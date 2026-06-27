@@ -454,8 +454,9 @@ where
                     }
 
                     if let Ok(message) = sonic_rs::from_str::<PusherMessage>(&broadcast.message) {
-                        // Debug log for tag filtering diagnostics
-                        tracing::debug!(
+                        // Very hot path under fanout load; keep detailed per-message
+                        // diagnostics behind TRACE.
+                        tracing::trace!(
                             "Received broadcast from node {}: channel={}, event={:?}, stream_id={:?}, serial={:?}, tags={:?}",
                             broadcast.node_id,
                             broadcast.channel,
@@ -477,7 +478,7 @@ where
                         {
                             let tag_filtering_enabled =
                                 horizontal_lock.local_adapter.is_tag_filtering_enabled();
-                            tracing::debug!(
+                            tracing::trace!(
                                 "Tag filtering enabled on this node: {}",
                                 tag_filtering_enabled
                             );

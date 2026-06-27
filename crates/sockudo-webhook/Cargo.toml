@@ -29,6 +29,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
 sonic-rs = { workspace = true }
+parking_lot = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
@@ -37,5 +38,11 @@ uuid = { workspace = true }
 [dev-dependencies]
 sockudo-app = { path = "../sockudo-app" }
 sockudo-queue = { path = "../sockudo-queue" }
+criterion = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[bench]]
+name = "webhook_hot_paths"
+path = "benches/webhook_hot_paths.rs"
+harness = false

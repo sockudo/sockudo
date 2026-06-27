@@ -77,6 +77,8 @@ The adapter controls cross-node fanout.
 ```toml
 [adapter]
 driver = "redis"
+enable_socket_counting = true
+aggregate_counts = false
 
 [adapter.redis]
 host = "redis"
@@ -85,6 +87,17 @@ prefix = "sockudo"
 ```
 
 Use a shared adapter for every multi-node deployment. Local memory adapters are intentionally process-local.
+
+`enable_socket_counting` keeps the adapter's request/reply socket-count path enabled by default.
+`aggregate_counts` is off by default; enable it when you want each node to maintain gossiped
+cluster-wide channel counts for local count reads.
+
+For high-churn benchmark runs that should avoid distributed count fanout, use:
+
+```bash
+ADAPTER_ENABLE_SOCKET_COUNTING=false
+ADAPTER_AGGREGATE_COUNTS=true
+```
 
 ## Recovery and history
 

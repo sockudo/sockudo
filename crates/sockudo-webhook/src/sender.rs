@@ -7,11 +7,10 @@ use sockudo_core::options::WebhookRetryConfig;
 use crate::lambda_sender::LambdaWebhookSender;
 use ahash::AHashMap;
 use reqwest::{Client, header};
+use serde::Serialize;
 use sockudo_core::token::Token;
 use sockudo_core::utils::channel_namespace_name;
-use sockudo_core::webhook_types::{
-    JobData, JobPayload, PusherWebhookPayload, Webhook, WebhookFilter, WebhookRetryPolicy,
-};
+use sockudo_core::webhook_types::{JobData, Webhook, WebhookFilter, WebhookRetryPolicy};
 use sonic_rs::Value;
 #[cfg(feature = "lambda")]
 use sonic_rs::json;
@@ -31,6 +30,12 @@ struct HttpWebhookTaskParams {
     app_key: String,
     signature: String,
     body_to_send: String,
+}
+
+#[derive(Serialize)]
+struct BorrowedPusherWebhookPayload<'a> {
+    time_ms: i64,
+    events: &'a [Value],
 }
 
 pub struct WebhookSender {
@@ -79,21 +84,18 @@ impl WebhookSender {
         Ok(())
     }
 
-    fn create_pusher_payload(&self, job: &JobData) -> Result<(PusherWebhookPayload, String)> {
-        let pusher_payload = PusherWebhookPayload {
-            time_ms: job.payload.time_ms,
-            events: job.payload.events.clone(),
-        };
-
-        let body_json_string = sonic_rs::to_string(&pusher_payload)
-            .map_err(|e| Error::Serialization(format!("Failed to serialize webhook body: {e}")))?;
-
-        let _signature =
-            Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);
-        Ok((pusher_payload, body_json_string))
+    fn create_pusher_body(&self, time_ms: i64, events: &[Value]) -> Result<String> {
+        let pusher_payload = BorrowedPusherWebhookPayload { time_ms, events };
+        sonic_rs::to_string(&pusher_payload)
+            .map_err(|e| Error::Serialization(format!("Failed to serialize webhook body: {e}")))
     }
 
-    fn event_matches_webhook_filter(&self, event: &Value, filter: Option<&WebhookFilter>) -> bool {
+    fn event_matches_webhook_filter(
+        &self,
+        event: &Value,
+        filter: Option<&WebhookFilter>,
+        channel_pattern: Option<&regex::Regex>,
+    ) -> bool {
         let Some(filter) = filter else {
             return true;
         };
@@ -115,18 +117,10 @@ impl WebhookSender {
             return false;
         }
 
-        if let Some(pattern) = &filter.channel_pattern {
-            let Ok(regex) = regex::Regex::new(pattern) else {
-                warn!(
-                    "Ignoring invalid webhook channel_pattern regex: {}",
-                    pattern
-                );
-                return false;
-            };
-
-            if !regex.is_match(channel) {
-                return false;
-            }
+        if let Some(regex) = channel_pattern
+            && !regex.is_match(channel)
+        {
+            return false;
         }
 
         let namespace = channel_namespace_name(channel);
@@ -149,20 +143,38 @@ impl WebhookSender {
     }
 
     fn filter_events_for_webhook(&self, events: &[Value], webhook_config: &Webhook) -> Vec<Value> {
-        events
-            .iter()
-            .filter(|event| {
-                event
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|event_name| {
-                        webhook_config.event_types.contains(&event_name.to_string())
-                            && self
-                                .event_matches_webhook_filter(event, webhook_config.filter.as_ref())
-                    })
-            })
-            .cloned()
-            .collect()
+        let filter = webhook_config.filter.as_ref();
+        let channel_pattern = match filter.and_then(|filter| filter.channel_pattern.as_deref()) {
+            Some(pattern) => match regex::Regex::new(pattern) {
+                Ok(regex) => Some(regex),
+                Err(_) => {
+                    warn!(
+                        "Ignoring invalid webhook channel_pattern regex: {}",
+                        pattern
+                    );
+                    return Vec::new();
+                }
+            },
+            None => None,
+        };
+
+        let mut filtered_events = Vec::new();
+        for event in events {
+            let Some(event_name) = event.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+
+            if webhook_config
+                .event_types
+                .iter()
+                .any(|configured| configured.as_str() == event_name)
+                && self.event_matches_webhook_filter(event, filter, channel_pattern.as_ref())
+            {
+                filtered_events.push(event.clone());
+            }
+        }
+
+        filtered_events
     }
 
     fn find_relevant_webhooks<'a>(
@@ -170,7 +182,7 @@ impl WebhookSender {
         events: &[Value],
         webhook_configs: &'a [Webhook],
     ) -> AHashMap<String, (&'a Webhook, Vec<Value>)> {
-        let mut relevant_configs = AHashMap::new();
+        let mut relevant_configs = AHashMap::with_capacity(webhook_configs.len());
 
         for wh_config in webhook_configs {
             let filtered_events = self.filter_events_for_webhook(events, wh_config);
@@ -211,8 +223,6 @@ impl WebhookSender {
         self.validate_webhook_job(&app_id, &job.payload.events)
             .await?;
 
-        let (pusher_payload, _body_json_string) = self.create_pusher_payload(&job)?;
-
         let relevant_webhooks = self.find_relevant_webhooks(&job.payload.events, webhook_configs);
         if relevant_webhooks.is_empty() {
             debug!(
@@ -222,10 +232,15 @@ impl WebhookSender {
             return Ok(());
         }
 
-        log_webhook_processing_pusher_format(&app_id, &pusher_payload);
+        log_webhook_processing_pusher_format(&app_id, job.payload.events.len());
 
-        let mut tasks = Vec::new();
+        let signer = Token::new(job.app_key.clone(), job.app_secret.clone());
+        let mut tasks = Vec::with_capacity(relevant_webhooks.len());
         for (_endpoint_key, (webhook_config, filtered_events)) in relevant_webhooks {
+            let filtered_body_json_string =
+                self.create_pusher_body(job.payload.time_ms, &filtered_events)?;
+            let filtered_signature = signer.sign(&filtered_body_json_string);
+
             let permit = self
                 .webhook_semaphore
                 .clone()
@@ -234,17 +249,6 @@ impl WebhookSender {
                 .map_err(|e| {
                     Error::Other(format!("Failed to acquire webhook semaphore permit: {e}"))
                 })?;
-
-            let filtered_job = JobData {
-                payload: JobPayload {
-                    time_ms: job.payload.time_ms,
-                    events: filtered_events,
-                },
-                ..job.clone()
-            };
-            let (_, filtered_body_json_string) = self.create_pusher_payload(&filtered_job)?;
-            let filtered_signature = Token::new(job.app_key.clone(), job.app_secret.clone())
-                .sign(&filtered_body_json_string);
 
             let task = self.create_webhook_task(
                 webhook_config,
@@ -555,10 +559,10 @@ async fn send_pusher_webhook_once(
     }
 }
 
-fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPayload) {
+fn log_webhook_processing_pusher_format(app_id: &str, event_count: usize) {
     debug!(
         app_id = %app_id,
-        event_count = payload.events.len(),
+        event_count,
         "Processing Pusher webhook payload"
     );
 }

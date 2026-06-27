@@ -152,17 +152,19 @@ impl PresenceManager {
         now: Instant,
     ) -> Vec<PendingRemovalTask> {
         let mut deadlines = deadlines.lock().await;
-        let due_deadlines = deadlines
-            .keys()
-            .copied()
-            .take_while(|deadline| *deadline <= now)
-            .collect::<Vec<_>>();
         let mut tasks = Vec::new();
-        for deadline in due_deadlines {
-            if let Some(mut bucket) = deadlines.remove(&deadline) {
+
+        while let Some((&deadline, _)) = deadlines.first_key_value() {
+            if deadline > now {
+                break;
+            }
+
+            if let Some((_, mut bucket)) = deadlines.pop_first() {
+                tasks.reserve(bucket.len());
                 tasks.extend(bucket.drain(..));
             }
         }
+
         tasks
     }
 

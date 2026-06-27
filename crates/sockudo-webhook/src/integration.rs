@@ -5,14 +5,15 @@ use sockudo_core::queue::QueueInterface;
 use sockudo_core::webhook_types::{JobData, JobPayload, JobProcessorFnAsync};
 
 use crate::sender::WebhookSender;
-use ahash::AHashMap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sonic_rs::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::interval;
 use tracing::{error, info, warn};
+
+const WEBHOOK_QUEUE_NAME: &str = "webhooks";
 
 /// Configuration for the webhook integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +92,7 @@ impl QueueManager {
 /// Webhook integration for processing events
 pub struct WebhookIntegration {
     config: WebhookConfig,
-    batched_webhooks: Arc<Mutex<AHashMap<String, Vec<JobData>>>>,
+    batched_webhooks: Arc<Mutex<Vec<JobData>>>,
     queue_manager: Option<Arc<QueueManager>>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
 }
@@ -104,7 +105,7 @@ impl WebhookIntegration {
     ) -> Result<Self> {
         let mut integration = Self {
             config,
-            batched_webhooks: Arc::new(Mutex::new(AHashMap::new())),
+            batched_webhooks: Arc::new(Mutex::new(Vec::new())),
             queue_manager: None,
             app_manager,
         };
@@ -133,7 +134,6 @@ impl WebhookIntegration {
             self.config.retry.clone(),
             self.config.request_timeout_ms,
         ));
-        let queue_name = "webhooks".to_string();
         let sender_clone = webhook_sender.clone();
 
         let processor: JobProcessorFnAsync = Box::new(move |job_data| {
@@ -147,7 +147,9 @@ impl WebhookIntegration {
             })
         });
 
-        queue_manager.process_queue(&queue_name, processor).await?;
+        queue_manager
+            .process_queue(WEBHOOK_QUEUE_NAME, processor)
+            .await?;
         self.queue_manager = Some(queue_manager);
         Ok(())
     }
@@ -165,34 +167,32 @@ impl WebhookIntegration {
             let mut interval = interval(Duration::from_millis(batch_duration));
             loop {
                 interval.tick().await;
-                let webhooks_to_process: AHashMap<String, Vec<JobData>> = {
-                    let mut batched = batched_webhooks_clone.lock().await;
+                let jobs_to_process = {
+                    let mut batched = batched_webhooks_clone.lock();
                     std::mem::take(&mut *batched)
                 };
 
-                if webhooks_to_process.is_empty() {
+                if jobs_to_process.is_empty() {
                     continue;
                 }
                 info!(
                     "{}",
                     format!(
-                        "Processing {} batched webhook queues (Sockudo internal batching)",
-                        webhooks_to_process.len()
+                        "Processing {} batched webhook jobs (Sockudo internal batching)",
+                        jobs_to_process.len()
                     )
                 );
 
                 if let Some(qm) = &queue_manager_clone {
-                    for (queue_name, jobs) in webhooks_to_process {
-                        for batch in Self::merge_jobs_for_queue(jobs, batch_size) {
-                            if let Err(e) = qm.add_to_queue(&queue_name, batch).await {
-                                error!(
-                                    "{}",
-                                    format!(
-                                        "Failed to add batched job to queue {}: {}",
-                                        queue_name, e
-                                    )
-                                );
-                            }
+                    for batch in Self::merge_jobs_for_queue(jobs_to_process, batch_size) {
+                        if let Err(e) = qm.add_to_queue(WEBHOOK_QUEUE_NAME, batch).await {
+                            error!(
+                                "{}",
+                                format!(
+                                    "Failed to add batched job to queue {}: {}",
+                                    WEBHOOK_QUEUE_NAME, e
+                                )
+                            );
                         }
                     }
                 }
@@ -204,18 +204,14 @@ impl WebhookIntegration {
         self.config.enabled
     }
 
-    async fn add_webhook(&self, queue_name: &str, job_data: JobData) -> Result<()> {
+    async fn add_webhook(&self, job_data: JobData) -> Result<()> {
         if !self.is_enabled() {
             return Ok(());
         }
         if self.config.batching.enabled {
-            let mut batched = self.batched_webhooks.lock().await;
-            batched
-                .entry(queue_name.to_string())
-                .or_default()
-                .push(job_data);
+            self.batched_webhooks.lock().push(job_data);
         } else if let Some(qm) = &self.queue_manager {
-            qm.add_to_queue(queue_name, job_data).await?;
+            qm.add_to_queue(WEBHOOK_QUEUE_NAME, job_data).await?;
         } else {
             return Err(Error::Internal(
                 "Queue manager not initialized for webhooks".to_string(),
@@ -225,7 +221,7 @@ impl WebhookIntegration {
     }
 
     fn merge_jobs_for_queue(jobs: Vec<JobData>, batch_size: usize) -> Vec<JobData> {
-        let mut merged = Vec::new();
+        let mut merged = Vec::with_capacity(jobs.len());
         let mut current: Option<JobData> = None;
         let batch_size = batch_size.max(1);
 
@@ -263,6 +259,10 @@ impl WebhookIntegration {
 
     fn split_job_by_size(job: JobData, batch_size: usize) -> Vec<JobData> {
         let batch_size = batch_size.max(1);
+        if job.payload.events.len() <= batch_size {
+            return vec![job];
+        }
+
         let JobData {
             app_key,
             app_id,
@@ -272,31 +272,20 @@ impl WebhookIntegration {
         } = job;
 
         let JobPayload { time_ms, events } = payload;
-        let mut chunks = Vec::new();
+        let chunk_count = events.len().div_ceil(batch_size);
+        let mut chunks = Vec::with_capacity(chunk_count);
 
-        for event_chunk in events.chunks(batch_size) {
+        let mut events = events.into_iter();
+        for _ in 0..chunk_count {
             chunks.push(JobData {
                 app_key: app_key.clone(),
                 app_id: app_id.clone(),
                 app_secret: app_secret.clone(),
                 payload: JobPayload {
                     time_ms,
-                    events: event_chunk.to_vec(),
+                    events: events.by_ref().take(batch_size).collect(),
                 },
                 original_signature: original_signature.clone(),
-            });
-        }
-
-        if chunks.is_empty() {
-            chunks.push(JobData {
-                app_key,
-                app_id,
-                app_secret,
-                payload: JobPayload {
-                    time_ms,
-                    events: Vec::new(),
-                },
-                original_signature,
             });
         }
 
@@ -322,15 +311,8 @@ impl WebhookIntegration {
         }
     }
 
-    async fn should_send_webhook(&self, app: &App, event_type_name: &str) -> bool {
-        if !self.is_enabled() {
-            return false;
-        }
-        app.webhooks_ref().is_some_and(|webhooks| {
-            webhooks
-                .iter()
-                .any(|wh_config| wh_config.event_types.contains(&event_type_name.to_string()))
-        })
+    fn should_send_webhook(&self, app: &App, event_type_name: &str) -> bool {
+        self.webhook_configured(app, event_type_name)
     }
 
     /// Cheap synchronous check: is a webhook configured for `event_type` on this app?
@@ -356,7 +338,7 @@ impl WebhookIntegration {
     }
 
     pub async fn send_channel_occupied(&self, app: &App, channel: &str) -> Result<()> {
-        if !self.should_send_webhook(app, "channel_occupied").await {
+        if !self.should_send_webhook(app, "channel_occupied") {
             return Ok(());
         }
         let event_obj = json!({
@@ -366,11 +348,11 @@ impl WebhookIntegration {
         let signature = format!("{}:{}:channel_occupied", app.id, channel);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
 
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_channel_vacated(&self, app: &App, channel: &str) -> Result<()> {
-        if !self.should_send_webhook(app, "channel_vacated").await {
+        if !self.should_send_webhook(app, "channel_vacated") {
             return Ok(());
         }
         let event_obj = json!({
@@ -379,11 +361,11 @@ impl WebhookIntegration {
         });
         let signature = format!("{}:{}:channel_vacated", app.id, channel);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_member_added(&self, app: &App, channel: &str, user_id: &str) -> Result<()> {
-        if !self.should_send_webhook(app, "member_added").await {
+        if !self.should_send_webhook(app, "member_added") {
             return Ok(());
         }
         let event_obj = json!({
@@ -393,11 +375,11 @@ impl WebhookIntegration {
         });
         let signature = format!("{}:{}:{}:member_added", app.id, channel, user_id);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_member_removed(&self, app: &App, channel: &str, user_id: &str) -> Result<()> {
-        if !self.should_send_webhook(app, "member_removed").await {
+        if !self.should_send_webhook(app, "member_removed") {
             return Ok(());
         }
         let event_obj = json!({
@@ -407,7 +389,7 @@ impl WebhookIntegration {
         });
         let signature = format!("{}:{}:{}:member_removed", app.id, channel, user_id);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_member_updated(
@@ -417,7 +399,7 @@ impl WebhookIntegration {
         user_id: &str,
         user_info: Value,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "member_updated").await {
+        if !self.should_send_webhook(app, "member_updated") {
             return Ok(());
         }
         let event_obj = json!({
@@ -428,7 +410,7 @@ impl WebhookIntegration {
         });
         let signature = format!("{}:{}:{}:member_updated", app.id, channel, user_id);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_client_event(
@@ -440,7 +422,7 @@ impl WebhookIntegration {
         socket_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "client_event").await {
+        if !self.should_send_webhook(app, "client_event") {
             return Ok(());
         }
 
@@ -465,11 +447,11 @@ impl WebhookIntegration {
             socket_id.unwrap_or("unknown")
         );
         let job_data = self.create_job_data(app, vec![client_event_pusher_payload], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_cache_missed(&self, app: &App, channel: &str) -> Result<()> {
-        if !self.should_send_webhook(app, "cache_miss").await {
+        if !self.should_send_webhook(app, "cache_miss") {
             return Ok(());
         }
         let event_obj = json!({
@@ -479,7 +461,7 @@ impl WebhookIntegration {
         });
         let signature = format!("{}:{}:cache_miss", app.id, channel);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_ai_stream_cancelled(
@@ -489,7 +471,7 @@ impl WebhookIntegration {
         message_serial: &str,
         reason: &str,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "ai_stream_cancelled").await {
+        if !self.should_send_webhook(app, "ai_stream_cancelled") {
             return Ok(());
         }
         let event_obj = json!({
@@ -503,7 +485,7 @@ impl WebhookIntegration {
             app.id, channel, message_serial
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_ai_turn_started(
@@ -513,7 +495,7 @@ impl WebhookIntegration {
         turn_id: Option<&str>,
         client_id: Option<&str>,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "ai_turn_started").await {
+        if !self.should_send_webhook(app, "ai_turn_started") {
             return Ok(());
         }
         let event_obj = json!({
@@ -529,7 +511,7 @@ impl WebhookIntegration {
             turn_id.unwrap_or("unknown")
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_ai_turn_ended(
@@ -540,7 +522,7 @@ impl WebhookIntegration {
         reason: &str,
         error_code: Option<&str>,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "ai_turn_ended").await {
+        if !self.should_send_webhook(app, "ai_turn_ended") {
             return Ok(());
         }
         let event_obj = json!({
@@ -558,7 +540,7 @@ impl WebhookIntegration {
             reason
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_ai_cancel_requested(
@@ -568,7 +550,7 @@ impl WebhookIntegration {
         turn_id: Option<&str>,
         client_id: Option<&str>,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "ai_cancel_requested").await {
+        if !self.should_send_webhook(app, "ai_cancel_requested") {
             return Ok(());
         }
         let event_obj = json!({
@@ -584,7 +566,7 @@ impl WebhookIntegration {
             turn_id.unwrap_or("unknown")
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_ai_stream_orphaned(
@@ -594,7 +576,7 @@ impl WebhookIntegration {
         message_serial: &str,
         reason: &str,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "ai_stream_orphaned").await {
+        if !self.should_send_webhook(app, "ai_stream_orphaned") {
             return Ok(());
         }
         let event_obj = json!({
@@ -608,7 +590,7 @@ impl WebhookIntegration {
             app.id, channel, message_serial
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_message_version_created(
@@ -619,10 +601,7 @@ impl WebhookIntegration {
         version_serial: &str,
         action: &str,
     ) -> Result<()> {
-        if !self
-            .should_send_webhook(app, "message_version_created")
-            .await
-        {
+        if !self.should_send_webhook(app, "message_version_created") {
             return Ok(());
         }
         let event_obj = json!({
@@ -637,7 +616,7 @@ impl WebhookIntegration {
             app.id, channel, message_serial, version_serial
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_annotation_created(
@@ -648,7 +627,7 @@ impl WebhookIntegration {
         annotation_serial: &str,
         annotation_type: &str,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "annotation_created").await {
+        if !self.should_send_webhook(app, "annotation_created") {
             return Ok(());
         }
         let event_obj = json!({
@@ -663,7 +642,7 @@ impl WebhookIntegration {
             app.id, channel, message_serial, annotation_serial
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     pub async fn send_annotation_deleted(
@@ -675,7 +654,7 @@ impl WebhookIntegration {
         deleted_annotation_serial: &str,
         annotation_type: &str,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "annotation_deleted").await {
+        if !self.should_send_webhook(app, "annotation_deleted") {
             return Ok(());
         }
         let event_obj = json!({
@@ -691,7 +670,7 @@ impl WebhookIntegration {
             app.id, channel, message_serial, annotation_serial
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     /// Sends a webhook when the subscription count for a channel changes.
@@ -701,7 +680,7 @@ impl WebhookIntegration {
         channel: &str,
         subscription_count: usize,
     ) -> Result<()> {
-        if !self.should_send_webhook(app, "subscription_count").await {
+        if !self.should_send_webhook(app, "subscription_count") {
             return Ok(());
         }
 
@@ -717,7 +696,7 @@ impl WebhookIntegration {
         );
 
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook("webhooks", job_data).await
+        self.add_webhook(job_data).await
     }
 
     /// Check the health of the queue manager used by webhook integration

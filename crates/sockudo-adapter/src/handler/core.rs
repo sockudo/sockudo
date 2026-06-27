@@ -147,12 +147,19 @@ impl ConnectionHandler {
             return Ok(());
         }
 
-        // Skip the cluster-wide count request/reply entirely when nothing consumes
-        // it. This is the room-switch hot path; a fanout here per unsubscribe is the
-        // dominant churn cost on multi-node clusters.
-        if !self
-            .subscription_count_has_consumer(app_config, channel_name)
-            .await
+        // Skip count reads entirely when this leave cannot produce an observable
+        // count-derived event.
+        let wants_channel_vacated_webhook =
+            self.subscription_count_webhook_configured(app_config, "channel_vacated");
+        let wants_subscription_count_webhook =
+            self.subscription_count_webhook_configured(app_config, "subscription_count");
+        let wants_meta_channel = self
+            .subscription_count_meta_channel_has_local_subscriber(app_config, channel_name)
+            .await;
+
+        if !wants_channel_vacated_webhook
+            && !wants_subscription_count_webhook
+            && !wants_meta_channel
         {
             return Ok(());
         }
@@ -162,7 +169,8 @@ impl ConnectionHandler {
             .get_channel_socket_count(&app_config.id, channel_name)
             .await;
 
-        if !channel_name.starts_with("presence-")
+        if wants_subscription_count_webhook
+            && !channel_name.starts_with("presence-")
             && let Some(webhook_integration) = &self.webhook_integration
         {
             webhook_integration
@@ -171,28 +179,30 @@ impl ConnectionHandler {
                 .ok();
         }
 
-        let event_name = if current_sub_count == 0 {
-            "channel_vacated"
-        } else {
-            "subscription_count"
-        };
-        self.broadcast_metachannel_event(
-            app_config,
-            channel_name,
-            event_name,
-            sonic_rs::json!({
-                "channel": channel_name,
-                "subscription_count": current_sub_count,
-            }),
-        )
-        .await
-        .ok();
+        if wants_meta_channel {
+            let event_name = if current_sub_count == 0 {
+                "channel_vacated"
+            } else {
+                "subscription_count"
+            };
+            self.broadcast_metachannel_event(
+                app_config,
+                channel_name,
+                event_name,
+                sonic_rs::json!({
+                    "channel": channel_name,
+                    "subscription_count": current_sub_count,
+                }),
+            )
+            .await
+            .ok();
+        }
 
         // Send channel_vacated webhook if no subscribers left (with 3-second delay).
         // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects.
         if current_sub_count == 0
+            && wants_channel_vacated_webhook
             && let Some(webhook_integration) = &self.webhook_integration
-            && webhook_integration.webhook_configured(app_config, "channel_vacated")
         {
             let wi = Arc::clone(webhook_integration);
             let cm = Arc::clone(&self.connection_manager);
@@ -210,27 +220,24 @@ impl ConnectionHandler {
         Ok(())
     }
 
-    /// Returns true when the cluster-wide subscription count for `channel` is
-    /// actually consumed by something: a configured webhook (channel_occupied,
-    /// channel_vacated, subscription_count) or local subscribers on the channel's
-    /// meta-channel. When false, subscribe/unsubscribe hot paths skip the
-    /// cross-node count request/reply entirely.
-    ///
-    /// Trade-off: with no local consumer we also skip the subscription_count
-    /// meta-channel update for subscribers living on a different node than the
-    /// membership change. Exact cluster-wide counts for that case need the
-    /// aggregate-count path, not per-event request/reply.
-    pub(crate) async fn subscription_count_has_consumer(
+    pub(crate) fn subscription_count_webhook_configured(
+        &self,
+        app_config: &App,
+        event_type: &str,
+    ) -> bool {
+        self.webhook_integration
+            .as_ref()
+            .is_some_and(|integration| integration.webhook_configured(app_config, event_type))
+    }
+
+    /// Returns true when this node has local subscribers for the channel's
+    /// meta-channel. Count webhooks are checked separately so webhook-only apps
+    /// don't also broadcast internal meta-channel events across the cluster.
+    pub(crate) async fn subscription_count_meta_channel_has_local_subscriber(
         &self,
         app_config: &App,
         channel: &str,
     ) -> bool {
-        if let Some(webhook_integration) = &self.webhook_integration
-            && webhook_integration.wants_subscription_count(app_config)
-        {
-            return true;
-        }
-
         match sockudo_core::utils::meta_channel_for(channel) {
             Some(meta_channel) => {
                 self.connection_manager

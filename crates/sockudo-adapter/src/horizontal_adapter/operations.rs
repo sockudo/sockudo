@@ -6,7 +6,7 @@ use std::collections::hash_map::Entry;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 impl HorizontalAdapter {
     /// Create a new horizontal adapter
@@ -65,7 +65,7 @@ impl HorizontalAdapter {
 
     /// Process a received request from another node
     pub async fn process_request(&self, request: RequestBody) -> Result<ResponseBody> {
-        debug!(
+        trace!(
             "{}",
             format!(
                 "Processing request from node {}: {:?}",
