@@ -855,6 +855,7 @@ mod tests {
                     buffer_config: crate::websocket::WebSocketBufferConfig::default(),
                     protocol_version: ProtocolVersion::V2,
                     wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
                     echo_messages: true,
                 },
             )

@@ -40,7 +40,7 @@ use sockudo_core::version_store::{NoopVersionStore, VersionStore};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
 use sockudo_protocol::messages::{MessageData, PusherMessage, is_ai_event};
-use sockudo_protocol::{ProtocolVersion, WireFormat};
+use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
 use sockudo_webhook::WebhookIntegration;
 
 use crate::handler::types::{ClientEventRequest, SignInRequest, SubscriptionRequest};
@@ -55,6 +55,14 @@ use tracing::{debug, error, warn};
 
 type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
 type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
+
+#[derive(Clone, Copy)]
+struct SocketWireOptions {
+    protocol_version: ProtocolVersion,
+    wire_format: WireFormat,
+    echo_messages: bool,
+    append_mode: AppendMode,
+}
 
 fn fast_dashmap<K: Eq + std::hash::Hash, V>() -> FastDashMap<K, V> {
     DashMap::with_hasher(ahash::RandomState::new())
@@ -564,10 +572,12 @@ impl ConnectionHandler {
             socket_id,
             socket_tx,
             &app_config,
-            protocol_version,
-            wire_format,
-            echo_messages,
-            append_mode,
+            SocketWireOptions {
+                protocol_version,
+                wire_format,
+                echo_messages,
+                append_mode,
+            },
         )
         .await?;
 
@@ -638,10 +648,7 @@ impl ConnectionHandler {
         socket_id: SocketId,
         socket_tx: WebSocketWriter,
         app_config: &App,
-        protocol_version: ProtocolVersion,
-        wire_format: WireFormat,
-        echo_messages: bool,
-        append_mode: sockudo_protocol::AppendMode,
+        wire_options: SocketWireOptions,
     ) -> Result<()> {
         // True atomic operation: quota check and socket addition under single lock
         // This is the only way to prevent race conditions
@@ -692,10 +699,10 @@ impl ConnectionHandler {
                     &app_config.id,
                     Arc::clone(&self.app_manager),
                     buffer_config,
-                    protocol_version,
-                    wire_format,
-                    echo_messages,
-                    append_mode,
+                    wire_options.protocol_version,
+                    wire_options.wire_format,
+                    wire_options.echo_messages,
+                    wire_options.append_mode,
                 )
                 .await?;
         } // Lock released - atomic operation complete

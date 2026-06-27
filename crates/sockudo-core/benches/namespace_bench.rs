@@ -131,6 +131,7 @@ async fn seed_namespace_with_refs(
                         buffer_config: WebSocketBufferConfig::default(),
                         protocol_version: ProtocolVersion::V2,
                         wire_format: WireFormat::Json,
+                        append_mode: sockudo_protocol::AppendMode::Delta,
                         echo_messages: true,
                     },
                 )
@@ -158,6 +159,7 @@ async fn seed_namespace_with_refs(
                         buffer_config: WebSocketBufferConfig::default(),
                         protocol_version: ProtocolVersion::V2,
                         wire_format: WireFormat::Json,
+                        append_mode: sockudo_protocol::AppendMode::Delta,
                         echo_messages: true,
                     },
                 )
