@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 * [ADDED] Preserve raw nested webhook event payloads while keeping the legacy string event projection.
 

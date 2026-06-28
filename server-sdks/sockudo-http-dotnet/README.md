@@ -35,13 +35,13 @@ A .NET server SDK for interacting with the [Sockudo](https://github.com/sockudo/
 Install the published NuGet package:
 
 ```bash
-dotnet add package SockudoServer --version 2.0.0
+dotnet add package SockudoServer --version 2.1.0
 ```
 
 Or add it directly to your project file:
 
 ```xml
-<PackageReference Include="SockudoServer" Version="2.0.0" />
+<PackageReference Include="SockudoServer" Version="2.1.0" />
 ```
 
 For local monorepo development, reference

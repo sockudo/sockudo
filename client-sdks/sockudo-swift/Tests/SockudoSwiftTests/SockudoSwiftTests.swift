@@ -196,7 +196,7 @@ private func liveSockudoURL(protocolVersion: Int) -> URL {
   var queryItems = [
     URLQueryItem(name: "protocol", value: "\(protocolVersion)"),
     URLQueryItem(name: "client", value: "swift-e2e"),
-    URLQueryItem(name: "version", value: "2.0.0"),
+    URLQueryItem(name: "version", value: "2.1.0"),
   ]
   if protocolVersion == 2 {
     queryItems.append(URLQueryItem(name: "format", value: liveWireFormat().queryValue))

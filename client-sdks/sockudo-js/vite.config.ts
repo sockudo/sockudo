@@ -36,7 +36,7 @@ export default defineConfig({
   define: {
     global: "window",
     RUNTIME: JSON.stringify("web"),
-    VERSION: JSON.stringify("2.0.0"),
+    VERSION: JSON.stringify("2.1.0"),
     CDN_HTTP: JSON.stringify("//js.pusher.com/"),
     CDN_HTTPS: JSON.stringify("//js.pusher.com/"),
     DEPENDENCY_SUFFIX: JSON.stringify(""),

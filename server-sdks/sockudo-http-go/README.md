@@ -24,7 +24,7 @@ Official Go server SDK for [Sockudo](https://github.com/sockudo/sockudo) — a f
 
 ## Installation
 
-Install the v2 Go module. Go resolves this package through the module path and the `v2.0.0` Git tag:
+Install the v2 Go module. Go resolves this package through the module path and the `v2.1.0` Git tag:
 
 ```sh
 go get github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2

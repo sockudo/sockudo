@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 * [ADDED] Preserve raw webhook event fields and nested non-string data payloads for forward compatibility.
 * [ADDED] Decode optional mutation response serial fields as 64-bit values.

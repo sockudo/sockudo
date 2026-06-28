@@ -1,6 +1,6 @@
 [package]
 name = "sockudo-http"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 repository = "https://github.com/sockudo/sockudo-http-rust"
 description = "A Rust client for interacting with the Sockudo HTTP API"

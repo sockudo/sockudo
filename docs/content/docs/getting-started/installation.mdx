@@ -38,7 +38,7 @@ cargo binstall sockudo
 Pin a release when your deployment needs repeatable installs:
 
 ```bash
-cargo binstall sockudo --version 4.6.0
+cargo binstall sockudo --version 4.7.0
 ```
 
 Run the installed binary with a local configuration file:
@@ -58,7 +58,7 @@ cargo install sockudo --locked
 Pin a release or enable the same production-oriented features you would use from source:
 
 ```bash
-cargo install sockudo --version 4.6.0 --locked
+cargo install sockudo --version 4.7.0 --locked
 cargo install sockudo --locked --features "redis,postgres,push"
 ```
 
@@ -78,8 +78,8 @@ docker pull sockudo/sockudo:latest
 Use versioned tags for production rollouts:
 
 ```bash
-docker pull ghcr.io/sockudo/sockudo:4.6.0
-docker pull sockudo/sockudo:4.6.0
+docker pull ghcr.io/sockudo/sockudo:4.7.0
+docker pull sockudo/sockudo:4.7.0
 ```
 
 Start a local container with an in-memory app and Prometheus metrics exposed:

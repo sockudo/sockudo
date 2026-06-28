@@ -1,6 +1,6 @@
 {
   "name": "@sockudo/ai-transport",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Sockudo AI Transport TypeScript SDK.",
   "type": "module",
   "sideEffects": false,

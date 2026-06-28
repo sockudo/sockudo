@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 - Added Protocol V2 client platform primitives: capability-token URL auth with provider refresh, presence member updates, attach-serial exposure with `until_attach` channel history params, proxy-backed mutable-message write helpers, and `appendRollupWindow` negotiation.
 - Added proactive 80%-lifetime refresh scheduling for JWT tokens returned by `ClientAuthTokenProvider`; opaque and static tokens remain reactive-only and rely on `sockudo:token_expired`.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 - [ADDED] Add tolerant webhook parsing that preserves unknown event names, future fields, nested JSON values, and raw event access.
 

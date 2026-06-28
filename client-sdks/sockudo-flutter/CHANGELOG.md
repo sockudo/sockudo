@@ -1,4 +1,4 @@
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 * Added Protocol V2 capability-token options with initial `token` query auth, proactive 80% lifetime refresh for JWTs when `authCallback` is available, `authCallback` refresh on `sockudo:token_expired` code `40142`, and `sockudo:auth_success` event passthrough. Opaque tokens and static-only tokens remain reactive/manual.
 * Added `PresenceChannel.update(data)` plus inbound `sockudo_internal:presence_update` member-state handling and `sockudo:presence_update` emission.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 - Added Protocol V2 capability-token options, initial WebSocket `token` query support, typed
   `sockudo:auth_success` / `sockudo:token_expired` state, and provider-backed `sockudo:auth`

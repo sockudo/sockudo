@@ -72,8 +72,8 @@ try {
         private: true,
         type: "module",
         dependencies: {
-          "@sockudo/ai-transport": "2.0.0",
-          "@sockudo/client": "^2.0.0",
+          "@sockudo/ai-transport": "2.1.0",
+          "@sockudo/client": "^2.1.0",
           ai: "^6",
           react: "^19",
           "react-dom": "^19",
