@@ -678,7 +678,7 @@ where
             .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
             .await?;
 
-        if channel.starts_with("presence-") {
+        if self.fast_presence_transitions && channel.starts_with("presence-") {
             return Ok(local_count
                 + self
                     .horizontal
@@ -721,7 +721,7 @@ where
             return Ok(true);
         }
 
-        if channel.starts_with("presence-") {
+        if self.fast_presence_transitions && channel.starts_with("presence-") {
             return Ok(self
                 .horizontal
                 .remote_presence_user_has_connections(app_id, channel, user_id)

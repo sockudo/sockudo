@@ -13,6 +13,7 @@ health_check_timeout_ms = 2000
 driver = "local"
 enable_socket_counting = true
 aggregate_counts = false
+fast_presence_transitions = false
 fallback_to_local = true
 
 [adapter.nats]

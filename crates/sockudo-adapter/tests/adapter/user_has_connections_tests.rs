@@ -110,11 +110,10 @@ async fn test_user_has_connections_returns_true_from_local_without_remote_reques
     Ok(())
 }
 
-/// Test that absent presence connections use the replicated presence registry
-/// instead of a cross-cluster request.
+/// By default, presence transition checks keep strict request/reply semantics
+/// even if the replicated registry already has a matching remote entry.
 #[tokio::test]
-async fn test_user_has_connections_uses_presence_registry_when_no_local_connections() -> Result<()>
-{
+async fn test_user_has_connections_uses_remote_request_for_presence_by_default() -> Result<()> {
     let adapter = MockConfig::create_multi_node_adapter().await?;
 
     adapter
@@ -134,8 +133,8 @@ async fn test_user_has_connections_uses_presence_registry_when_no_local_connecti
         .await?;
 
     assert!(
-        result,
-        "should be true when the replicated presence registry contains the user"
+        !result,
+        "strict mode should ignore the eventually consistent presence registry"
     );
 
     let requests = adapter.transport.get_published_requests().await;
@@ -144,27 +143,50 @@ async fn test_user_has_connections_uses_presence_registry_when_no_local_connecti
         .filter(|r| r.request_type == RequestType::CountUserConnectionsInChannel)
         .collect();
 
-    assert!(
-        count_requests.is_empty(),
-        "presence registry lookup should issue zero remote count requests, got {}",
-        count_requests.len()
+    assert_eq!(
+        count_requests.len(),
+        1,
+        "strict presence transition check should issue one remote count request"
+    );
+    assert_eq!(
+        count_requests[0].user_id,
+        Some("remote-user".to_string()),
+        "request must carry the queried user_id"
+    );
+    assert_eq!(
+        count_requests[0].channel,
+        Some("presence-chat".to_string()),
+        "request must carry the queried channel"
     );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_user_has_connections_returns_false_for_empty_presence_registry_without_remote_request()
+async fn test_user_has_connections_uses_presence_registry_when_fast_transitions_enabled()
 -> Result<()> {
-    let adapter = MockConfig::create_multi_node_adapter().await?;
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    adapter.set_fast_presence_transitions(true);
+
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node",
+            "presence-chat",
+            "remote-socket-1",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
 
     let result = adapter
-        .user_has_connections_in_channel("absent-user", "app-1", "presence-chat", None)
+        .user_has_connections_in_channel("remote-user", "app-1", "presence-chat", None)
         .await?;
 
     assert!(
-        !result,
-        "should be false when neither local nor remote nodes have the user"
+        result,
+        "fast mode should use the replicated presence registry"
     );
 
     let requests = adapter.transport.get_published_requests().await;
@@ -175,7 +197,7 @@ async fn test_user_has_connections_returns_false_for_empty_presence_registry_wit
 
     assert!(
         count_requests.is_empty(),
-        "empty presence registry lookup should issue zero remote count requests, got {}",
+        "fast presence transition check should issue zero remote count requests, got {}",
         count_requests.len()
     );
 
@@ -222,9 +244,72 @@ async fn test_user_has_connections_falls_back_to_remote_for_non_presence_channel
 }
 
 #[tokio::test]
-async fn test_count_user_connections_in_channel_includes_presence_registry_without_remote_request()
+async fn test_count_user_connections_in_channel_uses_remote_request_for_presence_by_default()
 -> Result<()> {
     let adapter = MockConfig::create_multi_node_adapter().await?;
+
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node-a",
+            "presence-chat",
+            "remote-socket-a",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node-b",
+            "presence-chat",
+            "remote-socket-b",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+
+    let count = adapter
+        .count_user_connections_in_channel("remote-user", "app-1", "presence-chat", None)
+        .await?;
+
+    assert_eq!(
+        count, 0,
+        "strict mode should use request/reply instead of the replicated presence registry"
+    );
+
+    let requests = adapter.transport.get_published_requests().await;
+    let count_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.request_type == RequestType::CountUserConnectionsInChannel)
+        .collect();
+
+    assert_eq!(
+        count_requests.len(),
+        1,
+        "strict presence count should issue one remote count request"
+    );
+    assert_eq!(
+        count_requests[0].user_id,
+        Some("remote-user".to_string()),
+        "request must carry the queried user_id"
+    );
+    assert_eq!(
+        count_requests[0].channel,
+        Some("presence-chat".to_string()),
+        "request must carry the queried channel"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_count_user_connections_in_channel_uses_registry_when_fast_transitions_enabled()
+-> Result<()> {
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    adapter.set_fast_presence_transitions(true);
 
     adapter
         .horizontal
@@ -263,7 +348,7 @@ async fn test_count_user_connections_in_channel_includes_presence_registry_witho
 
     assert!(
         count_requests.is_empty(),
-        "presence count should issue zero remote count requests, got {}",
+        "fast presence count should issue zero remote count requests, got {}",
         count_requests.len()
     );
 

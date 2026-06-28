@@ -16,6 +16,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     );
     options.adapter.aggregate_counts =
         parse_env::<bool>("ADAPTER_AGGREGATE_COUNTS", options.adapter.aggregate_counts);
+    options.adapter.fast_presence_transitions = parse_env::<bool>(
+        "ADAPTER_FAST_PRESENCE_TRANSITIONS",
+        options.adapter.fast_presence_transitions,
+    );
     options.adapter.fallback_to_local = parse_env::<bool>(
         "ADAPTER_FALLBACK_TO_LOCAL",
         options.adapter.fallback_to_local,
