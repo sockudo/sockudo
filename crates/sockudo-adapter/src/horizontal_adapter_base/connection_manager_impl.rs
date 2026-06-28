@@ -786,13 +786,13 @@ where
     }
 
     async fn get_sockets_count(&self, app_id: &str) -> Result<usize> {
-        // Check if socket counting is enabled
-        if !self.enable_socket_counting {
-            return Ok(0);
-        }
-
-        // Get local count
+        // Always keep the local count available for per-node quota checks.
         let local_count = self.local_adapter.get_sockets_count(app_id).await?;
+
+        // Disabling socket counting only skips the cross-node request/reply path.
+        if !self.enable_socket_counting {
+            return Ok(local_count);
+        }
 
         // Get distributed count
         match self

@@ -5,12 +5,41 @@ use sockudo_adapter::horizontal_adapter::RequestType;
 use sockudo_adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo_adapter::horizontal_transport::{HorizontalTransport, TransportConfig};
 use sockudo_core::error::Result;
-use sockudo_core::websocket::SocketId;
+use sockudo_core::namespace::Namespace;
+use sockudo_core::websocket::{SocketId, WebSocket, WebSocketRef};
 use sockudo_protocol::messages::{MessageData, PusherMessage};
+use sockudo_ws::axum_integration;
+use sockudo_ws::client::WebSocketClient;
+use sockudo_ws::{Config as WsConfig, Http1, WebSocketStream};
 use sonic_rs::prelude::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::{TcpListener, TcpStream};
+
+async fn create_test_writer() -> axum_integration::WebSocketWriter {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = sockudo_ws::handshake::server_handshake(&mut stream)
+            .await
+            .unwrap();
+        let ws = axum_integration::WebSocket::from_tcp(stream, WsConfig::default());
+        let (_reader, writer) = ws.split();
+        writer
+    });
+
+    let client_stream = TcpStream::connect(addr).await.unwrap();
+    let client = WebSocketClient::<Http1>::new(WsConfig::default());
+    let (_client_ws, _): (WebSocketStream<sockudo_ws::Stream<Http1>>, _) = client
+        .connect(client_stream, &addr.to_string(), "/", None)
+        .await
+        .unwrap();
+
+    server.await.unwrap()
+}
 
 #[tokio::test]
 async fn test_horizontal_adapter_base_new() -> Result<()> {
@@ -651,6 +680,44 @@ async fn test_connection_manager_distributed_socket_count() -> Result<()> {
 
     // Should sum socket counts from all nodes: 3 + 3 = 6
     assert_eq!(count, 6); // Total socket count across both nodes
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_disabled_socket_counting_returns_local_count_without_remote_request() -> Result<()> {
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    adapter.set_socket_counting(false);
+    adapter.start_listeners().await?;
+
+    let socket_id = SocketId::from_string("local-socket-1").unwrap();
+    let writer = create_test_writer().await;
+    let ws_ref = WebSocketRef::new(WebSocket::new(socket_id, writer));
+
+    let namespace = adapter
+        .local_adapter
+        .namespaces
+        .entry("test-app".to_string())
+        .or_insert_with(|| Arc::new(Namespace::new("test-app".to_string())))
+        .clone();
+    namespace.sockets.insert(socket_id, ws_ref);
+
+    let count = adapter.get_sockets_count("test-app").await?;
+
+    assert_eq!(
+        count, 1,
+        "disabled socket counting must still report local sockets for quota checks"
+    );
+
+    let requests = adapter.transport.get_published_requests().await;
+    let socket_count_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.request_type == RequestType::SocketsCount)
+        .collect();
+    assert!(
+        socket_count_requests.is_empty(),
+        "disabled socket counting should skip distributed SocketsCount requests"
+    );
 
     Ok(())
 }
