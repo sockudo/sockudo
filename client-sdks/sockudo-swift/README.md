@@ -364,6 +364,104 @@ The live suite covers:
 - filter validation and delta option serialization
 - encrypted, private, and delta-enabled runtime paths through the client core
 
+## Threading Model
+
+`SockudoClient`, all channel types, and their callback closures are `@MainActor`-isolated.
+
+### Internal pipeline
+
+Message processing runs on a background actor before reaching MainActor:
+
+```
+URLSession background queue
+  → MessageProcessor actor (decode, dedup, delta reconstruction)
+    → MainActor (routing, state updates, callback delivery)
+```
+
+CPU-intensive work — protocol decoding (JSON, MessagePack, Protobuf), message deduplication, and delta reconstruction — runs off the main thread. Only fully-processed events reach MainActor.
+
+### What this means for your code
+
+All public API must be called from the main thread (or an `@MainActor` context):
+
+```swift
+// ✅ SwiftUI — already @MainActor, no change needed
+struct ContentView: View {
+    var body: some View {
+        Button("Connect") { client.connect() }
+    }
+}
+
+// ✅ UIKit — UIViewController is @MainActor in Swift 6, no change needed
+class MyViewController: UIViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        client.connect()
+    }
+}
+
+// ✅ From a non-isolated async context — use await
+func setup() async {
+    await MainActor.run { client.connect() }
+}
+
+// ✅ From a Combine publisher — dispatch to main first
+publisher
+    .receive(on: DispatchQueue.main)
+    .sink { [weak self] _ in self?.client.connect() }
+    .store(in: &cancellables)
+```
+
+### Callbacks execute on MainActor
+
+All event callbacks (`bind`, `on`, `onGlobal`) fire on the main thread:
+
+```swift
+channel.bind("price-updated") { data, _ in
+    // Already on @MainActor — safe to update UI directly
+    self.label.text = "\(data ?? "")"
+}
+```
+
+### Reconnection
+
+On disconnect, the client reconnects automatically using exponential backoff:
+
+- Delay formula: `attempt² seconds` (1s, 4s, 9s, 16s, 25s, ...)
+- Maximum delay: 120 seconds (configurable via `Options.maxReconnectGapInSeconds`)
+- Maximum attempts: 6 (configurable via `Options.maxReconnectAttempts`, `nil` = unlimited)
+- Counter resets on successful connection
+
+```swift
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        maxReconnectAttempts: 10,
+        maxReconnectGapInSeconds: 60
+    )
+)
+```
+
+### Client event buffering
+
+Client events triggered on a channel while disconnected are buffered and replayed automatically after re-subscription:
+
+```swift
+// Triggered while disconnected — buffered, not dropped
+channel.trigger(event: "client-typing", data: ["user": "alice"])
+
+// After reconnect and re-subscription, the event is sent automatically
+```
+
+- Buffer capacity: 50 events per channel (oldest dropped on overflow)
+- Buffer is preserved across disconnect/reconnect cycles
+- Buffer is cleared when `unsubscribe()` is called
+
+### Migration from pre-2.2
+
+If you were calling SockudoSwift methods from a background thread or Combine sink without a main-thread dispatch, those calls were data races. Wrap them in `.receive(on: DispatchQueue.main)` or `Task { @MainActor in }`.
+
 ## Release Model
 
 Swift packages are distributed by git tag rather than a central package registry by default.

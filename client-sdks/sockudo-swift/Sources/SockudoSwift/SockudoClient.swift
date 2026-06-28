@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-public final class SockudoClient: @unchecked Sendable {
+@MainActor public final class SockudoClient: Sendable {
   public struct Options {
     public var cluster: String
     public var protocolVersion: Int
@@ -35,6 +35,8 @@ public final class SockudoClient: @unchecked Sendable {
     public var wireFormat: SockudoWireFormat
     public var appendMode: SockudoAppendMode
     public var appendRollupWindow: Int?
+    public var maxReconnectAttempts: Int? = 6
+    public var maxReconnectGapInSeconds: Double = 120
 
     public init(
       cluster: String,
@@ -68,7 +70,9 @@ public final class SockudoClient: @unchecked Sendable {
       echoMessages: Bool = true,
       wireFormat: SockudoWireFormat = .json,
       appendMode: SockudoAppendMode = .delta,
-      appendRollupWindow: Int? = nil
+      appendRollupWindow: Int? = nil,
+      maxReconnectAttempts: Int? = 6,
+      maxReconnectGapInSeconds: Double = 120
     ) {
       self.cluster = cluster
       self.protocolVersion = protocolVersion
@@ -102,6 +106,8 @@ public final class SockudoClient: @unchecked Sendable {
       self.wireFormat = wireFormat
       self.appendMode = appendMode
       self.appendRollupWindow = appendRollupWindow
+      self.maxReconnectAttempts = maxReconnectAttempts
+      self.maxReconnectGapInSeconds = maxReconnectGapInSeconds
     }
   }
 
@@ -117,6 +123,8 @@ public final class SockudoClient: @unchecked Sendable {
 
   public let key: String
   let p: ProtocolPrefix
+  nonisolated let pipeline: MessagePipeline
+  private nonisolated let messageProcessor: MessageProcessor
   var config: ResolvedConfiguration
   public private(set) var connectionState: ConnectionState = .initialized
   public private(set) var socketID: String?
@@ -136,8 +144,6 @@ public final class SockudoClient: @unchecked Sendable {
   private var timelineSenderTimer: Timer?
   private var capabilityTokenRefreshTimer: Timer?
   private let reachability = ReachabilityMonitor()
-  private var deltaManager: DeltaCompressionManager?
-  private var deduplicator: MessageDeduplicator?
   private var channelPositions: [String: RecoveryPosition] = [:]
   private var timeline = Timeline()
   private var currentTransport: Transport?
@@ -145,6 +151,8 @@ public final class SockudoClient: @unchecked Sendable {
   private var manuallyDisconnected = false
   private var terminalEventHandled = false
   private var tokenRequestInFlight = false
+  var reconnectAttempts = 0
+  private var cachedDeltaStats: DeltaStats?
 
   public init(_ key: String, options: Options, urlSession: URLSession? = nil) throws {
     guard key.isEmpty == false else { throw SockudoError.invalidAppKey }
@@ -157,8 +165,17 @@ public final class SockudoClient: @unchecked Sendable {
       )
     }
 
+    let p = ProtocolPrefix(version: options.protocolVersion)
+    let pipeline = MessagePipeline(wireFormat: options.wireFormat)
     self.key = key
-    self.p = ProtocolPrefix(version: options.protocolVersion)
+    self.p = p
+    self.pipeline = pipeline
+    self.messageProcessor = MessageProcessor(
+      pipeline: pipeline,
+      prefix: p,
+      deduplicationCapacity: options.messageDeduplication ? options.messageDeduplicationCapacity : nil,
+      deltaOptions: options.deltaCompression
+    )
     self.config = ResolvedConfiguration(options: options)
     self.user = UserFacade()
     self.watchlist = WatchlistFacade()
@@ -168,11 +185,6 @@ public final class SockudoClient: @unchecked Sendable {
       urlSession
       ?? URLSession(
         configuration: configuration, delegate: webSocketDelegate, delegateQueue: nil)
-
-    self.deltaManager = nil
-    if options.messageDeduplication {
-      self.deduplicator = MessageDeduplicator(capacity: options.messageDeduplicationCapacity)
-    }
 
     reachability.stateDidChange = { [weak self] isOnline in
       Task { @MainActor in
@@ -189,14 +201,6 @@ public final class SockudoClient: @unchecked Sendable {
 
     user.attach(client: self)
     watchlist.attach(client: self)
-
-    if let deltaOptions = options.deltaCompression {
-      self.deltaManager = DeltaCompressionManager(options: deltaOptions, prefix: self.p) {
-        [weak self] event, data in
-        guard let self else { return false }
-        return (try? self.sendEvent(name: event, data: data, channel: nil)) ?? false
-      }
-    }
   }
 
   private static func isAllowedAppendRollupWindow(_ value: Int?) -> Bool {
@@ -251,7 +255,10 @@ public final class SockudoClient: @unchecked Sendable {
   }
 
   deinit {
-    invalidateTimers()
+    // Timer cleanup is handled by disconnect(). The timers hold [weak self]
+    // so any stragglers become no-ops once this instance is released.
+    // NWPathMonitor.cancel() and URLSession invalidation are safe from any
+    // context and must run here to release system resources.
     reachability.stop()
     urlSession.invalidateAndCancel()
   }
@@ -321,11 +328,14 @@ public final class SockudoClient: @unchecked Sendable {
   public func unsubscribe(_ name: String) {
     if let channel = channels[name], channel.subscriptionPending {
       channel.subscriptionCancelled = true
-    } else if let channel = channels.removeValue(forKey: name), channel.isSubscribed {
-      channel.unsubscribe()
+    } else if let channel = channels.removeValue(forKey: name) {
+      channel.clearUnsentEvents()
+      if channel.isSubscribed {
+        channel.unsubscribe()
+      }
     }
     channelPositions.removeValue(forKey: name)
-    deltaManager?.clearChannelState(name)
+    Task { [messageProcessor] in await messageProcessor.clearDeltaState(name) }
   }
 
   public func connect() {
@@ -338,6 +348,7 @@ public final class SockudoClient: @unchecked Sendable {
     manuallyDisconnected = false
     terminalEventHandled = false
     attemptedFallback = false
+    reconnectAttempts = 0
     updateState(.connecting)
     openWebSocketAfterInitialAuth(using: transports[0])
     setUnavailableTimer()
@@ -346,6 +357,7 @@ public final class SockudoClient: @unchecked Sendable {
   public func disconnect() {
     manuallyDisconnected = true
     terminalEventHandled = true
+    reconnectAttempts = 0
     invalidateTimers()
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
     webSocketTask = nil
@@ -369,14 +381,16 @@ public final class SockudoClient: @unchecked Sendable {
     }
 
     requestCapabilityToken { [weak self] result in
-      guard let self else { return }
-      switch result {
-      case .success:
-        self.openWebSocket(using: transport)
-      case .failure(let error):
-        self.clearUnavailableTimer()
-        self.updateState(.failed)
-        self.dispatcher.emit("error", data: error)
+      Task { @MainActor in
+        guard let self else { return }
+        switch result {
+        case .success:
+          self.openWebSocket(using: transport)
+        case .failure(let error):
+          self.clearUnavailableTimer()
+          self.updateState(.failed)
+          self.dispatcher.emit("error", data: error)
+        }
       }
     }
   }
@@ -390,11 +404,12 @@ public final class SockudoClient: @unchecked Sendable {
   }
 
   public func getDeltaStats() -> DeltaStats? {
-    deltaManager?.getStats()
+    cachedDeltaStats
   }
 
   public func resetDeltaStats() {
-    deltaManager?.resetStats()
+    cachedDeltaStats = nil
+    Task { [messageProcessor] in await messageProcessor.resetDeltaStats() }
   }
 
   public func recoveryPosition(for channelName: String) -> RecoveryPosition? {
@@ -466,7 +481,7 @@ public final class SockudoClient: @unchecked Sendable {
       let url = try socketURL(for: transport)
       let task = urlSession.webSocketTask(with: url)
       webSocketDelegate.didOpen = { [weak self] in
-        self?.readNextMessage()
+        Task { @MainActor in self?.readNextMessage() }
       }
       webSocketDelegate.didClose = { [weak self] code, reason in
         Task { @MainActor in
@@ -520,51 +535,50 @@ public final class SockudoClient: @unchecked Sendable {
   }
 
   private func readNextMessage() {
-    webSocketTask?.receive { [weak self] result in
+    webSocketTask?.receive { [weak self, messageProcessor] result in
       guard let self else { return }
-      Task { @MainActor in
-        switch result {
-        case .failure(let error):
+      switch result {
+      case .failure(let error):
+        Task { @MainActor in
           self.dispatcher.emit("error", data: error)
-          self.handleSocketClosed(
-            code: .abnormalClosure, reason: error.localizedDescription)
-        case .success(let message):
-          switch message {
-          case .string(let text):
-            self.handle(rawMessage: .string(text))
-          case .data(let data):
-            self.handle(rawMessage: .data(data))
-          @unknown default:
-            break
+          self.handleSocketClosed(code: .abnormalClosure, reason: error.localizedDescription)
+        }
+      case .success(let message):
+        Task {
+          do {
+            guard let processed = try await messageProcessor.process(message) else {
+              await MainActor.run { self.readNextMessage() }
+              return
+            }
+            await MainActor.run {
+              self.deliverMessage(processed)
+              self.readNextMessage()
+            }
+          } catch {
+            await MainActor.run {
+              self.dispatcher.emit("error", data: error)
+              self.readNextMessage()
+            }
           }
-          self.readNextMessage()
         }
       }
     }
   }
 
-  func handle(rawMessage: URLSessionWebSocketTask.Message) {
+  func deliverMessage(_ message: ProcessedMessage) {
+    if config.connectionRecovery, let update = message.recoveryUpdate {
+      channelPositions[update.channel] = update.position
+    }
+    if let resyncChannel = message.resyncChannel {
+      _ = try? sendEvent(name: p.event("delta_sync_error"), data: ["channel": resyncChannel], channel: nil)
+    }
+    if let stats = message.updatedDeltaStats {
+      cachedDeltaStats = stats
+    }
+    resetActivityTimer()
+
     do {
-      let event = try decodeEvent(rawMessage: rawMessage)
-      resetActivityTimer()
-
-      if let messageId = event.messageId, let deduplicator {
-        if deduplicator.isDuplicate(messageId) {
-          Logger.debug("Skipping duplicate message", messageId)
-          return
-        }
-        deduplicator.track(messageId)
-      }
-
-      // Track serial per channel for connection recovery
-      if config.connectionRecovery, let channelName = event.channel, let serial = event.serial {
-        channelPositions[channelName] = RecoveryPosition(
-          streamID: event.streamID,
-          serial: serial,
-          lastMessageID: event.messageId
-        )
-      }
-
+      let event = message.event
       let eventName = event.event
       if eventName == p.event("connection_established") {
         guard let payload = event.data as? [String: Any],
@@ -577,6 +591,7 @@ public final class SockudoClient: @unchecked Sendable {
           (payload["activity_timeout"] as? Double ?? config.activityTimeout) * 1000
         config.activityTimeout =
           min(config.activityTimeout * 1000, negotiatedTimeout) / 1000
+        reconnectAttempts = 0
         clearUnavailableTimer()
         updateState(.connected, metadata: ["socket_id": socketID])
         reachability.start()
@@ -602,89 +617,71 @@ public final class SockudoClient: @unchecked Sendable {
         if config.enableStats {
           startTimelineSender()
         }
-        if deltaManager != nil, config.deltaCompressionEnabled {
-          deltaManager?.enable()
+        if let deltaOptions = config.deltaOptions {
+          let payload: [String: Any] = ["algorithms": deltaOptions.algorithms.map(\.rawValue)]
+          _ = try? sendEvent(name: p.event("enable_delta_compression"), data: payload, channel: nil)
         }
         user.handleConnected()
-      } else if eventName == p.event("error") {
-        dispatcher.emit("error", data: event.data)
-      } else if eventName == p.event("ping") {
-        _ = try? sendEvent(name: p.event("pong"), data: [:], channel: nil)
-      } else if eventName == p.event("pong") {
-        // no-op
-      } else if eventName == p.event("signin_success") {
-        user.handleSignInSuccess(event.data)
-      } else if eventName == p.event("auth_success") {
-        capabilityTokenAuth = Self.decodeCapabilityTokenAuthData(event.data)
-        dispatcher.emit(eventName, data: event.data)
-      } else if eventName == p.event("token_expired") {
-        let expired = Self.decodeCapabilityTokenExpiredData(event.data)
-        lastCapabilityTokenExpired = expired
-        dispatcher.emit(eventName, data: event.data)
-        if expired.code == 40142 || expired.code == 40160 {
-          refreshCapabilityToken()
-        }
-      } else if eventName == p.internal("watchlist_events") {
-        watchlist.handle(event.data)
-      } else if eventName == p.event("delta_compression_enabled") {
-        deltaManager?.handleEnabled(event.data)
-        dispatcher.emit(eventName, data: event.data)
-      } else if eventName == p.event("delta_cache_sync") {
-        if let channel = event.channel {
-          deltaManager?.handleCacheSync(channel: channel, data: event.data)
-        }
-      } else if eventName == p.event("delta") {
-        if let channelName = event.channel,
-          let reconstructed = deltaManager?.handleDeltaMessage(
-            channel: channelName, data: event.data)
-        {
-          channels[channelName]?.handle(event: reconstructed)
-          dispatcher.emit(reconstructed.event, data: reconstructed.data)
-        }
-      } else if eventName == p.event("resume_success") {
-        let data = Self.decodeResumeSuccessData(event.data)
-        Logger.debug("Connection recovery succeeded", data)
-        dispatcher.emit(eventName, data: data)
-      } else if eventName == p.event("resume_failed") {
-        let failData = Self.decodeResumeFailedData(event.data)
-        if failData.channel.isEmpty == false {
-          channelPositions.removeValue(forKey: failData.channel)
-          Logger.warn("Connection recovery failed for channel", failData.channel)
-          channels[failData.channel]?.subscribeIfPossible()
-        }
-        dispatcher.emit(eventName, data: failData)
       } else {
-        let normalizedEvent =
-          eventName == p.event("rewind_complete")
-          ? SockudoEvent(
-            event: event.event,
-            channel: event.channel,
-            data: Self.decodeRewindCompleteData(event.data),
-            userID: event.userID,
-            streamID: event.streamID,
-            messageId: event.messageId,
-            rawMessage: event.rawMessage,
-            sequence: event.sequence,
-            conflationKey: event.conflationKey,
-            serial: event.serial,
-            extras: event.extras
-          ) : event
-        if let channelName = normalizedEvent.channel {
-          channels[channelName]?.handle(event: normalizedEvent)
-          if let sequence = normalizedEvent.sequence, p.isPlatformEvent(eventName) == false,
-            p.isInternalEvent(eventName) == false
-          {
-            let stripped = stripDeltaMetadata(from: rawMessage)
-            deltaManager?.handleFullMessage(
-              channel: channelName, rawMessage: stripped, sequence: sequence,
-              conflationKey: normalizedEvent.conflationKey)
+        if eventName == p.event("error") {
+          dispatcher.emit("error", data: event.data)
+        } else if eventName == p.event("ping") {
+          _ = try? sendEvent(name: p.event("pong"), data: [:], channel: nil)
+        } else if eventName == p.event("pong") {
+        } else if eventName == p.event("signin_success") {
+          user.handleSignInSuccess(event.data)
+        } else if eventName == p.event("auth_success") {
+          capabilityTokenAuth = Self.decodeCapabilityTokenAuthData(event.data)
+          dispatcher.emit(eventName, data: event.data)
+        } else if eventName == p.event("token_expired") {
+          let expired = Self.decodeCapabilityTokenExpiredData(event.data)
+          lastCapabilityTokenExpired = expired
+          dispatcher.emit(eventName, data: event.data)
+          if expired.code == 40142 || expired.code == 40160 {
+            refreshCapabilityToken()
           }
-        }
-        if shouldEmitClientEvent(eventName) {
-          dispatcher.emit(
-            eventName, data: normalizedEvent.data,
-            metadata: EventMetadata(userID: normalizedEvent.userID)
-          )
+        } else if eventName == p.internal("watchlist_events") {
+          watchlist.handle(event.data)
+        } else if eventName == p.event("delta_compression_enabled") {
+          dispatcher.emit(eventName, data: event.data)
+        } else if eventName == p.event("delta_cache_sync") {
+        } else if eventName == p.event("resume_success") {
+          let data = Self.decodeResumeSuccessData(event.data)
+          Logger.debug("Connection recovery succeeded", data)
+          dispatcher.emit(eventName, data: data)
+        } else if eventName == p.event("resume_failed") {
+          let failData = Self.decodeResumeFailedData(event.data)
+          if failData.channel.isEmpty == false {
+            channelPositions.removeValue(forKey: failData.channel)
+            Logger.warn("Connection recovery failed for channel", failData.channel)
+            channels[failData.channel]?.subscribeIfPossible()
+          }
+          dispatcher.emit(eventName, data: failData)
+        } else {
+          let normalizedEvent =
+            eventName == p.event("rewind_complete")
+            ? SockudoEvent(
+              event: event.event,
+              channel: event.channel,
+              data: Self.decodeRewindCompleteData(event.data),
+              userID: event.userID,
+              streamID: event.streamID,
+              messageId: event.messageId,
+              rawMessage: event.rawMessage,
+              sequence: event.sequence,
+              conflationKey: event.conflationKey,
+              serial: event.serial,
+              extras: event.extras
+            ) : event
+          if let channelName = normalizedEvent.channel {
+            channels[channelName]?.handle(event: normalizedEvent)
+          }
+          if shouldEmitClientEvent(eventName) {
+            dispatcher.emit(
+              eventName, data: normalizedEvent.data,
+              metadata: EventMetadata(userID: normalizedEvent.userID)
+            )
+          }
         }
       }
     } catch {
@@ -692,31 +689,34 @@ public final class SockudoClient: @unchecked Sendable {
     }
   }
 
-  private func decodeEvent(rawMessage: URLSessionWebSocketTask.Message) throws -> SockudoEvent {
-    try ProtocolCodec.decodeEvent(rawMessage, format: config.wireFormat)
+  func handle(rawMessage: URLSessionWebSocketTask.Message) {
+    guard let event = try? pipeline.decode(rawMessage) else { return }
+    deliverMessage(ProcessedMessage(event: event, recoveryUpdate: nil, resyncChannel: nil, updatedDeltaStats: nil))
   }
 
   private func refreshCapabilityToken() {
     guard config.protocolVersion == 2, config.capabilityTokenProvider != nil else { return }
     invalidateCapabilityTokenRefreshTimer()
     requestCapabilityToken { [weak self] result in
-      guard let self else { return }
-      switch result {
-      case .success(let token):
-        do {
-          let sent = try self.sendEvent(
-            name: self.p.event("auth"),
-            data: ["token": token],
-            channel: nil
-          )
-          if sent == false {
-            self.dispatcher.emit("error", data: SockudoError.connectionUnavailable)
+      Task { @MainActor in
+        guard let self else { return }
+        switch result {
+        case .success(let token):
+          do {
+            let sent = try self.sendEvent(
+              name: self.p.event("auth"),
+              data: ["token": token],
+              channel: nil
+            )
+            if sent == false {
+              self.dispatcher.emit("error", data: SockudoError.connectionUnavailable)
+            }
+          } catch {
+            self.dispatcher.emit("error", data: error)
           }
-        } catch {
+        case .failure(let error):
           self.dispatcher.emit("error", data: error)
         }
-      case .failure(let error):
-        self.dispatcher.emit("error", data: error)
       }
     }
   }
@@ -739,22 +739,6 @@ public final class SockudoClient: @unchecked Sendable {
       || eventName == p.internal("presence_update")
   }
 
-  private func stripDeltaMetadata(from rawMessage: URLSessionWebSocketTask.Message) -> String {
-    let decoded =
-      (try? ProtocolCodec.decodeEnvelope(rawMessage, format: config.wireFormat).rawMessage)
-      ?? ""
-    var result = decoded
-    result = result.replacingOccurrences(
-      of: #","__delta_seq":\d+"#, with: "", options: .regularExpression)
-    result = result.replacingOccurrences(
-      of: #"__delta_seq":\d+,"#, with: "", options: .regularExpression)
-    result = result.replacingOccurrences(
-      of: #","__conflation_key":"[^"]*""#, with: "", options: .regularExpression)
-    result = result.replacingOccurrences(
-      of: #"__conflation_key":"[^"]*","#, with: "", options: .regularExpression)
-    return result
-  }
-
   private func handleSocketClosed(code: URLSessionWebSocketTask.CloseCode, reason: String?) {
     guard !terminalEventHandled else { return }
     terminalEventHandled = true
@@ -769,16 +753,16 @@ public final class SockudoClient: @unchecked Sendable {
     switch action {
     case .tlsOnly:
       config.useTLS = true
-      scheduleRetry(after: 0)
+      scheduleRetry(after: reconnectDelay(for: action))
     case .backoff:
-      scheduleRetry(after: 1)
+      scheduleRetry(after: reconnectDelay(for: action))
     case .retry:
-      scheduleRetry(after: 0)
+      scheduleRetry(after: reconnectDelay(for: action))
     case .refused:
       updateState(.disconnected)
     case .none:
       if manuallyDisconnected == false {
-        scheduleRetry(after: 1)
+        scheduleRetry(after: reconnectDelay(for: nil))
       }
     }
 
@@ -786,6 +770,13 @@ public final class SockudoClient: @unchecked Sendable {
       dispatcher.emit("error", data: SockudoError.connectionUnavailable)
       Logger.warn("Socket closed", code.rawValue, reason)
     }
+  }
+
+  func reconnectDelay(for action: CloseAction?) -> TimeInterval {
+    if action == .retry { return 0 }  // close codes 4200-4299: reconnect immediately
+    if action == .tlsOnly { return 0 }  // TLS upgrade: reconnect immediately
+    let interval = Double(reconnectAttempts * reconnectAttempts)
+    return min(interval, config.maxReconnectGapInSeconds)
   }
 
   private func closeAction(for code: URLSessionWebSocketTask.CloseCode) -> CloseAction? {
@@ -909,8 +900,13 @@ public final class SockudoClient: @unchecked Sendable {
     unavailableTimer = nil
   }
 
-  private func scheduleRetry(after seconds: TimeInterval) {
+  func scheduleRetry(after seconds: TimeInterval) {
     guard manuallyDisconnected == false else { return }
+    if let max = config.maxReconnectAttempts, reconnectAttempts >= max {
+      updateState(.disconnected)
+      return
+    }
+    reconnectAttempts += 1
     retryTimer?.invalidate()
     retryTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) {
       [weak self] _ in
@@ -919,7 +915,7 @@ public final class SockudoClient: @unchecked Sendable {
         self.terminalEventHandled = false
         self.webSocketTask?.cancel(with: .goingAway, reason: nil)
         self.webSocketTask = nil
-        self.updateState(.connecting)
+        self.updateState(.reconnecting)
         let transports = self.transportSequence()
         if self.currentTransport == .ws, self.attemptedFallback == false,
           transports.contains(.wss)
@@ -1012,7 +1008,7 @@ public final class SockudoClient: @unchecked Sendable {
   }
 }
 
-public final class UserFacade: @unchecked Sendable {
+@MainActor public final class UserFacade: Sendable {
   private(set) weak var client: SockudoClient?
   private let dispatcher = EventDispatcher { event, _ in
     Logger.debug("No callbacks on user for \(event)")
@@ -1106,7 +1102,7 @@ public final class UserFacade: @unchecked Sendable {
   }
 }
 
-public final class WatchlistFacade: @unchecked Sendable {
+@MainActor public final class WatchlistFacade: Sendable {
   private weak var client: SockudoClient?
   private let dispatcher = EventDispatcher { event, _ in
     Logger.debug("No callbacks on watchlist for \(event)")
@@ -1227,9 +1223,12 @@ extension SockudoClient {
     let presenceHistory: PresenceHistoryOptions?
     let versionedMessages: VersionedMessagesOptions?
     let deltaCompressionEnabled: Bool
+    let deltaOptions: DeltaOptions?
     let messageDeduplication: Bool
     let messageDeduplicationCapacity: Int
     let connectionRecovery: Bool
+    let maxReconnectAttempts: Int?
+    let maxReconnectGapInSeconds: Double
 
     init(options: Options) {
       cluster = options.cluster
@@ -1257,9 +1256,12 @@ extension SockudoClient {
       enabledTransports = options.enabledTransports
       disabledTransports = options.disabledTransports
       deltaCompressionEnabled = options.deltaCompression?.enabled == true
+      deltaOptions = options.deltaCompression
       messageDeduplication = options.messageDeduplication
       messageDeduplicationCapacity = options.messageDeduplicationCapacity
       connectionRecovery = options.connectionRecovery
+      maxReconnectAttempts = options.maxReconnectAttempts
+      maxReconnectGapInSeconds = options.maxReconnectGapInSeconds
       channelAuthorizer =
         options.channelAuthorization.customHandler
         ?? Self.makeChannelAuthorizer(options.channelAuthorization)
@@ -1844,7 +1846,7 @@ extension SockudoClient {
     }
   }
 
-  private func decodePresenceHistoryPage(
+  private nonisolated func decodePresenceHistoryPage(
     payload: [String: Any],
     channelName: String,
     originalParams: PresenceHistoryParams
@@ -1874,26 +1876,28 @@ extension SockudoClient {
       bounds: decodePresenceHistoryBounds(payload["bounds"] as? [String: Any]),
       continuity: decodePresenceHistoryContinuity(payload["continuity"] as? [String: Any]),
       fetchNext: { [weak self] cursor, completion in
-        self?.fetchPresenceHistory(
-          channelName: channelName,
-          params: PresenceHistoryParams(
-            direction: originalParams.direction,
-            limit: originalParams.limit,
-            cursor: cursor,
-            startSerial: originalParams.startSerial,
-            endSerial: originalParams.endSerial,
-            startTimeMS: originalParams.startTimeMS,
-            endTimeMS: originalParams.endTimeMS,
-            start: originalParams.start,
-            end: originalParams.end
-          ),
-          completion: completion
-        )
+        Task { @MainActor in
+          self?.fetchPresenceHistory(
+            channelName: channelName,
+            params: PresenceHistoryParams(
+              direction: originalParams.direction,
+              limit: originalParams.limit,
+              cursor: cursor,
+              startSerial: originalParams.startSerial,
+              endSerial: originalParams.endSerial,
+              startTimeMS: originalParams.startTimeMS,
+              endTimeMS: originalParams.endTimeMS,
+              start: originalParams.start,
+              end: originalParams.end
+            ),
+            completion: completion
+          )
+        }
       }
     )
   }
 
-  private func decodePresenceSnapshot(payload: [String: Any]) -> PresenceSnapshot {
+  private nonisolated func decodePresenceSnapshot(payload: [String: Any]) -> PresenceSnapshot {
     let members = ((payload["members"] as? [Any]) ?? []).compactMap { raw -> PresenceSnapshotMember? in
       guard let member = raw as? [String: Any] else { return nil }
       return PresenceSnapshotMember(
@@ -1915,7 +1919,7 @@ extension SockudoClient {
     )
   }
 
-  private func decodeChannelHistoryPage(
+  private nonisolated func decodeChannelHistoryPage(
     payload: [String: Any],
     channelName: String,
     originalParams: ChannelHistoryParams
@@ -1931,25 +1935,27 @@ extension SockudoClient {
       bounds: payload["bounds"] as? [String: Any] ?? [:],
       continuity: payload["continuity"] as? [String: Any] ?? [:],
       fetchNext: { [weak self] cursor, completion in
-        self?.fetchChannelHistory(
-          channelName: channelName,
-          params: ChannelHistoryParams(
-            direction: originalParams.direction,
-            limit: originalParams.limit,
-            cursor: cursor,
-            startSerial: originalParams.startSerial,
-            endSerial: originalParams.endSerial,
-            startTimeMS: originalParams.startTimeMS,
-            endTimeMS: originalParams.endTimeMS,
-            untilAttach: originalParams.untilAttach
-          ),
-          completion: completion
-        )
+        Task { @MainActor in
+          self?.fetchChannelHistory(
+            channelName: channelName,
+            params: ChannelHistoryParams(
+              direction: originalParams.direction,
+              limit: originalParams.limit,
+              cursor: cursor,
+              startSerial: originalParams.startSerial,
+              endSerial: originalParams.endSerial,
+              startTimeMS: originalParams.startTimeMS,
+              endTimeMS: originalParams.endTimeMS,
+              untilAttach: originalParams.untilAttach
+            ),
+            completion: completion
+          )
+        }
       }
     )
   }
 
-  private func decodeMessageVersionsPage(
+  private nonisolated func decodeMessageVersionsPage(
     payload: [String: Any],
     channelName: String,
     messageSerial: String,
@@ -1965,21 +1971,23 @@ extension SockudoClient {
       hasMore: payload["has_more"] as? Bool ?? false,
       nextCursor: payload["next_cursor"] as? String,
       fetchNext: { [weak self] cursor, completion in
-        self?.fetchMessageVersions(
-          channelName: channelName,
-          messageSerial: messageSerial,
-          params: MessageVersionsParams(
-            direction: originalParams.direction,
-            limit: originalParams.limit,
-            cursor: cursor
-          ),
-          completion: completion
-        )
+        Task { @MainActor in
+          self?.fetchMessageVersions(
+            channelName: channelName,
+            messageSerial: messageSerial,
+            params: MessageVersionsParams(
+              direction: originalParams.direction,
+              limit: originalParams.limit,
+              cursor: cursor
+            ),
+            completion: completion
+          )
+        }
       }
     )
   }
 
-  private static func decodeVersionedMessageAck(
+  private nonisolated static func decodeVersionedMessageAck(
     payload: [String: Any],
     channelName: String,
     messageSerial: String?,
@@ -2016,7 +2024,7 @@ extension SockudoClient {
       ))
   }
 
-  private static func extractVersionedMessageAckPayload(
+  private nonisolated static func extractVersionedMessageAckPayload(
     _ payload: [String: Any],
     channelName: String
   ) -> [String: Any] {
@@ -2031,7 +2039,7 @@ extension SockudoClient {
     return payload
   }
 
-  private func decodeAnnotationEventsPage(
+  private nonisolated func decodeAnnotationEventsPage(
     payload: [String: Any],
     channelName: String,
     messageSerial: String,
@@ -2046,23 +2054,25 @@ extension SockudoClient {
       hasMore: payload["has_more"] as? Bool ?? false,
       nextCursor: payload["next_cursor"] as? String,
       fetchNext: { [weak self] cursor, completion in
-        self?.listAnnotations(
-          channelName: channelName,
-          messageSerial: messageSerial,
-          params: AnnotationEventsParams(
-            direction: originalParams.direction,
-            limit: originalParams.limit,
-            cursor: cursor,
-            type: originalParams.type,
-            fromSerial: originalParams.fromSerial
-          ),
-          completion: completion
-        )
+        Task { @MainActor in
+          self?.listAnnotations(
+            channelName: channelName,
+            messageSerial: messageSerial,
+            params: AnnotationEventsParams(
+              direction: originalParams.direction,
+              limit: originalParams.limit,
+              cursor: cursor,
+              type: originalParams.type,
+              fromSerial: originalParams.fromSerial
+            ),
+            completion: completion
+          )
+        }
       }
     )
   }
 
-  private func decodePresenceHistoryBounds(_ payload: [String: Any]?) -> PresenceHistoryBounds {
+  private nonisolated func decodePresenceHistoryBounds(_ payload: [String: Any]?) -> PresenceHistoryBounds {
     PresenceHistoryBounds(
       startSerial: (payload?["start_serial"] as? NSNumber)?.int64Value,
       endSerial: (payload?["end_serial"] as? NSNumber)?.int64Value,
@@ -2071,7 +2081,7 @@ extension SockudoClient {
     )
   }
 
-  private func decodePresenceHistoryContinuity(_ payload: [String: Any]?) -> PresenceHistoryContinuity {
+  private nonisolated func decodePresenceHistoryContinuity(_ payload: [String: Any]?) -> PresenceHistoryContinuity {
     PresenceHistoryContinuity(
       streamID: payload?["stream_id"] as? String,
       oldestAvailableSerial: (payload?["oldest_available_serial"] as? NSNumber)?.int64Value,
@@ -2088,8 +2098,8 @@ extension SockudoClient {
 }
 
 private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
-  var didOpen: (() -> Void)?
-  var didClose: ((URLSessionWebSocketTask.CloseCode, String?) -> Void)?
+  var didOpen: (@Sendable () -> Void)?
+  var didClose: (@Sendable (URLSessionWebSocketTask.CloseCode, String?) -> Void)?
 
   func urlSession(
     _ session: URLSession, webSocketTask: URLSessionWebSocketTask,
@@ -2107,14 +2117,14 @@ private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @u
   }
 }
 
-private enum CloseAction {
+enum CloseAction {
   case tlsOnly
   case refused
   case backoff
   case retry
 }
 
-private final class ReachabilityMonitor: @unchecked Sendable {
+@MainActor private final class ReachabilityMonitor: Sendable {
   private let monitor = NWPathMonitor()
   private let queue = DispatchQueue(label: "sockudo.reachability")
   var stateDidChange: (@Sendable (Bool) -> Void)?
@@ -2129,7 +2139,7 @@ private final class ReachabilityMonitor: @unchecked Sendable {
     monitor.start(queue: queue)
   }
 
-  func stop() {
+  nonisolated func stop() {
     monitor.cancel()
   }
 }

@@ -2,7 +2,7 @@ import Foundation
 
 /// Tracks recently seen message IDs to skip duplicate deliveries.
 /// Uses an insertion-ordered set with LRU eviction when capacity is exceeded.
-final class MessageDeduplicator: @unchecked Sendable {
+final class MessageDeduplicator {
   private let capacity: Int
   private var order: [String] = []
   private var seen: Set<String> = []

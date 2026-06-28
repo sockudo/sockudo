@@ -1,7 +1,7 @@
 import Foundation
 import Sodium
 
-public class Channel: @unchecked Sendable {
+@MainActor public class Channel: Sendable {
   public let name: String
   unowned let client: SockudoClient
   let dispatcher: EventDispatcher
@@ -15,6 +15,16 @@ public class Channel: @unchecked Sendable {
   var eventsFilter: [String]?
   var rewind: SubscriptionRewind?
   var annotationSubscribe = false
+
+  private struct QueuedClientEvent {
+    let name: String
+    let data: Any
+  }
+
+  private var unsentEvents: [QueuedClientEvent] = []
+  private let maxBufferedEvents = 50
+
+  var bufferedEventCount: Int { unsentEvents.count }
 
   init(name: String, client: SockudoClient) {
     self.name = name
@@ -68,10 +78,27 @@ public class Channel: @unchecked Sendable {
     guard event.hasPrefix("client-") else {
       throw SockudoError.badEventName("Event '\(event)' does not start with 'client-'")
     }
-    if isSubscribed == false {
-      Logger.warn("Client event triggered before channel subscription succeeded")
+    if isSubscribed {
+      return (try? client.sendEvent(name: event, data: data, channel: name)) ?? false
+    } else {
+      if unsentEvents.count >= maxBufferedEvents {
+        unsentEvents.removeFirst()
+        Logger.warn("Client event buffer full for channel '\(name)', dropping oldest event")
+      }
+      unsentEvents.append(QueuedClientEvent(name: event, data: data))
+      return true
     }
-    return try client.sendEvent(name: event, data: data, channel: name)
+  }
+
+  fileprivate func drainUnsentEvents() {
+    while !unsentEvents.isEmpty {
+      let queued = unsentEvents.removeFirst()
+      _ = try? client.sendEvent(name: queued.name, data: queued.data, channel: name)
+    }
+  }
+
+  func clearUnsentEvents() {
+    unsentEvents.removeAll()
   }
 
   func authorize(
@@ -95,52 +122,54 @@ public class Channel: @unchecked Sendable {
     subscriptionPending = true
     subscriptionCancelled = false
     authorize(socketID: client.socketID ?? "") { [weak self] result in
-      guard let self else { return }
-      switch result {
-      case .failure(let error):
-        self.subscriptionPending = false
-        self.dispatcher.emit(
-          self.client.p.event("subscription_error"),
-          data: [
-            "type": "AuthError",
-            "error": error.localizedDescription,
-          ])
-      case .success(let data):
-        var payload: [String: Any] = [
-          "auth": data.auth,
-          "channel": self.name,
-        ]
-        if let channelData = data.channelData {
-          payload["channel_data"] = channelData
-        }
-        if let filter = self.tagsFilter, let filterJSON = try? JSON.encodeData(filter),
-          let json = try? JSON.decode(filterJSON)
-        {
-          payload["tags_filter"] = json
-        }
-        if let deltaSettings = self.deltaSettings {
-          payload["delta"] = deltaSettings.subscriptionValue()
-        }
-        if let eventsFilter = self.eventsFilter {
-          payload["events"] = eventsFilter
-        }
-        if let rewind = self.rewind {
-          payload["rewind"] = rewind.subscriptionValue()
-        }
-        if self.annotationSubscribe {
-          payload["modes"] = ["SUBSCRIBE", "ANNOTATION_SUBSCRIBE"]
-        }
-        do {
-          _ = try self.client.sendEvent(
-            name: self.client.p.event("subscribe"), data: payload, channel: nil)
-        } catch {
+      Task { @MainActor in
+        guard let self else { return }
+        switch result {
+        case .failure(let error):
           self.subscriptionPending = false
           self.dispatcher.emit(
             self.client.p.event("subscription_error"),
             data: [
-              "type": "ConnectionError",
+              "type": "AuthError",
               "error": error.localizedDescription,
             ])
+        case .success(let data):
+          var payload: [String: Any] = [
+            "auth": data.auth,
+            "channel": self.name,
+          ]
+          if let channelData = data.channelData {
+            payload["channel_data"] = channelData
+          }
+          if let filter = self.tagsFilter, let filterJSON = try? JSON.encodeData(filter),
+            let json = try? JSON.decode(filterJSON)
+          {
+            payload["tags_filter"] = json
+          }
+          if let deltaSettings = self.deltaSettings {
+            payload["delta"] = deltaSettings.subscriptionValue()
+          }
+          if let eventsFilter = self.eventsFilter {
+            payload["events"] = eventsFilter
+          }
+          if let rewind = self.rewind {
+            payload["rewind"] = rewind.subscriptionValue()
+          }
+          if self.annotationSubscribe {
+            payload["modes"] = ["SUBSCRIBE", "ANNOTATION_SUBSCRIBE"]
+          }
+          do {
+            _ = try self.client.sendEvent(
+              name: self.client.p.event("subscribe"), data: payload, channel: nil)
+          } catch {
+            self.subscriptionPending = false
+            self.dispatcher.emit(
+              self.client.p.event("subscription_error"),
+              data: [
+                "type": "ConnectionError",
+                "error": error.localizedDescription,
+              ])
+          }
         }
       }
     }
@@ -168,6 +197,7 @@ public class Channel: @unchecked Sendable {
       if subscriptionCancelled {
         client.unsubscribe(name)
       } else {
+        drainUnsentEvents()
         dispatcher.emit(p.event("subscription_succeeded"), data: event.data)
       }
     } else if event.event == p.internal("subscription_count") {
@@ -320,7 +350,7 @@ public class Channel: @unchecked Sendable {
   }
 }
 
-public class PrivateChannel: Channel, @unchecked Sendable {
+@MainActor public class PrivateChannel: Channel {
   override func authorize(
     socketID: String,
     completion: @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
@@ -332,7 +362,7 @@ public class PrivateChannel: Channel, @unchecked Sendable {
   }
 }
 
-public final class PresenceMembers: @unchecked Sendable {
+@MainActor public final class PresenceMembers: Sendable {
   private(set) var members: [String: AnyHashable] = [:]
   public private(set) var count = 0
   public private(set) var myID: String?
@@ -422,7 +452,7 @@ public final class PresenceMembers: @unchecked Sendable {
   }
 }
 
-public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
+@MainActor public final class PresenceChannel: PrivateChannel {
   public let members = PresenceMembers()
 
   override func authorize(
@@ -430,31 +460,33 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
     completion: @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
   ) {
     super.authorize(socketID: socketID) { [weak self] result in
-      guard let self else { return }
-      switch result {
-      case .failure:
-        completion(result)
-      case .success(let data):
-        if let channelData = data.channelData,
-          let channelDataAny = try? JSON.decodeString(channelData),
-          let dictionary = channelDataAny as? [String: Any],
-          let userID = dictionary["user_id"] as? String
-        {
-          self.members.setMyID(userID)
-          completion(.success(data))
-          return
-        }
+      Task { @MainActor in
+        guard let self else { return }
+        switch result {
+        case .failure:
+          completion(result)
+        case .success(let data):
+          if let channelData = data.channelData,
+            let channelDataAny = try? JSON.decodeString(channelData),
+            let dictionary = channelDataAny as? [String: Any],
+            let userID = dictionary["user_id"] as? String
+          {
+            self.members.setMyID(userID)
+            completion(.success(data))
+            return
+          }
 
-        if let userID = self.client.user.userID {
-          self.members.setMyID(userID)
-          completion(.success(data))
-        } else {
-          completion(
-            .failure(
-              SockudoError.authFailure(
-                statusCode: nil,
-                message: "Invalid auth response for presence channel '\(self.name)'"
-              )))
+          if let userID = self.client.user.userID {
+            self.members.setMyID(userID)
+            completion(.success(data))
+          } else {
+            completion(
+              .failure(
+                SockudoError.authFailure(
+                  statusCode: nil,
+                  message: "Invalid auth response for presence channel '\(self.name)'"
+                )))
+          }
         }
       }
     }
@@ -469,6 +501,7 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
       if subscriptionCancelled {
         client.unsubscribe(name)
       } else if let data = event.data as? [String: Any] {
+        drainUnsentEvents()
         members.applySubscriptionData(data)
         dispatcher.emit(p.event("subscription_succeeded"), data: members)
       }
@@ -566,7 +599,7 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
   }
 }
 
-public final class EncryptedChannel: PrivateChannel, @unchecked Sendable {
+@MainActor public final class EncryptedChannel: PrivateChannel {
   private var sharedSecret: Bytes?
   private let sodium = Sodium()
 
@@ -575,27 +608,29 @@ public final class EncryptedChannel: PrivateChannel, @unchecked Sendable {
     completion: @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
   ) {
     super.authorize(socketID: socketID) { [weak self] result in
-      guard let self else { return }
-      switch result {
-      case .failure:
-        completion(result)
-      case .success(let data):
-        guard let secret = data.sharedSecret, let decoded = Data(base64Encoded: secret)
-        else {
+      Task { @MainActor in
+        guard let self else { return }
+        switch result {
+        case .failure:
+          completion(result)
+        case .success(let data):
+          guard let secret = data.sharedSecret, let decoded = Data(base64Encoded: secret)
+          else {
+            completion(
+              .failure(
+                SockudoError.authFailure(
+                  statusCode: nil,
+                  message:
+                    "No shared_secret key in auth payload for encrypted channel: \(self.name)"
+                )))
+            return
+          }
+          self.sharedSecret = Array(decoded)
           completion(
-            .failure(
-              SockudoError.authFailure(
-                statusCode: nil,
-                message:
-                  "No shared_secret key in auth payload for encrypted channel: \(self.name)"
-              )))
-          return
+            .success(
+              ChannelAuthorizationData(
+                auth: data.auth, channelData: data.channelData, sharedSecret: nil)))
         }
-        self.sharedSecret = Array(decoded)
-        completion(
-          .success(
-            ChannelAuthorizationData(
-              auth: data.auth, channelData: data.channelData, sharedSecret: nil)))
       }
     }
   }
@@ -629,13 +664,15 @@ public final class EncryptedChannel: PrivateChannel, @unchecked Sendable {
         nonce: Array(nonceData))
     else {
       super.authorize(socketID: client.socketID ?? "") { [weak self] result in
-        guard let self else { return }
-        if case .success(let authData) = result,
-          let sharedSecret = authData.sharedSecret,
-          let refreshedData = Data(base64Encoded: sharedSecret)
-        {
-          self.sharedSecret = Array(refreshedData)
-          self.handle(event: event)
+        Task { @MainActor in
+          guard let self else { return }
+          if case .success(let authData) = result,
+            let sharedSecret = authData.sharedSecret,
+            let refreshedData = Data(base64Encoded: sharedSecret)
+          {
+            self.sharedSecret = Array(refreshedData)
+            self.handle(event: event)
+          }
         }
       }
       return

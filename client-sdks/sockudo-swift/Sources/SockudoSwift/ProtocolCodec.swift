@@ -1,16 +1,16 @@
 import Foundation
 
-enum EncodedPayload {
+enum EncodedPayload: Sendable {
   case string(String)
   case data(Data)
 }
 
-struct DecodedEnvelope {
+struct DecodedEnvelope: @unchecked Sendable {
   let envelope: [String: Any]
   let rawMessage: String
 }
 
-enum ProtocolCodec {
+enum ProtocolCodec: Sendable {
   static func encodeEnvelope(_ envelope: [String: Any], format: SockudoWireFormat) throws
     -> EncodedPayload
   {
@@ -186,7 +186,7 @@ enum ProtocolCodec {
   }
 }
 
-private enum MessagePackCodec {
+private enum MessagePackCodec: Sendable {
   private static let envelopeFields = [
     "event",
     "channel",
@@ -307,7 +307,8 @@ private enum MessagePackCodec {
   }
 }
 
-private struct MessagePackEncoder {
+private struct MessagePackEncoder: @unchecked Sendable {
+  // @unchecked Sendable: value type with mutable field, created and consumed within a single synchronous call stack, never shared across threads
   private(set) var data = Data()
 
   mutating func encode(_ value: Any) throws {
@@ -460,7 +461,8 @@ private struct MessagePackEncoder {
   }
 }
 
-private struct MessagePackDecoder {
+private struct MessagePackDecoder: @unchecked Sendable {
+  // @unchecked Sendable: value type with mutable field, created and consumed within a single synchronous call stack, never shared across threads
   let data: Data
   var offset: Data.Index
 
@@ -566,7 +568,7 @@ private struct MessagePackDecoder {
   }
 }
 
-private enum ProtobufCodec {
+private enum ProtobufCodec: Sendable {
   static func encode(_ envelope: [String: Any]) throws -> Data {
     var writer = ProtoWriter()
     if let event = envelope["event"] as? String {
@@ -886,7 +888,8 @@ private enum ProtobufCodec {
   }
 }
 
-private struct ProtoWriter {
+private struct ProtoWriter: @unchecked Sendable {
+  // @unchecked Sendable: value type with mutable field, created and consumed within a single synchronous call stack, never shared across threads
   private(set) var data = Data()
 
   mutating func writeString(field: UInt64, value: String) {
@@ -934,14 +937,15 @@ private struct ProtoWriter {
   }
 }
 
-private enum ProtoWireType: UInt64 {
+private enum ProtoWireType: UInt64, Sendable {
   case varint = 0
   case fixed64 = 1
   case lengthDelimited = 2
   case fixed32 = 5
 }
 
-private struct ProtoReader {
+private struct ProtoReader: @unchecked Sendable {
+  // @unchecked Sendable: value type with mutable fields, created and consumed within a single synchronous call stack, never shared across threads
   let data: Data
   var offset: Data.Index
   private var currentTag: UInt64 = 0

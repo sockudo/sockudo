@@ -79,38 +79,18 @@ private final class ChannelState {
 
 final class DeltaCompressionManager {
   private let options: DeltaOptions
-  private let sendEvent: (String, Any) -> Bool
   private let prefix: ProtocolPrefix
-  private var enabled = false
   private var channelStates: [String: ChannelState] = [:]
   private var defaultAlgorithm: DeltaAlgorithm = .fossil
   private var totals = (messages: 0, delta: 0, full: 0, rawBytes: 0, wireBytes: 0, errors: 0)
 
-  init(
-    options: DeltaOptions, prefix: ProtocolPrefix = ProtocolPrefix(version: 2),
-    sendEvent: @escaping (String, Any) -> Bool
-  ) {
+  init(options: DeltaOptions, prefix: ProtocolPrefix = ProtocolPrefix(version: 2)) {
     self.options = options
     self.prefix = prefix
-    self.sendEvent = sendEvent
-  }
-
-  func enable() {
-    guard enabled == false else { return }
-    let payload: [String: Any] = ["algorithms": options.algorithms.map(\.rawValue)]
-    _ = sendEvent(prefix.event("enable_delta_compression"), payload)
-  }
-
-  func disable() {
-    enabled = false
   }
 
   func handleEnabled(_ data: Any?) {
-    guard let dictionary = data as? [String: Any] else {
-      enabled = true
-      return
-    }
-    enabled = dictionary["enabled"] as? Bool ?? true
+    guard let dictionary = data as? [String: Any] else { return }
     if let algorithmName = dictionary["algorithm"] as? String,
       let algorithm = DeltaAlgorithm(rawValue: algorithmName)
     {
@@ -258,7 +238,6 @@ final class DeltaCompressionManager {
   }
 
   private func requestResync(channel: String) {
-    _ = sendEvent(prefix.event("delta_sync_error"), ["channel": channel])
     channelStates[channel] = nil
   }
 

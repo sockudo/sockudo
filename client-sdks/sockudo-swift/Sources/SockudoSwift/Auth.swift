@@ -40,21 +40,19 @@ public struct UserAuthenticationRequest: Sendable, Equatable {
   }
 }
 
-public typealias ChannelAuthorizationHandler =
-  (
-    ChannelAuthorizationRequest,
-    @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
-  ) -> Void
-public typealias UserAuthenticationHandler =
-  (
-    UserAuthenticationRequest,
-    @escaping @Sendable (Result<UserAuthenticationData, Error>) -> Void
-  ) -> Void
+public typealias ChannelAuthorizationHandler = @Sendable (
+  ChannelAuthorizationRequest,
+  @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
+) -> Void
+public typealias UserAuthenticationHandler = @Sendable (
+  UserAuthenticationRequest,
+  @escaping @Sendable (Result<UserAuthenticationData, Error>) -> Void
+) -> Void
 public typealias CapabilityTokenProvider =
-  (@escaping @Sendable (Result<String, Error>) -> Void) -> Void
+  @Sendable (@escaping @Sendable (Result<String, Error>) -> Void) -> Void
 public typealias CapabilityTokenAsyncProvider = @Sendable () async throws -> String
 
-public struct ChannelAuthorizationOptions {
+public struct ChannelAuthorizationOptions: Sendable {
   public var endpoint: String
   public var headers: [String: String]
   public var params: [String: AuthValue]
@@ -79,7 +77,7 @@ public struct ChannelAuthorizationOptions {
   }
 }
 
-public struct UserAuthenticationOptions {
+public struct UserAuthenticationOptions: Sendable {
   public var endpoint: String
   public var headers: [String: String]
   public var params: [String: AuthValue]
@@ -126,7 +124,7 @@ public struct CapabilityTokenExpiredData: Sendable, Equatable {
   }
 }
 
-public struct CapabilityTokenOptions {
+public struct CapabilityTokenOptions: Sendable {
   public var token: String?
   public var provider: CapabilityTokenProvider?
 
@@ -155,7 +153,7 @@ public struct CapabilityTokenOptions {
   }
 }
 
-public struct PresenceHistoryOptions {
+public struct PresenceHistoryOptions: Sendable {
   public var endpoint: String
   public var headers: [String: String]
   public var headersProvider: (@Sendable () -> [String: String])?
@@ -171,7 +169,7 @@ public struct PresenceHistoryOptions {
   }
 }
 
-public struct VersionedMessagesOptions {
+public struct VersionedMessagesOptions: Sendable {
   public var endpoint: String
   public var headers: [String: String]
   public var headersProvider: (@Sendable () -> [String: String])?
