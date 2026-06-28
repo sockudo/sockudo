@@ -1,15 +1,6 @@
 {
-  "originHash" : "df463ac19ad22ca6490f0041eca803600200682ddc4c948fe2fe0ed70c30c108",
+  "originHash" : "3b1f30fea9473cde9e41d71521753e2846bb2df553c40b051564643dcd822b1a",
   "pins" : [
-    {
-      "identity" : "delta-codec-cocoa",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ably/delta-codec-cocoa.git",
-      "state" : {
-        "revision" : "d53eec08f9443c6160d941327a6f9d8bbb93cea2",
-        "version" : "1.3.5"
-      }
-    },
     {
       "identity" : "swift-sodium",
       "kind" : "remoteSourceControl",

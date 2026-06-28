@@ -27,22 +27,31 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
-    .package(url: "https://github.com/ably/delta-codec-cocoa.git", from: "1.0.0"),
     .package(url: "https://github.com/danielrbrowne/APIota", .upToNextMajor(from: "0.2.0")),
     .package(url: "https://github.com/Flight-School/AnyCodable", .upToNextMajor(from: "0.4.0")),
     .package(url: "https://github.com/apple/swift-crypto", .upToNextMajor(from: "1.1.6")),
-    .package(
-      url: "https://github.com/bitmark-inc/tweetnacl-swiftwrap",
-      revision: "f8fd111642bf2336b11ef9ea828510693106e954"
-    ),
+    .package(url: "https://github.com/pusher/tweetnacl-swiftwrap", from: "1.1.0"),
     .package(url: "https://github.com/swiftlang/swift-testing.git", from: "0.12.0"),
   ],
   targets: [
     .target(
+      name: "CXDelta3",
+      path: "client-sdks/sockudo-swift/Vendor/xdelta3",
+      sources: ["xdelta3.c"],
+      publicHeadersPath: "include",
+      cSettings: [
+        .headerSearchPath("."),
+        .define("SIZEOF_SIZE_T", to: "8"),
+        .define("SIZEOF_UNSIGNED_INT", to: "4"),
+        .define("SIZEOF_UNSIGNED_LONG", to: "8"),
+        .define("SIZEOF_UNSIGNED_LONG_LONG", to: "8"),
+      ]
+    ),
+    .target(
       name: "SockudoSwift",
       dependencies: [
         .product(name: "Sodium", package: "swift-sodium"),
-        .product(name: "AblyDeltaCodec", package: "delta-codec-cocoa"),
+        "CXDelta3",
       ],
       path: "client-sdks/sockudo-swift/Sources/SockudoSwift",
       swiftSettings: [
@@ -81,6 +90,7 @@ let package = Package(
       name: "SockudoSwiftTests",
       dependencies: [
         "SockudoSwift",
+        "CXDelta3",
         .product(name: "Testing", package: "swift-testing"),
       ],
       path: "client-sdks/sockudo-swift/Tests/SockudoSwiftTests",

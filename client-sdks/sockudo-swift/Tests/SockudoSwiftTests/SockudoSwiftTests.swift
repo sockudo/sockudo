@@ -1,4 +1,5 @@
 import CryptoKit
+import CXDelta3
 import Foundation
 import Testing
 
@@ -1421,5 +1422,48 @@ func liveV1HeartbeatStillUsesProtocolPing() async throws {
     _ = try await receiveMessage(from: task, timeout: 1.5)
   } catch ReceiveTimeoutError.timedOut {
     // Connection remained open without immediate timeout close, which is what we want.
+  }
+}
+
+@Test func xdelta3RoundTripDecodeProducesCorrectOutput() throws {
+  let source = Data("hello world".utf8)
+  let target = Data("hello xdelta3 world".utf8)
+
+  let delta = try source.withUnsafeBytes { srcPtr in
+    try target.withUnsafeBytes { tgtPtr in
+      var deltaSize = UInt64(target.count * 2 + 1024)
+      var delta = Data(count: Int(deltaSize))
+      let deltaCap = UInt64(delta.count)
+      let result = delta.withUnsafeMutableBytes { deltaPtr in
+        xd3_encode_memory(
+          tgtPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          UInt64(target.count),
+          srcPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          UInt64(source.count),
+          deltaPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          &deltaSize,
+          deltaCap,
+          0
+        )
+      }
+      guard result == 0 else {
+        throw SockudoError.deltaFailure("encode failed: \(result)")
+      }
+      delta.count = Int(deltaSize)
+      return delta
+    }
+  }
+
+  let reconstructed = try XDelta3.decode(delta: delta, base: source)
+
+  #expect(reconstructed == target)
+  #expect(String(decoding: reconstructed, as: UTF8.self) == "hello xdelta3 world")
+}
+
+@Test func xdelta3InvalidInputThrows() {
+  let garbage = Data([0xFF, 0xFE, 0x00, 0x01, 0x02])
+  let base = Data("some base".utf8)
+  #expect(throws: (any Error).self) {
+    try XDelta3.decode(delta: garbage, base: base)
   }
 }

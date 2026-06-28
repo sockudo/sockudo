@@ -1,5 +1,5 @@
 {
-  "originHash" : "929fca62a9a0ffec8ddb96070325cf7f9cce4dadc22be69a2faa38a477f924e1",
+  "originHash" : "810e3dce6d47e43de603ea97f2fceef4e5e42e5c72379d8db909ff518d5d94d8",
   "pins" : [
     {
       "identity" : "anycodable",
@@ -17,15 +17,6 @@
       "state" : {
         "revision" : "590dd92231b0428f2b6910f856845d1895c58af9",
         "version" : "0.2.0"
-      }
-    },
-    {
-      "identity" : "delta-codec-cocoa",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ably/delta-codec-cocoa.git",
-      "state" : {
-        "revision" : "d53eec08f9443c6160d941327a6f9d8bbb93cea2",
-        "version" : "1.3.5"
       }
     },
     {
@@ -67,9 +58,10 @@
     {
       "identity" : "tweetnacl-swiftwrap",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/bitmark-inc/tweetnacl-swiftwrap",
+      "location" : "https://github.com/pusher/tweetnacl-swiftwrap",
       "state" : {
-        "revision" : "f8fd111642bf2336b11ef9ea828510693106e954"
+        "revision" : "92375f83c3af1b8af011d3c0af1001929844b936",
+        "version" : "1.2.0"
       }
     }
   ],

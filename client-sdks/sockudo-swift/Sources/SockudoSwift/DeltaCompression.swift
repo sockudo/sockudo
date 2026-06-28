@@ -1,4 +1,4 @@
-import AblyDeltaCodec
+import CXDelta3
 import Foundation
 
 private struct CachedMessage {
@@ -162,8 +162,7 @@ final class DeltaCompressionManager {
           decoding: FossilDelta.apply(base: Data(baseMessage.utf8), delta: deltaData),
           as: UTF8.self)
       case .xdelta3:
-        let output = try ARTDeltaCodec.applyDelta(
-          deltaData, previous: Data(baseMessage.utf8))
+        let output = try XDelta3.decode(delta: deltaData, base: Data(baseMessage.utf8))
         reconstructed = String(decoding: output, as: UTF8.self)
       }
 

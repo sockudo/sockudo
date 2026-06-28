@@ -19,15 +19,27 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
-    .package(url: "https://github.com/ably/delta-codec-cocoa.git", from: "1.0.0"),
     .package(url: "https://github.com/swiftlang/swift-testing.git", from: "0.12.0"),
   ],
   targets: [
     .target(
+      name: "CXDelta3",
+      path: "Vendor/xdelta3",
+      sources: ["xdelta3.c"],
+      publicHeadersPath: "include",
+      cSettings: [
+        .headerSearchPath("."),
+        .define("SIZEOF_SIZE_T", to: "8"),
+        .define("SIZEOF_UNSIGNED_INT", to: "4"),
+        .define("SIZEOF_UNSIGNED_LONG", to: "8"),
+        .define("SIZEOF_UNSIGNED_LONG_LONG", to: "8"),
+      ]
+    ),
+    .target(
       name: "SockudoSwift",
       dependencies: [
         .product(name: "Sodium", package: "swift-sodium"),
-        .product(name: "AblyDeltaCodec", package: "delta-codec-cocoa"),
+        "CXDelta3",
       ],
       swiftSettings: [
         .unsafeFlags(["-Xfrontend", "-strict-concurrency=minimal"])
