@@ -364,62 +364,69 @@ impl SockudoServer {
                 None
             }
             QueueDriver::Redis | QueueDriver::RedisCluster | QueueDriver::Memory => {
-                let (queue_redis_url_or_nodes, queue_prefix, queue_concurrency) =
-                    match config.queue.driver {
-                        QueueDriver::Redis => {
-                            let owned_default_queue_redis_url: String;
-                            let queue_redis_url_arg: Option<&str>;
+                let (
+                    queue_redis_url_or_nodes,
+                    queue_prefix,
+                    queue_concurrency,
+                    queue_response_timeout_ms,
+                ) = match config.queue.driver {
+                    QueueDriver::Redis => {
+                        let owned_default_queue_redis_url: String;
+                        let queue_redis_url_arg: Option<&str>;
 
-                            if let Some(url_override) = config.queue.redis.url_override.as_ref() {
-                                queue_redis_url_arg = Some(url_override.as_str());
-                            } else {
-                                owned_default_queue_redis_url = config.database.redis.to_url();
-                                queue_redis_url_arg = Some(&owned_default_queue_redis_url);
-                            }
-
-                            (
-                                queue_redis_url_arg.map(|s| s.to_string()),
-                                config
-                                    .queue
-                                    .redis
-                                    .prefix
-                                    .as_deref()
-                                    .unwrap_or("sockudo_queue:"),
-                                config.queue.redis.concurrency as usize,
-                            )
+                        if let Some(url_override) = config.queue.redis.url_override.as_ref() {
+                            queue_redis_url_arg = Some(url_override.as_str());
+                        } else {
+                            owned_default_queue_redis_url = config.database.redis.to_url();
+                            queue_redis_url_arg = Some(&owned_default_queue_redis_url);
                         }
-                        QueueDriver::RedisCluster => {
-                            let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
-                                vec![
-                                    "redis://127.0.0.1:7000".to_string(),
-                                    "redis://127.0.0.1:7001".to_string(),
-                                    "redis://127.0.0.1:7002".to_string(),
-                                ]
-                            } else {
-                                config.queue.redis_cluster.nodes.clone()
-                            };
 
-                            let nodes_str = cluster_nodes.join(",");
+                        (
+                            queue_redis_url_arg.map(|s| s.to_string()),
+                            config
+                                .queue
+                                .redis
+                                .prefix
+                                .as_deref()
+                                .unwrap_or("sockudo_queue:"),
+                            config.queue.redis.concurrency as usize,
+                            Some(config.queue.redis.response_timeout_ms),
+                        )
+                    }
+                    QueueDriver::RedisCluster => {
+                        let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
+                            vec![
+                                "redis://127.0.0.1:7000".to_string(),
+                                "redis://127.0.0.1:7001".to_string(),
+                                "redis://127.0.0.1:7002".to_string(),
+                            ]
+                        } else {
+                            config.queue.redis_cluster.nodes.clone()
+                        };
 
-                            (
-                                Some(nodes_str),
-                                config
-                                    .queue
-                                    .redis_cluster
-                                    .prefix
-                                    .as_deref()
-                                    .unwrap_or("sockudo_queue:"),
-                                config.queue.redis_cluster.concurrency as usize,
-                            )
-                        }
-                        _ => (None, "sockudo_queue:", 5),
-                    };
+                        let nodes_str = cluster_nodes.join(",");
+
+                        (
+                            Some(nodes_str),
+                            config
+                                .queue
+                                .redis_cluster
+                                .prefix
+                                .as_deref()
+                                .unwrap_or("sockudo_queue:"),
+                            config.queue.redis_cluster.concurrency as usize,
+                            Some(config.queue.redis_cluster.request_timeout_ms),
+                        )
+                    }
+                    _ => (None, "sockudo_queue:", 5, None),
+                };
 
                 match QueueManagerFactory::create(
                     config.queue.driver.as_ref(),
                     queue_redis_url_or_nodes.as_deref(),
                     Some(queue_prefix),
                     Some(queue_concurrency),
+                    queue_response_timeout_ms,
                 )
                 .await
                 {

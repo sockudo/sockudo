@@ -66,6 +66,7 @@ pub struct RedisQueueConfig {
     pub prefix: Option<String>,
     pub url_override: Option<String>,
     pub cluster_mode: bool,
+    pub response_timeout_ms: u64,
 }
 
 impl Default for SqsQueueConfig {
@@ -101,6 +102,18 @@ impl Default for RedisQueueConfig {
             prefix: Some("sockudo_queue:".to_string()),
             url_override: None,
             cluster_mode: false,
+            response_timeout_ms: 30000,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redis_queue_default_response_timeout_is_background_queue_budget() {
+        assert_eq!(RedisQueueConfig::default().response_timeout_ms, 30000);
+        assert_eq!(RedisClusterQueueConfig::default().request_timeout_ms, 5000);
     }
 }

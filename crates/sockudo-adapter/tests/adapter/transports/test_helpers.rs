@@ -58,6 +58,7 @@ pub fn get_nats_config() -> NatsAdapterConfig {
         password: None,
         token: None,
         nodes_number: Some(2),
+        no_echo: false,
         ..Default::default()
     }
 }

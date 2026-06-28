@@ -212,6 +212,7 @@ async fn test_subject_names() -> Result<()> {
         password: None,
         token: None,
         nodes_number: Some(2),
+        no_echo: false,
         ..Default::default()
     };
 

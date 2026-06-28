@@ -330,16 +330,19 @@ where
                 }
                 _ = tokio::time::sleep_until(deadline.into()) => {
                     // Timeout occurred
-                    warn!(
-                        "Request {} timed out after {}ms",
-                        request_id,
-                        start.elapsed().as_millis()
-                    );
                     let responses = if let Some(pending_request) = self.horizontal.pending_requests.get(&request_id) {
                         pending_request.responses.clone()
                     } else {
                         Vec::new()
                     };
+                    warn!(
+                        "Request {} ({:?}) timed out after {}ms, got {}/{} responses",
+                        request_id,
+                        request_type,
+                        start.elapsed().as_millis(),
+                        responses.len(),
+                        max_expected_responses
+                    );
                     Some((responses, true))
                 }
             };

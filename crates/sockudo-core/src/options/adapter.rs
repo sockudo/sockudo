@@ -103,6 +103,7 @@ pub struct NatsAdapterConfig {
     pub client_capacity: Option<usize>,
     pub max_reconnects: Option<usize>,
     pub presence_sync_chunk_size: Option<usize>,
+    pub no_echo: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +211,7 @@ impl Default for NatsAdapterConfig {
             client_capacity: None,
             max_reconnects: None,
             presence_sync_chunk_size: None,
+            no_echo: true,
         }
     }
 }

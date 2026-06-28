@@ -101,7 +101,7 @@ impl Default for ServerOptions {
             ai_transport: AiTransportConfig::default(),
             push: PushConfig::default(),
             push_rules: Vec::new(),
-            health_check_timeout_ms: 400,
+            health_check_timeout_ms: 2000,
         }
     }
 }
@@ -285,5 +285,15 @@ impl ServerOptions {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_health_check_timeout_leaves_probe_headroom() {
+        assert_eq!(ServerOptions::default().health_check_timeout_ms, 2000);
     }
 }

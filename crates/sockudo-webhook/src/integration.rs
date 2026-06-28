@@ -72,6 +72,10 @@ impl QueueManager {
         self.driver.add_to_queue(queue_name, data).await
     }
 
+    pub async fn add_batch_to_queue(&self, queue_name: &str, data: Vec<JobData>) -> Result<()> {
+        self.driver.add_batch_to_queue(queue_name, data).await
+    }
+
     pub async fn process_queue(
         &self,
         queue_name: &str,
@@ -184,16 +188,15 @@ impl WebhookIntegration {
                 );
 
                 if let Some(qm) = &queue_manager_clone {
-                    for batch in Self::merge_jobs_for_queue(jobs_to_process, batch_size) {
-                        if let Err(e) = qm.add_to_queue(WEBHOOK_QUEUE_NAME, batch).await {
-                            error!(
-                                "{}",
-                                format!(
-                                    "Failed to add batched job to queue {}: {}",
-                                    WEBHOOK_QUEUE_NAME, e
-                                )
-                            );
-                        }
+                    let batches = Self::merge_jobs_for_queue(jobs_to_process, batch_size);
+                    if let Err(e) = qm.add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches).await {
+                        error!(
+                            "{}",
+                            format!(
+                                "Failed to add batched jobs to queue {}: {}",
+                                WEBHOOK_QUEUE_NAME, e
+                            )
+                        );
                     }
                 }
             }
@@ -718,7 +721,7 @@ mod tests {
     use sockudo_queue::manager::QueueManagerFactory;
 
     async fn create_test_queue_manager() -> Arc<QueueManager> {
-        let driver = QueueManagerFactory::create("memory", None, None, None)
+        let driver = QueueManagerFactory::create("memory", None, None, None, None)
             .await
             .expect("Failed to create test queue manager");
         Arc::new(QueueManager::new(driver))

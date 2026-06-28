@@ -2,6 +2,7 @@
 //! where the local node count can differ from the cluster-wide count.
 
 use crate::adapter::horizontal_adapter_helpers::MockConfig;
+use ahash::AHashMap;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_adapter::horizontal_adapter::RequestType;
@@ -162,5 +163,45 @@ async fn unsubscribe_local_does_not_fan_out_for_cluster_count() {
             .iter()
             .all(|request| request.request_type != RequestType::ChannelSocketsCount),
         "unsubscribe_local should not publish horizontal count requests"
+    );
+}
+
+#[tokio::test]
+async fn batch_socket_counts_use_registry_when_aggregate_counts_enabled() {
+    let mut adapter = MockConfig::create_multi_node_adapter().await.unwrap();
+    adapter.set_aggregate_counts(true);
+
+    let mut remote_counts = AHashMap::new();
+    remote_counts.insert(SHARED_CHANNEL.to_string(), 7);
+    remote_counts.insert("channel-2".to_string(), 3);
+    adapter
+        .horizontal
+        .apply_remote_channel_counts(APP_ID, "node-remote", remote_counts, false);
+
+    let socket = SocketId::new();
+    adapter
+        .add_to_channel(APP_ID, SHARED_CHANNEL, &socket)
+        .await
+        .unwrap();
+
+    let counts = adapter
+        .get_batch_channel_socket_counts(APP_ID, &[SHARED_CHANNEL, "channel-2", "channel-3"])
+        .await
+        .unwrap();
+
+    assert_eq!(counts.get(SHARED_CHANNEL), Some(&8));
+    assert_eq!(counts.get("channel-2"), Some(&3));
+    assert!(!counts.contains_key("channel-3"));
+
+    let published_batch_requests = adapter
+        .transport
+        .get_published_requests()
+        .await
+        .into_iter()
+        .filter(|request| request.request_type == RequestType::BatchChannelSocketsCount)
+        .count();
+    assert_eq!(
+        published_batch_requests, 0,
+        "aggregate batch socket counts should issue zero NATS requests"
     );
 }

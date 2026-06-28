@@ -164,6 +164,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "REDIS_CLUSTER_QUEUE_CONCURRENCY",
         options.queue.redis_cluster.concurrency,
     );
+    options.queue.redis_cluster.request_timeout_ms = parse_env::<u64>(
+        "REDIS_CLUSTER_QUEUE_REQUEST_TIMEOUT_MS",
+        options.queue.redis_cluster.request_timeout_ms,
+    );
     if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
         options.queue.redis_cluster.prefix = Some(prefix);
     }

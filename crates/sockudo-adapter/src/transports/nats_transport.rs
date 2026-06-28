@@ -78,9 +78,9 @@ impl TransportMetrics {
 /// NATS transport implementation
 pub struct NatsTransport {
     client: NatsClient,
-    broadcast_subject: String,
-    request_subject: String,
-    response_subject: String,
+    broadcast_subject: Subject,
+    request_subject: Subject,
+    response_subject: Subject,
     /// Shared inbox prefix for direct reply routing
     inbox_prefix: String,
     config: NatsAdapterConfig,
@@ -187,6 +187,12 @@ impl HorizontalTransport for NatsTransport {
             "NATS transport credentials configured"
         );
 
+        // Build subject names before connecting so hot publish paths can reuse
+        // validated subject bytes instead of rebuilding them per message.
+        let broadcast_subject = Subject::from(format!("{}.broadcast", config.prefix));
+        let request_subject = Subject::from(format!("{}.requests", config.prefix));
+        let response_subject = Subject::from(format!("{}.responses", config.prefix));
+
         // Build NATS Options
         let mut nats_options = NatsOptions::new()
             .retry_on_initial_connect()
@@ -224,6 +230,13 @@ impl HorizontalTransport for NatsTransport {
                 }
             });
 
+        // Sockudo already delivers locally before publishing horizontally and
+        // ignores its own horizontal messages. Suppressing self-echo avoids
+        // needless inbound NATS traffic and own-message parsing.
+        if config.no_echo {
+            nats_options = nats_options.no_echo();
+        }
+
         if let Some(cap) = config.subscription_capacity {
             nats_options = nats_options.subscription_capacity(cap);
         }
@@ -254,11 +267,6 @@ impl HorizontalTransport for NatsTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to connect to NATS: {e}")))?;
 
-        // Build subject names
-        let broadcast_subject = format!("{}.broadcast", config.prefix);
-        let request_subject = format!("{}.requests", config.prefix);
-        let response_subject = format!("{}.responses", config.prefix);
-
         // Build inbox prefix
         let inbox_prefix = format!("_INBOX.{}.", Uuid::new_v4().as_simple());
 
@@ -282,10 +290,7 @@ impl HorizontalTransport for NatsTransport {
             .map_err(|e| Error::Other(format!("Failed to serialize broadcast message: {e}")))?;
 
         self.client
-            .publish(
-                Subject::from(self.broadcast_subject.clone()),
-                message_data.into(),
-            )
+            .publish(self.broadcast_subject.clone(), message_data.into())
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish broadcast: {e}")))?;
 
@@ -298,10 +303,7 @@ impl HorizontalTransport for NatsTransport {
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
 
         self.client
-            .publish(
-                Subject::from(self.request_subject.clone()),
-                request_data.into(),
-            )
+            .publish(self.request_subject.clone(), request_data.into())
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish request: {e}")))?;
 
@@ -314,10 +316,7 @@ impl HorizontalTransport for NatsTransport {
             .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
 
         self.client
-            .publish(
-                Subject::from(self.response_subject.clone()),
-                response_data.into(),
-            )
+            .publish(self.response_subject.clone(), response_data.into())
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish response: {e}")))?;
 
@@ -350,7 +349,7 @@ impl HorizontalTransport for NatsTransport {
 
         // Subscribe to broadcast channel
         let mut broadcast_subscription = client
-            .subscribe(Subject::from(broadcast_subject.clone()))
+            .subscribe(broadcast_subject.clone())
             .await
             .map_err(|e| {
                 Error::Internal(format!("Failed to subscribe to broadcast subject: {e}"))
@@ -358,17 +357,18 @@ impl HorizontalTransport for NatsTransport {
 
         // Subscribe to requests channel
         let mut request_subscription = client
-            .subscribe(Subject::from(request_subject.clone()))
+            .subscribe(request_subject.clone())
             .await
             .map_err(|e| Error::Internal(format!("Failed to subscribe to request subject: {e}")))?;
 
         // Subscribe to responses channel
-        let mut response_subscription = client
-            .subscribe(Subject::from(response_subject.clone()))
-            .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to subscribe to response subject: {e}"))
-            })?;
+        let mut response_subscription =
+            client
+                .subscribe(response_subject.clone())
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to subscribe to response subject: {e}"))
+                })?;
 
         // Subscribe to shared inbox wildcard
         let inbox_subject = format!("{}*", self.inbox_prefix);
@@ -662,8 +662,8 @@ impl HorizontalTransport for NatsTransport {
 
         self.client
             .publish_with_reply(
-                Subject::from(self.request_subject.clone()),
-                Subject::from(reply_to.to_string()),
+                self.request_subject.clone(),
+                Subject::from(reply_to),
                 request_data.into(),
             )
             .await

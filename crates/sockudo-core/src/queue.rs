@@ -23,6 +23,18 @@ type ArcJobProcessorFn = Arc<
 #[async_trait]
 pub trait QueueInterface: Send + Sync {
     async fn add_to_queue(&self, queue_name: &str, data: JobData) -> crate::error::Result<()>;
+
+    async fn add_batch_to_queue(
+        &self,
+        queue_name: &str,
+        data: Vec<JobData>,
+    ) -> crate::error::Result<()> {
+        for job in data {
+            self.add_to_queue(queue_name, job).await?;
+        }
+        Ok(())
+    }
+
     // Changed callback type to accept 'static lifetime needed by Redis workers
     async fn process_queue(
         &self,

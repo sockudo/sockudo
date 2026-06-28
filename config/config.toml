@@ -7,6 +7,7 @@ shutdown_grace_period = 2
 websocket_max_payload_kb = 64
 user_authentication_timeout = 3600
 activity_timeout = 120
+health_check_timeout_ms = 2000
 
 [adapter]
 driver = "local"
@@ -21,6 +22,7 @@ request_timeout_ms = 5000
 connection_timeout_ms = 5000
 discovery_max_wait_ms = 1000
 discovery_idle_wait_ms = 150
+no_echo = true
 
 [adapter.pulsar]
 url = "pulsar://127.0.0.1:6650"
@@ -270,6 +272,17 @@ max_capacity = 10000
 
 [queue]
 driver = "memory"
+
+[queue.redis]
+concurrency = 5
+prefix = "sockudo_queue:"
+response_timeout_ms = 30000
+
+[queue.redis_cluster]
+concurrency = 5
+prefix = "sockudo_queue:"
+nodes = ["redis://127.0.0.1:6379"]
+request_timeout_ms = 5000
 
 [queue.iggy]
 connection_string = "iggy://iggy:iggy@127.0.0.1:8090"

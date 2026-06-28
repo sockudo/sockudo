@@ -48,6 +48,7 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     if let Some(v) = parse_env_optional::<usize>("NATS_PRESENCE_SYNC_CHUNK_SIZE") {
         options.adapter.nats.presence_sync_chunk_size = Some(v);
     }
+    options.adapter.nats.no_echo = parse_bool_env("NATS_NO_ECHO", options.adapter.nats.no_echo);
 
     // --- Pulsar Adapter ---
     if let Ok(url) = std::env::var("PULSAR_URL") {

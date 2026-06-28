@@ -513,6 +513,18 @@ where
             }
         }
 
+        // Tier 1A: read peer contributions from the gossiped registry instead of
+        // publishing a request/reply batch during unsubscribe cleanup.
+        if self.aggregate_counts {
+            for ch in channels {
+                let remote_count = self.horizontal.remote_channel_count(app_id, ch);
+                if remote_count > 0 {
+                    *counts.entry((*ch).to_string()).or_insert(0) += remote_count;
+                }
+            }
+            return Ok(counts);
+        }
+
         if self.should_skip_horizontal_communication().await {
             return Ok(counts);
         }
@@ -666,6 +678,14 @@ where
             .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
             .await?;
 
+        if channel.starts_with("presence-") {
+            return Ok(local_count
+                + self
+                    .horizontal
+                    .remote_presence_user_connection_count(app_id, channel, user_id)
+                    .await);
+        }
+
         // Get remote count (no excluding_socket since it's local-only)
         match self
             .send_request(
@@ -699,6 +719,13 @@ where
 
         if local_count > 0 {
             return Ok(true);
+        }
+
+        if channel.starts_with("presence-") {
+            return Ok(self
+                .horizontal
+                .remote_presence_user_has_connections(app_id, channel, user_id)
+                .await);
         }
 
         match self
