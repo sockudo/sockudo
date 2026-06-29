@@ -1,0 +1,136 @@
+# =============================================================================
+# Caddy Production Configuration for Sockudo
+# =============================================================================
+#
+# Target: native, latest stock Caddy release (no custom build / no plugins).
+#
+# Why so much shorter than nginx-prod.conf:
+#   - Automatic HTTPS (Let's Encrypt / ZeroSSL) — no manual cert paths.
+#   - Automatic HTTP -> HTTPS redirect — no redirect server block.
+#   - reverse_proxy upgrades WebSockets natively — no Upgrade/Connection map,
+#     no `proxy_buffering off`. Caddy streams hijacked connections correctly.
+#   - X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host / Host are set by
+#     reverse_proxy automatically — only X-Real-IP is added explicitly below.
+#
+# NOT portable from nginx: `limit_req` rate limiting. Stock Caddy has no rate
+# limiter; it lives in the `caddy-ratelimit` plugin, which requires a custom
+# build (xcaddy). Left out on purpose. If you need it, do app-level limiting in
+# Sockudo or put a CDN/WAF in front. A commented stub is included far below.
+#
+# Required environment variables:
+#   MY_DOMAIN            apex domain, e.g. example.com
+#   MY_EMAIL            ACME account email (expiry / recovery notices)
+#   CLOUDFLARE_API_TOKEN  only if using the DNS-01 wildcard block below
+# =============================================================================
+{
+	# ACME account email. Everything else (admin endpoint localhost:2019,
+	# auto_https prefer_wildcard, h1/h2/h3 protocols) is already the default.
+	email {$MY_EMAIL}
+}
+
+# -----------------------------------------------------------------------------
+# Reusable snippets
+# -----------------------------------------------------------------------------
+
+# Security headers + compression. Keep this minimal and current: no deprecated
+# X-XSS-Protection, no X-Powered-By noise. `encode` defaults to zstd + gzip.
+(common) {
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Drop the Server: Caddy banner.
+		-Server
+	}
+	# Content-Security-Policy for Sockudo: allow same-origin plus ws/wss so the
+	# realtime client can open WebSocket connections. Tighten per your frontend.
+	header Content-Security-Policy "default-src 'self'; connect-src 'self' ws: wss:;"
+	encode
+}
+
+# JSON access log, rolled by size. Mount /var/log/caddy as a volume.
+(logging) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+		format json
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Optional: wildcard TLS via Cloudflare DNS-01.
+# -----------------------------------------------------------------------------
+# The `dns cloudflare` directive needs the caddy-dns/cloudflare module, which is
+# a custom build. If you stay on a stock binary, DELETE this block and rely on
+# the default on-demand HTTP-01/TLS-ALPN issuance per host below.
+#
+# *.{$MY_DOMAIN}, {$MY_DOMAIN} {
+# 	tls {
+# 		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+# 		resolvers 1.1.1.1
+# 	}
+# }
+
+# -----------------------------------------------------------------------------
+# Sockudo edge
+# -----------------------------------------------------------------------------
+# One site block handles WebSockets (/app/), REST API (/apps/), health (/up/)
+# and metrics (/metrics) — Caddy routes by path, no separate location blocks.
+{$MY_DOMAIN} {
+	import common
+	import logging
+
+	# Cap request bodies (nginx had client_max_body_size 10M).
+	request_body {
+		max_size 10MB
+	}
+
+	# Metrics: restrict to internal/private networks, proxy to the metrics port.
+	# Define this BEFORE the catch-all proxy so it wins for /metrics.
+	@metrics path /metrics
+	handle @metrics {
+		# Deny anything not on a private network.
+		@external not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+		respond @external "Forbidden" 403
+		reverse_proxy sockudo:9601 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Everything else -> Sockudo. WebSocket upgrade on /app/ is handled
+	# automatically. The same upstream serves /apps/ (REST) and /up/ (health).
+	#
+	# No proxy timeouts set on purpose: stock default is "no timeout", which is
+	# what long-lived WebSocket connections want. (nginx needed an explicit
+	# proxy_read_timeout 300s; here a timeout would only hurt idle WS clients.)
+	reverse_proxy sockudo:6001 {
+		# Only header Caddy does not already set for you.
+		header_up X-Real-IP {remote_host}
+
+		# Active health checks against Sockudo's /up/ endpoint.
+		health_uri /up/
+
+		# Multi-node load balancing: add more upstreams to the line above, e.g.
+		#   reverse_proxy sockudo:6001 sockudo-2:6001 sockudo-3:6001 { ... }
+		# least_conn matches the nginx upstream policy; default is round-robin.
+		lb_policy least_conn
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Rate limiting stub (REQUIRES custom build: github.com/mholt/caddy-ratelimit)
+# -----------------------------------------------------------------------------
+# Stock Caddy cannot do this. Kept here only as a migration reference for the
+# nginx `limit_req` zones (api 10r/s, websocket 5r/s). To use it you must build
+# with xcaddy, which contradicts the "native release" requirement.
+#
+# {
+# 	order rate_limit before reverse_proxy
+# }
+# rate_limit {
+# 	zone api      { match { path /apps/* } key {remote_host} events 10 window 1s }
+# 	zone websocket { match { path /app/*  } key {remote_host} events 5  window 1s }
+# }
