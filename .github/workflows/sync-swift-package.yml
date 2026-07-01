@@ -1,0 +1,50 @@
+name: Sync Swift Package Mirror
+
+on:
+  push:
+    tags:
+      - "client-swift-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to sync (e.g. client-swift-v2.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-swift-package
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Push to sockudo/sockudo-swift
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          ref="${{ inputs.tag || github.ref_name }}"
+          version="${ref#client-swift-v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Syncing Swift SDK ${version}"
+
+      - name: Subtree split
+        run: git subtree split --prefix=client-sdks/sockudo-swift -b swift-release
+
+      - name: Push to mirror repo
+        env:
+          MIRROR_TOKEN: ${{ secrets.SWIFT_MIRROR_TOKEN }}
+        run: |
+          git remote add mirror "https://x-access-token:${MIRROR_TOKEN}@github.com/sockudo/sockudo-swift.git"
+          git push mirror swift-release:main --force
+          git tag --force "${{ steps.version.outputs.version }}" swift-release
+          git push mirror "${{ steps.version.outputs.version }}" --force

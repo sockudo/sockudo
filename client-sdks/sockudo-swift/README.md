@@ -31,7 +31,28 @@ Official Swift client for Sockudo.
 
 ## Installation
 
-Use Swift Package Manager with the monorepo package URL:
+### Xcode (recommended for apps)
+
+Use Swift Package Manager with the mirror package URL:
+
+```swift
+.package(url: "https://github.com/sockudo/sockudo-swift", from: "2.1.0")
+```
+
+Then depend on the `SockudoSwift` product:
+
+```swift
+.target(
+    name: "YourApp",
+    dependencies: [
+        .product(name: "SockudoSwift", package: "sockudo-swift"),
+    ]
+)
+```
+
+### Monorepo (for local development)
+
+Use the monorepo package URL:
 
 ```swift
 .package(url: "https://github.com/sockudo/sockudo", from: "2.1.0")
@@ -48,7 +69,7 @@ Then depend on the `SockudoSwift` product:
 )
 ```
 
-For local development:
+For a local checkout:
 
 ```swift
 .package(path: "../sockudo")
