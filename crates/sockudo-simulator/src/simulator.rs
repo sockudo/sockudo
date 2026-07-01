@@ -626,15 +626,20 @@ impl DeterministicSimulator {
     }
 
     async fn quiesce(&mut self) -> SimulatorResult<()> {
-        let settle = self
-            .config
-            .fault
-            .max_fanout_delay_ticks
-            .saturating_add(5)
-            .max(16);
-        for _ in 0..settle {
-            self.tick = self.tick.saturating_add(1);
+        let max_steps = self.network.len();
+        for _ in 0..max_steps {
+            let Some(next_delivery_tick) = self.network.iter().map(|event| event.deliver_at).min()
+            else {
+                return Ok(());
+            };
+            self.tick = self.tick.saturating_add(1).max(next_delivery_tick);
             self.deliver_due_fanout();
+        }
+        if !self.network.is_empty() {
+            return Err(self.fail(format!(
+                "quiesce did not drain fanout queue after {max_steps} steps (remaining={})",
+                self.network.len()
+            )));
         }
         Ok(())
     }
@@ -1729,6 +1734,7 @@ mod tests {
         let right_report = right.run().await.unwrap();
 
         assert_eq!(left_report, right_report);
+        assert_eq!(left_report.queued_fanout, 0);
     }
 
     #[tokio::test]
