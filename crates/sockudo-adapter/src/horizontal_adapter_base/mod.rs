@@ -56,6 +56,9 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     /// Tier 1A: when true, channel counts are read from the gossiped registry
     /// (local + peers) instead of cross-node request/reply.
     pub aggregate_counts: bool,
+    /// When true, first-join/last-leave presence transition checks use the
+    /// replicated presence registry instead of request/reply.
+    pub fast_presence_transitions: bool,
     #[cfg(feature = "delta")]
     // Delta compression manager for bandwidth optimization
     delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,

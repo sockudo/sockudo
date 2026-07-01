@@ -258,6 +258,7 @@ impl AdapterFactory {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Redis(adapter.clone());
                         Ok((adapter, typed))
@@ -319,6 +320,7 @@ impl AdapterFactory {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::RedisCluster(adapter.clone());
                         Ok((adapter, typed))
@@ -358,12 +360,14 @@ impl AdapterFactory {
                     client_capacity: config.nats.client_capacity,
                     max_reconnects: config.nats.max_reconnects,
                     presence_sync_chunk_size: config.nats.presence_sync_chunk_size,
+                    no_echo: config.nats.no_echo,
                 };
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Nats(adapter.clone());
                         Ok((adapter, typed))
@@ -399,6 +403,7 @@ impl AdapterFactory {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Pulsar(adapter.clone());
                         Ok((adapter, typed))
@@ -434,6 +439,7 @@ impl AdapterFactory {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::RabbitMq(adapter.clone());
                         Ok((adapter, typed))
@@ -469,6 +475,7 @@ impl AdapterFactory {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::GooglePubSub(adapter.clone());
                         Ok((adapter, typed))
@@ -507,6 +514,7 @@ impl AdapterFactory {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Kafka(adapter.clone());
                         Ok((adapter, typed))
@@ -553,6 +561,7 @@ impl AdapterFactory {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
                         adapter.set_aggregate_counts(config.aggregate_counts);
+                        adapter.set_fast_presence_transitions(config.fast_presence_transitions);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Iggy(adapter.clone());
                         Ok((adapter, typed))

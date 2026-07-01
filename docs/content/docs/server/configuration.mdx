@@ -79,6 +79,7 @@ The adapter controls cross-node fanout.
 driver = "redis"
 enable_socket_counting = true
 aggregate_counts = false
+fast_presence_transitions = false
 
 [adapter.redis]
 host = "redis"
@@ -91,12 +92,17 @@ Use a shared adapter for every multi-node deployment. Local memory adapters are 
 `enable_socket_counting` keeps the adapter's request/reply socket-count path enabled by default.
 `aggregate_counts` is off by default; enable it when you want each node to maintain gossiped
 cluster-wide channel counts for local count reads.
+`fast_presence_transitions` is off by default. Enabling it uses the replicated presence registry
+for first-join and last-leave checks, which avoids request/reply fanout but makes presence
+webhook/history transition decisions eventually consistent.
 
 For high-churn benchmark runs that should avoid distributed count fanout, use:
 
 ```bash
 ADAPTER_ENABLE_SOCKET_COUNTING=false
 ADAPTER_AGGREGATE_COUNTS=true
+# Optional: enables eventual-consistency presence transition checks.
+ADAPTER_FAST_PRESENCE_TRANSITIONS=true
 ```
 
 ## Recovery and history

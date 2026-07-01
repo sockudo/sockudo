@@ -460,6 +460,40 @@ impl HorizontalAdapter {
         out
     }
 
+    /// Count peer-owned presence sockets for a user from the replicated presence
+    /// registry. Local sockets are intentionally excluded; callers add the local
+    /// adapter's authoritative count separately.
+    pub async fn remote_presence_user_connection_count(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+    ) -> usize {
+        let registry = self.cluster_presence_registry.read().await;
+        registry
+            .iter()
+            .filter(|(node_id, _)| *node_id != &self.node_id)
+            .filter_map(|(_, node_data)| node_data.get(channel))
+            .flat_map(|channel_sockets| channel_sockets.values())
+            .filter(|entry| entry.app_id == app_id && entry.user_id == user_id)
+            .count()
+    }
+
+    pub async fn remote_presence_user_has_connections(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+    ) -> bool {
+        let registry = self.cluster_presence_registry.read().await;
+        registry
+            .iter()
+            .filter(|(node_id, _)| *node_id != &self.node_id)
+            .filter_map(|(_, node_data)| node_data.get(channel))
+            .flat_map(|channel_sockets| channel_sockets.values())
+            .any(|entry| entry.app_id == app_id && entry.user_id == user_id)
+    }
+
     /// Remove a node's contributions for one app (snapshot replace).
     fn purge_node_channel_counts_for_app(&self, app_id: &str, node_id: &str) {
         self.cluster_channel_counts.retain(|key, entry| {

@@ -46,6 +46,14 @@ ADAPTER_ENABLE_SOCKET_COUNTING=false
 ADAPTER_AGGREGATE_COUNTS=true
 ```
 
+Presence first-join and last-leave checks remain strict by default because they drive member
+webhooks and presence history. For workloads that prefer maximum churn throughput over immediate
+transition consistency, opt into the replicated presence-registry fast path:
+
+```bash
+ADAPTER_FAST_PRESENCE_TRANSITIONS=true
+```
+
 For Kubernetes NATS clusters, prefer explicit StatefulSet pod DNS entries over a single headless service URL when you want better initial client spread:
 
 ```json
@@ -62,7 +70,8 @@ For Kubernetes NATS clusters, prefer explicit StatefulSet pod DNS entries over a
       "connection_timeout_ms": 5000,
       "subscription_capacity": 131072,
       "client_capacity": 131072,
-      "max_reconnects": 60
+      "max_reconnects": 60,
+      "no_echo": true
     }
   }
 }

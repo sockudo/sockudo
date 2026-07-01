@@ -1,6 +1,5 @@
 use futures_util::future::join_all;
 use sockudo_adapter::ConnectionHandler;
-use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_core::app::App;
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
@@ -270,12 +269,10 @@ pub(super) async fn process_single_event_parallel(
                 }
 
                 if is_presence && info_for_task.as_deref().is_some_and(|s| s.contains("user_count")) {
-                    match ChannelManager::get_channel_members(
-                        handler_clone.connection_manager(),
-                        &app.id,
-                        &target_channel_str
-                    )
-                    .await
+                    match handler_clone
+                        .connection_manager()
+                        .get_local_channel_members(&app.id, &target_channel_str)
+                        .await
                     {
                         Ok(members_map) => {
                             current_channel_info_map

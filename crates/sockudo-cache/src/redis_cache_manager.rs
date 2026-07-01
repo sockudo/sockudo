@@ -36,6 +36,9 @@ pub struct RedisCacheManager {
     client: Client,
     /// Connection manager with automatic reconnection. Clone is cheap (shared internal state).
     connection: ConnectionManager,
+    /// Dedicated connection manager for health checks so probes do not open a
+    /// new Redis connection or queue behind normal cache operations.
+    health_connection: ConnectionManager,
     /// Key prefix
     prefix: String,
 }
@@ -56,19 +59,27 @@ impl RedisCacheManager {
         let client = Client::open(redis_url)
             .map_err(|e| Error::Cache(format!("Failed to create Redis client: {e}")))?;
 
-        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
-            .set_number_of_retries(5)
-            .set_exponent_base(2.0)
-            .set_max_delay(std::time::Duration::from_millis(5000));
+        let connection_manager_config = Self::connection_manager_config(config.response_timeout);
 
         let connection = client
             .get_connection_manager_with_config(connection_manager_config)
             .await
             .map_err(|e| Error::Cache(format!("Failed to connect to Redis: {e}")))?;
+        let health_connection = client
+            .get_connection_manager_with_config(Self::connection_manager_config(
+                config.response_timeout,
+            ))
+            .await
+            .map_err(|e| {
+                Error::Cache(format!(
+                    "Failed to connect Redis health check connection: {e}"
+                ))
+            })?;
 
         Ok(Self {
             client,
             connection,
+            health_connection,
             prefix: config.prefix,
         })
     }
@@ -87,6 +98,16 @@ impl RedisCacheManager {
     /// Get the prefixed key
     fn prefixed_key(&self, key: &str) -> String {
         format!("{}:{}", self.prefix, key)
+    }
+
+    fn connection_manager_config(
+        response_timeout: Option<Duration>,
+    ) -> redis::aio::ConnectionManagerConfig {
+        redis::aio::ConnectionManagerConfig::new()
+            .set_number_of_retries(5)
+            .set_exponent_base(2.0)
+            .set_max_delay(Duration::from_millis(5000))
+            .set_response_timeout(response_timeout)
     }
 }
 
@@ -148,11 +169,7 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        let mut conn = self
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| Error::Cache(format!("Failed to acquire health check connection: {e}")))?;
+        let mut conn = self.health_connection.clone();
 
         let response = redis::cmd("PING")
             .query_async::<String>(&mut conn)

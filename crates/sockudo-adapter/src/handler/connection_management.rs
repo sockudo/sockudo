@@ -788,10 +788,17 @@ impl ConnectionHandler {
     }
 
     pub async fn get_channel_member_count(&self, app_config: &App, channel: &str) -> Result<usize> {
-        self.connection_manager
-            .get_channel_members(&app_config.id, channel)
-            .await
-            .map(|members| members.len())
+        if channel.starts_with("presence-") {
+            self.connection_manager
+                .get_local_channel_members(&app_config.id, channel)
+                .await
+                .map(|members| members.len())
+        } else {
+            self.connection_manager
+                .get_channel_members(&app_config.id, channel)
+                .await
+                .map(|members| members.len())
+        }
     }
 
     pub async fn verify_channel_subscription(

@@ -171,6 +171,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_batch_to_queue() {
+        let manager = MemoryQueueManager::new();
+        let data = JobData {
+            app_key: "test_key".to_string(),
+            app_id: "test_id".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: chrono::Utc::now().timestamp_millis(),
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        manager
+            .add_batch_to_queue("test_queue", vec![data.clone(), data])
+            .await
+            .unwrap();
+
+        assert_eq!(manager.queues.get("test_queue").unwrap().len(), 2);
+    }
+
+    #[tokio::test]
     async fn test_disconnect() {
         let manager = MemoryQueueManager::new();
         let data = JobData {

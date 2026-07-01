@@ -23,7 +23,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. |
 | `INSTANCE_PROCESS_ID` | Stable node/process identity used by clustering and Iggy consumers. |
 | `HOSTNAME` | Fallback node identity for Iggy when `INSTANCE_PROCESS_ID` is not set. |
-| `HEALTH_CHECK_TIMEOUT_MS` | Dependency timeout for health checks. |
+| `HEALTH_CHECK_TIMEOUT_MS` | Per-dependency timeout for `/up` health checks in milliseconds. Defaults to `2000`. |
 | `HTTP_API_USAGE_ENABLED` | Enables `/usage` and `/stats` operational endpoints. |
 
 ## Logging
@@ -48,6 +48,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | `ADAPTER_BUFFER_MULTIPLIER_PER_CPU` | Adapter fanout buffer sizing multiplier. |
 | `ADAPTER_ENABLE_SOCKET_COUNTING` | Enables adapter socket counting. |
 | `ADAPTER_AGGREGATE_COUNTS` | Enables gossiped aggregate channel counts for local count reads. |
+| `ADAPTER_FAST_PRESENCE_TRANSITIONS` | Uses the replicated presence registry for first-join/last-leave checks; faster but eventually consistent. |
 | `ADAPTER_FALLBACK_TO_LOCAL` | Falls back to the local adapter when a configured adapter cannot start. |
 | `APP_MANAGER_REGISTER_INLINE_APPS` | Allows inline app definitions from config to be registered. |
 | `SOCKUDO_SKIP_INLINE_APPS` | Skips inline apps even if present in the config file. |
@@ -207,6 +208,8 @@ This page lists every runtime environment variable referenced by the server, cor
 | --- | --- |
 | `QUEUE_REDIS_CONCURRENCY` | Redis queue worker concurrency. |
 | `QUEUE_REDIS_PREFIX` | Redis queue key prefix. |
+| `QUEUE_REDIS_RESPONSE_TIMEOUT_MS` | Redis queue command response timeout in milliseconds. Set to `0` to disable the client-side deadline. |
+| `REDIS_CLUSTER_QUEUE_REQUEST_TIMEOUT_MS` | Redis Cluster queue command request timeout in milliseconds. Set to `0` to disable the cluster client deadline. |
 | `QUEUE_SQS_REGION` | SQS region. |
 | `QUEUE_SQS_VISIBILITY_TIMEOUT` | SQS visibility timeout. |
 | `QUEUE_SQS_MAX_MESSAGES` | SQS receive batch size. |
@@ -236,6 +239,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | `NATS_CLIENT_CAPACITY` | NATS client channel capacity. |
 | `NATS_MAX_RECONNECTS` | NATS reconnect limit. |
 | `NATS_PRESENCE_SYNC_CHUNK_SIZE` | Presence sync chunk size for NATS. |
+| `NATS_NO_ECHO` | Suppress delivery of a NATS connection's own horizontal messages. |
 | `PULSAR_URL` | Pulsar service URL. |
 | `PULSAR_PREFIX` | Pulsar topic prefix. |
 | `PULSAR_TOKEN` | Pulsar auth token. |

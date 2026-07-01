@@ -1,9 +1,14 @@
 use crate::adapter::horizontal_adapter_helpers::MockConfig;
+use crate::mocks::connection_handler_mock::{MockAppManager, MockCacheManager};
 use sockudo_adapter::ConnectionManager;
+use sockudo_adapter::handler::ConnectionHandler;
 use sockudo_adapter::horizontal_adapter::RequestType;
+use sockudo_core::app::{App, AppLimitsPolicy, AppManager, AppPolicy};
+use sockudo_core::cache::CacheManager;
 use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::Result;
 use sockudo_core::namespace::Namespace;
+use sockudo_core::options::ServerOptions;
 use sockudo_core::websocket::{SocketId, WebSocket, WebSocketRef};
 use sockudo_ws::axum_integration;
 use sockudo_ws::client::WebSocketClient;
@@ -105,13 +110,107 @@ async fn test_user_has_connections_returns_true_from_local_without_remote_reques
     Ok(())
 }
 
-/// Test that absent local connections trigger a cross-cluster request
+/// By default, presence transition checks keep strict request/reply semantics
+/// even if the replicated registry already has a matching remote entry.
 #[tokio::test]
-async fn test_user_has_connections_falls_back_to_remote_when_no_local_connections() -> Result<()> {
+async fn test_user_has_connections_uses_remote_request_for_presence_by_default() -> Result<()> {
+    let adapter = MockConfig::create_multi_node_adapter().await?;
+
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node",
+            "presence-chat",
+            "remote-socket-1",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+
+    let result = adapter
+        .user_has_connections_in_channel("remote-user", "app-1", "presence-chat", None)
+        .await?;
+
+    assert!(
+        !result,
+        "strict mode should ignore the eventually consistent presence registry"
+    );
+
+    let requests = adapter.transport.get_published_requests().await;
+    let count_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.request_type == RequestType::CountUserConnectionsInChannel)
+        .collect();
+
+    assert_eq!(
+        count_requests.len(),
+        1,
+        "strict presence transition check should issue one remote count request"
+    );
+    assert_eq!(
+        count_requests[0].user_id,
+        Some("remote-user".to_string()),
+        "request must carry the queried user_id"
+    );
+    assert_eq!(
+        count_requests[0].channel,
+        Some("presence-chat".to_string()),
+        "request must carry the queried channel"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_user_has_connections_uses_presence_registry_when_fast_transitions_enabled()
+-> Result<()> {
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    adapter.set_fast_presence_transitions(true);
+
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node",
+            "presence-chat",
+            "remote-socket-1",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+
+    let result = adapter
+        .user_has_connections_in_channel("remote-user", "app-1", "presence-chat", None)
+        .await?;
+
+    assert!(
+        result,
+        "fast mode should use the replicated presence registry"
+    );
+
+    let requests = adapter.transport.get_published_requests().await;
+    let count_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.request_type == RequestType::CountUserConnectionsInChannel)
+        .collect();
+
+    assert!(
+        count_requests.is_empty(),
+        "fast presence transition check should issue zero remote count requests, got {}",
+        count_requests.len()
+    );
+
+    Ok(())
+}
+
+/// Non-presence user-connection calls keep the existing request/reply behavior.
+#[tokio::test]
+async fn test_user_has_connections_falls_back_to_remote_for_non_presence_channel() -> Result<()> {
     let adapter = MockConfig::create_multi_node_adapter().await?;
 
     let result = adapter
-        .user_has_connections_in_channel("absent-user", "app-1", "presence-chat", None)
+        .user_has_connections_in_channel("absent-user", "app-1", "private-chat", None)
         .await?;
 
     assert!(
@@ -137,8 +236,178 @@ async fn test_user_has_connections_falls_back_to_remote_when_no_local_connection
     );
     assert_eq!(
         count_requests[0].channel,
+        Some("private-chat".to_string()),
+        "request must carry the queried channel"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_count_user_connections_in_channel_uses_remote_request_for_presence_by_default()
+-> Result<()> {
+    let adapter = MockConfig::create_multi_node_adapter().await?;
+
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node-a",
+            "presence-chat",
+            "remote-socket-a",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node-b",
+            "presence-chat",
+            "remote-socket-b",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+
+    let count = adapter
+        .count_user_connections_in_channel("remote-user", "app-1", "presence-chat", None)
+        .await?;
+
+    assert_eq!(
+        count, 0,
+        "strict mode should use request/reply instead of the replicated presence registry"
+    );
+
+    let requests = adapter.transport.get_published_requests().await;
+    let count_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.request_type == RequestType::CountUserConnectionsInChannel)
+        .collect();
+
+    assert_eq!(
+        count_requests.len(),
+        1,
+        "strict presence count should issue one remote count request"
+    );
+    assert_eq!(
+        count_requests[0].user_id,
+        Some("remote-user".to_string()),
+        "request must carry the queried user_id"
+    );
+    assert_eq!(
+        count_requests[0].channel,
         Some("presence-chat".to_string()),
         "request must carry the queried channel"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_count_user_connections_in_channel_uses_registry_when_fast_transitions_enabled()
+-> Result<()> {
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    adapter.set_fast_presence_transitions(true);
+
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node-a",
+            "presence-chat",
+            "remote-socket-a",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node-b",
+            "presence-chat",
+            "remote-socket-b",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+
+    let count = adapter
+        .count_user_connections_in_channel("remote-user", "app-1", "presence-chat", None)
+        .await?;
+
+    assert_eq!(count, 2);
+
+    let requests = adapter.transport.get_published_requests().await;
+    let count_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.request_type == RequestType::CountUserConnectionsInChannel)
+        .collect();
+
+    assert!(
+        count_requests.is_empty(),
+        "fast presence count should issue zero remote count requests, got {}",
+        count_requests.len()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_presence_member_count_uses_registry_without_channel_members_request() -> Result<()> {
+    let adapter = Arc::new(MockConfig::create_multi_node_adapter().await?);
+
+    adapter
+        .horizontal
+        .add_presence_entry(
+            "remote-node",
+            "presence-chat",
+            "remote-socket",
+            "remote-user",
+            "app-1",
+            None,
+        )
+        .await;
+
+    let handler = ConnectionHandler::builder(
+        Arc::new(MockAppManager::new()) as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(MockCacheManager::new()) as Arc<dyn CacheManager + Send + Sync>,
+        ServerOptions::default(),
+    )
+    .build();
+    let app = App::from_policy(
+        "app-1".to_string(),
+        "key".to_string(),
+        "secret".to_string(),
+        true,
+        AppPolicy {
+            limits: AppLimitsPolicy {
+                max_presence_members_per_channel: Some(100),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+
+    let count = handler
+        .get_channel_member_count(&app, "presence-chat")
+        .await?;
+
+    assert_eq!(count, 1);
+
+    let requests = adapter.transport.get_published_requests().await;
+    let channel_member_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.request_type == RequestType::ChannelMembers)
+        .collect();
+
+    assert!(
+        channel_member_requests.is_empty(),
+        "presence member count should issue zero ChannelMembers requests, got {}",
+        channel_member_requests.len()
     );
 
     Ok(())

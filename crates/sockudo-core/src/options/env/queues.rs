@@ -4,6 +4,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     // --- Queue: Redis ---
     options.queue.redis.concurrency =
         parse_env::<u32>("QUEUE_REDIS_CONCURRENCY", options.queue.redis.concurrency);
+    options.queue.redis.response_timeout_ms = parse_env::<u64>(
+        "QUEUE_REDIS_RESPONSE_TIMEOUT_MS",
+        options.queue.redis.response_timeout_ms,
+    );
     if let Ok(prefix) = std::env::var("QUEUE_REDIS_PREFIX") {
         options.queue.redis.prefix = Some(prefix);
     }

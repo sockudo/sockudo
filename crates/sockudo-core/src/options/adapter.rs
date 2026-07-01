@@ -26,9 +26,19 @@ pub struct AdapterConfig {
     /// cross-node fan-out. Off by default; falls back to request/reply when off.
     #[serde(default = "default_aggregate_counts")]
     pub aggregate_counts: bool,
+    /// Use the replicated presence registry for first-join/last-leave transition
+    /// checks instead of request/reply. Faster under high churn, but registry
+    /// state is eventually consistent, so strict webhook/history behavior keeps
+    /// this off by default.
+    #[serde(default = "default_fast_presence_transitions")]
+    pub fast_presence_transitions: bool,
 }
 
 fn default_aggregate_counts() -> bool {
+    false
+}
+
+fn default_fast_presence_transitions() -> bool {
     false
 }
 
@@ -61,6 +71,7 @@ impl Default for AdapterConfig {
             enable_socket_counting: default_enable_socket_counting(),
             fallback_to_local: default_fallback_to_local(),
             aggregate_counts: default_aggregate_counts(),
+            fast_presence_transitions: default_fast_presence_transitions(),
         }
     }
 }
@@ -103,6 +114,7 @@ pub struct NatsAdapterConfig {
     pub client_capacity: Option<usize>,
     pub max_reconnects: Option<usize>,
     pub presence_sync_chunk_size: Option<usize>,
+    pub no_echo: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +222,7 @@ impl Default for NatsAdapterConfig {
             client_capacity: None,
             max_reconnects: None,
             presence_sync_chunk_size: None,
+            no_echo: true,
         }
     }
 }

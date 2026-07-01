@@ -30,8 +30,9 @@ where
             heartbeat_interval_ms: cluster_health_defaults.heartbeat_interval_ms,
             node_timeout_ms: cluster_health_defaults.node_timeout_ms,
             cleanup_interval_ms: cluster_health_defaults.cleanup_interval_ms,
-            enable_socket_counting: true, // Default to enabled
-            aggregate_counts: false,      // Tier 1A: opt-in via config
+            enable_socket_counting: true,     // Default to enabled
+            aggregate_counts: false,          // Tier 1A: opt-in via config
+            fast_presence_transitions: false, // Opt-in eventual presence transitions
             #[cfg(feature = "delta")]
             delta_compression: None,
             #[cfg(feature = "delta")]
@@ -141,6 +142,11 @@ where
     /// Tier 1A: enable reading channel counts from the gossiped registry.
     pub fn set_aggregate_counts(&mut self, enable: bool) {
         self.aggregate_counts = enable;
+    }
+
+    /// Enable the eventual-consistency fast path for presence transition checks.
+    pub fn set_fast_presence_transitions(&mut self, enable: bool) {
+        self.fast_presence_transitions = enable;
     }
 
     /// Publish a pre-built RequestBody and collect responses from other nodes
@@ -330,16 +336,19 @@ where
                 }
                 _ = tokio::time::sleep_until(deadline.into()) => {
                     // Timeout occurred
-                    warn!(
-                        "Request {} timed out after {}ms",
-                        request_id,
-                        start.elapsed().as_millis()
-                    );
                     let responses = if let Some(pending_request) = self.horizontal.pending_requests.get(&request_id) {
                         pending_request.responses.clone()
                     } else {
                         Vec::new()
                     };
+                    warn!(
+                        "Request {} ({:?}) timed out after {}ms, got {}/{} responses",
+                        request_id,
+                        request_type,
+                        start.elapsed().as_millis(),
+                        responses.len(),
+                        max_expected_responses
+                    );
                     Some((responses, true))
                 }
             };

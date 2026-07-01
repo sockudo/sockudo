@@ -53,6 +53,7 @@ impl QueueManagerFactory {
         redis_url: Option<&str>,
         prefix: Option<&str>,
         concurrency: Option<usize>,
+        response_timeout_ms: Option<u64>,
     ) -> Result<Box<dyn QueueInterface>> {
         match driver {
             #[cfg(feature = "redis")]
@@ -60,12 +61,15 @@ impl QueueManagerFactory {
                 let url = redis_url.unwrap_or("redis://127.0.0.1:6379/");
                 let prefix_str = prefix.unwrap_or("sockudo");
                 let concurrency_val = concurrency.unwrap_or(5);
+                let response_timeout_ms = response_timeout_ms.unwrap_or(30000);
                 info!(
-                    "Creating Redis queue manager (Prefix: {}, Concurrency: {})",
-                    prefix_str, concurrency_val
+                    "Creating Redis queue manager (Prefix: {}, Concurrency: {}, Response timeout: {}ms)",
+                    prefix_str, concurrency_val, response_timeout_ms
                 );
                 debug!("Redis queue manager URL: {}", url);
-                let manager = RedisQueueManager::new(url, prefix_str, concurrency_val).await?;
+                let manager =
+                    RedisQueueManager::new(url, prefix_str, concurrency_val, response_timeout_ms)
+                        .await?;
                 Ok(Box::new(manager))
             }
             #[cfg(feature = "redis-cluster")]
@@ -77,16 +81,21 @@ impl QueueManagerFactory {
                     nodes_str.split(',').map(|s| s.trim().to_string()).collect();
                 let prefix_str = prefix.unwrap_or("sockudo");
                 let concurrency_val = concurrency.unwrap_or(5);
+                let response_timeout_ms = response_timeout_ms.unwrap_or(5000);
 
                 info!(
-                    "Creating Redis Cluster queue manager (Prefix: {}, Concurrency: {})",
-                    prefix_str, concurrency_val
+                    "Creating Redis Cluster queue manager (Prefix: {}, Concurrency: {}, Request timeout: {}ms)",
+                    prefix_str, concurrency_val, response_timeout_ms
                 );
                 debug!("Redis Cluster queue manager nodes: {:?}", cluster_nodes);
 
-                let manager =
-                    RedisClusterQueueManager::new(cluster_nodes, prefix_str, concurrency_val)
-                        .await?;
+                let manager = RedisClusterQueueManager::new(
+                    cluster_nodes,
+                    prefix_str,
+                    concurrency_val,
+                    response_timeout_ms,
+                )
+                .await?;
                 Ok(Box::new(manager))
             }
             #[cfg(feature = "nats")]
@@ -334,6 +343,11 @@ impl QueueManager {
     /// Adds data to the specified queue via the underlying driver.
     pub async fn add_to_queue(&self, queue_name: &str, data: JobData) -> Result<()> {
         self.driver.add_to_queue(queue_name, data).await
+    }
+
+    /// Adds multiple jobs to the specified queue via the underlying driver.
+    pub async fn add_batch_to_queue(&self, queue_name: &str, data: Vec<JobData>) -> Result<()> {
+        self.driver.add_batch_to_queue(queue_name, data).await
     }
 
     /// Registers a processor for the specified queue and starts processing (if applicable for the driver).
