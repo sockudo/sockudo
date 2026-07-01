@@ -40,9 +40,6 @@ let package = Package(
       dependencies: [
         .product(name: "Sodium", package: "swift-sodium"),
         "CXDelta3",
-      ],
-      swiftSettings: [
-        .unsafeFlags(["-Xfrontend", "-strict-concurrency=minimal"])
       ]
     ),
     .testTarget(
@@ -52,10 +49,7 @@ let package = Package(
         .product(name: "Testing", package: "swift-testing"),
       ],
       swiftSettings: [
-        .unsafeFlags([
-          "-Xfrontend", "-strict-concurrency=minimal",
-          "-suppress-warnings",
-        ])
+        .unsafeFlags(["-suppress-warnings"])
       ]
     ),
   ]

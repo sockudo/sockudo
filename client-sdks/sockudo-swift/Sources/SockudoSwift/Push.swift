@@ -73,7 +73,7 @@ public struct PushSubscriptionParams: Sendable, Equatable {
   }
 }
 
-public final class SockudoPushRegistration: @unchecked Sendable {
+public final class SockudoPushRegistration: Sendable {
   private let endpoint: String
   private let headers: [String: String]
   private let headersProvider: (@Sendable () -> [String: String])?

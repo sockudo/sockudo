@@ -35,6 +35,8 @@ public enum VersionedMessageClearField: String, Sendable, Codable, Equatable, Ca
   case extras
 }
 
+// @unchecked Sendable: data uses Any which is not Sendable;
+// safe — fire-and-forget value type, created by caller and serialized on @MainActor.
 public struct VersionedMessageCreateRequest: @unchecked Sendable {
   public let name: String
   public let data: Any
@@ -76,6 +78,8 @@ public struct VersionedMessageCreateRequest: @unchecked Sendable {
   }
 }
 
+// @unchecked Sendable: data and metadata use Any?/Any which is not Sendable;
+// safe — fire-and-forget value type, created by caller and serialized on @MainActor.
 public struct VersionedMessageUpdateRequest: @unchecked Sendable {
   public let name: String?
   public let data: Any?
@@ -124,6 +128,8 @@ public struct VersionedMessageUpdateRequest: @unchecked Sendable {
   }
 }
 
+// @unchecked Sendable: metadata uses Any? which is not Sendable;
+// safe — fire-and-forget value type, created by caller and serialized on @MainActor.
 public struct VersionedMessageAppendRequest: @unchecked Sendable {
   public let data: String
   public let extras: MessageExtras?
@@ -163,6 +169,8 @@ public struct VersionedMessageAppendRequest: @unchecked Sendable {
   }
 }
 
+// @unchecked Sendable: data and metadata use Any?/Any which is not Sendable;
+// safe — fire-and-forget value type, created by caller and serialized on @MainActor.
 public struct VersionedMessageDeleteRequest: @unchecked Sendable {
   public let data: Any?
   public let extras: MessageExtras?
@@ -207,6 +215,8 @@ public struct VersionedMessageDeleteRequest: @unchecked Sendable {
   }
 }
 
+// @unchecked Sendable: raw uses [String: Any] which is not Sendable;
+// safe — all let, constructed from HTTP response decoding, consumed on @MainActor.
 public struct VersionedMessageAck: @unchecked Sendable {
   public let channel: String
   public let messageSerial: String
@@ -266,6 +276,8 @@ public struct MutableMessageVersionInfo: Sendable, Equatable {
   }
 }
 
+// @unchecked Sendable: data uses Any? which is not Sendable;
+// safe — all let, produced by reduceMutableMessageEvent on @MainActor, never mutated after creation.
 public struct MutableMessageState: @unchecked Sendable, Equatable {
   public let messageSerial: String
   public let action: MutableMessageAction

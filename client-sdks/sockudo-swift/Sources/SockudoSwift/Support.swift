@@ -89,6 +89,8 @@ public struct PresenceSnapshotParams: Sendable, Equatable {
   }
 }
 
+// @unchecked Sendable: presenceEvent uses [String: AnyHashable] which is not Sendable;
+// safe — constructed from JSON decoding and only read on @MainActor.
 public struct PresenceHistoryItem: @unchecked Sendable, Equatable {
   public let streamID: String
   public let serial: Int64
@@ -183,6 +185,8 @@ public struct ChannelHistoryParams: Sendable, Equatable {
   }
 }
 
+// @unchecked Sendable: items uses [[String: Any]] which is not Sendable;
+// safe — all let, constructed from JSON decoding, consumed on @MainActor.
 public final class ChannelHistoryPage: @unchecked Sendable {
   public let items: [[String: Any]]
   public let direction: String
@@ -252,6 +256,8 @@ public struct MessageVersionsParams: Sendable, Equatable {
   }
 }
 
+// @unchecked Sendable: items uses [[String: Any]] which is not Sendable;
+// safe — all let, constructed from JSON decoding, consumed on @MainActor.
 public final class MessageVersionsPage: @unchecked Sendable {
   public let channel: String
   public let items: [[String: Any]]
@@ -294,6 +300,8 @@ public final class MessageVersionsPage: @unchecked Sendable {
   }
 }
 
+// @unchecked Sendable: items uses [PresenceHistoryItem] whose presenceEvent is [String: AnyHashable];
+// safe — all let, constructed from JSON decoding, consumed on @MainActor.
 public final class PresenceHistoryPage: @unchecked Sendable {
   public let items: [PresenceHistoryItem]
   public let direction: String
@@ -436,11 +444,13 @@ enum QueryString {
   }
 }
 
-final class EventDispatcher {
+@MainActor final class EventDispatcher {
   typealias EventCallback = (Any?, EventMetadata?) -> Void
   typealias GlobalCallback = (String, Any?) -> Void
 
+  private var callbackOrder: [String: [EventBindingToken]] = [:]
   private var callbacks: [String: [EventBindingToken: EventCallback]] = [:]
+  private var globalCallbackOrder: [EventBindingToken] = []
   private var globalCallbacks: [EventBindingToken: GlobalCallback] = [:]
   private let failThrough: ((String, Any?) -> Void)?
 
@@ -451,6 +461,7 @@ final class EventDispatcher {
   @discardableResult
   func bind(_ eventName: String, callback: @escaping EventCallback) -> EventBindingToken {
     let token = EventBindingToken()
+    callbackOrder[eventName, default: []].append(token)
     callbacks[eventName, default: [:]][token] = callback
     return token
   }
@@ -458,6 +469,7 @@ final class EventDispatcher {
   @discardableResult
   func bindGlobal(_ callback: @escaping GlobalCallback) -> EventBindingToken {
     let token = EventBindingToken()
+    globalCallbackOrder.append(token)
     globalCallbacks[token] = callback
     return token
   }
@@ -465,11 +477,14 @@ final class EventDispatcher {
   func unbind(eventName: String? = nil, token: EventBindingToken? = nil) {
     if let eventName {
       guard let token else {
+        callbackOrder[eventName] = nil
         callbacks[eventName] = nil
         return
       }
+      callbackOrder[eventName]?.removeAll { $0 == token }
       callbacks[eventName]?[token] = nil
       if callbacks[eventName]?.isEmpty == true {
+        callbackOrder[eventName] = nil
         callbacks[eventName] = nil
       }
       return
@@ -477,27 +492,38 @@ final class EventDispatcher {
 
     if let token {
       for key in callbacks.keys {
+        callbackOrder[key]?.removeAll { $0 == token }
         callbacks[key]?[token] = nil
         if callbacks[key]?.isEmpty == true {
+          callbackOrder[key] = nil
           callbacks[key] = nil
         }
       }
+      globalCallbackOrder.removeAll { $0 == token }
       globalCallbacks[token] = nil
       return
     }
 
+    callbackOrder.removeAll()
     callbacks.removeAll()
+    globalCallbackOrder.removeAll()
     globalCallbacks.removeAll()
   }
 
   func emit(_ eventName: String, data: Any?, metadata: EventMetadata? = nil) {
-    for callback in globalCallbacks.values {
-      callback(eventName, data)
+    for token in globalCallbackOrder {
+      if let callback = globalCallbacks[token] {
+        callback(eventName, data)
+      }
     }
 
-    if let eventCallbacks = callbacks[eventName], eventCallbacks.isEmpty == false {
-      for callback in eventCallbacks.values {
-        callback(data, metadata)
+    if let order = callbackOrder[eventName], !order.isEmpty,
+       let eventCallbacks = callbacks[eventName]
+    {
+      for token in order {
+        if let callback = eventCallbacks[token] {
+          callback(data, metadata)
+        }
       }
     } else {
       failThrough?(eventName, data)
@@ -556,6 +582,7 @@ public enum SockudoAppendMode: String, Sendable, Codable, Equatable {
 public enum ConnectionState: String, Sendable, Equatable {
   case initialized
   case connecting
+  case reconnecting
   case connected
   case disconnected
   case unavailable
@@ -888,6 +915,8 @@ public struct PublishAnnotationRequest: Sendable, Equatable {
   }
 }
 
+// @unchecked Sendable: annotation and summary use [String: Any] which is not Sendable;
+// safe — all let, constructed from HTTP response decoding, consumed on @MainActor.
 public struct PublishAnnotationResponse: @unchecked Sendable {
   public let annotation: [String: Any]
   public let summary: [String: Any]?
@@ -898,6 +927,8 @@ public struct PublishAnnotationResponse: @unchecked Sendable {
   }
 }
 
+// @unchecked Sendable: summary uses [String: Any]? which is not Sendable;
+// safe — all let, constructed from HTTP response decoding, consumed on @MainActor.
 public struct DeleteAnnotationResponse: @unchecked Sendable {
   public let deleted: Bool
   public let annotationSerial: String
@@ -942,6 +973,8 @@ public struct AnnotationEventsParams: Sendable, Equatable {
   }
 }
 
+// @unchecked Sendable: items uses [[String: Any]] which is not Sendable;
+// safe — all let, constructed from JSON decoding, consumed on @MainActor.
 public final class AnnotationEventsPage: @unchecked Sendable {
   public let items: [[String: Any]]
   public let direction: String
@@ -1036,7 +1069,7 @@ public struct RewindCompleteData: Sendable, Codable, Equatable {
   public let truncatedByLimit: Bool
 }
 
-public struct DeltaOptions {
+public struct DeltaOptions: Sendable {
   public var enabled: Bool?
   public var algorithms: [DeltaAlgorithm]
   public var debug: Bool
@@ -1090,6 +1123,8 @@ public struct PresenceMember: Equatable {
   }
 }
 
+// @unchecked Sendable: data uses Any? which is not Sendable;
+// safe — constructed from JSON decoding on @MainActor, never mutated after creation.
 public struct SockudoEvent: @unchecked Sendable {
   let event: String
   let channel: String?
@@ -1138,9 +1173,9 @@ func wireInt64(_ value: Any?) -> Int64? {
   }
 }
 
-enum Logger {
-  nonisolated(unsafe) static var logToConsole = false
-  nonisolated(unsafe) static var customLog: ((String) -> Void)?
+@MainActor enum Logger {
+  static var logToConsole = false
+  static var customLog: ((String) -> Void)?
 
   static func debug(_ items: Any...) {
     log(items)

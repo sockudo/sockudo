@@ -1,7 +1,7 @@
 import Foundation
 import CXDelta3
 
-enum XDelta3 {
+enum XDelta3: Sendable {
   static func decode(delta: Data, base: Data) throws -> Data {
     try delta.withUnsafeBytes { deltaPtr in
       try base.withUnsafeBytes { basePtr in

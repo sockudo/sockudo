@@ -1,6 +1,6 @@
 import Foundation
 
-enum FossilDelta {
+enum FossilDelta: Sendable {
   private static let nHash = 16
   private static let digits = Array(
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~".utf8)
