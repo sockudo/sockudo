@@ -1,5 +1,7 @@
 use clap::Parser;
-use sockudo_simulator::{DeterministicSimulator, FaultConfig, SimulatorConfig};
+use sockudo_simulator::{
+    ActionWeights, DeterministicSimulator, FaultConfig, SimulatorConfig, WorkloadConfig,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -28,6 +30,20 @@ struct Cli {
     history_retention_messages: Option<usize>,
     #[arg(long)]
     presence_retention_events: Option<usize>,
+    #[arg(long, default_value_t = 35)]
+    weight_publish: u32,
+    #[arg(long, default_value_t = 15)]
+    weight_create_versioned: u32,
+    #[arg(long, default_value_t = 20)]
+    weight_mutate_versioned: u32,
+    #[arg(long, default_value_t = 20)]
+    weight_presence: u32,
+    #[arg(long, default_value_t = 7)]
+    weight_recovery: u32,
+    #[arg(long, default_value_t = 2)]
+    weight_purge: u32,
+    #[arg(long, default_value_t = 1)]
+    weight_oracle: u32,
     #[arg(long, default_value_t = 0.08)]
     drop_prob: f64,
     #[arg(long, default_value_t = 0.03)]
@@ -63,6 +79,17 @@ impl Cli {
             page_limit: self.page_limit,
             history_retention_messages: self.history_retention_messages.or(Some(512)),
             presence_retention_events: self.presence_retention_events.or(Some(512)),
+            workload: WorkloadConfig {
+                weights: ActionWeights {
+                    publish_message: self.weight_publish,
+                    create_versioned_message: self.weight_create_versioned,
+                    mutate_versioned_message: self.weight_mutate_versioned,
+                    presence_transition: self.weight_presence,
+                    recovery_probe: self.weight_recovery,
+                    purge_history: self.weight_purge,
+                    oracle_check: self.weight_oracle,
+                },
+            },
             fault: FaultConfig {
                 fanout_drop_probability: self.drop_prob,
                 fanout_duplicate_probability: self.duplicate_prob,

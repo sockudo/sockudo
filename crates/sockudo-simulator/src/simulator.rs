@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::config::SimulatorConfig;
 use crate::error::{SimulatorError, SimulatorResult};
+use crate::workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadGenerator};
 
 const APP_ID: &str = "sim-app";
 const BASE_TIME_MS: i64 = 1_893_456_000_000;
@@ -57,6 +58,8 @@ pub struct SimulationReport {
     pub live_nodes: usize,
     pub partitioned_nodes: usize,
     pub queued_fanout: usize,
+    pub workload_weights: ActionWeights,
+    pub workload_actions: WorkloadActionCounts,
 }
 
 /// Seed-deterministic simulator over Sockudo's durable core primitives.
@@ -72,6 +75,7 @@ pub struct DeterministicSimulator {
     channels: Vec<String>,
     network: Vec<NetworkEvent>,
     shadow: Shadow,
+    workload: WorkloadGenerator,
     stats: Stats,
     next_message_serial: u64,
     next_version_serial: u64,
@@ -80,6 +84,7 @@ pub struct DeterministicSimulator {
 impl DeterministicSimulator {
     pub fn new(config: SimulatorConfig) -> SimulatorResult<Self> {
         config.validate()?;
+        let workload = WorkloadGenerator::new(config.seed, config.workload.clone())?;
         let channels = (0..config.channels)
             .map(|idx| format!("sim-channel-{idx}"))
             .collect::<Vec<_>>();
@@ -116,6 +121,7 @@ impl DeterministicSimulator {
             channels,
             network: Vec::new(),
             stats: Stats::default(),
+            workload,
             next_message_serial: 1,
             next_version_serial: 1,
         })
@@ -163,24 +169,27 @@ impl DeterministicSimulator {
             live_nodes: self.nodes.iter().filter(|node| node.alive).count(),
             partitioned_nodes: self.nodes.iter().filter(|node| node.partitioned).count(),
             queued_fanout: self.network.len(),
+            workload_weights: self.workload.weights(),
+            workload_actions: self.workload.selected().clone(),
         }
     }
 
     async fn drive_workload(&mut self) -> SimulatorResult<()> {
         self.stats.operations = self.stats.operations.saturating_add(1);
+        let action = self.workload.next_action();
         if self.route_rejects() {
             self.stats.rejected_operations = self.stats.rejected_operations.saturating_add(1);
             return Ok(());
         }
 
-        match self.rng.random_range(0..100) {
-            0..=34 => self.publish_message().await,
-            35..=49 => self.create_versioned_message().await,
-            50..=69 => self.mutate_versioned_message().await,
-            70..=89 => self.record_presence_transition().await,
-            90..=96 => self.recovery_probe().await,
-            97..=98 => self.purge_history_prefix().await,
-            _ => self.check_oracles().await,
+        match action {
+            WorkloadAction::PublishMessage => self.publish_message().await,
+            WorkloadAction::CreateVersionedMessage => self.create_versioned_message().await,
+            WorkloadAction::MutateVersionedMessage => self.mutate_versioned_message().await,
+            WorkloadAction::PresenceTransition => self.record_presence_transition().await,
+            WorkloadAction::RecoveryProbe => self.recovery_probe().await,
+            WorkloadAction::PurgeHistory => self.purge_history_prefix().await,
+            WorkloadAction::OracleCheck => self.check_oracles().await,
         }
     }
 
@@ -1696,6 +1705,7 @@ mod tests {
             page_limit: 3,
             history_retention_messages: Some(128),
             presence_retention_events: Some(128),
+            workload: crate::WorkloadConfig::default(),
             fault: crate::FaultConfig {
                 fanout_drop_probability: 0.20,
                 fanout_duplicate_probability: 0.10,

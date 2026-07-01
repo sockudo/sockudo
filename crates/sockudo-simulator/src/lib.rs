@@ -8,7 +8,9 @@
 mod config;
 mod error;
 mod simulator;
+mod workload;
 
 pub use config::{FaultConfig, SimulatorConfig};
 pub use error::{SimulatorError, SimulatorResult};
 pub use simulator::{DeterministicSimulator, SimulationReport};
+pub use workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadConfig};

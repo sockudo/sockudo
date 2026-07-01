@@ -40,7 +40,24 @@ deterministic inner loop for the durable primitives those tests rely on.
 
 ## Fault Model
 
-The default run injects:
+The default workload is a weighted deterministic generator, not an ad hoc random branch in the
+runner. Each tick samples one action from these weights:
+
+| Flag | Default | Action |
+| --- | ---: | --- |
+| `--weight-publish` | `35` | Append a durable history message and fan it out to clients. |
+| `--weight-create-versioned` | `15` | Create a new mutable Protocol V2 message. |
+| `--weight-mutate-versioned` | `20` | Update, append to, or delete an existing mutable message. |
+| `--weight-presence` | `20` | Record a presence join/leave transition. |
+| `--weight-recovery` | `7` | Probe durable recovery for one simulated client/channel. |
+| `--weight-purge` | `2` | Purge an older retained history prefix. |
+| `--weight-oracle` | `1` | Force a full oracle sweep outside the periodic cadence. |
+
+Set a weight to `0` to disable that action family. At least one action weight must be non-zero.
+The final JSON report includes the weights and selected action counts so coverage is visible for a
+seed.
+
+The default fault model injects:
 
 | Flag | Default | Meaning |
 | --- | ---: | --- |

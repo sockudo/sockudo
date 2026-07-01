@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::error::{SimulatorError, SimulatorResult};
+use crate::workload::WorkloadConfig;
 
 /// Deterministic simulator configuration.
 ///
@@ -20,6 +21,7 @@ pub struct SimulatorConfig {
     pub page_limit: usize,
     pub history_retention_messages: Option<usize>,
     pub presence_retention_events: Option<usize>,
+    pub workload: WorkloadConfig,
     pub fault: FaultConfig,
 }
 
@@ -36,6 +38,7 @@ impl Default for SimulatorConfig {
             page_limit: 7,
             history_retention_messages: Some(512),
             presence_retention_events: Some(512),
+            workload: WorkloadConfig::default(),
             fault: FaultConfig::default(),
         }
     }
@@ -83,6 +86,7 @@ impl SimulatorConfig {
                 "presence_retention_events must be greater than 0 when set".into(),
             ));
         }
+        self.workload.validate()?;
         self.fault.validate()
     }
 
