@@ -1,0 +1,118 @@
+---
+title: Indestructibility simulator
+description: Run Sockudo's deterministic workload simulator for durable history, recovery, presence history, and mutable messages.
+icon: ShieldCheck
+---
+
+The Sockudo simulator is a seed-replayable workload fuzzer for durable Protocol V2 state. It runs
+inside one process, drives real `sockudo-core` memory stores, injects node and fanout faults, and
+checks a shadow model continuously.
+
+Use it to prove that core durability contracts survive dropped live fanout, duplicated delivery,
+node crashes, partitions, stream resets, retention purges, and reconnect recovery.
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- --seed 42 --ticks 10000
+```
+
+or through the Makefile wrapper:
+
+```bash
+make simulator SIM_SEED=42 SIM_TICKS=10000
+```
+
+Every failure prints a replay command with the seed. Keep the seed, tick count, and fault arguments
+unchanged when reducing a failure.
+
+## What It Exercises
+
+The simulator currently covers four high-value durability surfaces:
+
+| Surface | Oracle |
+| --- | --- |
+| Durable history | Reserved serials, retained rows, page cursors, stream inspection, retention purges, and reset behavior match the shadow model. |
+| Connection recovery | Simulated clients recover dropped live fanout from durable history unless retention has legitimately truncated the gap. |
+| Versioned messages | Delivery serial replay is contiguous, version chains page in both directions, latest reads match the shadow, and `latest_by_history` preserves original history ordering. |
+| Presence history | Transition dedupe, retained events, cursor paging, stream inspection, and reconstructed snapshots match the shadow model. |
+
+It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
+deterministic inner loop for the durable primitives those tests rely on.
+
+## Fault Model
+
+The default workload is a weighted deterministic generator, not an ad hoc random branch in the
+runner. Each tick samples one action from these weights:
+
+| Flag | Default | Action |
+| --- | ---: | --- |
+| `--weight-publish` | `35` | Append a durable history message and fan it out to clients. |
+| `--weight-create-versioned` | `15` | Create a new mutable Protocol V2 message. |
+| `--weight-mutate-versioned` | `20` | Update, append to, or delete an existing mutable message. |
+| `--weight-presence` | `20` | Record a presence join/leave transition. |
+| `--weight-recovery` | `7` | Probe durable recovery for one simulated client/channel. |
+| `--weight-purge` | `2` | Purge an older retained history prefix. |
+| `--weight-oracle` | `1` | Force a full oracle sweep outside the periodic cadence. |
+
+Set a weight to `0` to disable that action family. At least one action weight must be non-zero.
+The final JSON report includes the weights and selected action counts so coverage is visible for a
+seed.
+
+The default fault model injects:
+
+| Flag | Default | Meaning |
+| --- | ---: | --- |
+| `--drop-prob` | `0.08` | Probability that a live fanout message is dropped before reaching a simulated client. |
+| `--duplicate-prob` | `0.03` | Probability that a fanout message is duplicated. |
+| `--max-delay-ticks` | `12` | Maximum deterministic fanout delay. |
+| `--crash-prob` | `0.002` | Per-tick probability that one live node crashes. |
+| `--restart-prob` | `0.020` | Per-tick probability that one crashed node restarts. |
+| `--partition-prob` | `0.003` | Per-tick probability that one live node is isolated from traffic. |
+| `--heal-prob` | `0.020` | Per-tick probability that one partitioned node heals. |
+| `--stream-reset-prob` | `0.0005` | Per-tick probability of an operator history/presence stream reset. |
+
+Rejected operations are part of the model: a workload request may route to a crashed or partitioned
+node and fail before it reaches durable storage. The shadow only advances after durable Sockudo
+stores accept the operation.
+
+## CI Profile
+
+A good pull-request smoke profile is:
+
+```bash
+cargo test -p sockudo-simulator
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 12648430 \
+  --ticks 5000 \
+  --json
+```
+
+For nightly burn-in, run multiple fixed seeds and keep any new failing seed as a regression test:
+
+```bash
+for seed in 1 2 3 4 5 12648430 3735928559; do
+  cargo run -p sockudo-simulator --bin sockudo-sim -- --seed "$seed" --ticks 50000
+done
+```
+
+## Reading Failures
+
+Invariant failures include the seed and simulator tick:
+
+```text
+sockudo-sim: FAILED - reproduce with --seed 42
+simulator invariant failed at tick 812 (seed=42): history serial gap on sim-channel-1: 41 then 43
+```
+
+Treat these as product bugs unless the invariant is deliberately stronger than the subsystem's
+documented contract. If the contract changes, update the simulator shadow and this page in the same
+change.
+
+## Extending It
+
+Add new workloads by following the existing pattern:
+
+1. Generate the operation from the seeded RNG.
+2. Apply it to the real Sockudo store or subsystem first.
+3. Advance the shadow only after the real operation succeeds.
+4. Add a cheap per-run oracle and a quiesce oracle.
+5. Add or pin a seed that fails before the fix and passes after it.
