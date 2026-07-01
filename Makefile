@@ -8,6 +8,12 @@ COMPOSE_FILE ?= docker-compose.yml
 COMPOSE_DASHBOARD ?= docker-compose.dashboard.yml
 PROJECT_NAME ?= sockudo
 
+# Deterministic simulator defaults. Override on the command line, e.g.
+# `make simulator SIM_SEED=42 SIM_TICKS=10000`.
+SIM_SEED ?= 12648430
+SIM_TICKS ?= 5000
+SIM_ARGS ?=
+
 # Compose file set per environment (dashboard included for dev/prod)
 ifeq ($(ENV),dev)
 COMPOSE_ARGS := -f $(COMPOSE_FILE) -f docker-compose.dev.yml -f $(COMPOSE_DASHBOARD)
@@ -175,6 +181,11 @@ test: ## Run basic connectivity tests
 	@curl -f http://localhost:3460/health || echo "$(RED)Dashboard API test failed$(RESET)"
 	@echo "$(YELLOW)Testing dashboard UI...$(RESET)"
 	@curl -f http://localhost:5174/ || echo "$(RED)Dashboard UI test failed$(RESET)"
+
+.PHONY: simulator
+simulator: ## Run deterministic indestructibility simulator (override SIM_SEED/SIM_TICKS/SIM_ARGS)
+	@echo "$(BLUE)Running Sockudo deterministic simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
+	@cargo run -p sockudo-simulator --bin sockudo-sim -- --seed $(SIM_SEED) --ticks $(SIM_TICKS) $(SIM_ARGS)
 
 .PHONY: sentinel-tls-up
 sentinel-tls-up: ## Start the opt-in Redis Sentinel + TLS test fixture

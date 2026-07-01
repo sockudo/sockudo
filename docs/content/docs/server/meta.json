@@ -9,6 +9,7 @@
     "security",
     "observability",
     "history-recovery",
+    "indestructibility-simulator",
     "mutable-messages",
     "webhooks",
     "push-notifications",

@@ -1,0 +1,26 @@
+[package]
+name = "sockudo-simulator"
+description = "Deterministic workload simulator for Sockudo durable realtime invariants"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+publish = false
+
+[[bin]]
+name = "sockudo-sim"
+path = "src/main.rs"
+
+[dependencies]
+bytes = { workspace = true }
+clap = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sockudo-core = { workspace = true }
+sockudo-protocol = { workspace = true }
+sonic-rs = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+

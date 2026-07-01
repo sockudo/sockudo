@@ -8299,6 +8299,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sockudo-simulator"
+version = "4.7.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "sockudo-core",
+ "sockudo-protocol",
+ "sonic-rs",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "sockudo-webhook"
 version = "4.7.0"
 dependencies = [
