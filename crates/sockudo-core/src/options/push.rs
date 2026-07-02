@@ -72,6 +72,7 @@ impl FromStr for PushQueueDriver {
 pub struct PushConfig {
     pub storage_driver: PushStorageDriver,
     pub queue_driver: PushQueueDriver,
+    pub allow_memory_drivers: bool,
     pub fcm_enabled: bool,
     pub apns_enabled: bool,
     pub webpush_enabled: bool,
@@ -219,6 +220,7 @@ impl Default for PushConfig {
         Self {
             storage_driver: PushStorageDriver::Memory,
             queue_driver: PushQueueDriver::Memory,
+            allow_memory_drivers: false,
             fcm_enabled: false,
             apns_enabled: false,
             webpush_enabled: false,
@@ -392,6 +394,7 @@ mod tests {
 
         assert_eq!(options.push.storage_driver, PushStorageDriver::Memory);
         assert_eq!(options.push.queue_driver, PushQueueDriver::Memory);
+        assert!(!options.push.allow_memory_drivers);
         assert!(!options.push.fcm_enabled);
         assert!(!options.push.apns_enabled);
         assert!(!options.push.webpush_enabled);
@@ -408,6 +411,7 @@ mod tests {
     #[test]
     fn push_rules_default_off_and_validate_startup_shape() {
         let mut options = ServerOptions::default();
+        options.push.allow_memory_drivers = true;
         assert!(options.push_rules.is_empty());
 
         options.push_rules.push(PushRuleConfig {
@@ -430,6 +434,7 @@ mod tests {
             "PUSH_WEBPUSH_ENABLED",
             "PUSH_HMS_ENABLED",
             "PUSH_WNS_ENABLED",
+            "PUSH_ALLOW_MEMORY_DRIVERS",
             "PUSH_CREDENTIAL_ENCRYPTION_KEY",
             "PUSH_FANOUT_FAST_THRESHOLD",
             "PUSH_FANOUT_SHARD_SIZE",
@@ -458,6 +463,7 @@ mod tests {
             std::env::set_var("PUSH_WEBPUSH_ENABLED", "true");
             std::env::set_var("PUSH_HMS_ENABLED", "true");
             std::env::set_var("PUSH_WNS_ENABLED", "true");
+            std::env::set_var("PUSH_ALLOW_MEMORY_DRIVERS", "true");
             std::env::set_var("PUSH_CREDENTIAL_ENCRYPTION_KEY", "env:key:v1");
             std::env::set_var("PUSH_FANOUT_FAST_THRESHOLD", "12345");
             std::env::set_var("PUSH_FANOUT_SHARD_SIZE", "54321");
@@ -494,6 +500,7 @@ mod tests {
         assert!(options.push.webpush_enabled);
         assert!(options.push.hms_enabled);
         assert!(options.push.wns_enabled);
+        assert!(options.push.allow_memory_drivers);
         assert_eq!(
             options.push.credential_encryption_key.as_deref(),
             Some("env:key:v1")
@@ -511,5 +518,33 @@ mod tests {
         assert_eq!(options.push.default_quotas.delivery_quota_daily, 8_000);
         assert_eq!(options.push.default_quotas.fanout_max, 9_000);
         assert_eq!(options.push.default_quotas.inflight_max, 1_000);
+    }
+
+    #[test]
+    fn production_memory_push_drivers_require_explicit_allow() {
+        let mut options = ServerOptions {
+            mode: "production".to_owned(),
+            ..Default::default()
+        };
+        options.push.storage_driver = PushStorageDriver::Memory;
+        options.push.queue_driver = PushQueueDriver::Memory;
+        options.push.allow_memory_drivers = false;
+
+        let error = options.validate().unwrap_err();
+
+        assert!(error.contains("push.storage_driver=memory"));
+    }
+
+    #[test]
+    fn production_memory_push_drivers_validate_with_explicit_allow() {
+        let mut options = ServerOptions {
+            mode: "production".to_owned(),
+            ..Default::default()
+        };
+        options.push.storage_driver = PushStorageDriver::Memory;
+        options.push.queue_driver = PushQueueDriver::Memory;
+        options.push.allow_memory_drivers = true;
+
+        assert!(options.validate().is_ok());
     }
 }

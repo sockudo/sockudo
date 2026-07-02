@@ -371,6 +371,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | --- | --- |
 | `PUSH_STORAGE_DRIVER` | Push storage backend driver. |
 | `PUSH_QUEUE_DRIVER` | Push queue backend driver. |
+| `PUSH_ALLOW_MEMORY_DRIVERS` | Explicitly allows node-local memory push store/queue in production; use only for local/dev acknowledgment. |
 | `PUSH_CREDENTIAL_ENCRYPTION_KEY` | Master key for encrypted push credential material. |
 | `PUSH_ACCEPTANCE_RATE_LIMIT` | Admission rate limit for push publish requests. |
 | `PUSH_ANALYTICS_ENABLED` | Enables push analytics collection. |
@@ -381,6 +382,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | `PUSH_BACKPRESSURE` | Forces push backpressure responses in the HTTP layer. |
 | `PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS` | Retry-After value emitted for push backpressure. |
 | `PUSH_PUBLISH_LOG_MAX_LAG` | Maximum publish-log lag tolerated before push backpressure. |
+| `PUSH_CRITICAL_QUEUE_MAX_LAG` | Maximum lag tolerated for shard, delivery result, retry, dead-letter, and active provider delivery stages. |
 | `PUSH_PUBLISH_STATUS_TTL_DAYS` | Retention for push publish status records. |
 | `PUSH_FAILURE_THRESHOLD` | Push circuit-breaker failure threshold. |
 | `PUSH_SCHEDULER_INTERVAL_SECS` | Scheduled push scan interval. |

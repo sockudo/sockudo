@@ -119,6 +119,8 @@ async fn ai_batch_http_publish_returns_serial_acks_in_request_order() {
         test_push_store(),
         #[cfg(feature = "push")]
         test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
         State(handler),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/batch_events"),
@@ -458,6 +460,8 @@ async fn events_rejects_ai_create_when_open_stream_cap_is_reached() {
         test_push_store(),
         #[cfg(feature = "push")]
         test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
         State(handler.clone()),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/events"),
@@ -489,6 +493,8 @@ async fn events_rejects_ai_create_when_open_stream_cap_is_reached() {
         test_push_store(),
         #[cfg(feature = "push")]
         test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
         State(handler),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/events"),

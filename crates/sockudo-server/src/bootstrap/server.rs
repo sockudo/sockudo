@@ -1,7 +1,7 @@
 #[cfg(all(feature = "push", feature = "monolith"))]
 use super::push::workers::start_push_monolith_workers;
 #[cfg(feature = "push")]
-use super::push::{create_push_queue, create_push_store};
+use super::push::{PushAdmissionSnapshot, create_push_queue, create_push_store};
 use super::{MetricsFactory, ServerState, SockudoServer};
 use crate::cleanup::CleanupSender;
 use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
@@ -684,6 +684,9 @@ impl SockudoServer {
         let push_store = create_push_store(&config).await?;
         #[cfg(feature = "push")]
         let push_queue = create_push_queue(&config, queue_manager_opt.clone())?;
+        #[cfg(feature = "push")]
+        let push_admission =
+            Arc::new(PushAdmissionSnapshot::from_config(&config, &push_store).await);
 
         let state = ServerState {
             app_manager: app_manager.clone(),
@@ -710,6 +713,8 @@ impl SockudoServer {
             push_store,
             #[cfg(feature = "push")]
             push_queue,
+            #[cfg(feature = "push")]
+            push_admission,
         };
 
         #[cfg(all(feature = "push", feature = "monolith"))]

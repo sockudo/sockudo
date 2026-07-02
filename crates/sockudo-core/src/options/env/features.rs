@@ -26,6 +26,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
             "Push Queue Backend",
         );
     }
+    options.push.allow_memory_drivers = parse_bool_env(
+        "PUSH_ALLOW_MEMORY_DRIVERS",
+        options.push.allow_memory_drivers,
+    );
     options.push.fcm_enabled = parse_bool_env("PUSH_FCM_ENABLED", options.push.fcm_enabled);
     options.push.apns_enabled = parse_bool_env("PUSH_APNS_ENABLED", options.push.apns_enabled);
     options.push.webpush_enabled =

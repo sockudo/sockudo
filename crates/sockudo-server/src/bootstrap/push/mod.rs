@@ -1,3 +1,4 @@
+mod capability;
 mod queue;
 mod stores;
 #[cfg(all(feature = "push", feature = "monolith"))]
@@ -8,6 +9,7 @@ use self::stores::{
     create_dynamodb_push_store, create_mysql_push_store, create_postgres_push_store,
     create_scylladb_push_store, create_surrealdb_push_store,
 };
+pub(crate) use capability::{PushAdmissionRejection, PushAdmissionSnapshot};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::ServerOptions;
 #[cfg(feature = "push")]
@@ -17,11 +19,22 @@ use std::sync::Arc;
 use tracing::warn;
 
 #[cfg(feature = "push")]
+fn production_memory_drivers_allowed(config: &ServerOptions) -> bool {
+    !config.mode.eq_ignore_ascii_case("production") || config.push.allow_memory_drivers
+}
+
+#[cfg(feature = "push")]
 pub(crate) async fn create_push_store(
     config: &ServerOptions,
 ) -> Result<sockudo_push::DynPushStore> {
     match config.push.storage_driver {
         PushStorageDriver::Memory => {
+            if !production_memory_drivers_allowed(config) {
+                return Err(Error::Internal(
+                    "push storage driver memory is unsafe in production; set push.allow_memory_drivers=true or PUSH_ALLOW_MEMORY_DRIVERS=true only for local/dev acknowledgment"
+                        .to_owned(),
+                ));
+            }
             if config.mode.eq_ignore_ascii_case("production") {
                 warn!(
                     "Push storage driver is memory; this is intended only for tests and local development"
@@ -59,6 +72,12 @@ pub(crate) fn create_push_queue(
         .startup_check()
         .map_err(|e| Error::Internal(format!("Failed to create push queue: {e}")))?;
     if backend == sockudo_push::PushQueueBackendKind::Memory {
+        if !production_memory_drivers_allowed(config) {
+            return Err(Error::Internal(
+                "push queue driver memory is unsafe in production; set push.allow_memory_drivers=true or PUSH_ALLOW_MEMORY_DRIVERS=true only for local/dev acknowledgment"
+                    .to_owned(),
+            ));
+        }
         return Ok(Arc::new(sockudo_push::MemoryPushQueue::new()));
     }
     let queue_manager = queue_manager.ok_or_else(|| {
@@ -68,4 +87,51 @@ pub(crate) fn create_push_queue(
         ))
     })?;
     Ok(Arc::new(QueueManagerPushQueue::new(backend, queue_manager)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn production_memory_push_store_requires_explicit_allow() {
+        let mut config = ServerOptions::default();
+        config.mode = "production".to_owned();
+        config.push.storage_driver = PushStorageDriver::Memory;
+        config.push.allow_memory_drivers = false;
+
+        let error = match create_push_store(&config).await {
+            Ok(_) => panic!("memory push store should be rejected in production"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("memory is unsafe in production"));
+    }
+
+    #[test]
+    fn production_memory_push_queue_requires_explicit_allow() {
+        let mut config = ServerOptions::default();
+        config.mode = "production".to_owned();
+        config.push.queue_driver = PushQueueDriver::Memory;
+        config.push.allow_memory_drivers = false;
+
+        let error = match create_push_queue(&config, None) {
+            Ok(_) => panic!("memory push queue should be rejected in production"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("memory is unsafe in production"));
+    }
+
+    #[tokio::test]
+    async fn memory_push_drivers_can_be_explicitly_allowed_for_tests() {
+        let mut config = ServerOptions::default();
+        config.mode = "production".to_owned();
+        config.push.storage_driver = PushStorageDriver::Memory;
+        config.push.queue_driver = PushQueueDriver::Memory;
+        config.push.allow_memory_drivers = true;
+
+        create_push_store(&config).await.unwrap();
+        create_push_queue(&config, None).unwrap();
+    }
 }

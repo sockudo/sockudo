@@ -87,6 +87,9 @@ pub async fn events(
     Extension(app): Extension<App>,
     #[cfg(feature = "push")] Extension(push_store): Extension<sockudo_push::DynPushStore>,
     #[cfg(feature = "push")] Extension(push_queue): Extension<sockudo_push::DynPushQueue>,
+    #[cfg(feature = "push")] Extension(push_admission): Extension<
+        Arc<crate::bootstrap::push::PushAdmissionSnapshot>,
+    >,
     State(handler): State<Arc<ConnectionHandler>>,
     headers: HeaderMap,
     _uri: Uri,
@@ -243,6 +246,7 @@ pub async fn events(
                 extras_push,
                 &push_store,
                 &push_queue,
+                &push_admission,
             )
             .await?;
         }
@@ -254,6 +258,7 @@ pub async fn events(
                     extras_push,
                     &push_store,
                     &push_queue,
+                    &push_admission,
                 )
                 .await?;
             }
@@ -280,6 +285,7 @@ pub async fn events(
         push_rule_requests,
         push_store.clone(),
         push_queue.clone(),
+        push_admission.clone(),
     );
 
     let response_payload = if need_channel_info && !channels_info_map.is_empty() {
@@ -325,6 +331,9 @@ pub async fn batch_events(
     Extension(app_config): Extension<App>,
     #[cfg(feature = "push")] Extension(push_store): Extension<sockudo_push::DynPushStore>,
     #[cfg(feature = "push")] Extension(push_queue): Extension<sockudo_push::DynPushQueue>,
+    #[cfg(feature = "push")] Extension(push_admission): Extension<
+        Arc<crate::bootstrap::push::PushAdmissionSnapshot>,
+    >,
     State(handler): State<Arc<ConnectionHandler>>,
     headers: HeaderMap,
     _uri: Uri,
@@ -496,6 +505,7 @@ pub async fn batch_events(
                     extras_push,
                     &push_store,
                     &push_queue,
+                    &push_admission,
                 )
                 .await?;
             }
@@ -507,6 +517,7 @@ pub async fn batch_events(
                         extras_push,
                         &push_store,
                         &push_queue,
+                        &push_admission,
                     )
                     .await?;
                 }
@@ -533,6 +544,7 @@ pub async fn batch_events(
             push_rule_requests,
             push_store.clone(),
             push_queue.clone(),
+            push_admission.clone(),
         );
 
         // Store per-event idempotency key

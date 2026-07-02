@@ -264,6 +264,7 @@ mod unix_socket_config_tests {
     fn test_unix_socket_security_validation_safe_paths() {
         let mut config = ServerOptions::default();
         config.unix_socket.enabled = true;
+        config.push.allow_memory_drivers = true;
 
         let safe_paths = vec![
             "/tmp/sockudo.sock",
@@ -290,6 +291,7 @@ mod unix_socket_config_tests {
         let mut config = ServerOptions::default();
         config.unix_socket.enabled = false; // Disabled
         config.unix_socket.path = "/etc/passwd.sock".to_string(); // Dangerous path
+        config.push.allow_memory_drivers = true;
 
         // Should pass validation when disabled
         let result = config.validate();
@@ -312,7 +314,8 @@ mod unix_socket_config_tests {
             }
         }"#;
 
-        let config: ServerOptions = sonic_rs::from_str(json).unwrap();
+        let mut config: ServerOptions = sonic_rs::from_str(json).unwrap();
+        config.push.allow_memory_drivers = true;
         assert!(config.unix_socket.enabled);
         assert_eq!(config.unix_socket.path, "/tmp/test-sockudo.sock");
         assert_eq!(config.unix_socket.permission_mode, 0o664);
@@ -326,6 +329,7 @@ mod unix_socket_config_tests {
         let mut config = ServerOptions::default();
         config.unix_socket.enabled = true;
         config.ssl.enabled = true; // Both Unix socket and SSL enabled
+        config.push.allow_memory_drivers = true;
 
         // Should pass validation but would log a warning (we can't easily test logging in unit tests)
         let result = config.validate();

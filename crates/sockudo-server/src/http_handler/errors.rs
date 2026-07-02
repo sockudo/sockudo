@@ -44,6 +44,8 @@ pub enum AppError {
         message: String,
         retry_after_seconds: u64,
     },
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
     #[error("Invalid input: {0}")]
@@ -115,6 +117,11 @@ impl IntoResponse for AppError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "backpressure",
                 message.clone(),
+            ),
+            AppError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_unavailable",
+                msg.clone(),
             ),
             AppError::PayloadTooLarge(msg) => (
                 StatusCode::PAYLOAD_TOO_LARGE,

@@ -500,6 +500,7 @@ impl SockudoServer {
                 )
                 .layer(axum::Extension(self.state.push_queue.clone()))
                 .layer(axum::Extension(self.state.push_store.clone()))
+                .layer(axum::Extension(self.state.push_admission.clone()))
                 .layer(axum::Extension(
                     self.state.push_acceptance_rate_limiter.clone(),
                 ));

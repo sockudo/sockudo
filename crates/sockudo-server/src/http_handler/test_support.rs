@@ -56,6 +56,16 @@ pub(crate) fn test_push_queue() -> Extension<sockudo_push::DynPushQueue> {
     Extension(Arc::new(sockudo_push::MemoryPushQueue::new()))
 }
 
+#[cfg(feature = "push")]
+pub(crate) fn test_push_admission() -> Extension<Arc<crate::bootstrap::push::PushAdmissionSnapshot>>
+{
+    Extension(Arc::new(
+        crate::bootstrap::push::PushAdmissionSnapshot::testing_active([
+            sockudo_push::PushProviderKind::Fcm,
+        ]),
+    ))
+}
+
 pub(crate) fn test_app() -> App {
     test_app_with_policy(Default::default())
 }
@@ -406,6 +416,8 @@ pub(crate) async fn publish_ai_http_event(
         test_push_store(),
         #[cfg(feature = "push")]
         test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
         State(handler),
         headers,
         Uri::from_static("/apps/app-1/events"),

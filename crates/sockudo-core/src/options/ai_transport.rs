@@ -144,6 +144,7 @@ mod tests {
     #[test]
     fn ai_transport_allows_single_node_memory_development_matrix() {
         let mut options = ai_transport_options();
+        options.mode = "development".to_owned();
         options.adapter.driver = AdapterDriver::Local;
         options.history.backend = HistoryBackend::Memory;
         options.versioned_messages.driver = VersionStoreDriver::Memory;

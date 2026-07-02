@@ -239,6 +239,20 @@ impl ServerOptions {
         for (index, rule) in self.push_rules.iter().enumerate() {
             rule.validate(index)?;
         }
+        if self.mode.eq_ignore_ascii_case("production") && !self.push.allow_memory_drivers {
+            if self.push.storage_driver == PushStorageDriver::Memory {
+                return Err(
+                    "push.storage_driver=memory is unsafe in production; set push.allow_memory_drivers=true only for local/dev acknowledgment"
+                        .to_string(),
+                );
+            }
+            if self.push.queue_driver == PushQueueDriver::Memory {
+                return Err(
+                    "push.queue_driver=memory is unsafe in production; set push.allow_memory_drivers=true only for local/dev acknowledgment"
+                        .to_string(),
+                );
+            }
+        }
 
         if self.adapter.nats.presence_sync_chunk_size == Some(0) {
             return Err("nats.presence_sync_chunk_size must be > 0 when set".to_string());

@@ -71,6 +71,8 @@ struct ServerState {
     push_store: sockudo_push::DynPushStore,
     #[cfg(feature = "push")]
     push_queue: sockudo_push::DynPushQueue,
+    #[cfg(feature = "push")]
+    push_admission: Arc<push::PushAdmissionSnapshot>,
 }
 
 /// Main server struct
