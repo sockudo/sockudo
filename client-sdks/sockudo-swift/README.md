@@ -366,62 +366,73 @@ The live suite covers:
 
 ## Threading Model
 
-`SockudoClient`, all channel types, and their callback closures are `@MainActor`-isolated.
+`SockudoClient`, all channel types, and their callback closures are `@SockudoActor`-isolated,
+running on a dedicated background executor. This preserves single-threaded serialization —
+the same data-race safety as `@MainActor` — without blocking the main thread.
 
 ### Internal pipeline
 
-Message processing runs on a background actor before reaching MainActor:
+Message processing runs on a background actor before reaching SockudoActor:
 
 ```
 URLSession background queue
   → MessageProcessor actor (decode, dedup, delta reconstruction)
-    → MainActor (routing, state updates, callback delivery)
+    → @SockudoActor (routing, state updates, callback delivery)
 ```
-
-CPU-intensive work — protocol decoding (JSON, MessagePack, Protobuf), message deduplication, and delta reconstruction — runs off the main thread. Only fully-processed events reach MainActor.
 
 ### What this means for your code
 
-All public API must be called from the main thread (or an `@MainActor` context):
+All public API requires `await` from a non-`@SockudoActor` context:
 
 ```swift
-// ✅ SwiftUI — already @MainActor, no change needed
+// From any async context — use await
+func setup() async {
+    await client.connect()
+}
+
+// From a @SockudoActor context — synchronous, no await needed
+@SockudoActor func setupOnActor() {
+    client.connect()
+}
+
+// From SwiftUI — wrap in Task
 struct ContentView: View {
     var body: some View {
-        Button("Connect") { client.connect() }
+        Button("Connect") {
+            Task { await client.connect() }
+        }
     }
 }
 
-// ✅ UIKit — UIViewController is @MainActor in Swift 6, no change needed
+// From UIKit — wrap in Task
 class MyViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
-        client.connect()
+        Task { await client.connect() }
     }
 }
-
-// ✅ From a non-isolated async context — use await
-func setup() async {
-    await MainActor.run { client.connect() }
-}
-
-// ✅ From a Combine publisher — dispatch to main first
-publisher
-    .receive(on: DispatchQueue.main)
-    .sink { [weak self] _ in self?.client.connect() }
-    .store(in: &cancellables)
 ```
 
-### Callbacks execute on MainActor
+### Callbacks execute on @SockudoActor
 
-All event callbacks (`bind`, `on`, `onGlobal`) fire on the main thread:
+All event callbacks (`bind`, `on`, `bindGlobal`) are `@SockudoActor`-isolated closures:
+they fire synchronously on the `@SockudoActor` background executor — **not** the main
+thread — and in binding order. Because the closure itself is `@SockudoActor`-isolated,
+it can directly access your own `@SockudoActor` state without a `Task` hop. If your
+callback performs UI work, dispatch to main explicitly:
 
 ```swift
 channel.bind("price-updated") { data, _ in
-    // Already on @MainActor — safe to update UI directly
-    self.label.text = "\(data ?? "")"
+    // On @SockudoActor — NOT the main thread
+    // Dispatch to main for UI updates:
+    Task { @MainActor in
+        self.label.text = "\(data ?? "")"
+    }
 }
 ```
+
+If your callback only processes data (logging, storage, network requests), no
+dispatch is needed — it already runs off-main.
 
 ### Reconnection
 
@@ -460,7 +471,21 @@ channel.trigger(event: "client-typing", data: ["user": "alice"])
 
 ### Migration from pre-2.2
 
-If you were calling SockudoSwift methods from a background thread or Combine sink without a main-thread dispatch, those calls were data races. Wrap them in `.receive(on: DispatchQueue.main)` or `Task { @MainActor in }`.
+Event callbacks now execute on `@SockudoActor` (a background executor) instead of the
+main thread. If your callback performs UI work directly, add a `Task { @MainActor in }`
+wrapper or use `.receive(on: DispatchQueue.main)` in Combine pipelines.
+
+Public API must be called with `await` from non-`@SockudoActor` contexts. Synchronous
+reads of client state (`connectionState`, `socketID`) require `await` from outside
+`@SockudoActor`.
+
+Callback parameters are typed as `@SockudoActor`-isolated closures
+(`@escaping @SockudoActor (Any?, EventMetadata?) -> Void`). Your closure body runs
+on `@SockudoActor`, so it can synchronously access other `@SockudoActor`-isolated
+state (including your own `@SockudoActor` types) without any `Task` hop, and events
+are delivered strictly in order. Synchronous access to `@MainActor`-isolated state
+from inside a callback produces a Swift 6 compile error — this surfaces a real data
+race. Wrap the `@MainActor` work in `Task { @MainActor in }` inside the callback.
 
 ## Release Model
 

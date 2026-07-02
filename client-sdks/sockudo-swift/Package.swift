@@ -19,7 +19,6 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
-    .package(url: "https://github.com/swiftlang/swift-testing.git", from: "0.12.0"),
   ],
   targets: [
     .target(
@@ -45,8 +44,7 @@ let package = Package(
     .testTarget(
       name: "SockudoSwiftTests",
       dependencies: [
-        "SockudoSwift",
-        .product(name: "Testing", package: "swift-testing"),
+        "SockudoSwift"
       ],
       swiftSettings: [
         .unsafeFlags(["-suppress-warnings"])

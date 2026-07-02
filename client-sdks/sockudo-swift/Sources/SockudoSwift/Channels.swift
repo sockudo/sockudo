@@ -1,7 +1,7 @@
 import Foundation
 import Sodium
 
-@MainActor public class Channel: Sendable {
+@SockudoActor public class Channel: Sendable {
   public let name: String
   unowned let client: SockudoClient
   let dispatcher: EventDispatcher
@@ -35,26 +35,26 @@ import Sodium
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping (Any?, EventMetadata?) -> Void)
+  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
   }
 
   @discardableResult
-  public func bind(_ eventName: String, callback: @escaping (Any?, EventMetadata?) -> Void)
+  public func bind(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
     -> EventBindingToken
   {
     on(eventName, callback: callback)
   }
 
   @discardableResult
-  public func onGlobal(_ callback: @escaping (String, Any?) -> Void) -> EventBindingToken {
+  public func onGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
     dispatcher.bindGlobal(callback)
   }
 
   @discardableResult
-  public func bindGlobal(_ callback: @escaping (String, Any?) -> Void) -> EventBindingToken {
+  public func bindGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
     onGlobal(callback)
   }
 
@@ -122,7 +122,7 @@ import Sodium
     subscriptionPending = true
     subscriptionCancelled = false
     authorize(socketID: client.socketID ?? "") { [weak self] result in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self else { return }
         switch result {
         case .failure(let error):
@@ -234,7 +234,7 @@ import Sodium
   public func publishAnnotation(
     messageSerial: String,
     annotation: PublishAnnotationRequest,
-    completion: @escaping @Sendable (Result<PublishAnnotationResponse, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<PublishAnnotationResponse, Error>) -> Void
   ) {
     client.publishAnnotation(
       channelName: name,
@@ -248,7 +248,7 @@ import Sodium
     messageSerial: String,
     annotationSerial: String,
     socketID: String? = nil,
-    completion: @escaping @Sendable (Result<DeleteAnnotationResponse, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<DeleteAnnotationResponse, Error>) -> Void
   ) {
     client.deleteAnnotation(
       channelName: name,
@@ -262,7 +262,7 @@ import Sodium
   public func listAnnotations(
     messageSerial: String,
     params: AnnotationEventsParams = .init(),
-    completion: @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void
   ) {
     client.listAnnotations(
       channelName: name,
@@ -274,14 +274,14 @@ import Sodium
 
   public func channelHistory(
     _ params: ChannelHistoryParams = .init(),
-    completion: @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
   ) {
     client.fetchChannelHistory(channelName: name, params: params, completion: completion)
   }
 
   public func getMessage(
     _ messageSerial: String,
-    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+    completion: sending @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
     client.fetchLatestMessage(channelName: name, messageSerial: messageSerial, completion: completion)
   }
@@ -289,7 +289,7 @@ import Sodium
   public func getMessageVersions(
     _ messageSerial: String,
     params: MessageVersionsParams = .init(),
-    completion: @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
   ) {
     client.fetchMessageVersions(
       channelName: name,
@@ -301,7 +301,7 @@ import Sodium
 
   public func createMessage(
     _ request: VersionedMessageCreateRequest,
-    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
   ) {
     client.createVersionedMessage(
       channelName: name,
@@ -313,7 +313,7 @@ import Sodium
   public func updateMessage(
     _ messageSerial: String,
     request: VersionedMessageUpdateRequest,
-    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
   ) {
     client.updateVersionedMessage(
       channelName: name,
@@ -326,7 +326,7 @@ import Sodium
   public func appendMessage(
     _ messageSerial: String,
     request: VersionedMessageAppendRequest,
-    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
   ) {
     client.appendVersionedMessage(
       channelName: name,
@@ -339,7 +339,7 @@ import Sodium
   public func deleteMessage(
     _ messageSerial: String,
     request: VersionedMessageDeleteRequest = .init(),
-    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
   ) {
     client.deleteVersionedMessage(
       channelName: name,
@@ -350,7 +350,7 @@ import Sodium
   }
 }
 
-@MainActor public class PrivateChannel: Channel {
+@SockudoActor public class PrivateChannel: Channel {
   override func authorize(
     socketID: String,
     completion: @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
@@ -362,7 +362,7 @@ import Sodium
   }
 }
 
-@MainActor public final class PresenceMembers: Sendable {
+@SockudoActor public final class PresenceMembers: Sendable {
   private(set) var members: [String: AnyHashable] = [:]
   public private(set) var count = 0
   public private(set) var myID: String?
@@ -452,7 +452,7 @@ import Sodium
   }
 }
 
-@MainActor public final class PresenceChannel: PrivateChannel {
+@SockudoActor public final class PresenceChannel: PrivateChannel {
   public let members = PresenceMembers()
 
   override func authorize(
@@ -460,7 +460,7 @@ import Sodium
     completion: @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
   ) {
     super.authorize(socketID: socketID) { [weak self] result in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self else { return }
         switch result {
         case .failure:
@@ -545,21 +545,21 @@ import Sodium
 
   public func history(
     _ params: PresenceHistoryParams = .init(),
-    completion: @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void
   ) {
     client.fetchPresenceHistory(channelName: name, params: params, completion: completion)
   }
 
   override public func channelHistory(
     _ params: ChannelHistoryParams = .init(),
-    completion: @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
   ) {
     client.fetchChannelHistory(channelName: name, params: params, completion: completion)
   }
 
   override public func getMessage(
     _ messageSerial: String,
-    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+    completion: sending @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
     client.fetchLatestMessage(channelName: name, messageSerial: messageSerial, completion: completion)
   }
@@ -567,7 +567,7 @@ import Sodium
   override public func getMessageVersions(
     _ messageSerial: String,
     params: MessageVersionsParams = .init(),
-    completion: @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
   ) {
     client.fetchMessageVersions(
       channelName: name,
@@ -579,7 +579,7 @@ import Sodium
 
   public func snapshot(
     _ params: PresenceSnapshotParams = .init(),
-    completion: @escaping @Sendable (Result<PresenceSnapshot, Error>) -> Void
+    completion: sending @escaping @Sendable (Result<PresenceSnapshot, Error>) -> Void
   ) {
     client.fetchPresenceSnapshot(channelName: name, params: params, completion: completion)
   }
@@ -599,7 +599,7 @@ import Sodium
   }
 }
 
-@MainActor public final class EncryptedChannel: PrivateChannel {
+@SockudoActor public final class EncryptedChannel: PrivateChannel {
   private var sharedSecret: Bytes?
   private let sodium = Sodium()
 
@@ -608,7 +608,7 @@ import Sodium
     completion: @escaping @Sendable (Result<ChannelAuthorizationData, Error>) -> Void
   ) {
     super.authorize(socketID: socketID) { [weak self] result in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self else { return }
         switch result {
         case .failure:
@@ -664,7 +664,7 @@ import Sodium
         nonce: Array(nonceData))
     else {
       super.authorize(socketID: client.socketID ?? "") { [weak self] result in
-        Task { @MainActor in
+        Task { @SockudoActor in
           guard let self else { return }
           if case .success(let authData) = result,
             let sharedSecret = authData.sharedSecret,

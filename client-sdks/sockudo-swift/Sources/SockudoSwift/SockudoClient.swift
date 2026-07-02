@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-@MainActor public final class SockudoClient: Sendable {
+@SockudoActor public final class SockudoClient: Sendable {
   public struct Options {
     public var cluster: String
     public var protocolVersion: Int
@@ -111,12 +111,12 @@ import Network
     }
   }
 
-  public static var logToConsole: Bool {
+  nonisolated public static var logToConsole: Bool {
     get { Logger.logToConsole }
     set { Logger.logToConsole = newValue }
   }
 
-  public static var logHandler: ((String) -> Void)? {
+  nonisolated public static var logHandler: ((String) -> Void)? {
     get { Logger.customLog }
     set { Logger.customLog = newValue }
   }
@@ -138,11 +138,11 @@ import Network
   private let urlSession: URLSession
   private let webSocketDelegate = WebSocketDelegate()
   private var webSocketTask: URLSessionWebSocketTask?
-  private var activityTimer: Timer?
-  private var unavailableTimer: Timer?
-  private var retryTimer: Timer?
-  private var timelineSenderTimer: Timer?
-  private var capabilityTokenRefreshTimer: Timer?
+  private let activityTimer = SockudoTimer()
+  private let unavailableTimer = SockudoTimer()
+  private let retryTimer = SockudoTimer()
+  private let timelineSenderTimer = SockudoTimer()
+  private let capabilityTokenRefreshTimer = SockudoTimer()
   private let reachability = ReachabilityMonitor()
   private var channelPositions: [String: RecoveryPosition] = [:]
   private var timeline = Timeline()
@@ -187,7 +187,7 @@ import Network
         configuration: configuration, delegate: webSocketDelegate, delegateQueue: nil)
 
     reachability.stateDidChange = { [weak self] isOnline in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self else { return }
         if isOnline {
           if self.connectionState == .connecting || self.connectionState == .unavailable {
@@ -264,26 +264,26 @@ import Network
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping (Any?, EventMetadata?) -> Void)
+  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
   }
 
   @discardableResult
-  public func bind(_ eventName: String, callback: @escaping (Any?, EventMetadata?) -> Void)
+  public func bind(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
     -> EventBindingToken
   {
     on(eventName, callback: callback)
   }
 
   @discardableResult
-  public func onGlobal(_ callback: @escaping (String, Any?) -> Void) -> EventBindingToken {
+  public func onGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
     dispatcher.bindGlobal(callback)
   }
 
   @discardableResult
-  public func bindGlobal(_ callback: @escaping (String, Any?) -> Void) -> EventBindingToken {
+  public func bindGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
     onGlobal(callback)
   }
 
@@ -381,7 +381,7 @@ import Network
     }
 
     requestCapabilityToken { [weak self] result in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self else { return }
         switch result {
         case .success:
@@ -445,7 +445,7 @@ import Network
       }
     webSocketTask.send(message) { error in
       if let error {
-        Task { @MainActor in
+        Task { @SockudoActor in
           Logger.error("Send failed", error.localizedDescription)
         }
       }
@@ -481,10 +481,10 @@ import Network
       let url = try socketURL(for: transport)
       let task = urlSession.webSocketTask(with: url)
       webSocketDelegate.didOpen = { [weak self] in
-        Task { @MainActor in self?.readNextMessage() }
+        Task { @SockudoActor in self?.readNextMessage() }
       }
       webSocketDelegate.didClose = { [weak self] code, reason in
-        Task { @MainActor in
+        Task { @SockudoActor in
           self?.handleSocketClosed(code: code, reason: reason)
         }
       }
@@ -515,7 +515,7 @@ import Network
     guard tokenRequestInFlight == false else { return }
     tokenRequestInFlight = true
     provider { [weak self] result in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self else { return }
         self.tokenRequestInFlight = false
         switch result {
@@ -539,26 +539,22 @@ import Network
       guard let self else { return }
       switch result {
       case .failure(let error):
-        Task { @MainActor in
+        Task { @SockudoActor in
           self.dispatcher.emit("error", data: error)
           self.handleSocketClosed(code: .abnormalClosure, reason: error.localizedDescription)
         }
       case .success(let message):
-        Task {
+        Task { @SockudoActor in
           do {
             guard let processed = try await messageProcessor.process(message) else {
-              await MainActor.run { self.readNextMessage() }
+              self.readNextMessage()
               return
             }
-            await MainActor.run {
-              self.deliverMessage(processed)
-              self.readNextMessage()
-            }
+            self.deliverMessage(processed)
+            self.readNextMessage()
           } catch {
-            await MainActor.run {
-              self.dispatcher.emit("error", data: error)
-              self.readNextMessage()
-            }
+            self.dispatcher.emit("error", data: error)
+            self.readNextMessage()
           }
         }
       }
@@ -698,7 +694,7 @@ import Network
     guard config.protocolVersion == 2, config.capabilityTokenProvider != nil else { return }
     invalidateCapabilityTokenRefreshTimer()
     requestCapabilityToken { [weak self] result in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self else { return }
         switch result {
         case .success(let token):
@@ -838,15 +834,11 @@ import Network
 
   private func sendPing() {
     if config.protocolVersion == 2, let task = webSocketTask {
-      invalidateActivityTimer()
-      activityTimer = Timer.scheduledTimer(withTimeInterval: config.pongTimeout, repeats: false) {
-        [weak self] _ in
-        Task { @MainActor in
-          self?.scheduleRetry(after: 0)
-        }
+      activityTimer.schedule(after: config.pongTimeout) { [weak self] in
+        self?.scheduleRetry(after: 0)
       }
       task.sendPing { [weak self] error in
-        Task { @MainActor in
+        Task { @SockudoActor in
           guard let self else { return }
           if error != nil {
             self.scheduleRetry(after: 0)
@@ -859,45 +851,29 @@ import Network
     }
 
     _ = try? sendEvent(name: p.event("ping"), data: [:], channel: nil)
-    invalidateActivityTimer()
-    activityTimer = Timer.scheduledTimer(withTimeInterval: config.pongTimeout, repeats: false) {
-      [weak self] _ in
-      Task { @MainActor in
-        self?.scheduleRetry(after: 0)
-      }
+    activityTimer.schedule(after: config.pongTimeout) { [weak self] in
+      self?.scheduleRetry(after: 0)
     }
   }
 
   private func resetActivityTimer() {
-    invalidateActivityTimer()
-    activityTimer = Timer.scheduledTimer(
-      withTimeInterval: config.activityTimeout, repeats: false
-    ) { [weak self] _ in
-      Task { @MainActor in
-        self?.sendPing()
-      }
+    activityTimer.schedule(after: config.activityTimeout) { [weak self] in
+      self?.sendPing()
     }
   }
 
   private func invalidateActivityTimer() {
-    activityTimer?.invalidate()
-    activityTimer = nil
+    activityTimer.cancel()
   }
 
   private func setUnavailableTimer() {
-    clearUnavailableTimer()
-    unavailableTimer = Timer.scheduledTimer(
-      withTimeInterval: config.unavailableTimeout, repeats: false
-    ) { [weak self] _ in
-      Task { @MainActor in
-        self?.updateState(.unavailable)
-      }
+    unavailableTimer.schedule(after: config.unavailableTimeout) { [weak self] in
+      self?.updateState(.unavailable)
     }
   }
 
   private func clearUnavailableTimer() {
-    unavailableTimer?.invalidate()
-    unavailableTimer = nil
+    unavailableTimer.cancel()
   }
 
   func scheduleRetry(after seconds: TimeInterval) {
@@ -907,63 +883,51 @@ import Network
       return
     }
     reconnectAttempts += 1
-    retryTimer?.invalidate()
-    retryTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) {
-      [weak self] _ in
-      Task { @MainActor in
-        guard let self else { return }
-        self.terminalEventHandled = false
-        self.webSocketTask?.cancel(with: .goingAway, reason: nil)
-        self.webSocketTask = nil
-        self.updateState(.reconnecting)
-        let transports = self.transportSequence()
-        if self.currentTransport == .ws, self.attemptedFallback == false,
-          transports.contains(.wss)
-        {
-          self.attemptedFallback = true
-          self.openWebSocket(using: .wss)
-        } else {
-          self.attemptedFallback = false
-          self.openWebSocket(using: transports.first ?? .wss)
-        }
-        self.setUnavailableTimer()
+    retryTimer.schedule(after: seconds) { [weak self] in
+      guard let self else { return }
+      self.terminalEventHandled = false
+      self.webSocketTask?.cancel(with: .goingAway, reason: nil)
+      self.webSocketTask = nil
+      self.updateState(.reconnecting)
+      let transports = self.transportSequence()
+      if self.currentTransport == .ws, self.attemptedFallback == false,
+        transports.contains(.wss)
+      {
+        self.attemptedFallback = true
+        self.openWebSocket(using: .wss)
+      } else {
+        self.attemptedFallback = false
+        self.openWebSocket(using: transports.first ?? .wss)
       }
+      self.setUnavailableTimer()
     }
   }
 
   private func invalidateTimers() {
-    invalidateActivityTimer()
-    clearUnavailableTimer()
-    retryTimer?.invalidate()
-    retryTimer = nil
-    timelineSenderTimer?.invalidate()
-    timelineSenderTimer = nil
-    invalidateCapabilityTokenRefreshTimer()
+    activityTimer.cancel()
+    unavailableTimer.cancel()
+    retryTimer.cancel()
+    timelineSenderTimer.cancel()
+    capabilityTokenRefreshTimer.cancel()
   }
 
   func scheduleCapabilityTokenRefreshIfNeeded(for token: String, now: Date = Date()) {
-    invalidateCapabilityTokenRefreshTimer()
+    capabilityTokenRefreshTimer.cancel()
     guard config.protocolVersion == 2,
       config.capabilityTokenProvider != nil,
       let delay = Self.capabilityTokenRefreshDelay(for: token, now: now)
     else { return }
-
-    let timer = Timer(timeInterval: max(0.001, delay), repeats: false) { [weak self] _ in
-      Task { @MainActor in
-        self?.refreshCapabilityToken()
-      }
+    capabilityTokenRefreshTimer.schedule(after: max(0.001, delay)) { [weak self] in
+      self?.refreshCapabilityToken()
     }
-    capabilityTokenRefreshTimer = timer
-    RunLoop.main.add(timer, forMode: .common)
   }
 
   var hasCapabilityTokenRefreshTimer: Bool {
-    capabilityTokenRefreshTimer != nil
+    capabilityTokenRefreshTimer.isActive
   }
 
   private func invalidateCapabilityTokenRefreshTimer() {
-    capabilityTokenRefreshTimer?.invalidate()
-    capabilityTokenRefreshTimer = nil
+    capabilityTokenRefreshTimer.cancel()
   }
 
   private func updateState(_ state: ConnectionState, metadata: [String: Any]? = nil) {
@@ -975,12 +939,8 @@ import Network
   }
 
   private func startTimelineSender() {
-    timelineSenderTimer?.invalidate()
-    timelineSenderTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) {
-      [weak self] _ in
-      Task { @MainActor in
-        self?.sendTimeline()
-      }
+    timelineSenderTimer.scheduleRepeating(every: 60) { [weak self] in
+      self?.sendTimeline()
     }
     sendTimeline()
   }
@@ -1008,7 +968,7 @@ import Network
   }
 }
 
-@MainActor public final class UserFacade: Sendable {
+@SockudoActor public final class UserFacade: Sendable {
   private(set) weak var client: SockudoClient?
   private let dispatcher = EventDispatcher { event, _ in
     Logger.debug("No callbacks on user for \(event)")
@@ -1025,7 +985,7 @@ import Network
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping (Any?, EventMetadata?) -> Void)
+  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
@@ -1063,7 +1023,7 @@ import Network
     else { return }
     client.config.userAuthenticator(UserAuthenticationRequest(socketID: socketID)) {
       [weak self] result in
-      Task { @MainActor in
+      Task { @SockudoActor in
         guard let self, let client = self.client else { return }
         switch result {
         case .failure:
@@ -1083,7 +1043,7 @@ import Network
   private func subscribeServerChannel(userID: String) {
     guard let client else { return }
     let channel = Channel(name: "#server-to-user-\(userID)", client: client)
-    channel.onGlobal { [weak self] eventName, data in
+    channel.onGlobal { @SockudoActor [weak self] eventName, data in
       guard let self, let client = self.client else { return }
       guard client.p.isInternalEvent(eventName) == false,
         client.p.isPlatformEvent(eventName) == false
@@ -1102,7 +1062,7 @@ import Network
   }
 }
 
-@MainActor public final class WatchlistFacade: Sendable {
+@SockudoActor public final class WatchlistFacade: Sendable {
   private weak var client: SockudoClient?
   private let dispatcher = EventDispatcher { event, _ in
     Logger.debug("No callbacks on watchlist for \(event)")
@@ -1115,7 +1075,7 @@ import Network
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping (Any?, EventMetadata?) -> Void)
+  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
@@ -1331,7 +1291,7 @@ extension SockudoClient {
         request.setValue(value, forHTTPHeaderField: name)
       }
       URLSession.shared.dataTask(with: request) { data, response, error in
-        Task { @MainActor in
+        Task { @SockudoActor in
           if let error {
             completion(.failure(error))
             return
@@ -1810,7 +1770,7 @@ extension SockudoClient {
       }
 
       urlSession.dataTask(with: request) { data, response, error in
-        Task { @MainActor in
+        Task { @SockudoActor in
           if let error {
             completion(.failure(error))
             return
@@ -1876,7 +1836,7 @@ extension SockudoClient {
       bounds: decodePresenceHistoryBounds(payload["bounds"] as? [String: Any]),
       continuity: decodePresenceHistoryContinuity(payload["continuity"] as? [String: Any]),
       fetchNext: { [weak self] cursor, completion in
-        Task { @MainActor in
+        Task { @SockudoActor in
           self?.fetchPresenceHistory(
             channelName: channelName,
             params: PresenceHistoryParams(
@@ -1935,7 +1895,7 @@ extension SockudoClient {
       bounds: payload["bounds"] as? [String: Any] ?? [:],
       continuity: payload["continuity"] as? [String: Any] ?? [:],
       fetchNext: { [weak self] cursor, completion in
-        Task { @MainActor in
+        Task { @SockudoActor in
           self?.fetchChannelHistory(
             channelName: channelName,
             params: ChannelHistoryParams(
@@ -1971,7 +1931,7 @@ extension SockudoClient {
       hasMore: payload["has_more"] as? Bool ?? false,
       nextCursor: payload["next_cursor"] as? String,
       fetchNext: { [weak self] cursor, completion in
-        Task { @MainActor in
+        Task { @SockudoActor in
           self?.fetchMessageVersions(
             channelName: channelName,
             messageSerial: messageSerial,
@@ -2054,7 +2014,7 @@ extension SockudoClient {
       hasMore: payload["has_more"] as? Bool ?? false,
       nextCursor: payload["next_cursor"] as? String,
       fetchNext: { [weak self] cursor, completion in
-        Task { @MainActor in
+        Task { @SockudoActor in
           self?.listAnnotations(
             channelName: channelName,
             messageSerial: messageSerial,
@@ -2098,8 +2058,21 @@ extension SockudoClient {
 }
 
 private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
-  var didOpen: (@Sendable () -> Void)?
-  var didClose: (@Sendable (URLSessionWebSocketTask.CloseCode, String?) -> Void)?
+  // NSLock guards the closure storage: @SockudoActor reassigns these on every
+  // (re)connect while URLSession's delegate queue reads them on socket events.
+  private let lock = NSLock()
+  private var _didOpen: (@Sendable () -> Void)?
+  private var _didClose: (@Sendable (URLSessionWebSocketTask.CloseCode, String?) -> Void)?
+
+  var didOpen: (@Sendable () -> Void)? {
+    get { lock.lock(); defer { lock.unlock() }; return _didOpen }
+    set { lock.lock(); defer { lock.unlock() }; _didOpen = newValue }
+  }
+
+  var didClose: (@Sendable (URLSessionWebSocketTask.CloseCode, String?) -> Void)? {
+    get { lock.lock(); defer { lock.unlock() }; return _didClose }
+    set { lock.lock(); defer { lock.unlock() }; _didClose = newValue }
+  }
 
   func urlSession(
     _ session: URLSession, webSocketTask: URLSessionWebSocketTask,
@@ -2124,7 +2097,7 @@ enum CloseAction {
   case retry
 }
 
-@MainActor private final class ReachabilityMonitor: Sendable {
+@SockudoActor private final class ReachabilityMonitor: Sendable {
   private let monitor = NWPathMonitor()
   private let queue = DispatchQueue(label: "sockudo.reachability")
   var stateDidChange: (@Sendable (Bool) -> Void)?
@@ -2132,7 +2105,7 @@ enum CloseAction {
   func start() {
     let callback = stateDidChange
     monitor.pathUpdateHandler = { path in
-      Task { @MainActor in
+      Task { @SockudoActor in
         callback?(path.status == .satisfied)
       }
     }
