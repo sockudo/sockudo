@@ -766,6 +766,32 @@ pub async fn delete_channel_subscriptions(
     Ok(Json(json!({ "deleted": deleted })))
 }
 
+struct PushPublishDeps {
+    store: DynPushStore,
+    queue: DynPushQueue,
+    admission: Arc<PushAdmissionSnapshot>,
+    admission_limiter: Arc<dyn RateLimiter + Send + Sync>,
+}
+
+impl PushPublishDeps {
+    fn context(&self) -> PushPublishContext<'_> {
+        PushPublishContext {
+            store: &self.store,
+            queue: &self.queue,
+            admission: &self.admission,
+            admission_limiter: Some(&self.admission_limiter),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PushPublishContext<'a> {
+    store: &'a DynPushStore,
+    queue: &'a DynPushQueue,
+    admission: &'a PushAdmissionSnapshot,
+    admission_limiter: Option<&'a Arc<dyn RateLimiter + Send + Sync>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn publish(
     Path(app_id): Path<String>,
@@ -785,14 +811,17 @@ pub async fn publish(
         request,
         query.get("mode").is_some_and(|mode| mode == "sync"),
         headers,
-        store,
-        queue,
-        admission,
-        admission_limiter,
+        PushPublishDeps {
+            store,
+            queue,
+            admission,
+            admission_limiter,
+        },
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn batch_publish(
     Path(app_id): Path<String>,
     headers: HeaderMap,
@@ -806,18 +835,15 @@ pub async fn batch_publish(
     ensure_app_scope(&app_id, &app)?;
     ensure_push_admin(&headers)?;
     let mut responses = Vec::with_capacity(requests.len());
+    let context = PushPublishContext {
+        store: &store,
+        queue: &queue,
+        admission: &admission,
+        admission_limiter: Some(&admission_limiter),
+    };
     for request in requests {
-        let (_, Json(body), _) = accept_publish_inner(
-            &app_id,
-            request,
-            false,
-            &headers,
-            &store,
-            &queue,
-            &admission,
-            Some(&admission_limiter),
-        )
-        .await?;
+        let (_, Json(body), _) =
+            accept_publish_inner(&app_id, request, false, &headers, context).await?;
         responses.push(body);
     }
     Ok((StatusCode::ACCEPTED, Json(json!({ "items": responses }))))
@@ -876,22 +902,10 @@ async fn accept_publish(
     request: PublishRequest,
     sync_query: bool,
     headers: HeaderMap,
-    store: DynPushStore,
-    queue: DynPushQueue,
-    admission: Arc<PushAdmissionSnapshot>,
-    admission_limiter: Arc<dyn RateLimiter + Send + Sync>,
+    deps: PushPublishDeps,
 ) -> Result<impl IntoResponse, AppError> {
-    let (status, body, forced_async) = accept_publish_inner(
-        &app_id,
-        request,
-        sync_query,
-        &headers,
-        &store,
-        &queue,
-        &admission,
-        Some(&admission_limiter),
-    )
-    .await?;
+    let (status, body, forced_async) =
+        accept_publish_inner(&app_id, request, sync_query, &headers, deps.context()).await?;
     let mut headers = HeaderMap::new();
     if forced_async {
         headers.insert(
@@ -907,10 +921,7 @@ async fn accept_publish_inner(
     request: PublishRequest,
     sync_query: bool,
     headers: &HeaderMap,
-    store: &DynPushStore,
-    queue: &DynPushQueue,
-    admission: &PushAdmissionSnapshot,
-    admission_limiter: Option<&Arc<dyn RateLimiter + Send + Sync>>,
+    context: PushPublishContext<'_>,
 ) -> Result<(StatusCode, Json<PublishAcceptedResponse>, bool), AppError> {
     let started = std::time::Instant::now();
     enforce_raw_recipient_auth(&request.recipients, headers)?;
@@ -920,7 +931,8 @@ async fn accept_publish_inner(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let sync_requested = request.sync || sync_query;
-    let expected_recipients = expected_recipients(app_id, &request.recipients, store).await?;
+    let expected_recipients =
+        expected_recipients(app_id, &request.recipients, context.store).await?;
     let fast_threshold = fanout_fast_threshold();
     let shard_size = fanout_shard_size();
     let fanout_regime = if expected_recipients < fast_threshold {
@@ -943,9 +955,15 @@ async fn accept_publish_inner(
         .validate()
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
 
-    enforce_push_admission_capability(admission, &request.recipients, fanout_regime, queue).await?;
-    enforce_publish_admission_rate(app_id, admission_limiter).await?;
-    enforce_backpressure(queue, admission).await?;
+    enforce_push_admission_capability(
+        context.admission,
+        &request.recipients,
+        fanout_regime,
+        context.queue,
+    )
+    .await?;
+    enforce_publish_admission_rate(app_id, context.admission_limiter).await?;
+    enforce_backpressure(context.queue, context.admission).await?;
 
     let quota_override = quota_override_requested(headers)?;
     if quota_override {
@@ -954,12 +972,14 @@ async fn accept_publish_inner(
 
     let rendered_payloads = render_all_payloads(&request.payload, &request.provider_overrides)?;
     let idempotency_key = intent.idempotency_key();
-    let existing_idempotency = store
+    let existing_idempotency = context
+        .store
         .get_idempotency_record(app_id, &idempotency_key)
         .await
         .map_err(push_error)?;
     let existing_status = if let Some(existing) = existing_idempotency.as_ref() {
-        store
+        context
+            .store
             .get_publish_status(app_id, &existing.publish_id)
             .await
             .map_err(push_error)?
@@ -983,7 +1003,13 @@ async fn accept_publish_inner(
     let quota_failure = if quota_override {
         None
     } else {
-        quota_failure(app_id, expected_recipients, &request.recipients, store).await?
+        quota_failure(
+            app_id,
+            expected_recipients,
+            &request.recipients,
+            context.store,
+        )
+        .await?
     };
     if let Some(reason) = quota_failure.as_deref() {
         PUSH_HTTP_METRICS.quota_acceptance_rejected(app_id);
@@ -1005,7 +1031,8 @@ async fn accept_publish_inner(
     } else {
         PublishLifecycleState::Queued
     };
-    store
+    context
+        .store
         .put_publish_status(PublishStatus {
             app_id: app_id.to_owned(),
             publish_id: publish_id.clone(),
@@ -1032,12 +1059,14 @@ async fn accept_publish_inner(
             .expires_at_ms
             .unwrap_or_else(|| now_ms().saturating_add(PUSH_HTTP_DEFAULT_IDEMPOTENCY_TTL_MS)),
     };
-    if !store
+    if !context
+        .store
         .put_idempotency_record_if_absent(idempotency)
         .await
         .map_err(push_error)?
     {
-        let existing = store
+        let existing = context
+            .store
             .get_idempotency_record(app_id, &intent.idempotency_key())
             .await
             .map_err(push_error)?
@@ -1046,7 +1075,8 @@ async fn accept_publish_inner(
                     "duplicate publish idempotency record disappeared".to_owned(),
                 )
             })?;
-        if let Some(status) = store
+        if let Some(status) = context
+            .store
             .get_publish_status(app_id, &existing.publish_id)
             .await
             .map_err(push_error)?
@@ -1094,11 +1124,13 @@ async fn accept_publish_inner(
         fast_threshold,
         shard_size,
     };
-    store
+    context
+        .store
         .append_publish_log_event(publish_event.clone())
         .await
         .map_err(push_error)?;
-    queue
+    context
+        .queue
         .produce(
             PushQueueStage::PublishLog,
             publish_event.queue_key(),
@@ -1969,7 +2001,16 @@ pub async fn enqueue_v2_channel_push_from_extras(
     };
     let headers = HeaderMap::new();
     let _ = accept_publish_inner(
-        app_id, request, false, &headers, store, queue, admission, None,
+        app_id,
+        request,
+        false,
+        &headers,
+        PushPublishContext {
+            store,
+            queue,
+            admission,
+            admission_limiter: None,
+        },
     )
     .await?;
     PUSH_HTTP_METRICS.channel_publish(channel);
@@ -2046,7 +2087,16 @@ pub fn spawn_channel_push_rule_requests(
                 .unwrap_or("<unknown>")
                 .to_owned();
             match accept_publish_inner(
-                &app_id, request, false, &headers, &store, &queue, &admission, None,
+                &app_id,
+                request,
+                false,
+                &headers,
+                PushPublishContext {
+                    store: &store,
+                    queue: &queue,
+                    admission: &admission,
+                    admission_limiter: None,
+                },
             )
             .await
             {
@@ -2154,6 +2204,19 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_publish_context<'a>(
+        store: &'a DynPushStore,
+        queue: &'a DynPushQueue,
+        admission: &'a PushAdmissionSnapshot,
+    ) -> PushPublishContext<'a> {
+        PushPublishContext {
+            store,
+            queue,
+            admission,
+            admission_limiter: None,
+        }
+    }
 
     struct EnvVarGuard {
         key: &'static str,
@@ -2492,10 +2555,7 @@ mod tests {
             request,
             false,
             &HeaderMap::new(),
-            &dyn_store,
-            &dyn_queue,
-            &admission,
-            None,
+            test_publish_context(&dyn_store, &dyn_queue, &admission),
         )
         .await
         .unwrap();
@@ -2556,10 +2616,7 @@ mod tests {
                 sample_publish_request("quota-publish-replay"),
                 false,
                 &HeaderMap::new(),
-                &dyn_store,
-                &dyn_queue,
-                &admission,
-                None,
+                test_publish_context(&dyn_store, &dyn_queue, &admission),
             )
             .await
             .unwrap();
@@ -2600,10 +2657,7 @@ mod tests {
             sample_publish_request("providerless-publish"),
             false,
             &HeaderMap::new(),
-            &dyn_store,
-            &dyn_queue,
-            &admission,
-            None,
+            test_publish_context(&dyn_store, &dyn_queue, &admission),
         )
         .await
         .unwrap_err();
@@ -2628,10 +2682,7 @@ mod tests {
             request,
             false,
             &HeaderMap::new(),
-            &store,
-            &queue,
-            &admission,
-            None,
+            test_publish_context(&store, &queue, &admission),
         )
         .await
         .unwrap_err();
@@ -2656,10 +2707,7 @@ mod tests {
             request,
             false,
             &HeaderMap::new(),
-            &store,
-            &queue,
-            &admission,
-            None,
+            test_publish_context(&store, &queue, &admission),
         )
         .await
         .unwrap_err();

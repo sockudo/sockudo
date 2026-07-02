@@ -795,8 +795,10 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_config_is_reported_as_push_disabled() {
-        let mut config = ServerOptions::default();
-        config.mode = "development".to_owned();
+        let mut config = ServerOptions {
+            mode: "development".to_owned(),
+            ..Default::default()
+        };
         config.push.queue_driver = PushQueueDriver::Memory;
         let store: DynPushStore = Arc::new(MemoryPushStore::new());
 

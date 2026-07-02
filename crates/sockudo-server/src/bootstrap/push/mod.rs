@@ -95,8 +95,10 @@ mod tests {
 
     #[tokio::test]
     async fn production_memory_push_store_requires_explicit_allow() {
-        let mut config = ServerOptions::default();
-        config.mode = "production".to_owned();
+        let mut config = ServerOptions {
+            mode: "production".to_owned(),
+            ..Default::default()
+        };
         config.push.storage_driver = PushStorageDriver::Memory;
         config.push.allow_memory_drivers = false;
 
@@ -110,8 +112,10 @@ mod tests {
 
     #[test]
     fn production_memory_push_queue_requires_explicit_allow() {
-        let mut config = ServerOptions::default();
-        config.mode = "production".to_owned();
+        let mut config = ServerOptions {
+            mode: "production".to_owned(),
+            ..Default::default()
+        };
         config.push.queue_driver = PushQueueDriver::Memory;
         config.push.allow_memory_drivers = false;
 
@@ -125,8 +129,10 @@ mod tests {
 
     #[tokio::test]
     async fn memory_push_drivers_can_be_explicitly_allowed_for_tests() {
-        let mut config = ServerOptions::default();
-        config.mode = "production".to_owned();
+        let mut config = ServerOptions {
+            mode: "production".to_owned(),
+            ..Default::default()
+        };
         config.push.storage_driver = PushStorageDriver::Memory;
         config.push.queue_driver = PushQueueDriver::Memory;
         config.push.allow_memory_drivers = true;
