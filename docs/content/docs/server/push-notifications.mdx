@@ -48,6 +48,24 @@ flowchart LR
 
 Sockudo normalizes admission, idempotency, queueing, retries, status retention, and feedback. Provider-specific limits still apply after the request leaves Sockudo.
 
+## Admission readiness
+
+Sockudo fails closed before accepting publish work it already knows cannot be processed safely. The
+push publish API requires a healthy push queue, production-safe storage, local pipeline workers, and
+local provider-worker capability. Raw FCM/APNs/Web Push/HMS/WNS recipients require the matching
+provider worker in this process. Channel, client, and device targets require at least one active
+provider worker without scanning large channel subscription sets during admission; shard-path
+publishes also require a local shard worker. The planner still resolves exact devices
+asynchronously.
+
+In `mode = "production"`, `storage_driver = "memory"` and `queue_driver = "memory"` are rejected
+unless `allow_memory_drivers = true` or `PUSH_ALLOW_MEMORY_DRIVERS=true` is set explicitly. Memory
+drivers are node-local and lose state on restart or dead-node loss.
+
+Readiness failures return `503`. Queue pressure returns `429` with `Retry-After`. Quota rejection
+persists a terminal `quota_exceeded` publish status and idempotency record without appending publish
+log work or enqueueing the pipeline.
+
 ## Configure providers
 
 ```toml
@@ -251,5 +269,7 @@ Track accepted publishes, queue depth, provider dispatch latency, provider error
 | FCM unauthorized | Verify service account and project. |
 | Channel push misses users | Verify channel push subscriptions and `client_id` mapping. |
 | Large push is rejected | Check platform payload limits and remove nonessential data. |
+| Push publish returns `503` | Check push queue health, memory-driver production guard, provider feature flags, provider credentials, and dispatch worker count. |
+| Push publish returns `429` | Check publish-log, shard, delivery result, retry, dead-letter, and active provider delivery queue lag. |
 
 Push payloads should wake the app and include stable IDs. Fetch authoritative application state after the user opens the notification.

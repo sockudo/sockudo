@@ -2,12 +2,13 @@ use super::*;
 use crate::http_handler::test_support::*;
 use sockudo_protocol::messages::{ApiMessageData, PusherApiMessage};
 use sockudo_push::{
-    ChannelSubscription, MemoryPushQueue, MemoryPushStore, PushDeviceStore, PushPublishLogStore,
-    PushSubscriptionStore,
+    ChannelSubscription, MemoryPushQueue, MemoryPushStore, PushDeviceStore, PushProviderKind,
+    PushPublishLogStore, PushSubscriptionStore,
 };
 
 #[tokio::test]
 async fn matching_channel_push_rule_accepts_existing_channel_subscription_fanout() {
+    let _env_guard = crate::push_http::PUSH_TEST_ENV_LOCK.lock().await;
     let handler = test_handler_with_push_rules(vec![sockudo_core::options::PushRuleConfig {
         channel_pattern: "notifications:*".to_string(),
         event_filter: vec!["agent-complete".to_string()],
@@ -16,6 +17,9 @@ async fn matching_channel_push_rule_accepts_existing_channel_subscription_fanout
     let app = test_notifications_app();
     let store = Arc::new(MemoryPushStore::new());
     let queue = Arc::new(MemoryPushQueue::new());
+    let admission = Arc::new(
+        crate::bootstrap::push::PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]),
+    );
     let device = test_push_device("device-1");
     store.upsert_device(device.clone()).await.unwrap();
     store
@@ -34,6 +38,8 @@ async fn matching_channel_push_rule_accepts_existing_channel_subscription_fanout
         Extension(store.clone() as sockudo_push::DynPushStore),
         #[cfg(feature = "push")]
         Extension(queue.clone() as sockudo_push::DynPushQueue),
+        #[cfg(feature = "push")]
+        Extension(admission),
         State(handler),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/events"),
@@ -101,6 +107,9 @@ async fn non_matching_channel_push_rule_does_not_enqueue_push() {
     let app = test_notifications_app();
     let store = Arc::new(MemoryPushStore::new());
     let queue = Arc::new(MemoryPushQueue::new());
+    let admission = Arc::new(
+        crate::bootstrap::push::PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]),
+    );
 
     let response = events(
         Path("app-1".to_string()),
@@ -110,6 +119,8 @@ async fn non_matching_channel_push_rule_does_not_enqueue_push() {
         Extension(store.clone() as sockudo_push::DynPushStore),
         #[cfg(feature = "push")]
         Extension(queue.clone() as sockudo_push::DynPushQueue),
+        #[cfg(feature = "push")]
+        Extension(admission),
         State(handler),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/events"),

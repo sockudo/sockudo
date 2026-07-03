@@ -74,10 +74,15 @@ cleanup_interval_ms = 10000
 [database]
 
 [push]
-# memory is for local development/tests. Use a durable storage driver for clustered push.
+# memory is node-local and loses push state on restart or dead-node loss.
+# Use a durable storage driver for production and clustered push.
 storage_driver = "memory"
-# memory is for local development/tests. Durable queue driver values mirror [queue].driver.
+# memory is node-local and cannot survive queue owner loss. Durable queue driver
+# values mirror [queue].driver.
 queue_driver = "memory"
+# Production mode rejects memory push storage/queues unless this is explicitly
+# set true for local/dev acknowledgment.
+allow_memory_drivers = false
 fcm_enabled = false
 apns_enabled = true
 webpush_enabled = true

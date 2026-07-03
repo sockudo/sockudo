@@ -176,6 +176,7 @@ shards = 64
 [push]
 storage_driver = "memory"
 queue_driver = "memory"
+allow_memory_drivers = false
 fcm_enabled = false
 apns_enabled = false
 webpush_enabled = false
@@ -239,6 +240,12 @@ include_remaining_fields = true
 
 `max_messages_per_channel`, `max_bytes_per_channel`, `max_events_per_channel`, credential refs, and
 external key refs default to unset and are omitted from the checked block.
+
+`storage_driver = "memory"` and `queue_driver = "memory"` are node-local development drivers. In
+`mode = "production"`, Sockudo rejects them unless `allow_memory_drivers = true` is set explicitly.
+Push publish admission also requires a healthy queue, a safe store, local pipeline workers, and
+local provider-worker capability. Raw provider-specific recipients require the matching provider
+worker before the request is accepted; shard-path publishes also require a local shard worker.
 
 ## Observability
 

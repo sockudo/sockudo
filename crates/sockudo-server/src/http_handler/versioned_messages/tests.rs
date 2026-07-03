@@ -102,6 +102,8 @@ async fn events_create_then_update_substitutes_latest_visible_history() {
         test_push_store(),
         #[cfg(feature = "push")]
         test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
         State(handler.clone()),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/events"),
@@ -214,6 +216,8 @@ async fn events_create_then_delete_substitutes_latest_visible_history() {
         test_push_store(),
         #[cfg(feature = "push")]
         test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
         State(handler.clone()),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/events"),
@@ -322,6 +326,8 @@ async fn events_create_then_append_substitutes_latest_visible_history() {
         test_push_store(),
         #[cfg(feature = "push")]
         test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
         State(handler.clone()),
         HeaderMap::new(),
         Uri::from_static("/apps/app-1/events"),

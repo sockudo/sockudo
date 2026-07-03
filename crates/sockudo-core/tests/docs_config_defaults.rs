@@ -183,6 +183,11 @@ fn documented_ai_transport_related_defaults_match_code() {
         "push.queue_driver",
         push_queue_driver_name(&options.push.queue_driver),
     );
+    assert_bool(
+        &docs,
+        "push.allow_memory_drivers",
+        options.push.allow_memory_drivers,
+    );
     assert_bool(&docs, "push.fcm_enabled", options.push.fcm_enabled);
     assert_bool(&docs, "push.apns_enabled", options.push.apns_enabled);
     assert_bool(&docs, "push.webpush_enabled", options.push.webpush_enabled);
