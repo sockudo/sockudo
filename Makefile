@@ -405,6 +405,18 @@ ai-docker-builds: ## Build Docker images with and without AI Transport
 	@docker build --target runtime --build-arg SOCKUDO_FEATURES="v2,redis,postgres" -t sockudo:without-ai .
 	@docker build --target runtime --build-arg SOCKUDO_FEATURES="v2,ai-transport,redis,postgres" -t sockudo:with-ai .
 
+.PHONY: ably-compat-test
+ably-compat-test: ## Run Ably Pub/Sub subset smoke tests against Sockudo built with ably-compat
+	@cd tests/ably-compat && npm ci --silent && npm run test
+
+.PHONY: ably-ai-transport-test
+ably-ai-transport-test: ## Run stock @ably/ai-transport smoke test against Sockudo built with ably-compat
+	@cd tests/ably-compat && npm ci --silent && npm run ait:chat
+
+.PHONY: ably-ai-demo
+ably-ai-demo: ## Run headless Ably AI Transport demos against Sockudo built with ably-compat
+	@cd tests/ably-compat && npm ci --silent && npm run demo:chat && npm run demo:recovery-history
+
 .PHONY: push-benchmark
 push-benchmark: ## Run push notification admission benchmark (override ARGS="--mode all --devices 10000")
 	@node scripts/push-benchmark.mjs $(ARGS)

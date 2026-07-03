@@ -277,11 +277,28 @@ pub struct AppendMessageRequest {
 
 impl AppendMessageRequest {
     pub fn validate(&self) -> Result<(), String> {
-        if self.data.is_empty() {
+        if self.data.is_empty() && !is_terminal_ai_append(self.extras.as_ref()) {
             return Err("append request data must not be empty".to_string());
         }
         Ok(())
     }
+}
+
+fn is_terminal_ai_append(extras: Option<&MessageExtras>) -> bool {
+    let Some(ai) = extras.and_then(|extras| extras.ai.as_ref()) else {
+        return false;
+    };
+    let status = ai
+        .codec
+        .as_ref()
+        .and_then(|headers| headers.get("status"))
+        .or_else(|| {
+            ai.transport
+                .as_ref()
+                .and_then(|headers| headers.get("status"))
+        });
+
+    matches!(status.map(String::as_str), Some("complete" | "cancelled"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -476,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn append_request_rejects_empty_data() {
+    fn append_request_rejects_empty_non_terminal_data() {
         let error = AppendMessageRequest {
             data: String::new(),
             extras: None,
@@ -489,6 +506,30 @@ mod tests {
         .validate()
         .unwrap_err();
         assert!(error.contains("must not be empty"));
+    }
+
+    #[test]
+    fn append_request_allows_empty_terminal_data() {
+        AppendMessageRequest {
+            data: String::new(),
+            extras: Some(MessageExtras {
+                ai: Some(crate::messages::AiExtras {
+                    codec: Some(HashMap::from([(
+                        "status".to_string(),
+                        "complete".to_string(),
+                    )])),
+                    transport: None,
+                }),
+                ..Default::default()
+            }),
+            client_id: None,
+            socket_id: None,
+            description: None,
+            metadata: None,
+            op_id: None,
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]

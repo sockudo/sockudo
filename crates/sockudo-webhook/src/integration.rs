@@ -491,6 +491,32 @@ impl WebhookIntegration {
         self.add_webhook(job_data).await
     }
 
+    pub async fn send_ai_run_started(
+        &self,
+        app: &App,
+        channel: &str,
+        run_id: Option<&str>,
+        client_id: Option<&str>,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "ai_run_started") {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "ai_run_started",
+            "channel": channel,
+            "run_id": run_id,
+            "client_id": client_id,
+        });
+        let signature = format!(
+            "{}:{}:{}:ai_run_started",
+            app.id,
+            channel,
+            run_id.unwrap_or("unknown")
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook(job_data).await
+    }
+
     pub async fn send_ai_turn_started(
         &self,
         app: &App,
@@ -512,6 +538,35 @@ impl WebhookIntegration {
             app.id,
             channel,
             turn_id.unwrap_or("unknown")
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook(job_data).await
+    }
+
+    pub async fn send_ai_run_ended(
+        &self,
+        app: &App,
+        channel: &str,
+        run_id: Option<&str>,
+        reason: &str,
+        error_code: Option<&str>,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "ai_run_ended") {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "ai_run_ended",
+            "channel": channel,
+            "run_id": run_id,
+            "reason": reason,
+            "error_code": error_code,
+        });
+        let signature = format!(
+            "{}:{}:{}:{}:ai_run_ended",
+            app.id,
+            channel,
+            run_id.unwrap_or("unknown"),
+            reason
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
         self.add_webhook(job_data).await
@@ -559,6 +614,7 @@ impl WebhookIntegration {
         let event_obj = json!({
             "name": "ai_cancel_requested",
             "channel": channel,
+            "run_id": turn_id,
             "turn_id": turn_id,
             "client_id": client_id,
         });
@@ -791,6 +847,8 @@ mod tests {
         let mut app = test_app();
         app.policy.webhooks = Some(vec![Webhook {
             event_types: vec![
+                "ai_run_started".to_string(),
+                "ai_run_ended".to_string(),
                 "ai_turn_started".to_string(),
                 "ai_turn_ended".to_string(),
                 "ai_cancel_requested".to_string(),
@@ -810,19 +868,31 @@ mod tests {
 
         assert!(
             integration
-                .send_ai_turn_started(&app, "ai-chat", Some("turn-1"), Some("client-1"))
+                .send_ai_run_started(&app, "ai-chat", Some("run-1"), Some("client-1"))
                 .await
                 .is_ok()
         );
         assert!(
             integration
-                .send_ai_turn_ended(&app, "ai-chat", Some("turn-1"), "complete", None)
+                .send_ai_run_ended(&app, "ai-chat", Some("run-1"), "complete", None)
                 .await
                 .is_ok()
         );
         assert!(
             integration
-                .send_ai_cancel_requested(&app, "ai-chat", Some("turn-1"), Some("client-1"))
+                .send_ai_turn_started(&app, "ai-chat", Some("legacy-turn-1"), Some("client-1"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_ai_turn_ended(&app, "ai-chat", Some("legacy-turn-1"), "complete", None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_ai_cancel_requested(&app, "ai-chat", Some("run-1"), Some("client-1"))
                 .await
                 .is_ok()
         );

@@ -4,7 +4,10 @@ use super::types::*;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::websocket::SocketId;
-use sockudo_protocol::messages::{AI_EVENT_CANCEL, AI_EVENT_INPUT, PusherMessage};
+use sockudo_protocol::messages::{
+    AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_HEADER_INPUT_CLIENT_ID, AI_HEADER_RUN_CLIENT_ID,
+    PusherMessage,
+};
 #[cfg(feature = "delta")]
 use sonic_rs::prelude::*;
 
@@ -496,8 +499,8 @@ impl ConnectionHandler {
 
 fn stamp_verified_ai_identity(message: &mut PusherMessage, event: &str, client_id: &str) {
     let key = match event {
-        AI_EVENT_INPUT => "input-client-id",
-        AI_EVENT_CANCEL => "turn-client-id",
+        AI_EVENT_INPUT => AI_HEADER_INPUT_CLIENT_ID,
+        AI_EVENT_CANCEL => AI_HEADER_RUN_CLIENT_ID,
         _ => return,
     };
 

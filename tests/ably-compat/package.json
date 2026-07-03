@@ -1,0 +1,24 @@
+{
+  "name": "sockudo-ably-compat-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm run smoke && npm run ait:mutable && npm run ait:recovery",
+    "smoke": "node smoke.mjs",
+    "pubsub:chat": "node pubsub-chat-smoke.mjs",
+    "demo:pubsub-chat": "node pubsub-chat-server.mjs",
+    "ait:mutable": "node ait-mutable.mjs",
+    "ait:recovery": "node ait-recovery.mjs",
+    "ait:chat": "node ait-chat-demo.mjs",
+    "demo:chat": "node ait-chat-demo.mjs",
+    "demo:recovery-history": "node ait-recovery.mjs"
+  },
+  "dependencies": {
+    "@ably/ai-transport": "0.4.0",
+    "ably": "2.23.0",
+    "ai": "^6.0.137"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

@@ -1,7 +1,17 @@
-import { EVENT_AI_TURN_END, EVENT_AI_TURN_START, HEADER_TURN_REASON } from "../../constants.js";
+import {
+  EVENT_AI_LEGACY_TURN_END,
+  EVENT_AI_LEGACY_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_RESUME,
+  EVENT_AI_RUN_START,
+  EVENT_AI_RUN_SUSPEND,
+  HEADER_RUN_REASON,
+  HEADER_TURN_CONTINUE,
+} from "../../constants.js";
 import type { Decoder, DecodedEvent } from "../codec/index.js";
 import type { InboundMessage, PaginatedResult, Serial } from "../../realtime/types.js";
 import type { ConversationTree, TurnEndReason } from "./tree.js";
+import { mergeHeaders } from "../../utils.js";
 
 /**
  * Result of decoding one history page into a conversation tree.
@@ -29,7 +39,7 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
   for (const message of page.items) {
     processedMessages += 1;
     const headers = message.getTransportHeaders();
-    if (message.name === EVENT_AI_TURN_START) {
+    if (isRunStartMessage(message.name)) {
       tree.applyTurnLifecycle({
         type: "turn-start",
         headers,
@@ -38,12 +48,31 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
       lifecycleEvents += 1;
       continue;
     }
-    if (message.name === EVENT_AI_TURN_END) {
+    if (message.name === EVENT_AI_RUN_RESUME) {
+      tree.applyTurnLifecycle({
+        type: "turn-start",
+        headers: mergeHeaders(headers, { [HEADER_TURN_CONTINUE]: "true" }),
+        serial: message.historySerial,
+      });
+      lifecycleEvents += 1;
+      continue;
+    }
+    if (message.name === EVENT_AI_RUN_SUSPEND) {
+      tree.applyTurnLifecycle({
+        type: "turn-end",
+        headers: mergeHeaders(headers, { [HEADER_RUN_REASON]: "suspended" }),
+        serial: message.historySerial,
+        reason: "suspended",
+      });
+      lifecycleEvents += 1;
+      continue;
+    }
+    if (isRunEndMessage(message.name)) {
       tree.applyTurnLifecycle({
         type: "turn-end",
         headers,
         serial: message.historySerial,
-        ...optionalReason(headers[HEADER_TURN_REASON]),
+        ...optionalReason(headers[HEADER_RUN_REASON]),
       });
       lifecycleEvents += 1;
       continue;
@@ -54,6 +83,14 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
     tree.applyMessage(events, headers, message.historySerial);
   }
   return { processedMessages, decodedEvents, lifecycleEvents };
+}
+
+function isRunStartMessage(name: string): boolean {
+  return name === EVENT_AI_RUN_START || name === EVENT_AI_LEGACY_TURN_START;
+}
+
+function isRunEndMessage(name: string): boolean {
+  return name === EVENT_AI_RUN_END || name === EVENT_AI_LEGACY_TURN_END;
 }
 
 /**

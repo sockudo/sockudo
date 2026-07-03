@@ -21,7 +21,7 @@ describe("encoder core", () => {
     await expect(
       encoder.publishDiscrete("hello", {
         name: "ai-output",
-        transport: { "turn-id": "turn-1" },
+        transport: { "run-id": "run-1" },
         codec: { provider: "unit" },
       }),
     ).resolves.toMatchObject({ messageSerial: "msg-1" });
@@ -30,7 +30,7 @@ describe("encoder core", () => {
     expect(publish?.name).toBe("ai-output");
     expect(getTransportHeaders(publish?.extras)[HEADER_STREAM]).toBe("false");
     expect(getTransportHeaders(publish?.extras)[HEADER_DISCRETE]).toBe("true");
-    expect(getTransportHeaders(publish?.extras)["turn-id"]).toBe("turn-1");
+    expect(getTransportHeaders(publish?.extras)["run-id"]).toBe("run-1");
     expect(getCodecHeaders(publish?.extras).provider).toBe("unit");
   });
 
@@ -41,7 +41,7 @@ describe("encoder core", () => {
     await expect(
       encoder.startStream("stream-1", "a", {
         name: "ai-output",
-        transport: { "turn-id": "turn-1" },
+        transport: { "run-id": "run-1" },
         codec: { provider: "unit" },
       }),
     ).resolves.toBe("msg-1");
@@ -60,7 +60,7 @@ describe("encoder core", () => {
         data: "ab",
       },
     });
-    expect(getTransportHeaders(writer.appends.at(0)?.options.extras)["turn-id"]).toBe("turn-1");
+    expect(getTransportHeaders(writer.appends.at(0)?.options.extras)["run-id"]).toBe("run-1");
     expect(getCodecHeaders(writer.appends.at(0)?.options.extras).provider).toBe("unit");
     expect(getTransportHeaders(writer.updates.at(0)?.options.extras)[HEADER_STATUS]).toBe(
       "complete",

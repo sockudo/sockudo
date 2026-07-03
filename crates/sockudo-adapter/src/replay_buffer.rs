@@ -209,7 +209,11 @@ impl ReplayBuffer {
         });
 
         let mut state = entry.state.lock();
-        state.current_stream_id = stream_id.map(ToString::to_string);
+        let incoming_stream_id = stream_id.map(ToString::to_string);
+        if state.current_stream_id != incoming_stream_id {
+            state.messages.clear();
+        }
+        state.current_stream_id = incoming_stream_id.clone();
         state.last_touched = now;
         Self::raise_next_serial(entry.value(), serial.saturating_add(1));
         // Evict oldest if at capacity
@@ -217,7 +221,7 @@ impl ReplayBuffer {
             state.messages.pop_front();
         }
         state.messages.push_back(BufferedMessage {
-            stream_id: stream_id.map(ToString::to_string),
+            stream_id: incoming_stream_id,
             serial,
             message_bytes,
             timestamp: now,
@@ -287,7 +291,7 @@ impl ReplayBuffer {
 
         // Check if the buffer goes back far enough
         let oldest_serial = state.messages.front().map(|m| m.serial).unwrap_or(0);
-        if last_serial > 0 && last_serial < oldest_serial.saturating_sub(1) {
+        if last_serial.saturating_add(1) < oldest_serial {
             // The client missed messages that were already evicted
             return ReplayLookup::Expired;
         }

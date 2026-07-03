@@ -1,1 +1,1 @@
-{"event":"ai-input","channel":"ai:room","data":{"text":"hello"},"extras":{"ai":{"transport":{"turn-id":"turn-1","input-client-id":"client-1"}}}}
+{"event":"ai-input","channel":"ai:room","data":{"text":"hello"},"extras":{"ai":{"transport":{"run-id":"turn-1","input-client-id":"client-1"}}}}

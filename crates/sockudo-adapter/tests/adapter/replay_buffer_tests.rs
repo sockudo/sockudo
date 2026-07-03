@@ -51,8 +51,8 @@ mod replay_buffer_regression {
         }
 
         match buf.get_messages_after_position("app1", "ch", Some("stream-2"), 0) {
-            ReplayLookup::Recovered(msgs) => assert_eq!(msgs.len(), 2),
-            other => panic!("expected Recovered, got {}", variant_name(&other)),
+            ReplayLookup::Expired => {}
+            other => panic!("expected Expired, got {}", variant_name(&other)),
         }
 
         buf.store("app1", "ch", None, 3, Bytes::from("msg3"));
@@ -113,10 +113,10 @@ mod replay_buffer_regression {
             buf.store("app1", "ch", None, i, Bytes::from(format!("msg-{}", i)));
         }
 
-        let msgs = buf
-            .get_messages_after("app1", "ch", 0)
-            .expect("buffer should retain 5 messages");
-        assert_eq!(msgs.len(), 5);
+        assert!(
+            buf.get_messages_after("app1", "ch", 0).is_none(),
+            "client that only saw the initial position must fail closed after evictions"
+        );
 
         assert!(
             buf.get_messages_after("app1", "ch", 1).is_none(),

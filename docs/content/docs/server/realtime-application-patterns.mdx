@@ -196,13 +196,13 @@ Append is the right primitive for streams:
   "extras": {
     "ai": {
       "transport": {
-        "turn-id": "turn_123",
+        "run-id": "run_123",
         "stream-id": "text",
         "status": "streaming"
       }
     }
   },
-  "op_id": "turn_123:text:00042"
+  "op_id": "run_123:text:00042"
 }
 ```
 
@@ -271,12 +271,11 @@ idempotency, recovery, push dispatch, and durable history continuity.
 | --- | --- | --- |
 | Broadcast app events | `trigger`, channels, private auth | Not needed |
 | Presence/collaboration | Presence channels | Used for agent/user state too |
-| Recover after reconnect | Protocol V2 recovery | Required for durable turns |
+| Recover after reconnect | Protocol V2 recovery | Required for durable runs |
 | Persist channel history | Durable history | Required for sessions |
 | Edit or append messages | Mutable messages | Used for streamed output |
 | Wake offline users | Push notifications | Used for background agents |
-| Model/provider integration | Your app code | Provider adapters and turn lifecycle |
+| Model/provider integration | Your app code | Provider adapters and run lifecycle |
 
 Start with normal Sockudo when you are building realtime product events. Add AI Transport when model
-turns need to outlive one HTTP request, one browser tab, or one device.
-
+runs need to outlive one HTTP request, one browser tab, or one device.

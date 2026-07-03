@@ -1,4 +1,10 @@
-import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_FORK_OF, HEADER_PARENT } from "../../constants.js";
+import {
+  EVENT_AI_INPUT,
+  EVENT_AI_OUTPUT,
+  HEADER_FORK_OF,
+  HEADER_MSG_REGENERATE,
+  HEADER_PARENT,
+} from "../../constants.js";
 import { createDecoderCore, type DecoderStreamTracker } from "../../core/codec/decoder.js";
 import type { DecodedEvent, Decoder } from "../../core/codec/index.js";
 import type { InboundMessage } from "../../realtime/index.js";
@@ -110,7 +116,7 @@ function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
     return [
       decoded(
         {
-          target: transport[HEADER_FORK_OF] ?? "",
+          target: transport[HEADER_MSG_REGENERATE] ?? transport[HEADER_FORK_OF] ?? "",
           parent: transport[HEADER_PARENT] ?? "",
         },
         message,

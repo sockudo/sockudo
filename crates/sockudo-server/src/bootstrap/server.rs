@@ -8,6 +8,8 @@ use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
 use crate::history::create_history_store;
 #[cfg(feature = "versioned-messages")]
 use crate::history::create_version_store;
+#[cfg(feature = "ably-compat")]
+use crate::http_handler::global_ably_hub;
 use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::factory::AdapterFactory;
@@ -867,6 +869,10 @@ impl SockudoServer {
         }
         if let Some(q) = state.cleanup_queue.clone() {
             builder = builder.cleanup_queue(q);
+        }
+        #[cfg(feature = "ably-compat")]
+        {
+            builder = builder.realtime_egress_tap(global_ably_hub());
         }
 
         #[cfg(feature = "delta")]

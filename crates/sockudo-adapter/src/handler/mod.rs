@@ -56,6 +56,11 @@ use tracing::{debug, error, warn};
 type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
 type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
 
+#[async_trait::async_trait]
+pub trait RealtimeEgressTap: Send + Sync {
+    async fn deliver(&self, app_id: &str, channel: &str, message: &PusherMessage) -> Result<()>;
+}
+
 #[derive(Clone, Copy)]
 struct SocketWireOptions {
     protocol_version: ProtocolVersion,
@@ -83,6 +88,7 @@ pub struct ConnectionHandler {
     #[cfg(feature = "ai-transport")]
     pub(crate) ai_observability_tracker: Option<Arc<AiObservabilityTracker>>,
     pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+    realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
     message_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
@@ -116,6 +122,7 @@ pub struct ConnectionHandlerBuilder {
     annotation_store: Option<Arc<dyn AnnotationStore + Send + Sync>>,
     version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
     presence_history_store: Option<Arc<dyn PresenceHistoryStore + Send + Sync>>,
+    realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     server_options: ServerOptions,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -141,6 +148,7 @@ impl ConnectionHandlerBuilder {
             annotation_store: None,
             version_store: None,
             presence_history_store: None,
+            realtime_egress_tap: None,
             webhook_integration: None,
             server_options,
             cleanup_queue: None,
@@ -183,6 +191,11 @@ impl ConnectionHandlerBuilder {
         presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     ) -> Self {
         self.presence_history_store = Some(presence_history_store);
+        self
+    }
+
+    pub fn realtime_egress_tap(mut self, tap: Arc<dyn RealtimeEgressTap>) -> Self {
+        self.realtime_egress_tap = Some(tap);
         self
     }
 
@@ -251,6 +264,7 @@ impl ConnectionHandlerBuilder {
             start_ai_rollup_worker(
                 Arc::clone(engine),
                 Arc::clone(&self.connection_manager),
+                self.realtime_egress_tap.clone(),
                 self.metrics.clone(),
                 self.server_options.ai_transport.rollup.wheel_tick_ms,
             );
@@ -282,6 +296,7 @@ impl ConnectionHandlerBuilder {
             presence_history_store: self
                 .presence_history_store
                 .unwrap_or_else(|| Arc::new(NoopPresenceHistoryStore)),
+            realtime_egress_tap: self.realtime_egress_tap,
             webhook_integration: self.webhook_integration,
             client_event_limiters: Arc::new(fast_dashmap()),
             message_limiters: Arc::new(fast_dashmap()),
@@ -323,6 +338,7 @@ impl ConnectionHandlerBuilder {
 fn start_ai_rollup_worker(
     engine: Arc<RollupEngine>,
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
+    realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     wheel_tick_ms: u64,
 ) {
@@ -353,6 +369,9 @@ fn start_ai_rollup_worker(
                         engine.active_streams() as u64,
                     );
                 }
+                let app_id = delivery.app_id.clone();
+                let channel = delivery.channel.clone();
+                let message_for_tap = delivery.message.clone();
                 if let Err(error) = connection_manager
                     .send(
                         &delivery.channel,
@@ -368,6 +387,15 @@ fn start_ai_rollup_worker(
                         channel = %delivery.channel,
                         error = %error,
                         "failed to flush AI append rollup delivery"
+                    );
+                } else if let Some(tap) = realtime_egress_tap.as_ref()
+                    && let Err(error) = tap.deliver(&app_id, &channel, &message_for_tap).await
+                {
+                    warn!(
+                        app_id = %app_id,
+                        channel = %channel,
+                        error = %error,
+                        "realtime egress tap failed during AI rollup flush"
                     );
                 }
             }

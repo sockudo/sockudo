@@ -35,7 +35,7 @@ Sockudo AI Transport is exposed to hostile multi-tenant internet clients. Attack
 | Subscribe private/presence | Deny | Pusher auth required | Pusher auth or token state required | Requires `subscribe`; presence also `presence` | Deny | N/A | Deny |
 | Publish client events | Deny on public/non-private | Existing V1 behavior | Requires client events + publish rules | Requires `publish` | Deny | N/A | Deny |
 | Publish `ai-input`/`ai-cancel` | Deny | Deny | Requires V2, publish, authenticated `client_id` | Requires `publish`, authenticated token identity | Deny | Allow via HTTP signed publish | Deny |
-| Publish `ai-output`/`ai-turn-*` | Deny | Deny | Deny from WS client | Deny from WS client | Deny | Allow via HTTP signed publish | Deny |
+| Publish `ai-output`/`ai-run-*` | Deny | Deny | Deny from WS client | Deny from WS client | Deny | Allow via HTTP signed publish | Deny |
 | Mutable append/update/delete | Deny | Server HTTP only | Socket-proxied HTTP requires V2 actor + mutation capability | Requires publish plus own/any mutation capability | Deny | Allow privileged HTTP | Deny |
 | History WS `channel_history` | Deny | Deny | Requires V2 subscribed channel | Requires `history` | Deny | N/A | Deny |
 | History HTTP/state/reset/purge | Deny | Signed app HTTP only | Signed app HTTP only | Not accepted as app auth | Deny | Allow signed app HTTP | Deny |

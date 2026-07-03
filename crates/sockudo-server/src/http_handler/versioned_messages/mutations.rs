@@ -137,6 +137,16 @@ pub async fn update_message(
     State(handler): State<Arc<ConnectionHandler>>,
     Json(request): Json<UpdateMessageRequest>,
 ) -> Result<AxumResponse, AppError> {
+    let payload = apply_update_message(path, app, handler, request).await?;
+    Ok((StatusCode::OK, Json(payload)).into_response())
+}
+
+pub(crate) async fn apply_update_message(
+    path: VersionMutationPath,
+    app: App,
+    handler: Arc<ConnectionHandler>,
+    request: UpdateMessageRequest,
+) -> Result<MutationResponse, AppError> {
     validate_channel_name(&app, &path.channel_name).await?;
     require_versioned_messages_enabled(&handler, &path.channel_name)?;
     let history_policy =
@@ -205,7 +215,7 @@ pub async fn update_message(
                 delivery_serial: Some(current.delivery_serial()),
                 status: "duplicate".to_string(),
             };
-            return Ok((StatusCode::OK, Json(payload)).into_response());
+            return Ok(payload);
         }
     }
     if let Some(metrics) = handler.metrics() {
@@ -303,7 +313,7 @@ pub async fn update_message(
             .set(&cache_key, "1", idempotency_ttl(&app, &handler))
             .await;
     }
-    Ok((StatusCode::OK, Json(payload)).into_response())
+    Ok(payload)
 }
 
 /// POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/delete
@@ -314,6 +324,16 @@ pub async fn delete_message(
     State(handler): State<Arc<ConnectionHandler>>,
     Json(request): Json<DeleteMessageRequest>,
 ) -> Result<AxumResponse, AppError> {
+    let payload = apply_delete_message(path, app, handler, request).await?;
+    Ok((StatusCode::OK, Json(payload)).into_response())
+}
+
+pub(crate) async fn apply_delete_message(
+    path: VersionMutationPath,
+    app: App,
+    handler: Arc<ConnectionHandler>,
+    request: DeleteMessageRequest,
+) -> Result<MutationResponse, AppError> {
     validate_channel_name(&app, &path.channel_name).await?;
     require_versioned_messages_enabled(&handler, &path.channel_name)?;
     let history_policy =
@@ -382,7 +402,7 @@ pub async fn delete_message(
                 delivery_serial: Some(current.delivery_serial()),
                 status: "duplicate".to_string(),
             };
-            return Ok((StatusCode::OK, Json(payload)).into_response());
+            return Ok(payload);
         }
     }
     if let Some(metrics) = handler.metrics() {
@@ -472,7 +492,7 @@ pub async fn delete_message(
             .set(&cache_key, "1", idempotency_ttl(&app, &handler))
             .await;
     }
-    Ok((StatusCode::OK, Json(payload)).into_response())
+    Ok(payload)
 }
 
 /// POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/append
@@ -483,6 +503,16 @@ pub async fn append_message(
     State(handler): State<Arc<ConnectionHandler>>,
     Json(request): Json<AppendMessageRequest>,
 ) -> Result<AxumResponse, AppError> {
+    let payload = apply_append_message(path, app, handler, request).await?;
+    Ok((StatusCode::OK, Json(payload)).into_response())
+}
+
+pub(crate) async fn apply_append_message(
+    path: VersionMutationPath,
+    app: App,
+    handler: Arc<ConnectionHandler>,
+    request: AppendMessageRequest,
+) -> Result<MutationResponse, AppError> {
     validate_channel_name(&app, &path.channel_name).await?;
     require_versioned_messages_enabled(&handler, &path.channel_name)?;
     let history_policy =
@@ -551,7 +581,7 @@ pub async fn append_message(
                 delivery_serial: Some(current.delivery_serial()),
                 status: "duplicate".to_string(),
             };
-            return Ok((StatusCode::OK, Json(payload)).into_response());
+            return Ok(payload);
         }
     }
     if let Some(metrics) = handler.metrics() {
@@ -653,7 +683,7 @@ pub async fn append_message(
             .set(&cache_key, "1", idempotency_ttl(&app, &handler))
             .await;
     }
-    Ok((StatusCode::OK, Json(payload)).into_response())
+    Ok(payload)
 }
 
 #[cfg(test)]

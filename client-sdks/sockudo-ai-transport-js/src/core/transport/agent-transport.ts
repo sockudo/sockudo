@@ -1,10 +1,12 @@
 import {
   EVENT_AI_CANCEL,
   EVENT_AI_INPUT,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_START,
+  EVENT_AI_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
-  HEADER_TURN_REASON,
+  HEADER_MSG_REGENERATE,
+  HEADER_RUN_REASON,
 } from "../../constants.js";
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import { LogLevel, makeLogger, type Logger } from "../../logger.js";
@@ -90,10 +92,12 @@ export interface LoadConversationOptions {
   maxMessages?: number;
 }
 
-/** Server-side turn construction options. */
+/** Server-side run construction options. */
 export interface NewTurnOptions<TOutput> {
-  /** Turn identity. */
-  turnId: string;
+  /** Run identity. */
+  runId?: string;
+  /** Legacy alias for run identity. */
+  turnId?: string;
   /** Owner client id. */
   clientId?: string;
   /** Parent codec message id. */
@@ -116,9 +120,9 @@ export interface NewTurnOptions<TOutput> {
   inputEventId?: string;
 }
 
-/** Server-side turn. */
+/** Server-side run. The legacy type name is kept for source compatibility. */
 export interface Turn<TOutput, TProjection, TMessage> {
-  /** Turn identity. */
+  /** Run identity. */
   readonly turnId: string;
   /** Abort signal scoped to this turn. */
   readonly abortSignal: AbortSignal;
@@ -126,7 +130,7 @@ export interface Turn<TOutput, TProjection, TMessage> {
   readonly view: { readonly messages: readonly TMessage[] };
   /** Loaded messages alias. */
   readonly messages: readonly TMessage[];
-  /** Publishes turn start after optional input lookup. */
+  /** Publishes run start after optional input lookup. */
   start(): Promise<void>;
   /** Publishes discrete messages. */
   addMessages(
@@ -144,7 +148,7 @@ export interface Turn<TOutput, TProjection, TMessage> {
   loadProjection(): Promise<TProjection>;
   /** Loads conversation messages. */
   loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
-  /** Publishes turn-end. */
+  /** Publishes run end or run suspend. */
   end(reason: TurnEndReason): Promise<void>;
 }
 
@@ -324,7 +328,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
   public readonly managedTurn: ManagedTurn;
 
   public constructor(private readonly deps: TurnDeps<TInput, TOutput, TProjection, TMessage>) {
-    this.turnId = deps.options.turnId;
+    this.turnId = requireRunId(deps.options);
     this.signal = composeAbortSignal(this.internalAbort.signal, deps.options.signal);
     this.managedTurn = {
       turnId: this.turnId,
@@ -371,21 +375,24 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
       inputHeaders = this.capturedInput.headers;
       this.foldInput(this.capturedInput.message);
     }
+    const regenerateOf = inputHeaders[HEADER_MSG_REGENERATE];
     const headers = mergeHeaders(
       inputHeaders,
       buildTransportHeaders({
-        turnId: this.turnId,
+        runId: this.turnId,
         ...(this.deps.options.invocationId !== undefined
           ? { invocationId: this.deps.options.invocationId }
           : {}),
         ...(this.deps.options.clientId !== undefined
-          ? { turnClientId: this.deps.options.clientId }
+          ? { runClientId: this.deps.options.clientId }
           : {}),
         ...(this.deps.options.parent !== undefined ? { parent: this.deps.options.parent } : {}),
-        ...(this.deps.options.forkOf !== undefined ? { forkOf: this.deps.options.forkOf } : {}),
+        ...(this.deps.options.forkOf !== undefined && regenerateOf === undefined
+          ? { forkOf: this.deps.options.forkOf }
+          : {}),
       }),
     );
-    await this.publishLifecycle(EVENT_AI_TURN_START, headers);
+    await this.publishLifecycle(EVENT_AI_RUN_START, headers);
     this.started = true;
   }
 
@@ -501,15 +508,19 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
   }
 
   public async end(reason: TurnEndReason): Promise<void> {
-    const headers = mergeHeaders(this.baseHeaders("assistant"), {
-      [HEADER_TURN_REASON]: reason,
-    });
+    const headers =
+      reason === "suspended"
+        ? this.baseHeaders("assistant")
+        : mergeHeaders(this.baseHeaders("assistant"), {
+            [HEADER_RUN_REASON]: reason,
+          });
+    const eventName = reason === "suspended" ? EVENT_AI_RUN_SUSPEND : EVENT_AI_RUN_END;
     try {
-      await this.publishLifecycle(EVENT_AI_TURN_END, headers);
+      await this.publishLifecycle(eventName, headers);
     } catch (error) {
       throw toErrorInfo(error, {
         code: ErrorCode.TurnLifecycleError,
-        message: "unable to end turn; turn-end publish failed",
+        message: `unable to end turn; ${eventName} publish failed`,
       });
     }
     if (reason !== "suspended") {
@@ -543,7 +554,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
   }
 
   private async publishLifecycle(
-    name: typeof EVENT_AI_TURN_START | typeof EVENT_AI_TURN_END,
+    name: typeof EVENT_AI_RUN_START | typeof EVENT_AI_RUN_SUSPEND | typeof EVENT_AI_RUN_END,
     headers: HeaderMap,
   ): Promise<MessageAck> {
     try {
@@ -589,6 +600,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
       codecMessageId?: string;
     } = {},
   ): HeaderMap {
+    const regenerateOf = this.capturedInput?.headers[HEADER_MSG_REGENERATE];
     return buildTransportHeaders({
       role,
       turnId: this.turnId,
@@ -602,12 +614,17 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
           }
         : {}),
       ...(this.deps.options.parent !== undefined ? { parent: this.deps.options.parent } : {}),
-      ...(this.deps.options.forkOf !== undefined ? { forkOf: this.deps.options.forkOf } : {}),
+      ...(this.deps.options.forkOf !== undefined && regenerateOf === undefined
+        ? { forkOf: this.deps.options.forkOf }
+        : {}),
       ...(overrides.parent !== undefined ? { parent: overrides.parent } : {}),
-      ...(overrides.forkOf !== undefined ? { forkOf: overrides.forkOf } : {}),
+      ...(overrides.forkOf !== undefined && regenerateOf === undefined
+        ? { forkOf: overrides.forkOf }
+        : {}),
       ...(overrides.codecMessageId !== undefined
         ? { codecMessageId: overrides.codecMessageId }
         : {}),
+      ...(regenerateOf !== undefined ? { regenerates: regenerateOf } : {}),
     });
   }
 }
@@ -679,6 +696,17 @@ function requireChannelName(
     });
   }
   return options.channelName;
+}
+
+function requireRunId(options: { runId?: string; turnId?: string }): string {
+  const runId = options.runId ?? options.turnId;
+  if (!runId) {
+    throw new ErrorInfo({
+      code: ErrorCode.InvalidArgument,
+      message: "unable to create run; runId is required",
+    });
+  }
+  return runId;
 }
 
 function channelOptions(value: string): {

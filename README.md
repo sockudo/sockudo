@@ -43,6 +43,8 @@ TypeScript AI Transport SDK.
 - Prometheus metrics, webhook delivery, rate limiting, app managers, TLS, Docker Compose, and Helm.
 - Optional AI Transport built on the same versioned-message, history, recovery, push, and presence
   primitives instead of a parallel streaming path.
+- Optional `ably-compat` facade exposing a reduced Ably AI Transport compatibility surface for
+  tested AI Transport workloads.
 
 ## Monorepo Layout
 
@@ -287,6 +289,7 @@ Common server features:
 | `tag-filtering` | Server-side tag filtering |
 | `recovery` | Serial and message-id recovery |
 | `ai-transport` | AI Transport validation and rollup surfaces |
+| `ably-compat` | Opt-in reduced Ably Realtime/REST facade for AI Transport compatibility; implies `ai-transport` |
 | `push` | Push notification runtime and HTTP APIs |
 | `redis`, `redis-cluster` | Redis-backed adapter/cache/queue/rate limit paths |
 | `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy` | Horizontal adapter and queue integrations |
@@ -385,6 +388,7 @@ history, recovery, push, and webhooks still see every original mutation.
 Useful docs:
 
 - [AI Transport overview](docs/content/docs/server/ai-transport-overview.mdx)
+- [Ably AI Transport compatibility](docs/content/docs/server/ably-ai-transport-compatibility.mdx)
 - [AI Transport conventions](docs/content/docs/server/ai-transport-conventions.mdx)
 - [Token streaming rollup](docs/content/docs/server/token-streaming-rollup.mdx)
 - [Production checklist](docs/content/docs/server/ai-transport-production-checklist.mdx)
@@ -413,7 +417,15 @@ AI Transport checks:
 ```bash
 scripts/ai-transport-bench-guard.sh
 AIT_CONFORMANCE_OFFLINE=1 scripts/ai-conformance-node.sh
+make ably-compat-test
+make ably-ai-transport-test
+make ably-ai-demo
 ```
+
+The Ably targets exercise a reduced Ably Pub/Sub subset for AI Transport using local Sockudo as the
+endpoint. Start Sockudo with Cargo feature `ably-compat` plus the normal runtime `[ai_transport]`
+config before running them. They do not imply full Ably platform compatibility; see the
+compatibility scorecard in [`docs/ably-compat/`](docs/ably-compat/).
 
 Docs checks:
 

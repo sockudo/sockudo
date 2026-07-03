@@ -146,6 +146,8 @@ pub struct PrometheusMetricsDriver {
     pub(super) ai_messages_validated_total: CounterVec,
     pub(super) ai_messages_rejected_total: CounterVec,
     pub(super) ai_messages_unparseable_total: CounterVec,
+    pub(super) ai_runs_started_total: CounterVec,
+    pub(super) ai_runs_ended_total: CounterVec,
     pub(super) ai_turns_started_total: CounterVec,
     pub(super) ai_turns_ended_total: CounterVec,
     pub(super) ai_cancel_signals_total: CounterVec,
@@ -625,10 +627,28 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let ai_runs_started_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_runs_started_total"),
+                "Total number of AI Transport runs started"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ai_runs_ended_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_runs_ended_total"),
+                "Total number of AI Transport runs ended by bounded reason"
+            ),
+            &["app_id", "port", "reason"]
+        )
+        .unwrap();
+
         let ai_turns_started_total = register_counter_vec!(
             Opts::new(
                 format!("{prefix}ai_turns_started_total"),
-                "Total number of AI Transport turns started"
+                "Legacy total number of AI Transport turns started; use ai_runs_started_total"
             ),
             &["app_id", "port"]
         )
@@ -637,7 +657,7 @@ impl PrometheusMetricsDriver {
         let ai_turns_ended_total = register_counter_vec!(
             Opts::new(
                 format!("{prefix}ai_turns_ended_total"),
-                "Total number of AI Transport turns ended by bounded reason"
+                "Legacy total number of AI Transport turns ended by bounded reason; use ai_runs_ended_total"
             ),
             &["app_id", "port", "reason"]
         )
@@ -1174,6 +1194,8 @@ impl PrometheusMetricsDriver {
             ai_messages_validated_total,
             ai_messages_rejected_total,
             ai_messages_unparseable_total,
+            ai_runs_started_total,
+            ai_runs_ended_total,
             ai_turns_started_total,
             ai_turns_ended_total,
             ai_cancel_signals_total,

@@ -38,7 +38,7 @@ function aiExtras(status: 'streaming' | 'complete' | 'cancelled', role: 'user' |
   return {
     ai: {
       transport: {
-        'turn-id': turnId.value,
+        'run-id': turnId.value,
         status,
         role,
       },

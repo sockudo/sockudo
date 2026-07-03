@@ -5,7 +5,7 @@
     "data": {}
   },
   {
-    "event": "ai-turn-start",
+    "event": "ai-run-start",
     "channel": "private-ai-cancel-golden",
     "data": {
       "scenario": "private-ai-cancel"
@@ -19,7 +19,7 @@
     }
   },
   {
-    "event": "ai-turn-end",
+    "event": "ai-run-end",
     "channel": "private-ai-cancel-golden",
     "data": {
       "scenario": "private-ai-cancel"

@@ -16,7 +16,7 @@ export enum ErrorCode {
   TransportSubscriptionError = 104001,
   /** Cancellation listener failed. */
   CancelListenerError = 104002,
-  /** Invalid turn lifecycle operation. */
+  /** Invalid run lifecycle operation. */
   TurnLifecycleError = 104003,
   /** Transport was used after close. */
   TransportClosed = 104004,

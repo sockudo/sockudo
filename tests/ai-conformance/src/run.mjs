@@ -44,19 +44,27 @@ async function normalTurn(client) {
   const session = await client.connect();
   try {
     session.subscribe(channel);
-    await session.waitForEvent((frame) => frame.event === "sockudo:subscription_succeeded", "subscribe");
+    await session.waitForEvent(
+      (frame) => frame.event === "sockudo:subscription_succeeded",
+      "subscribe",
+    );
     await client.publish({
-      name: "ai-turn-start",
+      name: "ai-run-start",
       channel,
       data: { ok: true },
-      extras: aiExtras({ "turn-id": "turn-normal", "invocation-id": "invoke-normal" }),
+      extras: aiExtras({ "run-id": "run-normal", "invocation-id": "invoke-normal" }),
     });
     const create = await client.publish({
       name: "ai-output",
       channel,
       data: "",
       messageId: "msg-normal",
-      extras: aiExtras({ "turn-id": "turn-normal", "status": "streaming", stream: "true", role: "assistant" }),
+      extras: aiExtras({
+        "run-id": "run-normal",
+        status: "streaming",
+        stream: "true",
+        role: "assistant",
+      }),
     });
     const messageSerial = create.channels[channel].message_serial;
     await client.append({
@@ -74,12 +82,12 @@ async function normalTurn(client) {
       extras: aiExtras({ status: "complete" }),
     });
     await client.publish({
-      name: "ai-turn-end",
+      name: "ai-run-end",
       channel,
       data: { ok: true },
-      extras: aiExtras({ "turn-id": "turn-normal", "turn-reason": "complete" }),
+      extras: aiExtras({ "run-id": "run-normal", "run-reason": "complete" }),
     });
-    await session.waitForEvent((frame) => frame.event === "ai-turn-end", "turn end");
+    await session.waitForEvent((frame) => frame.event === "ai-run-end", "run end");
     return { transcript: session.transcript };
   } finally {
     session.close();
@@ -88,14 +96,14 @@ async function normalTurn(client) {
 
 async function cancelTurn(client) {
   return lifecycleOnly(client, "private-ai-cancel", [
-    ["ai-turn-start", { "turn-id": "turn-cancel", "invocation-id": "invoke-cancel" }],
-    ["ai-cancel", { "turn-id": "turn-cancel", "input-client-id": "client-1" }],
-    ["ai-turn-end", { "turn-id": "turn-cancel", "turn-reason": "cancelled" }],
+    ["ai-run-start", { "run-id": "run-cancel", "invocation-id": "invoke-cancel" }],
+    ["ai-cancel", { "run-id": "run-cancel", "input-client-id": "client-1" }],
+    ["ai-run-end", { "run-id": "run-cancel", "run-reason": "cancelled" }],
   ]);
 }
 
 async function abortPartial(client) {
-  return mutableSequence(client, "private-ai-abort", "turn-abort", [
+  return mutableSequence(client, "private-ai-abort", "run-abort", [
     ["append", "partial", "streaming"],
     ["update", "partial", "cancelled"],
   ]);
@@ -103,38 +111,49 @@ async function abortPartial(client) {
 
 async function errorTurn(client) {
   return lifecycleOnly(client, "private-ai-error", [
-    ["ai-turn-start", { "turn-id": "turn-error", "invocation-id": "invoke-error" }],
-    ["ai-turn-end", { "turn-id": "turn-error", "turn-reason": "error", "error-code": "tool-timeout", "error-message": "timeout" }],
+    ["ai-run-start", { "run-id": "run-error", "invocation-id": "invoke-error" }],
+    [
+      "ai-run-end",
+      {
+        "run-id": "run-error",
+        "run-reason": "error",
+        "error-code": "tool-timeout",
+        "error-message": "timeout",
+      },
+    ],
   ]);
 }
 
 async function suspendedContinuation(client) {
   return lifecycleOnly(client, "private-ai-suspended", [
-    ["ai-turn-start", { "turn-id": "turn-suspend", "invocation-id": "invoke-1" }],
-    ["ai-turn-end", { "turn-id": "turn-suspend", "turn-reason": "suspended" }],
-    ["ai-turn-start", { "turn-id": "turn-suspend", "turn-continue": "true", "invocation-id": "invoke-2" }],
+    ["ai-run-start", { "run-id": "run-suspend", "invocation-id": "invoke-1" }],
+    ["ai-run-suspend", { "run-id": "run-suspend", "invocation-id": "invoke-1" }],
+    ["ai-run-resume", { "run-id": "run-suspend", "invocation-id": "invoke-2" }],
   ]);
 }
 
 async function regenerate(client) {
-  return mutableSequence(client, "private-ai-regenerate", "turn-regenerate", [
-    ["append", "new answer", "complete", { "msg-regenerate": "true", "fork-of": "old-message" }],
+  return mutableSequence(client, "private-ai-regenerate", "run-regenerate", [
+    ["append", "new answer", "complete", { "msg-regenerate": "old-message" }],
   ]);
 }
 
 async function edit(client) {
   return lifecycleOnly(client, "private-ai-edit", [
-    ["ai-input", { "turn-id": "turn-edit", parent: "previous-input", role: "user" }],
-    ["ai-output", { "turn-id": "turn-edit", parent: "previous-input", role: "assistant", discrete: "true" }],
+    ["ai-input", { "run-id": "run-edit", parent: "previous-input", role: "user" }],
+    [
+      "ai-output",
+      { "run-id": "run-edit", parent: "previous-input", role: "assistant", discrete: "true" },
+    ],
   ]);
 }
 
 async function concurrentTurns(client) {
   return lifecycleOnly(client, "private-ai-concurrent", [
-    ["ai-turn-start", { "turn-id": "turn-a", "invocation-id": "invoke-a" }],
-    ["ai-turn-start", { "turn-id": "turn-b", "invocation-id": "invoke-b" }],
-    ["ai-turn-end", { "turn-id": "turn-b", "turn-reason": "complete" }],
-    ["ai-turn-end", { "turn-id": "turn-a", "turn-reason": "complete" }],
+    ["ai-run-start", { "run-id": "run-a", "invocation-id": "invoke-a" }],
+    ["ai-run-start", { "run-id": "run-b", "invocation-id": "invoke-b" }],
+    ["ai-run-end", { "run-id": "run-b", "run-reason": "complete" }],
+    ["ai-run-end", { "run-id": "run-a", "run-reason": "complete" }],
   ]);
 }
 
@@ -154,7 +173,10 @@ async function lateJoinHistory(client) {
     opId: "op-late-1",
     extras: aiExtras({ status: "complete" }),
   });
-  const latest = await client.getMessage({ channel, messageSerial: create.channels[channel].message_serial });
+  const latest = await client.getMessage({
+    channel,
+    messageSerial: create.channels[channel].message_serial,
+  });
   assert.equal(latest.item.data, "late-state");
   return { transcript: [{ event: "history:get_latest", channel, data: latest.item }] };
 }
@@ -164,7 +186,10 @@ async function recoverySmoke(client) {
   const session = await client.connect();
   try {
     session.subscribe(channel);
-    await session.waitForEvent((frame) => frame.event === "sockudo:subscription_succeeded", "subscribe");
+    await session.waitForEvent(
+      (frame) => frame.event === "sockudo:subscription_succeeded",
+      "subscribe",
+    );
     await client.publish({
       name: "ai-output",
       channel,
@@ -184,7 +209,10 @@ async function lifecycleOnly(client, prefix, events) {
   const session = await client.connect();
   try {
     session.subscribe(channel);
-    await session.waitForEvent((frame) => frame.event === "sockudo:subscription_succeeded", "subscribe");
+    await session.waitForEvent(
+      (frame) => frame.event === "sockudo:subscription_succeeded",
+      "subscribe",
+    );
     for (const [name, transport] of events) {
       await client.publish({
         name,
@@ -201,18 +229,21 @@ async function lifecycleOnly(client, prefix, events) {
   }
 }
 
-async function mutableSequence(client, prefix, turnId, steps) {
+async function mutableSequence(client, prefix, runId, steps) {
   const channel = uniqueChannel(prefix);
   const session = await client.connect();
   try {
     session.subscribe(channel);
-    await session.waitForEvent((frame) => frame.event === "sockudo:subscription_succeeded", "subscribe");
+    await session.waitForEvent(
+      (frame) => frame.event === "sockudo:subscription_succeeded",
+      "subscribe",
+    );
     const create = await client.publish({
       name: "ai-output",
       channel,
       data: "",
-      messageId: `msg-${turnId}`,
-      extras: aiExtras({ "turn-id": turnId, status: "streaming", stream: "true", role: "assistant" }),
+      messageId: `msg-${runId}`,
+      extras: aiExtras({ "run-id": runId, status: "streaming", stream: "true", role: "assistant" }),
     });
     const messageSerial = create.channels[channel].message_serial;
     for (const [kind, data, status, extra = {}] of steps) {
@@ -221,7 +252,7 @@ async function mutableSequence(client, prefix, turnId, steps) {
           channel,
           messageSerial,
           data,
-          opId: `op-${turnId}-${kind}`,
+          opId: `op-${runId}-${kind}`,
           extras: aiExtras({ status, ...extra }),
         });
       } else {
@@ -229,12 +260,16 @@ async function mutableSequence(client, prefix, turnId, steps) {
           channel,
           messageSerial,
           data,
-          opId: `op-${turnId}-${data}`,
+          opId: `op-${runId}-${data}`,
           extras: aiExtras({ status, ...extra }),
         });
       }
     }
-    await session.waitForEvent((frame) => frame.event === "sockudo:message.append" || frame.event === "sockudo:message.update", "mutation");
+    await session.waitForEvent(
+      (frame) =>
+        frame.event === "sockudo:message.append" || frame.event === "sockudo:message.update",
+      "mutation",
+    );
     return { transcript: session.transcript };
   } finally {
     session.close();

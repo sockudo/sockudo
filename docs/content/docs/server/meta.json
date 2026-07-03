@@ -14,6 +14,7 @@
     "webhooks",
     "push-notifications",
     "ai-transport-overview",
+    "ably-ai-transport-compatibility",
     "ai-transport-conventions",
     "ai-transport-providers",
     "ai-transport-authentication",

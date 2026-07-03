@@ -376,11 +376,11 @@ export function createDirectLlmProviderRegistry(
 }
 
 /**
- * Runs a Sockudo server turn from a direct provider stream.
+ * Runs a Sockudo server run from a direct provider stream.
  *
- * This helper starts the turn, streams provider chunks through
- * `turn.streamResponse`, maps completion to a turn end reason, publishes
- * `ai-turn-end`, and returns the evidence.
+ * This helper starts the run, streams provider chunks through
+ * `turn.streamResponse`, maps completion to a run end reason, publishes
+ * `ai-run-end`, and returns the evidence.
  */
 export async function runDirectLlmTurn(
   turn: Turn<VercelOutput, VercelProjection, AI.UIMessage>,

@@ -13,7 +13,7 @@ enabled = true
 prefix = "private-ai-"
 ```
 
-AI lifecycle events are plain channel events: `ai-input`, `ai-output`, `ai-turn-start`, `ai-turn-end`, and `ai-cancel`. Server-side validation applies only on enabled AI channels. WebSocket clients may publish `ai-input` and `ai-cancel` when their token allows `publish`; agent events require trusted server-side HTTP publish until an explicit agent token marker is specified.
+AI lifecycle events are plain channel events: `ai-input`, `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. Server-side validation applies only on enabled AI channels. WebSocket clients may publish `ai-input` and `ai-cancel` when their token allows `publish`; agent events require trusted server-side HTTP publish until an explicit agent token marker is specified.
 
 AI metadata is carried in the existing V2 `extras` envelope:
 
@@ -22,7 +22,7 @@ AI metadata is carried in the existing V2 `extras` envelope:
   "extras": {
     "ai": {
       "transport": {
-        "turn-id": "turn-1",
+        "run-id": "run-1",
         "status": "streaming",
         "role": "assistant"
       },
@@ -34,7 +34,7 @@ AI metadata is carried in the existing V2 `extras` envelope:
 }
 ```
 
-Each `transport` and `codec` tier is limited to 32 string keys. Keys must be at most 64 bytes and match `[a-z0-9-]+`; values must be at most 256 bytes. Transport keys are validated against the wire protocol registry. Codec keys are opaque but still bounded. Any `*-client-id` transport value on WebSocket publishes must match the verified signed-in client identity; trusted HTTP publishes are exempt.
+Each `transport` and `codec` tier is limited to 32 string keys. Keys must be at most 64 bytes. Transport keys match `[a-z0-9-]+`; codec keys match `[A-Za-z0-9_-]+` for Ably/Vercel codec fields. Transport values and ordinary codec values must be at most 256 bytes; `extras.ai.codec.providerMetadata` may be up to 8 KiB because Vercel provider metadata is JSON-serialized there. Transport keys are validated against the wire protocol registry. Codec keys are opaque but still bounded. Ably-native regenerate publishes use `extras.ai.transport.msg-regenerate` as the codec-message-id of the assistant message being regenerated. Any `*-client-id` transport value on WebSocket publishes must match the verified signed-in client identity; trusted HTTP publishes are exempt.
 
 Existing `idempotency_key` behavior is unchanged. AI SDKs may additionally send `message_id` on HTTP publish for idempotent creates, and mutation requests may send `op_id` for no-op replay of append/update/delete operations. V2 publish and mutation acknowledgements expose `message_serial`, `history_serial`, `delivery_serial`, and `version_serial` when those serials are assigned.
 

@@ -112,13 +112,18 @@ Protocol V1 behavior is immutable. AI Transport validation, headers, capability 
 
 ### AI Events And Headers
 
-The five AI event names are plain channel events:
+The seven native AI event names are plain channel events:
 
 - `ai-input`: client-to-agent codec/input events.
 - `ai-output`: agent-to-client codec/output events.
-- `ai-turn-start`: turn lifecycle start.
-- `ai-turn-end`: turn lifecycle end.
+- `ai-run-start`: run lifecycle start.
+- `ai-run-suspend`: run lifecycle nonterminal suspension.
+- `ai-run-resume`: run lifecycle continuation after suspension.
+- `ai-run-end`: run lifecycle terminal end.
 - `ai-cancel`: cancellation signal.
+
+Legacy `ai-turn-start` and `ai-turn-end` inbound publishes are accepted as compatibility aliases,
+but native examples and new SDKs use the Ably `ai-run-*` names.
 
 These events ride the existing publish path and, for streaming content, the existing `sockudo:message.create|append|update|delete` mutable-message events. Sockudo remains domain-blind: it validates the transport tier and passes the codec tier opaquely.
 
@@ -129,7 +134,7 @@ AI metadata is a convention over the existing `extras` field:
   "extras": {
     "ai": {
       "transport": {
-        "turn-id": "turn_123",
+        "run-id": "run_123",
         "codec-message-id": "msg_123",
         "status": "streaming"
       },
@@ -141,19 +146,19 @@ AI metadata is a convention over the existing `extras` field:
 }
 ```
 
-`extras.ai.transport` and `extras.ai.codec` are string-to-string maps. Per tier: at most 32 keys, key at most 64 bytes and matching `[a-z0-9-]+`, value at most 256 bytes of valid UTF-8. Unknown transport keys are rejected. Codec keys are not semantically interpreted but still obey tier limits.
+`extras.ai.transport` and `extras.ai.codec` are string-to-string maps. Per tier: at most 32 keys and keys at most 64 bytes. Transport keys match `[a-z0-9-]+`; codec keys match `[A-Za-z0-9_-]+` for Ably/Vercel codec fields such as `providerMetadata`. Transport values and ordinary codec values are limited to 256 bytes of valid UTF-8; `extras.ai.codec.providerMetadata` is limited to 8 KiB. Unknown transport keys are rejected. Codec keys are not semantically interpreted but still obey tier limits.
 
 Transport keys:
 
 | Key | Domain |
 | --- | --- |
-| `turn-id` | Non-empty opaque string |
-| `turn-client-id` | Verified client identity string |
-| `turn-reason` | `complete`, `cancelled`, `error`, `suspended` |
+| `run-id` | Non-empty opaque string |
+| `run-client-id` | Verified client identity string |
+| `run-reason` | `complete`, `cancelled`, `error` |
 | `codec-message-id` | Non-empty opaque string; equals Sockudo `message_serial` for streamed mutable messages |
 | `parent` | Parent `codec-message-id` |
 | `fork-of` | Fork source `codec-message-id` |
-| `msg-regenerate` | `true` or `false` |
+| `msg-regenerate` | Non-empty codec-message-id of the assistant message being regenerated |
 | `stream` | `true` or `false` |
 | `stream-id` | Non-empty opaque string |
 | `status` | `streaming`, `complete`, `cancelled` |
@@ -162,50 +167,53 @@ Transport keys:
 | `event-id` | Non-empty opaque string |
 | `input-client-id` | Verified client identity string |
 | `role` | `user`, `assistant`, `system`, `tool`, `agent` |
-| `turn-continue` | `true` or `false` |
 | `error-code` | Non-empty opaque string |
 | `error-message` | Human-readable string within value limit |
 | `model` | Non-empty opaque string; model identifier set by the publishing worker/agent, not interpreted by Sockudo |
 
-Anti-spoof rule: any `*-client-id` value MUST match the verified connection identity from authenticated socket state or capability token. Trusted signed app-key HTTP publishes are exempt. Client publishes may send `ai-input` and `ai-cancel`; `ai-output`, `ai-turn-start`, and `ai-turn-end` require trusted app key until capability tokens land, then require an agent-capable token.
+Legacy transport aliases `turn-id`, `turn-client-id`, `turn-reason`, and `turn-continue` are accepted
+for inbound/stored compatibility. `turn-reason=suspended` maps to native `ai-run-suspend`;
+new publishers should use `ai-run-suspend` and `ai-run-resume` instead of `turn-continue`.
+
+Anti-spoof rule: any `*-client-id` value MUST match the verified connection identity from authenticated socket state or capability token. Trusted signed app-key HTTP publishes are exempt. Client publishes may send `ai-input` and `ai-cancel`; `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` require trusted app key until capability tokens land, then require an agent-capable token.
 
 Canonical sequences, expressed in existing events:
 
-Normal streaming turn:
+Normal streaming run:
 
-1. `ai-turn-start` with `turn-id`, `invocation-id`, `turn-client-id`.
+1. `ai-run-start` with `run-id`, `invocation-id`, `run-client-id`.
 2. `sockudo:message.create` for `ai-output` content with `codec-message-id = message_serial`, `stream=true`, `status=streaming`.
 3. Zero or more `sockudo:message.append` events for the same message serial with `status=streaming`.
 4. Final `sockudo:message.append` or `sockudo:message.update` with `status=complete`.
-5. `ai-turn-end` with `turn-reason=complete`.
+5. `ai-run-end` with `run-reason=complete`.
 
 Cancellation:
 
-1. Client publishes `ai-cancel` with `turn-id`.
+1. Client publishes `ai-cancel` with `run-id`.
 2. Agent or server-side publisher emits final append/update with `status=cancelled`.
-3. `ai-turn-end` with `turn-reason=cancelled`.
+3. `ai-run-end` with `run-reason=cancelled`.
 
 Abort partial:
 
 1. Stream starts normally.
 2. Agent emits final update with accumulated content and `status=cancelled`.
-3. `ai-turn-end` with `turn-reason=cancelled`.
+3. `ai-run-end` with `run-reason=cancelled`.
 
 Error:
 
 1. Stream starts normally.
 2. Agent emits update with `status=complete`, `error-code`, and `error-message`, or emits no final content if no message was created.
-3. `ai-turn-end` with `turn-reason=error`.
+3. `ai-run-end` with `run-reason=error`.
 
 Suspended continuation:
 
-1. Agent emits `ai-turn-end` with `turn-reason=suspended`.
-2. Later continuation uses same `turn-id`, `turn-continue=true`, and a new `invocation-id`.
+1. Agent emits `ai-run-suspend` with `run-id` and the current `invocation-id`.
+2. Later continuation emits `ai-run-resume` with the same `run-id` and a new `invocation-id`.
 
 Regenerate:
 
-1. New output create uses `msg-regenerate=true` and `fork-of=<old codec-message-id>`.
-2. Parent/fork metadata is persisted in `extras.ai.transport`.
+1. New output create uses `msg-regenerate=<old assistant codec-message-id>` and parents at the same input as the regenerated reply.
+2. Parent/regenerate metadata is persisted in `extras.ai.transport`.
 
 Edit:
 
@@ -304,7 +312,7 @@ The default payload convention expects message data to be a JSON object with str
 }
 ```
 
-Devices subscribed to `notifications:user-123` through the existing channel-subscription API receive provider payloads that include the notification title/body and `data.sessionId`. Apps should open the session and load authoritative history/recovery state after the tap. The alternative server-owned recipe is `ai_turn_ended` webhook delivery to the customer backend, followed by the existing push publish API with an explicit `PublishTarget::Channel`.
+Devices subscribed to `notifications:user-123` through the existing channel-subscription API receive provider payloads that include the notification title/body and `data.sessionId`. Apps should open the session and load authoritative history/recovery state after the tap. The alternative server-owned recipe is `ai_run_ended` webhook delivery to the customer backend, followed by the existing push publish API with an explicit `PublishTarget::Channel`.
 
 ### Capability Tokens
 
@@ -471,14 +479,14 @@ AIT-S51 [EXISTS-VERIFY] Push publish supports Channel targets.
 AIT-S52 [EXISTS-VERIFY] Realtime `extras.push` enqueues channel push work.
 AIT-S53 [NEW] `ai-transport` Cargo feature is propagated through `sockudo-server`.
 AIT-S54 [NEW] `[ai_transport].enabled` gates all AI validation and behavior.
-AIT-S55 [NEW] AI events are exactly `ai-input`, `ai-output`, `ai-turn-start`, `ai-turn-end`, `ai-cancel`.
+AIT-S55 [NEW] AI events are exactly `ai-input`, `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, `ai-cancel`.
 AIT-S56 [NEW] `extras.ai.transport` validates known key registry only.
 AIT-S57 [NEW] `extras.ai.codec` is opaque but bounded.
 AIT-S58 [NEW] Transport/codec tiers reject more than 32 keys.
 AIT-S59 [NEW] AI header keys reject values over 64 bytes or outside `[a-z0-9-]+`.
-AIT-S60 [NEW] AI header values reject values over 256 bytes.
+AIT-S60 [NEW] AI transport header values and ordinary codec values reject values over 256 bytes; `extras.ai.codec.providerMetadata` rejects values over 8 KiB.
 AIT-S61 [NEW] `status` only accepts `streaming|complete|cancelled`.
-AIT-S62 [NEW] `turn-reason` only accepts `complete|cancelled|error|suspended`.
+AIT-S62 [NEW] `run-reason` only accepts `complete|cancelled|error`; suspension uses `ai-run-suspend`.
 AIT-S63 [NEW] `*-client-id` headers must match verified identity unless app-key trusted.
 AIT-S64 [NEW] Clients may publish only `ai-input` and `ai-cancel` without agent trust.
 AIT-S65 [VERIFIED] Client-supplied `message_id` dedupes mutable create by app/channel/message ID.

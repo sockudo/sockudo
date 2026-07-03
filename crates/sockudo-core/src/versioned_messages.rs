@@ -140,6 +140,8 @@ pub struct VersionedMessage {
     pub name: Option<String>,
     pub data: Option<MessageData>,
     pub extras: Option<MessageExtras>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_fragment: Option<String>,
 }
 
 impl VersionedMessage {
@@ -163,6 +165,7 @@ impl VersionedMessage {
             name,
             data,
             extras,
+            append_fragment: None,
         }
     }
 
@@ -193,6 +196,7 @@ impl VersionedMessage {
             name: apply_field_patch(&self.name, &delta.name),
             data: apply_field_patch(&self.data, &delta.data),
             extras: apply_field_patch(&self.extras, &delta.extras),
+            append_fragment: None,
         })
     }
 
@@ -217,6 +221,7 @@ impl VersionedMessage {
             name: self.name.clone(),
             data,
             extras: append.extras.or_else(|| self.extras.clone()),
+            append_fragment: Some(append.data_fragment),
         })
     }
 
@@ -473,6 +478,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(appended.action, MessageAction::Append);
+        assert_eq!(appended.append_fragment.as_deref(), Some(" world"));
         assert_eq!(
             appended.data.unwrap().into_string().as_deref(),
             Some("hello world")

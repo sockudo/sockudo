@@ -11,7 +11,7 @@ Sockudo is closing Ably AI Transport platform gaps while preserving strict Pushe
 
 AI Transport will be implemented as server platform primitives over existing Sockudo subsystems, not as a parallel AI message stack.
 
-1. AI lifecycle events are plain channel events: `ai-input`, `ai-output`, `ai-turn-start`, `ai-turn-end`, and `ai-cancel`.
+1. AI lifecycle events are plain channel events: `ai-input`, `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`.
 2. Streaming content uses existing `sockudo:message.create|append|update|delete` mutable-message events and `VersionStore`.
 3. AI metadata is represented by `extras.ai.transport` and `extras.ai.codec`; the server validates transport headers and bounds codec headers without interpreting codec semantics.
 4. New behavior is behind Cargo feature `ai-transport` and runtime `[ai_transport] enabled`.

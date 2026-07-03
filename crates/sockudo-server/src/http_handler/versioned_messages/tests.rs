@@ -413,6 +413,90 @@ async fn events_create_then_append_substitutes_latest_visible_history() {
 }
 
 #[tokio::test]
+async fn channel_message_versions_returns_append_fragment_for_replay() {
+    let store = Arc::new(MemoryVersionStore::new());
+    let handler = test_versioned_handler_with_store(100, store.clone());
+    let app = test_app();
+
+    let original = test_versioned_record(
+        "msg:1",
+        "00000000000000000001:test:00000000000000000001",
+        10,
+        1,
+        "hello",
+    );
+    let appended = StoredVersionRecord {
+        message: original
+            .message
+            .apply_append(
+                VersionMetadata {
+                    serial: VersionSerial::new(
+                        "00000000000000000002:test:00000000000000000002".to_string(),
+                    )
+                    .unwrap(),
+                    client_id: Some("user-1".to_string()),
+                    timestamp_ms: 2,
+                    description: None,
+                    metadata: None,
+                },
+                2,
+                sockudo_core::versioned_messages::MessageAppend {
+                    data_fragment: " world".to_string(),
+                    extras: None,
+                },
+            )
+            .unwrap(),
+        ..original.clone()
+    };
+
+    store.append_version(original).await.unwrap();
+    store.append_version(appended).await.unwrap();
+
+    let latest_response = channel_message(
+        Path(VersionMutationPath {
+            app_id: "app-1".to_string(),
+            channel_name: "versioned-room".to_string(),
+            message_serial: "msg:1".to_string(),
+        }),
+        Extension(app.clone()),
+        State(handler.clone()),
+    )
+    .await
+    .unwrap()
+    .into_response();
+    let latest_body = axum::body::to_bytes(latest_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let latest_json: Value = sonic_rs::from_slice(&latest_body).unwrap();
+    assert_eq!(latest_json["item"]["data"], "{\"text\":\"hello\"} world");
+
+    let versions_response = channel_message_versions(
+        Path(VersionMutationPath {
+            app_id: "app-1".to_string(),
+            channel_name: "versioned-room".to_string(),
+            message_serial: "msg:1".to_string(),
+        }),
+        Query(MessageVersionsQuery {
+            limit: Some(10),
+            direction: Some(VersionDirection::NewestFirst),
+            cursor: None,
+        }),
+        Extension(app),
+        State(handler),
+    )
+    .await
+    .unwrap()
+    .into_response();
+
+    let versions_body = axum::body::to_bytes(versions_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let versions_json: Value = sonic_rs::from_slice(&versions_body).unwrap();
+    assert_eq!(versions_json["items"][0]["action"], "append");
+    assert_eq!(versions_json["items"][0]["data"], " world");
+}
+
+#[tokio::test]
 async fn channel_message_versions_pages_newest_first() {
     let store = Arc::new(MemoryVersionStore::new());
     let handler = test_versioned_handler_with_store(2, store.clone());

@@ -21,11 +21,11 @@ impl ConnectionHandler {
             if update.unparseable {
                 metrics.mark_ai_transport_unparseable(&app.id);
             }
-            if update.turn_started.is_some() {
-                metrics.mark_ai_turn_started(&app.id);
+            if update.run_started.is_some() {
+                metrics.mark_ai_run_started(&app.id);
             }
-            if let Some(turn_ended) = update.turn_ended.as_ref() {
-                metrics.mark_ai_turn_ended(&app.id, turn_ended.reason.as_label());
+            if let Some(run_ended) = update.run_ended.as_ref() {
+                metrics.mark_ai_run_ended(&app.id, run_ended.reason.as_label());
             }
             if update.cancel_requested.is_some() {
                 metrics.mark_ai_cancel_signal(&app.id);
@@ -47,27 +47,54 @@ impl ConnectionHandler {
         let app = app.clone();
         let channel = channel.to_string();
         tokio::spawn(async move {
-            if let Some(turn_started) = update.turn_started.as_ref()
+            if let Some(run_started) = update.run_started.as_ref()
+                && let Err(error) = webhook_integration
+                    .send_ai_run_started(
+                        &app,
+                        &channel,
+                        run_started.run_id.as_deref(),
+                        run_started.client_id.as_deref(),
+                    )
+                    .await
+            {
+                tracing::warn!(error = %error, "failed to emit ai_run_started webhook");
+            }
+
+            if let Some(run_started) = update.run_started.as_ref()
                 && let Err(error) = webhook_integration
                     .send_ai_turn_started(
                         &app,
                         &channel,
-                        turn_started.turn_id.as_deref(),
-                        turn_started.client_id.as_deref(),
+                        run_started.run_id.as_deref(),
+                        run_started.client_id.as_deref(),
                     )
                     .await
             {
                 tracing::warn!(error = %error, "failed to emit ai_turn_started webhook");
             }
 
-            if let Some(turn_ended) = update.turn_ended.as_ref()
+            if let Some(run_ended) = update.run_ended.as_ref()
+                && let Err(error) = webhook_integration
+                    .send_ai_run_ended(
+                        &app,
+                        &channel,
+                        run_ended.run_id.as_deref(),
+                        run_ended.reason.as_label(),
+                        run_ended.error_code.as_deref(),
+                    )
+                    .await
+            {
+                tracing::warn!(error = %error, "failed to emit ai_run_ended webhook");
+            }
+
+            if let Some(run_ended) = update.run_ended.as_ref()
                 && let Err(error) = webhook_integration
                     .send_ai_turn_ended(
                         &app,
                         &channel,
-                        turn_ended.turn_id.as_deref(),
-                        turn_ended.reason.as_label(),
-                        turn_ended.error_code.as_deref(),
+                        run_ended.run_id.as_deref(),
+                        run_ended.reason.as_label(),
+                        run_ended.error_code.as_deref(),
                     )
                     .await
             {
@@ -79,7 +106,7 @@ impl ConnectionHandler {
                     .send_ai_cancel_requested(
                         &app,
                         &channel,
-                        cancel_requested.turn_id.as_deref(),
+                        cancel_requested.run_id.as_deref(),
                         cancel_requested.client_id.as_deref(),
                     )
                     .await
