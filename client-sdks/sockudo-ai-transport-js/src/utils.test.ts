@@ -196,6 +196,11 @@ describe("header utilities", () => {
     expect(reader.string(HEADER_INPUT_CLIENT_ID)).toBe("client-2");
     expect(reader.string(HEADER_EVENT_ID)).toBe("event-1");
     expect(reader.boolean(HEADER_TURN_CONTINUE)).toBe(false);
+    expect(
+      buildTransportHeaders({ regenerates: true, codecMessageId: "msg-2" })[HEADER_MSG_REGENERATE],
+    ).toBe("msg-2");
+    expect(buildTransportHeaders({ regenerates: true })[HEADER_MSG_REGENERATE]).toBe("true");
+    expect(buildTransportHeaders({ regenerates: "msg-3" })[HEADER_MSG_REGENERATE]).toBe("msg-3");
     expect(buildTransportHeaders({})).toEqual({});
   });
 });
