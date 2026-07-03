@@ -297,7 +297,7 @@ async fn create_websocket_ref() -> WebSocketRef {
     WebSocketRef::new(WebSocket::new(socket_id, writer))
 }
 
-fn test_message(channel: &str, serial: u64, message_id: &str) -> PusherMessage {
+fn create_test_pong_message(channel: &str, serial: u64, message_id: &str) -> PusherMessage {
     let mut message = PusherMessage::pong();
     message.channel = Some(channel.to_string());
     message.serial = Some(serial);
@@ -428,7 +428,10 @@ async fn resubscribe_preserves_rewind_gate_and_clears_attach_serial() {
     ws_ref.start_rewind_gate("presence-room".to_string());
     assert!(
         ws_ref
-            .buffer_rewind_message("presence-room", &test_message("presence-room", 1, "msg-1"))
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 1, "msg-1"),
+            )
             .await
     );
     ws_ref.set_attach_serial("presence-room".to_string(), 41);
@@ -445,7 +448,10 @@ async fn resubscribe_preserves_rewind_gate_and_clears_attach_serial() {
     assert_eq!(ws_ref.attach_serial("presence-room"), None);
     assert!(
         ws_ref
-            .buffer_rewind_message("presence-room", &test_message("presence-room", 2, "msg-2"))
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 2, "msg-2"),
+            )
             .await
     );
 
@@ -471,7 +477,10 @@ async fn unsubscribe_removes_all_per_channel_state() {
     ws_ref.start_rewind_gate("presence-room".to_string());
     assert!(
         ws_ref
-            .buffer_rewind_message("presence-room", &test_message("presence-room", 1, "msg-1"))
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 1, "msg-1"),
+            )
             .await
     );
 
@@ -482,7 +491,10 @@ async fn unsubscribe_removes_all_per_channel_state() {
     assert_eq!(ws_ref.attach_serial("presence-room"), None);
     assert!(
         !ws_ref
-            .buffer_rewind_message("presence-room", &test_message("presence-room", 2, "msg-2"))
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 2, "msg-2"),
+            )
             .await
     );
     assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
@@ -495,12 +507,18 @@ async fn finish_rewind_gate_drains_buffered_messages() {
     ws_ref.start_rewind_gate("presence-room".to_string());
     assert!(
         ws_ref
-            .buffer_rewind_message("presence-room", &test_message("presence-room", 1, "msg-1"))
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 1, "msg-1"),
+            )
             .await
     );
     assert!(
         ws_ref
-            .buffer_rewind_message("presence-room", &test_message("presence-room", 2, "msg-2"))
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 2, "msg-2"),
+            )
             .await
     );
 
@@ -511,7 +529,10 @@ async fn finish_rewind_gate_drains_buffered_messages() {
     assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
     assert!(
         !ws_ref
-            .buffer_rewind_message("presence-room", &test_message("presence-room", 3, "msg-3"))
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 3, "msg-3"),
+            )
             .await
     );
 }

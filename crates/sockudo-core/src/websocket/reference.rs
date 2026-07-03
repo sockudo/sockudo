@@ -393,6 +393,7 @@ impl WebSocketRef {
         annotation_subscribe: bool,
     ) {
         let mut state = self.channel_state.entry(channel).or_default();
+        // Preserve any rewind gate started just before subscription setup.
         state.filter = filter;
         state.event_name_filter = event_name_filter;
         state.annotation_subscribe = annotation_subscribe;
