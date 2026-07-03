@@ -5,7 +5,7 @@
   "extras": {
     "ai": {
       "transport": {
-        "run-id": "run-1",
+        "turn-id": "turn-1",
         "status": "streaming"
       },
       "codec": {

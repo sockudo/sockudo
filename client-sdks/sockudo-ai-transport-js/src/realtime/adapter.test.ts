@@ -251,7 +251,7 @@ describe("realtime adapter", () => {
     expect(aiExtras?.extras).toMatchObject({
       ai: {
         transport: {
-          "run-id": "run-1",
+          "turn-id": "turn-1",
           status: "streaming",
         },
         codec: {
@@ -261,7 +261,7 @@ describe("realtime adapter", () => {
       },
       futureExtrasField: true,
     });
-    expect(aiExtras?.getTransportHeaders()["run-id"]).toBe("run-1");
+    expect(aiExtras?.getTransportHeaders()["run-id"]).toBe("turn-1");
     expect(aiExtras?.getCodecHeaders()["provider-future-key"]).toBe("opaque");
   });
 
