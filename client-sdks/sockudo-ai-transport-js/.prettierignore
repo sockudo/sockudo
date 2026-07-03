@@ -2,6 +2,7 @@ node_modules/
 dist/
 .vite/
 .next/
+demo/.nuxt/
 coverage/
 bench/.generated/
 test-results/
