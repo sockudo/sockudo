@@ -145,7 +145,8 @@ describe Sockudo::WebHook do
       expect(wh.time).to eq(Time.at(1_710_000_000))
       expect(wh.events[0]['name']).to eq('member_updated')
       expect(wh.events[0]['future_field']).to eq('must-pass-through')
-      expect(wh.events[1]['turn_id']).to eq('turn-1')
+      expect(wh.events[1]['name']).to eq('ai_run_started')
+      expect(wh.events[1]['run_id']).to eq('run-1')
       expect(wh.events[2]['version_serial']).to eq('ver-1')
     end
 

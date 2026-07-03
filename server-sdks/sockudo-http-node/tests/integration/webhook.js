@@ -248,7 +248,8 @@ describe("WebHook", function () {
       expect(webhook.getTime()).to.eql(new Date(1710000000000));
       expect(webhook.getEvents()[0].name).to.equal("member_updated");
       expect(webhook.getEvents()[0].future_field).to.equal("must-pass-through");
-      expect(webhook.getEvents()[1].turn_id).to.equal("turn-1");
+      expect(webhook.getEvents()[1].name).to.equal("ai_run_started");
+      expect(webhook.getEvents()[1].run_id).to.equal("run-1");
       expect(webhook.getEvents()[2].version_serial).to.equal("ver-1");
     });
 

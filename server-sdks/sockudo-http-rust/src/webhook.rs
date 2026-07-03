@@ -536,7 +536,11 @@ mod tests {
             data.events[0].get("future_field"),
             Some(&"must-pass-through".to_string())
         );
-        assert_eq!(data.events[1].get("turn_id"), Some(&"turn-1".to_string()));
+        assert_eq!(
+            data.events[1].get("name"),
+            Some(&"ai_run_started".to_string())
+        );
+        assert_eq!(data.events[1].get("run_id"), Some(&"run-1".to_string()));
         assert_eq!(
             data.events[2].get("version_serial"),
             Some(&"ver-1".to_string())

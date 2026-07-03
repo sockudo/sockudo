@@ -90,8 +90,8 @@ class WebhookTest extends TestCase
         self::assertCount(3, $events);
         self::assertEquals('member_updated', $events[0]->name);
         self::assertEquals('must-pass-through', $events[0]->future_field);
-        self::assertEquals('ai_turn_started', $events[1]->name);
-        self::assertEquals('turn-1', $events[1]->turn_id);
+        self::assertEquals('ai_run_started', $events[1]->name);
+        self::assertEquals('run-1', $events[1]->run_id);
         self::assertEquals('message_version_created', $events[2]->name);
         self::assertEquals('ver-1', $events[2]->version_serial);
     }

@@ -86,8 +86,8 @@ func TestWebhookForwardCompatFixture(t *testing.T) {
 	assert.Equal(t, "presence-ai-forward", result.Events[0].Channel)
 	assert.Equal(t, "user-1", result.Events[0].UserID)
 	assert.Equal(t, []byte(`"must-pass-through"`), []byte(result.Events[0].Fields["future_field"]))
-	assert.Equal(t, "ai_turn_started", result.Events[1].Name)
-	assert.Equal(t, []byte(`"turn-1"`), []byte(result.Events[1].Fields["turn_id"]))
+	assert.Equal(t, "ai_run_started", result.Events[1].Name)
+	assert.Equal(t, []byte(`"run-1"`), []byte(result.Events[1].Fields["run_id"]))
 	assert.Equal(t, "message_version_created", result.Events[2].Name)
 }
 
