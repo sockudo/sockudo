@@ -26,14 +26,7 @@ use tracing::warn;
 pub struct WebSocketRef {
     pub broadcast_tx: SizedMessageSenderHandle,
     pub message_sender: MessageSenderHandle,
-    pub channel_filters: Arc<DashMap<String, Option<Arc<FilterNode>>>>,
-    /// V2 event name filters per channel. None = receive all events.
-    pub event_name_filters: Arc<DashMap<String, Option<Vec<String>>>>,
-    /// V2 raw annotation delivery mode per channel.
-    pub annotation_subscriptions: Arc<DashMap<String, bool>>,
-    /// V2 history head captured at subscription acknowledgement time.
-    pub attach_serials: Arc<DashMap<String, u64>>,
-    pub rewind_gates: Arc<DashMap<String, Arc<Mutex<RewindGate>>>>,
+    pub channel_state: Arc<DashMap<Arc<str>, PerChannelState>>,
     pub socket_id: SocketId,
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
@@ -51,6 +44,18 @@ pub struct WebSocketRef {
     pub append_mode: sockudo_protocol::AppendMode,
 }
 
+#[derive(Default)]
+pub struct PerChannelState {
+    pub filter: Option<Arc<FilterNode>>,
+    /// V2 event name filter. None = receive all events.
+    pub event_name_filter: Option<Vec<String>>,
+    /// V2 raw annotation delivery mode.
+    pub annotation_subscribe: bool,
+    /// V2 history head captured at subscription acknowledgement time.
+    pub attach_serial: Option<u64>,
+    pub rewind_gate: Option<Arc<Mutex<RewindGate>>>,
+}
+
 impl WebSocketRef {
     pub fn new(websocket: WebSocket) -> Self {
         let broadcast_tx = websocket.broadcast_tx.clone();
@@ -64,24 +69,23 @@ impl WebSocketRef {
         let echo_messages = websocket.state.echo_messages;
         let append_mode = websocket.state.append_mode;
 
-        let channel_filters = Arc::new(DashMap::new());
+        let channel_state = Arc::new(DashMap::with_capacity(
+            websocket.state.subscribed_channels.len(),
+        ));
         for (channel, filter) in &websocket.state.subscribed_channels {
-            channel_filters.insert(channel.clone(), filter.clone().map(Arc::new));
+            channel_state.insert(
+                Arc::<str>::from(channel.as_str()),
+                PerChannelState {
+                    filter: filter.clone().map(Arc::new),
+                    ..PerChannelState::default()
+                },
+            );
         }
-
-        let event_name_filters = Arc::new(DashMap::new());
-        let annotation_subscriptions = Arc::new(DashMap::new());
-        let attach_serials = Arc::new(DashMap::new());
-        let rewind_gates = Arc::new(DashMap::new());
 
         Self {
             broadcast_tx,
             message_sender,
-            channel_filters,
-            event_name_filters,
-            annotation_subscriptions,
-            attach_serials,
-            rewind_gates,
+            channel_state,
             socket_id,
             buffer_config,
             byte_counter,
@@ -260,10 +264,7 @@ impl WebSocketRef {
     pub async fn subscribe_to_channel(&self, channel: String) {
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel(channel.clone());
-        self.channel_filters.insert(channel.clone(), None);
-        self.event_name_filters.insert(channel.clone(), None);
-        self.annotation_subscriptions.insert(channel.clone(), false);
-        self.attach_serials.remove(&channel);
+        self.upsert_channel_state(Arc::<str>::from(channel), None, None, false);
     }
 
     pub async fn subscribe_to_channel_with_filter(
@@ -277,11 +278,7 @@ impl WebSocketRef {
 
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel_with_filter(channel.clone(), filter.clone());
-        self.channel_filters
-            .insert(channel.clone(), filter.map(Arc::new));
-        self.event_name_filters.insert(channel.clone(), None);
-        self.annotation_subscriptions.insert(channel.clone(), false);
-        self.attach_serials.remove(&channel);
+        self.upsert_channel_state(Arc::<str>::from(channel), filter.map(Arc::new), None, false);
     }
 
     /// Subscribe with both tag filter and event name filter (V2).
@@ -298,68 +295,71 @@ impl WebSocketRef {
 
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel_with_filter(channel.clone(), tag_filter.clone());
-        self.channel_filters
-            .insert(channel.clone(), tag_filter.map(Arc::new));
-        self.event_name_filters
-            .insert(channel.clone(), event_name_filter);
-        self.annotation_subscriptions
-            .insert(channel.clone(), annotation_subscribe);
-        self.attach_serials.remove(&channel);
+        self.upsert_channel_state(
+            Arc::<str>::from(channel),
+            tag_filter.map(Arc::new),
+            event_name_filter,
+            annotation_subscribe,
+        );
     }
 
     pub async fn unsubscribe_from_channel(&self, channel: &str) -> bool {
         let mut ws = self.inner.lock().await;
         let result = ws.unsubscribe_from_channel(channel);
-        self.channel_filters.remove(channel);
-        self.event_name_filters.remove(channel);
-        self.annotation_subscriptions.remove(channel);
-        self.attach_serials.remove(channel);
+        self.channel_state.remove(channel);
         result
     }
 
     pub async fn get_channel_filter(&self, channel: &str) -> Option<Arc<FilterNode>> {
-        self.channel_filters
+        self.channel_state
             .get(channel)
-            .and_then(|entry| entry.value().clone())
+            .and_then(|entry| entry.value().filter.clone())
     }
 
     pub fn get_channel_filter_sync(&self, channel: &str) -> Option<Arc<FilterNode>> {
-        self.channel_filters
+        self.channel_state
             .get(channel)
-            .and_then(|entry| entry.value().clone())
+            .and_then(|entry| entry.value().filter.clone())
     }
 
     /// Get the event name filter for a channel. Returns None if no filter (all events).
     pub fn get_event_name_filter_sync(&self, channel: &str) -> Option<Vec<String>> {
-        self.event_name_filters
+        self.channel_state
             .get(channel)
-            .and_then(|entry| entry.value().clone())
+            .and_then(|entry| entry.value().event_name_filter.clone())
     }
 
     pub fn allows_annotation_events_sync(&self, channel: &str) -> bool {
-        self.annotation_subscriptions
+        self.channel_state
             .get(channel)
-            .is_some_and(|entry| *entry.value())
+            .is_some_and(|entry| entry.value().annotation_subscribe)
     }
 
     pub fn set_attach_serial(&self, channel: String, serial: u64) {
-        self.attach_serials.insert(channel, serial);
+        self.channel_state
+            .entry(Arc::<str>::from(channel))
+            .or_default()
+            .attach_serial = Some(serial);
     }
 
     pub fn attach_serial(&self, channel: &str) -> Option<u64> {
-        self.attach_serials.get(channel).map(|entry| *entry.value())
+        self.channel_state
+            .get(channel)
+            .and_then(|entry| entry.value().attach_serial)
     }
 
     pub fn start_rewind_gate(&self, channel: String) {
-        self.rewind_gates
-            .insert(channel, Arc::new(Mutex::new(RewindGate::default())));
+        self.channel_state
+            .entry(Arc::<str>::from(channel))
+            .or_default()
+            .rewind_gate = Some(Arc::new(Mutex::new(RewindGate::default())));
     }
 
     pub async fn buffer_rewind_message(&self, channel: &str, message: &PusherMessage) -> bool {
         let Some(gate) = self
-            .rewind_gates
+            .channel_state
             .get(channel)
-            .map(|entry| entry.value().clone())
+            .and_then(|entry| entry.value().rewind_gate.clone())
         else {
             return false;
         };
@@ -374,11 +374,29 @@ impl WebSocketRef {
     }
 
     pub async fn finish_rewind_gate(&self, channel: &str) -> Vec<BufferedRewindMessage> {
-        let Some((_, gate)) = self.rewind_gates.remove(channel) else {
+        let Some(gate) = self
+            .channel_state
+            .get_mut(channel)
+            .and_then(|mut entry| entry.rewind_gate.take())
+        else {
             return Vec::new();
         };
         let mut gate = gate.lock().await;
         std::mem::take(&mut gate.buffered)
+    }
+
+    fn upsert_channel_state(
+        &self,
+        channel: Arc<str>,
+        filter: Option<Arc<FilterNode>>,
+        event_name_filter: Option<Vec<String>>,
+        annotation_subscribe: bool,
+    ) {
+        let mut state = self.channel_state.entry(channel).or_default();
+        state.filter = filter;
+        state.event_name_filter = event_name_filter;
+        state.annotation_subscribe = annotation_subscribe;
+        state.attach_serial = None;
     }
 }
 

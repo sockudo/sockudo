@@ -61,14 +61,15 @@ fn matching_channel_filter_entries(
     channel: &str,
 ) -> Vec<Option<std::sync::Arc<sockudo_filter::FilterNode>>> {
     socket
-        .channel_filters
+        .channel_state
         .iter()
         .filter_map(|entry| {
             let subscribed_channel = entry.key();
+            let subscribed_channel = subscribed_channel.as_ref();
             let matches = subscribed_channel == channel
                 || (is_wildcard_subscription_pattern(subscribed_channel)
                     && wildcard_pattern_matches(channel, subscribed_channel));
-            matches.then(|| entry.value().clone())
+            matches.then(|| entry.value().filter.clone())
         })
         .collect()
 }
@@ -96,8 +97,9 @@ fn should_deliver_for_tags(
 fn event_name_filter_allows(socket: &WebSocketRef, channel: &str, event_name: &str) -> bool {
     let mut matched = false;
 
-    for entry in socket.event_name_filters.iter() {
+    for entry in socket.channel_state.iter() {
         let subscribed_channel = entry.key();
+        let subscribed_channel = subscribed_channel.as_ref();
         let channel_matches = subscribed_channel == channel
             || (is_wildcard_subscription_pattern(subscribed_channel)
                 && wildcard_pattern_matches(channel, subscribed_channel));
@@ -106,7 +108,7 @@ fn event_name_filter_allows(socket: &WebSocketRef, channel: &str, event_name: &s
         }
 
         matched = true;
-        match entry.value() {
+        match &entry.value().event_name_filter {
             None => return true,
             Some(names) if names.is_empty() => return true,
             Some(names) if names.iter().any(|name| name == event_name) => return true,
