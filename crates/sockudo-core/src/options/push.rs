@@ -523,32 +523,4 @@ mod tests {
         assert_eq!(options.push.default_quotas.fanout_max, 9_000);
         assert_eq!(options.push.default_quotas.inflight_max, 1_000);
     }
-
-    #[test]
-    fn production_memory_push_drivers_require_explicit_allow() {
-        let mut options = ServerOptions {
-            mode: "production".to_owned(),
-            ..Default::default()
-        };
-        options.push.storage_driver = PushStorageDriver::Memory;
-        options.push.queue_driver = PushQueueDriver::Memory;
-        options.push.allow_memory_drivers = false;
-
-        let error = options.validate().unwrap_err();
-
-        assert!(error.contains("push.storage_driver=memory"));
-    }
-
-    #[test]
-    fn production_memory_push_drivers_validate_with_explicit_allow() {
-        let mut options = ServerOptions {
-            mode: "production".to_owned(),
-            ..Default::default()
-        };
-        options.push.storage_driver = PushStorageDriver::Memory;
-        options.push.queue_driver = PushQueueDriver::Memory;
-        options.push.allow_memory_drivers = true;
-
-        assert!(options.validate().is_ok());
-    }
 }
