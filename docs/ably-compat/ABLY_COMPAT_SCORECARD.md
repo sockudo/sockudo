@@ -25,14 +25,14 @@ Sockudo V1/V2 conformance tests pass against pinned target versions.
 | Pusher Protocol V1 compatibility | Supported | Ably compatibility is additive and must not alter V1 wire behavior. |
 | Sockudo-native AI Transport | Supported | Uses Cargo feature `ai-transport` plus runtime `[ai_transport]`; it does not require `ably-compat`. |
 | Ably facade feature gate | Supported | Root Ably WebSocket route, Ably REST routes, and Ably realtime egress tap are compiled only with `ably-compat`. |
-| Ably Realtime JSON/MsgPack protocol | Supported for AI Transport only | Handles the ProtocolMessage flows needed by the harness in JSON and MsgPack WebSocket modes. |
-| Ably REST time/token/history/message reads and publish | Supported for AI Transport only | Provides the reduced surfaces used by stock Ably clients and AI Transport smoke tests in the tested JSON/MsgPack lanes. Ably token capabilities are translated to Sockudo channel-scoped capabilities for the supported operations. |
+| Ably Realtime JSON/MsgPack protocol | Supported for tested Pub/Sub subset | Handles the ProtocolMessage flows covered by stock `ably@2.23.0` discovery lanes in JSON and MsgPack WebSocket modes. Full Ably Realtime parity is not claimed. |
+| Ably REST time/token/history/message reads and publish | Supported for tested Pub/Sub subset | Provides the reduced surfaces used by stock Ably clients and AI Transport smoke tests in the tested JSON/MsgPack lanes. Ably token capabilities are translated to Sockudo channel-scoped capabilities for the supported operations. Full Ably REST API parity is not claimed. |
 | Mutable output streaming | Supported for AI Transport only | Ably mutable message calls map to Sockudo versioned messages. |
 | History and recovery | Supported for AI Transport only | Harness covers history projection and recovery of missed append fragments. |
 | Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes; full Ably mode enforcement is not claimed. |
 | LiveObjects/object modes | Intentionally out of scope | Not part of the current compatibility target. |
 | Ably Push | Intentionally out of scope | Sockudo native push is separate from Ably Push compatibility. |
-| Binary MsgPack Ably protocol | Supported for AI Transport only | Covered for Realtime Pub/Sub and REST publish/history/time discovery lanes. |
+| Binary MsgPack Ably protocol | Supported for tested Pub/Sub subset | Realtime Pub/Sub and REST publish/history/time pass the stock `ably@2.23.0` discovery lanes with `useBinaryProtocol: true`. Full Ably platform MsgPack parity is not claimed. |
 | Full Ably platform API parity | Intentionally out of scope | The claim is limited to AI Transport compatibility. |
 
 ## Stable Commands
