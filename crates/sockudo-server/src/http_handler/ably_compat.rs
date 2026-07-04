@@ -848,14 +848,16 @@ pub async fn handle_ably_realtime_upgrade(
         .on_upgrade(move |socket| async move {
             if let Err(error) = run_ably_realtime_socket(
                 socket,
-                handler,
-                hub,
-                resolved.app,
-                resolved.client_id,
-                resolved.capabilities,
-                resume,
-                recover,
-                format,
+                AblyRealtimeSocketContext {
+                    handler,
+                    hub,
+                    app: resolved.app,
+                    client_id: resolved.client_id,
+                    capabilities: resolved.capabilities,
+                    resume,
+                    recover,
+                    format,
+                },
             )
             .await
             {
@@ -865,8 +867,7 @@ pub async fn handle_ably_realtime_upgrade(
         .into_response()
 }
 
-async fn run_ably_realtime_socket(
-    socket: sockudo_ws::axum_integration::WebSocket,
+struct AblyRealtimeSocketContext {
     handler: Arc<ConnectionHandler>,
     hub: Arc<AblyCompatHub>,
     app: App,
@@ -875,7 +876,23 @@ async fn run_ably_realtime_socket(
     resume: Option<String>,
     recover: Option<String>,
     format: AblyFormat,
+}
+
+async fn run_ably_realtime_socket(
+    socket: sockudo_ws::axum_integration::WebSocket,
+    context: AblyRealtimeSocketContext,
 ) -> SockudoResult<()> {
+    let AblyRealtimeSocketContext {
+        handler,
+        hub,
+        app,
+        client_id,
+        capabilities,
+        resume,
+        recover,
+        format,
+    } = context;
+
     let connection_start = hub.begin_connection(
         &app.id,
         client_id.as_deref(),
