@@ -31,6 +31,7 @@ Environment variables:
 | `ABLY_PROTOCOL_TIMEOUT_MS` | `15000` | Per-lane timeout for protocol discovery. |
 | `ABLY_PROTOCOL_OUTPUT` | unset | Optional JSON output path for protocol discovery results. |
 | `ABLY_PROTOCOL_STRICT` | `0` | Set `1` to fail when optional broader-protocol lanes fail. |
+| `ABLY_BROWSER_ORIGIN_PORTS` | `4173,3001,5174` | Allowed localhost origin ports tried by the Chromium discovery lane. |
 
 ```bash
 cd tests/ably-compat
@@ -59,8 +60,13 @@ publishes, receives the same message, reads history, and detaches.
 a machine-readable scorecard. The required lane is the JSON Realtime Pub/Sub
 baseline already covered by the compatibility claim. Optional lanes currently
 cover REST time, REST publish/history in JSON and MsgPack, Realtime presence,
-token requests, Realtime MsgPack Pub/Sub, and a browser placeholder. Optional
+token requests, Realtime MsgPack Pub/Sub, and Chromium browser Pub/Sub/history. Optional
 failures are reported as gaps unless `ABLY_PROTOCOL_STRICT=1` is set.
+
+`make ably-protocol-discovery` installs the Playwright Chromium browser before
+running the discovery script. On minimal Linux CI images, install the Playwright
+system dependencies first or run `npx playwright install --with-deps chromium`
+in the job setup.
 
 `npm run pubsub:chat` verifies plain Ably Pub/Sub chat behavior with two
 separate stock Ably Realtime clients on a normal `chat:` channel. Alice publishes,

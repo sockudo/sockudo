@@ -55,6 +55,10 @@ make ably-ai-transport-test
 make ably-ai-demo
 ```
 
+`make ably-protocol-discovery` installs Playwright Chromium and includes a real
+stock Ably browser bundle lane for JSON Pub/Sub/history. The other stable targets
+remain headless Node.js checks.
+
 The targets read these environment variables:
 
 | Variable | Default |
@@ -67,6 +71,7 @@ The targets read these environment variables:
 | `ABLY_AGENT_CLIENT_ID` | `sockudo-ably-ait-agent` |
 | `ABLY_CHANNEL` | generated per run |
 | `ABLY_DEMO_PROMPT` | `Say hello from Sockudo AI Transport.` |
+| `ABLY_BROWSER_ORIGIN_PORTS` | `4173,3001,5174` |
 
 ## Demos
 
@@ -79,7 +84,8 @@ The targets read these environment variables:
    additional fragments while offline, reconnects with an Ably recovery key, and
    verifies that only missed fragments replay and the final aggregate is intact.
 
-These are deliberately Node-based so CI can run them without a browser.
+These AI Transport demos are deliberately Node-based so CI can run them without
+a browser.
 
 ## Evidence Files
 

@@ -15,6 +15,7 @@ Sockudo V1/V2 conformance tests pass against pinned target versions.
 | --- | --- | --- |
 | Ably AI Transport package | `@ably/ai-transport@0.4.0` | Smoke harness in `tests/ably-compat`. |
 | Ably Realtime JS peer | `ably@2.23.0` | Smoke and protocol discovery harnesses in `tests/ably-compat`. |
+| Browser discovery runtime | Playwright Chromium | `make ably-protocol-discovery` installs and runs Chromium for the browser lane. |
 | Sockudo server workspace | `4.7.0` | Root Cargo workspace package version. |
 
 ## Compatibility Summary
@@ -65,7 +66,7 @@ Last local run: 2026-07-04 against `ably@2.23.0`, Sockudo built with
 Command:
 
 ```bash
-ABLY_PROTOCOL_RUN_ID=realtime-msgpack npm run protocol:discovery
+make ably-protocol-discovery
 ```
 
 | Lane | Status | Notes |
@@ -78,7 +79,7 @@ ABLY_PROTOCOL_RUN_ID=realtime-msgpack npm run protocol:discovery
 | `node-auth-json-request-token` | Supported | Stock Ably token request returned a token. |
 | `node-realtime-msgpack-pubsub` | Supported | Realtime Pub/Sub passes with `format=msgpack` binary ProtocolMessages. |
 | `node-rest-msgpack-time` | Supported | REST time works with the SDK's MsgPack option. |
-| `browser-chromium-json-pubsub` | Not run | Browser runner needs an explicit Playwright/browser dependency and CI setup. |
+| `browser-chromium-json-pubsub` | Supported | Stock Ably browser bundle passes Chromium connect, attach, publish, receive, history, and detach over the reduced JSON Realtime path. |
 
 ## Compatibility Claim
 

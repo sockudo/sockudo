@@ -411,7 +411,7 @@ ably-compat-test: ## Run Ably Pub/Sub subset smoke tests against Sockudo built w
 
 .PHONY: ably-protocol-discovery
 ably-protocol-discovery: ## Probe broader stock ably-js protocol compatibility and report current gaps
-	@cd tests/ably-compat && npm ci --silent && npm run protocol:discovery
+	@cd tests/ably-compat && npm ci --silent && npx playwright install chromium >/dev/null && npm run protocol:discovery
 
 .PHONY: ably-ai-transport-test
 ably-ai-transport-test: ## Run stock @ably/ai-transport smoke test against Sockudo built with ably-compat

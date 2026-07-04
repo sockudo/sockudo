@@ -1,7 +1,9 @@
 import * as Ably from 'ably';
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 const endpoint = process.env.ABLY_ENDPOINT ?? '127.0.0.1';
 const port = Number(process.env.ABLY_PORT ?? '6001');
@@ -12,9 +14,16 @@ const runId = process.env.ABLY_PROTOCOL_RUN_ID ?? String(Date.now());
 const timeoutMs = Number(process.env.ABLY_PROTOCOL_TIMEOUT_MS ?? '15000');
 const strict = process.env.ABLY_PROTOCOL_STRICT === '1';
 const outputPath = process.env.ABLY_PROTOCOL_OUTPUT;
+const browserOriginPorts = (process.env.ABLY_BROWSER_ORIGIN_PORTS ?? '4173,3001,5174')
+  .split(',')
+  .map((value) => Number(value.trim()))
+  .filter(Number.isFinite);
 
 const ablyPackage = JSON.parse(
   await readFile(new URL('./node_modules/ably/package.json', import.meta.url), 'utf8'),
+);
+const ablyBrowserBundlePath = fileURLToPath(
+  new URL('./node_modules/ably/build/ably.min.js', import.meta.url),
 );
 
 function realtimeOptions({ clientId, binary }) {
@@ -183,6 +192,203 @@ async function authRequestToken() {
   return { clientId, tokenId: token.id ?? null };
 }
 
+async function startBrowserOriginServer() {
+  if (browserOriginPorts.length === 0) {
+    throw new Error('ABLY_BROWSER_ORIGIN_PORTS did not contain any usable ports');
+  }
+
+  const html = '<!doctype html><html><head><meta charset="utf-8"><title>Ably browser discovery</title></head><body></body></html>';
+  const errors = [];
+
+  for (const originPort of browserOriginPorts) {
+    const server = createServer((_, response) => {
+      response.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+      });
+      response.end(html);
+    });
+
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = (error) => {
+          server.off('listening', onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off('error', onError);
+          resolve();
+        };
+
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(originPort, '127.0.0.1');
+      });
+
+      return {
+        origin: `http://127.0.0.1:${originPort}/`,
+        close: () =>
+          new Promise((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+          }),
+      };
+    } catch (error) {
+      errors.push(`${originPort}: ${error.message}`);
+      if (error.code !== 'EADDRINUSE' && error.code !== 'EACCES') {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(
+    `unable to start browser origin on ports ${browserOriginPorts.join(', ')} (${errors.join('; ')})`,
+  );
+}
+
+async function browserChromiumPubSub() {
+  const { chromium } = await import('playwright');
+  const originServer = await startBrowserOriginServer();
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const browserErrors = [];
+
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') {
+      browserErrors.push(message.text());
+    }
+  });
+
+  try {
+    await page.goto(originServer.origin, { waitUntil: 'domcontentloaded' });
+    await page.addScriptTag({ path: ablyBrowserBundlePath });
+
+    const clientId = `${baseClientId}-browser-json-${runId}`;
+    const channelName = `ably-browser-json-${runId}`;
+    const details = await withTimeout(
+      page.evaluate(
+        async ({ channelName, clientId, endpoint, key, port, runId, timeoutMs, tls }) => {
+          const AblyBrowser = window.Ably;
+          if (!AblyBrowser?.Realtime) {
+            throw new Error('Ably browser bundle did not expose window.Ably.Realtime');
+          }
+
+          function withBrowserTimeout(promise, label, ms = timeoutMs) {
+            let timer;
+            return Promise.race([
+              promise,
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+              }),
+            ]).finally(() => clearTimeout(timer));
+          }
+
+          function onceBrowserConnection(client, state) {
+            if (client.connection.state === state) {
+              return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+              const onState = (change) => {
+                if (change.current === state) {
+                  client.connection.off(onState);
+                  resolve(change);
+                } else if (change.current === 'failed' || change.current === 'closed') {
+                  client.connection.off(onState);
+                  const reason = change.reason?.message ?? `connection ${change.current}`;
+                  reject(new Error(reason));
+                }
+              };
+              client.connection.on(onState);
+            });
+          }
+
+          function expectBrowserMessage(message, expectedName, expectedData) {
+            if (message.name !== expectedName) {
+              throw new Error(`expected message name ${expectedName}, got ${message.name}`);
+            }
+            if (JSON.stringify(message.data) !== JSON.stringify(expectedData)) {
+              throw new Error(
+                `expected message data ${JSON.stringify(expectedData)}, got ${JSON.stringify(message.data)}`,
+              );
+            }
+          }
+
+          const client = new AblyBrowser.Realtime({
+            key,
+            clientId,
+            endpoint,
+            port,
+            tls,
+            useBinaryProtocol: false,
+            transports: ['web_socket'],
+            autoConnect: false,
+            logLevel: 0,
+          });
+
+          try {
+            client.connect();
+            await withBrowserTimeout(onceBrowserConnection(client, 'connected'), 'browser connect');
+
+            const channel = client.channels.get(channelName);
+            await withBrowserTimeout(channel.attach(), 'browser attach');
+
+            let resolveMessage;
+            const received = new Promise((resolve) => {
+              resolveMessage = resolve;
+            });
+            await withBrowserTimeout(
+              Promise.resolve(channel.subscribe('browser-protocol-discovery', resolveMessage)),
+              'browser subscribe',
+            );
+
+            const data = { via: 'browser', runId };
+            await withBrowserTimeout(
+              channel.publish('browser-protocol-discovery', data),
+              'browser publish',
+            );
+
+            const message = await withBrowserTimeout(received, 'browser delivery');
+            expectBrowserMessage(message, 'browser-protocol-discovery', data);
+
+            const history = await withBrowserTimeout(
+              channel.history({ limit: 1, untilAttach: true }),
+              'browser history',
+            );
+            if (!history.items.length) {
+              throw new Error('expected at least one browser history item');
+            }
+            expectBrowserMessage(history.items[0], 'browser-protocol-discovery', data);
+
+            await withBrowserTimeout(channel.detach(), 'browser detach');
+            return {
+              channel: channelName,
+              clientId,
+              userAgent: navigator.userAgent,
+            };
+          } finally {
+            client.close();
+            try {
+              await withBrowserTimeout(onceBrowserConnection(client, 'closed'), 'browser close', 2000);
+            } catch {
+              // Closing is best-effort; the browser process is torn down after the lane.
+            }
+          }
+        },
+        { channelName, clientId, endpoint, key, port, runId, timeoutMs, tls },
+      ),
+      'browser chromium pubsub',
+    );
+
+    if (browserErrors.length > 0) {
+      details.browserErrors = browserErrors.slice(0, 10);
+    }
+    return { ...details, origin: originServer.origin };
+  } finally {
+    await browser.close();
+    await originServer.close();
+  }
+}
+
 function errorSummary(error) {
   const reason = error?.reason ?? error;
   return {
@@ -273,7 +479,7 @@ const scenarios = [
     runtime: 'chromium',
     area: 'realtime',
     claim: 'broader Ably protocol discovery',
-    skip: 'browser runner needs explicit Playwright/Chromium dependency and CI setup',
+    run: browserChromiumPubSub,
   },
 ];
 

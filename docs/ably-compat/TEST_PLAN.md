@@ -26,6 +26,8 @@ make ably-ai-demo
 The `make` targets use `tests/ably-compat`, stock `ably@2.23.0`, and
 `@ably/ai-transport@0.4.0`. The Ably facade is expected at the Sockudo root WebSocket/REST endpoint;
 existing Sockudo/Pusher clients continue to use `/app/{appKey}` and `/apps/{appId}`.
+`make ably-protocol-discovery` also installs Playwright Chromium and runs one stock browser bundle
+Pub/Sub/history lane from an allowed localhost origin.
 
 ## Required Test Cases
 

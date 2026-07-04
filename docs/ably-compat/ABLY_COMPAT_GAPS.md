@@ -13,7 +13,6 @@ the reduced Ably Pub/Sub subset needed by AI Transport tests and demos.
 | Full channel mode/capability enforcement | Not yet implemented | Sockudo app auth remains authoritative. |
 | Full Ably presence-history parity | Not yet implemented | Realtime presence frames are supported for the reduced path. |
 | Byte-for-byte Ably serial internals | Not yet implemented | Sockudo emits stable compatible serials for the tested history/recovery path. |
-| Browser SDK discovery lane | Not yet implemented | A real Chromium/Playwright runner is not wired into `make ably-protocol-discovery` yet. |
 
 ## Required Before Broader Claims
 
