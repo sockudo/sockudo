@@ -34,7 +34,7 @@ Pub/Sub/history lane from an allowed localhost origin.
 | Case | Command |
 | --- | --- |
 | Ably Realtime connect, attach, publish, receive, history, detach | `make ably-compat-test` |
-| Broader stock `ably` SDK discovery across JSON, REST publish/history, presence, token, MsgPack, and browser lanes | `make ably-protocol-discovery` |
+| Broader stock `ably` SDK discovery across JSON, REST publish/history, presence, token, token capability enforcement, MsgPack, and browser lanes | `make ably-protocol-discovery` |
 | Ably mutable message create/append/update/delete/version reads | `make ably-compat-test` |
 | Ably recovery/history replay during streamed output | `make ably-compat-test` |
 | Stock `@ably/ai-transport` chat smoke | `make ably-ai-transport-test` |

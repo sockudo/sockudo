@@ -22,6 +22,7 @@ use sockudo_core::{
     history::{HistoryCursor, HistoryDirection, HistoryQueryBounds, HistoryReadRequest, now_ms},
     origin_validation::OriginValidator,
     utils::validate_channel_name,
+    websocket::ConnectionCapabilities,
 };
 use sockudo_protocol::{
     messages::{
@@ -136,7 +137,7 @@ pub struct AblyTokenRequest {
     key_name: Option<String>,
     client_id: Option<String>,
     ttl: Option<i64>,
-    capability: Option<Value>,
+    capability: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -276,7 +277,7 @@ struct AblyTokenDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    capability: Option<Value>,
+    capability: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,12 +285,14 @@ struct AblyTokenRecord {
     app_key: String,
     client_id: Option<String>,
     expires_ms: i64,
+    capabilities: Option<ConnectionCapabilities>,
 }
 
 #[derive(Debug)]
 struct ResolvedAblyAuth {
     app: App,
     client_id: Option<String>,
+    capabilities: Option<ConnectionCapabilities>,
 }
 
 #[derive(Debug)]
@@ -755,7 +758,8 @@ impl AblyCompatHub {
         app: &App,
         client_id: Option<String>,
         ttl_ms: i64,
-        capability: Option<Value>,
+        capability: Option<String>,
+        capabilities: Option<ConnectionCapabilities>,
     ) -> AblyTokenDetails {
         let issued = now_ms();
         let expires = issued.saturating_add(ttl_ms.max(1));
@@ -766,6 +770,7 @@ impl AblyCompatHub {
                 app_key: app.key.clone(),
                 client_id: client_id.clone(),
                 expires_ms: expires,
+                capabilities,
             },
         );
         AblyTokenDetails {
@@ -847,6 +852,7 @@ pub async fn handle_ably_realtime_upgrade(
                 hub,
                 resolved.app,
                 resolved.client_id,
+                resolved.capabilities,
                 resume,
                 recover,
                 format,
@@ -865,6 +871,7 @@ async fn run_ably_realtime_socket(
     hub: Arc<AblyCompatHub>,
     app: App,
     client_id: Option<String>,
+    capabilities: Option<ConnectionCapabilities>,
     resume: Option<String>,
     recover: Option<String>,
     format: AblyFormat,
@@ -959,6 +966,7 @@ async fn run_ably_realtime_socket(
             &app,
             &connection_id,
             client_id.as_deref(),
+            capabilities.as_ref(),
             &session_id,
             &sender,
             &mut attached_channels,
@@ -984,6 +992,7 @@ async fn handle_ably_protocol_message(
     app: &App,
     connection_id: &str,
     client_id: Option<&str>,
+    capabilities: Option<&ConnectionCapabilities>,
     session_id: &str,
     sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
     attached_channels: &mut HashSet<String>,
@@ -1020,6 +1029,12 @@ async fn handle_ably_protocol_message(
                 send_protocol_error(sender, 40000, error.to_string());
                 return Ok(());
             }
+            if let Err(error) =
+                ensure_ably_capability(capabilities, &channel, AblyCapabilityCheck::Subscribe)
+            {
+                send_protocol_error(sender, error.code, error.message);
+                return Ok(());
+            }
             attached_channels.insert(channel.clone());
             handle_ably_attach(
                 handler,
@@ -1046,10 +1061,28 @@ async fn handle_ably_protocol_message(
             });
         }
         ACTION_MESSAGE => {
-            handle_ably_publish(handler, app, connection_id, client_id, sender, inbound).await?;
+            handle_ably_publish(
+                handler,
+                app,
+                connection_id,
+                client_id,
+                capabilities,
+                sender,
+                inbound,
+            )
+            .await?;
         }
         ACTION_PRESENCE => {
-            handle_ably_presence(hub, app, connection_id, client_id, sender, inbound);
+            handle_ably_presence(
+                hub,
+                app,
+                connection_id,
+                client_id,
+                capabilities,
+                sender,
+                inbound,
+            )
+            .await;
         }
         ACTION_DISCONNECT | ACTION_CLOSE => {
             let _ = sender.send(AblyProtocolMessage {
@@ -1384,6 +1417,7 @@ async fn handle_ably_publish(
     app: &App,
     connection_id: &str,
     client_id: Option<&str>,
+    capabilities: Option<&ConnectionCapabilities>,
     sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
     inbound: AblyProtocolMessage,
 ) -> SockudoResult<()> {
@@ -1396,6 +1430,11 @@ async fn handle_ably_publish(
     };
     if let Err(error) = validate_channel_name(app, &channel).await {
         send_publish_nack(sender, &inbound, 40000, error.to_string());
+        return Ok(());
+    }
+    if let Err(error) = ensure_ably_capability(capabilities, &channel, AblyCapabilityCheck::Publish)
+    {
+        send_publish_nack(sender, &inbound, error.code, error.message);
         return Ok(());
     }
 
@@ -1621,11 +1660,12 @@ async fn publish_ably_delete(
     Ok(payload.version_serial.unwrap_or(payload.message_serial))
 }
 
-fn handle_ably_presence(
+async fn handle_ably_presence(
     hub: &Arc<AblyCompatHub>,
     app: &App,
     connection_id: &str,
     client_id: Option<&str>,
+    capabilities: Option<&ConnectionCapabilities>,
     sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
     inbound: AblyProtocolMessage,
 ) {
@@ -1633,6 +1673,16 @@ fn handle_ably_presence(
         send_publish_nack(sender, &inbound, 40000, "PRESENCE requires channel");
         return;
     };
+    if let Err(error) = validate_channel_name(app, &channel).await {
+        send_publish_nack(sender, &inbound, 40000, error.to_string());
+        return;
+    }
+    if let Err(error) =
+        ensure_ably_capability(capabilities, &channel, AblyCapabilityCheck::Presence)
+    {
+        send_publish_nack(sender, &inbound, error.code, error.message);
+        return;
+    }
     let mut presence = inbound.presence.unwrap_or_default();
     for member in &mut presence {
         member
@@ -1712,6 +1762,11 @@ async fn ably_channel_publish_inner(
     .await
     .map_err(|error| AppError::ApiAuthFailed(error.message))?;
     validate_channel_name(&resolved.app, &channel_name).await?;
+    ensure_ably_capability_app_error(
+        resolved.capabilities.as_ref(),
+        &channel_name,
+        AblyCapabilityCheck::Publish,
+    )?;
 
     let messages = decode_ably_publish_payload(body.as_ref(), request_format)?;
     if messages.is_empty() {
@@ -1764,6 +1819,11 @@ async fn ably_channel_history_inner(
     .await
     .map_err(|error| AppError::ApiAuthFailed(error.message))?;
     validate_channel_name(&resolved.app, &channel_name).await?;
+    ensure_ably_capability_app_error(
+        resolved.capabilities.as_ref(),
+        &channel_name,
+        AblyCapabilityCheck::History,
+    )?;
     let history_policy = resolved
         .app
         .resolved_history(&channel_name, &handler.server_options().history);
@@ -1857,6 +1917,13 @@ pub async fn ably_channel_status(
     if let Err(error) = validate_channel_name(&resolved.app, &channel_name).await {
         return ably_error_response(StatusCode::BAD_REQUEST, 40000, error.to_string());
     }
+    if let Err(error) = ensure_ably_capability(
+        resolved.capabilities.as_ref(),
+        &channel_name,
+        AblyCapabilityCheck::AnyChannelAccess,
+    ) {
+        return ably_error_response(error.status, error.code, error.message);
+    }
     let occupancy = handler
         .connection_manager()
         .get_channel_socket_count(&resolved.app.id, &channel_name)
@@ -1901,6 +1968,16 @@ pub async fn ably_channel_message(
         Ok(resolved) => resolved,
         Err(error) => return ably_error_response(error.status, error.code, error.message),
     };
+    if let Err(error) = validate_channel_name(&resolved.app, &channel_name).await {
+        return ably_error_response(StatusCode::BAD_REQUEST, 40000, error.to_string());
+    }
+    if let Err(error) = ensure_ably_capability(
+        resolved.capabilities.as_ref(),
+        &channel_name,
+        AblyCapabilityCheck::History,
+    ) {
+        return ably_error_response(error.status, error.code, error.message);
+    }
     match ably_channel_message_inner(handler, resolved.app, channel_name, message_serial).await {
         Ok(message) => (StatusCode::OK, Json(message)).into_response(),
         Err(error) => ably_app_error_response(error),
@@ -1948,6 +2025,16 @@ pub async fn ably_channel_message_versions(
         Ok(resolved) => resolved,
         Err(error) => return ably_error_response(error.status, error.code, error.message),
     };
+    if let Err(error) = validate_channel_name(&resolved.app, &channel_name).await {
+        return ably_error_response(StatusCode::BAD_REQUEST, 40000, error.to_string());
+    }
+    if let Err(error) = ensure_ably_capability(
+        resolved.capabilities.as_ref(),
+        &channel_name,
+        AblyCapabilityCheck::History,
+    ) {
+        return ably_error_response(error.status, error.code, error.message);
+    }
     match ably_channel_message_versions_inner(handler, resolved.app, channel_name, message_serial)
         .await
     {
@@ -2016,11 +2103,18 @@ pub async fn ably_request_token(
             "Token keyName does not match authenticated app",
         );
     }
+    let (capability, capabilities) = match normalise_ably_token_capability(request.capability) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return ably_error_response(StatusCode::BAD_REQUEST, 40000, error.to_string());
+        }
+    };
     let token = global_ably_hub().issue_token(
         &resolved.app,
         request.client_id.or(resolved.client_id),
         request.ttl.unwrap_or(DEFAULT_TOKEN_TTL_MS),
-        request.capability,
+        capability,
+        capabilities,
     );
     (StatusCode::OK, Json(token)).into_response()
 }
@@ -2173,6 +2267,266 @@ fn empty_protocol_message(action: u8) -> AblyProtocolMessage {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum AblyCapabilityCheck {
+    Publish,
+    Subscribe,
+    History,
+    Presence,
+    AnyChannelAccess,
+}
+
+impl AblyCapabilityCheck {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Publish => "publish",
+            Self::Subscribe => "subscribe",
+            Self::History => "history",
+            Self::Presence => "presence",
+            Self::AnyChannelAccess => "channel access",
+        }
+    }
+}
+
+fn ensure_ably_capability(
+    capabilities: Option<&ConnectionCapabilities>,
+    channel: &str,
+    check: AblyCapabilityCheck,
+) -> Result<(), AblyAuthError> {
+    let Some(capabilities) = capabilities else {
+        return Ok(());
+    };
+
+    let allowed = match check {
+        AblyCapabilityCheck::Publish => capabilities.allows_publish(channel),
+        AblyCapabilityCheck::Subscribe => capabilities.allows_subscribe(channel),
+        AblyCapabilityCheck::History => capabilities.allows_history(channel),
+        AblyCapabilityCheck::Presence => capabilities
+            .presence
+            .as_deref()
+            .is_some_and(|patterns| ConnectionCapabilities::matches_any(patterns, channel)),
+        AblyCapabilityCheck::AnyChannelAccess => {
+            capabilities.allows_publish(channel)
+                || capabilities.allows_subscribe(channel)
+                || capabilities.allows_history(channel)
+                || capabilities
+                    .presence
+                    .as_deref()
+                    .is_some_and(|patterns| ConnectionCapabilities::matches_any(patterns, channel))
+                || capabilities.allows_annotation_subscribe(channel)
+                || capabilities.allows_annotation_publish(channel)
+                || capabilities.allows_annotation_delete_own(channel)
+                || capabilities.allows_annotation_delete_any(channel)
+                || capabilities.allows_message_mutation_own(
+                    sockudo_core::versioned_message_auth::MutationKind::Append,
+                    channel,
+                )
+                || capabilities.allows_message_mutation_any(
+                    sockudo_core::versioned_message_auth::MutationKind::Append,
+                    channel,
+                )
+                || capabilities.allows_message_mutation_own(
+                    sockudo_core::versioned_message_auth::MutationKind::Update,
+                    channel,
+                )
+                || capabilities.allows_message_mutation_any(
+                    sockudo_core::versioned_message_auth::MutationKind::Update,
+                    channel,
+                )
+                || capabilities.allows_message_mutation_own(
+                    sockudo_core::versioned_message_auth::MutationKind::Delete,
+                    channel,
+                )
+                || capabilities.allows_message_mutation_any(
+                    sockudo_core::versioned_message_auth::MutationKind::Delete,
+                    channel,
+                )
+        }
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(AblyAuthError::forbidden(format!(
+            "Ably token lacks {} capability for channel '{}'",
+            check.label(),
+            channel
+        )))
+    }
+}
+
+fn ensure_ably_capability_app_error(
+    capabilities: Option<&ConnectionCapabilities>,
+    channel: &str,
+    check: AblyCapabilityCheck,
+) -> Result<(), AppError> {
+    ensure_ably_capability(capabilities, channel, check)
+        .map_err(|error| AppError::Forbidden(error.message))
+}
+
+fn normalise_ably_token_capability(
+    capability: Option<serde_json::Value>,
+) -> Result<(Option<String>, Option<ConnectionCapabilities>), AppError> {
+    let Some(capability) = capability else {
+        return Ok((None, None));
+    };
+
+    let parsed = match &capability {
+        serde_json::Value::String(raw) => {
+            serde_json::from_str::<serde_json::Value>(raw).map_err(|error| {
+                AppError::InvalidInput(format!("Invalid Ably token capability JSON: {error}"))
+            })?
+        }
+        serde_json::Value::Object(_) => capability.clone(),
+        _ => {
+            return Err(AppError::InvalidInput(
+                "Ably token capability must be a JSON object or JSON object string".to_string(),
+            ));
+        }
+    };
+
+    let capabilities = ably_capability_value_to_sockudo(&parsed)?;
+    let capability = match capability {
+        serde_json::Value::String(raw) => raw,
+        _ => serde_json::to_string(&parsed).map_err(|error| {
+            AppError::InvalidInput(format!("Invalid Ably token capability: {error}"))
+        })?,
+    };
+    Ok((Some(capability), Some(capabilities)))
+}
+
+fn ably_capability_value_to_sockudo(
+    value: &serde_json::Value,
+) -> Result<ConnectionCapabilities, AppError> {
+    let object = value.as_object().ok_or_else(|| {
+        AppError::InvalidInput("Ably token capability must be a JSON object".to_string())
+    })?;
+    let mut capabilities = restricted_ably_capabilities();
+
+    for (resource, operations) in object {
+        if resource.is_empty() {
+            return Err(AppError::InvalidInput(
+                "Ably token capability resource must not be empty".to_string(),
+            ));
+        }
+        let operations = operations.as_array().ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "Ably token capability for '{resource}' must be an array"
+            ))
+        })?;
+        for operation in operations {
+            let operation = operation.as_str().ok_or_else(|| {
+                AppError::InvalidInput(format!(
+                    "Ably token capability operation for '{resource}' must be a string"
+                ))
+            })?;
+            add_ably_capability_operation(&mut capabilities, resource, operation)?;
+        }
+    }
+
+    Ok(capabilities)
+}
+
+fn restricted_ably_capabilities() -> ConnectionCapabilities {
+    ConnectionCapabilities {
+        subscribe: Some(Vec::new()),
+        publish: Some(Vec::new()),
+        history: Some(Vec::new()),
+        presence: Some(Vec::new()),
+        annotation_subscribe: Some(Vec::new()),
+        annotation_publish: Some(Vec::new()),
+        annotation_delete_own: Some(Vec::new()),
+        annotation_delete_any: Some(Vec::new()),
+        message_update_own: Some(Vec::new()),
+        message_update_any: Some(Vec::new()),
+        message_delete_own: Some(Vec::new()),
+        message_delete_any: Some(Vec::new()),
+        message_append_own: Some(Vec::new()),
+        message_append_any: Some(Vec::new()),
+    }
+}
+
+fn add_ably_capability_operation(
+    capabilities: &mut ConnectionCapabilities,
+    resource: &str,
+    operation: &str,
+) -> Result<(), AppError> {
+    match operation {
+        "*" => {
+            add_all_supported_ably_capabilities(capabilities, resource);
+            Ok(())
+        }
+        "publish" => {
+            add_capability_pattern(&mut capabilities.publish, resource);
+            Ok(())
+        }
+        "subscribe" => {
+            add_capability_pattern(&mut capabilities.subscribe, resource);
+            Ok(())
+        }
+        "history" => {
+            add_capability_pattern(&mut capabilities.history, resource);
+            Ok(())
+        }
+        "presence" => {
+            add_capability_pattern(&mut capabilities.presence, resource);
+            Ok(())
+        }
+        "annotation-subscribe" => {
+            add_capability_pattern(&mut capabilities.annotation_subscribe, resource);
+            Ok(())
+        }
+        "annotation-publish" => {
+            add_capability_pattern(&mut capabilities.annotation_publish, resource);
+            Ok(())
+        }
+        "message-update-own" => {
+            add_capability_pattern(&mut capabilities.message_update_own, resource);
+            Ok(())
+        }
+        "message-update-any" => {
+            add_capability_pattern(&mut capabilities.message_update_any, resource);
+            Ok(())
+        }
+        "message-delete-own" => {
+            add_capability_pattern(&mut capabilities.message_delete_own, resource);
+            Ok(())
+        }
+        "message-delete-any" => {
+            add_capability_pattern(&mut capabilities.message_delete_any, resource);
+            Ok(())
+        }
+        "object-subscribe" | "object-publish" | "stats" | "channel-metadata" | "push-subscribe"
+        | "push-admin" | "privileged-headers" => Ok(()),
+        other => Err(AppError::InvalidInput(format!(
+            "Unsupported Ably token capability operation '{other}'"
+        ))),
+    }
+}
+
+fn add_all_supported_ably_capabilities(capabilities: &mut ConnectionCapabilities, resource: &str) {
+    add_capability_pattern(&mut capabilities.publish, resource);
+    add_capability_pattern(&mut capabilities.subscribe, resource);
+    add_capability_pattern(&mut capabilities.history, resource);
+    add_capability_pattern(&mut capabilities.presence, resource);
+    add_capability_pattern(&mut capabilities.annotation_subscribe, resource);
+    add_capability_pattern(&mut capabilities.annotation_publish, resource);
+    add_capability_pattern(&mut capabilities.annotation_delete_own, resource);
+    add_capability_pattern(&mut capabilities.annotation_delete_any, resource);
+    add_capability_pattern(&mut capabilities.message_update_own, resource);
+    add_capability_pattern(&mut capabilities.message_update_any, resource);
+    add_capability_pattern(&mut capabilities.message_delete_own, resource);
+    add_capability_pattern(&mut capabilities.message_delete_any, resource);
+    add_capability_pattern(&mut capabilities.message_append_own, resource);
+    add_capability_pattern(&mut capabilities.message_append_any, resource);
+}
+
+fn add_capability_pattern(patterns: &mut Option<Vec<String>>, pattern: &str) {
+    patterns
+        .get_or_insert_with(Vec::new)
+        .push(pattern.to_string());
+}
+
 async fn resolve_ably_auth(
     handler: &Arc<ConnectionHandler>,
     headers: &HeaderMap,
@@ -2180,14 +2534,19 @@ async fn resolve_ably_auth(
     access_token: Option<&str>,
     query_client_id: Option<&str>,
 ) -> Result<ResolvedAblyAuth, AblyAuthError> {
-    if let Some(access_token) = access_token.or_else(|| bearer_token(headers)) {
+    let access_token = access_token
+        .map(str::to_string)
+        .or_else(|| bearer_token(headers));
+    if let Some(access_token) = access_token {
         let record = global_ably_hub()
-            .resolve_token(access_token)
+            .resolve_token(&access_token)
             .ok_or_else(|| AblyAuthError::unauthorized("Invalid or expired Ably token"))?;
         let app = find_enabled_app_by_key(handler, &record.app_key).await?;
+        let client_id = resolve_ably_token_client_id(record.client_id, query_client_id)?;
         return Ok(ResolvedAblyAuth {
             app,
-            client_id: query_client_id.map(str::to_string).or(record.client_id),
+            client_id,
+            capabilities: record.capabilities,
         });
     }
 
@@ -2205,7 +2564,24 @@ async fn resolve_ably_auth(
     Ok(ResolvedAblyAuth {
         app,
         client_id: query_client_id.map(str::to_string),
+        capabilities: None,
     })
+}
+
+fn resolve_ably_token_client_id(
+    token_client_id: Option<String>,
+    query_client_id: Option<&str>,
+) -> Result<Option<String>, AblyAuthError> {
+    match (token_client_id, query_client_id) {
+        (Some(token_client_id), Some(query_client_id)) if token_client_id != query_client_id => {
+            Err(AblyAuthError::forbidden(
+                "Token clientId does not match requested clientId",
+            ))
+        }
+        (Some(token_client_id), _) => Ok(Some(token_client_id)),
+        (None, Some(query_client_id)) => Ok(Some(query_client_id.to_string())),
+        (None, None) => Ok(None),
+    }
 }
 
 async fn find_enabled_app_by_key(
@@ -2237,11 +2613,16 @@ fn basic_credential(headers: &HeaderMap) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let raw = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| value.strip_prefix("Bearer "))?;
+    general_purpose::STANDARD
+        .decode(raw)
+        .ok()
+        .and_then(|decoded| String::from_utf8(decoded).ok())
+        .or_else(|| Some(raw.to_string()))
 }
 
 fn ably_rest_request_format(headers: &HeaderMap) -> AblyFormat {
@@ -2825,6 +3206,7 @@ fn ably_app_error_response(error: AppError) -> Response {
         AppError::ApiAuthFailed(message) => {
             ably_error_response(StatusCode::UNAUTHORIZED, 40140, message)
         }
+        AppError::Forbidden(message) => ably_error_response(StatusCode::FORBIDDEN, 40160, message),
         AppError::FeatureDisabled(message) => {
             ably_error_response(StatusCode::BAD_REQUEST, 40000, message)
         }
@@ -2859,6 +3241,26 @@ mod tests {
             ("app-key", Some("secret"))
         );
         assert_eq!(parse_ably_key("app-key"), ("app-key", None));
+    }
+
+    #[test]
+    fn bearer_token_accepts_raw_and_ably_base64_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer sockudo-ably-raw".parse().unwrap(),
+        );
+        assert_eq!(bearer_token(&headers).as_deref(), Some("sockudo-ably-raw"));
+
+        let encoded = general_purpose::STANDARD.encode("sockudo-ably-encoded");
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {encoded}").parse().unwrap(),
+        );
+        assert_eq!(
+            bearer_token(&headers).as_deref(),
+            Some("sockudo-ably-encoded")
+        );
     }
 
     #[test]
@@ -3029,6 +3431,80 @@ mod tests {
         };
         let error = effective_ably_client_id(Some("client-1"), &message).unwrap_err();
         assert!(error.to_string().contains("authenticated clientId"));
+    }
+
+    #[test]
+    fn ably_token_capability_maps_to_sockudo_capabilities() {
+        let (_, capabilities) = normalise_ably_token_capability(Some(serde_json::json!({
+            "chat:*": ["publish", "subscribe", "history"],
+            "presence-chat:*": ["presence"],
+            "mutable:*": ["message-update-any", "message-delete-own"],
+            "object:*": ["object-subscribe"]
+        })))
+        .unwrap();
+        let capabilities = capabilities.unwrap();
+
+        assert!(capabilities.allows_publish("chat:one"));
+        assert!(capabilities.allows_subscribe("chat:one"));
+        assert!(capabilities.allows_history("chat:one"));
+        assert!(!capabilities.allows_publish("other:one"));
+        assert!(capabilities.presence.as_deref().is_some_and(|patterns| {
+            ConnectionCapabilities::matches_any(patterns, "presence-chat:one")
+        }));
+        assert!(capabilities.allows_message_mutation_any(
+            sockudo_core::versioned_message_auth::MutationKind::Update,
+            "mutable:one"
+        ));
+        assert!(capabilities.allows_message_mutation_own(
+            sockudo_core::versioned_message_auth::MutationKind::Delete,
+            "mutable:one"
+        ));
+        assert!(
+            ensure_ably_capability(
+                Some(&capabilities),
+                "other:one",
+                AblyCapabilityCheck::Publish
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ably_token_capability_accepts_json_string_and_wildcard() {
+        let (capability, capabilities) = normalise_ably_token_capability(Some(
+            serde_json::Value::String(r#"{"*":["*"]}"#.to_string()),
+        ))
+        .unwrap();
+        let capabilities = capabilities.unwrap();
+
+        assert_eq!(capability.as_deref(), Some(r#"{"*":["*"]}"#));
+        assert!(capabilities.allows_publish("any-channel"));
+        assert!(capabilities.allows_subscribe("any-channel"));
+        assert!(capabilities.allows_history("any-channel"));
+        assert!(
+            ensure_ably_capability(
+                Some(&capabilities),
+                "any-channel",
+                AblyCapabilityCheck::AnyChannelAccess
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn ably_token_client_id_cannot_be_overridden() {
+        assert_eq!(
+            resolve_ably_token_client_id(Some("client-1".to_string()), Some("client-1")).unwrap(),
+            Some("client-1".to_string())
+        );
+        assert!(
+            resolve_ably_token_client_id(Some("client-1".to_string()), Some("other-client"))
+                .is_err()
+        );
+        assert_eq!(
+            resolve_ably_token_client_id(None, Some("client-1")).unwrap(),
+            Some("client-1".to_string())
+        );
     }
 
     #[test]

@@ -26,7 +26,7 @@ Sockudo V1/V2 conformance tests pass against pinned target versions.
 | Sockudo-native AI Transport | Supported | Uses Cargo feature `ai-transport` plus runtime `[ai_transport]`; it does not require `ably-compat`. |
 | Ably facade feature gate | Supported | Root Ably WebSocket route, Ably REST routes, and Ably realtime egress tap are compiled only with `ably-compat`. |
 | Ably Realtime JSON/MsgPack protocol | Supported for AI Transport only | Handles the ProtocolMessage flows needed by the harness in JSON and MsgPack WebSocket modes. |
-| Ably REST time/token/history/message reads and publish | Supported for AI Transport only | Provides the reduced surfaces used by stock Ably clients and AI Transport smoke tests in the tested JSON/MsgPack lanes. |
+| Ably REST time/token/history/message reads and publish | Supported for AI Transport only | Provides the reduced surfaces used by stock Ably clients and AI Transport smoke tests in the tested JSON/MsgPack lanes. Ably token capabilities are translated to Sockudo channel-scoped capabilities for the supported operations. |
 | Mutable output streaming | Supported for AI Transport only | Ably mutable message calls map to Sockudo versioned messages. |
 | History and recovery | Supported for AI Transport only | Harness covers history projection and recovery of missed append fragments. |
 | Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes; full Ably mode enforcement is not claimed. |
@@ -77,6 +77,7 @@ make ably-protocol-discovery
 | `node-rest-msgpack-publish-history` | Supported | Stock Ably REST publish/history passes with `useBinaryProtocol: true`. |
 | `node-realtime-json-presence` | Supported | Enter, get, update, and leave passed for one client. |
 | `node-auth-json-request-token` | Supported | Stock Ably token request returned a token. |
+| `node-auth-json-token-capability-enforcement` | Supported | Restricted Ably token can publish/history on its allowed channel and is denied publish on another channel. |
 | `node-realtime-msgpack-pubsub` | Supported | Realtime Pub/Sub passes with `format=msgpack` binary ProtocolMessages. |
 | `node-rest-msgpack-time` | Supported | REST time works with the SDK's MsgPack option. |
 | `browser-chromium-json-pubsub` | Supported | Stock Ably browser bundle passes Chromium connect, attach, publish, receive, history, and detach over the reduced JSON Realtime path. |

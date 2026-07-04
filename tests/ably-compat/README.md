@@ -60,8 +60,9 @@ publishes, receives the same message, reads history, and detaches.
 a machine-readable scorecard. The required lane is the JSON Realtime Pub/Sub
 baseline already covered by the compatibility claim. Optional lanes currently
 cover REST time, REST publish/history in JSON and MsgPack, Realtime presence,
-token requests, Realtime MsgPack Pub/Sub, and Chromium browser Pub/Sub/history. Optional
-failures are reported as gaps unless `ABLY_PROTOCOL_STRICT=1` is set.
+token requests, token capability enforcement, Realtime MsgPack Pub/Sub, and
+Chromium browser Pub/Sub/history. Optional failures are reported as gaps unless
+`ABLY_PROTOCOL_STRICT=1` is set.
 
 `make ably-protocol-discovery` installs the Playwright Chromium browser before
 running the discovery script. On minimal Linux CI images, install the Playwright

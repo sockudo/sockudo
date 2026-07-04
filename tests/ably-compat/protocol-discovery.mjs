@@ -52,6 +52,19 @@ function restOptions({ clientId, binary }) {
   };
 }
 
+function tokenRestOptions({ clientId, binary, tokenDetails }) {
+  return {
+    tokenDetails,
+    clientId,
+    endpoint,
+    port,
+    tls,
+    useBinaryProtocol: binary,
+    useTokenAuth: true,
+    logLevel: 0,
+  };
+}
+
 function withTimeout(promise, label, ms = timeoutMs) {
   let timer;
   return Promise.race([
@@ -192,6 +205,54 @@ async function authRequestToken() {
   return { clientId, tokenId: token.id ?? null };
 }
 
+async function authTokenCapabilityEnforcement() {
+  const clientId = `${baseClientId}-token-caps-${runId}`;
+  const issuer = new Ably.Rest(restOptions({ clientId, binary: false }));
+  const allowedChannelName = `ably-token-allowed-${runId}`;
+  const deniedChannelName = `ably-token-denied-${runId}`;
+  const token = await withTimeout(
+    issuer.auth.requestToken({
+      clientId,
+      capability: {
+        [allowedChannelName]: ['publish', 'history'],
+        [deniedChannelName]: ['history'],
+      },
+    }),
+    'restricted token request',
+  );
+  assert.equal(typeof token.token, 'string');
+  assert.equal(typeof token.capability, 'string');
+
+  const rest = new Ably.Rest(tokenRestOptions({ clientId, binary: false, tokenDetails: token }));
+  const data = { via: 'restricted-token', runId };
+  const allowedChannel = rest.channels.get(allowedChannelName);
+  await withTimeout(
+    allowedChannel.publish('restricted-token-publish', data),
+    'restricted token allowed publish',
+  );
+  const history = await withTimeout(
+    allowedChannel.history({ limit: 1 }),
+    'restricted token allowed history',
+  );
+  assert.ok(history.items.length >= 1, 'expected restricted token history item');
+  expectMessage(history.items[0], 'restricted-token-publish', data);
+
+  await assert.rejects(
+    () =>
+      withTimeout(
+        rest.channels.get(deniedChannelName).publish('restricted-token-publish', data),
+        'restricted token denied publish',
+      ),
+    /capability|40160|403|Forbidden/i,
+  );
+
+  return {
+    clientId,
+    allowedChannel: allowedChannelName,
+    deniedChannel: deniedChannelName,
+  };
+}
+
 async function startBrowserOriginServer() {
   if (browserOriginPorts.length === 0) {
     throw new Error('ABLY_BROWSER_ORIGIN_PORTS did not contain any usable ports');
@@ -306,7 +367,20 @@ async function browserChromiumPubSub() {
             if (message.name !== expectedName) {
               throw new Error(`expected message name ${expectedName}, got ${message.name}`);
             }
-            if (JSON.stringify(message.data) !== JSON.stringify(expectedData)) {
+            const stable = (value) => {
+              if (Array.isArray(value)) {
+                return value.map(stable);
+              }
+              if (value && typeof value === 'object') {
+                return Object.fromEntries(
+                  Object.entries(value)
+                    .sort(([left], [right]) => left.localeCompare(right))
+                    .map(([key, nested]) => [key, stable(nested)]),
+                );
+              }
+              return value;
+            };
+            if (JSON.stringify(stable(message.data)) !== JSON.stringify(stable(expectedData))) {
               throw new Error(
                 `expected message data ${JSON.stringify(expectedData)}, got ${JSON.stringify(message.data)}`,
               );
@@ -453,6 +527,15 @@ const scenarios = [
     area: 'auth',
     claim: 'broader Ably protocol discovery',
     run: authRequestToken,
+  },
+  {
+    id: 'node-auth-json-token-capability-enforcement',
+    required: false,
+    protocol: 'json',
+    runtime: 'node',
+    area: 'auth',
+    claim: 'broader Ably protocol discovery',
+    run: authTokenCapabilityEnforcement,
   },
   {
     id: 'node-realtime-msgpack-pubsub',

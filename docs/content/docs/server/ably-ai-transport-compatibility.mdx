@@ -23,7 +23,7 @@ against Sockudo and the scorecard records that evidence.
 | Surface | Status | Scope |
 | --- | --- | --- |
 | Ably Realtime WebSocket JSON/MsgPack protocol | Supported for AI Transport only | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows needed by the smoke harness in JSON and MsgPack modes. |
-| Ably REST time/token/history/message reads and publish | Supported for AI Transport only | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. REST publish/history is covered in JSON and MsgPack discovery lanes. |
+| Ably REST time/token/history/message reads and publish | Supported for AI Transport only | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. REST publish/history and token capability enforcement are covered in discovery lanes. |
 | Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
 | Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
 | Mutable output streaming | Supported for AI Transport only | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
