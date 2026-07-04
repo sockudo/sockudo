@@ -39,9 +39,9 @@ public class WebhookTest {
         assertThat(memberUpdated.getUserId(), is("user-1"));
         assertThat(memberUpdated.getFieldAsString("future_field"), is("must-pass-through"));
 
-        final WebhookEvent aiTurnStarted = webhook.getEvents().get(1);
-        assertThat(aiTurnStarted.getName(), is("ai_turn_started"));
-        assertThat(aiTurnStarted.getFieldAsString("turn_id"), is("turn-1"));
+        final WebhookEvent aiRunStarted = webhook.getEvents().get(1);
+        assertThat(aiRunStarted.getName(), is("ai_run_started"));
+        assertThat(aiRunStarted.getFieldAsString("run_id"), is("run-1"));
 
         final WebhookEvent messageVersionCreated = webhook.getEvents().get(2);
         assertThat(messageVersionCreated.getName(), is("message_version_created"));

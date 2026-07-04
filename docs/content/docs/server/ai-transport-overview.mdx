@@ -5,7 +5,7 @@ icon: Bot
 ---
 
 AI Transport is a Protocol V2 convention layer. It does not replace Sockudo's realtime protocol or
-create AI-only storage. A session is a channel, every turn is normal channel traffic, and the
+create AI-only storage. A session is a channel, every run is normal channel traffic, and the
 server supplies durable, ordered, recoverable primitives that SDKs reduce into UI state.
 
 Sockudo AI Transport is heavily inspired by [Ably AI Transport](https://ably.com/docs/ai-transport).
@@ -32,7 +32,7 @@ prefix = "private-ai-"
 >
   <div className="ai-model-grid">
     <div className="ai-model-column">
-      <span className="ai-diagram-label">Turn sources</span>
+      <span className="ai-diagram-label">Run sources</span>
       <div className="ai-model-node">
         <strong>User device</strong>
         <small>{"Creates ai-input and receives live output."}</small>
@@ -58,7 +58,7 @@ prefix = "private-ai-"
       <strong>AI session channel</strong>
       <p>
         {
-          "A normal Protocol V2 channel that carries every turn event, message mutation, presence update, and recovery cursor."
+          "A normal Protocol V2 channel that carries every run event, message mutation, presence update, and recovery cursor."
         }
       </p>
     </div>
@@ -89,7 +89,7 @@ prefix = "private-ai-"
   </div>
 </div>
 
-The durable channel is the source of truth. HTTP streaming can start a turn, but the answer is no
+The durable channel is the source of truth. HTTP streaming can start a run, but the answer is no
 longer tied to that HTTP response. A browser refresh, mobile handoff, tab close, or temporary
 network loss can recover from the same channel history.
 
@@ -100,19 +100,19 @@ network loss can recover from the same channel history.
 | Session        | One channel, usually private or presence, for a user/agent conversation.                           |
 | Input          | `ai-input` channel event from a verified user-capable connection or trusted server.                |
 | Output         | `ai-output` mutable message created and appended by the agent/server side.                         |
-| Turn lifecycle | `ai-turn-start`, `ai-turn-end`, and `ai-cancel` events with bounded `extras.ai.transport` headers. |
+| Run lifecycle  | `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel` events with bounded `extras.ai.transport` headers. |
 | Mutable state  | Existing versioned messages: create, update, delete, append, summary.                              |
 | Replay         | Durable history, rewind, `until_attach`, and hot-to-durable recovery.                              |
 | Identity       | V2 capability tokens, signed channel auth, and server app-key HTTP auth.                           |
 | Agent state    | Presence channels plus V2 `sockudo:presence_update`.                                               |
 | Notifications  | Existing push device/channel-subscription pipeline and optional `[[push_rules]]`.                  |
 
-## Turn lifecycle
+## Run lifecycle
 
 <div
   className="turn-lifecycle-diagram not-prose"
   role="img"
-  aria-label="AI Transport turn lifecycle from client input through Sockudo persistence, agent output, append rollup, and final history state."
+  aria-label="AI Transport run lifecycle from client input through Sockudo persistence, agent output, append rollup, and final history state."
 >
   <div className="turn-lifecycle-actors" aria-hidden="true">
     <span>Client</span>
@@ -124,7 +124,7 @@ network loss can recover from the same channel history.
     <li>
       <span>01</span>
       <div>
-        <strong>Input creates the turn</strong>
+        <strong>Input creates the run</strong>
         <p>
           {
             "The client publishes ai-input create; Sockudo persists the input before agent work starts."
@@ -139,7 +139,7 @@ network loss can recover from the same channel history.
         <strong>Agent opens output state</strong>
         <p>
           {
-            "The worker emits ai-turn-start and creates the ai-output mutable message for this turn."
+            "The worker emits ai-run-start and creates the ai-output mutable message for this run."
           }
         </p>
       </div>
@@ -172,10 +172,10 @@ network loss can recover from the same channel history.
     <li>
       <span>05</span>
       <div>
-        <strong>Turn closes into durable history</strong>
+        <strong>Run closes into durable history</strong>
         <p>
           {
-            "The agent emits ai-turn-end complete; the final aggregate is visible to history, rewind, and recovery."
+            "The agent emits ai-run-end complete; the final aggregate is visible to history, rewind, and recovery."
           }
         </p>
       </div>
@@ -224,12 +224,12 @@ run long-lived agents.
 
 | Layer                                 | Owns                                                                                              | Recovers from                                                                                  |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Sockudo AI Transport                  | Published user inputs, assistant output chunks, approval responses, turn lifecycle, and cursors.  | Browser refresh, mobile handoff, reconnect, late join, transcript replay, and audit workflows. |
+| Sockudo AI Transport                  | Published user inputs, assistant output chunks, approval responses, run lifecycle, and cursors.   | Browser refresh, mobile handoff, reconnect, late join, transcript replay, and audit workflows. |
 | AI SDK `WorkflowAgent` or agent store | Pending agent steps, sleeps, retries, tool execution state, model-local context, and checkpoints. | Worker crash, deployment restart, long-running wait states, and agent workflow resume.         |
 | Model provider runtime                | Provider-native realtime sessions, reasoning controls, uploaded files, and provider tool context. | Provider-specific retries, session resume, or media reconnect semantics.                       |
 
 Sockudo history is intentionally not a workflow checkpoint store. Persist the AI SDK workflow run id
-or agent checkpoint id in turn metadata, then correlate it with `channelName`, `turnId`, and
+or agent checkpoint id in run metadata, then correlate it with `channelName`, `runId`, and
 `invocationId`. When a workflow resumes, it can reload its own checkpoint and continue appending to
 the same Sockudo session channel; clients recover the visible transcript from Sockudo.
 
@@ -239,28 +239,28 @@ the same Sockudo session channel; clients recover the visible transcript from So
 import { streamText, toUIMessageStream } from "ai";
 import { createServerTransport } from "@sockudo/ai-transport/vercel";
 
-export async function runTurn({ body, sockudo }) {
+export async function runAgent({ body, sockudo }) {
   const transport = createServerTransport({
     client: sockudo,
     channelName: body.channelName,
   });
 
-  const turn = transport.newTurn({
-    turnId: body.turnId,
+  const run = transport.newTurn({
+    runId: body.runId,
     invocationId: body.invocationId,
     inputEventId: body.inputEventId,
     clientId: body.clientId,
   });
 
-  await turn.start();
+  await run.start();
   const result = streamText({
     model: "openai/gpt-5-mini",
     instructions: "You are a concise incident-room assistant.",
     prompt: body.prompt,
-    abortSignal: turn.abortSignal,
+    abortSignal: run.abortSignal,
   });
-  await turn.streamResponse(toUIMessageStream({ stream: result.stream }));
-  await turn.end("complete");
+  await run.streamResponse(toUIMessageStream({ stream: result.stream }));
+  await run.end("complete");
   transport.close();
 }
 ```

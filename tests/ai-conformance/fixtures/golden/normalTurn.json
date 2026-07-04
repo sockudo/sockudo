@@ -5,7 +5,7 @@
     "data": {}
   },
   {
-    "event": "ai-turn-start",
+    "event": "ai-run-start",
     "channel": "private-ai-normal-golden",
     "data": {
       "ok": true
@@ -45,7 +45,7 @@
     }
   },
   {
-    "event": "ai-turn-end",
+    "event": "ai-run-end",
     "channel": "private-ai-normal-golden",
     "data": {
       "ok": true

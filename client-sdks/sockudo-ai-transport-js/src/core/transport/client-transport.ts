@@ -1,17 +1,27 @@
 import {
   EVENT_AI_CANCEL,
   EVENT_AI_INPUT,
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
+  EVENT_AI_LEGACY_TURN_END,
+  EVENT_AI_LEGACY_TURN_START,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_RESUME,
+  EVENT_AI_RUN_START,
+  EVENT_AI_RUN_SUSPEND,
   HEADER_INVOCATION_ID,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
+  HEADER_TURN_CONTINUE,
 } from "../../constants.js";
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import { EventEmitter, type EventUnsubscribe } from "../../event-emitter.js";
 import { LogLevel, makeLogger, type Logger } from "../../logger.js";
 import type { ChannelLike, ClientLike, InboundMessage } from "../../realtime/index.js";
-import { buildTransportHeaders, stripUndefined, type HeaderMap } from "../../utils.js";
+import {
+  buildTransportHeaders,
+  mergeHeaders,
+  stripUndefined,
+  type HeaderMap,
+} from "../../utils.js";
 import type { Codec, DecodedBatch, DecodedEvent } from "../codec/index.js";
 import { createConversationTree, type ConversationTree } from "./tree.js";
 import { createView, type View, type ViewSendExecutor } from "./view.js";
@@ -37,12 +47,12 @@ export interface SendOptions {
   body?: Record<string, unknown>;
   /** Additional POST headers. */
   headers?: Record<string, string>;
-  /** Return the active stream immediately instead of waiting for `ai-turn-start`.
+  /** Return the active stream immediately instead of waiting for `ai-run-start`.
    *
    * @defaultValue `false`.
    */
   waitForTurnStart?: boolean;
-  /** Existing turn id for suspended-turn continuation. */
+  /** Existing run id for suspended-run continuation. */
   turnId?: string;
   /** Message id this send replaces. */
   forkOf?: string;
@@ -502,6 +512,11 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     const inputEventId = eventIds[eventIds.length - 1] ?? this.idProvider.inputEventId();
     const parent = sendOptions.parent ?? this.currentParent();
     const isContinuation = sendOptions.turnId !== undefined;
+    const regenerateOf =
+      sendOptions.trigger === "regenerate"
+        ? (sendOptions.messageId ?? sendOptions.forkOf)
+        : undefined;
+    const wireForkOf = sendOptions.trigger === "regenerate" ? undefined : sendOptions.forkOf;
     const optimisticMsgIds: string[] = [];
     const staged = this.stagedEvents;
     this.stagedEvents = [];
@@ -525,9 +540,9 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
           : optimisticMsgIds[index - 1] !== undefined
             ? { parent: optimisticMsgIds[index - 1] }
             : {}),
-        ...(sendOptions.forkOf !== undefined ? { forkOf: sendOptions.forkOf } : {}),
+        ...(wireForkOf !== undefined ? { forkOf: wireForkOf } : {}),
         turnContinue: isContinuation,
-        regenerates: sendOptions.trigger === "regenerate",
+        ...(regenerateOf !== undefined ? { regenerates: regenerateOf } : {}),
       });
       this.tree.applyMessage(
         [
@@ -574,9 +589,9 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
                   : optimisticMsgIds[index - 1] !== undefined
                     ? { parent: optimisticMsgIds[index - 1] }
                     : {}),
-                ...(sendOptions.forkOf !== undefined ? { forkOf: sendOptions.forkOf } : {}),
+                ...(wireForkOf !== undefined ? { forkOf: wireForkOf } : {}),
                 turnContinue: isContinuation,
-                regenerates: sendOptions.trigger === "regenerate",
+                ...(regenerateOf !== undefined ? { regenerates: regenerateOf } : {}),
               }),
             },
           },
@@ -650,11 +665,25 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     try {
       this.emitter.emit("message", message);
       const transportHeaders = message.getTransportHeaders();
-      if (message.name === EVENT_AI_TURN_START) {
+      if (isRunStartMessage(message.name)) {
         this.handleTurnStart(message, transportHeaders);
         return;
       }
-      if (message.name === EVENT_AI_TURN_END) {
+      if (message.name === EVENT_AI_RUN_RESUME) {
+        this.handleTurnStart(
+          message,
+          mergeHeaders(transportHeaders, { [HEADER_TURN_CONTINUE]: "true" }),
+        );
+        return;
+      }
+      if (message.name === EVENT_AI_RUN_SUSPEND) {
+        this.handleTurnEnd(
+          message,
+          mergeHeaders(transportHeaders, { [HEADER_RUN_REASON]: "suspended" }),
+        );
+        return;
+      }
+      if (isRunEndMessage(message.name)) {
         this.handleTurnEnd(message, transportHeaders);
         return;
       }
@@ -670,7 +699,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
           message.deliverySerial ?? message.historySerial,
         );
       }
-      const turnId = transportHeaders[HEADER_TURN_ID];
+      const turnId = transportHeaders[HEADER_RUN_ID];
       if (!turnId) {
         return;
       }
@@ -694,7 +723,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
       headers,
       serial: message.deliverySerial ?? message.historySerial,
     });
-    const turnId = headers[HEADER_TURN_ID];
+    const turnId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
     if (turnId && invocationId) {
       const own = this.ownTurns.get(turnId);
@@ -713,7 +742,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
   }
 
   private handleTurnEnd(message: InboundMessage, headers: HeaderMap): void {
-    const turnId = headers[HEADER_TURN_ID];
+    const turnId = headers[HEADER_RUN_ID];
     const invocationId = headers[HEADER_INVOCATION_ID];
     if (
       turnId &&
@@ -731,7 +760,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     if (!turnId) {
       return;
     }
-    const reason = headers[HEADER_TURN_REASON];
+    const reason = headers[HEADER_RUN_REASON];
     if (reason !== "suspended") {
       this.router.closeStream(turnId);
       this.ownTurns.delete(turnId);
@@ -863,7 +892,7 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
     parent?: string;
     forkOf?: string;
     turnContinue?: boolean;
-    regenerates?: boolean;
+    regenerates?: string | boolean;
   }): HeaderMap {
     const headers = buildTransportHeaders({
       role: "user",
@@ -1051,15 +1080,23 @@ function normalizeInputs<TInput>(input: TInput | readonly TInput[]): readonly TI
 
 function cancelHeaders(filter: CancelFilter, clientId: string | undefined): HeaderMap {
   if ("turnId" in filter && filter.turnId) {
-    return buildTransportHeaders({ turnId: filter.turnId });
+    return buildTransportHeaders({ runId: filter.turnId });
   }
   if ("clientId" in filter && filter.clientId) {
-    return buildTransportHeaders({ turnClientId: filter.clientId });
+    return buildTransportHeaders({ runClientId: filter.clientId });
   }
   if ("own" in filter && filter.own) {
     return buildTransportHeaders(clientId === undefined ? {} : { inputClientId: clientId });
   }
   return buildTransportHeaders({});
+}
+
+function isRunStartMessage(name: string): boolean {
+  return name === EVENT_AI_RUN_START || name === EVENT_AI_LEGACY_TURN_START;
+}
+
+function isRunEndMessage(name: string): boolean {
+  return name === EVENT_AI_RUN_END || name === EVENT_AI_LEGACY_TURN_END;
 }
 
 function missingChannel(): ChannelLike {

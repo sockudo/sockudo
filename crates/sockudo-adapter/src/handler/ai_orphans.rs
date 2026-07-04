@@ -527,6 +527,7 @@ mod tests {
                 name: Some("response".to_string()),
                 data: Some(MessageData::String("partial".to_string())),
                 extras: Some(status_extras),
+                append_fragment: None,
             },
         }
     }

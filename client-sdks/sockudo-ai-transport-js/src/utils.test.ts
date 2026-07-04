@@ -4,6 +4,10 @@ import {
   EVENT_AI_CANCEL,
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
+  EVENT_AI_RUN_END,
+  EVENT_AI_RUN_RESUME,
+  EVENT_AI_RUN_START,
+  EVENT_AI_RUN_SUSPEND,
   EVENT_AI_TURN_END,
   EVENT_AI_TURN_START,
   HEADER_CODEC_MESSAGE_ID,
@@ -16,14 +20,14 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
   HEADER_ROLE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
-  HEADER_TURN_CLIENT_ID,
   HEADER_TURN_CONTINUE,
-  HEADER_TURN_ID,
-  HEADER_TURN_REASON,
 } from "./constants.js";
 import {
   buildTransportHeaders,
@@ -40,14 +44,28 @@ describe("constants", () => {
     expect([
       EVENT_AI_INPUT,
       EVENT_AI_OUTPUT,
+      EVENT_AI_RUN_START,
+      EVENT_AI_RUN_SUSPEND,
+      EVENT_AI_RUN_RESUME,
+      EVENT_AI_RUN_END,
       EVENT_AI_TURN_START,
       EVENT_AI_TURN_END,
       EVENT_AI_CANCEL,
-    ]).toEqual(["ai-input", "ai-output", "ai-turn-start", "ai-turn-end", "ai-cancel"]);
+    ]).toEqual([
+      "ai-input",
+      "ai-output",
+      "ai-run-start",
+      "ai-run-suspend",
+      "ai-run-resume",
+      "ai-run-end",
+      "ai-run-start",
+      "ai-run-end",
+      "ai-cancel",
+    ]);
     expect([
-      HEADER_TURN_ID,
-      HEADER_TURN_CLIENT_ID,
-      HEADER_TURN_REASON,
+      HEADER_RUN_ID,
+      HEADER_RUN_CLIENT_ID,
+      HEADER_RUN_REASON,
       HEADER_TURN_CONTINUE,
       HEADER_INVOCATION_ID,
       HEADER_EVENT_ID,
@@ -64,9 +82,9 @@ describe("constants", () => {
       HEADER_ERROR_MESSAGE,
       HEADER_INPUT_CLIENT_ID,
     ]).toEqual([
-      "turn-id",
-      "turn-client-id",
-      "turn-reason",
+      "run-id",
+      "run-client-id",
+      "run-reason",
       "turn-continue",
       "invocation-id",
       "event-id",
@@ -87,7 +105,7 @@ describe("constants", () => {
 });
 
 describe("header utilities", () => {
-  it("reads hostile extras defensively into null-prototype maps", () => {
+  it("reads hostile legacy extras defensively into null-prototype maps", () => {
     const extras = {
       ai: {
         transport: {
@@ -107,6 +125,7 @@ describe("header utilities", () => {
 
     expect(Object.getPrototypeOf(transport)).toBe(null);
     expect(Object.getPrototypeOf(codec)).toBe(null);
+    expect(transport["run-id"]).toBe("turn-1");
     expect(transport["turn-id"]).toBe("turn-1");
     expect(transport.ignored).toBeUndefined();
     expect(codec.unicode).toBe("żółć");
@@ -167,16 +186,21 @@ describe("header utilities", () => {
     const reader = headerReader(headers);
 
     expect(reader.string(HEADER_ROLE)).toBe("assistant");
-    expect(reader.string(HEADER_TURN_ID)).toBe("turn-1");
+    expect(reader.string(HEADER_RUN_ID)).toBe("turn-1");
     expect(reader.string(HEADER_CODEC_MESSAGE_ID)).toBe("msg-1");
-    expect(reader.string(HEADER_TURN_CLIENT_ID)).toBe("client-1");
+    expect(reader.string(HEADER_RUN_CLIENT_ID)).toBe("client-1");
     expect(reader.string(HEADER_PARENT)).toBe("parent-1");
     expect(reader.string(HEADER_FORK_OF)).toBe("fork-1");
-    expect(reader.boolean(HEADER_MSG_REGENERATE)).toBe(true);
+    expect(reader.string(HEADER_MSG_REGENERATE)).toBe("fork-1");
     expect(reader.string(HEADER_INVOCATION_ID)).toBe("inv-1");
     expect(reader.string(HEADER_INPUT_CLIENT_ID)).toBe("client-2");
     expect(reader.string(HEADER_EVENT_ID)).toBe("event-1");
     expect(reader.boolean(HEADER_TURN_CONTINUE)).toBe(false);
+    expect(
+      buildTransportHeaders({ regenerates: true, codecMessageId: "msg-2" })[HEADER_MSG_REGENERATE],
+    ).toBe("msg-2");
+    expect(buildTransportHeaders({ regenerates: true })[HEADER_MSG_REGENERATE]).toBe("true");
+    expect(buildTransportHeaders({ regenerates: "msg-3" })[HEADER_MSG_REGENERATE]).toBe("msg-3");
     expect(buildTransportHeaders({})).toEqual({});
   });
 });

@@ -16,7 +16,7 @@ const apnsPrivateKey = ref('')
 const credentialResult = ref<ApiResponse | null>(null)
 const credentialListResult = ref<ApiResponse | null>(null)
 
-const templateId = ref('ai-turn-alert')
+const templateId = ref('ai-run-alert')
 const templateTitle = ref('AI response ready')
 const templateBody = ref('Sockudo finished an AI Transport turn')
 const templateResult = ref<ApiResponse | null>(null)

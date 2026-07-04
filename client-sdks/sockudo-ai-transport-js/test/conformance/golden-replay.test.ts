@@ -4,7 +4,15 @@ import { normalizeInboundMessage } from "../../src/realtime/adapter.js";
 import { createConversationTree } from "../../src/core/transport/tree.js";
 import { createView } from "../../src/core/transport/view.js";
 import { UIMessageCodec } from "../../src/vercel/codec/index.js";
-import { EVENT_AI_TURN_END, EVENT_AI_TURN_START, HEADER_TURN_REASON } from "../../src/constants.js";
+import {
+  EVENT_AI_RUN_RESUME,
+  EVENT_AI_RUN_SUSPEND,
+  EVENT_AI_TURN_END,
+  EVENT_AI_TURN_START,
+  HEADER_TURN_CONTINUE,
+  HEADER_TURN_REASON,
+} from "../../src/constants.js";
+import { mergeHeaders } from "../../src/utils.js";
 import {
   hydrateGoldenFrame,
   loadGoldenTranscripts,
@@ -40,6 +48,25 @@ describe("golden transcript replay", () => {
             type: "turn-start",
             headers,
             serial: message.historySerial,
+          });
+          lifecycleEvents += 1;
+          continue;
+        }
+        if (message.name === EVENT_AI_RUN_RESUME) {
+          tree.applyTurnLifecycle({
+            type: "turn-start",
+            headers: mergeHeaders(headers, { [HEADER_TURN_CONTINUE]: "true" }),
+            serial: message.historySerial,
+          });
+          lifecycleEvents += 1;
+          continue;
+        }
+        if (message.name === EVENT_AI_RUN_SUSPEND) {
+          tree.applyTurnLifecycle({
+            type: "turn-end",
+            headers: mergeHeaders(headers, { [HEADER_TURN_REASON]: "suspended" }),
+            serial: message.historySerial,
+            reason: "suspended",
           });
           lifecycleEvents += 1;
           continue;

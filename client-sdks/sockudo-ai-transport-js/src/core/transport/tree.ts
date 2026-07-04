@@ -478,8 +478,12 @@ class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEve
       } else if (forkRef !== undefined) {
         metadata.forkRef = forkRef;
       }
-      if (headers[HEADER_MSG_REGENERATE] === "true") {
-        const anchor = headers[HEADER_FORK_OF] ?? headers[HEADER_CODEC_MESSAGE_ID];
+      const regenerateRef = headers[HEADER_MSG_REGENERATE];
+      if (regenerateRef !== undefined && regenerateRef !== "false") {
+        const anchor =
+          regenerateRef === "true"
+            ? (headers[HEADER_FORK_OF] ?? headers[HEADER_CODEC_MESSAGE_ID])
+            : regenerateRef;
         if (anchor !== undefined) {
           metadata.regeneratesCodecMessageId = anchor;
         }

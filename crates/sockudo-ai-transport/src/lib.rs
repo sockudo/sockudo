@@ -6,7 +6,8 @@ use ahash::AHashMap;
 use parking_lot::Mutex;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{
-    MessageAction, extract_runtime_action, extract_runtime_message_serial,
+    MessageAction, extract_runtime_action, extract_runtime_append_fragment,
+    extract_runtime_message_serial, set_runtime_append_fragment,
 };
 use std::hash::Hash;
 
@@ -86,6 +87,7 @@ struct PendingStream {
     last_seen_ms: u64,
     deadline_ms: u64,
     latest_message: PusherMessage,
+    pending_fragment: Option<String>,
     appended_count: usize,
 }
 
@@ -96,13 +98,26 @@ impl PendingStream {
             last_seen_ms: first_seen_ms,
             deadline_ms,
             latest_message,
+            pending_fragment: None,
             appended_count: 0,
         }
     }
 
     fn push(&mut self, now_ms: u64, message: PusherMessage) {
         self.last_seen_ms = now_ms;
+        let next_fragment = extract_runtime_append_fragment(&message).map(str::to_string);
         self.latest_message = message;
+        if let Some(next_fragment) = next_fragment {
+            match self.pending_fragment.as_mut() {
+                Some(pending) => pending.push_str(&next_fragment),
+                None => self.pending_fragment = Some(next_fragment),
+            }
+            if let Some(pending) = self.pending_fragment.as_ref() {
+                set_runtime_append_fragment(&mut self.latest_message, pending.clone());
+            }
+        } else {
+            self.pending_fragment = None;
+        }
         self.appended_count += 1;
     }
 
@@ -522,6 +537,17 @@ mod tests {
         message
     }
 
+    fn append_with_fragment(
+        serial: &str,
+        aggregate: &str,
+        fragment: &str,
+        now: i64,
+    ) -> PusherMessage {
+        let mut message = append(serial, aggregate, now);
+        set_runtime_append_fragment(&mut message, fragment);
+        message
+    }
+
     fn terminal_append(serial: &str, data: &str) -> PusherMessage {
         let mut message = append(serial, data, 99);
         let mut transport = HashMap::new();
@@ -597,6 +623,39 @@ mod tests {
         assert_eq!(string_data(&out[0].message), "abc");
         assert_eq!(out[0].coalesced, 2);
         assert_eq!(engine.active_streams(), 0);
+    }
+
+    #[test]
+    fn coalesced_appends_preserve_combined_append_fragment() {
+        let engine = RollupEngine::new(RollupConfig::default());
+        let first = engine.ingest("app", "ai:room", append_with_fragment("m1", "a", "a", 1), 0);
+        assert_eq!(first.len(), 1);
+
+        assert!(
+            engine
+                .ingest(
+                    "app",
+                    "ai:room",
+                    append_with_fragment("m1", "ab", "b", 2),
+                    10,
+                )
+                .is_empty()
+        );
+        assert!(
+            engine
+                .ingest(
+                    "app",
+                    "ai:room",
+                    append_with_fragment("m1", "abc", "c", 3),
+                    20,
+                )
+                .is_empty()
+        );
+
+        let out = engine.flush_due(40);
+        assert_eq!(out.len(), 1);
+        assert_eq!(string_data(&out[0].message), "abc");
+        assert_eq!(extract_runtime_append_fragment(&out[0].message), Some("bc"));
     }
 
     #[test]

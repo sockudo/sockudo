@@ -209,7 +209,7 @@ exports[`golden transcript replay > replays server golden transcripts through de
     "nodes": [
       {
         "messageCount": 0,
-        "status": "suspended",
+        "status": "active",
         "turnId": "turn-suspended",
       },
     ],

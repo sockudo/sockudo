@@ -2,14 +2,18 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_LEGACY_TURN_CLIENT_ID,
+  HEADER_LEGACY_TURN_ID,
+  HEADER_LEGACY_TURN_REASON,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
+  HEADER_RUN_CLIENT_ID,
+  HEADER_RUN_ID,
+  HEADER_RUN_REASON,
   HEADER_ROLE,
-  HEADER_TURN_CLIENT_ID,
   HEADER_TURN_CONTINUE,
-  HEADER_TURN_ID,
 } from "./constants.js";
 
 /** Immutable string header map. */
@@ -30,25 +34,29 @@ export interface AiExtras {
 export interface BuildTransportHeadersOptions {
   /** Message role. */
   role?: string;
-  /** Turn identity. */
+  /** Run identity. */
+  runId?: string;
+  /** Legacy alias for run identity. */
   turnId?: string;
   /** Codec message identity. */
   codecMessageId?: string;
-  /** Verified turn client identity. */
+  /** Verified run client identity. */
+  runClientId?: string;
+  /** Legacy alias for verified run client identity. */
   turnClientId?: string;
   /** Parent codec message identity. */
   parent?: string;
   /** Fork source codec message identity. */
   forkOf?: string;
-  /** Whether this message regenerates another. */
-  regenerates?: boolean;
+  /** Codec message id of the assistant message this message regenerates. */
+  regenerates?: string | boolean;
   /** Invocation identity. */
   invocationId?: string;
   /** Verified input client identity. */
   inputClientId?: string;
   /** Input event identity. */
   inputEventId?: string;
-  /** Whether this turn continues a suspended turn. */
+  /** Whether this legacy turn continues a suspended turn. Native runs use `ai-run-resume`. */
   turnContinue?: boolean;
 }
 
@@ -168,17 +176,27 @@ export function stripUndefined<T extends Record<string, unknown>>(value: T): Par
 export function buildTransportHeaders(options: BuildTransportHeadersOptions): HeaderMap {
   const writer = headerWriter();
   writer.set(HEADER_ROLE, options.role);
-  writer.set(HEADER_TURN_ID, options.turnId);
+  writer.set(HEADER_RUN_ID, options.runId ?? options.turnId);
   writer.set(HEADER_CODEC_MESSAGE_ID, options.codecMessageId);
-  writer.set(HEADER_TURN_CLIENT_ID, options.turnClientId);
+  writer.set(HEADER_RUN_CLIENT_ID, options.runClientId ?? options.turnClientId);
   writer.set(HEADER_PARENT, options.parent);
   writer.set(HEADER_FORK_OF, options.forkOf);
-  writer.set(HEADER_MSG_REGENERATE, options.regenerates);
+  writer.set(HEADER_MSG_REGENERATE, regenerateHeaderValue(options));
   writer.set(HEADER_INVOCATION_ID, options.invocationId);
   writer.set(HEADER_INPUT_CLIENT_ID, options.inputClientId);
   writer.set(HEADER_EVENT_ID, options.inputEventId);
   writer.set(HEADER_TURN_CONTINUE, options.turnContinue);
   return writer.headers;
+}
+
+function regenerateHeaderValue(options: BuildTransportHeadersOptions): string | undefined {
+  if (typeof options.regenerates === "string") {
+    return options.regenerates;
+  }
+  if (options.regenerates === true) {
+    return options.forkOf ?? options.codecMessageId ?? "true";
+  }
+  return undefined;
 }
 
 function readHeaderTier(extras: unknown, tier: "transport" | "codec"): HeaderMap {
@@ -192,15 +210,39 @@ function readHeaderTier(extras: unknown, tier: "transport" | "codec"): HeaderMap
       }
     }
   }
+  if (tier === "transport") {
+    addRunHeaderAliases(result);
+  }
   return result;
 }
 
+function addRunHeaderAliases(headers: Record<string, string>): void {
+  if (headers[HEADER_RUN_ID] === undefined && headers[HEADER_LEGACY_TURN_ID] !== undefined) {
+    headers[HEADER_RUN_ID] = headers[HEADER_LEGACY_TURN_ID];
+  }
+  if (
+    headers[HEADER_RUN_CLIENT_ID] === undefined &&
+    headers[HEADER_LEGACY_TURN_CLIENT_ID] !== undefined
+  ) {
+    headers[HEADER_RUN_CLIENT_ID] = headers[HEADER_LEGACY_TURN_CLIENT_ID];
+  }
+  if (
+    headers[HEADER_RUN_REASON] === undefined &&
+    headers[HEADER_LEGACY_TURN_REASON] !== undefined
+  ) {
+    headers[HEADER_RUN_REASON] = headers[HEADER_LEGACY_TURN_REASON];
+  }
+}
+
 const transportHeaderFallbacks: Readonly<Record<string, string>> = {
-  "x-sockudo-turn-id": HEADER_TURN_ID,
-  "x-sockudo-turn-client-id": HEADER_TURN_CLIENT_ID,
-  "x-sockudo-client-id": HEADER_TURN_CLIENT_ID,
+  "x-sockudo-run-id": HEADER_RUN_ID,
+  "x-sockudo-turn-id": HEADER_RUN_ID,
+  "x-sockudo-run-client-id": HEADER_RUN_CLIENT_ID,
+  "x-sockudo-turn-client-id": HEADER_RUN_CLIENT_ID,
+  "x-sockudo-client-id": HEADER_RUN_CLIENT_ID,
   "x-sockudo-input-client-id": HEADER_INPUT_CLIENT_ID,
-  "x-sockudo-turn-reason": "turn-reason",
+  "x-sockudo-run-reason": HEADER_RUN_REASON,
+  "x-sockudo-turn-reason": HEADER_RUN_REASON,
   "x-sockudo-turn-continue": HEADER_TURN_CONTINUE,
   "x-sockudo-invocation-id": HEADER_INVOCATION_ID,
   "x-sockudo-event-id": HEADER_EVENT_ID,

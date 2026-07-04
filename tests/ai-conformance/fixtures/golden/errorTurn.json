@@ -5,14 +5,14 @@
     "data": {}
   },
   {
-    "event": "ai-turn-start",
+    "event": "ai-run-start",
     "channel": "private-ai-error-golden",
     "data": {
       "scenario": "private-ai-error"
     }
   },
   {
-    "event": "ai-turn-end",
+    "event": "ai-run-end",
     "channel": "private-ai-error-golden",
     "data": {
       "scenario": "private-ai-error"

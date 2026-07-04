@@ -111,7 +111,7 @@ Use these as starting alerts and tune with measured baselines:
 | --- | --- | --- |
 | Mutations rejected as not permitted | App/channel capability lacks the create/update/delete/append action | Inspect token capability and server app policy; client-supplied identity is not authoritative |
 | History retention too short | Rewind or recovery request points before retained durable history | Increase retention count/time or reduce expected rewind window; watch retained message/byte gauges |
-| Turn never ends | Missing terminal append/update/summary or rollup orphan TTL too long | Check `sockudo_ai_active_streams`, terminal event rates, and client turn lifecycle |
+| Run never ends | Missing terminal append/update/summary or rollup orphan TTL too long | Check `sockudo_ai_active_streams`, terminal event rates, and client run lifecycle |
 | Suspended-state publishes | Producer continued after suspend/continuation boundary | Reject or route through the continuation flow; audit op_id/message_id idempotency |
 | Reconnect loop on bad tokens | Clients retrying auth failures without refreshing credentials | Rate-limit, inspect auth error codes, and fix token refresh logic |
 | Rollup mis-tuning | Window too high for latency budget or too low for fanout reduction | Compare `sockudo_flush_latency` and `sockudo_rollup_ratio`; tune the window per channel class |

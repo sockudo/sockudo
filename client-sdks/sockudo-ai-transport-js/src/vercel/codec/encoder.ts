@@ -2,7 +2,6 @@ import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
-  HEADER_FORK_OF,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -73,8 +72,7 @@ export function createVercelEncoder(
           {
             name: EVENT_AI_INPUT,
             transport: mergeHeaders(getTransportHeaders(writeOptions.extras), {
-              [HEADER_MSG_REGENERATE]: "true",
-              [HEADER_FORK_OF]: input.target,
+              [HEADER_MSG_REGENERATE]: input.target,
               [HEADER_PARENT]: input.parent,
               [HEADER_ROLE]: "user",
             }),

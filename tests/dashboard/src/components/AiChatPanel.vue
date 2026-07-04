@@ -144,14 +144,14 @@ function chatMessage(
 }
 
 function aiExtras(
-    turnId: string,
+    runId: string,
     status: "streaming" | "complete" | "cancelled",
     role: "user" | "assistant",
 ) {
     return {
         ai: {
             transport: {
-                "turn-id": turnId,
+                "run-id": runId,
                 status,
                 role,
             },
@@ -173,8 +173,10 @@ function getTransportRole(extras: any): "user" | "assistant" | undefined {
 
 function getTurnId(extras: any, fallback?: string) {
     return (
+        getTransport(extras)?.["run-id"] ??
+        getTransport(extras)?.run_id ??
+        getTransport(extras)?.runId ??
         getTransport(extras)?.["turn-id"] ??
-        getTransport(extras)?.turn_id ??
         getTransport(extras)?.turnId ??
         fallback
     );

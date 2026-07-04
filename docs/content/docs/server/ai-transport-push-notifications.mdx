@@ -50,7 +50,7 @@ When the user taps the notification, the client should load `sessionId`, attach 
 
 ## Webhook recipe
 
-For teams that keep push orchestration in their backend, enable the `ai_turn_ended` webhook. On `reason = "complete"`, the backend can call the existing push publish API:
+For teams that keep push orchestration in their backend, enable the `ai_run_ended` webhook. On `reason = "complete"`, the backend can call the existing push publish API:
 
 ```json
 {
@@ -68,7 +68,7 @@ For teams that keep push orchestration in their backend, enable the `ai_turn_end
 }
 ```
 
-This path is useful when the backend enriches notifications, applies product-specific quiet hours, or joins turn metadata with an application database before sending push.
+This path is useful when the backend enriches notifications, applies product-specific quiet hours, or joins run metadata with an application database before sending push.
 
 ## Authorization
 

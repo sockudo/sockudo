@@ -21,6 +21,7 @@ sockudo-blog
 .tmp
 .macos-push-probe/DerivedData/
 .swiftpm/
+plans/
 
 # Local push provider secrets and canary inputs
 AuthKey_*.p8

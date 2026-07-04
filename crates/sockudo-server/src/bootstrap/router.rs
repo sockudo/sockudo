@@ -1,4 +1,9 @@
 use super::SockudoServer;
+#[cfg(feature = "ably-compat")]
+use crate::http_handler::{
+    ably_channel_history, ably_channel_message, ably_channel_message_versions, ably_channel_status,
+    ably_request_token, ably_time, handle_ably_realtime_upgrade,
+};
 use crate::http_handler::{
     append_message, batch_events, channel, channel_history, channel_history_purge,
     channel_history_reset, channel_history_state, channel_message, channel_message_annotations,
@@ -194,6 +199,10 @@ impl SockudoServer {
         );
 
         let mut websocket_router = Router::new().route("/app/{appKey}", get(handle_ws_upgrade));
+        #[cfg(feature = "ably-compat")]
+        {
+            websocket_router = websocket_router.route("/", get(handle_ably_realtime_upgrade));
+        }
         if let Some(middleware) = websocket_rate_limiter_middleware_layer {
             websocket_router = websocket_router.layer(middleware);
         }
@@ -361,6 +370,26 @@ impl SockudoServer {
                     pusher_api_auth_middleware,
                 )),
             );
+
+        #[cfg(feature = "ably-compat")]
+        {
+            api_router = api_router
+                .route("/time", get(ably_time))
+                .route("/keys/{keyName}/requestToken", post(ably_request_token))
+                .route("/channels/{channelName}", get(ably_channel_status))
+                .route(
+                    "/channels/{channelName}/messages",
+                    get(ably_channel_history),
+                )
+                .route(
+                    "/channels/{channelName}/messages/{messageSerial}",
+                    get(ably_channel_message),
+                )
+                .route(
+                    "/channels/{channelName}/messages/{messageSerial}/versions",
+                    get(ably_channel_message_versions),
+                );
+        }
 
         #[cfg(feature = "push")]
         {

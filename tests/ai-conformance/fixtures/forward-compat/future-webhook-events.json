@@ -8,9 +8,9 @@
       "future_field": "must-pass-through"
     },
     {
-      "name": "ai_turn_started",
+      "name": "ai_run_started",
       "channel": "private-ai-forward",
-      "turn_id": "turn-1"
+      "run_id": "run-1"
     },
     {
       "name": "message_version_created",

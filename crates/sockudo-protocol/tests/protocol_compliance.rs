@@ -1,6 +1,9 @@
 use sockudo_protocol::messages::{
-    AI_ERROR_HEADER_TOO_LARGE, AI_ERROR_INVALID_TRANSPORT_HEADER, AI_EVENT_CANCEL, AI_EVENT_INPUT,
-    AI_EVENT_OUTPUT, AI_EVENT_TURN_END, AI_EVENT_TURN_START, AiExtras, ExtrasValue, MessageData,
+    AI_CODEC_PROVIDER_METADATA_MAX_BYTES, AI_ERROR_HEADER_TOO_LARGE,
+    AI_ERROR_INVALID_TRANSPORT_HEADER, AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_EVENT_LEGACY_TURN_END,
+    AI_EVENT_LEGACY_TURN_START, AI_EVENT_OUTPUT, AI_EVENT_RUN_END, AI_EVENT_RUN_RESUME,
+    AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, AI_HEADER_LEGACY_TURN_ID, AI_HEADER_MSG_REGENERATE,
+    AI_HEADER_RUN_ID, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue, MessageData,
     MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::prelude::*;
@@ -103,11 +106,16 @@ fn test_ai_event_constants_and_predicate() {
     for event in [
         AI_EVENT_INPUT,
         AI_EVENT_OUTPUT,
-        AI_EVENT_TURN_START,
-        AI_EVENT_TURN_END,
+        AI_EVENT_RUN_START,
+        AI_EVENT_RUN_SUSPEND,
+        AI_EVENT_RUN_RESUME,
+        AI_EVENT_RUN_END,
         AI_EVENT_CANCEL,
     ] {
         assert!(is_ai_event(event));
+    }
+    for legacy_event in [AI_EVENT_LEGACY_TURN_START, AI_EVENT_LEGACY_TURN_END] {
+        assert!(is_ai_event(legacy_event));
     }
     assert!(!is_ai_event("client-typing"));
 }
@@ -115,7 +123,7 @@ fn test_ai_event_constants_and_predicate() {
 #[test]
 fn test_ai_transport_headers_are_borrowed_views() {
     let mut transport = HashMap::new();
-    transport.insert("turn-id".to_string(), "turn-1".to_string());
+    transport.insert(AI_HEADER_RUN_ID.to_string(), "run-1".to_string());
     transport.insert("status".to_string(), "streaming".to_string());
     transport.insert("parent".to_string(), "msg-0".to_string());
     transport.insert("fork-of".to_string(), "msg-old".to_string());
@@ -132,7 +140,8 @@ fn test_ai_transport_headers_are_borrowed_views() {
     };
 
     let headers = extras.ai_transport_headers().expect("transport headers");
-    assert_eq!(headers.turn_id(), Some("turn-1"));
+    assert_eq!(headers.run_id(), Some("run-1"));
+    assert_eq!(headers.turn_id(), Some("run-1"));
     assert_eq!(headers.status(), Some("streaming"));
     assert_eq!(headers.parent(), Some("msg-0"));
     assert_eq!(headers.fork_of(), Some("msg-old"));
@@ -149,7 +158,10 @@ fn test_ai_transport_headers_are_borrowed_views() {
 fn test_ai_header_validation_rejects_limits_and_domains() {
     let oversized = sockudo_protocol::messages::MessageExtras {
         ai: Some(AiExtras {
-            transport: Some(HashMap::from([("turn-id".to_string(), "x".repeat(257))])),
+            transport: Some(HashMap::from([(
+                AI_HEADER_RUN_ID.to_string(),
+                "x".repeat(257),
+            )])),
             codec: None,
         }),
         ..Default::default()
@@ -185,11 +197,117 @@ fn test_ai_header_validation_rejects_limits_and_domains() {
 }
 
 #[test]
+fn test_ai_codec_headers_accept_ably_camel_case_keys() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_RUN_ID.to_string(),
+                "run-1".to_string(),
+            )])),
+            codec: Some(HashMap::from([
+                ("messageId".to_string(), "msg-1".to_string()),
+                ("finishReason".to_string(), "stop".to_string()),
+                ("providerMetadata".to_string(), "{}".to_string()),
+                ("toolCallId".to_string(), "tool-1".to_string()),
+            ])),
+        }),
+        ..Default::default()
+    };
+
+    assert!(extras.validate_ai_headers().is_ok());
+}
+
+#[test]
+fn test_ai_codec_provider_metadata_accepts_ably_sized_payloads() {
+    let provider_metadata = format!(
+        "{{\"gateway\":\"{}\"}}",
+        "x".repeat(AI_TRANSPORT_VALUE_MAX_BYTES + 1)
+    );
+    assert!(provider_metadata.len() < AI_CODEC_PROVIDER_METADATA_MAX_BYTES);
+
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_RUN_ID.to_string(),
+                "run-1".to_string(),
+            )])),
+            codec: Some(HashMap::from([(
+                "providerMetadata".to_string(),
+                provider_metadata,
+            )])),
+        }),
+        ..Default::default()
+    };
+
+    assert!(extras.validate_ai_headers().is_ok());
+}
+
+#[test]
+fn test_ai_codec_provider_metadata_remains_bounded() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: None,
+            codec: Some(HashMap::from([(
+                "providerMetadata".to_string(),
+                "x".repeat(AI_CODEC_PROVIDER_METADATA_MAX_BYTES + 1),
+            )])),
+        }),
+        ..Default::default()
+    };
+
+    let error = extras.validate_ai_headers().unwrap_err();
+    assert_eq!(error.code, AI_ERROR_HEADER_TOO_LARGE);
+    assert!(
+        error.message.contains("providerMetadata"),
+        "unexpected error: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_ai_codec_other_values_stay_small() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: None,
+            codec: Some(HashMap::from([(
+                "finishReason".to_string(),
+                "x".repeat(AI_TRANSPORT_VALUE_MAX_BYTES + 1),
+            )])),
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        extras.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_HEADER_TOO_LARGE
+    );
+}
+
+#[test]
+fn test_ai_codec_headers_reject_unsafe_keys() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: None,
+            codec: Some(HashMap::from([(
+                "message.id".to_string(),
+                "msg-1".to_string(),
+            )])),
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        extras.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_INVALID_TRANSPORT_HEADER
+    );
+}
+
+#[test]
 fn test_ai_transport_model_key_accepted() {
     let extras = MessageExtras {
         ai: Some(AiExtras {
             transport: Some(HashMap::from([
-                ("turn-id".to_string(), "turn-1".to_string()),
+                (AI_HEADER_RUN_ID.to_string(), "run-1".to_string()),
                 ("model".to_string(), "gpt-4o".to_string()),
             ])),
             codec: None,
@@ -200,7 +318,7 @@ fn test_ai_transport_model_key_accepted() {
 
     let headers = extras.ai_transport_headers().expect("transport headers");
     assert_eq!(headers.model(), Some("gpt-4o"));
-    assert_eq!(headers.turn_id(), Some("turn-1"));
+    assert_eq!(headers.run_id(), Some("run-1"));
 }
 
 #[test]
@@ -223,8 +341,8 @@ fn test_ai_transport_model_key_optional() {
     let extras = MessageExtras {
         ai: Some(AiExtras {
             transport: Some(HashMap::from([(
-                "turn-id".to_string(),
-                "turn-1".to_string(),
+                AI_HEADER_RUN_ID.to_string(),
+                "run-1".to_string(),
             )])),
             codec: None,
         }),
@@ -234,6 +352,68 @@ fn test_ai_transport_model_key_optional() {
 
     let headers = extras.ai_transport_headers().expect("transport headers");
     assert_eq!(headers.model(), None);
+}
+
+#[test]
+fn test_ai_transport_msg_regenerate_accepts_ably_message_id() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([
+                (AI_HEADER_RUN_ID.to_string(), "run-1".to_string()),
+                (
+                    AI_HEADER_MSG_REGENERATE.to_string(),
+                    "7f997e32-3a4d-4635-bb34-778c6952946b".to_string(),
+                ),
+            ])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert!(extras.validate_ai_headers().is_ok());
+    let headers = extras.ai_transport_headers().expect("transport headers");
+    assert_eq!(
+        headers.msg_regenerate(),
+        Some("7f997e32-3a4d-4635-bb34-778c6952946b")
+    );
+}
+
+#[test]
+fn test_ai_transport_msg_regenerate_rejects_empty() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_MSG_REGENERATE.to_string(),
+                "".to_string(),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        extras.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_INVALID_TRANSPORT_HEADER
+    );
+}
+
+#[test]
+fn test_ai_transport_legacy_turn_id_alias_is_still_readable() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([(
+                AI_HEADER_LEGACY_TURN_ID.to_string(),
+                "legacy-turn-1".to_string(),
+            )])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    let headers = extras.ai_transport_headers().expect("transport headers");
+    assert_eq!(headers.run_id(), Some("legacy-turn-1"));
+    assert_eq!(headers.turn_id(), Some("legacy-turn-1"));
+    assert!(extras.validate_ai_headers().is_ok());
 }
 
 #[test]

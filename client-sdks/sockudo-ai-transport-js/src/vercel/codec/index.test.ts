@@ -295,7 +295,7 @@ describe("UIMessageCodec", () => {
         extras: {
           ai: {
             transport: {
-              "turn-id": "turn-raw",
+              "run-id": "run-raw",
               "codec-message-id": message.id,
               role: "user",
             },

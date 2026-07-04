@@ -73,21 +73,21 @@ async fn ai_http_publish_idempotency_key_header_returns_cached_serial_ack() {
     let first = publish_ai_http_event(
         handler.clone(),
         app.clone(),
-        "ai-turn-start",
+        "ai-run-start",
         None,
-        Some("turn-start-request-1"),
+        Some("run-start-request-1"),
         "streaming",
-        "{\"turn\":\"1\"}",
+        "{\"run\":\"1\"}",
     )
     .await;
     let duplicate = publish_ai_http_event(
         handler,
         app,
-        "ai-turn-start",
+        "ai-run-start",
         None,
-        Some("turn-start-request-1"),
+        Some("run-start-request-1"),
         "streaming",
-        "{\"turn\":\"1-retry\"}",
+        "{\"run\":\"1-retry\"}",
     )
     .await;
 
@@ -535,7 +535,7 @@ enum MatrixOperation {
     PublishClientEvent,
     PublishAiInput,
     PublishAiOutput,
-    PublishAiTurn,
+    PublishAiRun,
     PublishAiCancel,
     AppendOwn,
     AppendOther,
@@ -586,7 +586,7 @@ const MATRIX_OPERATIONS: [MatrixOperation; 25] = [
     MatrixOperation::PublishClientEvent,
     MatrixOperation::PublishAiInput,
     MatrixOperation::PublishAiOutput,
-    MatrixOperation::PublishAiTurn,
+    MatrixOperation::PublishAiRun,
     MatrixOperation::PublishAiCancel,
     MatrixOperation::AppendOwn,
     MatrixOperation::AppendOther,
@@ -636,7 +636,7 @@ fn authz_matrix_decision(operation: MatrixOperation, principal: MatrixPrincipal)
         (SubscribePresence, V1Hmac | V2Hmac | TokenPresence) => Allow,
         (PublishClientEvent, V1Hmac | V2Hmac | TokenPublish) => Allow,
         (PublishAiInput | PublishAiCancel, V2Hmac | TokenPublish | ServerKey) => Allow,
-        (PublishAiOutput | PublishAiTurn, ServerKey) => Allow,
+        (PublishAiOutput | PublishAiRun, ServerKey) => Allow,
         (
             AppendOwn | UpdateOwn | DeleteOwn,
             V2Hmac | TokenMutationOwn | TokenMutationAny | ServerKey,
@@ -651,7 +651,7 @@ fn authz_matrix_decision(operation: MatrixOperation, principal: MatrixPrincipal)
         (SubscribePublic, _) => Deny(4009),
         (SubscribePrivate | SubscribePresence, _) => Deny(4009),
         (PublishClientEvent, _) => Deny(4301),
-        (PublishAiInput | PublishAiOutput | PublishAiTurn | PublishAiCancel, _) => {
+        (PublishAiInput | PublishAiOutput | PublishAiRun | PublishAiCancel, _) => {
             Deny(AI_ERROR_EVENT_NOT_PERMITTED)
         }
         (

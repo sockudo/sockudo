@@ -27,7 +27,7 @@ describe("realtime adapter", () => {
       extras: {
         ai: {
           transport: {
-            "turn-id": "turn-1",
+            "run-id": "run-1",
             __proto__: "pollution",
           },
           codec: {
@@ -60,7 +60,7 @@ describe("realtime adapter", () => {
       messageId: "event-1",
     });
     expect(Object.getPrototypeOf(message.getTransportHeaders())).toBe(null);
-    expect(message.getTransportHeaders()["turn-id"]).toBe("turn-1");
+    expect(message.getTransportHeaders()["run-id"]).toBe("run-1");
     expect(message.getCodecHeaders().provider).toBe("test");
     expect(({} as Record<string, unknown>).pollution).toBeUndefined();
   });
@@ -261,7 +261,7 @@ describe("realtime adapter", () => {
       },
       futureExtrasField: true,
     });
-    expect(aiExtras?.getTransportHeaders()["turn-id"]).toBe("turn-1");
+    expect(aiExtras?.getTransportHeaders()["run-id"]).toBe("turn-1");
     expect(aiExtras?.getCodecHeaders()["provider-future-key"]).toBe("opaque");
   });
 
@@ -322,7 +322,7 @@ describe("header utilities", () => {
   it("maps Sockudo x-sockudo flat headers into transport and codec tiers", () => {
     const extras = {
       headers: {
-        "x-sockudo-turn-id": "turn-1",
+        "x-sockudo-run-id": "run-1",
         "x-sockudo-client-id": "client-1",
         "x-sockudo-role": "assistant",
         "x-sockudo-status": "streaming",
@@ -339,8 +339,8 @@ describe("header utilities", () => {
     };
 
     expect(getTransportHeaders(extras)).toEqual({
-      "turn-id": "turn-1",
-      "turn-client-id": "client-1",
+      "run-id": "run-1",
+      "run-client-id": "client-1",
       role: "assistant",
       status: "streaming",
       stream: "true",
@@ -359,17 +359,33 @@ describe("header utilities", () => {
   it("lets extras.ai override x-sockudo fallback headers", () => {
     const extras = {
       headers: {
-        "x-sockudo-turn-id": "fallback-turn",
+        "x-sockudo-run-id": "fallback-run",
         "x-sockudo-codec-type": "text-delta",
       },
       ai: {
-        transport: { "turn-id": "ai-turn" },
+        transport: { "run-id": "ai-run" },
         codec: { type: "reasoning-delta" },
       },
     };
 
-    expect(getTransportHeaders(extras)["turn-id"]).toBe("ai-turn");
+    expect(getTransportHeaders(extras)["run-id"]).toBe("ai-run");
     expect(getCodecHeaders(extras).type).toBe("reasoning-delta");
+  });
+
+  it("normalizes legacy turn transport headers to run headers", () => {
+    const headers = getTransportHeaders({
+      ai: {
+        transport: {
+          "turn-id": "legacy-turn",
+          "turn-client-id": "legacy-client",
+          "turn-reason": "complete",
+        },
+      },
+    });
+
+    expect(headers["run-id"]).toBe("legacy-turn");
+    expect(headers["run-client-id"]).toBe("legacy-client");
+    expect(headers["run-reason"]).toBe("complete");
   });
 });
 

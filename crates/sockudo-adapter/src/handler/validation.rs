@@ -887,7 +887,7 @@ mod tests {
             extras: Some(MessageExtras {
                 ai: Some(AiExtras {
                     transport: Some(HashMap::from([(
-                        "turn-client-id".to_string(),
+                        "run-client-id".to_string(),
                         "server-agent".to_string(),
                     )])),
                     codec: None,

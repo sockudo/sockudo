@@ -11,9 +11,11 @@ use sockudo_core::versioned_messages::{
     validate_replay_continuity, validate_version_chain,
 };
 use sockudo_protocol::messages::{
-    AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_EVENT_OUTPUT, AI_EVENT_TURN_END, AI_EVENT_TURN_START,
-    AI_TRANSPORT_KEY_MAX_BYTES, AI_TRANSPORT_TIER_LIMIT, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras,
-    MessageData, MessageExtras, PusherMessage, is_ai_client_publish_event, is_ai_event,
+    AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_EVENT_LEGACY_TURN_END, AI_EVENT_LEGACY_TURN_START,
+    AI_EVENT_OUTPUT, AI_EVENT_RUN_END, AI_EVENT_RUN_RESUME, AI_EVENT_RUN_START,
+    AI_EVENT_RUN_SUSPEND, AI_TRANSPORT_KEY_MAX_BYTES, AI_TRANSPORT_TIER_LIMIT,
+    AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, MessageData, MessageExtras, PusherMessage,
+    is_ai_client_publish_event, is_ai_event,
 };
 use sockudo_protocol::versioned_messages::{
     MessageAction, MessageVersionMetadata, VersionedRealtimeMessage, apply_runtime_metadata,
@@ -372,11 +374,16 @@ fn ait_s055_to_s064_ai_event_and_header_rules_match_registry() {
     for event in [
         AI_EVENT_INPUT,
         AI_EVENT_OUTPUT,
-        AI_EVENT_TURN_START,
-        AI_EVENT_TURN_END,
+        AI_EVENT_RUN_START,
+        AI_EVENT_RUN_SUSPEND,
+        AI_EVENT_RUN_RESUME,
+        AI_EVENT_RUN_END,
         AI_EVENT_CANCEL,
     ] {
         assert!(is_ai_event(event));
+    }
+    for legacy_event in [AI_EVENT_LEGACY_TURN_START, AI_EVENT_LEGACY_TURN_END] {
+        assert!(is_ai_event(legacy_event));
     }
     assert!(is_ai_client_publish_event(AI_EVENT_INPUT));
     assert!(is_ai_client_publish_event(AI_EVENT_CANCEL));
@@ -384,13 +391,14 @@ fn ait_s055_to_s064_ai_event_and_header_rules_match_registry() {
     assert!(!is_ai_event("ai-unknown"));
 
     ai_extras(&[
-        ("turn-id", "turn-1"),
-        ("turn-client-id", "client-1"),
-        ("turn-reason", "suspended"),
+        ("run-id", "run-1"),
+        ("run-client-id", "client-1"),
+        ("run-reason", "complete"),
         ("codec-message-id", "msg-1"),
+        ("input-codec-message-id", "input-msg-1"),
         ("parent", "msg-0"),
         ("fork-of", "msg-old"),
-        ("msg-regenerate", "true"),
+        ("msg-regenerate", "msg-old"),
         ("stream", "true"),
         ("stream-id", "stream-1"),
         ("status", "streaming"),
@@ -399,7 +407,6 @@ fn ait_s055_to_s064_ai_event_and_header_rules_match_registry() {
         ("event-id", "event-1"),
         ("input-client-id", "client-1"),
         ("role", "assistant"),
-        ("turn-continue", "false"),
         ("error-code", "tool-timeout"),
         ("error-message", "bounded message"),
     ])
@@ -417,10 +424,23 @@ fn ait_s055_to_s064_ai_event_and_header_rules_match_registry() {
             .is_err()
     );
     assert!(
-        ai_extras(&[("turn-reason", "paused")])
+        ai_extras(&[("run-reason", "paused")])
             .validate_ai_headers()
             .is_err()
     );
+    assert!(
+        ai_extras(&[("run-reason", "suspended")])
+            .validate_ai_headers()
+            .is_err()
+    );
+    ai_extras(&[
+        ("turn-id", "legacy-turn-1"),
+        ("turn-client-id", "client-1"),
+        ("turn-reason", "suspended"),
+        ("turn-continue", "false"),
+    ])
+    .validate_ai_headers()
+    .unwrap();
     assert!(ai_extras(&[("role", "bot")]).validate_ai_headers().is_err());
     assert!(
         ai_extras(&[("stream", "yes")])

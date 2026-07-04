@@ -1,23 +1,25 @@
 use ahash::AHashMap;
 use parking_lot::Mutex;
 use sockudo_protocol::messages::{
-    AI_EVENT_CANCEL, AI_EVENT_TURN_END, AI_EVENT_TURN_START, MessageData, PusherMessage,
+    AI_EVENT_CANCEL, AI_EVENT_LEGACY_TURN_END, AI_EVENT_LEGACY_TURN_START, AI_EVENT_RUN_END,
+    AI_EVENT_RUN_RESUME, AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, MessageData, PusherMessage,
 };
 use sockudo_protocol::versioned_messages::extract_runtime_message_serial;
 
 const DEFAULT_TRACKER_SHARDS: usize = 64;
 
-/// Low-cardinality reason labels accepted for AI turn end metrics.
+/// Low-cardinality reason labels accepted for AI run end metrics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnEndReason {
+pub enum RunEndReason {
     Complete,
     Cancelled,
     Error,
+    /// Legacy `turn-reason=suspended`; native Ably runs use `ai-run-suspend`.
     Suspended,
     Unknown,
 }
 
-impl TurnEndReason {
+impl RunEndReason {
     #[must_use]
     pub fn from_header(value: Option<&str>) -> Self {
         match value {
@@ -42,21 +44,27 @@ impl TurnEndReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnStarted {
-    pub turn_id: Option<String>,
+pub struct RunStarted {
+    pub run_id: Option<String>,
     pub client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnEnded {
-    pub turn_id: Option<String>,
-    pub reason: TurnEndReason,
+pub struct RunEnded {
+    pub run_id: Option<String>,
+    pub reason: RunEndReason,
     pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunLifecycleSignal {
+    pub run_id: Option<String>,
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelRequested {
-    pub turn_id: Option<String>,
+    pub run_id: Option<String>,
     pub client_id: Option<String>,
 }
 
@@ -70,8 +78,10 @@ pub struct StreamMetricUpdate {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AiObservabilityUpdate {
     pub unparseable: bool,
-    pub turn_started: Option<TurnStarted>,
-    pub turn_ended: Option<TurnEnded>,
+    pub run_started: Option<RunStarted>,
+    pub run_suspended: Option<RunLifecycleSignal>,
+    pub run_resumed: Option<RunLifecycleSignal>,
+    pub run_ended: Option<RunEnded>,
     pub cancel_requested: Option<CancelRequested>,
     pub stream: Option<StreamMetricUpdate>,
 }
@@ -123,7 +133,7 @@ impl AiObservabilityTracker {
         message: &PusherMessage,
         now_ms: i64,
     ) -> AiObservabilityUpdate {
-        let mut update = classify_turn_event(message);
+        let mut update = classify_run_event(message);
 
         if message.validate_ai_headers().is_err() {
             update.unparseable = true;
@@ -219,46 +229,73 @@ impl AiObservabilityTracker {
     }
 }
 
-fn classify_turn_event(message: &PusherMessage) -> AiObservabilityUpdate {
+fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
     let event = message.event.as_deref();
     let headers = message.ai_transport_headers();
     match event {
-        Some(AI_EVENT_TURN_START) => AiObservabilityUpdate {
-            turn_started: Some(TurnStarted {
-                turn_id: headers
-                    .as_ref()
-                    .and_then(|h| h.turn_id())
-                    .map(str::to_owned),
+        Some(AI_EVENT_RUN_START | AI_EVENT_LEGACY_TURN_START) => AiObservabilityUpdate {
+            run_started: Some(RunStarted {
+                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
                     .as_ref()
-                    .and_then(|h| h.turn_client_id())
+                    .and_then(|h| h.run_client_id())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
         },
-        Some(AI_EVENT_TURN_END) => AiObservabilityUpdate {
-            turn_ended: Some(TurnEnded {
-                turn_id: headers
+        Some(AI_EVENT_RUN_SUSPEND) => AiObservabilityUpdate {
+            run_suspended: Some(RunLifecycleSignal {
+                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                client_id: headers
                     .as_ref()
-                    .and_then(|h| h.turn_id())
-                    .map(str::to_owned),
-                reason: TurnEndReason::from_header(headers.as_ref().and_then(|h| h.turn_reason())),
-                error_code: headers
-                    .as_ref()
-                    .and_then(|h| h.error_code())
+                    .and_then(|h| h.run_client_id())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
         },
+        Some(AI_EVENT_RUN_RESUME) => AiObservabilityUpdate {
+            run_resumed: Some(RunLifecycleSignal {
+                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                client_id: headers
+                    .as_ref()
+                    .and_then(|h| h.run_client_id())
+                    .map(str::to_owned),
+            }),
+            ..AiObservabilityUpdate::default()
+        },
+        Some(AI_EVENT_RUN_END | AI_EVENT_LEGACY_TURN_END) => {
+            let reason = RunEndReason::from_header(headers.as_ref().and_then(|h| h.run_reason()));
+            if reason == RunEndReason::Suspended {
+                AiObservabilityUpdate {
+                    run_suspended: Some(RunLifecycleSignal {
+                        run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                        client_id: headers
+                            .as_ref()
+                            .and_then(|h| h.run_client_id())
+                            .map(str::to_owned),
+                    }),
+                    ..AiObservabilityUpdate::default()
+                }
+            } else {
+                AiObservabilityUpdate {
+                    run_ended: Some(RunEnded {
+                        run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                        reason,
+                        error_code: headers
+                            .as_ref()
+                            .and_then(|h| h.error_code())
+                            .map(str::to_owned),
+                    }),
+                    ..AiObservabilityUpdate::default()
+                }
+            }
+        }
         Some(AI_EVENT_CANCEL) => AiObservabilityUpdate {
             cancel_requested: Some(CancelRequested {
-                turn_id: headers
-                    .as_ref()
-                    .and_then(|h| h.turn_id())
-                    .map(str::to_owned),
+                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
                     .as_ref()
-                    .and_then(|h| h.turn_client_id())
+                    .and_then(|h| h.run_client_id())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
@@ -330,46 +367,64 @@ mod tests {
     }
 
     #[test]
-    fn turn_end_reason_is_bounded() {
+    fn run_end_reason_is_bounded() {
         assert_eq!(
-            TurnEndReason::from_header(Some("complete")).as_label(),
+            RunEndReason::from_header(Some("complete")).as_label(),
             "complete"
         );
         assert_eq!(
-            TurnEndReason::from_header(Some("anything")).as_label(),
+            RunEndReason::from_header(Some("anything")).as_label(),
             "unknown"
         );
-        assert_eq!(TurnEndReason::from_header(None).as_label(), "unknown");
+        assert_eq!(RunEndReason::from_header(None).as_label(), "unknown");
     }
 
     #[test]
-    fn classifies_turn_and_cancel_events_without_turn_labels_for_metrics() {
+    fn classifies_run_and_cancel_events_without_legacy_turn_labels_for_metrics() {
         let tracker = AiObservabilityTracker::new(2);
         let start = tracker.observe(
             "app",
             "ai-chat",
             &ai_message(
-                AI_EVENT_TURN_START,
-                &[("turn-id", "turn-1"), ("turn-client-id", "client-1")],
+                AI_EVENT_RUN_START,
+                &[("run-id", "run-1"), ("run-client-id", "client-1")],
                 "{}",
             ),
             1,
         );
-        assert_eq!(
-            start.turn_started.unwrap().turn_id.as_deref(),
-            Some("turn-1")
-        );
+        assert_eq!(start.run_started.unwrap().run_id.as_deref(), Some("run-1"));
 
         let cancel = tracker.observe(
             "app",
             "ai-chat",
-            &ai_message(AI_EVENT_CANCEL, &[("turn-id", "turn-1")], "{}"),
+            &ai_message(AI_EVENT_CANCEL, &[("run-id", "run-1")], "{}"),
             2,
         );
         assert_eq!(
-            cancel.cancel_requested.unwrap().turn_id.as_deref(),
-            Some("turn-1")
+            cancel.cancel_requested.unwrap().run_id.as_deref(),
+            Some("run-1")
         );
+    }
+
+    #[test]
+    fn legacy_turn_suspend_maps_to_run_suspended_signal() {
+        let tracker = AiObservabilityTracker::new(2);
+        let update = tracker.observe(
+            "app",
+            "ai-chat",
+            &ai_message(
+                AI_EVENT_LEGACY_TURN_END,
+                &[("turn-id", "legacy-1"), ("turn-reason", "suspended")],
+                "{}",
+            ),
+            1,
+        );
+
+        assert_eq!(
+            update.run_suspended.unwrap().run_id.as_deref(),
+            Some("legacy-1")
+        );
+        assert!(update.run_ended.is_none());
     }
 
     #[test]
@@ -379,15 +434,15 @@ mod tests {
             "app",
             "ai-chat",
             &ai_message(
-                AI_EVENT_TURN_END,
-                &[("turn-id", "turn-1"), ("turn-reason", "bad")],
+                AI_EVENT_RUN_END,
+                &[("run-id", "run-1"), ("run-reason", "bad")],
                 "{}",
             ),
             1,
         );
 
         assert!(update.unparseable);
-        assert_eq!(update.turn_ended.unwrap().reason, TurnEndReason::Unknown);
+        assert_eq!(update.run_ended.unwrap().reason, RunEndReason::Unknown);
     }
 
     #[test]

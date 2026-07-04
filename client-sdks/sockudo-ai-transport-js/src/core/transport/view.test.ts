@@ -72,12 +72,12 @@ describe("transport view", () => {
       1,
     );
     createTurn(tree, "regen-1", [{ id: "a1r", text: "a1 regen" }], 2, {
-      forkOf: "a1",
-      regenerates: true,
+      parent: "u1",
+      regenerates: "a1",
     });
     createTurn(tree, "regen-2", [{ id: "a1rr", text: "a1 nested" }], 3, {
-      forkOf: "a1r",
-      regenerates: true,
+      parent: "u1",
+      regenerates: "a1r",
     });
 
     expect(view.getMessages().map((message) => message.id)).toEqual(["u1", "a1rr"]);
@@ -291,7 +291,7 @@ interface HeaderOptions {
   codecMessageId?: string;
   parent?: string;
   forkOf?: string;
-  regenerates?: boolean;
+  regenerates?: string | boolean;
   turnReason?: string;
 }
 
@@ -395,7 +395,7 @@ function headers(options: HeaderOptions): HeaderMap {
   set(map, HEADER_CODEC_MESSAGE_ID, options.codecMessageId);
   set(map, HEADER_PARENT, options.parent);
   set(map, HEADER_FORK_OF, options.forkOf);
-  set(map, HEADER_MSG_REGENERATE, bool(options.regenerates));
+  set(map, HEADER_MSG_REGENERATE, headerValue(options.regenerates));
   set(map, HEADER_TURN_REASON, options.turnReason);
   return map;
 }
@@ -477,4 +477,8 @@ function set(target: Record<string, string>, key: string, value: string | undefi
 
 function bool(value: boolean | undefined): string | undefined {
   return value === undefined ? undefined : value ? "true" : "false";
+}
+
+function headerValue(value: string | boolean | undefined): string | undefined {
+  return typeof value === "boolean" ? bool(value) : value;
 }

@@ -10,7 +10,7 @@
         "name": "app_id",
         "type": "query",
         "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "query": "label_values(sockudo_ai_turns_started_total, app_id)",
+        "query": "label_values(sockudo_ai_runs_started_total, app_id)",
         "refresh": 1,
         "includeAll": true,
         "multi": true
@@ -20,12 +20,12 @@
   "panels": [
     {
       "id": 1,
-      "title": "Turn Outcomes",
+      "title": "Run Outcomes",
       "type": "timeseries",
       "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
       "targets": [
         {
-          "expr": "sum by (reason) (rate(sockudo_ai_turns_ended_total{app_id=~\"$app_id\"}[5m]))",
+          "expr": "sum by (reason) (rate(sockudo_ai_runs_ended_total{app_id=~\"$app_id\"}[5m]))",
           "legendFormat": "{{reason}}"
         }
       ]
@@ -37,8 +37,8 @@
       "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
       "targets": [
         {
-          "expr": "sum(rate(sockudo_ai_turns_started_total{app_id=~\"$app_id\"}[5m]))",
-          "legendFormat": "turns started"
+          "expr": "sum(rate(sockudo_ai_runs_started_total{app_id=~\"$app_id\"}[5m]))",
+          "legendFormat": "runs started"
         },
         {
           "expr": "sum(rate(sockudo_ai_cancel_signals_total{app_id=~\"$app_id\"}[5m]))",

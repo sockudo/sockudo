@@ -145,8 +145,8 @@ final class WebhookTests: XCTestCase {
         XCTAssertEqual(webhook.events[0].channel.fullName, "presence-ai-forward")
         XCTAssertEqual(webhook.events[0].userId, "user-1")
         XCTAssertEqual(webhook.events[0].rawPayload["future_field"]?.value as? String, "must-pass-through")
-        XCTAssertEqual(webhook.events[1].eventType, .unknown("ai_turn_started"))
-        XCTAssertEqual(webhook.events[1].rawPayload["turn_id"]?.value as? String, "turn-1")
+        XCTAssertEqual(webhook.events[1].eventType, .unknown("ai_run_started"))
+        XCTAssertEqual(webhook.events[1].rawPayload["run_id"]?.value as? String, "run-1")
         XCTAssertEqual(webhook.events[2].eventType, .unknown("message_version_created"))
         XCTAssertEqual(webhook.events[2].rawPayload["version_serial"]?.value as? String, "ver-1")
       }

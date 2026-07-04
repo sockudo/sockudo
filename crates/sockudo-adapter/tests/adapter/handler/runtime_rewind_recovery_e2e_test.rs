@@ -654,7 +654,7 @@ async fn ai_transport_streamed_response_fans_out_and_rewinds_as_latest_message_e
                 "Hel",
                 "ai-response-1",
                 &[
-                    ("x-sockudo-turn-id", "turn-stream"),
+                    ("x-sockudo-run-id", "run-stream"),
                     ("x-sockudo-client-id", "agent-1"),
                     ("x-sockudo-role", "assistant"),
                     ("x-sockudo-status", "streaming"),
@@ -772,7 +772,7 @@ async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
                 "Token",
                 "ai-response-recovery",
                 &[
-                    ("x-sockudo-turn-id", "turn-recovery"),
+                    ("x-sockudo-run-id", "run-recovery"),
                     ("x-sockudo-client-id", "agent-1"),
                     ("x-sockudo-status", "streaming"),
                 ],
@@ -863,7 +863,7 @@ async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
 }
 
 #[tokio::test]
-async fn ai_transport_concurrent_turns_cancel_and_codec_metadata_round_trip_e2e() {
+async fn ai_transport_concurrent_runs_cancel_and_codec_metadata_round_trip_e2e() {
     let mut options = ServerOptions::default();
     options.history.enabled = true;
     options.history.max_page_size = 100;
@@ -882,12 +882,12 @@ async fn ai_transport_concurrent_turns_cancel_and_codec_metadata_round_trip_e2e(
     )
     .await;
 
-    for (turn_id, message_id, text, parent, fork_of) in [
-        ("turn-summary", "ai-summary", "Sum", "root", ""),
-        ("turn-risks", "ai-risks", "Ris", "root", "ai-summary"),
+    for (run_id, message_id, text, parent, fork_of) in [
+        ("run-summary", "ai-summary", "Sum", "root", ""),
+        ("run-risks", "ai-risks", "Ris", "root", "ai-summary"),
     ] {
         let mut headers = vec![
-            ("x-sockudo-turn-id", turn_id),
+            ("x-sockudo-run-id", run_id),
             ("x-sockudo-client-id", "agent-1"),
             ("x-sockudo-status", "streaming"),
             ("x-sockudo-parent", parent),
@@ -959,11 +959,11 @@ async fn ai_transport_concurrent_turns_cancel_and_codec_metadata_round_trip_e2e(
             ai_text_message(
                 channel,
                 "ai.cancel",
-                r#"{"filter":{"turnId":"turn-summary"}}"#,
+                r#"{"filter":{"runId":"run-summary"}}"#,
                 "ai-cancel-summary",
                 &[
                     ("x-sockudo-signal", "cancel"),
-                    ("x-sockudo-turn-id", "turn-summary"),
+                    ("x-sockudo-run-id", "run-summary"),
                     ("x-sockudo-client-id", "user-phone"),
                 ],
             ),
@@ -975,8 +975,8 @@ async fn ai_transport_concurrent_turns_cancel_and_codec_metadata_round_trip_e2e(
     assert_eq!(cancel.event.as_deref(), Some("ai.cancel"));
     assert_eq!(header_string(&cancel, "x-sockudo-signal"), Some("cancel"));
     assert_eq!(
-        header_string(&cancel, "x-sockudo-turn-id"),
-        Some("turn-summary")
+        header_string(&cancel, "x-sockudo-run-id"),
+        Some("run-summary")
     );
 
     update_ai_message_status(
@@ -1035,11 +1035,11 @@ async fn ai_transport_concurrent_turns_cancel_and_codec_metadata_round_trip_e2e(
     let summary = history
         .iter()
         .find(|message| extract_runtime_message_serial(message) == Some(summary_serial.as_str()))
-        .expect("expected cancelled summary turn in history");
+        .expect("expected cancelled summary run in history");
     let risks = history
         .iter()
         .find(|message| extract_runtime_message_serial(message) == Some(risks_serial.as_str()))
-        .expect("expected completed risks turn in history");
+        .expect("expected completed risks run in history");
     assert_eq!(header_string(summary, "x-sockudo-status"), Some("aborted"));
     assert_eq!(message_string_data(summary), "Summary");
     assert_eq!(header_string(risks, "x-sockudo-status"), Some("finished"));

@@ -23,7 +23,7 @@ use sockudo_protocol::messages::{
 };
 use sockudo_protocol::versioned_messages::{
     MessageAction as ProtocolMessageAction, MessageVersionMetadata, apply_runtime_metadata,
-    extract_runtime_action, extract_runtime_message_serial,
+    extract_runtime_action, extract_runtime_message_serial, set_runtime_append_fragment,
 };
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
@@ -161,6 +161,12 @@ impl ConnectionHandler {
             },
             Some(record.history_serial()),
         );
+
+        if action == ProtocolMessageAction::Append
+            && let Some(fragment) = record.message.append_fragment.as_ref()
+        {
+            set_runtime_append_fragment(&mut message, fragment.clone());
+        }
 
         message
     }
@@ -714,8 +720,10 @@ impl ConnectionHandler {
         start_time_ms: Option<f64>,
         force_full_message: bool,
     ) -> Result<()> {
+        let message_for_tap = self.realtime_egress_tap.as_ref().map(|_| message.clone());
+
         #[cfg(feature = "delta")]
-        {
+        let result = {
             let channel_settings = if force_full_message {
                 None
             } else {
@@ -747,10 +755,10 @@ impl ConnectionHandler {
                     )
                     .await
             }
-        }
+        };
 
         #[cfg(not(feature = "delta"))]
-        {
+        let result = {
             let _ = force_full_message;
             self.connection_manager
                 .send(
@@ -761,7 +769,22 @@ impl ConnectionHandler {
                     start_time_ms,
                 )
                 .await
+        };
+
+        if result.is_ok()
+            && let Some(tap) = self.realtime_egress_tap.as_ref()
+            && let Some(message) = message_for_tap.as_ref()
+            && let Err(error) = tap.deliver(&app_config.id, channel, message).await
+        {
+            warn!(
+                app_id = %app_config.id,
+                channel = %channel,
+                error = %error,
+                "realtime egress tap failed"
+            );
         }
+
+        result
     }
 
     pub async fn close_connection(

@@ -1,0 +1,91 @@
+---
+title: Ably AI Transport compatibility
+description: Sockudo's reduced Ably Pub/Sub subset for Ably AI Transport clients, tests, and demos.
+icon: BadgeCheck
+---
+
+Sockudo can expose a reduced Ably-compatible Pub/Sub surface for AI Transport
+workloads when the server is built with Cargo feature `ably-compat`. The goal
+is not broad Ably platform parity; the goal is to let Ably AI Transport clients
+exercise run lifecycle, mutable streaming, history, and recovery against
+Sockudo-backed durable primitives.
+
+Use this wording in public material:
+
+- **Ably AI Transport compatible**
+- **Ably Pub/Sub subset for AI Transport**
+
+Avoid broader full-platform claims until the current Ably SDK test suite passes
+against Sockudo and the scorecard records that evidence.
+
+## Compatibility Matrix
+
+| Surface | Status | Scope |
+| --- | --- | --- |
+| Ably Realtime WebSocket JSON protocol | Supported for AI Transport only | Root WebSocket endpoint accepts Ably JSON `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows needed by the smoke harness. |
+| Ably REST time/token/history/message reads | Supported for AI Transport only | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. |
+| Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
+| Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
+| Mutable output streaming | Supported for AI Transport only | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
+| History and recovery | Supported for AI Transport only | The harness covers history projection and recovery of missed append fragments. Broader Ably pagination/link behavior remains limited. |
+| Presence enter/update/leave | Supported for AI Transport only | Realtime presence frames are ACKed and fanned out for the reduced path. Full Ably presence-history parity is not claimed. |
+| Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes, but Ably mode capability enforcement is not complete. Sockudo app auth remains authoritative. |
+| LiveObjects/object modes | Intentionally out of scope | The current compatibility target does not implement Ably LiveObjects. |
+| Ably Push | Intentionally out of scope | Sockudo has native push APIs, but Ably Push compatibility is not part of this target. |
+| Binary MsgPack Ably protocol | Not yet implemented | The documented harness sets `useBinaryProtocol: false`. |
+| Full Ably platform API parity | Intentionally out of scope | This surface is for AI Transport compatibility, not a replacement for all Ably services. |
+
+## Test Commands
+
+Start Sockudo locally with the Ably compatibility feature, AI Transport, durable
+history, and versioned messages enabled. The default repository config uses
+`app-key:app-secret` and an AI channel prefix of `private-ai-`.
+
+```bash
+cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push" -- \
+  --config config/config.toml
+```
+
+Then run the compatibility lanes:
+
+```bash
+make ably-compat-test
+make ably-ai-transport-test
+make ably-ai-demo
+```
+
+The targets read these environment variables:
+
+| Variable | Default |
+| --- | --- |
+| `ABLY_KEY` | `app-key:app-secret` |
+| `ABLY_ENDPOINT` | `127.0.0.1` |
+| `ABLY_PORT` | `6001` |
+| `ABLY_TLS` | `false` |
+| `ABLY_CLIENT_ID` | script-specific |
+| `ABLY_AGENT_CLIENT_ID` | `sockudo-ably-ait-agent` |
+| `ABLY_CHANNEL` | generated per run |
+| `ABLY_DEMO_PROMPT` | `Say hello from Sockudo AI Transport.` |
+
+## Demos
+
+`make ably-ai-demo` runs two headless demos:
+
+1. A stock `@ably/ai-transport@0.4.0` chat demo using
+   `@ably/ai-transport/vercel`, stock `ably@2.23.0`, and Sockudo as the
+   configured endpoint.
+2. A recovery/history demo that disconnects during an AI output stream, appends
+   additional fragments while offline, reconnects with an Ably recovery key, and
+   verifies that only missed fragments replay and the final aggregate is intact.
+
+These are deliberately Node-based so CI can run them without a browser.
+
+## Evidence Files
+
+The working compatibility evidence lives in repository docs:
+
+- `docs/ably-compat/ABLY_COMPAT_SCORECARD.md`
+- `docs/ably-compat/ABLY_COMPAT_GAPS.md`
+- `docs/ably-compat/TEST_PLAN.md`
+
+Update those files whenever a supported/deferred status changes.

@@ -125,11 +125,21 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a malformed AI Transport header observed outside the validation path.
     fn mark_ai_transport_unparseable(&self, _app_id: &str) {}
 
-    /// Track an AI turn start event.
-    fn mark_ai_turn_started(&self, _app_id: &str) {}
+    /// Track an AI run start event.
+    fn mark_ai_run_started(&self, _app_id: &str) {}
 
-    /// Track an AI turn end event by bounded reason label.
-    fn mark_ai_turn_ended(&self, _app_id: &str, _reason: &str) {}
+    /// Track an AI run end event by bounded reason label.
+    fn mark_ai_run_ended(&self, _app_id: &str, _reason: &str) {}
+
+    /// Track a legacy AI turn start event.
+    fn mark_ai_turn_started(&self, app_id: &str) {
+        self.mark_ai_run_started(app_id);
+    }
+
+    /// Track a legacy AI turn end event by bounded reason label.
+    fn mark_ai_turn_ended(&self, app_id: &str, reason: &str) {
+        self.mark_ai_run_ended(app_id, reason);
+    }
 
     /// Track an AI cancel signal.
     fn mark_ai_cancel_signal(&self, _app_id: &str) {}

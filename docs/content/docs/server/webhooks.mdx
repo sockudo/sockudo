@@ -66,10 +66,13 @@ Push provider status callbacks and push lifecycle webhooks are core to operating
 
 Enable event types per app webhook. AI Transport event types are:
 
-- `ai_turn_started`
-- `ai_turn_ended`
+- `ai_run_started`
+- `ai_run_ended`
 - `ai_cancel_requested`
 - `ai_stream_orphaned`
+
+Legacy `ai_turn_started` and `ai_turn_ended` event types are still accepted for existing webhook
+consumers, but new integrations should subscribe to `ai_run_started` and `ai_run_ended`.
 
 Versioned-message and annotation event types are:
 
@@ -77,7 +80,9 @@ Versioned-message and annotation event types are:
 - `annotation_created`
 - `annotation_deleted`
 
-`ai_turn_ended` includes `reason` and optional `error_code`. `ai_stream_orphaned` is emitted when the distributed orphan janitor closes a stale streaming message after `ai_transport.rollup.orphan_ttl_ms`:
+`ai_run_ended` includes `reason` and optional `error_code`. `ai_cancel_requested` includes both
+`run_id` and the legacy `turn_id` alias. `ai_stream_orphaned` is emitted when the distributed
+orphan janitor closes a stale streaming message after `ai_transport.rollup.orphan_ttl_ms`:
 
 ```json
 {

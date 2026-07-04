@@ -1,0 +1,2582 @@
+//! Reduced Ably REST and Realtime compatibility for Ably AI Transport tests.
+//!
+//! This is an additive compatibility surface. Sockudo and Pusher clients still
+//! use their native routes and protocol frames; Ably ProtocolMessages are
+//! translated at the edge into Sockudo's existing publish, history, and version
+//! stores.
+
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use base64::{Engine as _, engine::general_purpose};
+use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+use sockudo_adapter::{ConnectionHandler, RealtimeEgressTap};
+use sockudo_core::{
+    app::App,
+    error::{Error as SockudoError, Result as SockudoResult},
+    history::{HistoryCursor, HistoryDirection, HistoryQueryBounds, HistoryReadRequest, now_ms},
+    origin_validation::OriginValidator,
+    utils::validate_channel_name,
+};
+use sockudo_protocol::{
+    messages::{
+        AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_HEADER_INPUT_CLIENT_ID, AI_HEADER_RUN_CLIENT_ID,
+        MessageData, MessageExtras, PusherMessage, is_ai_event,
+    },
+    versioned_messages::{
+        AppendMessageRequest, HEADER_VERSION_SERIAL, HEADER_VERSION_TIMESTAMP_MS,
+        MessageAction as ProtocolMessageAction, UpdateMessageRequest, extract_runtime_action,
+        extract_runtime_append_fragment, extract_runtime_message_serial,
+    },
+};
+use sockudo_ws::{Message, axum_integration::WebSocketUpgrade};
+use sonic_rs::{JsonValueTrait, Value, json};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
+use tokio::sync::mpsc;
+use tracing::{debug, warn};
+use uuid::Uuid;
+
+use super::{
+    AppError,
+    versioned_messages::{
+        VersionMutationPath,
+        mutations::{apply_append_message, apply_delete_message, apply_update_message},
+        parse_message_serial,
+    },
+};
+
+const ACTION_HEARTBEAT: u8 = 0;
+const ACTION_ACK: u8 = 1;
+const ACTION_NACK: u8 = 2;
+const ACTION_CONNECT: u8 = 3;
+const ACTION_CONNECTED: u8 = 4;
+const ACTION_DISCONNECT: u8 = 5;
+const ACTION_CLOSE: u8 = 7;
+const ACTION_CLOSED: u8 = 8;
+const ACTION_ERROR: u8 = 9;
+const ACTION_ATTACH: u8 = 10;
+const ACTION_ATTACHED: u8 = 11;
+const ACTION_DETACH: u8 = 12;
+const ACTION_DETACHED: u8 = 13;
+const ACTION_PRESENCE: u8 = 14;
+const ACTION_MESSAGE: u8 = 15;
+const ACTION_AUTH: u8 = 17;
+
+const FLAG_RESUMED: u64 = 1 << 2;
+const FLAG_HAS_BACKLOG: u64 = 1 << 1;
+const DEFAULT_CONNECTION_STATE_TTL_MS: u64 = 120_000;
+const DEFAULT_MAX_IDLE_INTERVAL_MS: u64 = 15_000;
+const DEFAULT_MAX_MESSAGE_SIZE: u64 = 64 * 1024;
+const DEFAULT_TOKEN_TTL_MS: i64 = 60 * 60 * 1000;
+const ABLY_COMPAT_MAX_REPLAY_MESSAGES: usize = 4096;
+
+const MESSAGE_CREATE: u8 = 0;
+const MESSAGE_UPDATE: u8 = 1;
+const MESSAGE_DELETE: u8 = 2;
+const MESSAGE_SUMMARY: u8 = 4;
+const MESSAGE_APPEND: u8 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AblyMessageProjection {
+    Mutation,
+    Aggregate,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AblyConnectQuery {
+    key: Option<String>,
+    access_token: Option<String>,
+    client_id: Option<String>,
+    resume: Option<String>,
+    recover: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AblyRestQuery {
+    key: Option<String>,
+    access_token: Option<String>,
+    client_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AblyHistoryQuery {
+    key: Option<String>,
+    access_token: Option<String>,
+    client_id: Option<String>,
+    limit: Option<usize>,
+    direction: Option<String>,
+    cursor: Option<String>,
+    start: Option<i64>,
+    end: Option<i64>,
+    until_attach: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AblyTokenRequest {
+    key_name: Option<String>,
+    client_id: Option<String>,
+    ttl: Option<i64>,
+    capability: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AblyErrorBody {
+    error: AblyErrorInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AblyErrorInfo {
+    message: String,
+    code: u32,
+    status_code: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AblyConnectionDetails {
+    client_id: Option<String>,
+    connection_key: String,
+    connection_state_ttl: u64,
+    max_idle_interval: u64,
+    max_message_size: u64,
+    max_frame_size: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AblyProtocolMessage {
+    action: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flags: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<AblyErrorInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    msg_serial: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    messages: Option<Vec<AblyMessage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence: Option<Vec<AblyPresenceMessage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_details: Option<AblyConnectionDetails>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    res: Option<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct AblyMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extras: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<AblyMessageVersion>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AblyMessageVersion {
+    serial: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct AblyPresenceMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AblyTokenDetails {
+    token: String,
+    key_name: String,
+    issued: i64,
+    expires: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capability: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct AblyTokenRecord {
+    app_key: String,
+    client_id: Option<String>,
+    expires_ms: i64,
+}
+
+#[derive(Debug)]
+struct ResolvedAblyAuth {
+    app: App,
+    client_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct AblyAuthError {
+    status: StatusCode,
+    code: u32,
+    message: String,
+}
+
+#[derive(Debug, Clone)]
+struct AblySessionRecord {
+    app_id: String,
+    connection_id: String,
+    client_id: Option<String>,
+    expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct AblyChannelPosition {
+    stream_id: String,
+    serial: u64,
+}
+
+#[derive(Debug, Clone)]
+struct AblyRecoveryFailure {
+    code: u32,
+    status: StatusCode,
+    message: String,
+}
+
+#[derive(Debug, Clone)]
+struct AblyReplayEntry {
+    stream_id: String,
+    serial: u64,
+    message: AblyProtocolMessage,
+    published_at_ms: i64,
+}
+
+#[derive(Debug, Default)]
+struct AblyChannelState {
+    subscribers: HashMap<String, mpsc::UnboundedSender<AblyProtocolMessage>>,
+    replay: VecDeque<AblyReplayEntry>,
+    current_stream_id: Option<String>,
+    last_touched_ms: i64,
+}
+
+enum AblyHotRecovery {
+    Sent,
+    NeedsCold,
+    Failed(AblyRecoveryFailure),
+}
+
+enum AblyConnectionStart {
+    Fresh,
+    Resumed { connection_id: String },
+    Failed { error: AblyErrorInfo },
+}
+
+impl AblyAuthError {
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: 40140,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: 40160,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct AblyCompatHub {
+    channels: DashMap<String, Arc<Mutex<AblyChannelState>>>,
+    sessions: DashMap<String, AblySessionRecord>,
+    tokens: DashMap<String, AblyTokenRecord>,
+}
+
+pub fn global_ably_hub() -> Arc<AblyCompatHub> {
+    static HUB: OnceLock<Arc<AblyCompatHub>> = OnceLock::new();
+    Arc::clone(HUB.get_or_init(|| Arc::new(AblyCompatHub::default())))
+}
+
+#[async_trait::async_trait]
+impl RealtimeEgressTap for AblyCompatHub {
+    async fn deliver(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message: &PusherMessage,
+    ) -> SockudoResult<()> {
+        let ably_message = match pusher_to_ably_message(message, AblyMessageProjection::Mutation) {
+            Ok(message) => message,
+            Err(error) => {
+                warn!(
+                    app_id = %app_id,
+                    channel = %channel,
+                    error = %error,
+                    "failed to translate Sockudo message for Ably compatibility"
+                );
+                return Ok(());
+            }
+        };
+        let channel_serial = message
+            .stream_id
+            .as_deref()
+            .zip(message.serial)
+            .map(|(stream_id, serial)| encode_ably_channel_serial(stream_id, serial));
+        self.broadcast(
+            app_id,
+            channel,
+            AblyProtocolMessage {
+                action: ACTION_MESSAGE,
+                timestamp: Some(now_ms()),
+                channel: Some(channel.to_string()),
+                channel_serial,
+                messages: Some(vec![ably_message]),
+                ..empty_protocol_message(ACTION_MESSAGE)
+            },
+        );
+        Ok(())
+    }
+}
+
+impl AblyCompatHub {
+    fn channel_state(&self, app_id: &str, channel: &str) -> Arc<Mutex<AblyChannelState>> {
+        self.channels
+            .entry(channel_key(app_id, channel))
+            .or_insert_with(|| Arc::new(Mutex::new(AblyChannelState::default())))
+            .clone()
+    }
+
+    fn attach_clean(
+        &self,
+        app_id: &str,
+        channel: &str,
+        session_id: &str,
+        sender: mpsc::UnboundedSender<AblyProtocolMessage>,
+        channel_serial: Option<String>,
+    ) {
+        let now = now_ms();
+        let state = self.channel_state(app_id, channel);
+        let mut state = lock_channel_state(&state);
+        prune_ably_replay(&mut state, now);
+        if let Some(position) = channel_serial
+            .as_deref()
+            .and_then(|serial| parse_ably_channel_serial(serial).ok())
+        {
+            state.current_stream_id = Some(position.stream_id);
+            state.last_touched_ms = now;
+        }
+        state
+            .subscribers
+            .insert(session_id.to_string(), sender.clone());
+        send_ably_attached(&sender, channel, channel_serial, None, None, Vec::new());
+    }
+
+    fn unsubscribe(&self, app_id: &str, channel: &str, session_id: &str) {
+        let key = channel_key(app_id, channel);
+        let Some(state) = self.channels.get(&key).map(|entry| entry.clone()) else {
+            return;
+        };
+        let mut state = lock_channel_state(&state);
+        state.subscribers.remove(session_id);
+        if state.subscribers.is_empty() && state.replay.is_empty() {
+            drop(state);
+            self.channels.remove(&key);
+        }
+    }
+
+    fn broadcast(&self, app_id: &str, channel: &str, message: AblyProtocolMessage) {
+        let now = now_ms();
+        let state = self.channel_state(app_id, channel);
+        let mut state = lock_channel_state(&state);
+        prune_ably_replay(&mut state, now);
+
+        if let Some(position) = message
+            .channel_serial
+            .as_deref()
+            .and_then(|serial| parse_ably_channel_serial(serial).ok())
+        {
+            if state
+                .current_stream_id
+                .as_deref()
+                .is_some_and(|current| current != position.stream_id)
+            {
+                state.replay.clear();
+            }
+            state.current_stream_id = Some(position.stream_id.clone());
+            state.last_touched_ms = now;
+            state.replay.push_back(AblyReplayEntry {
+                stream_id: position.stream_id,
+                serial: position.serial,
+                message: message.clone(),
+                published_at_ms: now,
+            });
+            while state.replay.len() > ABLY_COMPAT_MAX_REPLAY_MESSAGES {
+                state.replay.pop_front();
+            }
+        }
+
+        let mut stale = Vec::new();
+        for (session_id, subscriber) in &state.subscribers {
+            if subscriber.send(message.clone()).is_err() {
+                stale.push(session_id.clone());
+            }
+        }
+        for session_id in stale {
+            state.subscribers.remove(&session_id);
+        }
+    }
+
+    fn attach_hot_recovery(
+        &self,
+        app_id: &str,
+        channel: &str,
+        session_id: &str,
+        sender: mpsc::UnboundedSender<AblyProtocolMessage>,
+        position: &AblyChannelPosition,
+    ) -> AblyHotRecovery {
+        let now = now_ms();
+        let state = self.channel_state(app_id, channel);
+        let mut state = lock_channel_state(&state);
+        prune_ably_replay(&mut state, now);
+
+        let Some(current_stream_id) = state.current_stream_id.as_deref() else {
+            return AblyHotRecovery::NeedsCold;
+        };
+        if current_stream_id != position.stream_id {
+            return AblyHotRecovery::Failed(AblyRecoveryFailure::channel(
+                90005,
+                format!("unable to recover channel '{channel}' because the stream changed"),
+            ));
+        }
+
+        let Some(newest) = state.replay.back().map(|entry| entry.serial) else {
+            if now.saturating_sub(state.last_touched_ms)
+                <= i64::try_from(DEFAULT_CONNECTION_STATE_TTL_MS).unwrap_or(i64::MAX)
+            {
+                state
+                    .subscribers
+                    .insert(session_id.to_string(), sender.clone());
+                send_ably_attached(
+                    &sender,
+                    channel,
+                    Some(encode_ably_channel_serial(
+                        &position.stream_id,
+                        position.serial,
+                    )),
+                    Some(FLAG_RESUMED),
+                    None,
+                    Vec::new(),
+                );
+                return AblyHotRecovery::Sent;
+            }
+            return AblyHotRecovery::NeedsCold;
+        };
+
+        if position.serial >= newest {
+            state
+                .subscribers
+                .insert(session_id.to_string(), sender.clone());
+            send_ably_attached(
+                &sender,
+                channel,
+                Some(encode_ably_channel_serial(
+                    &position.stream_id,
+                    position.serial,
+                )),
+                Some(FLAG_RESUMED),
+                None,
+                Vec::new(),
+            );
+            return AblyHotRecovery::Sent;
+        }
+
+        let oldest = state.replay.front().map(|entry| entry.serial).unwrap_or(0);
+        if position.serial.saturating_add(1) < oldest {
+            return AblyHotRecovery::NeedsCold;
+        }
+
+        let replay = state
+            .replay
+            .iter()
+            .filter(|entry| entry.stream_id == position.stream_id && entry.serial > position.serial)
+            .map(|entry| entry.message.clone())
+            .collect::<Vec<_>>();
+        let flags = if replay.is_empty() {
+            FLAG_RESUMED
+        } else {
+            FLAG_RESUMED | FLAG_HAS_BACKLOG
+        };
+        state
+            .subscribers
+            .insert(session_id.to_string(), sender.clone());
+        send_ably_attached(
+            &sender,
+            channel,
+            Some(encode_ably_channel_serial(
+                &position.stream_id,
+                position.serial,
+            )),
+            Some(flags),
+            None,
+            replay,
+        );
+        AblyHotRecovery::Sent
+    }
+
+    fn attach_cold_recovery(
+        &self,
+        app_id: &str,
+        channel: &str,
+        session_id: &str,
+        sender: mpsc::UnboundedSender<AblyProtocolMessage>,
+        position: &AblyChannelPosition,
+        replay: Vec<AblyProtocolMessage>,
+    ) {
+        let now = now_ms();
+        let state = self.channel_state(app_id, channel);
+        let mut state = lock_channel_state(&state);
+        prune_ably_replay(&mut state, now);
+        if state
+            .current_stream_id
+            .as_deref()
+            .is_some_and(|current| current != position.stream_id)
+        {
+            send_ably_attached(
+                &sender,
+                channel,
+                Some(encode_ably_channel_serial(
+                    &position.stream_id,
+                    position.serial,
+                )),
+                None,
+                Some(AblyRecoveryFailure::channel(
+                    90005,
+                    format!("unable to recover channel '{channel}' because the stream changed"),
+                )),
+                Vec::new(),
+            );
+            return;
+        }
+
+        state.current_stream_id = Some(position.stream_id.clone());
+        state.last_touched_ms = now;
+        let flags = if replay.is_empty() {
+            FLAG_RESUMED
+        } else {
+            FLAG_RESUMED | FLAG_HAS_BACKLOG
+        };
+        state
+            .subscribers
+            .insert(session_id.to_string(), sender.clone());
+        send_ably_attached(
+            &sender,
+            channel,
+            Some(encode_ably_channel_serial(
+                &position.stream_id,
+                position.serial,
+            )),
+            Some(flags),
+            None,
+            replay,
+        );
+    }
+
+    fn attach_failed(
+        &self,
+        app_id: &str,
+        channel: &str,
+        session_id: &str,
+        sender: mpsc::UnboundedSender<AblyProtocolMessage>,
+        channel_serial: Option<String>,
+        failure: AblyRecoveryFailure,
+    ) {
+        let state = self.channel_state(app_id, channel);
+        let mut state = lock_channel_state(&state);
+        state
+            .subscribers
+            .insert(session_id.to_string(), sender.clone());
+        send_ably_attached(
+            &sender,
+            channel,
+            channel_serial,
+            None,
+            Some(failure),
+            Vec::new(),
+        );
+    }
+
+    fn begin_connection(
+        &self,
+        app_id: &str,
+        client_id: Option<&str>,
+        resume: Option<&str>,
+        recover: Option<&str>,
+    ) -> AblyConnectionStart {
+        let requested_key = resume.or(recover);
+        let Some(requested_key) = requested_key else {
+            return AblyConnectionStart::Fresh;
+        };
+        let now = now_ms();
+        let Some(record) = self.sessions.get(requested_key).map(|entry| entry.clone()) else {
+            return AblyConnectionStart::Failed {
+                error: error_info(
+                    StatusCode::BAD_REQUEST,
+                    80008,
+                    "unable to recover connection (connection expired)",
+                ),
+            };
+        };
+        if record.expires_at_ms <= now {
+            self.sessions.remove(requested_key);
+            return AblyConnectionStart::Failed {
+                error: error_info(
+                    StatusCode::BAD_REQUEST,
+                    80008,
+                    "unable to recover connection (connection expired)",
+                ),
+            };
+        }
+        if record.app_id != app_id || record.client_id.as_deref() != client_id {
+            return AblyConnectionStart::Failed {
+                error: error_info(
+                    StatusCode::BAD_REQUEST,
+                    80011,
+                    "unable to recover connection (incompatible auth params)",
+                ),
+            };
+        }
+        AblyConnectionStart::Resumed {
+            connection_id: record.connection_id,
+        }
+    }
+
+    fn remember_connection(
+        &self,
+        connection_key: String,
+        app_id: &str,
+        connection_id: &str,
+        client_id: Option<String>,
+    ) {
+        self.sessions.insert(
+            connection_key,
+            AblySessionRecord {
+                app_id: app_id.to_string(),
+                connection_id: connection_id.to_string(),
+                client_id,
+                expires_at_ms: now_ms()
+                    .saturating_add(i64::try_from(DEFAULT_CONNECTION_STATE_TTL_MS).unwrap_or(0)),
+            },
+        );
+    }
+
+    fn issue_token(
+        &self,
+        app: &App,
+        client_id: Option<String>,
+        ttl_ms: i64,
+        capability: Option<Value>,
+    ) -> AblyTokenDetails {
+        let issued = now_ms();
+        let expires = issued.saturating_add(ttl_ms.max(1));
+        let token = format!("sockudo-ably-{}", Uuid::new_v4());
+        self.tokens.insert(
+            token.clone(),
+            AblyTokenRecord {
+                app_key: app.key.clone(),
+                client_id: client_id.clone(),
+                expires_ms: expires,
+            },
+        );
+        AblyTokenDetails {
+            token,
+            key_name: app.key.clone(),
+            issued,
+            expires,
+            client_id,
+            capability,
+        }
+    }
+
+    fn resolve_token(&self, token: &str) -> Option<AblyTokenRecord> {
+        let record = self.tokens.get(token)?.clone();
+        if record.expires_ms <= now_ms() {
+            self.tokens.remove(token);
+            return None;
+        }
+        Some(record)
+    }
+}
+
+pub async fn handle_ably_realtime_upgrade(
+    Query(params): Query<AblyConnectQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Response {
+    if !handler.is_accepting() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
+    let resolved = match resolve_ably_auth(
+        &handler,
+        &headers,
+        params.key.as_deref(),
+        params.access_token.as_deref(),
+        params.client_id.as_deref(),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => return ably_error_response(error.status, error.code, error.message),
+    };
+
+    if let Some(allowed_origins) = resolved.app.allowed_origins_ref()
+        && !allowed_origins.is_empty()
+    {
+        let origin = headers
+            .get(header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if !OriginValidator::validate_origin(origin, allowed_origins) {
+            return ably_error_response(
+                StatusCode::FORBIDDEN,
+                40300,
+                "Origin is not allowed for this app",
+            );
+        }
+    }
+
+    let ws_cfg = handler.server_options().websocket.to_sockudo_ws_config(
+        handler.server_options().websocket_max_payload_kb,
+        handler.server_options().activity_timeout,
+    );
+    let hub = global_ably_hub();
+    let resume = params.resume.clone();
+    let recover = params.recover.clone();
+
+    ws.config(ws_cfg)
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = run_ably_realtime_socket(
+                socket,
+                handler,
+                hub,
+                resolved.app,
+                resolved.client_id,
+                resume,
+                recover,
+            )
+            .await
+            {
+                warn!(error = %error, "Ably compatibility socket closed with error");
+            }
+        })
+        .into_response()
+}
+
+async fn run_ably_realtime_socket(
+    socket: sockudo_ws::axum_integration::WebSocket,
+    handler: Arc<ConnectionHandler>,
+    hub: Arc<AblyCompatHub>,
+    app: App,
+    client_id: Option<String>,
+    resume: Option<String>,
+    recover: Option<String>,
+) -> SockudoResult<()> {
+    let connection_start = hub.begin_connection(
+        &app.id,
+        client_id.as_deref(),
+        resume.as_deref(),
+        recover.as_deref(),
+    );
+    let connection_id = match &connection_start {
+        AblyConnectionStart::Resumed { connection_id } => connection_id.clone(),
+        AblyConnectionStart::Fresh | AblyConnectionStart::Failed { .. } => {
+            format!("sockudo-ably-{}", Uuid::new_v4().simple())
+        }
+    };
+    let connection_key = format!("{}:{}", app.id, Uuid::new_v4().simple());
+    let connection_error = match &connection_start {
+        AblyConnectionStart::Failed { error } => Some(error.clone()),
+        AblyConnectionStart::Fresh | AblyConnectionStart::Resumed { .. } => None,
+    };
+    hub.remember_connection(
+        connection_key.clone(),
+        &app.id,
+        &connection_id,
+        client_id.clone(),
+    );
+    let session_id = connection_id.clone();
+    let (mut reader, mut writer) = socket.split();
+    let (sender, mut outbound) = mpsc::unbounded_channel::<AblyProtocolMessage>();
+    let writer_task = tokio::spawn(async move {
+        while let Some(message) = outbound.recv().await {
+            let payload = match sonic_rs::to_string(&message) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    warn!(error = %error, "failed to serialize Ably ProtocolMessage");
+                    continue;
+                }
+            };
+            if let Err(error) = writer.send(Message::text(payload)).await {
+                debug!(error = %error, "Ably compatibility socket writer closed");
+                break;
+            }
+        }
+    });
+    let heartbeat_sender = sender.clone();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_millis(DEFAULT_MAX_IDLE_INTERVAL_MS / 2));
+        loop {
+            interval.tick().await;
+            if heartbeat_sender
+                .send(AblyProtocolMessage {
+                    action: ACTION_HEARTBEAT,
+                    ..empty_protocol_message(ACTION_HEARTBEAT)
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let _ = sender.send(connected_message(
+        &connection_id,
+        &connection_key,
+        client_id.clone(),
+        connection_error,
+    ));
+
+    let mut attached_channels = HashSet::new();
+    while let Some(frame) = reader.next().await {
+        let frame = frame.map_err(|error| SockudoError::Internal(error.to_string()))?;
+        let bytes = match frame {
+            Message::Text(bytes) | Message::Binary(bytes) => bytes,
+            Message::Ping(payload) => {
+                let _ = sender.send(AblyProtocolMessage {
+                    action: ACTION_HEARTBEAT,
+                    ..empty_protocol_message(ACTION_HEARTBEAT)
+                });
+                let _ = payload;
+                continue;
+            }
+            Message::Pong(_) => continue,
+            Message::Close(_) => break,
+        };
+        let inbound: AblyProtocolMessage = sonic_rs::from_slice(bytes.as_ref())
+            .map_err(|error| SockudoError::InvalidMessageFormat(error.to_string()))?;
+        handle_ably_protocol_message(
+            &handler,
+            &hub,
+            &app,
+            &connection_id,
+            client_id.as_deref(),
+            &session_id,
+            &sender,
+            &mut attached_channels,
+            inbound,
+        )
+        .await?;
+    }
+
+    for channel in attached_channels {
+        hub.unsubscribe(&app.id, &channel, &session_id);
+    }
+    heartbeat_task.abort();
+    let _ = heartbeat_task.await;
+    drop(sender);
+    let _ = writer_task.await;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_ably_protocol_message(
+    handler: &Arc<ConnectionHandler>,
+    hub: &Arc<AblyCompatHub>,
+    app: &App,
+    connection_id: &str,
+    client_id: Option<&str>,
+    session_id: &str,
+    sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
+    attached_channels: &mut HashSet<String>,
+    inbound: AblyProtocolMessage,
+) -> SockudoResult<()> {
+    match inbound.action {
+        ACTION_HEARTBEAT => {
+            let _ = sender.send(AblyProtocolMessage {
+                action: ACTION_HEARTBEAT,
+                ..empty_protocol_message(ACTION_HEARTBEAT)
+            });
+        }
+        ACTION_CONNECT | ACTION_AUTH => {
+            let connection_key = format!("{}:{}", app.id, Uuid::new_v4().simple());
+            hub.remember_connection(
+                connection_key.clone(),
+                &app.id,
+                connection_id,
+                client_id.map(str::to_string),
+            );
+            let _ = sender.send(connected_message(
+                connection_id,
+                &connection_key,
+                client_id.map(str::to_string),
+                None,
+            ));
+        }
+        ACTION_ATTACH => {
+            let Some(channel) = inbound.channel else {
+                send_protocol_error(sender, 40000, "ATTACH requires channel");
+                return Ok(());
+            };
+            if let Err(error) = validate_channel_name(app, &channel).await {
+                send_protocol_error(sender, 40000, error.to_string());
+                return Ok(());
+            }
+            attached_channels.insert(channel.clone());
+            handle_ably_attach(
+                handler,
+                hub,
+                app,
+                session_id,
+                sender,
+                &channel,
+                inbound.channel_serial,
+            )
+            .await;
+        }
+        ACTION_DETACH => {
+            let Some(channel) = inbound.channel else {
+                send_protocol_error(sender, 40000, "DETACH requires channel");
+                return Ok(());
+            };
+            hub.unsubscribe(&app.id, &channel, session_id);
+            attached_channels.remove(&channel);
+            let _ = sender.send(AblyProtocolMessage {
+                action: ACTION_DETACHED,
+                channel: Some(channel),
+                ..empty_protocol_message(ACTION_DETACHED)
+            });
+        }
+        ACTION_MESSAGE => {
+            handle_ably_publish(handler, app, connection_id, client_id, sender, inbound).await?;
+        }
+        ACTION_PRESENCE => {
+            handle_ably_presence(hub, app, connection_id, client_id, sender, inbound);
+        }
+        ACTION_DISCONNECT | ACTION_CLOSE => {
+            let _ = sender.send(AblyProtocolMessage {
+                action: ACTION_CLOSED,
+                ..empty_protocol_message(ACTION_CLOSED)
+            });
+        }
+        _ => {
+            send_protocol_error(
+                sender,
+                40000,
+                format!("Unsupported Ably ProtocolMessage action {}", inbound.action),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_ably_attach(
+    handler: &Arc<ConnectionHandler>,
+    hub: &Arc<AblyCompatHub>,
+    app: &App,
+    session_id: &str,
+    sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
+    channel: &str,
+    channel_serial: Option<String>,
+) {
+    let Some(channel_serial) = channel_serial else {
+        let attach_serial = current_ably_channel_serial(handler, app, channel);
+        hub.attach_clean(&app.id, channel, session_id, sender.clone(), attach_serial);
+        return;
+    };
+
+    let position = match parse_ably_channel_serial(&channel_serial) {
+        Ok(position) => position,
+        Err(failure) => {
+            hub.attach_failed(
+                &app.id,
+                channel,
+                session_id,
+                sender.clone(),
+                Some(channel_serial),
+                failure,
+            );
+            return;
+        }
+    };
+
+    match hub.attach_hot_recovery(&app.id, channel, session_id, sender.clone(), &position) {
+        AblyHotRecovery::Sent => return,
+        AblyHotRecovery::Failed(failure) => {
+            hub.attach_failed(
+                &app.id,
+                channel,
+                session_id,
+                sender.clone(),
+                Some(channel_serial),
+                failure,
+            );
+            return;
+        }
+        AblyHotRecovery::NeedsCold => {}
+    }
+
+    match collect_ably_cold_recovery(handler, app, channel, &position).await {
+        Ok(replay) => hub.attach_cold_recovery(
+            &app.id,
+            channel,
+            session_id,
+            sender.clone(),
+            &position,
+            replay,
+        ),
+        Err(failure) => hub.attach_failed(
+            &app.id,
+            channel,
+            session_id,
+            sender.clone(),
+            Some(channel_serial),
+            failure,
+        ),
+    }
+}
+
+fn current_ably_channel_serial(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+) -> Option<String> {
+    #[cfg(feature = "recovery")]
+    {
+        handler.replay_buffer().map(|replay_buffer| {
+            let position = replay_buffer.current_position(&app.id, channel);
+            encode_ably_channel_serial(&position.stream_id, position.serial)
+        })
+    }
+    #[cfg(not(feature = "recovery"))]
+    {
+        let _ = (handler, app, channel);
+        None
+    }
+}
+
+async fn collect_ably_cold_recovery(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    position: &AblyChannelPosition,
+) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
+    if handler.server_options().versioned_messages.enabled {
+        return collect_ably_version_recovery(handler, app, channel, position).await;
+    }
+
+    collect_ably_history_recovery(handler, app, channel, position).await
+}
+
+async fn collect_ably_version_recovery(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    position: &AblyChannelPosition,
+) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
+    let stream_state = handler
+        .version_store()
+        .stream_state(&app.id, channel)
+        .await
+        .map_err(|error| {
+            AblyRecoveryFailure::channel(
+                90000,
+                format!("unable to recover channel '{channel}': {error}"),
+            )
+        })?;
+
+    if stream_state.stream_id.as_deref() != Some(position.stream_id.as_str()) {
+        return Err(AblyRecoveryFailure::channel(
+            90005,
+            format!("unable to recover channel '{channel}' because the stream changed"),
+        ));
+    }
+
+    if let Some(oldest) = stream_state.oldest_available_delivery_serial
+        && position.serial.saturating_add(1) < oldest
+    {
+        return Err(AblyRecoveryFailure::channel(
+            90003,
+            format!("unable to recover channel '{channel}' because messages expired"),
+        ));
+    }
+
+    let newest = stream_state
+        .newest_available_delivery_serial
+        .unwrap_or(position.serial);
+    if newest <= position.serial {
+        return Ok(Vec::new());
+    }
+    let missing = newest.saturating_sub(position.serial);
+    let limit = usize::try_from(missing).map_err(|_| {
+        AblyRecoveryFailure::channel(
+            90004,
+            format!("unable to recover channel '{channel}' because the message limit was exceeded"),
+        )
+    })?;
+    if limit > ABLY_COMPAT_MAX_REPLAY_MESSAGES {
+        return Err(AblyRecoveryFailure::channel(
+            90004,
+            format!("unable to recover channel '{channel}' because the message limit was exceeded"),
+        ));
+    }
+
+    let records = handler
+        .version_store()
+        .replay_after(sockudo_core::version_store::VersionReplayRequest {
+            app_id: app.id.clone(),
+            channel: channel.to_string(),
+            after_delivery_serial: position.serial,
+            limit,
+        })
+        .await
+        .map_err(|error| {
+            AblyRecoveryFailure::channel(
+                90003,
+                format!("unable to recover channel '{channel}': {error}"),
+            )
+        })?;
+
+    if records.len() != limit {
+        return Err(AblyRecoveryFailure::channel(
+            90003,
+            format!("unable to recover channel '{channel}' because continuity is unprovable"),
+        ));
+    }
+
+    let mut replay = Vec::with_capacity(records.len());
+    for record in records {
+        let delivery_serial = record.delivery_serial();
+        let runtime =
+            handler.build_runtime_message_from_record(&record, Some(position.stream_id.clone()));
+        replay.push(ably_protocol_message_from_pusher(
+            channel,
+            &runtime,
+            AblyMessageProjection::Mutation,
+            Some(encode_ably_channel_serial(
+                &position.stream_id,
+                delivery_serial,
+            )),
+        )?);
+    }
+    Ok(replay)
+}
+
+async fn collect_ably_history_recovery(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    position: &AblyChannelPosition,
+) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
+    let history_policy = app.resolved_history(channel, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AblyRecoveryFailure::channel(
+            90003,
+            format!("unable to recover channel '{channel}' because messages expired"),
+        ));
+    }
+
+    let stream_state = handler
+        .history_store()
+        .stream_runtime_state(&app.id, channel)
+        .await
+        .map_err(|error| {
+            AblyRecoveryFailure::channel(
+                90000,
+                format!("unable to recover channel '{channel}': {error}"),
+            )
+        })?;
+    if !stream_state.recovery_allowed {
+        return Err(AblyRecoveryFailure::channel(
+            if stream_state.reset_required {
+                90005
+            } else {
+                90000
+            },
+            stream_state.reason.unwrap_or_else(|| {
+                format!("unable to recover channel '{channel}' because continuity is unprovable")
+            }),
+        ));
+    }
+    if stream_state.stream_id.as_deref() != Some(position.stream_id.as_str()) {
+        return Err(AblyRecoveryFailure::channel(
+            90005,
+            format!("unable to recover channel '{channel}' because the stream changed"),
+        ));
+    }
+
+    let mut replay = Vec::new();
+    let mut cursor = None;
+    let bounds = HistoryQueryBounds {
+        start_serial: Some(position.serial.saturating_add(1)),
+        end_serial: None,
+        start_time_ms: None,
+        end_time_ms: None,
+    };
+    loop {
+        if replay.len() >= ABLY_COMPAT_MAX_REPLAY_MESSAGES {
+            return Err(AblyRecoveryFailure::channel(
+                90004,
+                format!(
+                    "unable to recover channel '{channel}' because the message limit was exceeded"
+                ),
+            ));
+        }
+        let page = handler
+            .history_store()
+            .read_page(HistoryReadRequest {
+                app_id: app.id.clone(),
+                channel: channel.to_string(),
+                direction: HistoryDirection::OldestFirst,
+                limit: history_policy
+                    .max_page_size
+                    .min(ABLY_COMPAT_MAX_REPLAY_MESSAGES.saturating_sub(replay.len()))
+                    .max(1),
+                cursor: cursor.clone(),
+                bounds: bounds.clone(),
+            })
+            .await
+            .map_err(|error| {
+                AblyRecoveryFailure::channel(
+                    90003,
+                    format!("unable to recover channel '{channel}': {error}"),
+                )
+            })?;
+
+        if page.retained.stream_id.as_deref() != Some(position.stream_id.as_str()) {
+            return Err(AblyRecoveryFailure::channel(
+                90005,
+                format!("unable to recover channel '{channel}' because the stream changed"),
+            ));
+        }
+        if page.truncated_by_retention {
+            return Err(AblyRecoveryFailure::channel(
+                90003,
+                format!("unable to recover channel '{channel}' because messages expired"),
+            ));
+        }
+
+        for item in page.items {
+            let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+                .map_err(|error| {
+                    AblyRecoveryFailure::channel(
+                        90000,
+                        format!("unable to recover channel '{channel}': {error}"),
+                    )
+                })?;
+            replay.push(ably_protocol_message_from_pusher(
+                channel,
+                &raw_message,
+                AblyMessageProjection::Mutation,
+                Some(encode_ably_channel_serial(&item.stream_id, item.serial)),
+            )?);
+        }
+
+        if !page.has_more {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+
+    Ok(replay)
+}
+
+async fn handle_ably_publish(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    connection_id: &str,
+    client_id: Option<&str>,
+    sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
+    inbound: AblyProtocolMessage,
+) -> SockudoResult<()> {
+    let channel = match inbound.channel.clone() {
+        Some(channel) => channel,
+        None => {
+            send_publish_nack(sender, &inbound, 40000, "MESSAGE requires channel");
+            return Ok(());
+        }
+    };
+    if let Err(error) = validate_channel_name(app, &channel).await {
+        send_publish_nack(sender, &inbound, 40000, error.to_string());
+        return Ok(());
+    }
+
+    let messages = inbound.messages.clone().unwrap_or_default();
+    let mut serials = Vec::with_capacity(messages.len());
+    for (index, message) in messages.into_iter().enumerate() {
+        let action = message.action.unwrap_or(MESSAGE_CREATE);
+        let result = match action {
+            MESSAGE_CREATE => {
+                publish_ably_create(handler, app, &channel, connection_id, client_id, message).await
+            }
+            MESSAGE_APPEND => publish_ably_append(handler, app, &channel, client_id, message).await,
+            MESSAGE_UPDATE => publish_ably_update(handler, app, &channel, client_id, message).await,
+            MESSAGE_DELETE => publish_ably_delete(handler, app, &channel, client_id, message).await,
+            MESSAGE_SUMMARY => Err(AppError::InvalidInput(format!(
+                "Ably message action {action} is not implemented by this compatibility layer"
+            ))),
+            other => Err(AppError::InvalidInput(format!(
+                "Unsupported Ably message action {other}"
+            ))),
+        };
+
+        match result {
+            Ok(serial) => serials.push(serial),
+            Err(error) => {
+                send_publish_nack(
+                    sender,
+                    &inbound,
+                    40000,
+                    format!("Failed to publish message {index}: {error}"),
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    let count = u64::try_from(serials.len()).unwrap_or(u64::MAX);
+    let _ = sender.send(AblyProtocolMessage {
+        action: ACTION_ACK,
+        msg_serial: inbound.msg_serial,
+        count: Some(count),
+        res: Some(json!([{ "serials": serials }])),
+        ..empty_protocol_message(ACTION_ACK)
+    });
+    Ok(())
+}
+
+async fn publish_ably_create(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    connection_id: &str,
+    client_id: Option<&str>,
+    message: AblyMessage,
+) -> Result<String, AppError> {
+    let event_name = message
+        .name
+        .clone()
+        .ok_or_else(|| AppError::InvalidInput("Ably message.name is required".to_string()))?;
+    let encoding = message.encoding.clone();
+    let data = message
+        .data
+        .map(|value| ably_message_data_to_message_data(value, encoding.as_deref()));
+    let mut extras = ably_extras_to_message_extras(message.extras)?;
+    if let Some(client_id) = client_id
+        && is_ai_event(&event_name)
+    {
+        stamp_ai_identity(&mut extras, &event_name, client_id)?;
+    }
+    if let Some(extras) = extras.as_ref() {
+        extras
+            .validate_ai_headers()
+            .map_err(|error| AppError::InvalidInput(error.message))?;
+    }
+    let pusher_message = PusherMessage {
+        event: Some(event_name),
+        channel: Some(channel.to_string()),
+        data,
+        name: None,
+        user_id: client_id.map(str::to_string),
+        tags: None,
+        sequence: None,
+        conflation_key: None,
+        message_id: message.id,
+        stream_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras,
+        delta_sequence: None,
+        delta_conflation_key: None,
+    };
+    let ack = handler
+        .publish_to_channel_with_timing(app, channel, pusher_message, None, None, true)
+        .await?;
+    Ok(ack
+        .map(|ack| ack.message_serial)
+        .or(message.serial)
+        .unwrap_or_else(|| format!("{connection_id}:{}", now_ms())))
+}
+
+async fn publish_ably_append(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    client_id: Option<&str>,
+    message: AblyMessage,
+) -> Result<String, AppError> {
+    let serial = message.serial.clone().ok_or_else(|| {
+        AppError::InvalidInput("appendMessage requires message.serial".to_string())
+    })?;
+    let data = match message.data.as_ref() {
+        Some(value) => value.as_str().ok_or_else(|| {
+            AppError::InvalidInput("appendMessage data must be a string".to_string())
+        })?,
+        None => "",
+    }
+    .to_string();
+    let request = AppendMessageRequest {
+        data,
+        extras: ably_extras_to_message_extras(message.extras)?,
+        client_id: client_id.map(str::to_string),
+        socket_id: None,
+        description: None,
+        metadata: None,
+        op_id: message.id,
+    };
+    let payload = apply_append_message(
+        VersionMutationPath {
+            app_id: app.id.clone(),
+            channel_name: channel.to_string(),
+            message_serial: serial,
+        },
+        app.clone(),
+        Arc::clone(handler),
+        request,
+    )
+    .await?;
+    Ok(payload.version_serial.unwrap_or(payload.message_serial))
+}
+
+async fn publish_ably_update(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    client_id: Option<&str>,
+    message: AblyMessage,
+) -> Result<String, AppError> {
+    let serial = message.serial.clone().ok_or_else(|| {
+        AppError::InvalidInput("updateMessage requires message.serial".to_string())
+    })?;
+    let request = UpdateMessageRequest {
+        name: message.name,
+        data: message
+            .data
+            .map(|value| ably_message_data_to_message_data(value, message.encoding.as_deref())),
+        extras: ably_extras_to_message_extras(message.extras)?,
+        clear_fields: Vec::new(),
+        client_id: client_id.map(str::to_string),
+        socket_id: None,
+        description: None,
+        metadata: None,
+        op_id: message.id,
+    };
+    let payload = apply_update_message(
+        VersionMutationPath {
+            app_id: app.id.clone(),
+            channel_name: channel.to_string(),
+            message_serial: serial,
+        },
+        app.clone(),
+        Arc::clone(handler),
+        request,
+    )
+    .await?;
+    Ok(payload.version_serial.unwrap_or(payload.message_serial))
+}
+
+async fn publish_ably_delete(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    client_id: Option<&str>,
+    message: AblyMessage,
+) -> Result<String, AppError> {
+    let serial = message.serial.clone().ok_or_else(|| {
+        AppError::InvalidInput("deleteMessage requires message.serial".to_string())
+    })?;
+    let request = sockudo_protocol::versioned_messages::DeleteMessageRequest {
+        data: message
+            .data
+            .map(|value| ably_message_data_to_message_data(value, message.encoding.as_deref())),
+        extras: ably_extras_to_message_extras(message.extras)?,
+        clear_fields: Vec::new(),
+        client_id: client_id.map(str::to_string),
+        socket_id: None,
+        description: None,
+        metadata: None,
+        op_id: message.id,
+    };
+    let payload = apply_delete_message(
+        VersionMutationPath {
+            app_id: app.id.clone(),
+            channel_name: channel.to_string(),
+            message_serial: serial,
+        },
+        app.clone(),
+        Arc::clone(handler),
+        request,
+    )
+    .await?;
+    Ok(payload.version_serial.unwrap_or(payload.message_serial))
+}
+
+fn handle_ably_presence(
+    hub: &Arc<AblyCompatHub>,
+    app: &App,
+    connection_id: &str,
+    client_id: Option<&str>,
+    sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
+    inbound: AblyProtocolMessage,
+) {
+    let Some(channel) = inbound.channel.clone() else {
+        send_publish_nack(sender, &inbound, 40000, "PRESENCE requires channel");
+        return;
+    };
+    let mut presence = inbound.presence.unwrap_or_default();
+    for member in &mut presence {
+        member
+            .connection_id
+            .get_or_insert_with(|| connection_id.to_string());
+        if let Some(client_id) = client_id {
+            member
+                .client_id
+                .get_or_insert_with(|| client_id.to_string());
+        }
+        member.timestamp.get_or_insert_with(now_ms);
+    }
+    hub.broadcast(
+        &app.id,
+        &channel,
+        AblyProtocolMessage {
+            action: ACTION_PRESENCE,
+            channel: Some(channel.clone()),
+            presence: Some(presence),
+            timestamp: Some(now_ms()),
+            ..empty_protocol_message(ACTION_PRESENCE)
+        },
+    );
+    let _ = sender.send(AblyProtocolMessage {
+        action: ACTION_ACK,
+        msg_serial: inbound.msg_serial,
+        count: inbound.count.or(Some(1)),
+        ..empty_protocol_message(ACTION_ACK)
+    });
+}
+
+pub async fn ably_time() -> Response {
+    (StatusCode::OK, Json(vec![now_ms()])).into_response()
+}
+
+pub async fn ably_channel_history(
+    Path(channel_name): Path<String>,
+    Query(query): Query<AblyHistoryQuery>,
+    headers: HeaderMap,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Response {
+    match ably_channel_history_inner(channel_name, query, headers, handler).await {
+        Ok(response) => response,
+        Err(error) => ably_app_error_response(error),
+    }
+}
+
+async fn ably_channel_history_inner(
+    channel_name: String,
+    query: AblyHistoryQuery,
+    headers: HeaderMap,
+    handler: Arc<ConnectionHandler>,
+) -> Result<Response, AppError> {
+    let resolved = resolve_ably_auth(
+        &handler,
+        &headers,
+        query.key.as_deref(),
+        query.access_token.as_deref(),
+        query.client_id.as_deref(),
+    )
+    .await
+    .map_err(|error| AppError::ApiAuthFailed(error.message))?;
+    validate_channel_name(&resolved.app, &channel_name).await?;
+    let history_policy = resolved
+        .app
+        .resolved_history(&channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Ok((StatusCode::OK, Json(Vec::<AblyMessage>::new())).into_response());
+    }
+    let limit = query
+        .limit
+        .unwrap_or(history_policy.max_page_size)
+        .min(history_policy.max_page_size)
+        .max(1);
+    let direction = parse_ably_history_direction(query.direction.as_deref())?;
+    let cursor = match query.cursor.as_deref() {
+        Some(cursor) => Some(HistoryCursor::decode(cursor)?),
+        None => None,
+    };
+    let bounds = HistoryQueryBounds {
+        start_serial: None,
+        end_serial: None,
+        start_time_ms: query.start,
+        end_time_ms: query.end,
+    };
+    let _until_attach = query.until_attach.unwrap_or(false);
+    let page = handler
+        .history_store()
+        .read_page(HistoryReadRequest {
+            app_id: resolved.app.id.clone(),
+            channel: channel_name.clone(),
+            direction,
+            limit,
+            cursor,
+            bounds,
+        })
+        .await?;
+
+    let mut items = Vec::with_capacity(page.items.len());
+    for item in page.items {
+        let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+            .map_err(|error| AppError::InternalError(error.to_string()))?;
+        let message = if handler.server_options().versioned_messages.enabled {
+            if let Some(message_serial) = extract_runtime_message_serial(&raw_message) {
+                match handler
+                    .version_store()
+                    .get_latest(
+                        &resolved.app.id,
+                        &channel_name,
+                        &parse_message_serial(message_serial)?,
+                    )
+                    .await?
+                {
+                    Some(latest) => handler
+                        .build_runtime_message_from_record(&latest, Some(item.stream_id.clone())),
+                    None => raw_message,
+                }
+            } else {
+                raw_message
+            }
+        } else {
+            raw_message
+        };
+        items.push(
+            pusher_to_ably_message(&message, AblyMessageProjection::Aggregate)
+                .map_err(AppError::InvalidInput)?,
+        );
+    }
+    Ok((StatusCode::OK, Json(items)).into_response())
+}
+
+pub async fn ably_channel_status(
+    Path(channel_name): Path<String>,
+    Query(query): Query<AblyRestQuery>,
+    headers: HeaderMap,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Response {
+    let resolved = match resolve_ably_auth(
+        &handler,
+        &headers,
+        query.key.as_deref(),
+        query.access_token.as_deref(),
+        query.client_id.as_deref(),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => return ably_error_response(error.status, error.code, error.message),
+    };
+    if let Err(error) = validate_channel_name(&resolved.app, &channel_name).await {
+        return ably_error_response(StatusCode::BAD_REQUEST, 40000, error.to_string());
+    }
+    let occupancy = handler
+        .connection_manager()
+        .get_channel_socket_count(&resolved.app.id, &channel_name)
+        .await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "channelId": channel_name,
+            "status": {
+                "isActive": occupancy > 0,
+                "occupancy": {
+                    "metrics": {
+                        "connections": occupancy,
+                        "publishers": 0,
+                        "subscribers": occupancy,
+                        "presenceConnections": 0,
+                        "presenceMembers": 0,
+                        "presenceSubscribers": 0,
+                    }
+                }
+            }
+        })),
+    )
+        .into_response()
+}
+
+pub async fn ably_channel_message(
+    Path((channel_name, message_serial)): Path<(String, String)>,
+    Query(query): Query<AblyRestQuery>,
+    headers: HeaderMap,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Response {
+    let resolved = match resolve_ably_auth(
+        &handler,
+        &headers,
+        query.key.as_deref(),
+        query.access_token.as_deref(),
+        query.client_id.as_deref(),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => return ably_error_response(error.status, error.code, error.message),
+    };
+    match ably_channel_message_inner(handler, resolved.app, channel_name, message_serial).await {
+        Ok(message) => (StatusCode::OK, Json(message)).into_response(),
+        Err(error) => ably_app_error_response(error),
+    }
+}
+
+async fn ably_channel_message_inner(
+    handler: Arc<ConnectionHandler>,
+    app: App,
+    channel_name: String,
+    message_serial: String,
+) -> Result<AblyMessage, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+    let message_serial_value = parse_message_serial(&message_serial)?;
+    let item = handler
+        .version_store()
+        .get_latest(&app.id, &channel_name, &message_serial_value)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Message '{}' was not found in channel '{}'",
+                message_serial, channel_name
+            ))
+        })?;
+    let runtime_message = handler.build_runtime_message_from_record(&item, None);
+    pusher_to_ably_message(&runtime_message, AblyMessageProjection::Aggregate)
+        .map_err(AppError::InvalidInput)
+}
+
+pub async fn ably_channel_message_versions(
+    Path((channel_name, message_serial)): Path<(String, String)>,
+    Query(query): Query<AblyRestQuery>,
+    headers: HeaderMap,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Response {
+    let resolved = match resolve_ably_auth(
+        &handler,
+        &headers,
+        query.key.as_deref(),
+        query.access_token.as_deref(),
+        query.client_id.as_deref(),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => return ably_error_response(error.status, error.code, error.message),
+    };
+    match ably_channel_message_versions_inner(handler, resolved.app, channel_name, message_serial)
+        .await
+    {
+        Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
+        Err(error) => ably_app_error_response(error),
+    }
+}
+
+async fn ably_channel_message_versions_inner(
+    handler: Arc<ConnectionHandler>,
+    app: App,
+    channel_name: String,
+    message_serial: String,
+) -> Result<Vec<AblyMessage>, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+    let message_serial_value = parse_message_serial(&message_serial)?;
+    let versions = handler
+        .version_store()
+        .get_versions(sockudo_core::version_store::VersionStoreReadRequest {
+            app_id: app.id.clone(),
+            channel: channel_name.clone(),
+            message_serial: message_serial_value,
+            direction: sockudo_core::version_store::VersionStoreDirection::NewestFirst,
+            limit: handler
+                .server_options()
+                .versioned_messages
+                .max_page_size
+                .max(1),
+            cursor: None,
+        })
+        .await?;
+    versions
+        .items
+        .iter()
+        .map(|record| {
+            let runtime_message = handler.build_runtime_message_from_record(record, None);
+            pusher_to_ably_message(&runtime_message, AblyMessageProjection::Mutation)
+                .map_err(AppError::InvalidInput)
+        })
+        .collect()
+}
+
+pub async fn ably_request_token(
+    Path(key_name): Path<String>,
+    headers: HeaderMap,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(request): Json<AblyTokenRequest>,
+) -> Response {
+    let body_key_name = request.key_name.as_deref().unwrap_or(&key_name);
+    let resolved = match resolve_ably_auth(
+        &handler,
+        &headers,
+        Some(body_key_name),
+        None,
+        request.client_id.as_deref(),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => return ably_error_response(error.status, error.code, error.message),
+    };
+    if resolved.app.key != body_key_name {
+        return ably_error_response(
+            StatusCode::FORBIDDEN,
+            40160,
+            "Token keyName does not match authenticated app",
+        );
+    }
+    let token = global_ably_hub().issue_token(
+        &resolved.app,
+        request.client_id.or(resolved.client_id),
+        request.ttl.unwrap_or(DEFAULT_TOKEN_TTL_MS),
+        request.capability,
+    );
+    (StatusCode::OK, Json(token)).into_response()
+}
+
+impl AblyRecoveryFailure {
+    fn channel(code: u32, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+}
+
+fn lock_channel_state(
+    state: &Arc<Mutex<AblyChannelState>>,
+) -> std::sync::MutexGuard<'_, AblyChannelState> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn prune_ably_replay(state: &mut AblyChannelState, now: i64) {
+    let ttl_ms = i64::try_from(DEFAULT_CONNECTION_STATE_TTL_MS).unwrap_or(i64::MAX);
+    while state
+        .replay
+        .front()
+        .is_some_and(|entry| now.saturating_sub(entry.published_at_ms) > ttl_ms)
+    {
+        state.replay.pop_front();
+    }
+    while state.replay.len() > ABLY_COMPAT_MAX_REPLAY_MESSAGES {
+        state.replay.pop_front();
+    }
+    if state.replay.is_empty() && now.saturating_sub(state.last_touched_ms) > ttl_ms {
+        state.current_stream_id = None;
+    }
+}
+
+fn encode_ably_channel_serial(stream_id: &str, serial: u64) -> String {
+    format!("{stream_id}:{serial}")
+}
+
+fn parse_ably_channel_serial(raw: &str) -> Result<AblyChannelPosition, AblyRecoveryFailure> {
+    let Some((stream_id, serial)) = raw.rsplit_once(':') else {
+        return Err(AblyRecoveryFailure::channel(
+            90005,
+            "unable to recover channel (no matching epoch)",
+        ));
+    };
+    if stream_id.is_empty() {
+        return Err(AblyRecoveryFailure::channel(
+            90005,
+            "unable to recover channel (no matching epoch)",
+        ));
+    }
+    let serial = serial.parse::<u64>().map_err(|_| {
+        AblyRecoveryFailure::channel(90005, "unable to recover channel (invalid channel serial)")
+    })?;
+    Ok(AblyChannelPosition {
+        stream_id: stream_id.to_string(),
+        serial,
+    })
+}
+
+fn send_ably_attached(
+    sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
+    channel: &str,
+    channel_serial: Option<String>,
+    flags: Option<u64>,
+    failure: Option<AblyRecoveryFailure>,
+    replay: Vec<AblyProtocolMessage>,
+) {
+    let _ = sender.send(AblyProtocolMessage {
+        action: ACTION_ATTACHED,
+        channel: Some(channel.to_string()),
+        flags,
+        channel_serial,
+        error: failure.map(|failure| error_info(failure.status, failure.code, failure.message)),
+        ..empty_protocol_message(ACTION_ATTACHED)
+    });
+    for message in replay {
+        let _ = sender.send(message);
+    }
+}
+
+fn ably_protocol_message_from_pusher(
+    channel: &str,
+    message: &PusherMessage,
+    projection: AblyMessageProjection,
+    channel_serial: Option<String>,
+) -> Result<AblyProtocolMessage, AblyRecoveryFailure> {
+    let ably_message = pusher_to_ably_message(message, projection).map_err(|error| {
+        AblyRecoveryFailure::channel(
+            90000,
+            format!("unable to recover channel '{channel}': {error}"),
+        )
+    })?;
+    Ok(AblyProtocolMessage {
+        action: ACTION_MESSAGE,
+        timestamp: Some(now_ms()),
+        channel: Some(channel.to_string()),
+        channel_serial,
+        messages: Some(vec![ably_message]),
+        ..empty_protocol_message(ACTION_MESSAGE)
+    })
+}
+
+fn connected_message(
+    connection_id: &str,
+    connection_key: &str,
+    client_id: Option<String>,
+    error: Option<AblyErrorInfo>,
+) -> AblyProtocolMessage {
+    AblyProtocolMessage {
+        action: ACTION_CONNECTED,
+        timestamp: Some(now_ms()),
+        error,
+        connection_id: Some(connection_id.to_string()),
+        connection_details: Some(AblyConnectionDetails {
+            client_id,
+            connection_key: connection_key.to_string(),
+            connection_state_ttl: DEFAULT_CONNECTION_STATE_TTL_MS,
+            max_idle_interval: DEFAULT_MAX_IDLE_INTERVAL_MS,
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            max_frame_size: DEFAULT_MAX_MESSAGE_SIZE,
+        }),
+        ..empty_protocol_message(ACTION_CONNECTED)
+    }
+}
+
+fn empty_protocol_message(action: u8) -> AblyProtocolMessage {
+    AblyProtocolMessage {
+        action,
+        id: None,
+        flags: None,
+        timestamp: None,
+        count: None,
+        error: None,
+        connection_id: None,
+        channel: None,
+        channel_serial: None,
+        msg_serial: None,
+        messages: None,
+        presence: None,
+        auth: None,
+        connection_details: None,
+        params: None,
+        res: None,
+    }
+}
+
+async fn resolve_ably_auth(
+    handler: &Arc<ConnectionHandler>,
+    headers: &HeaderMap,
+    query_key: Option<&str>,
+    access_token: Option<&str>,
+    query_client_id: Option<&str>,
+) -> Result<ResolvedAblyAuth, AblyAuthError> {
+    if let Some(access_token) = access_token.or_else(|| bearer_token(headers)) {
+        let record = global_ably_hub()
+            .resolve_token(access_token)
+            .ok_or_else(|| AblyAuthError::unauthorized("Invalid or expired Ably token"))?;
+        let app = find_enabled_app_by_key(handler, &record.app_key).await?;
+        return Ok(ResolvedAblyAuth {
+            app,
+            client_id: query_client_id.map(str::to_string).or(record.client_id),
+        });
+    }
+
+    let credential = query_key
+        .map(str::to_string)
+        .or_else(|| basic_credential(headers))
+        .ok_or_else(|| AblyAuthError::unauthorized("Missing Ably key credentials"))?;
+    let (app_key, app_secret) = parse_ably_key(&credential);
+    let app = find_enabled_app_by_key(handler, app_key).await?;
+    if let Some(app_secret) = app_secret
+        && app_secret != app.secret
+    {
+        return Err(AblyAuthError::forbidden("Invalid Ably key secret"));
+    }
+    Ok(ResolvedAblyAuth {
+        app,
+        client_id: query_client_id.map(str::to_string),
+    })
+}
+
+async fn find_enabled_app_by_key(
+    handler: &Arc<ConnectionHandler>,
+    app_key: &str,
+) -> Result<App, AblyAuthError> {
+    match handler.app_manager().find_by_key(app_key).await {
+        Ok(Some(app)) if app.enabled => Ok(app),
+        Ok(Some(_)) => Err(AblyAuthError::forbidden("Application is disabled")),
+        Ok(None) => Err(AblyAuthError::unauthorized("Application was not found")),
+        Err(error) => Err(AblyAuthError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: 50000,
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn parse_ably_key(raw: &str) -> (&str, Option<&str>) {
+    raw.split_once(':')
+        .map(|(key, secret)| (key, Some(secret)))
+        .unwrap_or((raw, None))
+}
+
+fn basic_credential(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let encoded = value.strip_prefix("Basic ")?;
+    let decoded = general_purpose::STANDARD.decode(encoded).ok()?;
+    String::from_utf8(decoded).ok()
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+fn pusher_to_ably_message(
+    message: &PusherMessage,
+    projection: AblyMessageProjection,
+) -> Result<AblyMessage, String> {
+    let action = extract_runtime_action(message);
+    let exposed_action = match (projection, action) {
+        (AblyMessageProjection::Aggregate, Some(ProtocolMessageAction::Append)) => {
+            Some(ProtocolMessageAction::Update)
+        }
+        _ => action,
+    };
+    let serial = extract_runtime_message_serial(message)
+        .map(str::to_string)
+        .or_else(|| message.serial.map(|serial| serial.to_string()));
+    let data = match (projection, action) {
+        (AblyMessageProjection::Mutation, Some(ProtocolMessageAction::Append)) => {
+            match extract_runtime_append_fragment(message) {
+                Some(fragment) => Some(json!(fragment)),
+                None => message
+                    .data
+                    .as_ref()
+                    .map(message_data_to_ably_value)
+                    .transpose()?,
+            }
+        }
+        _ => message
+            .data
+            .as_ref()
+            .map(message_data_to_ably_value)
+            .transpose()?,
+    };
+    Ok(AblyMessage {
+        id: message.message_id.clone(),
+        name: message.name.clone().or_else(|| message.event.clone()),
+        data,
+        encoding: None,
+        client_id: message.user_id.clone().or_else(|| ai_client_id(message)),
+        connection_id: None,
+        timestamp: Some(now_ms()),
+        extras: message
+            .extras
+            .as_ref()
+            .and_then(ably_extras_from_message_extras),
+        serial,
+        action: exposed_action.map(protocol_action_to_ably),
+        version: message_version_from_runtime_headers(message),
+    })
+}
+
+fn protocol_action_to_ably(action: ProtocolMessageAction) -> u8 {
+    match action {
+        ProtocolMessageAction::Create => MESSAGE_CREATE,
+        ProtocolMessageAction::Update => MESSAGE_UPDATE,
+        ProtocolMessageAction::Delete => MESSAGE_DELETE,
+        ProtocolMessageAction::Append => MESSAGE_APPEND,
+        ProtocolMessageAction::Summary => MESSAGE_SUMMARY,
+    }
+}
+
+fn message_version_from_runtime_headers(message: &PusherMessage) -> Option<AblyMessageVersion> {
+    let headers = message
+        .extras
+        .as_ref()
+        .and_then(|extras| extras.headers.as_ref())?;
+    let serial = match headers.get(HEADER_VERSION_SERIAL)? {
+        sockudo_protocol::messages::ExtrasValue::String(value) => value.clone(),
+        _ => return None,
+    };
+    let timestamp = match headers.get(HEADER_VERSION_TIMESTAMP_MS) {
+        Some(sockudo_protocol::messages::ExtrasValue::Number(value)) => Some(*value as i64),
+        _ => None,
+    };
+    Some(AblyMessageVersion {
+        serial,
+        timestamp,
+        client_id: None,
+        description: None,
+        metadata: None,
+    })
+}
+
+fn ably_extras_from_message_extras(extras: &MessageExtras) -> Option<Value> {
+    let ai = extras.ai.clone()?;
+    sonic_rs::to_value(&MessageExtras {
+        ai: Some(ai),
+        ..Default::default()
+    })
+    .ok()
+}
+
+fn ably_extras_to_message_extras(extras: Option<Value>) -> Result<Option<MessageExtras>, AppError> {
+    let Some(extras) = extras else {
+        return Ok(None);
+    };
+    let encoded = sonic_rs::to_string(&extras)
+        .map_err(|error| AppError::InvalidInput(format!("Invalid extras: {error}")))?;
+    let decoded: MessageExtras = sonic_rs::from_str(&encoded)
+        .map_err(|error| AppError::InvalidInput(format!("Invalid extras: {error}")))?;
+    Ok(Some(decoded))
+}
+
+fn message_data_to_ably_value(data: &MessageData) -> Result<Value, String> {
+    sonic_rs::to_value(data).map_err(|error| error.to_string())
+}
+
+fn ably_value_to_message_data(value: Value) -> MessageData {
+    value
+        .as_str()
+        .map(|value| MessageData::String(value.to_string()))
+        .unwrap_or(MessageData::Json(value))
+}
+
+fn ably_message_data_to_message_data(value: Value, encoding: Option<&str>) -> MessageData {
+    if encoding
+        .unwrap_or_default()
+        .split('/')
+        .any(|part| part.eq_ignore_ascii_case("json"))
+        && let Some(raw) = value.as_str()
+        && let Ok(decoded) = sonic_rs::from_str::<Value>(raw)
+    {
+        return MessageData::Json(decoded);
+    }
+    ably_value_to_message_data(value)
+}
+
+fn stamp_ai_identity(
+    extras: &mut Option<MessageExtras>,
+    event_name: &str,
+    client_id: &str,
+) -> Result<(), AppError> {
+    let key = match event_name {
+        AI_EVENT_INPUT => AI_HEADER_INPUT_CLIENT_ID,
+        AI_EVENT_CANCEL => AI_HEADER_RUN_CLIENT_ID,
+        _ => return Ok(()),
+    };
+    let extras = extras.get_or_insert_with(Default::default);
+    let ai = extras.ai.get_or_insert_with(Default::default);
+    let transport = ai.transport.get_or_insert_with(Default::default);
+    match transport.get(key) {
+        Some(existing) if existing != client_id => Err(AppError::InvalidInput(format!(
+            "extras.ai.transport.{key} must match authenticated clientId"
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            transport.insert(key.to_string(), client_id.to_string());
+            Ok(())
+        }
+    }
+}
+
+fn ai_client_id(message: &PusherMessage) -> Option<String> {
+    let transport = message
+        .extras
+        .as_ref()
+        .and_then(MessageExtras::ai_transport_headers)?;
+    transport
+        .input_client_id()
+        .or_else(|| transport.run_client_id())
+        .or_else(|| transport.step_client_id())
+        .map(str::to_string)
+}
+
+fn send_protocol_error(
+    sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
+    code: u32,
+    message: impl Into<String>,
+) {
+    let _ = sender.send(AblyProtocolMessage {
+        action: ACTION_ERROR,
+        error: Some(error_info(StatusCode::BAD_REQUEST, code, message)),
+        ..empty_protocol_message(ACTION_ERROR)
+    });
+}
+
+fn send_publish_nack(
+    sender: &mpsc::UnboundedSender<AblyProtocolMessage>,
+    inbound: &AblyProtocolMessage,
+    code: u32,
+    message: impl Into<String>,
+) {
+    let _ = sender.send(AblyProtocolMessage {
+        action: ACTION_NACK,
+        msg_serial: inbound.msg_serial,
+        count: inbound.count.or(Some(1)),
+        error: Some(error_info(StatusCode::BAD_REQUEST, code, message)),
+        ..empty_protocol_message(ACTION_NACK)
+    });
+}
+
+fn error_info(status: StatusCode, code: u32, message: impl Into<String>) -> AblyErrorInfo {
+    AblyErrorInfo {
+        message: message.into(),
+        code,
+        status_code: status.as_u16(),
+    }
+}
+
+fn ably_error_response(status: StatusCode, code: u32, message: impl Into<String>) -> Response {
+    let message = message.into();
+    (
+        status,
+        Json(AblyErrorBody {
+            error: error_info(status, code, message),
+        }),
+    )
+        .into_response()
+}
+
+fn ably_app_error_response(error: AppError) -> Response {
+    match error {
+        AppError::NotFound(message) => ably_error_response(StatusCode::NOT_FOUND, 40400, message),
+        AppError::InvalidInput(message) => {
+            ably_error_response(StatusCode::BAD_REQUEST, 40000, message)
+        }
+        AppError::ApiAuthFailed(message) => {
+            ably_error_response(StatusCode::UNAUTHORIZED, 40140, message)
+        }
+        AppError::FeatureDisabled(message) => {
+            ably_error_response(StatusCode::BAD_REQUEST, 40000, message)
+        }
+        other => ably_error_response(StatusCode::INTERNAL_SERVER_ERROR, 50000, other.to_string()),
+    }
+}
+
+fn parse_ably_history_direction(raw: Option<&str>) -> Result<HistoryDirection, AppError> {
+    match raw.unwrap_or("backwards").to_ascii_lowercase().as_str() {
+        "backwards" | "newest_first" | "reverse" => Ok(HistoryDirection::NewestFirst),
+        "forwards" | "oldest_first" | "forward" => Ok(HistoryDirection::OldestFirst),
+        other => Err(AppError::InvalidInput(format!(
+            "Invalid Ably history direction '{other}'"
+        ))),
+    }
+}
+
+fn channel_key(app_id: &str, channel: &str) -> String {
+    format!("{app_id}\0{channel}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sockudo_protocol::messages::{AiExtras, MessageExtras};
+    use sockudo_protocol::versioned_messages::apply_runtime_metadata;
+
+    #[test]
+    fn ably_key_parses_key_and_secret() {
+        assert_eq!(
+            parse_ably_key("app-key:secret"),
+            ("app-key", Some("secret"))
+        );
+        assert_eq!(parse_ably_key("app-key"), ("app-key", None));
+    }
+
+    #[test]
+    fn pusher_to_ably_keeps_ai_extras_and_hides_runtime_headers() {
+        let message = PusherMessage {
+            event: Some("ai-input".to_string()),
+            channel: Some("chat".to_string()),
+            data: Some(MessageData::String("hello".to_string())),
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: Some(42),
+            idempotency_key: None,
+            extras: Some(MessageExtras {
+                ai: Some(AiExtras {
+                    transport: Some(HashMap::from([(
+                        "input-client-id".to_string(),
+                        "client-1".to_string(),
+                    )])),
+                    codec: None,
+                }),
+                ..Default::default()
+            }),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        let converted = pusher_to_ably_message(&message, AblyMessageProjection::Mutation).unwrap();
+        assert_eq!(converted.name.as_deref(), Some("ai-input"));
+        assert_eq!(converted.serial.as_deref(), Some("42"));
+        assert_eq!(converted.client_id.as_deref(), Some("client-1"));
+        assert!(converted.extras.unwrap().get("ai").is_some());
+    }
+
+    #[test]
+    fn stamp_ai_identity_rejects_client_id_spoofing() {
+        let mut extras = Some(MessageExtras {
+            ai: Some(AiExtras {
+                transport: Some(HashMap::from([(
+                    AI_HEADER_INPUT_CLIENT_ID.to_string(),
+                    "other-client".to_string(),
+                )])),
+                codec: None,
+            }),
+            ..Default::default()
+        });
+
+        let error = stamp_ai_identity(&mut extras, AI_EVENT_INPUT, "client-1").unwrap_err();
+        assert!(error.to_string().contains("authenticated clientId"));
+    }
+
+    #[test]
+    fn append_projection_uses_delta_for_mutations_and_aggregate_for_history() {
+        let mut message = PusherMessage {
+            event: Some("sockudo:message.append".to_string()),
+            channel: Some("chat".to_string()),
+            data: Some(MessageData::String("hello world".to_string())),
+            name: Some("ai-output".to_string()),
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: Some("stream-1".to_string()),
+            serial: Some(2),
+            idempotency_key: None,
+            extras: Some(MessageExtras {
+                ai: Some(AiExtras {
+                    transport: None,
+                    codec: Some(HashMap::from([(
+                        "status".to_string(),
+                        "complete".to_string(),
+                    )])),
+                }),
+                ..Default::default()
+            }),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+        apply_runtime_metadata(
+            &mut message,
+            ProtocolMessageAction::Append,
+            "msg:1",
+            &sockudo_protocol::versioned_messages::MessageVersionMetadata {
+                serial: "ver:2".to_string(),
+                client_id: Some("client-1".to_string()),
+                timestamp_ms: 2,
+                description: None,
+                metadata: None,
+            },
+            Some(10),
+        );
+        sockudo_protocol::versioned_messages::set_runtime_append_fragment(&mut message, " world");
+
+        let mutation = pusher_to_ably_message(&message, AblyMessageProjection::Mutation).unwrap();
+        assert_eq!(mutation.action, Some(MESSAGE_APPEND));
+        assert_eq!(
+            mutation.data.as_ref().and_then(Value::as_str),
+            Some(" world")
+        );
+        assert_eq!(mutation.serial.as_deref(), Some("msg:1"));
+        assert_eq!(
+            mutation
+                .version
+                .as_ref()
+                .map(|version| version.serial.as_str()),
+            Some("ver:2")
+        );
+
+        let aggregate = pusher_to_ably_message(&message, AblyMessageProjection::Aggregate).unwrap();
+        assert_eq!(aggregate.action, Some(MESSAGE_UPDATE));
+        assert_eq!(
+            aggregate.data.as_ref().and_then(Value::as_str),
+            Some("hello world")
+        );
+        assert_eq!(aggregate.serial.as_deref(), Some("msg:1"));
+    }
+
+    #[test]
+    fn ably_channel_serial_round_trips_stream_position() {
+        let encoded = encode_ably_channel_serial("stream-1", 42);
+        let parsed = parse_ably_channel_serial(&encoded).unwrap();
+        assert_eq!(parsed.stream_id, "stream-1");
+        assert_eq!(parsed.serial, 42);
+
+        let failure = parse_ably_channel_serial("not-a-position").unwrap_err();
+        assert_eq!(failure.code, 90005);
+    }
+
+    #[test]
+    fn hub_hot_recovery_replays_only_messages_after_channel_serial() {
+        let hub = AblyCompatHub::default();
+        let message_one = AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            channel: Some("chat".to_string()),
+            channel_serial: Some(encode_ably_channel_serial("stream-1", 1)),
+            messages: Some(vec![AblyMessage {
+                name: Some("one".to_string()),
+                ..Default::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        };
+        let message_two = AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            channel: Some("chat".to_string()),
+            channel_serial: Some(encode_ably_channel_serial("stream-1", 2)),
+            messages: Some(vec![AblyMessage {
+                name: Some("two".to_string()),
+                ..Default::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        };
+        hub.broadcast("app", "chat", message_one);
+        hub.broadcast("app", "chat", message_two);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let outcome = hub.attach_hot_recovery(
+            "app",
+            "chat",
+            "session-1",
+            tx,
+            &AblyChannelPosition {
+                stream_id: "stream-1".to_string(),
+                serial: 1,
+            },
+        );
+        assert!(matches!(outcome, AblyHotRecovery::Sent));
+
+        let attached = rx.try_recv().unwrap();
+        assert_eq!(attached.action, ACTION_ATTACHED);
+        assert_eq!(attached.flags, Some(FLAG_RESUMED | FLAG_HAS_BACKLOG));
+
+        let replayed = rx.try_recv().unwrap();
+        assert_eq!(replayed.action, ACTION_MESSAGE);
+        assert_eq!(
+            replayed
+                .messages
+                .as_ref()
+                .and_then(|messages| messages.first())
+                .and_then(|message| message.name.as_deref()),
+            Some("two")
+        );
+        assert!(rx.try_recv().is_err());
+    }
+}

@@ -1,7 +1,7 @@
 //! Versioned mutable-message HTTP surfaces: latest reads, version history, and
 //! the shared serial/identity/wire-shape helpers used by the mutation endpoints.
 
-mod mutations;
+pub(crate) mod mutations;
 
 pub use mutations::{append_message, delete_message, update_message};
 
@@ -24,7 +24,7 @@ use sockudo_core::versioned_message_auth::{
 use sockudo_core::versioned_messages::MessageSerial;
 use sockudo_core::versioned_messages::{VersionMetadata, VersionSerial};
 use sockudo_core::websocket::SocketId;
-use sockudo_protocol::messages::PusherMessage;
+use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_protocol::versioned_messages::{
     GetMessageResponse, ListMessageVersionsResponse, MessageAction as ProtocolMessageAction,
     MessageVersionMetadata, MessageVersionsQuery, VersionDirection, VersionedRealtimeMessage,
@@ -89,15 +89,41 @@ fn protocol_action(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionedRealtimeProjection {
+    Aggregate,
+    Mutation,
+}
+
 pub(super) fn build_versioned_realtime_message(
     record: &StoredVersionRecord,
 ) -> VersionedRealtimeMessage {
+    build_versioned_realtime_message_for(record, VersionedRealtimeProjection::Aggregate)
+}
+
+fn build_versioned_realtime_message_for(
+    record: &StoredVersionRecord,
+    projection: VersionedRealtimeProjection,
+) -> VersionedRealtimeMessage {
     let action = protocol_action(record.message.action);
+    let data = if projection == VersionedRealtimeProjection::Mutation
+        && action == ProtocolMessageAction::Append
+    {
+        record
+            .message
+            .append_fragment
+            .clone()
+            .map(MessageData::String)
+            .or_else(|| record.message.data.clone())
+    } else {
+        record.message.data.clone()
+    };
+
     VersionedRealtimeMessage {
         message: PusherMessage {
             event: Some(action.v2_event_name()),
             channel: Some(record.channel.clone()),
-            data: record.message.data.clone(),
+            data,
             name: record.message.name.clone(),
             user_id: None,
             tags: None,
@@ -370,7 +396,9 @@ pub async fn channel_message_versions(
         items: page
             .items
             .iter()
-            .map(build_versioned_realtime_message)
+            .map(|record| {
+                build_versioned_realtime_message_for(record, VersionedRealtimeProjection::Mutation)
+            })
             .collect(),
     };
     let response_json_bytes = sonic_rs::to_vec(&payload)?;

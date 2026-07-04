@@ -10,7 +10,7 @@ fn sample_ai_extras() -> MessageExtras {
     MessageExtras {
         ai: Some(AiExtras {
             transport: Some(HashMap::from([
-                ("turn-id".to_string(), "turn-1".to_string()),
+                ("run-id".to_string(), "turn-1".to_string()),
                 ("invocation-id".to_string(), "invoke-1".to_string()),
                 ("status".to_string(), "streaming".to_string()),
                 ("role".to_string(), "assistant".to_string()),

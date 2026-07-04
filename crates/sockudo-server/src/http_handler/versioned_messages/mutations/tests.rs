@@ -438,3 +438,60 @@ async fn append_message_reports_not_implemented_after_validation() {
     assert_eq!(json["accepted"], true);
     assert_eq!(json["action"], "append");
 }
+
+#[tokio::test]
+async fn append_message_accepts_empty_terminal_ai_append_and_retains_fragment() {
+    let store = Arc::new(MemoryVersionStore::new());
+    let handler = test_ai_versioned_handler_with_store(100, store.clone(), 1024, 4096, 1024);
+    let app = test_app();
+
+    store
+        .append_version(test_versioned_record(
+            "msg:1",
+            "00000000000000000001:test:00000000000000000001",
+            10,
+            1,
+            "hello",
+        ))
+        .await
+        .unwrap();
+
+    let response = append_message(
+        Path(VersionMutationPath {
+            app_id: "app-1".to_string(),
+            channel_name: "versioned-room".to_string(),
+            message_serial: "msg:1".to_string(),
+        }),
+        Extension(app),
+        State(handler.clone()),
+        Json(AppendMessageRequest {
+            data: String::new(),
+            extras: Some(ai_extras("complete")),
+            client_id: None,
+            socket_id: None,
+            description: Some("terminal".to_string()),
+            metadata: None,
+            op_id: Some("terminal-empty".to_string()),
+        }),
+    )
+    .await
+    .unwrap()
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let latest = handler
+        .version_store()
+        .get_latest(
+            "app-1",
+            "versioned-room",
+            &MessageSerial::new("msg:1").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        latest.message.data.unwrap().into_string().as_deref(),
+        Some("{\"text\":\"hello\"}")
+    );
+    assert_eq!(latest.message.append_fragment.as_deref(), Some(""));
+}

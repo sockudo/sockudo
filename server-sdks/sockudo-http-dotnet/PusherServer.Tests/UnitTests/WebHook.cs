@@ -208,8 +208,8 @@ namespace PusherServer.Tests.UnitTests
             Assert.IsTrue(webHook.IsValid);
             Assert.AreEqual("member_updated", webHook.Events[0]["name"]);
             Assert.AreEqual("must-pass-through", webHook.Events[0]["future_field"]);
-            Assert.AreEqual("ai_turn_started", webHook.Events[1]["name"]);
-            Assert.AreEqual("turn-1", webHook.GetRawEvents()[1]["turn_id"].ToString());
+            Assert.AreEqual("ai_run_started", webHook.Events[1]["name"]);
+            Assert.AreEqual("run-1", webHook.GetRawEvents()[1]["run_id"].ToString());
             Assert.AreEqual("message_version_created", webHook.Events[2]["name"]);
         }
 

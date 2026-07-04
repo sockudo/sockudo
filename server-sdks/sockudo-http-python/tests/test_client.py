@@ -83,13 +83,13 @@ def test_webhook_accepts_future_event_fixture_and_preserves_unknown_fields():
     assert webhook.time_ms == 1710000000000
     assert [event.name for event in webhook.events] == [
         "member_updated",
-        "ai_turn_started",
+        "ai_run_started",
         "message_version_created",
     ]
     assert webhook.events[0].channel == "presence-ai-forward"
     assert webhook.events[0].user_id == "user-1"
     assert webhook.events[0].raw["future_field"] == "must-pass-through"
-    assert webhook.events[1].raw["turn_id"] == "turn-1"
+    assert webhook.events[1].raw["run_id"] == "run-1"
     assert Webhook.parse(body).events[2].raw["version_serial"] == "ver-1"
     sockudo.close()
 

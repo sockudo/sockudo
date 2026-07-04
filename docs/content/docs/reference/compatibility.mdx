@@ -63,8 +63,13 @@ AI Transport is additive and default-off. The server release order is:
 | Protocol V1 / pusher-js canary | Must remain byte-identical with AI Transport disabled |
 | Protocol V2 non-AI clients | Existing recovery, rewind, history, mutable messages, annotations, and push remain additive |
 | `@sockudo/ai-transport` | Requires server AI Transport feature, runtime profile, and `@sockudo/client` |
+| `@ably/ai-transport` | Optional `ably-compat` feature exposing a reduced Ably Pub/Sub subset for AI Transport only; see [Ably AI Transport compatibility](/docs/server/ably-ai-transport-compatibility) |
 | Existing client SDKs | Full product parity depends on Protocol V2 feature enablement in each SDK |
 | Server HTTP SDKs | Existing Pusher-compatible publish APIs continue to work; AI helpers are additive |
+
+Sockudo does not claim full Ably platform compatibility. The Ably-compatible surface is feature
+gated behind `ably-compat` and scoped to AI Transport tests and demos: run lifecycle, mutable
+streaming, history projection, and recovery through Sockudo-backed durable primitives.
 
 ## Release gates
 
@@ -81,4 +86,3 @@ independently because valid V1 and existing V2 traffic remain compatible.
 
 GA evidence is tracked in
 [`docs/specs/ai-transport-ga-readiness.md`](/specs/ai-transport-ga-readiness).
-

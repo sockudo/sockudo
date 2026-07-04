@@ -35,5 +35,5 @@ pub mod watchlist;
 
 pub use self::{
     connection_manager::ConnectionManager,
-    handler::{ConnectionHandler, ConnectionHandlerBuilder},
+    handler::{ConnectionHandler, ConnectionHandlerBuilder, RealtimeEgressTap},
 };

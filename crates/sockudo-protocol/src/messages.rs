@@ -11,9 +11,36 @@ use crate::protocol_version::ProtocolVersion;
 
 pub const AI_EVENT_INPUT: &str = "ai-input";
 pub const AI_EVENT_OUTPUT: &str = "ai-output";
-pub const AI_EVENT_TURN_START: &str = "ai-turn-start";
-pub const AI_EVENT_TURN_END: &str = "ai-turn-end";
+pub const AI_EVENT_RUN_START: &str = "ai-run-start";
+pub const AI_EVENT_RUN_SUSPEND: &str = "ai-run-suspend";
+pub const AI_EVENT_RUN_RESUME: &str = "ai-run-resume";
+pub const AI_EVENT_RUN_END: &str = "ai-run-end";
 pub const AI_EVENT_CANCEL: &str = "ai-cancel";
+pub const AI_EVENT_STEP_START: &str = "ai-step-start";
+pub const AI_EVENT_STEP_END: &str = "ai-step-end";
+pub const AI_EVENT_LEGACY_TURN_START: &str = "ai-turn-start";
+pub const AI_EVENT_LEGACY_TURN_END: &str = "ai-turn-end";
+
+pub const AI_EVENT_TURN_START: &str = AI_EVENT_LEGACY_TURN_START;
+pub const AI_EVENT_TURN_END: &str = AI_EVENT_LEGACY_TURN_END;
+
+pub const AI_HEADER_RUN_ID: &str = "run-id";
+pub const AI_HEADER_RUN_CLIENT_ID: &str = "run-client-id";
+pub const AI_HEADER_RUN_REASON: &str = "run-reason";
+pub const AI_HEADER_INPUT_CLIENT_ID: &str = "input-client-id";
+pub const AI_HEADER_INPUT_CODEC_MESSAGE_ID: &str = "input-codec-message-id";
+pub const AI_HEADER_CODEC_MESSAGE_ID: &str = "codec-message-id";
+pub const AI_HEADER_INVOCATION_ID: &str = "invocation-id";
+pub const AI_HEADER_EVENT_ID: &str = "event-id";
+pub const AI_HEADER_STEP_ID: &str = "step-id";
+pub const AI_HEADER_START_SERIAL: &str = "start-serial";
+pub const AI_HEADER_STEP_REASON: &str = "step-reason";
+pub const AI_HEADER_STEP_CLIENT_ID: &str = "step-client-id";
+pub const AI_HEADER_MSG_REGENERATE: &str = "msg-regenerate";
+pub const AI_HEADER_LEGACY_TURN_ID: &str = "turn-id";
+pub const AI_HEADER_LEGACY_TURN_CLIENT_ID: &str = "turn-client-id";
+pub const AI_HEADER_LEGACY_TURN_REASON: &str = "turn-reason";
+pub const AI_HEADER_LEGACY_TURN_CONTINUE: &str = "turn-continue";
 
 pub const AI_ERROR_INVALID_TRANSPORT_HEADER: u32 = 104000;
 pub const AI_ERROR_HEADER_TOO_LARGE: u32 = 104001;
@@ -25,6 +52,7 @@ pub const AI_ERROR_MUTABLE_NOT_PERMITTED: u32 = 93002;
 pub const AI_TRANSPORT_TIER_LIMIT: usize = 32;
 pub const AI_TRANSPORT_KEY_MAX_BYTES: usize = 64;
 pub const AI_TRANSPORT_VALUE_MAX_BYTES: usize = 256;
+pub const AI_CODEC_PROVIDER_METADATA_MAX_BYTES: usize = 8 * 1024;
 pub const AI_MESSAGE_ID_MAX_BYTES: usize = 64;
 
 #[inline]
@@ -33,9 +61,15 @@ pub fn is_ai_event(event: &str) -> bool {
         event,
         AI_EVENT_INPUT
             | AI_EVENT_OUTPUT
-            | AI_EVENT_TURN_START
-            | AI_EVENT_TURN_END
+            | AI_EVENT_RUN_START
+            | AI_EVENT_RUN_SUSPEND
+            | AI_EVENT_RUN_RESUME
+            | AI_EVENT_RUN_END
             | AI_EVENT_CANCEL
+            | AI_EVENT_STEP_START
+            | AI_EVENT_STEP_END
+            | AI_EVENT_LEGACY_TURN_START
+            | AI_EVENT_LEGACY_TURN_END
     )
 }
 
@@ -48,7 +82,15 @@ pub fn is_ai_client_publish_event(event: &str) -> bool {
 pub fn is_ai_agent_publish_event(event: &str) -> bool {
     matches!(
         event,
-        AI_EVENT_OUTPUT | AI_EVENT_TURN_START | AI_EVENT_TURN_END
+        AI_EVENT_OUTPUT
+            | AI_EVENT_RUN_START
+            | AI_EVENT_RUN_SUSPEND
+            | AI_EVENT_RUN_RESUME
+            | AI_EVENT_RUN_END
+            | AI_EVENT_STEP_START
+            | AI_EVENT_STEP_END
+            | AI_EVENT_LEGACY_TURN_START
+            | AI_EVENT_LEGACY_TURN_END
     )
 }
 
@@ -174,23 +216,46 @@ impl<'a> AiTransportHeaders<'a> {
     }
 
     #[inline]
+    pub fn run_id(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_RUN_ID)
+            .or_else(|| self.get(AI_HEADER_LEGACY_TURN_ID))
+    }
+
+    #[inline]
     pub fn turn_id(&self) -> Option<&'a str> {
-        self.get("turn-id")
+        self.run_id()
+    }
+
+    #[inline]
+    pub fn run_client_id(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_RUN_CLIENT_ID)
+            .or_else(|| self.get(AI_HEADER_LEGACY_TURN_CLIENT_ID))
     }
 
     #[inline]
     pub fn turn_client_id(&self) -> Option<&'a str> {
-        self.get("turn-client-id")
+        self.run_client_id()
+    }
+
+    #[inline]
+    pub fn run_reason(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_RUN_REASON)
+            .or_else(|| self.get(AI_HEADER_LEGACY_TURN_REASON))
     }
 
     #[inline]
     pub fn turn_reason(&self) -> Option<&'a str> {
-        self.get("turn-reason")
+        self.run_reason()
     }
 
     #[inline]
     pub fn codec_message_id(&self) -> Option<&'a str> {
-        self.get("codec-message-id")
+        self.get(AI_HEADER_CODEC_MESSAGE_ID)
+    }
+
+    #[inline]
+    pub fn input_codec_message_id(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_INPUT_CODEC_MESSAGE_ID)
     }
 
     #[inline]
@@ -205,7 +270,7 @@ impl<'a> AiTransportHeaders<'a> {
 
     #[inline]
     pub fn msg_regenerate(&self) -> Option<&'a str> {
-        self.get("msg-regenerate")
+        self.get(AI_HEADER_MSG_REGENERATE)
     }
 
     #[inline]
@@ -230,17 +295,37 @@ impl<'a> AiTransportHeaders<'a> {
 
     #[inline]
     pub fn invocation_id(&self) -> Option<&'a str> {
-        self.get("invocation-id")
+        self.get(AI_HEADER_INVOCATION_ID)
     }
 
     #[inline]
     pub fn event_id(&self) -> Option<&'a str> {
-        self.get("event-id")
+        self.get(AI_HEADER_EVENT_ID)
     }
 
     #[inline]
     pub fn input_client_id(&self) -> Option<&'a str> {
-        self.get("input-client-id")
+        self.get(AI_HEADER_INPUT_CLIENT_ID)
+    }
+
+    #[inline]
+    pub fn step_id(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_STEP_ID)
+    }
+
+    #[inline]
+    pub fn start_serial(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_START_SERIAL)
+    }
+
+    #[inline]
+    pub fn step_reason(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_STEP_REASON)
+    }
+
+    #[inline]
+    pub fn step_client_id(&self) -> Option<&'a str> {
+        self.get(AI_HEADER_STEP_CLIENT_ID)
     }
 
     #[inline]
@@ -250,7 +335,7 @@ impl<'a> AiTransportHeaders<'a> {
 
     #[inline]
     pub fn turn_continue(&self) -> Option<&'a str> {
-        self.get("turn-continue")
+        self.get(AI_HEADER_LEGACY_TURN_CONTINUE)
     }
 
     #[inline]
@@ -325,7 +410,7 @@ impl MessageExtras {
         }
 
         if let Some(codec) = ai.codec.as_ref() {
-            validate_ai_tier("codec", codec)?;
+            validate_ai_codec_tier(codec)?;
         }
 
         Ok(())
@@ -371,24 +456,100 @@ fn is_ai_header_key(key: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+fn validate_ai_codec_tier(codec: &HashMap<String, String>) -> Result<(), AiHeaderValidationError> {
+    if codec.len() > AI_TRANSPORT_TIER_LIMIT {
+        return Err(AiHeaderValidationError::too_large(format!(
+            "extras.ai.codec exceeds {AI_TRANSPORT_TIER_LIMIT} keys"
+        )));
+    }
+
+    for (key, value) in codec {
+        if key.len() > AI_TRANSPORT_KEY_MAX_BYTES {
+            return Err(AiHeaderValidationError::too_large(format!(
+                "extras.ai.codec key exceeds {AI_TRANSPORT_KEY_MAX_BYTES} bytes"
+            )));
+        }
+        if !is_ai_codec_key(key) {
+            return Err(AiHeaderValidationError::invalid_transport(format!(
+                "extras.ai.codec key '{key}' must match [A-Za-z0-9_-]+"
+            )));
+        }
+        let value_max_bytes = ai_codec_value_max_bytes(key);
+        if value.len() > value_max_bytes {
+            return Err(AiHeaderValidationError::too_large(format!(
+                "extras.ai.codec.{key} exceeds {value_max_bytes} bytes"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[inline]
+fn ai_codec_value_max_bytes(key: &str) -> usize {
+    if key == "providerMetadata" {
+        AI_CODEC_PROVIDER_METADATA_MAX_BYTES
+    } else {
+        AI_TRANSPORT_VALUE_MAX_BYTES
+    }
+}
+
+#[inline]
+fn is_ai_codec_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
 fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderValidationError> {
     match key {
-        "turn-id" | "codec-message-id" | "parent" | "fork-of" | "stream-id" | "invocation-id"
-        | "event-id" | "input-client-id" | "turn-client-id" | "error-code" | "model" => {
+        AI_HEADER_RUN_ID
+        | AI_HEADER_LEGACY_TURN_ID
+        | AI_HEADER_RUN_CLIENT_ID
+        | AI_HEADER_LEGACY_TURN_CLIENT_ID
+        | AI_HEADER_INPUT_CLIENT_ID
+        | AI_HEADER_INPUT_CODEC_MESSAGE_ID
+        | AI_HEADER_CODEC_MESSAGE_ID
+        | "parent"
+        | "fork-of"
+        | "stream-id"
+        | AI_HEADER_INVOCATION_ID
+        | AI_HEADER_EVENT_ID
+        | AI_HEADER_STEP_ID
+        | AI_HEADER_START_SERIAL
+        | AI_HEADER_STEP_CLIENT_ID
+        | AI_HEADER_MSG_REGENERATE
+        | "error-code"
+        | "model" => {
             if value.is_empty() {
                 return Err(AiHeaderValidationError::invalid_transport(format!(
                     "extras.ai.transport.{key} must not be empty"
                 )));
             }
         }
-        "turn-reason" => {
+        AI_HEADER_RUN_REASON => {
+            if !matches!(value, "complete" | "cancelled" | "error") {
+                return Err(AiHeaderValidationError::invalid_transport(
+                    "extras.ai.transport.run-reason has invalid value",
+                ));
+            }
+        }
+        AI_HEADER_LEGACY_TURN_REASON => {
             if !matches!(value, "complete" | "cancelled" | "error" | "suspended") {
                 return Err(AiHeaderValidationError::invalid_transport(
                     "extras.ai.transport.turn-reason has invalid value",
                 ));
             }
         }
-        "msg-regenerate" | "stream" | "discrete" | "turn-continue" => {
+        AI_HEADER_STEP_REASON => {
+            if !matches!(value, "complete" | "failed" | "cancelled") {
+                return Err(AiHeaderValidationError::invalid_transport(
+                    "extras.ai.transport.step-reason has invalid value",
+                ));
+            }
+        }
+        "stream" | "discrete" | AI_HEADER_LEGACY_TURN_CONTINUE => {
             if !matches!(value, "true" | "false") {
                 return Err(AiHeaderValidationError::invalid_transport(format!(
                     "extras.ai.transport.{key} must be true or false"
@@ -1268,8 +1429,8 @@ impl InfoQueryParser for Option<&String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AiExtras, AnnotationEventAction, AnnotationEventData, AnnotationSummaryEnvelope,
-        MessageData, MessageExtras, MessageSummaryData, PusherMessage,
+        AI_HEADER_RUN_ID, AiExtras, AnnotationEventAction, AnnotationEventData,
+        AnnotationSummaryEnvelope, MessageData, MessageExtras, MessageSummaryData, PusherMessage,
     };
     use sonic_rs::JsonValueTrait;
     use std::collections::{BTreeMap, HashMap};
@@ -1303,7 +1464,7 @@ mod tests {
     #[test]
     fn pusher_message_debug_redacts_payload_extras_and_idempotency() {
         let mut transport = HashMap::new();
-        transport.insert("turn-id".to_string(), "secret-turn".to_string());
+        transport.insert(AI_HEADER_RUN_ID.to_string(), "secret-run".to_string());
         let message = PusherMessage {
             event: Some("ai-output".to_string()),
             channel: Some("ai:room".to_string()),
@@ -1332,7 +1493,7 @@ mod tests {
 
         assert!(!rendered.contains("streaming prompt secret"));
         assert!(!rendered.contains("idempotency-secret"));
-        assert!(!rendered.contains("secret-turn"));
+        assert!(!rendered.contains("secret-run"));
         assert!(rendered.contains("has_data: true"));
         assert!(rendered.contains("has_extras: true"));
         assert!(rendered.contains("has_idempotency_key: true"));

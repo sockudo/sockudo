@@ -218,7 +218,7 @@ export function useDemoSenders() {
     const extras = (status: 'streaming' | 'complete', role: 'user' | 'assistant') => ({
       ai: {
         transport: {
-          'turn-id': turnId,
+          'run-id': turnId,
           status,
           role,
         },

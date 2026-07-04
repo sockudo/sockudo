@@ -349,13 +349,19 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc();
     }
 
-    fn mark_ai_turn_started(&self, app_id: &str) {
+    fn mark_ai_run_started(&self, app_id: &str) {
+        self.ai_runs_started_total
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .inc();
         self.ai_turns_started_total
             .with_label_values(&[app_id, &self.port.to_string()])
             .inc();
     }
 
-    fn mark_ai_turn_ended(&self, app_id: &str, reason: &str) {
+    fn mark_ai_run_ended(&self, app_id: &str, reason: &str) {
+        self.ai_runs_ended_total
+            .with_label_values(&[app_id, &self.port.to_string(), reason])
+            .inc();
         self.ai_turns_ended_total
             .with_label_values(&[app_id, &self.port.to_string(), reason])
             .inc();

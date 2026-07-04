@@ -178,8 +178,7 @@ describe("conversation tree", () => {
     const tree = createTestTree();
 
     createTurn(tree, "regen", "msg-regen", 2, {
-      forkOf: "msg-owner",
-      regenerates: true,
+      regenerates: "msg-owner",
     });
     createTurn(tree, "owner", "msg-owner", 1);
 
@@ -188,7 +187,7 @@ describe("conversation tree", () => {
       "regen",
     ]);
     expect(tree.getTurnNode("regen")).toMatchObject({
-      forkOf: "owner",
+      regeneratesCodecMessageId: "msg-owner",
     });
   });
 
@@ -277,7 +276,7 @@ interface HeaderOptions {
   codecMessageId?: string;
   parent?: string;
   forkOf?: string;
-  regenerates?: boolean;
+  regenerates?: string | boolean;
   role?: string;
   turnClientId?: string;
   inputClientId?: string;
@@ -308,7 +307,7 @@ function headers(options: HeaderOptions): HeaderMap {
   set(map, HEADER_CODEC_MESSAGE_ID, options.codecMessageId);
   set(map, HEADER_PARENT, options.parent);
   set(map, HEADER_FORK_OF, options.forkOf);
-  set(map, HEADER_MSG_REGENERATE, bool(options.regenerates));
+  set(map, HEADER_MSG_REGENERATE, headerValue(options.regenerates));
   set(map, HEADER_ROLE, options.role);
   set(map, HEADER_TURN_CLIENT_ID, options.turnClientId);
   set(map, HEADER_INPUT_CLIENT_ID, options.inputClientId);
@@ -354,7 +353,7 @@ interface Op {
   serial: number;
   parent?: string;
   forkOf?: string;
-  regenerates?: boolean;
+  regenerates?: string | boolean;
   reason?: TurnEndReason;
 }
 
@@ -375,16 +374,16 @@ const validOps: Op[] = [
     kind: "start",
     turnId: "regen",
     serial: 7,
-    forkOf: "msg-child",
-    regenerates: true,
+    parent: "msg-root",
+    regenerates: "msg-child",
   },
   {
     kind: "message",
     turnId: "regen",
     codecMessageId: "msg-regen",
     serial: 8,
-    forkOf: "msg-child",
-    regenerates: true,
+    parent: "msg-root",
+    regenerates: "msg-child",
   },
   { kind: "end", turnId: "regen", serial: 9, reason: "suspended" },
 ];
@@ -462,6 +461,10 @@ function set(target: Record<string, string>, key: string, value: string | undefi
 
 function bool(value: boolean | undefined): string | undefined {
   return value === undefined ? undefined : value ? "true" : "false";
+}
+
+function headerValue(value: string | boolean | undefined): string | undefined {
+  return typeof value === "boolean" ? bool(value) : value;
 }
 
 function setOptional<T extends object, K extends keyof T>(

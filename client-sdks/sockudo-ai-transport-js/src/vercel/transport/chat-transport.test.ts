@@ -160,10 +160,10 @@ describe("Vercel ChatTransport", () => {
       parent: "u1",
     });
     expect(transportHeaders(published[0])).toMatchObject({
-      "msg-regenerate": "true",
-      "fork-of": "a1",
+      "msg-regenerate": "a1",
       parent: "u1",
     });
+    expect(transportHeaders(published[0])["fork-of"]).toBeUndefined();
   });
 
   it("continues a suspended assistant turn with derived tool inputs", async () => {
@@ -188,8 +188,7 @@ describe("Vercel ChatTransport", () => {
       approved: true,
     });
     expect(transportHeaders(published[0])).toMatchObject({
-      "turn-id": "turn-1",
-      "turn-continue": "true",
+      "run-id": "turn-1",
       "codec-message-id": "a1",
     });
     expect(bodyOf(fetch)).toMatchObject({
