@@ -280,6 +280,7 @@ jobs:
             -e DATABASE_REDIS_HOST=localhost \
             -e DATABASE_REDIS_PORT=6379 \
             -e SOCKUDO_DEFAULT_APP_ENABLED=true \
+            -e PUSH_ALLOW_MEMORY_DRIVERS=true \
             sockudo:test
           
           # Wait for startup
