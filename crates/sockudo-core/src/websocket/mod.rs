@@ -11,7 +11,7 @@ mod state;
 pub use buffer::{BufferLimit, BufferedRewindMessage, ByteCounter, WebSocketBufferConfig};
 pub use capabilities::{ConnectionCapabilities, UserInfo};
 pub use connection::WebSocket;
-pub use reference::{BufferStats, WebSocketExt, WebSocketRef};
+pub use reference::{BufferStats, PerChannelState, WebSocketExt, WebSocketRef};
 pub use sender::MessageSender;
 pub use socket_id::SocketId;
 pub use state::{ConnectionState, ConnectionStatus, ConnectionTimeouts};

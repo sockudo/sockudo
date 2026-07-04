@@ -995,8 +995,8 @@ impl ConnectionHandler {
                 filter_index.remove_socket_filter(channel_name, *socket_id, filter_node.as_deref());
             }
 
-            // Remove from WebSocketRef's channel_filters (lock-free)
-            conn_arc.channel_filters.remove(channel_name);
+            // Remove WebSocketRef's per-channel state (lock-free)
+            conn_arc.channel_state.remove(channel_name);
 
             let mut conn_locked = conn_arc.inner.lock().await;
             conn_locked.unsubscribe_from_channel(channel_name);

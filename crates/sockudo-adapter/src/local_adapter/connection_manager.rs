@@ -539,7 +539,7 @@ impl ConnectionManager for LocalAdapter {
 
         #[cfg(feature = "tag-filtering")]
         if let Some(socket_ref) = namespace.sockets.get(socket_id) {
-            socket_ref.channel_filters.remove(channel);
+            socket_ref.channel_state.remove(channel);
         }
 
         Ok(namespace.remove_channel_from_socket(channel, socket_id))

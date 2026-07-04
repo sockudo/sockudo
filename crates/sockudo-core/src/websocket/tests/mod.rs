@@ -1,6 +1,7 @@
 use super::buffer::{RewindGate, SizedMessage};
 use super::*;
 use bytes::Bytes;
+use sockudo_filter::node::FilterNodeBuilder;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::axum_integration::WebSocketWriter;
 
@@ -290,6 +291,20 @@ async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
     (writer, client_ws)
 }
 
+async fn create_websocket_ref() -> WebSocketRef {
+    let socket_id = SocketId::new();
+    let (writer, _client) = create_server_writer_with_client().await;
+    WebSocketRef::new(WebSocket::new(socket_id, writer))
+}
+
+fn create_test_pong_message(channel: &str, serial: u64, message_id: &str) -> PusherMessage {
+    let mut message = PusherMessage::pong();
+    message.channel = Some(channel.to_string());
+    message.serial = Some(serial);
+    message.message_id = Some(message_id.to_string());
+    message
+}
+
 #[tokio::test]
 async fn close_with_error_code_sends_error_then_close_frame() {
     use sockudo_ws::Message;
@@ -373,6 +388,153 @@ async fn test_send_message_serializes_and_delivers() {
             "serialized payload should contain 'pong', got: {text}"
         );
     }
+}
+
+#[tokio::test]
+async fn subscribe_getters_return_expected_values() {
+    let ws_ref = create_websocket_ref().await;
+    let filter = FilterNodeBuilder::eq("region", "us-east");
+    let event_name_filter = vec!["message-created".to_string(), "message-updated".to_string()];
+
+    ws_ref
+        .subscribe_to_channel_with_filters(
+            "presence-room".to_string(),
+            Some(filter.clone()),
+            Some(event_name_filter.clone()),
+            true,
+        )
+        .await;
+
+    assert_eq!(
+        ws_ref.get_channel_filter("presence-room").await.as_deref(),
+        Some(&filter)
+    );
+    assert_eq!(
+        ws_ref.get_channel_filter_sync("presence-room").as_deref(),
+        Some(&filter)
+    );
+    assert_eq!(
+        ws_ref.get_event_name_filter_sync("presence-room"),
+        Some(event_name_filter)
+    );
+    assert!(ws_ref.allows_annotation_events_sync("presence-room"));
+    assert!(!ws_ref.allows_annotation_events_sync("unknown-room"));
+}
+
+#[tokio::test]
+async fn resubscribe_preserves_rewind_gate_and_clears_attach_serial() {
+    let ws_ref = create_websocket_ref().await;
+
+    ws_ref.start_rewind_gate("presence-room".to_string());
+    assert!(
+        ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 1, "msg-1"),
+            )
+            .await
+    );
+    ws_ref.set_attach_serial("presence-room".to_string(), 41);
+
+    ws_ref
+        .subscribe_to_channel_with_filters(
+            "presence-room".to_string(),
+            Some(FilterNodeBuilder::eq("region", "us-east")),
+            Some(vec!["message-created".to_string()]),
+            false,
+        )
+        .await;
+
+    assert_eq!(ws_ref.attach_serial("presence-room"), None);
+    assert!(
+        ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 2, "msg-2"),
+            )
+            .await
+    );
+
+    let drained = ws_ref.finish_rewind_gate("presence-room").await;
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].serial, Some(1));
+    assert_eq!(drained[1].serial, Some(2));
+}
+
+#[tokio::test]
+async fn unsubscribe_removes_all_per_channel_state() {
+    let ws_ref = create_websocket_ref().await;
+
+    ws_ref
+        .subscribe_to_channel_with_filters(
+            "presence-room".to_string(),
+            Some(FilterNodeBuilder::eq("region", "us-east")),
+            Some(vec!["message-created".to_string()]),
+            true,
+        )
+        .await;
+    ws_ref.set_attach_serial("presence-room".to_string(), 99);
+    ws_ref.start_rewind_gate("presence-room".to_string());
+    assert!(
+        ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 1, "msg-1"),
+            )
+            .await
+    );
+
+    assert!(ws_ref.unsubscribe_from_channel("presence-room").await);
+    assert_eq!(ws_ref.get_channel_filter_sync("presence-room"), None);
+    assert_eq!(ws_ref.get_event_name_filter_sync("presence-room"), None);
+    assert!(!ws_ref.allows_annotation_events_sync("presence-room"));
+    assert_eq!(ws_ref.attach_serial("presence-room"), None);
+    assert!(
+        !ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 2, "msg-2"),
+            )
+            .await
+    );
+    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
+}
+
+#[tokio::test]
+async fn finish_rewind_gate_drains_buffered_messages() {
+    let ws_ref = create_websocket_ref().await;
+
+    ws_ref.start_rewind_gate("presence-room".to_string());
+    assert!(
+        ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 1, "msg-1"),
+            )
+            .await
+    );
+    assert!(
+        ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 2, "msg-2"),
+            )
+            .await
+    );
+
+    let drained = ws_ref.finish_rewind_gate("presence-room").await;
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].message_id.as_deref(), Some("msg-1"));
+    assert_eq!(drained[1].message_id.as_deref(), Some("msg-2"));
+    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
+    assert!(
+        !ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 3, "msg-3"),
+            )
+            .await
+    );
 }
 
 #[tokio::test]
