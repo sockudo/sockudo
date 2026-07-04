@@ -412,6 +412,9 @@ fn push_queue_payload_app_id(payload: &sockudo_push::PushQueuePayload) -> String
         sockudo_push::PushQueuePayload::ShardJob(job) => job.app_id.clone(),
         sockudo_push::PushQueuePayload::DeliveryBatch(batch) => batch.app_id.clone(),
         sockudo_push::PushQueuePayload::DeliveryResult(result) => result.app_id.clone(),
+        sockudo_push::PushQueuePayload::DeliveryFeedback(feedback) => {
+            feedback.result.app_id.clone()
+        }
         sockudo_push::PushQueuePayload::DeadLetter(dead_letter) => dead_letter.app_id.clone(),
         sockudo_push::PushQueuePayload::RetrySchedule(entry) => entry.app_id.clone(),
     }
@@ -424,6 +427,9 @@ fn push_queue_payload_publish_id(payload: &sockudo_push::PushQueuePayload) -> St
         sockudo_push::PushQueuePayload::ShardJob(job) => job.publish_id.clone(),
         sockudo_push::PushQueuePayload::DeliveryBatch(batch) => batch.publish_id.clone(),
         sockudo_push::PushQueuePayload::DeliveryResult(result) => result.publish_id.clone(),
+        sockudo_push::PushQueuePayload::DeliveryFeedback(feedback) => {
+            feedback.result.publish_id.clone()
+        }
         sockudo_push::PushQueuePayload::DeadLetter(dead_letter) => dead_letter.publish_id.clone(),
         sockudo_push::PushQueuePayload::RetrySchedule(entry) => entry.publish_id.clone(),
     }

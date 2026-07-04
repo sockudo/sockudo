@@ -88,6 +88,7 @@ pub struct PushConfig {
     pub shard_worker_count: u32,
     pub dispatch_worker_count: u32,
     pub feedback_worker_count: u32,
+    pub retry_worker_count: u32,
     pub queue_partition_count: u32,
     pub channel_shard_count: u32,
     pub fanout_fast_threshold: u64,
@@ -236,6 +237,7 @@ impl Default for PushConfig {
             shard_worker_count: 1,
             dispatch_worker_count: 1,
             feedback_worker_count: 1,
+            retry_worker_count: 1,
             queue_partition_count: 1,
             channel_shard_count: 1,
             fanout_fast_threshold: 10_000,
@@ -267,6 +269,7 @@ pub struct PushRetryConfig {
     pub max_backoff_ms: u64,
     pub max_elapsed_secs: u64,
     pub jitter: bool,
+    pub jitter_ratio_percent: u8,
     pub respect_retry_after: bool,
 }
 
@@ -278,6 +281,7 @@ impl Default for PushRetryConfig {
             max_backoff_ms: 60_000,
             max_elapsed_secs: 86_400,
             jitter: true,
+            jitter_ratio_percent: 20,
             respect_retry_after: true,
         }
     }

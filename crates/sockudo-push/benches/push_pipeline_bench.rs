@@ -12,8 +12,9 @@ use sockudo_push::{
     DevicePushDetails, DevicePushState, FanoutConfig, FormFactor, MemoryPushQueue, MemoryPushStore,
     Platform, ProviderDispatchWorker, PublishIntent, PublishTarget, PushAcceptRequest,
     PushDeviceStore, PushMetrics, PushPayload, PushPipeline, PushPlanner, PushProviderKind,
-    PushQueue, PushQueuePayload, PushQueueStage, PushRecipient, PushShardWorker,
-    PushSubscriptionStore, SecretString, any_rule_matches, render_provider_payload,
+    PushQueue, PushQueuePayload, PushQueueStage, PushRecipient, PushRetryScheduler,
+    PushShardWorker, PushSubscriptionStore, RetryScheduleEntry, SecretString, any_rule_matches,
+    render_provider_payload,
 };
 use sonic_rs::json;
 use tokio::runtime::Runtime;
@@ -290,6 +291,50 @@ fn bench_provider_dispatch(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_retry_scheduler(c: &mut Criterion) {
+    const RETRY_ENTRIES: usize = 100_000;
+    let mut group = c.benchmark_group("push_retry_scheduler");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(RETRY_ENTRIES as u64));
+    // Budget: draining 100k due retry entries through the memory queue/store
+    // should remain under 5s on a typical local development machine.
+    group.bench_function("memory_drain_100k_due_retry_entries_budget_lt_5s", |b| {
+        b.iter_batched(
+            || {
+                let runtime = Runtime::new().expect("tokio runtime");
+                let store = Arc::new(MemoryPushStore::new());
+                let queue = Arc::new(MemoryPushQueue::new());
+                runtime.block_on(seed_retry_entries(queue.clone(), RETRY_ENTRIES));
+                (runtime, store, queue)
+            },
+            |(runtime, store, queue)| {
+                runtime.block_on(async move {
+                    let scheduler = PushRetryScheduler::new(store, queue.clone(), "bench-retry")
+                        .with_max_messages_per_tick(1_024);
+                    let mut processed = 0_usize;
+                    while processed < RETRY_ENTRIES {
+                        let tick = scheduler.run_once("bench-retry").await.unwrap();
+                        if tick == 0 {
+                            break;
+                        }
+                        processed += tick;
+                    }
+                    assert_eq!(processed, RETRY_ENTRIES);
+                    black_box(
+                        queue
+                            .lag(PushQueueStage::DeliveryJobs(PushProviderKind::Fcm))
+                            .await
+                            .unwrap()
+                            .ready_depth,
+                    );
+                });
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.finish();
+}
+
 fn bench_provider_rendering(c: &mut Criterion) {
     let payload = sample_payload();
     let mut group = c.benchmark_group("push_provider_rendering");
@@ -546,10 +591,58 @@ fn sample_delivery_batch(publish_id: String, jobs: usize) -> DeliveryBatch {
                 },
                 payload: Arc::clone(&payload),
                 attempt: 1,
+                first_attempt_at_ms: None,
                 not_before_ms: None,
                 expires_at_ms: None,
             })
             .collect(),
+    }
+}
+
+async fn seed_retry_entries(queue: Arc<MemoryPushQueue>, count: usize) {
+    let payload = Arc::new(sample_payload());
+    for index in 0..count {
+        let key = format!("retry:bench:{index}");
+        let job = DeliveryJob {
+            app_id: APP_ID.to_owned(),
+            publish_id: format!("retry-publish-{index}"),
+            provider: PushProviderKind::Fcm,
+            batch_id: format!("retry-batch-{index}"),
+            device_id: Some(format!("device-{index}")),
+            recipient: PushRecipient::Fcm {
+                registration_token: SecretString::new(format!("token-{index}")).unwrap(),
+            },
+            payload: Arc::clone(&payload),
+            attempt: 2,
+            first_attempt_at_ms: Some(1),
+            not_before_ms: Some(1),
+            expires_at_ms: None,
+        };
+        let entry = RetryScheduleEntry {
+            app_id: APP_ID.to_owned(),
+            publish_id: job.publish_id.clone(),
+            provider: Some(PushProviderKind::Fcm),
+            job: Some(Box::new(job)),
+            attempt: 2,
+            first_attempt_at_ms: 1,
+            next_attempt_at_ms: 1,
+            max_attempts: 5,
+            expires_at_ms: u64::MAX,
+            last_error: None,
+            retry_idempotency_key: key.clone(),
+            stage: "delivery".to_owned(),
+            key: key.clone(),
+            not_before_ms: Some(1),
+            payload: None,
+        };
+        queue
+            .produce(
+                PushQueueStage::RetrySchedule,
+                key,
+                PushQueuePayload::RetrySchedule(Box::new(entry)),
+            )
+            .await
+            .unwrap();
     }
 }
 
@@ -567,6 +660,7 @@ criterion_group!(
     bench_sharded_fanout,
     bench_queue,
     bench_provider_dispatch,
+    bench_retry_scheduler,
     bench_provider_rendering,
     bench_metrics,
     bench_device_secret_pbkdf2

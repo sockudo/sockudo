@@ -79,6 +79,22 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
     PushMetricSpec::counter("sockudo_push_delivery_status_total", &["status", "app"]),
     PushMetricSpec::counter("sockudo_push_wfq_dispatched_total", &["provider", "app"]),
     PushMetricSpec::gauge("sockudo_push_wfq_starvation_seconds", &["provider", "app"]),
+    PushMetricSpec::counter("sockudo_push_retry_scheduled_total", &["provider", "app"]),
+    PushMetricSpec::counter("sockudo_push_retry_attempted_total", &["provider", "app"]),
+    PushMetricSpec::counter("sockudo_push_retry_deferred_total", &["provider", "app"]),
+    PushMetricSpec::gauge(
+        "sockudo_push_retry_deferred_delay_seconds",
+        &["provider", "app"],
+    ),
+    PushMetricSpec::counter("sockudo_push_retry_expired_total", &["provider", "app"]),
+    PushMetricSpec::counter(
+        "sockudo_push_retry_dead_lettered_total",
+        &["provider", "app"],
+    ),
+    PushMetricSpec::counter(
+        "sockudo_push_retry_malformed_total",
+        &["provider", "reason"],
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -465,6 +481,59 @@ impl PushMetrics {
         );
     }
 
+    pub fn retry_scheduled(&self, provider: PushProviderKind, app_id: &str) {
+        self.counter(
+            "sockudo_push_retry_scheduled_total",
+            &[("provider", provider_label(provider)), ("app", app_id)],
+            1,
+        );
+    }
+
+    pub fn retry_attempted(&self, provider: PushProviderKind, app_id: &str) {
+        self.counter(
+            "sockudo_push_retry_attempted_total",
+            &[("provider", provider_label(provider)), ("app", app_id)],
+            1,
+        );
+    }
+
+    pub fn retry_deferred(&self, provider: &str, app_id: &str, delay_ms: u64) {
+        self.counter(
+            "sockudo_push_retry_deferred_total",
+            &[("provider", provider), ("app", app_id)],
+            1,
+        );
+        self.gauge(
+            "sockudo_push_retry_deferred_delay_seconds",
+            &[("provider", provider), ("app", app_id)],
+            delay_ms as f64 / 1000.0,
+        );
+    }
+
+    pub fn retry_expired(&self, provider: &str, app_id: &str) {
+        self.counter(
+            "sockudo_push_retry_expired_total",
+            &[("provider", provider), ("app", app_id)],
+            1,
+        );
+    }
+
+    pub fn retry_dead_lettered(&self, provider: &str, app_id: &str) {
+        self.counter(
+            "sockudo_push_retry_dead_lettered_total",
+            &[("provider", provider), ("app", app_id)],
+            1,
+        );
+    }
+
+    pub fn retry_malformed(&self, provider: &str, reason: &str) {
+        self.counter(
+            "sockudo_push_retry_malformed_total",
+            &[("provider", provider), ("reason", reason)],
+            1,
+        );
+    }
+
     pub fn delivery_result(&self, provider: PushProviderKind, app_id: &str, outcome: &str) {
         self.counter(
             "sockudo_push_dispatched_total",
@@ -622,6 +691,13 @@ mod tests {
             "sockudo_push_delivery_status_total",
             "sockudo_push_wfq_dispatched_total",
             "sockudo_push_wfq_starvation_seconds",
+            "sockudo_push_retry_scheduled_total",
+            "sockudo_push_retry_attempted_total",
+            "sockudo_push_retry_deferred_total",
+            "sockudo_push_retry_deferred_delay_seconds",
+            "sockudo_push_retry_expired_total",
+            "sockudo_push_retry_dead_lettered_total",
+            "sockudo_push_retry_malformed_total",
         ];
 
         for name in required {

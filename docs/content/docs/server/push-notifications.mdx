@@ -66,6 +66,33 @@ Readiness failures return `503`. Queue pressure returns `429` with `Retry-After`
 persists a terminal `quota_exceeded` publish status and idempotency record without appending publish
 log work or enqueueing the pipeline.
 
+## Retry and dead letters
+
+Provider throttling, 5xx responses, and transport failures are classified as retryable. Feedback
+workers schedule retry entries on `push.retry.v1` with the original delivery job context, a
+deterministic retry idempotency key, the next attempt number, the first-attempt timestamp, retry
+deadline, and the provider error class. Retry scheduler workers consume only due entries, respect
+provider `Retry-After` deadlines when configured, and otherwise use bounded exponential backoff with
+deterministic jitter.
+
+Retries stop at the earliest of `max_attempts`, `max_elapsed_secs`, or the publish/job
+`expires_at_ms`. Exhausted retry work is emitted to `push.deadletters.v1` and the publish status
+moves to `dead_lettered` unless some deliveries already succeeded, in which case it becomes
+`partially_succeeded`. If the publish expiry passes before a retry can run, the publish moves to
+`expired`. Pending retry work increments `retryScheduled`; retry dispatch increments
+`retryAttempted`; `dispatched` counts terminal provider outcomes so retry attempts do not inflate
+completion accounting.
+
+Operators inspect aggregate status with `GET /apps/{appId}/push/publish/{publishId}/status`, retry
+and dead-letter queue lag through the health/backpressure surfaces, and metrics such as
+`sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`,
+`sockudo_push_retry_dead_lettered_total`, and `sockudo_push_retry_malformed_total`.
+
+Upgrade note: provider workers now enqueue internal `deliveryFeedback` payloads on
+`push.results.v1` so feedback workers can schedule retries with replayable job context. Older
+`deliveryResult` payloads are still accepted, but retryable legacy results without job context are
+dead-lettered instead of being retried blindly.
+
 ## Configure providers
 
 ```toml
@@ -259,6 +286,10 @@ node scripts/push-benchmark.mjs \
 
 Track accepted publishes, queue depth, provider dispatch latency, provider error classes, and status write latency.
 
+The Criterion benchmark `push_retry_scheduler/memory_drain_100k_due_retry_entries_budget_lt_5s`
+seeds and drains 100k due retry entries through the memory queue/store path as a regression guard
+for retry scheduling overhead.
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -271,5 +302,7 @@ Track accepted publishes, queue depth, provider dispatch latency, provider error
 | Large push is rejected | Check platform payload limits and remove nonessential data. |
 | Push publish returns `503` | Check push queue health, memory-driver production guard, provider feature flags, provider credentials, and dispatch worker count. |
 | Push publish returns `429` | Check publish-log, shard, delivery result, retry, dead-letter, and active provider delivery queue lag. |
+| Publish remains `dispatching` | Check retry scheduler workers, `push.retry.v1` lag, dead-letter lag, and provider retry-after deadlines. |
+| Publish becomes `dead_lettered` | Inspect the dead-letter queue reason, retry metrics, provider outage history, and `max_attempts`/`max_elapsed_secs`. |
 
 Push payloads should wake the app and include stable IDs. Fetch authoritative application state after the user opens the notification.

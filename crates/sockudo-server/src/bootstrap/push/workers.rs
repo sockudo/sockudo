@@ -21,12 +21,30 @@ fn push_fanout_config(config: &ServerOptions) -> sockudo_push::FanoutConfig {
 }
 
 #[cfg(all(feature = "push", feature = "monolith"))]
+fn push_retry_policy(config: &ServerOptions) -> sockudo_push::RetryPolicy {
+    sockudo_push::RetryPolicy {
+        initial_backoff_ms: config.push.retry.initial_backoff_ms,
+        max_backoff_ms: config.push.retry.max_backoff_ms,
+        max_attempts: config.push.retry.max_attempts,
+        max_retry_age_ms: config.push.retry.max_elapsed_secs.saturating_mul(1_000),
+        jitter_ratio_percent: if config.push.retry.jitter {
+            config.push.retry.jitter_ratio_percent
+        } else {
+            0
+        },
+        respect_retry_after: config.push.retry.respect_retry_after,
+    }
+    .bounded()
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
 pub(crate) fn start_push_monolith_workers(
     config: &ServerOptions,
     store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
 ) {
     let fanout_config = push_fanout_config(config);
+    let retry_policy = push_retry_policy(config);
 
     for worker_index in 0..config.push.planner_worker_count {
         let planner =
@@ -71,7 +89,8 @@ pub(crate) fn start_push_monolith_workers(
     }
 
     for worker_index in 0..config.push.feedback_worker_count {
-        let processor = sockudo_push::PushFeedbackProcessor::new(store.clone(), queue.clone());
+        let processor = sockudo_push::PushFeedbackProcessor::new(store.clone(), queue.clone())
+            .with_retry_policy(retry_policy.clone());
         tokio::spawn(async move {
             let group = format!("sockudo-monolith-feedback-{worker_index}");
             warn!(worker = %group, "push feedback worker started");
@@ -83,6 +102,30 @@ pub(crate) fn start_push_monolith_workers(
                     Ok(_) => {}
                     Err(error) => {
                         warn!(worker = %group, error = %error, "push feedback worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+
+    for worker_index in 0..config.push.retry_worker_count {
+        let scheduler = sockudo_push::PushRetryScheduler::new(
+            store.clone(),
+            queue.clone(),
+            format!("sockudo-monolith-retry-{worker_index}"),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-retry-{worker_index}");
+            warn!(worker = %group, "push retry scheduler worker started");
+            loop {
+                match scheduler.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "push retry scheduler worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "push retry scheduler worker tick failed");
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;

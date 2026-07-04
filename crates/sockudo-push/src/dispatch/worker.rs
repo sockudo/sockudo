@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::PushDispatcher;
-use crate::domain::{DeliveryOutcome, DeliveryResult, PushProviderKind, provider_key};
+use crate::domain::{
+    DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult, PushProviderKind, provider_key,
+    stable_hash,
+};
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
 use crate::pipeline::{PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, now_ms};
@@ -110,6 +113,7 @@ impl ProviderDispatchWorker {
         };
         let batch = *batch;
         let app_id = batch.app_id.clone();
+        let retry_jobs = batch.jobs.clone();
         self.metrics
             .worker_pool(self.provider, self.max_batches_per_tick, 1);
 
@@ -142,11 +146,14 @@ impl ProviderDispatchWorker {
         }
 
         let started = Instant::now();
+        let started_ms = now_ms();
         self.metrics.dispatch_started(self.provider, &app_id);
         let results = self.dispatcher.dispatch(batch).await;
         let mut saw_retry_after = None;
         let mut failures = 0_u64;
+        let mut retry_jobs = retry_jobs.into_iter();
         for result in results {
+            let original_job = retry_jobs.next();
             if !matches!(result.outcome, DeliveryOutcome::Accepted) {
                 failures += 1;
                 tracing::warn!(
@@ -180,11 +187,12 @@ impl ProviderDispatchWorker {
             {
                 saw_retry_after = Some(retry_after_ms);
             }
+            let feedback = delivery_feedback(result, original_job, started_ms);
             self.queue
                 .produce(
                     PushQueueStage::DeliveryResults,
-                    result_key(&result),
-                    PushQueuePayload::DeliveryResult(Box::new(result)),
+                    feedback_key(&feedback),
+                    PushQueuePayload::DeliveryFeedback(Box::new(feedback)),
                 )
                 .await?;
         }
@@ -499,14 +507,57 @@ impl WeightedFairScheduler {
     }
 }
 
-fn result_key(result: &DeliveryResult) -> String {
+fn delivery_feedback(
+    result: DeliveryResult,
+    original_job: Option<DeliveryJob>,
+    started_ms: u64,
+) -> DeliveryFeedback {
+    let delivery_key = original_job
+        .as_ref()
+        .map(|job| stable_hash(job.idempotency_key().as_bytes()))
+        .unwrap_or_else(|| {
+            stable_hash(
+                format!(
+                    "{}:{}:{}:{}:{}",
+                    result.app_id,
+                    result.publish_id,
+                    provider_key(result.provider),
+                    result.batch_id,
+                    result.device_id.as_deref().unwrap_or("[provider-target]")
+                )
+                .as_bytes(),
+            )
+        });
+    let retry_job = if matches!(result.outcome, DeliveryOutcome::Retryable) {
+        original_job.map(|mut job| {
+            job.first_attempt_at_ms = Some(job.first_attempt_at_ms.unwrap_or(started_ms));
+            Box::new(job)
+        })
+    } else {
+        None
+    };
+    let first_attempt_at_ms = retry_job
+        .as_ref()
+        .and_then(|job| job.first_attempt_at_ms)
+        .or(Some(started_ms));
+    let expires_at_ms = retry_job.as_ref().and_then(|job| job.expires_at_ms);
+    DeliveryFeedback {
+        result,
+        delivery_key,
+        retry_job,
+        first_attempt_at_ms,
+        expires_at_ms,
+    }
+}
+
+fn feedback_key(feedback: &DeliveryFeedback) -> String {
     format!(
         "{}:{}:{}:{}:{}:{}",
-        result.app_id,
-        result.publish_id,
-        provider_key(result.provider),
-        result.batch_id,
-        result.device_id.as_deref().unwrap_or("[provider-target]"),
-        result.attempt
+        feedback.result.app_id,
+        feedback.result.publish_id,
+        provider_key(feedback.result.provider),
+        feedback.result.batch_id,
+        feedback.delivery_key,
+        feedback.result.attempt
     )
 }

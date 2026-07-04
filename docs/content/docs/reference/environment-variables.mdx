@@ -388,6 +388,14 @@ This page lists every runtime environment variable referenced by the server, cor
 | `PUSH_PUBLISH_LOG_MAX_LAG` | Maximum publish-log lag tolerated before push backpressure. |
 | `PUSH_CRITICAL_QUEUE_MAX_LAG` | Maximum lag tolerated for shard, delivery result, retry, dead-letter, and active provider delivery stages. |
 | `PUSH_PUBLISH_STATUS_TTL_DAYS` | Retention for push publish status records. |
+| `PUSH_RETRY_WORKER_COUNT` | Number of monolith retry scheduler workers consuming `push.retry.v1`. |
+| `PUSH_RETRY_MAX_ATTEMPTS` | Maximum provider delivery attempts before retry work is dead-lettered. |
+| `PUSH_RETRY_INITIAL_BACKOFF_MS` | Initial retry backoff when the provider does not send `Retry-After`. |
+| `PUSH_RETRY_MAX_BACKOFF_MS` | Maximum exponential retry backoff. |
+| `PUSH_RETRY_MAX_ELAPSED_SECS` | Maximum retry age from first provider attempt. |
+| `PUSH_RETRY_JITTER` | Enables deterministic retry jitter. |
+| `PUSH_RETRY_JITTER_RATIO_PERCENT` | Retry jitter spread as a percentage of the selected backoff. |
+| `PUSH_RETRY_RESPECT_RETRY_AFTER` | Uses provider `Retry-After` deadlines when present. |
 | `PUSH_FAILURE_THRESHOLD` | Push circuit-breaker failure threshold. |
 | `PUSH_SCHEDULER_INTERVAL_SECS` | Scheduled push scan interval. |
 | `PUSH_STALE_DEVICE_MAX_AGE_DAYS` | Stale device age threshold. |
