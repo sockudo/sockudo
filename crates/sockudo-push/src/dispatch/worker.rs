@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use super::PushDispatcher;
 use crate::domain::{
-    DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult, PushProviderKind, provider_key,
-    stable_hash,
+    DeliveryBatch, DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
+    PushProviderKind, provider_key, stable_hash,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
@@ -112,6 +112,9 @@ impl ProviderDispatchWorker {
             return Ok(());
         };
         let batch = *batch;
+        let Some(batch) = self.preflight_batch(message.ack.clone(), batch).await? else {
+            return Ok(());
+        };
         let app_id = batch.app_id.clone();
         let retry_jobs = batch.jobs.clone();
         self.metrics
@@ -222,6 +225,149 @@ impl ProviderDispatchWorker {
         self.metrics
             .worker_pool(self.provider, self.max_batches_per_tick, 0);
         self.queue.ack(message.ack).await?;
+        Ok(())
+    }
+
+    async fn preflight_batch(
+        &self,
+        ack: crate::pipeline::QueueAckToken,
+        batch: DeliveryBatch,
+    ) -> PushPipelineResult<Option<DeliveryBatch>> {
+        let now = now_ms();
+        let DeliveryBatch {
+            app_id,
+            publish_id,
+            provider,
+            batch_id,
+            jobs,
+        } = batch;
+        let mut ready = Vec::with_capacity(jobs.len());
+        let mut future = Vec::new();
+        let mut expired = Vec::new();
+
+        for job in jobs {
+            if is_expired_before_dispatch(&job, now) {
+                expired.push(job);
+            } else if job.not_before_ms.is_some_and(|not_before| not_before > now) {
+                future.push(job);
+            } else {
+                ready.push(job);
+            }
+        }
+
+        let emitted_expired = !expired.is_empty();
+        for job in expired {
+            self.emit_expired_feedback(job, now).await?;
+        }
+
+        let next_not_before_ms = future.iter().filter_map(|job| job.not_before_ms).min();
+        if ready.is_empty() {
+            if let Some(not_before_ms) = next_not_before_ms {
+                if future.is_empty() {
+                    self.queue.ack(ack).await?;
+                } else if emitted_expired {
+                    self.defer_future_jobs(
+                        &app_id,
+                        &publish_id,
+                        provider,
+                        &batch_id,
+                        future,
+                        not_before_ms,
+                    )
+                    .await?;
+                    self.queue.ack(ack).await?;
+                } else {
+                    self.queue.nack(ack, Some(not_before_ms)).await?;
+                }
+            } else {
+                self.queue.ack(ack).await?;
+            }
+            return Ok(None);
+        }
+
+        if let Some(not_before_ms) = next_not_before_ms {
+            self.defer_future_jobs(
+                &app_id,
+                &publish_id,
+                provider,
+                &batch_id,
+                future,
+                not_before_ms,
+            )
+            .await?;
+        }
+
+        Ok(Some(DeliveryBatch {
+            app_id,
+            publish_id,
+            provider,
+            batch_id,
+            jobs: ready,
+        }))
+    }
+
+    async fn defer_future_jobs(
+        &self,
+        app_id: &str,
+        publish_id: &str,
+        provider: PushProviderKind,
+        original_batch_id: &str,
+        mut jobs: Vec<DeliveryJob>,
+        not_before_ms: u64,
+    ) -> PushPipelineResult<()> {
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        let batch_id = format!("{original_batch_id}-deferred-{not_before_ms}");
+        for job in &mut jobs {
+            job.batch_id = batch_id.clone();
+        }
+        let batch = DeliveryBatch {
+            app_id: app_id.to_owned(),
+            publish_id: publish_id.to_owned(),
+            provider,
+            batch_id,
+            jobs,
+        };
+        self.queue
+            .retry_at(
+                PushQueueStage::DeliveryJobs(provider),
+                batch.queue_key(),
+                PushQueuePayload::DeliveryBatch(Box::new(batch)),
+                not_before_ms,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn emit_expired_feedback(
+        &self,
+        job: DeliveryJob,
+        occurred_at_ms: u64,
+    ) -> PushPipelineResult<()> {
+        let result = DeliveryResult {
+            app_id: job.app_id.clone(),
+            publish_id: job.publish_id.clone(),
+            provider: job.provider,
+            batch_id: job.batch_id.clone(),
+            device_id: job.device_id.clone(),
+            outcome: DeliveryOutcome::Expired,
+            provider_message_id: None,
+            error: Some(ProviderError {
+                class: "expired".to_owned(),
+                reason: Some("delivery expired before provider dispatch".to_owned()),
+                retry_after_ms: None,
+            }),
+            attempt: job.attempt,
+        };
+        let feedback = delivery_feedback(result, Some(job), occurred_at_ms);
+        self.queue
+            .produce(
+                PushQueueStage::DeliveryResults,
+                feedback_key(&feedback),
+                PushQueuePayload::DeliveryFeedback(Box::new(feedback)),
+            )
+            .await?;
         Ok(())
     }
 
@@ -560,4 +706,13 @@ fn feedback_key(feedback: &DeliveryFeedback) -> String {
         feedback.delivery_key,
         feedback.result.attempt
     )
+}
+
+fn is_expired_before_dispatch(job: &DeliveryJob, now_ms: u64) -> bool {
+    job.expires_at_ms.is_some_and(|expires_at_ms| {
+        expires_at_ms <= now_ms
+            || job
+                .not_before_ms
+                .is_some_and(|not_before_ms| expires_at_ms <= not_before_ms)
+    })
 }

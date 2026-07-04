@@ -1065,6 +1065,8 @@ pub struct ShardJob {
     pub target: PublishTarget,
     pub payload: PushPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_before_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<PushCursor>,

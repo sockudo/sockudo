@@ -83,6 +83,11 @@ moves to `dead_lettered` unless some deliveries already succeeded, in which case
 `retryAttempted`; `dispatched` counts terminal provider outcomes so retry attempts do not inflate
 completion accounting.
 
+Publish timing is enforced at delivery time. `notBeforeMs` delays provider dispatch; provider
+workers split mixed due/future batches so due jobs are not blocked behind future jobs. `expiresAtMs`
+prevents late sends; expired delivery jobs are recorded as `expired` and are not sent to providers.
+Retry scheduling preserves the original timing window and does not run past publish or job expiry.
+
 Operators inspect aggregate status with `GET /apps/{appId}/push/publish/{publishId}/status`, retry
 and dead-letter queue lag through the health/backpressure surfaces, and metrics such as
 `sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`,
@@ -210,17 +215,21 @@ console.log(response.publish_id);
 Use `sync: false` for most production traffic. Async admission returns quickly, then workers fan out
 to providers and update publish status records.
 
-## Schedule and cancel
+## Delayed delivery and cancellation
 
 ```ts
-const scheduled = await sockudo.schedulePush({
-  run_at: "2026-05-19T18:00:00Z",
+const delayed = await sockudo.publishPush({
+  notBeforeMs: Date.parse("2026-05-19T18:00:00Z"),
+  expiresAtMs: Date.parse("2026-05-19T18:10:00Z"),
   recipients: [{ type: "client", client_id: "user-42" }],
   payload: { title: "Reminder", body: "Your room starts soon" },
 });
-
-await sockudo.cancelScheduledPush(scheduled.publish_id);
 ```
+
+The public HTTP API does not expose a separate schedule-create endpoint. Use
+`POST /apps/{appId}/push/publish` with `notBeforeMs` for delayed delivery. Persisted scheduled jobs
+created by internal scheduler/store integrations can be cancelled before emission with
+`DELETE /apps/{appId}/push/scheduled/{jobId}`.
 
 ## Channel-triggered push rule
 

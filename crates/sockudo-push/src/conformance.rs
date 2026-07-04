@@ -247,6 +247,33 @@ impl PushStoreConformance {
             store.get_idempotency_record("app-1", "idem-1").await?,
             Some(idempotency)
         );
+        let expired_idempotency = IdempotencyRecord {
+            app_id: "app-1".to_owned(),
+            key: "idem-expired".to_owned(),
+            publish_id: "publish-old".to_owned(),
+            expires_at_ms: crate::pipeline::now_ms().saturating_sub(1),
+        };
+        assert!(
+            store
+                .put_idempotency_record_if_absent(expired_idempotency)
+                .await?
+        );
+        assert_eq!(
+            store
+                .get_idempotency_record("app-1", "idem-expired")
+                .await?,
+            None
+        );
+        assert!(
+            store
+                .put_idempotency_record_if_absent(IdempotencyRecord {
+                    app_id: "app-1".to_owned(),
+                    key: "idem-expired".to_owned(),
+                    publish_id: "publish-new".to_owned(),
+                    expires_at_ms: crate::pipeline::now_ms().saturating_add(60_000),
+                })
+                .await?
+        );
         Ok(())
     }
 

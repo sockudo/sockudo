@@ -178,6 +178,11 @@ Push notifications are a core Sockudo API surface. Push endpoints are available 
 | `DELETE` | `/apps/{appId}/push/scheduled/{jobId}` | Signed app API, push admin | Cancel a scheduled publish before dispatch when possible. |
 | `POST` | `/apps/{appId}/push/deliveryStatus` | Signed app API, push admin | Ingest worker or provider delivery feedback. |
 
+Push publish bodies accept `notBeforeMs` to delay provider dispatch and `expiresAtMs` to stop late
+delivery and retry. The public API does not expose `POST /push/scheduled`; delayed delivery is
+created through `/push/publish`, while `DELETE /push/scheduled/{jobId}` only cancels jobs already
+persisted by scheduler/store integrations.
+
 Push headers:
 
 | Header | Values | Meaning |
