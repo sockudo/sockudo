@@ -24,6 +24,20 @@ where
         &self,
         record: IdempotencyRecord,
     ) -> PushStorageResult<bool> {
+        if let Some(existing) = self
+            .get_json::<IdempotencyRecord>(
+                FAMILY_IDEMPOTENCY,
+                &record.app_id,
+                &record.key,
+                DEFAULT_SK,
+            )
+            .await?
+            && idempotency_record_expired(&existing, crate::pipeline::now_ms())
+        {
+            self.backend
+                .delete(FAMILY_IDEMPOTENCY, &record.app_id, &record.key, DEFAULT_SK)
+                .await?;
+        }
         self.backend
             .put_if_absent(
                 FAMILY_IDEMPOTENCY,
@@ -40,9 +54,24 @@ where
         app_id: &str,
         key: &str,
     ) -> PushStorageResult<Option<IdempotencyRecord>> {
-        self.get_json(FAMILY_IDEMPOTENCY, app_id, key, DEFAULT_SK)
-            .await
+        let Some(record) = self
+            .get_json::<IdempotencyRecord>(FAMILY_IDEMPOTENCY, app_id, key, DEFAULT_SK)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if idempotency_record_expired(&record, crate::pipeline::now_ms()) {
+            self.backend
+                .delete(FAMILY_IDEMPOTENCY, app_id, key, DEFAULT_SK)
+                .await?;
+            return Ok(None);
+        }
+        Ok(Some(record))
     }
+}
+
+fn idempotency_record_expired(record: &IdempotencyRecord, now_ms: u64) -> bool {
+    record.expires_at_ms >= 1_000_000_000_000 && record.expires_at_ms <= now_ms
 }
 
 #[async_trait]

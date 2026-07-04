@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
 use crate::domain::{PushPayload, PushRecipient, SecretString};
-use crate::pipeline::{PushQueuePayload, PushQueueStage, QueueMessage};
+use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueuePayload, PushQueueStage, QueueMessage};
 
 use super::apns::classify_apns_response;
 use super::fcm::classify_fcm_response;
@@ -56,6 +56,51 @@ impl ProviderTokenSource for CountingTokenSource {
             token: SecretString::new(format!("token-{count}")).unwrap(),
             expires_at_ms: self.first_expiry,
         })
+    }
+}
+
+#[derive(Default)]
+struct RecordingDispatcher {
+    batches: Mutex<Vec<DeliveryBatch>>,
+}
+
+impl RecordingDispatcher {
+    async fn batches(&self) -> Vec<DeliveryBatch> {
+        self.batches.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl PushDispatcher for RecordingDispatcher {
+    fn provider(&self) -> PushProviderKind {
+        PushProviderKind::Fcm
+    }
+
+    async fn dispatch(&self, batch: DeliveryBatch) -> Vec<DeliveryResult> {
+        self.batches.lock().await.push(batch.clone());
+        batch
+            .jobs
+            .into_iter()
+            .map(|job| DeliveryResult {
+                app_id: job.app_id,
+                publish_id: job.publish_id,
+                provider: job.provider,
+                batch_id: job.batch_id,
+                device_id: job.device_id,
+                outcome: DeliveryOutcome::Accepted,
+                provider_message_id: Some("recorded".to_owned()),
+                error: None,
+                attempt: job.attempt,
+            })
+            .collect()
+    }
+
+    async fn health_check(&self) -> HealthStatus {
+        HealthStatus {
+            provider: PushProviderKind::Fcm,
+            healthy: true,
+            details: "recording dispatcher".to_owned(),
+        }
     }
 }
 
@@ -272,6 +317,117 @@ fn weighted_scheduler_downgrades_over_quota_tenants_and_caps_each_lane() {
         3
     );
     assert_ne!(order.first().map(String::as_str), Some("noisy"));
+}
+
+#[tokio::test]
+async fn provider_worker_defers_future_batch_without_dispatching() {
+    let queue = Arc::new(MemoryPushQueue::new());
+    let dispatcher = Arc::new(RecordingDispatcher::default());
+    let mut batch = batch(PushProviderKind::Fcm);
+    let not_before_ms = now_ms().saturating_add(60_000);
+    batch.jobs[0].not_before_ms = Some(not_before_ms);
+    queue
+        .produce(
+            PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+            batch.queue_key(),
+            PushQueuePayload::DeliveryBatch(Box::new(batch)),
+        )
+        .await
+        .unwrap();
+
+    let mut worker =
+        ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher.clone());
+    assert_eq!(worker.run_once("fcm").await.unwrap(), 1);
+
+    assert!(dispatcher.batches().await.is_empty());
+    let lag = queue
+        .lag(PushQueueStage::DeliveryJobs(PushProviderKind::Fcm))
+        .await
+        .unwrap();
+    assert_eq!(lag.ready_depth, 0);
+    assert_eq!(lag.delayed_depth, 1);
+    assert_eq!(
+        queue
+            .lag(PushQueueStage::DeliveryResults)
+            .await
+            .unwrap()
+            .ready_depth,
+        0
+    );
+}
+
+#[tokio::test]
+async fn provider_worker_expires_batch_without_dispatching() {
+    let queue = Arc::new(MemoryPushQueue::new());
+    let dispatcher = Arc::new(RecordingDispatcher::default());
+    let mut batch = batch(PushProviderKind::Fcm);
+    batch.jobs[0].expires_at_ms = Some(now_ms().saturating_sub(1));
+    queue
+        .produce(
+            PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+            batch.queue_key(),
+            PushQueuePayload::DeliveryBatch(Box::new(batch)),
+        )
+        .await
+        .unwrap();
+
+    let mut worker =
+        ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher.clone());
+    assert_eq!(worker.run_once("fcm").await.unwrap(), 1);
+
+    assert!(dispatcher.batches().await.is_empty());
+    let message = queue
+        .consume(PushQueueStage::DeliveryResults, "feedback", 1, 30_000)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let PushQueuePayload::DeliveryFeedback(feedback) = message.payload else {
+        panic!("expected delivery feedback");
+    };
+    assert_eq!(feedback.result.outcome, DeliveryOutcome::Expired);
+}
+
+#[tokio::test]
+async fn provider_worker_dispatches_due_jobs_and_requeues_future_jobs() {
+    let queue = Arc::new(MemoryPushQueue::new());
+    let dispatcher = Arc::new(RecordingDispatcher::default());
+    let mut batch = batch(PushProviderKind::Fcm);
+    let mut future = batch.jobs[0].clone();
+    future.device_id = Some("device-2".to_owned());
+    future.not_before_ms = Some(now_ms().saturating_add(60_000));
+    batch.jobs.push(future);
+    queue
+        .produce(
+            PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+            batch.queue_key(),
+            PushQueuePayload::DeliveryBatch(Box::new(batch)),
+        )
+        .await
+        .unwrap();
+
+    let mut worker =
+        ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher.clone());
+    assert_eq!(worker.run_once("fcm").await.unwrap(), 1);
+
+    let batches = dispatcher.batches().await;
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].jobs.len(), 1);
+    assert_eq!(batches[0].jobs[0].device_id.as_deref(), Some("device-1"));
+    let delivery_lag = queue
+        .lag(PushQueueStage::DeliveryJobs(PushProviderKind::Fcm))
+        .await
+        .unwrap();
+    assert_eq!(delivery_lag.ready_depth, 0);
+    assert_eq!(delivery_lag.delayed_depth, 1);
+    assert_eq!(
+        queue
+            .lag(PushQueueStage::DeliveryResults)
+            .await
+            .unwrap()
+            .ready_depth,
+        1
+    );
 }
 
 #[test]

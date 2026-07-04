@@ -380,6 +380,17 @@ macro_rules! impl_common_sql_traits {
         #[async_trait]
         impl PushIdempotencyStore for $store {
             async fn put_idempotency_record_if_absent(&self, record: IdempotencyRecord) -> PushStorageResult<bool> {
+                let prune = sql_query(format!(
+                    "DELETE FROM push_idempotency WHERE app_id = {0} AND idempotency_key = {0} AND expires_at_ms >= 1000000000000 AND expires_at_ms <= {0}",
+                    $bind
+                ), $postgres);
+                sqlx::query(sqlx::AssertSqlSafe(prune.as_str()))
+                    .bind(&record.app_id)
+                    .bind(&record.key)
+                    .bind(now_ms_i64())
+                    .execute(&self.$pool)
+                    .await
+                    .map_err(sql_error)?;
                 let q = sql_query(format!(
                     "INSERT INTO push_idempotency (app_id, idempotency_key, publish_id, expires_at_ms, created_at_ms) VALUES ({0}, {0}, {0}, {0}, {0}) {1}",
                     $bind, ignore_conflict_clause($postgres)
@@ -397,10 +408,11 @@ macro_rules! impl_common_sql_traits {
             }
 
             async fn get_idempotency_record(&self, app_id: &str, key: &str) -> PushStorageResult<Option<IdempotencyRecord>> {
-                let q = sql_query(format!("SELECT app_id, idempotency_key, publish_id, expires_at_ms FROM push_idempotency WHERE app_id = {0} AND idempotency_key = {0}", $bind), $postgres);
+                let q = sql_query(format!("SELECT app_id, idempotency_key, publish_id, expires_at_ms FROM push_idempotency WHERE app_id = {0} AND idempotency_key = {0} AND (expires_at_ms < 1000000000000 OR expires_at_ms > {0})", $bind), $postgres);
                 sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(app_id)
                     .bind(key)
+                    .bind(now_ms_i64())
                     .fetch_optional(&self.$pool)
                     .await
                     .map_err(sql_error)?

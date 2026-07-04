@@ -978,7 +978,9 @@ mod tests {
     use crate::memory::MemoryPushStore;
     use crate::planner::{PushPlanner, PushShardWorker};
     use crate::retry::{PushRetryScheduler, RetryPolicy};
-    use crate::storage::{PushDeviceStore, PushPublishStatusStore, PushSubscriptionStore};
+    use crate::storage::{
+        PushDeviceStore, PushFanoutShardStore, PushPublishStatusStore, PushSubscriptionStore,
+    };
 
     use super::*;
 
@@ -1170,6 +1172,124 @@ mod tests {
                 .unwrap()
                 .ready_depth,
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn planner_fast_path_copies_delivery_timing_fields() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .upsert_device(sample_device("device-1"))
+            .await
+            .unwrap();
+        let mut intent = sample_intent(vec![PublishTarget::Device {
+            device_id: "device-1".to_owned(),
+        }]);
+        intent.not_before_ms = Some(0);
+        intent.expires_at_ms = Some(123_456);
+        let pipeline = PushPipeline::new(store.clone(), queue.clone(), FanoutConfig::default());
+        pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent,
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+
+        let planner = PushPlanner::new(store, queue.clone(), FanoutConfig::default());
+        assert_eq!(planner.run_once("planner").await.unwrap(), 1);
+        let message = queue
+            .consume(
+                PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                "delivery",
+                1,
+                30_000,
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(message.not_before_ms, Some(0));
+        let PushQueuePayload::DeliveryBatch(batch) = message.payload else {
+            panic!("expected delivery batch");
+        };
+        assert_eq!(batch.jobs[0].not_before_ms, Some(0));
+        assert_eq!(batch.jobs[0].expires_at_ms, Some(123_456));
+    }
+
+    #[tokio::test]
+    async fn shard_path_copies_timing_into_shard_and_delivery_jobs() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        for index in 0..2 {
+            let device = sample_device(&format!("device-{index}"));
+            store.upsert_device(device.clone()).await.unwrap();
+            store
+                .upsert_subscription(ChannelSubscription::from_device("room", &device))
+                .await
+                .unwrap();
+        }
+        let config = FanoutConfig {
+            fast_threshold: 1,
+            shard_size: 10,
+            page_size: 10,
+            provider_batch_size: 10,
+            status_retention_days: 30,
+        };
+        let mut intent = sample_intent(vec![PublishTarget::Channel {
+            channel: "room".to_owned(),
+        }]);
+        intent.not_before_ms = Some(0);
+        intent.expires_at_ms = Some(123_456);
+        let pipeline = PushPipeline::new(store.clone(), queue.clone(), config.clone());
+        pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent,
+                    expected_recipients: 2,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+
+        let planner = PushPlanner::new(store.clone(), queue.clone(), config.clone());
+        assert_eq!(planner.run_once("planner").await.unwrap(), 1);
+        let shard = store
+            .get_fanout_shard("app-1", "publish-1", "shard-0")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(shard.not_before_ms, Some(0));
+        assert_eq!(shard.expires_at_ms, Some(123_456));
+
+        let worker = PushShardWorker::new(store, queue.clone(), config);
+        assert_eq!(worker.run_once("shards").await.unwrap(), 1);
+        let message = queue
+            .consume(
+                PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                "delivery",
+                1,
+                30_000,
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let PushQueuePayload::DeliveryBatch(batch) = message.payload else {
+            panic!("expected delivery batch");
+        };
+        assert_eq!(batch.jobs.len(), 2);
+        assert!(batch.jobs.iter().all(|job| job.not_before_ms == Some(0)));
+        assert!(
+            batch
+                .jobs
+                .iter()
+                .all(|job| job.expires_at_ms == Some(123_456))
         );
     }
 
@@ -1427,7 +1547,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_expiry_before_retry_marks_publish_expired() {
+    async fn publish_expiry_before_dispatch_marks_publish_expired() {
         let store = Arc::new(MemoryPushStore::new());
         let queue = Arc::new(MemoryPushQueue::new());
         store
@@ -1460,8 +1580,14 @@ mod tests {
         let feedback = PushFeedbackProcessor::new(store.clone(), queue.clone());
         assert_eq!(feedback.run_once("feedback").await.unwrap(), 1);
 
-        let retry_scheduler = PushRetryScheduler::new(store.clone(), queue.clone(), "node-a");
-        assert_eq!(retry_scheduler.run_once("retry").await.unwrap(), 1);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::RetrySchedule)
+                .await
+                .unwrap()
+                .ready_depth,
+            0
+        );
         let status = store
             .get_publish_status("app-1", "publish-1")
             .await

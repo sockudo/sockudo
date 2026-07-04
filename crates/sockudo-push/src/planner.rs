@@ -85,6 +85,12 @@ impl PushPlanner {
             .await?
         {
             status.state = state;
+            if state == PublishLifecycleState::Dispatching {
+                status.retry_after_ms = event
+                    .intent
+                    .not_before_ms
+                    .filter(|not_before_ms| *not_before_ms > crate::pipeline::now_ms());
+            }
             self.store.put_publish_status(status).await?;
         }
         Ok(())
@@ -96,6 +102,7 @@ impl PushPlanner {
             event.publish_id.clone(),
             "fast".to_owned(),
             self.config.provider_batch_size,
+            event.intent.not_before_ms,
             event.intent.expires_at_ms,
             self.metrics.clone(),
         );
@@ -123,6 +130,7 @@ impl PushPlanner {
                         shard_id: dedupe_key(format!("shard-{index}"), &mut ids),
                         target: target.clone(),
                         payload: event.intent.payload.clone(),
+                        not_before_ms: event.intent.not_before_ms,
                         expires_at_ms: event.intent.expires_at_ms,
                         cursor: None,
                         page_size: self.config.page_size,
@@ -146,6 +154,7 @@ impl PushPlanner {
                         event.publish_id.clone(),
                         format!("direct-{index}"),
                         self.config.provider_batch_size,
+                        event.intent.not_before_ms,
                         event.intent.expires_at_ms,
                         self.metrics.clone(),
                     );
@@ -256,7 +265,7 @@ impl PushPlanner {
                             payload: Arc::clone(&payload),
                             attempt: 1,
                             first_attempt_at_ms: None,
-                            not_before_ms: None,
+                            not_before_ms: batcher.not_before_ms,
                             expires_at_ms: batcher.expires_at_ms,
                         },
                         &self.queue,
@@ -333,6 +342,7 @@ impl PushShardWorker {
             shard.publish_id.clone(),
             shard.shard_id.clone(),
             self.config.provider_batch_size,
+            shard.not_before_ms,
             shard.expires_at_ms,
             self.metrics.clone(),
         );
@@ -439,6 +449,7 @@ struct ProviderBatcher {
     publish_id: String,
     batch_prefix: String,
     max_batch_size: usize,
+    not_before_ms: Option<u64>,
     expires_at_ms: Option<u64>,
     batches: BTreeMap<PushProviderKind, Vec<DeliveryJob>>,
     batch_indexes: BTreeMap<PushProviderKind, u64>,
@@ -453,6 +464,7 @@ impl ProviderBatcher {
         publish_id: String,
         batch_prefix: String,
         max_batch_size: usize,
+        not_before_ms: Option<u64>,
         expires_at_ms: Option<u64>,
         metrics: PushMetrics,
     ) -> Self {
@@ -461,6 +473,7 @@ impl ProviderBatcher {
             publish_id,
             batch_prefix,
             max_batch_size,
+            not_before_ms,
             expires_at_ms,
             batches: BTreeMap::new(),
             batch_indexes: BTreeMap::new(),
@@ -489,7 +502,7 @@ impl ProviderBatcher {
                 payload,
                 attempt: 1,
                 first_attempt_at_ms: None,
-                not_before_ms: None,
+                not_before_ms: self.not_before_ms,
                 expires_at_ms: self.expires_at_ms,
             },
             queue,
@@ -553,13 +566,22 @@ impl ProviderBatcher {
             batch_id,
             jobs,
         };
-        queue
-            .produce(
-                PushQueueStage::DeliveryJobs(provider),
-                batch.queue_key(),
-                PushQueuePayload::DeliveryBatch(Box::new(batch)),
-            )
-            .await?;
+        let key = batch.queue_key();
+        let payload = PushQueuePayload::DeliveryBatch(Box::new(batch));
+        if let Some(not_before_ms) = self.not_before_ms {
+            queue
+                .retry_at(
+                    PushQueueStage::DeliveryJobs(provider),
+                    key,
+                    payload,
+                    not_before_ms,
+                )
+                .await?;
+        } else {
+            queue
+                .produce(PushQueueStage::DeliveryJobs(provider), key, payload)
+                .await?;
+        }
         self.metrics
             .delivery_jobs_emitted(provider, &self.app_id, jobs_len as u64);
         self.emitted_batches += 1;
