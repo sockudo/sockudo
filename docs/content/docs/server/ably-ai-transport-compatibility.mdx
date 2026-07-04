@@ -22,8 +22,8 @@ against Sockudo and the scorecard records that evidence.
 
 | Surface | Status | Scope |
 | --- | --- | --- |
-| Ably Realtime WebSocket JSON protocol | Supported for AI Transport only | Root WebSocket endpoint accepts Ably JSON `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows needed by the smoke harness. |
-| Ably REST time/token/history/message reads | Supported for AI Transport only | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. |
+| Ably Realtime WebSocket JSON/MsgPack protocol | Supported for AI Transport only | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows needed by the smoke harness in JSON and MsgPack modes. |
+| Ably REST time/token/history/message reads and publish | Supported for AI Transport only | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. REST publish/history is covered in JSON and MsgPack discovery lanes. |
 | Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
 | Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
 | Mutable output streaming | Supported for AI Transport only | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
@@ -32,7 +32,7 @@ against Sockudo and the scorecard records that evidence.
 | Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes, but Ably mode capability enforcement is not complete. Sockudo app auth remains authoritative. |
 | LiveObjects/object modes | Intentionally out of scope | The current compatibility target does not implement Ably LiveObjects. |
 | Ably Push | Intentionally out of scope | Sockudo has native push APIs, but Ably Push compatibility is not part of this target. |
-| Binary MsgPack Ably protocol | Not yet implemented | The documented harness sets `useBinaryProtocol: false`. |
+| Binary MsgPack Ably protocol | Supported for AI Transport only | Realtime Pub/Sub and REST publish/history/time pass the stock `ably@2.23.0` discovery lanes with `useBinaryProtocol: true`. |
 | Full Ably platform API parity | Intentionally out of scope | This surface is for AI Transport compatibility, not a replacement for all Ably services. |
 
 ## Test Commands
@@ -50,6 +50,7 @@ Then run the compatibility lanes:
 
 ```bash
 make ably-compat-test
+make ably-protocol-discovery
 make ably-ai-transport-test
 make ably-ai-demo
 ```

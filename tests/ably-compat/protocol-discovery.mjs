@@ -222,6 +222,15 @@ const scenarios = [
     run: () => restPublishHistory({ binary: false }),
   },
   {
+    id: 'node-rest-msgpack-publish-history',
+    required: false,
+    protocol: 'msgpack',
+    runtime: 'node',
+    area: 'rest',
+    claim: 'broader Ably protocol discovery',
+    run: () => restPublishHistory({ binary: true }),
+  },
+  {
     id: 'node-realtime-json-presence',
     required: false,
     protocol: 'json',
@@ -264,7 +273,7 @@ const scenarios = [
     runtime: 'chromium',
     area: 'realtime',
     claim: 'broader Ably protocol discovery',
-    skip: 'browser runner is not wired yet; add Playwright once Node gaps are stable',
+    skip: 'browser runner needs explicit Playwright/Chromium dependency and CI setup',
   },
 ];
 

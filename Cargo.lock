@@ -7877,6 +7877,7 @@ dependencies = [
  "jsonwebtoken",
  "num_cpus",
  "redis",
+ "rmp-serde",
  "rustls",
  "scylla",
  "serde",

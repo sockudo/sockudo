@@ -1,8 +1,9 @@
 use super::SockudoServer;
 #[cfg(feature = "ably-compat")]
 use crate::http_handler::{
-    ably_channel_history, ably_channel_message, ably_channel_message_versions, ably_channel_status,
-    ably_request_token, ably_time, handle_ably_realtime_upgrade,
+    ably_channel_history, ably_channel_message, ably_channel_message_versions,
+    ably_channel_publish, ably_channel_status, ably_request_token, ably_time,
+    handle_ably_realtime_upgrade,
 };
 use crate::http_handler::{
     append_message, batch_events, channel, channel_history, channel_history_purge,
@@ -379,7 +380,7 @@ impl SockudoServer {
                 .route("/channels/{channelName}", get(ably_channel_status))
                 .route(
                     "/channels/{channelName}/messages",
-                    get(ably_channel_history),
+                    get(ably_channel_history).post(ably_channel_publish),
                 )
                 .route(
                     "/channels/{channelName}/messages/{messageSerial}",

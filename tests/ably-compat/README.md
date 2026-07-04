@@ -58,9 +58,9 @@ publishes, receives the same message, reads history, and detaches.
 `npm run protocol:discovery` probes a broader stock `ably` SDK surface and emits
 a machine-readable scorecard. The required lane is the JSON Realtime Pub/Sub
 baseline already covered by the compatibility claim. Optional lanes currently
-cover REST time, REST publish/history, Realtime presence, token requests,
-MsgPack, and a browser placeholder. Optional failures are reported as gaps
-unless `ABLY_PROTOCOL_STRICT=1` is set.
+cover REST time, REST publish/history in JSON and MsgPack, Realtime presence,
+token requests, Realtime MsgPack Pub/Sub, and a browser placeholder. Optional
+failures are reported as gaps unless `ABLY_PROTOCOL_STRICT=1` is set.
 
 `npm run pubsub:chat` verifies plain Ably Pub/Sub chat behavior with two
 separate stock Ably Realtime clients on a normal `chat:` channel. Alice publishes,
