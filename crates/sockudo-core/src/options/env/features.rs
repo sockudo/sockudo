@@ -57,6 +57,31 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "PUSH_PUBLISH_STATUS_TTL_DAYS",
         options.push.publish_status_ttl_days,
     );
+    options.push.retry.max_attempts =
+        parse_env::<u32>("PUSH_RETRY_MAX_ATTEMPTS", options.push.retry.max_attempts);
+    options.push.retry.initial_backoff_ms = parse_env::<u64>(
+        "PUSH_RETRY_INITIAL_BACKOFF_MS",
+        options.push.retry.initial_backoff_ms,
+    );
+    options.push.retry.max_backoff_ms = parse_env::<u64>(
+        "PUSH_RETRY_MAX_BACKOFF_MS",
+        options.push.retry.max_backoff_ms,
+    );
+    options.push.retry.max_elapsed_secs = parse_env::<u64>(
+        "PUSH_RETRY_MAX_ELAPSED_SECS",
+        options.push.retry.max_elapsed_secs,
+    );
+    options.push.retry.jitter = parse_bool_env("PUSH_RETRY_JITTER", options.push.retry.jitter);
+    options.push.retry.jitter_ratio_percent = parse_env::<u8>(
+        "PUSH_RETRY_JITTER_RATIO_PERCENT",
+        options.push.retry.jitter_ratio_percent,
+    );
+    options.push.retry.respect_retry_after = parse_bool_env(
+        "PUSH_RETRY_RESPECT_RETRY_AFTER",
+        options.push.retry.respect_retry_after,
+    );
+    options.push.retry_worker_count =
+        parse_env::<u32>("PUSH_RETRY_WORKER_COUNT", options.push.retry_worker_count);
     options.push.circuit_breaker.failure_threshold = parse_env::<u32>(
         "PUSH_FAILURE_THRESHOLD",
         options.push.circuit_breaker.failure_threshold,

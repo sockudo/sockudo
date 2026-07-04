@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod planner;
 pub mod ratelimit;
 pub mod registry;
+pub mod retry;
 pub mod rules;
 pub mod scheduler;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -55,19 +56,21 @@ pub use dispatch::{
 pub use domain::{
     ChannelSubscription, DEFAULT_PUSH_FANOUT_FAST_THRESHOLD, DEFAULT_PUSH_FANOUT_PAGE_SIZE,
     DEFAULT_PUSH_FANOUT_SHARD_SIZE, DEFAULT_PUSH_PROVIDER_BATCH_SIZE,
-    DEFAULT_PUSH_STATUS_RETENTION_DAYS, DEVICE_IDENTITY_TOKEN_BYTES,
-    DEVICE_SECRET_PBKDF2_ITERATIONS, DeadLetter, DeleteDeviceOutcome, DeliveryBatch, DeliveryEvent,
-    DeliveryJob, DeliveryOutcome, DeliveryResult, DeviceDetails, DevicePushDetails,
-    DevicePushState, EncryptedSecret, FanoutConfig, FanoutRegime, FormFactor, MAX_APP_ID_BYTES,
-    MAX_CURSOR_BYTES, MAX_METADATA_BYTES, MAX_PROVIDER_OVERRIDE_BYTES, MAX_PUSH_BODY_BYTES,
-    MAX_PUSH_ICON_BYTES, MAX_PUSH_TARGETS, MAX_PUSH_TITLE_BYTES, MAX_RENDERED_TEMPLATE_BYTES,
-    MAX_TEMPLATE_DATA_BYTES, NotificationTemplate, Platform, ProviderCredential,
-    ProviderCredentialMaterial, ProviderError, ProviderOverridePayload, PublishCounters,
-    PublishIntent, PublishLifecycleState, PublishLogEvent, PublishStatus, PublishTarget,
-    PushCursor, PushCursorKind, PushDomainError, PushPayload, PushProviderKind, PushRecipient,
-    RetryScheduleEntry, SecretString, ShardJob, ShardJobStatus, TemplateContent, TokenBucketPolicy,
-    generate_device_identity_token, hash_device_identity_token, is_hashed_device_secret,
-    stable_hash, verify_device_identity_token,
+    DEFAULT_PUSH_RETRY_INITIAL_BACKOFF_MS, DEFAULT_PUSH_RETRY_JITTER_RATIO_PERCENT,
+    DEFAULT_PUSH_RETRY_MAX_AGE_MS, DEFAULT_PUSH_RETRY_MAX_ATTEMPTS,
+    DEFAULT_PUSH_RETRY_MAX_BACKOFF_MS, DEFAULT_PUSH_STATUS_RETENTION_DAYS,
+    DEVICE_IDENTITY_TOKEN_BYTES, DEVICE_SECRET_PBKDF2_ITERATIONS, DeadLetter, DeleteDeviceOutcome,
+    DeliveryBatch, DeliveryEvent, DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult,
+    DeviceDetails, DevicePushDetails, DevicePushState, EncryptedSecret, FanoutConfig, FanoutRegime,
+    FormFactor, MAX_APP_ID_BYTES, MAX_CURSOR_BYTES, MAX_METADATA_BYTES,
+    MAX_PROVIDER_OVERRIDE_BYTES, MAX_PUSH_BODY_BYTES, MAX_PUSH_ICON_BYTES, MAX_PUSH_TARGETS,
+    MAX_PUSH_TITLE_BYTES, MAX_RENDERED_TEMPLATE_BYTES, MAX_TEMPLATE_DATA_BYTES,
+    NotificationTemplate, Platform, ProviderCredential, ProviderCredentialMaterial, ProviderError,
+    ProviderOverridePayload, PublishCounters, PublishIntent, PublishLifecycleState,
+    PublishLogEvent, PublishStatus, PublishTarget, PushCursor, PushCursorKind, PushDomainError,
+    PushPayload, PushProviderKind, PushRecipient, RetryScheduleEntry, SecretString, ShardJob,
+    ShardJobStatus, TemplateContent, TokenBucketPolicy, generate_device_identity_token,
+    hash_device_identity_token, is_hashed_device_secret, stable_hash, verify_device_identity_token,
 };
 pub use feedback::{PushFeedbackProcessor, device_is_terminally_failed};
 pub use memory::MemoryPushStore;
@@ -93,6 +96,7 @@ pub use pipeline::{
     publish_uid_key,
 };
 pub use planner::{PushPlanner, PushShardWorker};
+pub use retry::{PushRetryScheduler, RetryPolicy};
 pub use rules::{
     ChannelPushRule, PushRuleError, PushRulePayloadMapping, any_rule_matches, matching_rule_indices,
 };

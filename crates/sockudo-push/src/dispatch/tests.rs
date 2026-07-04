@@ -175,6 +175,37 @@ fn classifies_provider_error_classes_and_retry_after() {
 }
 
 #[test]
+fn provider_outage_responses_are_retryable() {
+    let fcm = classify_fcm_response(&ProviderHttpResponse {
+        status: 429,
+        headers: BTreeMap::from([("retry-after".to_owned(), "3".to_owned())]),
+        body: br#"{"error":{"status":"RESOURCE_EXHAUSTED"}}"#.to_vec(),
+    });
+    assert_eq!(fcm.0, DeliveryOutcome::Retryable);
+    assert_eq!(fcm.1.as_ref().unwrap().class, "quota");
+    assert!(fcm.1.as_ref().unwrap().retry_after_ms.is_some());
+
+    for status in [429, 500] {
+        let apns = classify_apns_response(&response(status, json!({"reason": "TooManyRequests"})));
+        assert_eq!(apns.0, DeliveryOutcome::Retryable, "apns {status}");
+    }
+    for status in [429, 503] {
+        let webpush = classify_webpush_response(&response(status, json!({})));
+        assert_eq!(webpush.0, DeliveryOutcome::Retryable, "webpush {status}");
+    }
+
+    let mut batch = batch(PushProviderKind::Fcm);
+    let job = batch.jobs.remove(0);
+    let timeout = classify_http_result(
+        job,
+        Err("transport timeout".to_owned()),
+        classify_fcm_response,
+    );
+    assert_eq!(timeout.outcome, DeliveryOutcome::Retryable);
+    assert_eq!(timeout.error.unwrap().class, "unavailable");
+}
+
+#[test]
 fn adaptive_rate_limiter_shrinks_and_grows_slowly() {
     let mut limiter = AdaptiveRateLimiter::default();
     assert_eq!(limiter.limit("app-1", PushProviderKind::Fcm), 100);
@@ -345,6 +376,7 @@ fn batch(provider: PushProviderKind) -> DeliveryBatch {
                 collapse_key: Some("collapse".to_owned()),
             }),
             attempt: 1,
+            first_attempt_at_ms: None,
             not_before_ms: None,
             expires_at_ms: None,
         }],

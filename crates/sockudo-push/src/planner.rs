@@ -96,6 +96,7 @@ impl PushPlanner {
             event.publish_id.clone(),
             "fast".to_owned(),
             self.config.provider_batch_size,
+            event.intent.expires_at_ms,
             self.metrics.clone(),
         );
         let payload = Arc::new(event.intent.payload.clone());
@@ -122,6 +123,7 @@ impl PushPlanner {
                         shard_id: dedupe_key(format!("shard-{index}"), &mut ids),
                         target: target.clone(),
                         payload: event.intent.payload.clone(),
+                        expires_at_ms: event.intent.expires_at_ms,
                         cursor: None,
                         page_size: self.config.page_size,
                         shard_size: self.config.shard_size,
@@ -144,6 +146,7 @@ impl PushPlanner {
                         event.publish_id.clone(),
                         format!("direct-{index}"),
                         self.config.provider_batch_size,
+                        event.intent.expires_at_ms,
                         self.metrics.clone(),
                     );
                     self.stream_target(
@@ -252,8 +255,9 @@ impl PushPlanner {
                             recipient: recipient.clone(),
                             payload: Arc::clone(&payload),
                             attempt: 1,
+                            first_attempt_at_ms: None,
                             not_before_ms: None,
-                            expires_at_ms: None,
+                            expires_at_ms: batcher.expires_at_ms,
                         },
                         &self.queue,
                     )
@@ -329,6 +333,7 @@ impl PushShardWorker {
             shard.publish_id.clone(),
             shard.shard_id.clone(),
             self.config.provider_batch_size,
+            shard.expires_at_ms,
             self.metrics.clone(),
         );
         let next_cursor = self.stream_shard(&shard, &mut batcher).await?;
@@ -434,6 +439,7 @@ struct ProviderBatcher {
     publish_id: String,
     batch_prefix: String,
     max_batch_size: usize,
+    expires_at_ms: Option<u64>,
     batches: BTreeMap<PushProviderKind, Vec<DeliveryJob>>,
     batch_indexes: BTreeMap<PushProviderKind, u64>,
     emitted_recipients: u64,
@@ -447,6 +453,7 @@ impl ProviderBatcher {
         publish_id: String,
         batch_prefix: String,
         max_batch_size: usize,
+        expires_at_ms: Option<u64>,
         metrics: PushMetrics,
     ) -> Self {
         Self {
@@ -454,6 +461,7 @@ impl ProviderBatcher {
             publish_id,
             batch_prefix,
             max_batch_size,
+            expires_at_ms,
             batches: BTreeMap::new(),
             batch_indexes: BTreeMap::new(),
             emitted_recipients: 0,
@@ -480,8 +488,9 @@ impl ProviderBatcher {
                 recipient: device.push.recipient,
                 payload,
                 attempt: 1,
+                first_attempt_at_ms: None,
                 not_before_ms: None,
-                expires_at_ms: None,
+                expires_at_ms: self.expires_at_ms,
             },
             queue,
         )

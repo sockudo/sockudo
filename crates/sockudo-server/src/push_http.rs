@@ -130,6 +130,7 @@ fn publish_state_label(state: PublishLifecycleState) -> &'static str {
         PublishLifecycleState::Failed => "failed",
         PublishLifecycleState::QuotaExceeded => "quota_exceeded",
         PublishLifecycleState::Expired => "expired",
+        PublishLifecycleState::DeadLettered => "dead_lettered",
     }
 }
 
@@ -1043,6 +1044,9 @@ async fn accept_publish_inner(
                 succeeded: 0,
                 failed: 0,
                 expired: 0,
+                retry_scheduled: 0,
+                retry_attempted: 0,
+                dead_lettered: 0,
             },
             fanout_regime: Some(fanout_regime),
             retry_after_ms: None,

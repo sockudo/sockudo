@@ -324,6 +324,65 @@
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "id": 106,
+      "panels": [],
+      "title": "Retries And Dead Letters",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 46 },
+      "id": 15,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,app) (rate(sockudo_push_retry_scheduled_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{app}} scheduled",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,app) (rate(sockudo_push_retry_attempted_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{app}} attempted",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,app) (rate(sockudo_push_retry_deferred_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{app}} deferred",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,app) (rate(sockudo_push_retry_expired_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{app}} expired",
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,app) (rate(sockudo_push_retry_dead_lettered_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{app}} dead-lettered",
+          "refId": "E"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,reason) (rate(sockudo_push_retry_malformed_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} {{reason}} malformed",
+          "refId": "F"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (provider,app) (sockudo_push_retry_deferred_delay_seconds{provider=~\"$provider\",app=~\"$app\"})",
+          "legendFormat": "{{provider}} {{app}} defer seconds",
+          "refId": "G"
+        }
+      ],
+      "title": "Retry Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 },
       "id": 105,
       "panels": [],
       "title": "Scheduling And Provider Capacity",
@@ -331,7 +390,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
       "id": 13,
       "targets": [
         {
@@ -364,7 +423,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
       "id": 14,
       "targets": [
         {

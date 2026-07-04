@@ -33,6 +33,11 @@ pub const DEFAULT_PUSH_FANOUT_SHARD_SIZE: u64 = 100_000;
 pub const DEFAULT_PUSH_FANOUT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_PUSH_PROVIDER_BATCH_SIZE: usize = 500;
 pub const DEFAULT_PUSH_STATUS_RETENTION_DAYS: u64 = 30;
+pub const DEFAULT_PUSH_RETRY_INITIAL_BACKOFF_MS: u64 = 1_000;
+pub const DEFAULT_PUSH_RETRY_MAX_BACKOFF_MS: u64 = 60_000;
+pub const DEFAULT_PUSH_RETRY_MAX_ATTEMPTS: u32 = 5;
+pub const DEFAULT_PUSH_RETRY_MAX_AGE_MS: u64 = 86_400_000;
+pub const DEFAULT_PUSH_RETRY_JITTER_RATIO_PERCENT: u8 = 20;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PushDomainError {
@@ -923,6 +928,8 @@ pub enum PublishLifecycleState {
     Cancelled,
     Expired,
     Failed,
+    #[serde(rename = "dead_lettered")]
+    DeadLettered,
     Succeeded,
     PartiallySucceeded,
 }
@@ -996,6 +1003,12 @@ pub struct PublishCounters {
     pub succeeded: u64,
     pub failed: u64,
     pub expired: u64,
+    #[serde(default)]
+    pub retry_scheduled: u64,
+    #[serde(default)]
+    pub retry_attempted: u64,
+    #[serde(default)]
+    pub dead_lettered: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1052,6 +1065,8 @@ pub struct ShardJob {
     pub target: PublishTarget,
     pub payload: PushPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<PushCursor>,
     pub page_size: usize,
     pub shard_size: u64,
@@ -1079,6 +1094,8 @@ pub struct DeliveryJob {
     #[serde(with = "arc_push_payload")]
     pub payload: Arc<PushPayload>,
     pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_attempt_at_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_before_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1129,6 +1146,7 @@ impl fmt::Debug for DeliveryJob {
             .field("recipient", &self.recipient)
             .field("payload", &self.payload)
             .field("attempt", &self.attempt)
+            .field("first_attempt_at_ms", &self.first_attempt_at_ms)
             .field("not_before_ms", &self.not_before_ms)
             .field("expires_at_ms", &self.expires_at_ms)
             .finish()
@@ -1218,6 +1236,39 @@ pub struct DeliveryResult {
     pub attempt: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryFeedback {
+    pub result: DeliveryResult,
+    pub delivery_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_job: Option<Box<DeliveryJob>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_attempt_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+impl DeliveryFeedback {
+    pub fn from_result(result: DeliveryResult) -> Self {
+        let delivery_key = format!(
+            "{}:{}:{}:{}:{}",
+            result.app_id,
+            result.publish_id,
+            provider_key(result.provider),
+            result.batch_id,
+            result.device_id.as_deref().unwrap_or("[provider-target]")
+        );
+        Self {
+            result,
+            delivery_key,
+            retry_job: None,
+            first_attempt_at_ms: None,
+            expires_at_ms: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliveryEvent {
@@ -1239,15 +1290,67 @@ pub struct DeadLetter {
     pub occurred_at_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetryScheduleEntry {
     pub app_id: String,
     pub publish_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PushProviderKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<Box<DeliveryJob>>,
+    #[serde(default = "default_retry_attempt")]
+    pub attempt: u32,
+    #[serde(default)]
+    pub first_attempt_at_ms: u64,
+    #[serde(default)]
+    pub next_attempt_at_ms: u64,
+    #[serde(default = "default_retry_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default)]
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<ProviderError>,
+    #[serde(default)]
+    pub retry_idempotency_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub stage: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key: String,
-    pub not_before_ms: u64,
-    pub payload: sonic_rs::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<sonic_rs::Value>,
+}
+
+impl fmt::Debug for RetryScheduleEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RetryScheduleEntry")
+            .field("app_id", &self.app_id)
+            .field("publish_id", &self.publish_id)
+            .field("provider", &self.provider)
+            .field("job", &self.job)
+            .field("attempt", &self.attempt)
+            .field("first_attempt_at_ms", &self.first_attempt_at_ms)
+            .field("next_attempt_at_ms", &self.next_attempt_at_ms)
+            .field("max_attempts", &self.max_attempts)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .field("last_error", &self.last_error)
+            .field("retry_idempotency_key", &self.retry_idempotency_key)
+            .field("stage", &self.stage)
+            .field("key", &self.key)
+            .field("not_before_ms", &self.not_before_ms)
+            .field("payload", &self.payload.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+fn default_retry_attempt() -> u32 {
+    1
+}
+
+fn default_retry_max_attempts() -> u32 {
+    DEFAULT_PUSH_RETRY_MAX_ATTEMPTS
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

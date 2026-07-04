@@ -187,6 +187,7 @@ planner_worker_count = 1
 shard_worker_count = 1
 dispatch_worker_count = 1
 feedback_worker_count = 1
+retry_worker_count = 1
 queue_partition_count = 1
 channel_shard_count = 1
 fanout_fast_threshold = 10000
@@ -206,6 +207,7 @@ initial_backoff_ms = 1000
 max_backoff_ms = 60000
 max_elapsed_secs = 86400
 jitter = true
+jitter_ratio_percent = 20
 respect_retry_after = true
 
 [push.circuit_breaker]

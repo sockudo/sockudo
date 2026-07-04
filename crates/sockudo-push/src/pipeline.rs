@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::domain::{
-    DeadLetter, DeliveryBatch, DeliveryResult, FanoutConfig, FanoutRegime, PublishCounters,
-    PublishIntent, PublishLifecycleState, PublishLogEvent, PublishStatus, PushDomainError,
-    RetryScheduleEntry, provider_key, stable_hash,
+    DeadLetter, DeliveryBatch, DeliveryFeedback, DeliveryResult, FanoutConfig, FanoutRegime,
+    PublishCounters, PublishIntent, PublishLifecycleState, PublishLogEvent, PublishStatus,
+    PushDomainError, RetryScheduleEntry, provider_key, stable_hash,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
@@ -38,6 +38,7 @@ pub enum PushQueuePayload {
     ShardJob(Box<crate::domain::ShardJob>),
     DeliveryBatch(Box<DeliveryBatch>),
     DeliveryResult(Box<DeliveryResult>),
+    DeliveryFeedback(Box<DeliveryFeedback>),
     DeadLetter(Box<DeadLetter>),
     RetrySchedule(Box<RetryScheduleEntry>),
 }
@@ -214,6 +215,9 @@ fn partition_key_for_payload(stage: PushQueueStage, payload: &PushQueuePayload) 
         (PushQueueStage::DeliveryResults, PushQueuePayload::DeliveryResult(result)) => {
             result.app_id.clone()
         }
+        (PushQueueStage::DeliveryResults, PushQueuePayload::DeliveryFeedback(feedback)) => {
+            feedback.result.app_id.clone()
+        }
         (PushQueueStage::RetrySchedule, PushQueuePayload::RetrySchedule(entry)) => {
             entry.app_id.clone()
         }
@@ -230,6 +234,7 @@ fn payload_app_id(payload: &PushQueuePayload) -> Option<String> {
         PushQueuePayload::ShardJob(job) => Some(job.app_id.clone()),
         PushQueuePayload::DeliveryBatch(batch) => Some(batch.app_id.clone()),
         PushQueuePayload::DeliveryResult(result) => Some(result.app_id.clone()),
+        PushQueuePayload::DeliveryFeedback(feedback) => Some(feedback.result.app_id.clone()),
         PushQueuePayload::DeadLetter(dead_letter) => Some(dead_letter.app_id.clone()),
         PushQueuePayload::RetrySchedule(entry) => Some(entry.app_id.clone()),
     }
@@ -603,6 +608,10 @@ fn dead_letter_from_message(
         PushQueuePayload::DeliveryResult(result) => {
             (result.app_id.clone(), result.publish_id.clone())
         }
+        PushQueuePayload::DeliveryFeedback(feedback) => (
+            feedback.result.app_id.clone(),
+            feedback.result.publish_id.clone(),
+        ),
         PushQueuePayload::DeadLetter(dead_letter) => {
             (dead_letter.app_id.clone(), dead_letter.publish_id.clone())
         }
@@ -755,6 +764,9 @@ impl PushPipeline {
                 succeeded: 0,
                 failed: 0,
                 expired: 0,
+                retry_scheduled: 0,
+                retry_attempted: 0,
+                dead_lettered: 0,
             },
             fanout_regime: Some(fanout_regime),
             retry_after_ms: None,
@@ -956,7 +968,7 @@ mod tests {
 
     use sonic_rs::json;
 
-    use crate::dispatch::{AcceptAllDispatcher, ProviderDispatchWorker};
+    use crate::dispatch::{AcceptAllDispatcher, ProviderDispatchWorker, RetryAfterDispatcher};
     use crate::domain::{
         ChannelSubscription, DeviceDetails, DevicePushDetails, DevicePushState, FanoutConfig,
         FormFactor, Platform, PublishIntent, PublishLifecycleState, PublishTarget, PushPayload,
@@ -965,6 +977,7 @@ mod tests {
     use crate::feedback::PushFeedbackProcessor;
     use crate::memory::MemoryPushStore;
     use crate::planner::{PushPlanner, PushShardWorker};
+    use crate::retry::{PushRetryScheduler, RetryPolicy};
     use crate::storage::{PushDeviceStore, PushPublishStatusStore, PushSubscriptionStore};
 
     use super::*;
@@ -1279,6 +1292,183 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(device.push.state, DevicePushState::Active);
+    }
+
+    #[tokio::test]
+    async fn retryable_once_then_accepted_completes_publish() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .upsert_device(sample_device("device-1"))
+            .await
+            .unwrap();
+        let pipeline = PushPipeline::new(store.clone(), queue.clone(), FanoutConfig::default());
+        pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent: sample_intent(vec![PublishTarget::Device {
+                        device_id: "device-1".to_owned(),
+                    }]),
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        PushPlanner::new(store.clone(), queue.clone(), FanoutConfig::default())
+            .run_once("planner")
+            .await
+            .unwrap();
+
+        let retry_dispatcher = Arc::new(RetryAfterDispatcher::new(PushProviderKind::Fcm, now_ms()));
+        let mut retry_worker =
+            ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), retry_dispatcher);
+        assert_eq!(retry_worker.run_once("fcm").await.unwrap(), 1);
+        let feedback = PushFeedbackProcessor::new(store.clone(), queue.clone()).with_retry_policy(
+            RetryPolicy {
+                jitter_ratio_percent: 0,
+                ..RetryPolicy::default()
+            },
+        );
+        assert_eq!(feedback.run_once("feedback").await.unwrap(), 1);
+        assert_eq!(
+            store
+                .get_publish_status("app-1", "publish-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            PublishLifecycleState::Dispatching
+        );
+
+        let retry_scheduler = PushRetryScheduler::new(store.clone(), queue.clone(), "node-a");
+        assert_eq!(retry_scheduler.run_once("retry").await.unwrap(), 1);
+        let accept_dispatcher = Arc::new(AcceptAllDispatcher::new(PushProviderKind::Fcm));
+        let mut accept_worker =
+            ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), accept_dispatcher);
+        assert_eq!(accept_worker.run_once("fcm").await.unwrap(), 1);
+        assert_eq!(feedback.run_once("feedback").await.unwrap(), 1);
+
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.counters.dispatched, 1);
+        assert_eq!(status.counters.retry_scheduled, 1);
+        assert_eq!(status.counters.retry_attempted, 1);
+        assert_eq!(status.counters.succeeded, 1);
+        assert_eq!(status.state, PublishLifecycleState::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn retryable_until_attempts_exhausted_dead_letters_publish() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .upsert_device(sample_device("device-1"))
+            .await
+            .unwrap();
+        let pipeline = PushPipeline::new(store.clone(), queue.clone(), FanoutConfig::default());
+        pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent: sample_intent(vec![PublishTarget::Device {
+                        device_id: "device-1".to_owned(),
+                    }]),
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        PushPlanner::new(store.clone(), queue.clone(), FanoutConfig::default())
+            .run_once("planner")
+            .await
+            .unwrap();
+
+        let policy = RetryPolicy {
+            max_attempts: 2,
+            jitter_ratio_percent: 0,
+            ..RetryPolicy::default()
+        };
+        let feedback = PushFeedbackProcessor::new(store.clone(), queue.clone())
+            .with_retry_policy(policy.clone());
+        let dispatcher = Arc::new(RetryAfterDispatcher::new(PushProviderKind::Fcm, now_ms()));
+        let mut worker =
+            ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher);
+        assert_eq!(worker.run_once("fcm").await.unwrap(), 1);
+        assert_eq!(feedback.run_once("feedback").await.unwrap(), 1);
+
+        let retry_scheduler = PushRetryScheduler::new(store.clone(), queue.clone(), "node-a");
+        assert_eq!(retry_scheduler.run_once("retry").await.unwrap(), 1);
+        let dispatcher = Arc::new(RetryAfterDispatcher::new(PushProviderKind::Fcm, now_ms()));
+        let mut worker =
+            ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher);
+        assert_eq!(worker.run_once("fcm").await.unwrap(), 1);
+        assert_eq!(feedback.run_once("feedback").await.unwrap(), 1);
+        assert_eq!(retry_scheduler.run_once("retry").await.unwrap(), 1);
+
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.counters.dead_lettered, 1);
+        assert_eq!(status.state, PublishLifecycleState::DeadLettered);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::DeadLetters)
+                .await
+                .unwrap()
+                .ready_depth,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_expiry_before_retry_marks_publish_expired() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .upsert_device(sample_device("device-1"))
+            .await
+            .unwrap();
+        let pipeline = PushPipeline::new(store.clone(), queue.clone(), FanoutConfig::default());
+        let mut intent = sample_intent(vec![PublishTarget::Device {
+            device_id: "device-1".to_owned(),
+        }]);
+        intent.expires_at_ms = Some(11);
+        pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent,
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        PushPlanner::new(store.clone(), queue.clone(), FanoutConfig::default())
+            .run_once("planner")
+            .await
+            .unwrap();
+        let dispatcher = Arc::new(RetryAfterDispatcher::new(PushProviderKind::Fcm, now_ms()));
+        let mut worker =
+            ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher);
+        assert_eq!(worker.run_once("fcm").await.unwrap(), 1);
+        let feedback = PushFeedbackProcessor::new(store.clone(), queue.clone());
+        assert_eq!(feedback.run_once("feedback").await.unwrap(), 1);
+
+        let retry_scheduler = PushRetryScheduler::new(store.clone(), queue.clone(), "node-a");
+        assert_eq!(retry_scheduler.run_once("retry").await.unwrap(), 1);
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.counters.expired, 1);
+        assert_eq!(status.state, PublishLifecycleState::Expired);
     }
 
     fn sample_intent(targets: Vec<PublishTarget>) -> PublishIntent {
