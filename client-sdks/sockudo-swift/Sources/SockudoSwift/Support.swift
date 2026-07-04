@@ -90,7 +90,7 @@ public struct PresenceSnapshotParams: Sendable, Equatable {
 }
 
 // @unchecked Sendable: presenceEvent uses [String: AnyHashable] which is not Sendable;
-// safe — constructed from JSON decoding and only read on @MainActor.
+// safe — constructed from JSON decoding and only read on @SockudoActor.
 public struct PresenceHistoryItem: @unchecked Sendable, Equatable {
   public let streamID: String
   public let serial: Int64
@@ -186,7 +186,7 @@ public struct ChannelHistoryParams: Sendable, Equatable {
 }
 
 // @unchecked Sendable: items uses [[String: Any]] which is not Sendable;
-// safe — all let, constructed from JSON decoding, consumed on @MainActor.
+// safe — all let, constructed from JSON decoding, consumed on @SockudoActor.
 public final class ChannelHistoryPage: @unchecked Sendable {
   public let items: [[String: Any]]
   public let direction: String
@@ -257,7 +257,7 @@ public struct MessageVersionsParams: Sendable, Equatable {
 }
 
 // @unchecked Sendable: items uses [[String: Any]] which is not Sendable;
-// safe — all let, constructed from JSON decoding, consumed on @MainActor.
+// safe — all let, constructed from JSON decoding, consumed on @SockudoActor.
 public final class MessageVersionsPage: @unchecked Sendable {
   public let channel: String
   public let items: [[String: Any]]
@@ -301,7 +301,7 @@ public final class MessageVersionsPage: @unchecked Sendable {
 }
 
 // @unchecked Sendable: items uses [PresenceHistoryItem] whose presenceEvent is [String: AnyHashable];
-// safe — all let, constructed from JSON decoding, consumed on @MainActor.
+// safe — all let, constructed from JSON decoding, consumed on @SockudoActor.
 public final class PresenceHistoryPage: @unchecked Sendable {
   public let items: [PresenceHistoryItem]
   public let direction: String
@@ -444,9 +444,9 @@ enum QueryString {
   }
 }
 
-@MainActor final class EventDispatcher {
-  typealias EventCallback = (Any?, EventMetadata?) -> Void
-  typealias GlobalCallback = (String, Any?) -> Void
+@SockudoActor final class EventDispatcher {
+  typealias EventCallback = @SockudoActor (Any?, EventMetadata?) -> Void
+  typealias GlobalCallback = @SockudoActor (String, Any?) -> Void
 
   private var callbackOrder: [String: [EventBindingToken]] = [:]
   private var callbacks: [String: [EventBindingToken: EventCallback]] = [:]
@@ -916,7 +916,7 @@ public struct PublishAnnotationRequest: Sendable, Equatable {
 }
 
 // @unchecked Sendable: annotation and summary use [String: Any] which is not Sendable;
-// safe — all let, constructed from HTTP response decoding, consumed on @MainActor.
+// safe — all let, constructed from HTTP response decoding, consumed on @SockudoActor.
 public struct PublishAnnotationResponse: @unchecked Sendable {
   public let annotation: [String: Any]
   public let summary: [String: Any]?
@@ -928,7 +928,7 @@ public struct PublishAnnotationResponse: @unchecked Sendable {
 }
 
 // @unchecked Sendable: summary uses [String: Any]? which is not Sendable;
-// safe — all let, constructed from HTTP response decoding, consumed on @MainActor.
+// safe — all let, constructed from HTTP response decoding, consumed on @SockudoActor.
 public struct DeleteAnnotationResponse: @unchecked Sendable {
   public let deleted: Bool
   public let annotationSerial: String
@@ -974,7 +974,7 @@ public struct AnnotationEventsParams: Sendable, Equatable {
 }
 
 // @unchecked Sendable: items uses [[String: Any]] which is not Sendable;
-// safe — all let, constructed from JSON decoding, consumed on @MainActor.
+// safe — all let, constructed from JSON decoding, consumed on @SockudoActor.
 public final class AnnotationEventsPage: @unchecked Sendable {
   public let items: [[String: Any]]
   public let direction: String
@@ -1124,7 +1124,7 @@ public struct PresenceMember: Equatable {
 }
 
 // @unchecked Sendable: data uses Any? which is not Sendable;
-// safe — constructed from JSON decoding on @MainActor, never mutated after creation.
+// safe — constructed from JSON decoding on @SockudoActor, never mutated after creation.
 public struct SockudoEvent: @unchecked Sendable {
   let event: String
   let channel: String?
@@ -1173,23 +1173,26 @@ func wireInt64(_ value: Any?) -> Int64? {
   }
 }
 
-@MainActor enum Logger {
-  static var logToConsole = false
-  static var customLog: ((String) -> Void)?
+enum Logger {
+  private static let _lock = NSLock()
+  private nonisolated(unsafe) static var _logToConsole = false
+  private nonisolated(unsafe) static var _customLog: ((String) -> Void)?
 
-  static func debug(_ items: Any...) {
-    log(items)
+  static var logToConsole: Bool {
+    get { _lock.lock(); defer { _lock.unlock() }; return _logToConsole }
+    set { _lock.lock(); defer { _lock.unlock() }; _logToConsole = newValue }
   }
 
-  static func warn(_ items: Any...) {
-    log(items)
+  static var customLog: ((String) -> Void)? {
+    get { _lock.lock(); defer { _lock.unlock() }; return _customLog }
+    set { _lock.lock(); defer { _lock.unlock() }; _customLog = newValue }
   }
 
-  static func error(_ items: Any...) {
-    log(items)
-  }
+  @SockudoActor static func debug(_ items: Any...) { log(items) }
+  @SockudoActor static func warn(_ items: Any...) { log(items) }
+  @SockudoActor static func error(_ items: Any...) { log(items) }
 
-  private static func log(_ items: [Any]) {
+  @SockudoActor private static func log(_ items: [Any]) {
     let message = (["Sockudo"] + items.map { String(describing: $0) }).joined(separator: " : ")
     if let customLog {
       customLog(message)

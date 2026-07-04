@@ -75,7 +75,7 @@ private final class VersionedProxyURLProtocol: URLProtocol, @unchecked Sendable 
 
 private struct TimeoutError: Error {}
 
-@MainActor private func waitForValue<T>(
+@SockudoActor private func waitForValue<T>(
   timeout: TimeInterval = 5,
   pollInterval: UInt64 = 50_000_000,
   _ body: @escaping () -> T?
@@ -285,7 +285,7 @@ private func requestBodyData(_ request: URLRequest) -> Data? {
   return data.isEmpty ? nil : data
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func filterValidationAcceptsNestedFilters() {
   let filter = Filter.or(
     .init(key: "sport", cmp: "eq", val: "football"),
@@ -298,13 +298,13 @@ func filterValidationAcceptsNestedFilters() {
   #expect(validateFilter(filter) == nil)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func filterValidationRejectsInvalidNotNode() {
   let invalid = FilterNode(op: "not", nodes: [])
   #expect(validateFilter(invalid) == "NOT operation requires exactly one child node, got 0")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func deltaSettingsSerializeAsExpected() {
   #expect(ChannelDeltaSettings(enabled: true).subscriptionValue() as? Bool == true)
   #expect(ChannelDeltaSettings(enabled: false).subscriptionValue() as? Bool == false)
@@ -313,7 +313,7 @@ func deltaSettingsSerializeAsExpected() {
   #expect((SubscriptionRewind.seconds(30).subscriptionValue() as? [String: Int])?["seconds"] == 30)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func presenceHistoryParamsNormalizeAblyAliases() {
   let payload = PresenceHistoryParams(
     direction: "newest_first",
@@ -328,7 +328,7 @@ func presenceHistoryParamsNormalizeAblyAliases() {
   #expect(payload["end_time_ms"] as? Int64 == 2000)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func channelHistoryParamsIncludeUntilAttach() {
   let payload = ChannelHistoryParams(
     direction: "newest_first",
@@ -341,7 +341,7 @@ func channelHistoryParamsIncludeUntilAttach() {
   #expect(payload["until_attach"] as? Bool == true)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func presenceHistoryPageNextUsesNextCursor() async throws {
   let cursor = Box<String>()
   let page = PresenceHistoryPage(
@@ -406,7 +406,7 @@ func presenceHistoryPageNextUsesNextCursor() async throws {
   #expect(cursor.value == "cursor-2")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func annotationRequestPayloadUsesProxyShape() {
   let payload = PublishAnnotationRequest(
     type: "reactions:distinct.v1",
@@ -427,7 +427,7 @@ func annotationRequestPayloadUsesProxyShape() {
   #expect(payload["idempotencyKey"] as? String == "anno-1")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func annotationEventsPageNextUsesNextCursor() {
   let cursor = Box<String>()
   let page = AnnotationEventsPage(
@@ -456,7 +456,7 @@ func annotationEventsPageNextUsesNextCursor() {
   #expect(cursor.value == "anno-cursor-2")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func pushProxyHelpersUseBackendEndpointAndAsyncPublishDefaults() async throws {
   let requests = Box<[URLRequest]>()
   requests.value = []
@@ -556,7 +556,7 @@ func pushProxyHelpersUseBackendEndpointAndAsyncPublishDefaults() async throws {
   )
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func versionedMessageProxyWritesUseEndpointTimeoutAndTypedAcks() async throws {
   let requests = Box<[URLRequest]>()
   requests.value = []
@@ -717,7 +717,7 @@ func versionedMessageProxyWritesUseEndpointTimeoutAndTypedAcks() async throws {
   #expect(deleteBody["action"] as? String == "delete_message")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func channelExposesAnnotationInternalEvents() throws {
   let client = try SockudoClient(
     "app-key",
@@ -767,7 +767,7 @@ func channelExposesAnnotationInternalEvents() throws {
   #expect(raw.value?["action"] as? String == "annotation.create")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func subscriptionSucceededCapturesAttachSerial() throws {
   let client = try SockudoClient(
     "app-key",
@@ -793,7 +793,7 @@ func subscriptionSucceededCapturesAttachSerial() throws {
   #expect(channel.attachSerial == 42)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func websocketURLIncludesV2FormatQuery() throws {
   let client = try SockudoClient(
     "app-key",
@@ -825,7 +825,7 @@ func websocketURLIncludesV2FormatQuery() throws {
   #expect(query["token"] == "jwt-1")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func websocketURLUsesV1ByDefaultAndOmitsFormatQuery() throws {
   let client = try SockudoClient(
     "app-key",
@@ -852,7 +852,7 @@ func websocketURLUsesV1ByDefaultAndOmitsFormatQuery() throws {
   #expect(query["token"] == nil)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func appendRollupWindowRejectsUnsupportedValues() {
   do {
     _ = try SockudoClient(
@@ -867,7 +867,7 @@ func appendRollupWindowRejectsUnsupportedValues() {
   }
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func capabilityTokenAuthEventsUpdateStateAndProviderRefreshes() async throws {
   let tokenRequests = Box<Int>()
   tokenRequests.value = 0
@@ -900,7 +900,7 @@ func capabilityTokenAuthEventsUpdateStateAndProviderRefreshes() async throws {
   #expect(tokenRequests.value == 1)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func capabilityTokenRefreshDelayUsesJWTIatAndExp() throws {
   let token = try unsignedJWT(claims: ["iat": 1_000, "exp": 2_000])
   let delay = try #require(
@@ -912,7 +912,7 @@ func capabilityTokenRefreshDelayUsesJWTIatAndExp() throws {
   #expect(abs(delay - 100) < 0.001)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func capabilityTokenRefreshDelayFallsBackToNowWhenIatMissing() throws {
   let token = try unsignedJWT(claims: ["exp": 2_000])
   let delay = try #require(
@@ -926,7 +926,7 @@ func capabilityTokenRefreshDelayFallsBackToNowWhenIatMissing() throws {
   #expect(SockudoClient.capabilityTokenRefreshDelay(for: try unsignedJWT(claims: ["iat": 1])) == nil)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func providerJWTCapabilityTokenSchedulesProactiveRefresh() async throws {
   let issuedAt = 1_000
   let expiresAt = 2_000
@@ -959,7 +959,7 @@ func providerJWTCapabilityTokenSchedulesProactiveRefresh() async throws {
   #expect(client.hasCapabilityTokenRefreshTimer == false)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func staticOnlyAndOpaqueCapabilityTokensDoNotScheduleProactiveRefresh() throws {
   let token = try unsignedJWT(claims: ["iat": 1_000, "exp": 2_000])
   let staticOnly = try SockudoClient(
@@ -991,7 +991,7 @@ func staticOnlyAndOpaqueCapabilityTokensDoNotScheduleProactiveRefresh() throws {
   #expect(providerOpaque.hasCapabilityTokenRefreshTimer == false)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func messagePackRoundTrip() throws {
   let payload = try ProtocolCodec.encodeEnvelope(
     [
@@ -1028,7 +1028,7 @@ func messagePackRoundTrip() throws {
   #expect(decoded.conflationKey == "room")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func protobufRoundTrip() throws {
   let payload = try ProtocolCodec.encodeEnvelope(
     [
@@ -1083,7 +1083,7 @@ func protobufRoundTrip() throws {
   #expect(decoded.extras?.raw?["ai"]?["codec"]?["x-custom"]?.stringValue == "opaque")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func forwardCompatFixturesReplayThroughClientDispatch() throws {
   let client = try SockudoClient(
     "app-key",
@@ -1133,7 +1133,7 @@ func forwardCompatFixturesReplayThroughClientDispatch() throws {
   #expect(channelEvents.value?.contains("ai-output") == true)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func forwardCompatJSONPreservesSerialBoundariesAndRawExtras() throws {
   let futureFrame = try ProtocolCodec.decodeEvent(
     .string(try forwardCompatFixture("future-v2-frame.json")),
@@ -1162,7 +1162,7 @@ func forwardCompatJSONPreservesSerialBoundariesAndRawExtras() throws {
   #expect(extrasFrame.extras?.raw?["futureExtrasField"] == .bool(true))
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func binaryCodecsPreserveLargeSerialsAndAIExtras() throws {
   let largeSerial = 9_007_199_254_740_993
   let payload: [String: Any] = [
@@ -1202,7 +1202,7 @@ func binaryCodecsPreserveLargeSerialsAndAIExtras() throws {
   #expect(protobuf.extras?.raw?["ai"]?["transport"]?["turn-id"]?.stringValue == "turn-1")
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func presenceUnknownInternalEventsDoNotCorruptMembers() throws {
   let client = try SockudoClient(
     "app-key",
@@ -1264,7 +1264,7 @@ func presenceUnknownInternalEventsDoNotCorruptMembers() throws {
   #expect(channel.members.member(id: "undefined") == nil)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func presenceUpdateRequiresV2AndUsesConnectionSendPath() throws {
   let v1Client = try SockudoClient(
     "app-key",
@@ -1290,7 +1290,7 @@ func presenceUpdateRequiresV2AndUsesConnectionSendPath() throws {
   #expect(try v2Channel.update(data: ["status": "thinking"]) == false)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func localSockudoIntegrationConnectsAndReceivesPublishedEvent() async throws {
   guard ProcessInfo.processInfo.environment["SOCKUDO_LIVE_TESTS"] == "1" else {
     return
@@ -1345,7 +1345,7 @@ func localSockudoIntegrationConnectsAndReceivesPublishedEvent() async throws {
   client.disconnect()
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func liveV2HeartbeatUsesControlFramesOnIdle() async throws {
   guard ProcessInfo.processInfo.environment["SOCKUDO_LIVE_TESTS"] == "1" else {
     return
@@ -1371,7 +1371,7 @@ func liveV2HeartbeatUsesControlFramesOnIdle() async throws {
   }
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func liveV2FallbackPongHasNoMetadata() async throws {
   guard ProcessInfo.processInfo.environment["SOCKUDO_LIVE_TESTS"] == "1" else {
     return
@@ -1396,7 +1396,7 @@ func liveV2FallbackPongHasNoMetadata() async throws {
   #expect(pong.streamID == nil)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func liveV1HeartbeatStillUsesProtocolPing() async throws {
   guard ProcessInfo.processInfo.environment["SOCKUDO_LIVE_TESTS"] == "1" else {
     return
@@ -1468,7 +1468,7 @@ func liveV1HeartbeatStillUsesProtocolPing() async throws {
   }
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func clientEventBufferedWhenNotSubscribed() throws {
   let client = try SockudoClient("app-key", options: .init(cluster: "local", protocolVersion: 2))
   let channel = client.subscribe("private-chat")
@@ -1479,7 +1479,7 @@ func clientEventBufferedWhenNotSubscribed() throws {
   #expect(channel.bufferedEventCount == 1)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func clientEventBufferDrainedAfterSubscriptionSucceeded() throws {
   let client = try SockudoClient("app-key", options: .init(cluster: "local", protocolVersion: 2))
   let channel = client.subscribe("private-chat")
@@ -1507,7 +1507,7 @@ func clientEventBufferDrainedAfterSubscriptionSucceeded() throws {
   #expect(channel.bufferedEventCount == 0)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func clientEventBufferCapDropsOldestAtOverflow() throws {
   let client = try SockudoClient("app-key", options: .init(cluster: "local", protocolVersion: 2))
   let channel = client.subscribe("private-chat")
@@ -1519,7 +1519,7 @@ func clientEventBufferCapDropsOldestAtOverflow() throws {
   #expect(channel.bufferedEventCount == 50)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func unsubscribeClearsClientEventBuffer() throws {
   let client = try SockudoClient("app-key", options: .init(cluster: "local", protocolVersion: 2))
   let channel = client.subscribe("private-chat")
@@ -1531,7 +1531,7 @@ func unsubscribeClearsClientEventBuffer() throws {
   #expect(channel.bufferedEventCount == 0)
 }
 
-@Test @MainActor
+@Test @SockudoActor
 func clientEventBufferSurvivesDisconnect() throws {
   let client = try SockudoClient("app-key", options: .init(cluster: "local", protocolVersion: 2))
   let channel = client.subscribe("private-chat")
@@ -1546,7 +1546,7 @@ func clientEventBufferSurvivesDisconnect() throws {
 
 // MARK: - Connection State
 
-@Test @MainActor
+@Test @SockudoActor
 func connectionStateTransitionIncludesReconnecting() async throws {
   let client = try SockudoClient(
     "app-key",
@@ -1584,7 +1584,7 @@ func connectionStateTransitionIncludesReconnecting() async throws {
 // MARK: - Reconnect Backoff
 
 @Suite("Reconnect Backoff")
-@MainActor
+@SockudoActor
 struct ReconnectBackoffTests {
 
   @Test func delayProgressionFollowsSquaredFormula() throws {
@@ -1671,12 +1671,12 @@ struct ReconnectBackoffTests {
 // MARK: - Concurrency Compliance
 
 @Suite("Concurrency Compliance")
-@MainActor
+@SockudoActor
 struct ConcurrencyComplianceTests {
 
-  // Verifies that sequential connect/disconnect on @MainActor does not crash.
+  // Verifies that sequential connect/disconnect on @SockudoActor does not crash.
   // The parallel case (calling from a background thread) is now a compile-time
-  // error due to @MainActor isolation on SockudoClient — that's the real guard.
+  // error due to @SockudoActor isolation on SockudoClient — that's the real guard.
   @Test func connectDisconnect_sequential_doesNotCrash() throws {
     let client = try SockudoClient(
       "test-key",
@@ -1700,7 +1700,7 @@ struct ConcurrencyComplianceTests {
     #expect(received == [1, 2])
   }
 
-  // Verifies MessageDeduplicator isolation: isDuplicate/track are @MainActor-safe.
+  // Verifies MessageDeduplicator isolation: isDuplicate/track are @SockudoActor-safe.
   @Test func messageDeduplicator_trackAndCheck() {
     let dedup = MessageDeduplicator(capacity: 10)
     dedup.track("msg-1")
@@ -1710,7 +1710,7 @@ struct ConcurrencyComplianceTests {
 
   // Documents the @unchecked Sendable count does not regress above the
   // post-migration threshold of 19 type declarations.
-  // This test passes trivially at compile time — if @MainActor were removed and
+  // This test passes trivially at compile time — if @SockudoActor were removed and
   // more @unchecked Sendable added, this comment serves as the documented baseline.
   @Test func uncheckedSendableCount_documentedThreshold() {
     // Baseline established post-migration: 19 @unchecked Sendable type declarations.
@@ -1720,8 +1720,8 @@ struct ConcurrencyComplianceTests {
     #expect(Bool(true)) // Compile-time contract; runtime is a formality.
   }
 
-  @Test @MainActor
-  func deliveredCallbacksFireOnMainActor() throws {
+  @Test @SockudoActor
+  func deliveredCallbacksFireOnSockudoActor() throws {
     let client = try SockudoClient(
       "app-key",
       options: .init(cluster: "local", protocolVersion: 2)
@@ -1733,7 +1733,7 @@ struct ConcurrencyComplianceTests {
     fired.value = false
 
     channel.bind("test-event") { _, _ in
-      MainActor.assertIsolated()
+      SockudoActor.assertIsolated()
       fired.value = true
     }
 
@@ -1743,4 +1743,25 @@ struct ConcurrencyComplianceTests {
 
     #expect(fired.value == true)
   }
+}
+
+// MARK: - SockudoTimer
+
+@Test @SockudoActor
+func schedule_whenActionReschedulesSameTimer_keepsNewTimerActiveAndCancellable() async throws {
+  let timer = SockudoTimer()
+  let rescheduledFired = Box<Bool>()
+
+  timer.schedule(after: 0.01) {
+    timer.schedule(after: 0.2) {
+      rescheduledFired.value = true
+    }
+  }
+
+  try await Task.sleep(nanoseconds: 100_000_000)
+  #expect(timer.isActive == true)
+
+  timer.cancel()
+  try await Task.sleep(nanoseconds: 300_000_000)
+  #expect(rescheduledFired.value == nil)
 }

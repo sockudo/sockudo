@@ -309,7 +309,7 @@ public final class SockudoPushRegistration: Sendable {
       }
 
       urlSession.dataTask(with: request) { data, response, error in
-        Task { @MainActor in
+        Task { @SockudoActor in
           if let error {
             completion(.failure(error))
             return

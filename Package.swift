@@ -31,7 +31,6 @@ let package = Package(
     .package(url: "https://github.com/Flight-School/AnyCodable", .upToNextMajor(from: "0.4.0")),
     .package(url: "https://github.com/apple/swift-crypto", .upToNextMajor(from: "1.1.6")),
     .package(url: "https://github.com/pusher/tweetnacl-swiftwrap", from: "1.1.0"),
-    .package(url: "https://github.com/swiftlang/swift-testing.git", from: "0.12.0"),
   ],
   targets: [
     .target(
@@ -91,7 +90,6 @@ let package = Package(
       dependencies: [
         "SockudoSwift",
         "CXDelta3",
-        .product(name: "Testing", package: "swift-testing"),
       ],
       path: "client-sdks/sockudo-swift/Tests/SockudoSwiftTests",
       swiftSettings: [
