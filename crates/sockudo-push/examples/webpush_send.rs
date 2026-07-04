@@ -80,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 collapse_key: Some(collapse_key),
             }),
             attempt: 1,
+            first_attempt_at_ms: Some(now_ms),
             not_before_ms: None,
             expires_at_ms: None,
         }],
