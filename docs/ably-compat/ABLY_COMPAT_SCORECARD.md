@@ -14,7 +14,7 @@ Sockudo V1/V2 conformance tests pass against pinned target versions.
 | Surface | Target | Evidence |
 | --- | --- | --- |
 | Ably AI Transport package | `@ably/ai-transport@0.4.0` | Smoke harness in `tests/ably-compat`. |
-| Ably Realtime JS peer | `ably@2.23.0` | Smoke harness in `tests/ably-compat`. |
+| Ably Realtime JS peer | `ably@2.23.0` | Smoke and protocol discovery harnesses in `tests/ably-compat`. |
 | Sockudo server workspace | `4.7.0` | Root Cargo workspace package version. |
 
 ## Compatibility Summary
@@ -47,9 +47,37 @@ Then run:
 
 ```bash
 make ably-compat-test
+make ably-protocol-discovery
 make ably-ai-transport-test
 make ably-ai-demo
 ```
+
+`make ably-protocol-discovery` is not a support claim by itself. It records the
+current stock `ably` SDK behavior across required and optional lanes. Required
+lanes protect the claimed AI Transport Pub/Sub subset; optional failures remain
+scorecard gaps until intentionally implemented.
+
+## Protocol Discovery Baseline
+
+Last local run: 2026-07-04 against `ably@2.23.0`, Sockudo built with
+`v2,ai-transport,ably-compat,redis,postgres,push`.
+
+Command:
+
+```bash
+ABLY_PROTOCOL_RUN_ID=codex-baseline npm run protocol:discovery
+```
+
+| Lane | Status | Notes |
+| --- | --- | --- |
+| `node-realtime-json-pubsub` | Supported | Required baseline for the current compatibility claim. |
+| `node-rest-json-time` | Supported | Stock Ably REST `time()` returned a timestamp. |
+| `node-rest-json-publish-history` | Not yet implemented | Stock Ably REST publish/history path returned HTTP 405. |
+| `node-realtime-json-presence` | Supported | Enter, get, update, and leave passed for one client. |
+| `node-auth-json-request-token` | Supported | Stock Ably token request returned a token. |
+| `node-realtime-msgpack-pubsub` | Not yet implemented | Realtime MsgPack connect timed out because Sockudo replies JSON frames. |
+| `node-rest-msgpack-time` | Supported | REST time works with the SDK's MsgPack option. |
+| `browser-chromium-json-pubsub` | Not run | Browser runner is the next discovery harness gap. |
 
 ## Compatibility Claim
 

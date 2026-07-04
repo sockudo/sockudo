@@ -18,6 +18,7 @@ channel prefix `private-ai-`.
 
 ```bash
 make ably-compat-test
+make ably-protocol-discovery
 make ably-ai-transport-test
 make ably-ai-demo
 ```
@@ -31,6 +32,7 @@ existing Sockudo/Pusher clients continue to use `/app/{appKey}` and `/apps/{appI
 | Case | Command |
 | --- | --- |
 | Ably Realtime connect, attach, publish, receive, history, detach | `make ably-compat-test` |
+| Broader stock `ably` SDK discovery across JSON, REST, presence, token, MsgPack, and browser lanes | `make ably-protocol-discovery` |
 | Ably mutable message create/append/update/delete/version reads | `make ably-compat-test` |
 | Ably recovery/history replay during streamed output | `make ably-compat-test` |
 | Stock `@ably/ai-transport` chat smoke | `make ably-ai-transport-test` |
