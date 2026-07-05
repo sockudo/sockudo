@@ -692,10 +692,13 @@ impl SockudoServer {
         #[cfg(feature = "push")]
         let push_store = create_push_store(&config).await?;
         #[cfg(feature = "push")]
-        let push_queue = create_push_queue(&config, queue_manager_opt.clone())?;
-        #[cfg(feature = "push")]
         let push_admission =
             Arc::new(PushAdmissionSnapshot::from_config(&config, &push_store).await);
+        #[cfg(feature = "push")]
+        let push_queue = create_push_queue(&config, queue_manager_opt.clone(), &push_admission)?;
+        #[cfg(all(feature = "push", feature = "monolith"))]
+        let push_worker_handles =
+            start_push_monolith_workers(&config, push_store.clone(), push_queue.clone());
 
         let state = ServerState {
             app_manager: app_manager.clone(),
@@ -724,10 +727,9 @@ impl SockudoServer {
             push_queue,
             #[cfg(feature = "push")]
             push_admission,
+            #[cfg(all(feature = "push", feature = "monolith"))]
+            push_worker_handles,
         };
-
-        #[cfg(all(feature = "push", feature = "monolith"))]
-        start_push_monolith_workers(&config, state.push_store.clone(), state.push_queue.clone());
 
         let mut builder = ConnectionHandler::builder(
             state.app_manager.clone(),

@@ -66,6 +66,29 @@ Readiness failures return `503`. Queue pressure returns `429` with `Retry-After`
 persists a terminal `quota_exceeded` publish status and idempotency record without appending publish
 log work or enqueueing the pipeline.
 
+## Cluster queue delivery guarantees
+
+Push queue delivery is at-least-once. Accepted publish work is durable before the API returns, and
+every delivery result is idempotently applied by feedback workers. A provider send can still be
+duplicated if a worker crashes after the provider accepts the request but before `push.results.v1`
+is produced or before the original delivery batch is acknowledged. Sockudo keeps the duplicate
+window bounded with stable delivery idempotency keys, deterministic retry context, and duplicate
+feedback suppression, but it does not claim exactly-once provider delivery.
+
+In monolith deployments, each node consumes only stages it can process. Planner, shard, feedback,
+retry, and dead-letter stages are consumed only by nodes with the matching local worker enabled.
+Provider delivery stages such as `push.delivery.fcm.v1` are consumed only by nodes whose provider
+worker is active and credential-ready at boot. Changing provider capability or credentials requires
+worker restart; stored credentials are reloaded when a supervised provider worker restarts.
+
+External queue adapters pull broker messages into a bounded node-local ready/pending handoff before
+Sockudo workers ack, nack, or dead-letter them. If the local worker does not finish before the local
+lease timeout, the adapter requeues the envelope with backoff. Broker-wide visibility timeout and
+dead-node redelivery still depend on the configured `[queue]` backend. Queue health and lag reported
+by the generic queue manager adapter distinguish this node's local pull-ahead depth from
+broker-wide backlog, so operators should watch both provider/stage lag and backend-native queue
+metrics where the backend exposes them.
+
 ## Retry and dead letters
 
 Provider throttling, 5xx responses, and transport failures are classified as retryable provider,

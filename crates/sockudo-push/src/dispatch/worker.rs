@@ -20,6 +20,7 @@ pub struct ProviderDispatchWorker {
     rate_limiter: AdaptiveRateLimiter,
     metrics: PushMetrics,
     max_batches_per_tick: usize,
+    max_outbound_requests: usize,
     over_quota_tenants: BTreeSet<String>,
     tenant_inflight_cap: usize,
 }
@@ -38,6 +39,7 @@ impl ProviderDispatchWorker {
             rate_limiter: AdaptiveRateLimiter::default(),
             metrics: PushMetrics::default(),
             max_batches_per_tick: 32,
+            max_outbound_requests: 32,
             over_quota_tenants: BTreeSet::new(),
             tenant_inflight_cap: 8,
         }
@@ -60,6 +62,11 @@ impl ProviderDispatchWorker {
 
     pub fn with_over_quota_tenants(mut self, tenants: impl IntoIterator<Item = String>) -> Self {
         self.over_quota_tenants = tenants.into_iter().collect();
+        self
+    }
+
+    pub fn with_max_outbound_requests(mut self, limit: usize) -> Self {
+        self.max_outbound_requests = limit.max(1);
         self
     }
 
@@ -116,9 +123,8 @@ impl ProviderDispatchWorker {
             return Ok(());
         };
         let app_id = batch.app_id.clone();
-        let retry_jobs = batch.jobs.clone();
         self.metrics
-            .worker_pool(self.provider, self.max_batches_per_tick, 1);
+            .worker_pool(self.provider, self.max_outbound_requests, 0);
 
         if self.circuit_breaker.is_open(now_ms()) {
             self.metrics.counter(
@@ -151,56 +157,77 @@ impl ProviderDispatchWorker {
         let started = Instant::now();
         let started_ms = now_ms();
         self.metrics.dispatch_started(self.provider, &app_id);
-        let results = self.dispatcher.dispatch(batch).await;
         let mut saw_retry_after = None;
         let mut failures = 0_u64;
-        let mut retry_jobs = retry_jobs.into_iter();
-        for result in results {
-            let original_job = retry_jobs.next();
-            if !matches!(result.outcome, DeliveryOutcome::Accepted) {
-                failures += 1;
-                tracing::warn!(
-                    app_id = %result.app_id,
-                    publish_id = %result.publish_id,
-                    provider = ?result.provider,
-                    batch_id = %result.batch_id,
-                    outcome = ?result.outcome,
-                    error_class = result.error.as_ref().map(|error| error.class.as_str()),
-                    failure_class = result
-                        .error
-                        .as_ref()
-                        .map(|error| error.resolved_failure_class().label()),
-                    retry_after_ms = result.error.as_ref().and_then(|error| error.retry_after_ms),
-                    "push dispatch failure"
+        let DeliveryBatch {
+            app_id,
+            publish_id,
+            provider,
+            batch_id,
+            jobs,
+        } = batch;
+        for chunk in jobs.chunks(self.max_outbound_requests) {
+            let chunk_jobs = chunk.to_vec();
+            self.metrics
+                .worker_pool(self.provider, self.max_outbound_requests, chunk_jobs.len());
+            let mut original_jobs = chunk_jobs.clone().into_iter();
+            let results = self
+                .dispatcher
+                .dispatch(DeliveryBatch {
+                    app_id: app_id.clone(),
+                    publish_id: publish_id.clone(),
+                    provider,
+                    batch_id: batch_id.clone(),
+                    jobs: chunk_jobs,
+                })
+                .await;
+            for result in results {
+                let original_job = original_jobs.next();
+                if !matches!(result.outcome, DeliveryOutcome::Accepted) {
+                    failures += 1;
+                    tracing::warn!(
+                        app_id = %result.app_id,
+                        publish_id = %result.publish_id,
+                        provider = ?result.provider,
+                        batch_id = %result.batch_id,
+                        outcome = ?result.outcome,
+                        error_class = result.error.as_ref().map(|error| error.class.as_str()),
+                        failure_class = result
+                            .error
+                            .as_ref()
+                            .map(|error| error.resolved_failure_class().label()),
+                        retry_after_ms = result.error.as_ref().and_then(|error| error.retry_after_ms),
+                        "push dispatch failure"
+                    );
+                } else {
+                    tracing::info!(
+                        app_id = %result.app_id,
+                        publish_id = %result.publish_id,
+                        provider = ?result.provider,
+                        batch_id = %result.batch_id,
+                        "push dispatch success"
+                    );
+                }
+                self.metrics.dispatch_finished(
+                    result.provider,
+                    &result.app_id,
+                    result.outcome,
+                    started.elapsed(),
                 );
-            } else {
-                tracing::info!(
-                    app_id = %result.app_id,
-                    publish_id = %result.publish_id,
-                    provider = ?result.provider,
-                    batch_id = %result.batch_id,
-                    "push dispatch success"
-                );
+                if let Some(retry_after_ms) =
+                    result.error.as_ref().and_then(|error| error.retry_after_ms)
+                {
+                    saw_retry_after = Some(retry_after_ms);
+                }
+                let feedback = delivery_feedback(result, original_job, started_ms);
+                self.queue
+                    .produce(
+                        PushQueueStage::DeliveryResults,
+                        feedback_key(&feedback),
+                        PushQueuePayload::DeliveryFeedback(Box::new(feedback)),
+                    )
+                    .await?;
             }
-            self.metrics.dispatch_finished(
-                result.provider,
-                &result.app_id,
-                result.outcome,
-                started.elapsed(),
-            );
-            if let Some(retry_after_ms) =
-                result.error.as_ref().and_then(|error| error.retry_after_ms)
-            {
-                saw_retry_after = Some(retry_after_ms);
-            }
-            let feedback = delivery_feedback(result, original_job, started_ms);
-            self.queue
-                .produce(
-                    PushQueueStage::DeliveryResults,
-                    feedback_key(&feedback),
-                    PushQueuePayload::DeliveryFeedback(Box::new(feedback)),
-                )
-                .await?;
         }
 
         if let Some(retry_after_ms) = saw_retry_after {
@@ -209,7 +236,7 @@ impl ProviderDispatchWorker {
             self.circuit_breaker.defer_until(retry_after_ms);
             self.metrics
                 .circuit_breaker_state(self.provider, &app_id, true);
-            self.emit_circuit_event("open_retry_after", retry_after_ms);
+            self.emit_circuit_event(&app_id, "open_retry_after", retry_after_ms);
         } else if failures == 0 {
             self.rate_limiter
                 .record_success_window(&app_id, self.provider, now_ms());
@@ -220,13 +247,17 @@ impl ProviderDispatchWorker {
             if self.circuit_breaker.record_failure(now_ms()) {
                 self.metrics
                     .circuit_breaker_state(self.provider, &app_id, true);
-                self.emit_circuit_event("open_failure_rate", self.circuit_breaker.open_until_ms);
+                self.emit_circuit_event(
+                    &app_id,
+                    "open_failure_rate",
+                    self.circuit_breaker.open_until_ms,
+                );
             }
         }
 
         self.rate_limiter.release(&app_id, self.provider);
         self.metrics
-            .worker_pool(self.provider, self.max_batches_per_tick, 0);
+            .worker_pool(self.provider, self.max_outbound_requests, 0);
         self.queue.ack(message.ack).await?;
         Ok(())
     }
@@ -375,9 +406,9 @@ impl ProviderDispatchWorker {
         Ok(())
     }
 
-    fn emit_circuit_event(&self, action: &'static str, retry_at_ms: u64) {
+    fn emit_circuit_event(&self, app_id: &str, action: &'static str, retry_at_ms: u64) {
         emit_push_meta_event(PushMetaEvent::circuit_breaker_event(
-            "unknown",
+            app_id,
             self.provider,
             action,
             retry_at_ms,

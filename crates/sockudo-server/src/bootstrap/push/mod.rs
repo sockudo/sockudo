@@ -54,6 +54,7 @@ pub(crate) async fn create_push_store(
 pub(crate) fn create_push_queue(
     config: &ServerOptions,
     queue_manager: Option<Arc<QueueManager>>,
+    admission: &PushAdmissionSnapshot,
 ) -> Result<sockudo_push::DynPushQueue> {
     let backend = match config.push.queue_driver {
         PushQueueDriver::Memory => sockudo_push::PushQueueBackendKind::Memory,
@@ -86,7 +87,11 @@ pub(crate) fn create_push_queue(
             backend
         ))
     })?;
-    Ok(Arc::new(QueueManagerPushQueue::new(backend, queue_manager)))
+    Ok(Arc::new(QueueManagerPushQueue::new(
+        backend,
+        queue_manager,
+        queue::QueueManagerPushQueueStageOwnership::from_config(config, admission),
+    )))
 }
 
 #[cfg(test)]
@@ -110,8 +115,8 @@ mod tests {
         assert!(error.to_string().contains("memory is unsafe in production"));
     }
 
-    #[test]
-    fn production_memory_push_queue_requires_explicit_allow() {
+    #[tokio::test]
+    async fn production_memory_push_queue_requires_explicit_allow() {
         let mut config = ServerOptions {
             mode: "production".to_owned(),
             ..Default::default()
@@ -119,7 +124,9 @@ mod tests {
         config.push.queue_driver = PushQueueDriver::Memory;
         config.push.allow_memory_drivers = false;
 
-        let error = match create_push_queue(&config, None) {
+        let store: sockudo_push::DynPushStore = Arc::new(sockudo_push::MemoryPushStore::new());
+        let admission = PushAdmissionSnapshot::from_config(&config, &store).await;
+        let error = match create_push_queue(&config, None, &admission) {
             Ok(_) => panic!("memory push queue should be rejected in production"),
             Err(error) => error,
         };
@@ -137,7 +144,8 @@ mod tests {
         config.push.queue_driver = PushQueueDriver::Memory;
         config.push.allow_memory_drivers = true;
 
-        create_push_store(&config).await.unwrap();
-        create_push_queue(&config, None).unwrap();
+        let store = create_push_store(&config).await.unwrap();
+        let admission = PushAdmissionSnapshot::from_config(&config, &store).await;
+        create_push_queue(&config, None, &admission).unwrap();
     }
 }

@@ -103,6 +103,14 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
         "sockudo_push_retry_malformed_total",
         &["provider", "reason"],
     ),
+    PushMetricSpec::counter(
+        "sockudo_push_worker_exits_total",
+        &["kind", "worker", "reason"],
+    ),
+    PushMetricSpec::counter(
+        "sockudo_push_queue_local_requeued_total",
+        &["stage", "reason"],
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -563,6 +571,22 @@ impl PushMetrics {
         self.counter(
             "sockudo_push_retry_malformed_total",
             &[("provider", provider), ("reason", reason)],
+            1,
+        );
+    }
+
+    pub fn worker_exit(&self, kind: &str, worker: &str, reason: &str) {
+        self.counter(
+            "sockudo_push_worker_exits_total",
+            &[("kind", kind), ("worker", worker), ("reason", reason)],
+            1,
+        );
+    }
+
+    pub fn queue_local_requeued(&self, stage: &str, reason: &str) {
+        self.counter(
+            "sockudo_push_queue_local_requeued_total",
+            &[("stage", stage), ("reason", reason)],
             1,
         );
     }

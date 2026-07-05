@@ -1,3 +1,4 @@
+use super::super::spawn_supervised_worker;
 use crate::push_http::decrypt_credential_secret;
 use base64::{
     Engine as _,
@@ -6,7 +7,7 @@ use base64::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::ServerOptions;
-use std::{env, fs, sync::Arc, time::Duration};
+use std::{env, fs, sync::Arc};
 use tracing::warn;
 
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
@@ -14,17 +15,17 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
     config: &ServerOptions,
     store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<tokio::task::JoinHandle<()>> {
     let topic = env::var("APNS_TOPIC").or_else(|_| env::var("PUSH_APNS_TOPIC"));
     let Ok(topic) = topic else {
         warn!(
             "push.apns_enabled is true but APNS_TOPIC/PUSH_APNS_TOPIC is not set; APNs dispatch worker not started"
         );
-        return;
+        return Vec::new();
     };
     if topic.trim().is_empty() {
         warn!("APNS_TOPIC/PUSH_APNS_TOPIC is empty; APNs dispatch worker not started");
-        return;
+        return Vec::new();
     }
 
     let endpoint = env::var("APNS_ENDPOINT")
@@ -38,8 +39,10 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
     if let Ok(stored_app_id) = stored_app_id {
         if stored_app_id.trim().is_empty() {
             warn!("APNS_APP_ID/PUSH_APNS_APP_ID is empty; APNs dispatch worker not started");
-            return;
+            return Vec::new();
         }
+        let mut handles = Vec::new();
+        let max_outbound = config.push.dispatch_max_outbound_requests;
         for worker_index in 0..config.push.dispatch_worker_count {
             let store = store.clone();
             let queue = queue.clone();
@@ -47,54 +50,68 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
             let endpoint = endpoint.clone();
             let app_id = stored_app_id.clone();
             let credential_id = stored_credential_id.clone();
-            tokio::spawn(async move {
-                let dispatcher = match create_stored_apns_dispatcher(
-                    &store,
-                    &app_id,
-                    &credential_id,
-                    &topic,
-                    &endpoint,
-                )
-                .await
-                {
-                    Ok(dispatcher) => dispatcher,
-                    Err(error) => {
-                        warn!(worker = worker_index, app_id = %app_id, credential_id = %credential_id, error = %error, "APNs dispatch worker not started");
-                        return;
-                    }
-                };
-                let mut worker = sockudo_push::ProviderDispatchWorker::new(
-                    sockudo_push::PushProviderKind::Apns,
-                    queue,
-                    Arc::new(dispatcher),
-                );
-                let group = format!("sockudo-monolith-apns-{worker_index}");
-                warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, "APNs dispatch worker started with stored credential");
-                loop {
-                    match worker.run_once(&group).await {
-                        Ok(processed) if processed > 0 => {
-                            warn!(worker = %group, processed, "APNs dispatch worker processed messages");
+            handles.push(spawn_supervised_worker(
+                "provider",
+                format!("sockudo-monolith-apns-{worker_index}"),
+                move |group| {
+                    let store = store.clone();
+                    let queue = queue.clone();
+                    let topic = topic.clone();
+                    let endpoint = endpoint.clone();
+                    let app_id = app_id.clone();
+                    let credential_id = credential_id.clone();
+                    async move {
+                        let dispatcher = match create_stored_apns_dispatcher(
+                            &store,
+                            &app_id,
+                            &credential_id,
+                            &topic,
+                            &endpoint,
+                        )
+                        .await
+                        {
+                            Ok(dispatcher) => dispatcher,
+                            Err(error) => {
+                                warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, error = %error, "APNs dispatch worker not started");
+                                return;
+                            }
+                        };
+                        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+                            sockudo_push::PushProviderKind::Apns,
+                            queue,
+                            Arc::new(dispatcher),
+                        )
+                        .with_max_outbound_requests(max_outbound);
+                        warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, "APNs dispatch worker started with stored credential");
+                        loop {
+                            match worker.run_once(&group).await {
+                                Ok(processed) if processed > 0 => {
+                                    warn!(worker = %group, processed, "APNs dispatch worker processed messages");
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         }
-                        Ok(_) => {}
-                        Err(error) => {
-                            warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
-                        }
                     }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            });
+                },
+            ));
         }
-        return;
+        return handles;
     }
 
     let token_provider = match create_apns_token_provider() {
         Ok(provider) => provider,
         Err(error) => {
             warn!(error = %error, "APNs dispatch worker not started");
-            return;
+            return Vec::new();
         }
     };
 
+    let mut handles = Vec::new();
+    let max_outbound = config.push.dispatch_max_outbound_requests;
     for worker_index in 0..config.push.dispatch_worker_count {
         let http = match sockudo_push::ReqwestProviderHttpClient::new() {
             Ok(http) => Arc::new(http),
@@ -106,28 +123,40 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
         let dispatcher =
             sockudo_push::ApnsDispatcher::new(topic.clone(), token_provider.clone(), http)
                 .with_base_url(endpoint.clone());
-        let mut worker = sockudo_push::ProviderDispatchWorker::new(
-            sockudo_push::PushProviderKind::Apns,
-            queue.clone(),
-            Arc::new(dispatcher),
-        );
-        tokio::spawn(async move {
-            let group = format!("sockudo-monolith-apns-{worker_index}");
-            warn!(worker = %group, "APNs dispatch worker started");
-            loop {
-                match worker.run_once(&group).await {
-                    Ok(processed) if processed > 0 => {
-                        warn!(worker = %group, processed, "APNs dispatch worker processed messages");
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
+        handles.push(spawn_supervised_worker(
+            "provider",
+            format!("sockudo-monolith-apns-{worker_index}"),
+            {
+                let queue = queue.clone();
+                move |group| {
+                    let queue = queue.clone();
+                    let dispatcher = dispatcher.clone();
+                    async move {
+                        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+                            sockudo_push::PushProviderKind::Apns,
+                            queue,
+                            Arc::new(dispatcher),
+                        )
+                        .with_max_outbound_requests(max_outbound);
+                        warn!(worker = %group, "APNs dispatch worker started");
+                        loop {
+                            match worker.run_once(&group).await {
+                                Ok(processed) if processed > 0 => {
+                                    warn!(worker = %group, processed, "APNs dispatch worker processed messages");
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-        });
+            },
+        ));
     }
+    handles
 }
 
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]

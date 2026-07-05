@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Mutex;
 
-use crate::domain::{ProviderOverridePayload, PushPayload, PushRecipient, SecretString};
+use crate::domain::{
+    DeliveryJob, ProviderOverridePayload, PushPayload, PushRecipient, SecretString,
+};
 use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueuePayload, PushQueueStage, QueueMessage};
 use crate::transform::render_provider_payload;
 
@@ -674,6 +676,64 @@ async fn provider_worker_dispatches_due_jobs_and_requeues_future_jobs() {
             .unwrap()
             .ready_depth,
         1
+    );
+}
+
+#[tokio::test]
+async fn provider_worker_bounds_outbound_dispatch_batch_size() {
+    let queue = Arc::new(MemoryPushQueue::new());
+    let dispatcher = Arc::new(RecordingDispatcher::default());
+    let mut batch = batch(PushProviderKind::Fcm);
+    let template = batch.jobs[0].clone();
+    batch.jobs = (0..5)
+        .map(|index| {
+            let mut job = template.clone();
+            job.device_id = Some(format!("device-{index}"));
+            job.recipient = PushRecipient::Fcm {
+                registration_token: SecretString::new(format!("fcm-token-{index}")).unwrap(),
+            };
+            job
+        })
+        .collect();
+    let original_keys = batch
+        .jobs
+        .iter()
+        .map(DeliveryJob::idempotency_key)
+        .collect::<Vec<_>>();
+    queue
+        .produce(
+            PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+            batch.queue_key(),
+            PushQueuePayload::DeliveryBatch(Box::new(batch)),
+        )
+        .await
+        .unwrap();
+
+    let mut worker =
+        ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher.clone())
+            .with_max_outbound_requests(2);
+    assert_eq!(worker.run_once("fcm").await.unwrap(), 1);
+
+    let batches = dispatcher.batches().await;
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.jobs.len())
+            .collect::<Vec<_>>(),
+        vec![2, 2, 1]
+    );
+    let redelivered_keys = batches
+        .iter()
+        .flat_map(|batch| batch.jobs.iter().map(DeliveryJob::idempotency_key))
+        .collect::<Vec<_>>();
+    assert_eq!(redelivered_keys, original_keys);
+    assert_eq!(
+        queue
+            .lag(PushQueueStage::DeliveryResults)
+            .await
+            .unwrap()
+            .ready_depth,
+        5
     );
 }
 

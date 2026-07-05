@@ -38,10 +38,11 @@ pub(super) fn start_apns_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
     _store: sockudo_push::DynPushStore,
     _queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(
         "push.apns_enabled is true but the binary was not compiled with the push-apns feature"
     );
+    Vec::new()
 }
 
 #[cfg(all(feature = "push", feature = "monolith", not(feature = "push-fcm")))]
@@ -49,40 +50,44 @@ pub(super) fn start_fcm_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
     _store: sockudo_push::DynPushStore,
     _queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(
         "push.fcm_enabled is true but the binary was not compiled with the push-fcm feature"
     );
+    Vec::new()
 }
 
 #[cfg(all(feature = "push", feature = "monolith", not(feature = "push-hms")))]
 pub(super) fn start_hms_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
     _queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(
         "push.hms_enabled is true but the binary was not compiled with the push-hms feature"
     );
+    Vec::new()
 }
 
 #[cfg(all(feature = "push", feature = "monolith", not(feature = "push-webpush")))]
 pub(super) fn start_webpush_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
     _queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(
         "push.webpush_enabled is true but the binary was not compiled with the push-webpush feature"
     );
+    Vec::new()
 }
 
 #[cfg(all(feature = "push", feature = "monolith", not(feature = "push-wns")))]
 pub(super) fn start_wns_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
     _queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(
         "push.wns_enabled is true but the binary was not compiled with the push-wns feature"
     );
+    Vec::new()
 }
 
 #[cfg(any(

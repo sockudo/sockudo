@@ -73,6 +73,8 @@ struct ServerState {
     push_queue: sockudo_push::DynPushQueue,
     #[cfg(feature = "push")]
     push_admission: Arc<push::PushAdmissionSnapshot>,
+    #[cfg(all(feature = "push", feature = "monolith"))]
+    push_worker_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// Main server struct

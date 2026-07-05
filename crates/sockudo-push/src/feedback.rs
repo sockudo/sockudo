@@ -584,7 +584,7 @@ mod tests {
     };
     use crate::memory::MemoryPushStore;
     use crate::metrics::PushMetrics;
-    use crate::pipeline::{MemoryPushQueue, PushQueue};
+    use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueuePayload, PushQueueStage};
     use crate::retry::RetryPolicy;
     use crate::storage::{PushDeviceStore, PushPublishStatusStore};
 
@@ -642,6 +642,46 @@ mod tests {
         assert_eq!(status.counters.succeeded, 1);
         assert_eq!(status.state, PublishLifecycleState::Succeeded);
         assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 1);
+    }
+
+    #[tokio::test]
+    async fn redelivered_feedback_message_does_not_double_count_status() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.put_publish_status(status()).await.unwrap();
+        let processor = PushFeedbackProcessor::new(store.clone(), queue.clone());
+        let feedback = DeliveryFeedback::from_result(DeliveryResult {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            provider: PushProviderKind::Fcm,
+            batch_id: "batch-1".to_owned(),
+            device_id: Some("device-1".to_owned()),
+            outcome: DeliveryOutcome::Accepted,
+            provider_message_id: Some("provider-1".to_owned()),
+            error: None,
+            attempt: 1,
+        });
+
+        for key in ["result-before-ack", "result-redelivered"] {
+            queue
+                .produce(
+                    PushQueueStage::DeliveryResults,
+                    key.to_owned(),
+                    PushQueuePayload::DeliveryFeedback(Box::new(feedback.clone())),
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(processor.run_once("feedback").await.unwrap(), 2);
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.counters.dispatched, 1);
+        assert_eq!(status.counters.succeeded, 1);
+        assert_eq!(status.state, PublishLifecycleState::Succeeded);
     }
 
     #[tokio::test]
