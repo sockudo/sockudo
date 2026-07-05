@@ -281,6 +281,17 @@ fn classifies_provider_error_classes_and_retry_after() {
     .retry_after_ms
     .unwrap();
     assert!(retry_at > now_ms());
+    assert_eq!(
+        classify_fcm_response(&ProviderHttpResponse {
+            status: 429,
+            headers: BTreeMap::from([("retry-after".to_owned(), "7".to_owned())]),
+            body: br#"{"error":{"status":"RESOURCE_EXHAUSTED"}}"#.to_vec(),
+        })
+        .1
+        .unwrap()
+        .resolved_failure_class(),
+        ProviderFailureClass::ProviderQuota
+    );
 
     for (provider, status, class) in [
         (PushProviderKind::Fcm, 400, "invalid_payload"),
@@ -298,6 +309,155 @@ fn classifies_provider_error_classes_and_retry_after() {
         }
         .unwrap();
         assert_eq!(error.class, class);
+    }
+}
+
+#[test]
+fn fcm_failure_classification_preserves_devices_for_project_auth_quota_and_payload_errors() {
+    let unregistered = classify_fcm_response(&ProviderHttpResponse {
+        status: 404,
+        headers: BTreeMap::new(),
+        body: br#"{"error":{"status":"NOT_FOUND","details":[{"errorCode":"UNREGISTERED"}]}}"#
+            .to_vec(),
+    });
+    assert_eq!(unregistered.0, DeliveryOutcome::Rejected);
+    assert_eq!(
+        unregistered.1.unwrap().resolved_failure_class(),
+        ProviderFailureClass::DeviceTerminal
+    );
+
+    let invalid_token_argument = classify_fcm_response(&ProviderHttpResponse {
+        status: 400,
+        headers: BTreeMap::new(),
+        body: br#"{"error":{"status":"INVALID_ARGUMENT","message":"The registration token is not a valid FCM registration token"}}"#.to_vec(),
+    });
+    assert_eq!(
+        invalid_token_argument.1.unwrap().resolved_failure_class(),
+        ProviderFailureClass::DeviceTerminal
+    );
+
+    for (status, body, failure_class) in [
+        (
+            403,
+            json!({"error":{"status":"PERMISSION_DENIED","details":[{"errorCode":"SENDER_ID_MISMATCH"}]}}),
+            ProviderFailureClass::CredentialAuth,
+        ),
+        (
+            401,
+            json!({"error":{"status":"UNAUTHENTICATED"}}),
+            ProviderFailureClass::CredentialAuth,
+        ),
+        (
+            400,
+            json!({"error":{"status":"INVALID_ARGUMENT","message":"invalid payload field"}}),
+            ProviderFailureClass::CallerPayload,
+        ),
+    ] {
+        let classification = classify_fcm_response(&response(status, body));
+        assert_eq!(classification.0, DeliveryOutcome::Rejected);
+        assert_eq!(
+            classification.1.unwrap().resolved_failure_class(),
+            failure_class
+        );
+    }
+
+    for (status, failure_class) in [
+        (429, ProviderFailureClass::ProviderQuota),
+        (503, ProviderFailureClass::ProviderTransient),
+    ] {
+        let classification = classify_fcm_response(&response(status, json!({})));
+        assert_eq!(classification.0, DeliveryOutcome::Retryable);
+        assert_eq!(
+            classification.1.unwrap().resolved_failure_class(),
+            failure_class
+        );
+    }
+}
+
+#[test]
+fn apns_failure_classification_keeps_topic_auth_and_quota_off_device_health() {
+    for reason in ["BadDeviceToken", "Unregistered"] {
+        let status = if reason == "Unregistered" { 410 } else { 400 };
+        let classification = classify_apns_response(&response(status, json!({"reason": reason})));
+        assert_eq!(classification.0, DeliveryOutcome::Rejected);
+        assert_eq!(
+            classification.1.unwrap().resolved_failure_class(),
+            ProviderFailureClass::DeviceTerminal,
+            "{reason}"
+        );
+    }
+
+    for reason in ["BadTopic", "DeviceTokenNotForTopic"] {
+        let classification = classify_apns_response(&response(400, json!({"reason": reason})));
+        assert_eq!(
+            classification.1.unwrap().resolved_failure_class(),
+            ProviderFailureClass::CredentialAuth,
+            "{reason}"
+        );
+    }
+
+    let expired_provider_token =
+        classify_apns_response(&response(403, json!({"reason": "ExpiredProviderToken"})));
+    assert_eq!(expired_provider_token.0, DeliveryOutcome::Retryable);
+    assert_eq!(
+        expired_provider_token.1.unwrap().resolved_failure_class(),
+        ProviderFailureClass::CredentialAuth
+    );
+
+    for (status, failure_class) in [
+        (429, ProviderFailureClass::ProviderQuota),
+        (500, ProviderFailureClass::ProviderTransient),
+    ] {
+        let classification = classify_apns_response(&response(status, json!({})));
+        assert_eq!(classification.0, DeliveryOutcome::Retryable);
+        assert_eq!(
+            classification.1.unwrap().resolved_failure_class(),
+            failure_class
+        );
+    }
+}
+
+#[test]
+fn webpush_failure_classification_separates_subscription_auth_quota_and_provider_errors() {
+    for status in [404, 410] {
+        let classification = classify_webpush_response(&response(status, json!({})));
+        assert_eq!(classification.0, DeliveryOutcome::Rejected);
+        assert_eq!(
+            classification.1.unwrap().resolved_failure_class(),
+            ProviderFailureClass::DeviceTerminal,
+            "{status}"
+        );
+    }
+
+    for (status, outcome, failure_class) in [
+        (
+            401,
+            DeliveryOutcome::Rejected,
+            ProviderFailureClass::CredentialAuth,
+        ),
+        (
+            403,
+            DeliveryOutcome::Rejected,
+            ProviderFailureClass::CredentialAuth,
+        ),
+        (
+            429,
+            DeliveryOutcome::Retryable,
+            ProviderFailureClass::ProviderQuota,
+        ),
+        (
+            503,
+            DeliveryOutcome::Retryable,
+            ProviderFailureClass::ProviderTransient,
+        ),
+    ] {
+        let classification = classify_webpush_response(&response(status, json!({})));
+        assert_eq!(classification.0, outcome);
+        assert_eq!(
+            classification.1.unwrap().resolved_failure_class(),
+            failure_class,
+            "{status}"
+        );
     }
 }
 
@@ -329,7 +489,12 @@ fn provider_outage_responses_are_retryable() {
         classify_fcm_response,
     );
     assert_eq!(timeout.outcome, DeliveryOutcome::Retryable);
-    assert_eq!(timeout.error.unwrap().class, "unavailable");
+    let error = timeout.error.unwrap();
+    assert_eq!(error.class, "network_transport");
+    assert_eq!(
+        error.resolved_failure_class(),
+        ProviderFailureClass::NetworkTransport
+    );
 }
 
 #[test]
@@ -579,9 +744,19 @@ async fn native_web_push_crypto_encrypts_and_signs_request() {
 #[test]
 fn invalid_token_classes_are_cleanup_signals() {
     let (_, error, _) = classify_webpush_response(&response(410, json!({})));
-    assert_eq!(error.unwrap().class, "invalid_token");
+    let error = error.unwrap();
+    assert_eq!(error.class, "invalid_token");
+    assert_eq!(
+        error.resolved_failure_class(),
+        ProviderFailureClass::DeviceTerminal
+    );
     let (_, error, _) = classify_apns_response(&response(410, json!({})));
-    assert_eq!(error.unwrap().class, "invalid_token");
+    let error = error.unwrap();
+    assert_eq!(error.class, "invalid_token");
+    assert_eq!(
+        error.resolved_failure_class(),
+        ProviderFailureClass::DeviceTerminal
+    );
 }
 
 fn cached_static_token(raw: &str, expires_at_ms: u64) -> CachedTokenProvider {

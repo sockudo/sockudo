@@ -11,12 +11,13 @@ use super::http::{
     ProviderEndpointConfig, ProviderHttpClient, ProviderHttpRequest, ProviderHttpResponse,
 };
 use super::outcome::{
-    ProviderClassification, classify_http_result, json_request, recipient_token, rejected,
-    render_payload_json, result_from_error, retryable,
+    ProviderClassification, classify_http_result, json_field, json_request, recipient_token,
+    rejected, render_payload_json, result_from_error, retryable,
 };
 use super::{HealthStatus, PushDispatcher};
 use crate::domain::{
-    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,
+    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
+    ProviderFailureClass, PushProviderKind,
 };
 use crate::pipeline::now_ms;
 
@@ -81,6 +82,7 @@ impl ApnsDispatcher {
         };
         let device_token = recipient_token(&job.recipient).ok_or_else(|| ProviderError {
             class: "invalid_token".to_owned(),
+            failure_class: ProviderFailureClass::DeviceTerminal,
             reason: Some("apns device token is missing".to_owned()),
             retry_after_ms: None,
         })?;
@@ -169,16 +171,73 @@ pub(super) fn classify_apns_response(response: &ProviderHttpResponse) -> Provide
             response.headers.get("apns-id").cloned(),
         );
     }
+    let reason = apns_reason(response);
     match response.status {
-        400 => rejected("invalid_payload", response, None),
-        403 if is_apns_expired_provider_token_response(response) => {
-            retryable("auth_failure", response)
+        400 if apns_reason_matches(reason.as_deref(), &["BadDeviceToken"]) => rejected(
+            "invalid_token",
+            ProviderFailureClass::DeviceTerminal,
+            response,
+            reason.as_deref(),
+        ),
+        400 if apns_reason_matches(
+            reason.as_deref(),
+            &[
+                "BadCertificateEnvironment",
+                "BadTopic",
+                "DeviceTokenNotForTopic",
+                "TopicDisallowed",
+            ],
+        ) =>
+        {
+            rejected(
+                "apns_topic_mismatch",
+                ProviderFailureClass::CredentialAuth,
+                response,
+                reason.as_deref(),
+            )
         }
-        403 => rejected("auth_failure", response, None),
-        410 => rejected("invalid_token", response, Some("unregistered")),
-        429 => retryable("quota", response),
-        500 | 503 => retryable("unavailable", response),
-        _ => rejected("provider_rejected", response, None),
+        400 => rejected(
+            "invalid_payload",
+            ProviderFailureClass::CallerPayload,
+            response,
+            reason.as_deref(),
+        ),
+        403 if is_apns_expired_provider_token_response(response) => retryable(
+            "auth_failure",
+            ProviderFailureClass::CredentialAuth,
+            response,
+        ),
+        403 if apns_reason_matches(reason.as_deref(), &["TooManyProviderTokenUpdates"]) => {
+            retryable(
+                "auth_failure",
+                ProviderFailureClass::CredentialAuth,
+                response,
+            )
+        }
+        403 => rejected(
+            "auth_failure",
+            ProviderFailureClass::CredentialAuth,
+            response,
+            reason.as_deref(),
+        ),
+        410 => rejected(
+            "invalid_token",
+            ProviderFailureClass::DeviceTerminal,
+            response,
+            Some("unregistered"),
+        ),
+        429 => retryable("quota", ProviderFailureClass::ProviderQuota, response),
+        500 | 503 => retryable(
+            "unavailable",
+            ProviderFailureClass::ProviderTransient,
+            response,
+        ),
+        _ => rejected(
+            "provider_rejected",
+            ProviderFailureClass::Unknown,
+            response,
+            reason.as_deref(),
+        ),
     }
 }
 
@@ -196,4 +255,17 @@ fn is_apns_expired_provider_token_response(response: &ProviderHttpResponse) -> b
         && String::from_utf8_lossy(&response.body)
             .to_ascii_lowercase()
             .contains("expiredprovidertoken")
+}
+
+fn apns_reason(response: &ProviderHttpResponse) -> Option<String> {
+    json_field(&response.body, &["reason"]).or_else(|| json_field(&response.body, &["error"]))
+}
+
+fn apns_reason_matches(reason: Option<&str>, values: &[&str]) -> bool {
+    let Some(reason) = reason else {
+        return false;
+    };
+    values
+        .iter()
+        .any(|value| reason.eq_ignore_ascii_case(value))
 }

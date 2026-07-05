@@ -604,7 +604,8 @@ mod tests {
     use sonic_rs::json;
 
     use crate::domain::{
-        DeliveryOutcome, DeliveryResult, PushPayload, PushProviderKind, PushRecipient, SecretString,
+        DeliveryOutcome, DeliveryResult, ProviderFailureClass, PushPayload, PushProviderKind,
+        PushRecipient, SecretString,
     };
     use crate::memory::MemoryPushStore;
     use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueueError, QueueAckToken};
@@ -848,6 +849,7 @@ mod tests {
                 provider_message_id: None,
                 error: Some(ProviderError {
                     class: "unavailable".to_owned(),
+                    failure_class: ProviderFailureClass::ProviderTransient,
                     reason: None,
                     retry_after_ms: None,
                 }),

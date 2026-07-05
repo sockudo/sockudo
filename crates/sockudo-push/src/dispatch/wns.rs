@@ -15,7 +15,8 @@ use super::outcome::{
 };
 use super::{HealthStatus, PushDispatcher};
 use crate::domain::{
-    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,
+    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
+    ProviderFailureClass, PushProviderKind,
 };
 use crate::pipeline::now_ms;
 
@@ -42,6 +43,7 @@ impl WnsDispatcher {
     ) -> Result<ProviderHttpRequest, ProviderError> {
         let channel_uri = recipient_token(&job.recipient).ok_or_else(|| ProviderError {
             class: "invalid_token".to_owned(),
+            failure_class: ProviderFailureClass::DeviceTerminal,
             reason: Some("wns channel URI is missing".to_owned()),
             retry_after_ms: None,
         })?;
@@ -105,12 +107,36 @@ pub(super) fn classify_wns_response(response: &ProviderHttpResponse) -> Provider
         );
     }
     match response.status {
-        404 | 410 => rejected("invalid_token", response, None),
-        401 | 403 => rejected("auth_failure", response, None),
-        413 => rejected("invalid_payload", response, Some("payload_too_large")),
-        429 => retryable("quota", response),
-        500..=599 => retryable("unavailable", response),
-        _ => rejected("provider_rejected", response, None),
+        404 | 410 => rejected(
+            "invalid_token",
+            ProviderFailureClass::DeviceTerminal,
+            response,
+            None,
+        ),
+        401 | 403 => rejected(
+            "auth_failure",
+            ProviderFailureClass::CredentialAuth,
+            response,
+            None,
+        ),
+        413 => rejected(
+            "invalid_payload",
+            ProviderFailureClass::CallerPayload,
+            response,
+            Some("payload_too_large"),
+        ),
+        429 => retryable("quota", ProviderFailureClass::ProviderQuota, response),
+        500..=599 => retryable(
+            "unavailable",
+            ProviderFailureClass::ProviderTransient,
+            response,
+        ),
+        _ => rejected(
+            "provider_rejected",
+            ProviderFailureClass::Unknown,
+            response,
+            None,
+        ),
     }
 }
 
@@ -122,6 +148,7 @@ fn validate_wns_payload(payload: &Value) -> Result<(), ProviderError> {
     if !matches!(kind, "toast" | "tile" | "raw") {
         return Err(ProviderError {
             class: "invalid_payload".to_owned(),
+            failure_class: ProviderFailureClass::CallerPayload,
             reason: Some("invalid WNS notification type".to_owned()),
             retry_after_ms: None,
         });

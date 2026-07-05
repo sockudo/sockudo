@@ -316,6 +316,18 @@
           "expr": "sum by (app) (rate(sockudo_push_stale_devices_removed_total{app=~\"$app\"}[5m]))",
           "legendFormat": "{{app}} stale removed",
           "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,failure_class) (rate(sockudo_push_provider_failures_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{failure_class}}",
+          "refId": "E"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider) (rate(sockudo_push_token_invalidation_guard_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} invalidation guard",
+          "refId": "F"
         }
       ],
       "title": "Feedback And Cleanup",

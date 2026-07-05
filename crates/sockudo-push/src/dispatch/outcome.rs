@@ -5,8 +5,8 @@ use sonic_rs::prelude::*;
 
 use super::http::{ProviderHttpMethod, ProviderHttpRequest, ProviderHttpResponse};
 use crate::domain::{
-    DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind, PushRecipient,
-    SecretString,
+    DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, ProviderFailureClass,
+    PushProviderKind, PushRecipient, SecretString,
 };
 use crate::pipeline::now_ms;
 use crate::transform::render_provider_payload;
@@ -22,6 +22,7 @@ pub(super) fn render_payload_json(
         if rendered.provider != provider {
             return Err(ProviderError {
                 class: "invalid_payload".to_owned(),
+                failure_class: ProviderFailureClass::CallerPayload,
                 reason: Some("cached provider payload does not match dispatcher".to_owned()),
                 retry_after_ms: None,
             });
@@ -32,6 +33,7 @@ pub(super) fn render_payload_json(
         .map(|rendered| rendered.payload)
         .map_err(|error| ProviderError {
             class: "invalid_payload".to_owned(),
+            failure_class: ProviderFailureClass::CallerPayload,
             reason: Some(error.to_string()),
             retry_after_ms: None,
         })
@@ -58,6 +60,7 @@ pub(super) fn json_request_with_content_type(
         .or_insert_with(|| content_type.unwrap_or("application/json").to_owned());
     let body = sonic_rs::to_vec(&payload).map_err(|_| ProviderError {
         class: "invalid_payload".to_owned(),
+        failure_class: ProviderFailureClass::CallerPayload,
         reason: Some("provider payload serialization failed".to_owned()),
         retry_after_ms: None,
     })?;
@@ -101,12 +104,13 @@ pub(super) fn classify_http_result(
                 attempt: job.attempt,
             }
         }
-        Err(error) => result_from_error(
+        Err(_) => result_from_error(
             job,
             DeliveryOutcome::Retryable,
             ProviderError {
-                class: "unavailable".to_owned(),
-                reason: Some(error),
+                class: "network_transport".to_owned(),
+                failure_class: ProviderFailureClass::NetworkTransport,
+                reason: Some("provider transport failure".to_owned()),
                 retry_after_ms: None,
             },
         ),
@@ -115,21 +119,27 @@ pub(super) fn classify_http_result(
 
 pub(super) fn rejected(
     class: &str,
+    failure_class: ProviderFailureClass,
     response: &ProviderHttpResponse,
     reason: Option<&str>,
 ) -> ProviderClassification {
     (
         DeliveryOutcome::Rejected,
-        Some(provider_error(class, response, reason, None)),
+        Some(provider_error(class, failure_class, response, reason, None)),
         None,
     )
 }
 
-pub(super) fn retryable(class: &str, response: &ProviderHttpResponse) -> ProviderClassification {
+pub(super) fn retryable(
+    class: &str,
+    failure_class: ProviderFailureClass,
+    response: &ProviderHttpResponse,
+) -> ProviderClassification {
     (
         DeliveryOutcome::Retryable,
         Some(provider_error(
             class,
+            failure_class,
             response,
             None,
             retry_after_ms(&response.headers),
@@ -140,12 +150,14 @@ pub(super) fn retryable(class: &str, response: &ProviderHttpResponse) -> Provide
 
 fn provider_error(
     class: &str,
+    failure_class: ProviderFailureClass,
     response: &ProviderHttpResponse,
     reason: Option<&str>,
     retry_after_ms: Option<u64>,
 ) -> ProviderError {
     ProviderError {
         class: class.to_owned(),
+        failure_class,
         reason: reason
             .map(str::to_owned)
             .or_else(|| json_field(&response.body, &["error", "status"]))

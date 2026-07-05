@@ -68,12 +68,12 @@ log work or enqueueing the pipeline.
 
 ## Retry and dead letters
 
-Provider throttling, 5xx responses, and transport failures are classified as retryable. Feedback
-workers schedule retry entries on `push.retry.v1` with the original delivery job context, a
-deterministic retry idempotency key, the next attempt number, the first-attempt timestamp, retry
-deadline, and the provider error class. Retry scheduler workers consume only due entries, respect
-provider `Retry-After` deadlines when configured, and otherwise use bounded exponential backoff with
-deterministic jitter.
+Provider throttling, 5xx responses, and transport failures are classified as retryable provider,
+quota, or network failures. Feedback workers schedule retry entries on `push.retry.v1` with the
+original delivery job context, a deterministic retry idempotency key, the next attempt number, the
+first-attempt timestamp, retry deadline, and the provider error class. Retry scheduler workers
+consume only due entries, respect provider `Retry-After` deadlines when configured, and otherwise
+use bounded exponential backoff with deterministic jitter.
 
 Retries stop at the earliest of `max_attempts`, `max_elapsed_secs`, or the publish/job
 `expires_at_ms`. Exhausted retry work is emitted to `push.deadletters.v1` and the publish status
@@ -91,12 +91,37 @@ Retry scheduling preserves the original timing window and does not run past publ
 Operators inspect aggregate status with `GET /apps/{appId}/push/publish/{publishId}/status`, retry
 and dead-letter queue lag through the health/backpressure surfaces, and metrics such as
 `sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`,
-`sockudo_push_retry_dead_lettered_total`, and `sockudo_push_retry_malformed_total`.
+`sockudo_push_retry_dead_lettered_total`, `sockudo_push_retry_malformed_total`, and
+`sockudo_push_provider_failures_total{failure_class=...}`.
 
 Upgrade note: provider workers now enqueue internal `deliveryFeedback` payloads on
 `push.results.v1` so feedback workers can schedule retries with replayable job context. Older
 `deliveryResult` payloads are still accepted, but retryable legacy results without job context are
 dead-lettered instead of being retried blindly.
+
+## Device invalidation safety
+
+Sockudo deletes or terminally invalidates a device only for device-specific terminal failures:
+
+- FCM `UNREGISTERED`, `registration-token-not-registered`, or an `INVALID_ARGUMENT` response that
+  specifically identifies the registration token as invalid.
+- APNs `BadDeviceToken` or `Unregistered`.
+- Web Push, HMS, and WNS expired subscription/channel responses such as `404` or `410`.
+
+Provider-wide failures do not increment device failure counts and do not delete devices. This
+includes FCM `SENDER_ID_MISMATCH` or project mismatch, APNs topic/environment/auth failures, Web
+Push VAPID/auth failures, provider `429` quota responses, provider `5xx` responses, DNS/TLS/network
+transport failures, and caller payload errors. These outcomes still update publish status, schedule
+retry or dead-letter work according to the retry policy, and emit classified metrics.
+
+Operators should treat `credential_auth` and project/topic mismatch failures as credential or
+configuration incidents: rotate or fix the provider credential, project id, APNs topic/environment,
+or VAPID configuration, then replay or republish as appropriate. Do not purge device registries for
+these classes. The `sockudo_push_provider_failures_total{failure_class=...}` metric separates
+`device_terminal`, `provider_transient`, `provider_quota`, `credential_auth`, `caller_payload`,
+`network_transport`, and `unknown` failures. The `sockudo_push_token_invalidation_guard_total`
+metric and `token-invalidation-guard` meta event fire when a publish crosses the built-in
+invalidation spike threshold.
 
 ## Configure providers
 

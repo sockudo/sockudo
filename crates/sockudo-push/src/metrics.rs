@@ -62,6 +62,14 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
         "sockudo_push_token_invalidations_total",
         &["provider", "app"],
     ),
+    PushMetricSpec::counter(
+        "sockudo_push_provider_failures_total",
+        &["provider", "failure_class", "app"],
+    ),
+    PushMetricSpec::counter(
+        "sockudo_push_token_invalidation_guard_total",
+        &["provider", "app"],
+    ),
     PushMetricSpec::counter("sockudo_push_quota_acceptance_rejections_total", &["app"]),
     PushMetricSpec::counter("sockudo_push_quota_delivery_rejections_total", &["app"]),
     PushMetricSpec::gauge("sockudo_push_quota_consumed_acceptance", &["app"]),
@@ -396,6 +404,31 @@ impl PushMetrics {
         );
     }
 
+    pub fn provider_failure_class(
+        &self,
+        provider: PushProviderKind,
+        app_id: &str,
+        failure_class: &str,
+    ) {
+        self.counter(
+            "sockudo_push_provider_failures_total",
+            &[
+                ("provider", provider_label(provider)),
+                ("failure_class", failure_class),
+                ("app", app_id),
+            ],
+            1,
+        );
+    }
+
+    pub fn token_invalidation_guard(&self, provider: PushProviderKind, app_id: &str) {
+        self.counter(
+            "sockudo_push_token_invalidation_guard_total",
+            &[("provider", provider_label(provider)), ("app", app_id)],
+            1,
+        );
+    }
+
     pub fn quota_acceptance_rejected(&self, app_id: &str) {
         self.counter(
             "sockudo_push_quota_acceptance_rejections_total",
@@ -678,6 +711,8 @@ mod tests {
             "sockudo_push_devices_total",
             "sockudo_push_device_state_transitions_total",
             "sockudo_push_token_invalidations_total",
+            "sockudo_push_provider_failures_total",
+            "sockudo_push_token_invalidation_guard_total",
             "sockudo_push_quota_acceptance_rejections_total",
             "sockudo_push_quota_delivery_rejections_total",
             "sockudo_push_quota_consumed_acceptance",

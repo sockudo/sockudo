@@ -1262,20 +1262,103 @@ pub enum DeliveryOutcome {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFailureClass {
+    DeviceTerminal,
+    DeviceTransient,
+    ProviderTransient,
+    ProviderQuota,
+    CredentialAuth,
+    CallerPayload,
+    NetworkTransport,
+    #[default]
+    Unknown,
+}
+
+impl ProviderFailureClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DeviceTerminal => "device_terminal",
+            Self::DeviceTransient => "device_transient",
+            Self::ProviderTransient => "provider_transient",
+            Self::ProviderQuota => "provider_quota",
+            Self::CredentialAuth => "credential_auth",
+            Self::CallerPayload => "caller_payload",
+            Self::NetworkTransport => "network_transport",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn is_device_terminal(self) -> bool {
+        matches!(self, Self::DeviceTerminal)
+    }
+
+    pub fn is_device_transient(self) -> bool {
+        matches!(self, Self::DeviceTransient)
+    }
+
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderError {
     pub class: String,
+    #[serde(default, skip_serializing_if = "ProviderFailureClass::is_unknown")]
+    pub failure_class: ProviderFailureClass,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
 }
 
+impl ProviderError {
+    pub fn resolved_failure_class(&self) -> ProviderFailureClass {
+        if !self.failure_class.is_unknown() {
+            return self.failure_class;
+        }
+        ProviderFailureClass::from_legacy_error(&self.class, self.reason.as_deref())
+    }
+}
+
+impl ProviderFailureClass {
+    fn from_legacy_error(class: &str, reason: Option<&str>) -> Self {
+        match class {
+            "invalid_token" | "unregistered" | "not_registered" | "expired_channel" => {
+                if reason.is_some_and(|reason| reason.eq_ignore_ascii_case("sender_id_mismatch")) {
+                    Self::CredentialAuth
+                } else {
+                    Self::DeviceTerminal
+                }
+            }
+            "device_transient" => Self::DeviceTransient,
+            "quota" => Self::ProviderQuota,
+            "unavailable" => Self::ProviderTransient,
+            "auth_failure" => Self::CredentialAuth,
+            "invalid_payload" => Self::CallerPayload,
+            "network_transport" => Self::NetworkTransport,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub(crate) fn from_legacy_url_class(class: &str) -> Self {
+        match class {
+            "invalid_token" => Self::DeviceTerminal,
+            "invalid_payload" => Self::CallerPayload,
+            "auth_failure" => Self::CredentialAuth,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl fmt::Debug for ProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProviderError")
             .field("class", &self.class)
+            .field("failure_class", &self.resolved_failure_class())
             .field("reason", &self.reason.as_ref().map(|_| "[REDACTED]"))
             .field("retry_after_ms", &self.retry_after_ms)
             .finish()
@@ -1890,6 +1973,7 @@ mod tests {
 
         let provider_error = ProviderError {
             class: "invalid-token".to_owned(),
+            failure_class: ProviderFailureClass::DeviceTerminal,
             reason: Some("token fcm-token-secret rejected".to_owned()),
             retry_after_ms: None,
         };

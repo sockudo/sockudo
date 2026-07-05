@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
 
-use crate::domain::{DeliveryOutcome, DevicePushState, PushProviderKind};
+use crate::domain::{DeliveryOutcome, DevicePushState, ProviderFailureClass, PushProviderKind};
 use crate::metrics::{delivery_outcome_label, device_state_label, provider_label};
 
 pub const PUSH_META_LOG_TARGET: &str = "[meta]log:push";
@@ -31,6 +31,7 @@ pub enum PushMetaEventKind {
     DeviceStateChanged,
     ProviderRejected,
     TokenInvalidated,
+    TokenInvalidationGuard,
     QuotaEvent,
     SchedulerEvent,
     CircuitBreakerEvent,
@@ -82,6 +83,7 @@ impl PushMetaEvent {
         provider: PushProviderKind,
         outcome: DeliveryOutcome,
         class: Option<&str>,
+        failure_class: Option<ProviderFailureClass>,
     ) -> Self {
         Self {
             event: PushMetaEventKind::ProviderRejected,
@@ -90,18 +92,43 @@ impl PushMetaEvent {
             provider: Some(Cow::Borrowed(provider_label(provider))),
             detail: json!({
                 "outcome": delivery_outcome_label(outcome),
-                "class": class
+                "class": class,
+                "failureClass": failure_class
+                    .unwrap_or(ProviderFailureClass::Unknown)
+                    .label()
             }),
         }
     }
 
     pub fn token_invalidated(app_id: &str, publish_id: &str, provider: PushProviderKind) -> Self {
         Self {
-            event: PushMetaEventKind::TokenInvalidated,
+            event: PushMetaEventKind::TokenInvalidationGuard,
             app_id: app_id.to_owned(),
             publish_id: Some(publish_id.to_owned()),
             provider: Some(Cow::Borrowed(provider_label(provider))),
             detail: Value::new_null(),
+        }
+    }
+
+    pub fn token_invalidation_guard(
+        app_id: &str,
+        publish_id: &str,
+        provider: PushProviderKind,
+        planned: u64,
+        failed: u64,
+        threshold_percent: u64,
+    ) -> Self {
+        Self {
+            event: PushMetaEventKind::TokenInvalidated,
+            app_id: app_id.to_owned(),
+            publish_id: Some(publish_id.to_owned()),
+            provider: Some(Cow::Borrowed(provider_label(provider))),
+            detail: json!({
+                "action": "invalidation-spike-guard",
+                "planned": planned,
+                "failed": failed,
+                "thresholdPercent": threshold_percent
+            }),
         }
     }
 
@@ -175,6 +202,7 @@ mod tests {
             PushProviderKind::Fcm,
             DeliveryOutcome::Rejected,
             Some("invalid_token"),
+            Some(ProviderFailureClass::DeviceTerminal),
         );
         let serialized = sonic_rs::to_string(&event).unwrap();
 

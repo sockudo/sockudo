@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::domain::{ProviderError, SecretString};
+use crate::domain::{ProviderError, ProviderFailureClass, SecretString};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderAccessToken {
@@ -136,6 +136,7 @@ pub struct ProviderAuthError {
 pub(super) fn auth_error(error: ProviderAuthError) -> ProviderError {
     ProviderError {
         class: error.class.to_owned(),
+        failure_class: ProviderFailureClass::CredentialAuth,
         reason: Some(error.reason),
         retry_after_ms: None,
     }

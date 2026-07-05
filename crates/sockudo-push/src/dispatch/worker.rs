@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::PushDispatcher;
 use crate::domain::{
     DeliveryBatch, DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
-    PushProviderKind, provider_key, stable_hash,
+    ProviderFailureClass, PushProviderKind, provider_key, stable_hash,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
@@ -166,7 +166,10 @@ impl ProviderDispatchWorker {
                     batch_id = %result.batch_id,
                     outcome = ?result.outcome,
                     error_class = result.error.as_ref().map(|error| error.class.as_str()),
-                    error_reason = result.error.as_ref().and_then(|error| error.reason.as_deref()),
+                    failure_class = result
+                        .error
+                        .as_ref()
+                        .map(|error| error.resolved_failure_class().label()),
                     retry_after_ms = result.error.as_ref().and_then(|error| error.retry_after_ms),
                     "push dispatch failure"
                 );
@@ -355,6 +358,7 @@ impl ProviderDispatchWorker {
             provider_message_id: None,
             error: Some(ProviderError {
                 class: "expired".to_owned(),
+                failure_class: ProviderFailureClass::Unknown,
                 reason: Some("delivery expired before provider dispatch".to_owned()),
                 retry_after_ms: None,
             }),
