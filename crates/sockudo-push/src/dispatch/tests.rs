@@ -966,6 +966,7 @@ fn queue_message(app_id: &str, index: usize) -> QueueMessage {
         partition: 0,
         payload: PushQueuePayload::DeliveryBatch(Box::new(batch)),
         attempt: 1,
+        enqueued_at_ms: crate::pipeline::now_ms(),
         not_before_ms: None,
         lease_deadline_ms: 0,
         ack: crate::pipeline::QueueAckToken {

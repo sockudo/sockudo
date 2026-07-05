@@ -934,6 +934,7 @@ mod tests {
                 partition: 0,
                 payload,
                 attempt: 1,
+                enqueued_at_ms: crate::pipeline::now_ms(),
                 not_before_ms: None,
                 lease_deadline_ms: u64::MAX,
                 ack: QueueAckToken {

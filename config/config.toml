@@ -125,6 +125,8 @@ fanout_fast_threshold = 10000
 fanout_shard_size = 100000
 # 0 means the Publish API remains async-only and returns 202 after durable admission.
 fanout_sync_threshold = 0
+# Oldest ready/inflight push queue item age tolerated before admission backpressure.
+# Set 0 to rely only on queue-depth thresholds.
 backpressure_lag_threshold_secs = 60
 publish_status_ttl_days = 30
 stale_device_max_age_days = 90
@@ -137,6 +139,9 @@ dry_run = false
 analytics_enabled = true
 analytics_retention_days = 30
 scheduler_interval_secs = 5
+repair_interval_secs = 30
+repair_min_age_secs = 30
+repair_batch_size = 100
 cleanup_interval_secs = 300
 cleanup_batch_size = 1000
 cleanup_max_deleted_per_tick = 100000

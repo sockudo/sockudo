@@ -1,5 +1,6 @@
 use super::queue::push_queue_now_ms;
 use futures_util::FutureExt;
+use sockudo_core::app::AppManager;
 use sockudo_core::options::{PushStorageDriver, ServerOptions};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -52,6 +53,20 @@ fn push_cleanup_policy(config: &ServerOptions) -> sockudo_push::PushCleanupPolic
 }
 
 #[cfg(all(feature = "push", feature = "monolith"))]
+fn push_repair_policy(config: &ServerOptions) -> sockudo_push::PushRepairPolicy {
+    sockudo_push::PushRepairPolicy {
+        batch_size: config.push.repair_batch_size,
+        min_age_ms: config.push.repair_min_age_secs.saturating_mul(1_000),
+        lock_ttl_ms: config
+            .push
+            .repair_interval_secs
+            .max(config.push.repair_min_age_secs)
+            .saturating_mul(1_000),
+    }
+    .bounded()
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
 fn push_storage_backend_label(config: &ServerOptions) -> &'static str {
     match config.push.storage_driver {
         PushStorageDriver::Memory => "memory",
@@ -99,10 +114,13 @@ pub(crate) fn start_push_monolith_workers(
     config: &ServerOptions,
     store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
+    app_manager: std::sync::Arc<dyn AppManager + Send + Sync>,
 ) -> Vec<JoinHandle<()>> {
     let fanout_config = push_fanout_config(config);
     let retry_policy = push_retry_policy(config);
     let cleanup_policy = push_cleanup_policy(config);
+    let repair_policy = push_repair_policy(config);
+    let repair_interval = sockudo_push::interval_from_secs(config.push.repair_interval_secs);
     let cleanup_interval = sockudo_push::interval_from_secs(config.push.cleanup_interval_secs);
     let cleanup_backend = push_storage_backend_label(config);
     let mut handles = Vec::new();
@@ -257,6 +275,49 @@ pub(crate) fn start_push_monolith_workers(
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
+                }
+            },
+        ));
+    }
+
+    if config.push.repair_interval_secs > 0 {
+        let repair = sockudo_push::PushPublishLogRepairWorker::new(
+            store.clone(),
+            queue.clone(),
+            "sockudo-monolith-repair",
+        )
+        .with_policy(repair_policy);
+        let app_manager = app_manager.clone();
+        handles.push(spawn_supervised_worker(
+            "repair",
+            "sockudo-monolith-repair".to_owned(),
+            move |group| {
+                let repair = repair.clone();
+                let app_manager = app_manager.clone();
+                async move {
+                    warn!(worker = %group, "push repair worker started");
+                    loop {
+                        let now = push_queue_now_ms();
+                        match app_manager.get_apps().await {
+                            Ok(apps) => {
+                                for app in apps {
+                                    match repair.run_once_for_app(&app.id, now).await {
+                                        Ok(report) if report.repaired_any() => {
+                                            warn!(worker = %group, app_id = %app.id, scanned = report.scanned, requeued = report.requeued, "push repair worker requeued stale publish-log work");
+                                        }
+                                        Ok(_) => {}
+                                        Err(error) => {
+                                            warn!(worker = %group, app_id = %app.id, error = %error, "push repair app tick failed");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                warn!(worker = %group, error = %error, "push repair app discovery failed");
+                            }
+                        }
+                        tokio::time::sleep(repair_interval).await;
+                    }
                 }
             },
         ));

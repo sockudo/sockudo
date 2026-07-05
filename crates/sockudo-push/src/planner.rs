@@ -12,10 +12,18 @@ use crate::pipeline::{
     PushPipelineError, PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage,
     dedupe_key,
 };
-use crate::storage::DynPushStore;
+use crate::storage::{DynPushStore, SchedulerLock};
 use crate::transform::render_all_provider_payloads;
 
 type RenderedPayloadMap = BTreeMap<PushProviderKind, Arc<RenderedProviderPayload>>;
+const PLANNER_LOCK_TTL_MS: u64 = 30_000;
+const PLANNER_LOCK_RETRY_DELAY_MS: u64 = 1_000;
+
+enum PlanningStart {
+    Started { lock_id: String },
+    AlreadyHandled,
+    Locked { retry_at_ms: u64 },
+}
 
 #[derive(Clone)]
 pub struct PushPlanner {
@@ -51,13 +59,17 @@ impl PushPlanner {
             .await?;
         let mut processed = 0;
         for message in messages {
-            self.handle_publish_message(message).await?;
+            self.handle_publish_message(message, consumer_group).await?;
             processed += 1;
         }
         Ok(processed)
     }
 
-    async fn handle_publish_message(&self, message: QueueMessage) -> PushPipelineResult<()> {
+    async fn handle_publish_message(
+        &self,
+        message: QueueMessage,
+        consumer_group: &str,
+    ) -> PushPipelineResult<()> {
         let started = Instant::now();
         let PushQueuePayload::PublishLog(event) = message.payload.clone() else {
             self.queue
@@ -66,23 +78,94 @@ impl PushPlanner {
             return Ok(());
         };
 
-        self.mark_state(&event, PublishLifecycleState::Planning)
-            .await?;
+        let lock_id = match self.begin_planning(&event, consumer_group).await? {
+            PlanningStart::Started { lock_id } => lock_id,
+            PlanningStart::AlreadyHandled => {
+                self.queue.ack(message.ack).await?;
+                return Ok(());
+            }
+            PlanningStart::Locked { retry_at_ms } => {
+                self.queue.nack(message.ack, Some(retry_at_ms)).await?;
+                return Ok(());
+            }
+        };
         let plan_result = match event.fanout_regime {
             FanoutRegime::FastPath => self.plan_fast_path(&event).await,
             FanoutRegime::ShardPath => self.plan_shard_path(&event).await,
         };
         if let Err(PushPipelineError::InvalidPayload(reason)) = plan_result {
             self.mark_failed(&event, reason.clone()).await?;
+            self.release_planner_lock(&event, &lock_id, consumer_group)
+                .await;
             self.queue.dead_letter(message.ack, reason).await?;
             return Ok(());
         }
-        plan_result?;
+        if let Err(error) = plan_result {
+            self.release_planner_lock(&event, &lock_id, consumer_group)
+                .await;
+            return Err(error);
+        }
         self.metrics.planner_duration(started.elapsed());
         self.mark_state(&event, PublishLifecycleState::Dispatching)
             .await?;
+        self.release_planner_lock(&event, &lock_id, consumer_group)
+            .await;
         self.queue.ack(message.ack).await?;
         Ok(())
+    }
+
+    async fn begin_planning(
+        &self,
+        event: &PublishLogEvent,
+        owner_id: &str,
+    ) -> PushPipelineResult<PlanningStart> {
+        if !self.publish_can_be_planned(event).await? {
+            return Ok(PlanningStart::AlreadyHandled);
+        }
+
+        let now_ms = crate::pipeline::now_ms();
+        let lock_id = planner_lock_id(&event.publish_id);
+        let lock = SchedulerLock {
+            app_id: event.app_id.clone(),
+            publish_id: lock_id.clone(),
+            owner_id: owner_id.to_owned(),
+            expires_at_ms: now_ms.saturating_add(PLANNER_LOCK_TTL_MS),
+        };
+        if !self.store.acquire_scheduler_lock(lock, now_ms).await? {
+            return Ok(PlanningStart::Locked {
+                retry_at_ms: now_ms.saturating_add(PLANNER_LOCK_RETRY_DELAY_MS),
+            });
+        }
+
+        if !self.publish_can_be_planned(event).await? {
+            self.release_planner_lock(event, &lock_id, owner_id).await;
+            return Ok(PlanningStart::AlreadyHandled);
+        }
+
+        self.mark_state(event, PublishLifecycleState::Planning)
+            .await?;
+        Ok(PlanningStart::Started { lock_id })
+    }
+
+    async fn publish_can_be_planned(&self, event: &PublishLogEvent) -> PushPipelineResult<bool> {
+        let Some(status) = self
+            .store
+            .get_publish_status(&event.app_id, &event.publish_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            status.state,
+            PublishLifecycleState::Queued | PublishLifecycleState::Planning
+        ))
+    }
+
+    async fn release_planner_lock(&self, event: &PublishLogEvent, lock_id: &str, owner_id: &str) {
+        let _ = self
+            .store
+            .release_scheduler_lock(&event.app_id, lock_id, owner_id)
+            .await;
     }
 
     async fn mark_state(
@@ -658,4 +741,120 @@ fn rendered_payload_map(
             .map(|payload| (payload.provider, Arc::new(payload)))
             .collect(),
     ))
+}
+
+fn planner_lock_id(publish_id: &str) -> String {
+    format!("planner:publish-log:{publish_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::domain::{
+        FanoutConfig, PublishIntent, PublishLifecycleState, PublishTarget, PushPayload,
+        PushProviderKind, PushRecipient, SecretString,
+    };
+    use crate::memory::MemoryPushStore;
+    use crate::pipeline::{
+        MemoryPushQueue, PushAcceptRequest, PushPipeline, PushQueue, PushQueuePayload,
+        PushQueueStage, QueueLagMetrics,
+    };
+    use crate::storage::{PushPublishLogStore, PushPublishStatusStore};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn duplicate_publish_log_after_dispatching_does_not_emit_more_delivery_jobs() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        accept_direct_publish(store.clone(), queue.clone(), 1_000).await;
+
+        let planner = PushPlanner::new(store.clone(), queue.clone(), FanoutConfig::default());
+        assert_eq!(planner.run_once("planner-a").await.unwrap(), 1);
+        assert_eq!(
+            delivery_lag(&queue, PushProviderKind::Fcm)
+                .await
+                .ready_depth,
+            1
+        );
+
+        let event = store
+            .list_publish_log_events("app-1", 10, None)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .next()
+            .unwrap();
+        queue
+            .produce(
+                PushQueueStage::PublishLog,
+                event.queue_key(),
+                PushQueuePayload::PublishLog(Box::new(event)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(planner.run_once("planner-b").await.unwrap(), 1);
+        assert_eq!(
+            delivery_lag(&queue, PushProviderKind::Fcm)
+                .await
+                .ready_depth,
+            1
+        );
+        assert_eq!(
+            store
+                .get_publish_status("app-1", "publish-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            PublishLifecycleState::Dispatching
+        );
+    }
+
+    async fn accept_direct_publish(
+        store: Arc<MemoryPushStore>,
+        queue: Arc<MemoryPushQueue>,
+        occurred_at_ms: u64,
+    ) {
+        PushPipeline::new(store, queue, FanoutConfig::default())
+            .accept_publish(
+                PushAcceptRequest {
+                    intent: PublishIntent {
+                        app_id: "app-1".to_owned(),
+                        publish_id: "publish-1".to_owned(),
+                        targets: vec![PublishTarget::Recipient {
+                            recipient: PushRecipient::Fcm {
+                                registration_token: SecretString::new("token-1").unwrap(),
+                            },
+                        }],
+                        payload: PushPayload {
+                            template_id: None,
+                            template_data: sonic_rs::json!({}),
+                            title: Some("hello".to_owned()),
+                            body: Some("body".to_owned()),
+                            icon: None,
+                            sound: None,
+                            collapse_key: None,
+                        },
+                        provider_overrides: Default::default(),
+                        not_before_ms: None,
+                        expires_at_ms: None,
+                    },
+                    expected_recipients: 1,
+                },
+                occurred_at_ms,
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn delivery_lag(queue: &MemoryPushQueue, provider: PushProviderKind) -> QueueLagMetrics {
+        queue
+            .lag(PushQueueStage::DeliveryJobs(provider))
+            .await
+            .unwrap()
+    }
 }

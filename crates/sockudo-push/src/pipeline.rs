@@ -62,6 +62,8 @@ pub struct QueueMessage {
     pub partition: u32,
     pub payload: PushQueuePayload,
     pub attempt: u32,
+    #[serde(default = "now_ms")]
+    pub enqueued_at_ms: u64,
     pub not_before_ms: Option<u64>,
     pub lease_deadline_ms: u64,
     pub ack: QueueAckToken,
@@ -74,6 +76,18 @@ pub struct QueueLagMetrics {
     pub delayed_depth: u64,
     pub inflight_depth: u64,
     pub dead_letter_depth: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_ready_age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_delayed_age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_inflight_age_ms: Option<u64>,
+}
+
+impl QueueLagMetrics {
+    pub fn oldest_actionable_age_ms(&self) -> Option<u64> {
+        max_optional_u64(self.oldest_ready_age_ms, self.oldest_inflight_age_ms)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,6 +509,7 @@ struct StoredMessage {
     route: QueueRoute,
     payload: PushQueuePayload,
     attempt: u32,
+    enqueued_at_ms: u64,
     not_before_ms: Option<u64>,
     lease_deadline_ms: u64,
 }
@@ -607,6 +622,7 @@ impl PushQueue for MemoryPushQueue {
                 partition: stored.route.partition,
                 payload: stored.payload.clone(),
                 attempt: stored.attempt,
+                enqueued_at_ms: stored.enqueued_at_ms,
                 not_before_ms: stored.not_before_ms,
                 lease_deadline_ms: stored.lease_deadline_ms,
                 ack: token.clone(),
@@ -673,6 +689,7 @@ impl PushQueue for MemoryPushQueue {
                     ),
                     payload: PushQueuePayload::DeadLetter(Box::new(dead_letter)),
                     attempt: 1,
+                    enqueued_at_ms: now_ms(),
                     not_before_ms: None,
                     lease_deadline_ms: 0,
                 });
@@ -759,16 +776,28 @@ impl PushQueue for MemoryPushQueue {
                     .is_some_and(|not_before| not_before > now)
                 {
                     metrics.delayed_depth += 1;
+                    metrics.oldest_delayed_age_ms = max_optional_u64(
+                        metrics.oldest_delayed_age_ms,
+                        Some(queue_message_age_ms(message, now)),
+                    );
                 } else {
                     metrics.ready_depth += 1;
+                    metrics.oldest_ready_age_ms = max_optional_u64(
+                        metrics.oldest_ready_age_ms,
+                        Some(queue_message_age_ms(message, now)),
+                    );
                 }
             }
         }
-        metrics.inflight_depth = inner
-            .inflight
-            .keys()
-            .filter(|(message_stage, _)| *message_stage == stage)
-            .count() as u64;
+        for ((message_stage, _), message) in &inner.inflight {
+            if *message_stage == stage {
+                metrics.inflight_depth += 1;
+                metrics.oldest_inflight_age_ms = max_optional_u64(
+                    metrics.oldest_inflight_age_ms,
+                    Some(queue_message_age_ms(message, now)),
+                );
+            }
+        }
         metrics.dead_letter_depth = inner.dead_letters.len() as u64;
         Ok(metrics)
     }
@@ -815,6 +844,7 @@ impl MemoryPushQueue {
                 route,
                 payload,
                 attempt: 1,
+                enqueued_at_ms: now_ms(),
                 not_before_ms,
                 lease_deadline_ms: 0,
             });
@@ -843,6 +873,18 @@ fn reclaim_expired_leases(inner: &mut MemoryQueueState, now_ms: u64) {
             message.lease_deadline_ms = 0;
             inner.ready.entry(stage).or_default().push_back(message);
         }
+    }
+}
+
+fn queue_message_age_ms(message: &StoredMessage, now_ms: u64) -> u64 {
+    now_ms.saturating_sub(message.enqueued_at_ms)
+}
+
+fn max_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
     }
 }
 
@@ -960,6 +1002,7 @@ impl PushPipeline {
             .map_err(|error| PushPipelineError::InvalidPayload(error.to_string()))?;
         let lag = self.queue.lag(PushQueueStage::PublishLog).await?;
         self.metrics.publish_log_lag_seconds(lag.ready_depth as f64);
+        self.metrics.queue_lag(PushQueueStage::PublishLog, &lag);
         if lag.ready_depth.saturating_add(lag.delayed_depth) >= self.max_publish_log_lag {
             self.metrics.publish_accepted(
                 &request.intent.app_id,
@@ -1327,6 +1370,9 @@ mod tests {
         let lag = queue.lag(PushQueueStage::PublishLog).await.unwrap();
         assert_eq!(lag.ready_depth, 1);
         assert_eq!(lag.delayed_depth, 1);
+        assert!(lag.oldest_ready_age_ms.is_some());
+        assert!(lag.oldest_delayed_age_ms.is_some());
+        assert_eq!(lag.oldest_inflight_age_ms, None);
 
         let mut messages = queue
             .consume(PushQueueStage::PublishLog, "worker", 1, 30_000)
@@ -1335,6 +1381,12 @@ mod tests {
         assert_eq!(messages.len(), 1);
         let message = messages.pop().unwrap();
         assert_eq!(message.attempt, 1);
+        assert!(message.enqueued_at_ms > 0);
+
+        let lag = queue.lag(PushQueueStage::PublishLog).await.unwrap();
+        assert_eq!(lag.ready_depth, 0);
+        assert_eq!(lag.inflight_depth, 1);
+        assert!(lag.oldest_inflight_age_ms.is_some());
 
         queue.nack(message.ack.clone(), None).await.unwrap();
         let message = queue
@@ -1349,6 +1401,8 @@ mod tests {
         let lag = queue.lag(PushQueueStage::PublishLog).await.unwrap();
         assert_eq!(lag.ready_depth, 0);
         assert_eq!(lag.delayed_depth, 1);
+        assert_eq!(lag.oldest_ready_age_ms, None);
+        assert!(lag.oldest_delayed_age_ms.is_some());
     }
 
     #[tokio::test]

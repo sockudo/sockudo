@@ -1837,12 +1837,20 @@ async fn enforce_backpressure(
     }
     let max_publish_log_lag =
         env_u64("PUSH_PUBLISH_LOG_MAX_LAG").unwrap_or(DEFAULT_PUSH_CRITICAL_QUEUE_MAX_LAG);
-    reject_on_stage_lag(queue, PushQueueStage::PublishLog, max_publish_log_lag).await?;
+    let max_queue_age_secs = env_u64("PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS")
+        .unwrap_or_else(|| admission.backpressure_lag_threshold_secs());
+    reject_on_stage_lag(
+        queue,
+        PushQueueStage::PublishLog,
+        max_publish_log_lag,
+        max_queue_age_secs,
+    )
+    .await?;
 
     let max_critical_lag =
         env_u64("PUSH_CRITICAL_QUEUE_MAX_LAG").unwrap_or(DEFAULT_PUSH_CRITICAL_QUEUE_MAX_LAG);
     for stage in critical_backpressure_stages(admission) {
-        reject_on_stage_lag(queue, stage, max_critical_lag).await?;
+        reject_on_stage_lag(queue, stage, max_critical_lag, max_queue_age_secs).await?;
     }
 
     Ok(())
@@ -1852,11 +1860,13 @@ async fn reject_on_stage_lag(
     queue: &DynPushQueue,
     stage: PushQueueStage,
     max_lag: u64,
+    max_queue_age_secs: u64,
 ) -> Result<(), AppError> {
     let lag = queue
         .lag(stage)
         .await
         .map_err(|error| AppError::InternalError(error.to_string()))?;
+    PUSH_HTTP_METRICS.queue_lag(stage, &lag);
     if stage == PushQueueStage::PublishLog {
         PUSH_HTTP_METRICS.publish_log_lag_seconds(lag.ready_depth as f64);
     }
@@ -1870,6 +1880,24 @@ async fn reject_on_stage_lag(
         );
         return Err(AppError::TooManyRequests {
             message: format!("push {} lag exceeded", queue_stage_label(stage)),
+            retry_after_seconds: env_u64("PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS")
+                .unwrap_or(DEFAULT_PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS),
+        });
+    }
+    let max_queue_age_ms = max_queue_age_secs.saturating_mul(1_000);
+    if max_queue_age_ms > 0
+        && lag
+            .oldest_actionable_age_ms()
+            .is_some_and(|age_ms| age_ms >= max_queue_age_ms)
+    {
+        warn!(
+            stage = %queue_stage_label(stage),
+            oldest_actionable_age_ms = lag.oldest_actionable_age_ms().unwrap_or_default(),
+            max_queue_age_ms,
+            "push publish rejected by queue-stage age backpressure"
+        );
+        return Err(AppError::TooManyRequests {
+            message: format!("push {} age exceeded", queue_stage_label(stage)),
             retry_after_seconds: env_u64("PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS")
                 .unwrap_or(DEFAULT_PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS),
         });
@@ -2380,6 +2408,84 @@ mod tests {
                     std::env::remove_var(self.key);
                 }
             }
+        }
+    }
+
+    struct LagOnlyQueue {
+        lag: sockudo_push::QueueLagMetrics,
+    }
+
+    #[async_trait::async_trait]
+    impl PushQueue for LagOnlyQueue {
+        fn backend(&self) -> sockudo_push::PushQueueBackendKind {
+            sockudo_push::PushQueueBackendKind::Memory
+        }
+
+        async fn produce(
+            &self,
+            _stage: PushQueueStage,
+            _key: String,
+            _payload: PushQueuePayload,
+        ) -> sockudo_push::PushQueueResult<String> {
+            Ok("lag-only".to_owned())
+        }
+
+        async fn retry_at(
+            &self,
+            _stage: PushQueueStage,
+            _key: String,
+            _payload: PushQueuePayload,
+            _not_before_ms: u64,
+        ) -> sockudo_push::PushQueueResult<String> {
+            Ok("lag-only".to_owned())
+        }
+
+        async fn consume(
+            &self,
+            _stage: PushQueueStage,
+            _consumer_group: &str,
+            _max_messages: usize,
+            _lease_timeout_ms: u64,
+        ) -> sockudo_push::PushQueueResult<Vec<sockudo_push::QueueMessage>> {
+            Ok(Vec::new())
+        }
+
+        async fn ack(
+            &self,
+            _token: sockudo_push::QueueAckToken,
+        ) -> sockudo_push::PushQueueResult<()> {
+            Ok(())
+        }
+
+        async fn nack(
+            &self,
+            _token: sockudo_push::QueueAckToken,
+            _retry_at_ms: Option<u64>,
+        ) -> sockudo_push::PushQueueResult<()> {
+            Ok(())
+        }
+
+        async fn dead_letter(
+            &self,
+            _token: sockudo_push::QueueAckToken,
+            _reason: String,
+        ) -> sockudo_push::PushQueueResult<()> {
+            Ok(())
+        }
+
+        async fn health(&self) -> sockudo_push::PushQueueResult<sockudo_push::QueueHealth> {
+            Ok(sockudo_push::QueueHealth {
+                backend: sockudo_push::PushQueueBackendKind::Memory,
+                healthy: true,
+                details: "test lag-only queue".to_owned(),
+            })
+        }
+
+        async fn lag(
+            &self,
+            _stage: PushQueueStage,
+        ) -> sockudo_push::PushQueueResult<sockudo_push::QueueLagMetrics> {
+            Ok(self.lag.clone())
         }
     }
 
@@ -2985,6 +3091,25 @@ mod tests {
         let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
 
         enforce_backpressure(&queue, &admission).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_queue_age_rejects_admission_even_when_depth_is_small() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
+        let _depth_threshold = EnvVarGuard::set("PUSH_PUBLISH_LOG_MAX_LAG", "10");
+        let _age_threshold = EnvVarGuard::set("PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS", "1");
+        let queue: DynPushQueue = Arc::new(LagOnlyQueue {
+            lag: sockudo_push::QueueLagMetrics {
+                ready_depth: 1,
+                oldest_ready_age_ms: Some(1_000),
+                ..Default::default()
+            },
+        });
+        let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
+
+        let error = enforce_backpressure(&queue, &admission).await.unwrap_err();
+
+        assert!(matches!(error, AppError::TooManyRequests { .. }));
     }
 
     #[test]

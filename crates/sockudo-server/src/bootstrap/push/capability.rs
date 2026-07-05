@@ -17,6 +17,7 @@ pub(crate) struct PushAdmissionSnapshot {
     planner_worker_count: u32,
     shard_worker_count: u32,
     feedback_worker_count: u32,
+    backpressure_lag_threshold_secs: u64,
     providers: BTreeMap<PushProviderKind, PushProviderCapability>,
 }
 
@@ -85,6 +86,7 @@ impl PushAdmissionSnapshot {
             planner_worker_count: config.push.planner_worker_count,
             shard_worker_count: config.push.shard_worker_count,
             feedback_worker_count: config.push.feedback_worker_count,
+            backpressure_lag_threshold_secs: config.push.backpressure_lag_threshold_secs,
             providers,
         }
     }
@@ -112,6 +114,7 @@ impl PushAdmissionSnapshot {
             planner_worker_count: 1,
             shard_worker_count: 1,
             feedback_worker_count: 1,
+            backpressure_lag_threshold_secs: 60,
             providers,
         }
     }
@@ -147,6 +150,10 @@ impl PushAdmissionSnapshot {
                 matches!(capability.status, PushProviderStatus::Active).then_some(*provider)
             })
             .collect()
+    }
+
+    pub(crate) fn backpressure_lag_threshold_secs(&self) -> u64 {
+        self.backpressure_lag_threshold_secs
     }
 
     pub(crate) fn rejection_for_targets(

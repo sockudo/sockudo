@@ -8,6 +8,7 @@ use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gau
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{DeliveryOutcome, DevicePushState, PushProviderKind};
+use crate::pipeline::{PushQueueStage, QueueLagMetrics};
 
 pub type PushMetricLabels = Vec<(&'static str, String)>;
 pub type PushMetricKey = (&'static str, PushMetricLabels);
@@ -26,6 +27,7 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
     PushMetricSpec::counter("sockudo_push_publish_accepted_total", &["app", "result"]),
     PushMetricSpec::histogram("sockudo_push_publish_acceptance_duration_seconds", &["app"]),
     PushMetricSpec::gauge("sockudo_push_publish_log_lag_seconds", &[]),
+    PushMetricSpec::gauge("sockudo_push_queue_oldest_age_seconds", &["stage", "state"]),
     PushMetricSpec::histogram("sockudo_push_planner_duration_seconds", &[]),
     PushMetricSpec::histogram("sockudo_push_fanout_size", &["app"]),
     PushMetricSpec::counter(
@@ -111,6 +113,9 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
         "sockudo_push_queue_local_requeued_total",
         &["stage", "reason"],
     ),
+    PushMetricSpec::counter("sockudo_push_repair_scanned_total", &["category"]),
+    PushMetricSpec::counter("sockudo_push_repair_requeued_total", &["stage", "reason"]),
+    PushMetricSpec::counter("sockudo_push_repair_skipped_total", &["reason"]),
     PushMetricSpec::counter("sockudo_push_cleanup_scanned_total", &["category"]),
     PushMetricSpec::counter("sockudo_push_cleanup_deleted_total", &["category"]),
     PushMetricSpec::counter(
@@ -257,6 +262,21 @@ impl PushMetrics {
 
     pub fn publish_log_lag_seconds(&self, seconds: f64) {
         self.gauge("sockudo_push_publish_log_lag_seconds", &[], seconds);
+    }
+
+    pub fn queue_lag(&self, stage: PushQueueStage, lag: &QueueLagMetrics) {
+        let stage = queue_stage_label(stage);
+        for (state, age_ms) in [
+            ("ready", lag.oldest_ready_age_ms),
+            ("delayed", lag.oldest_delayed_age_ms),
+            ("inflight", lag.oldest_inflight_age_ms),
+        ] {
+            self.gauge(
+                "sockudo_push_queue_oldest_age_seconds",
+                &[("stage", stage.as_str()), ("state", state)],
+                age_ms.map_or(0.0, |age_ms| age_ms as f64 / 1000.0),
+            );
+        }
     }
 
     pub fn planner_duration(&self, duration: Duration) {
@@ -598,6 +618,30 @@ impl PushMetrics {
         );
     }
 
+    pub fn repair_scanned(&self, category: &str, count: u64) {
+        self.counter(
+            "sockudo_push_repair_scanned_total",
+            &[("category", category)],
+            count,
+        );
+    }
+
+    pub fn repair_requeued(&self, stage: &str, reason: &str) {
+        self.counter(
+            "sockudo_push_repair_requeued_total",
+            &[("stage", stage), ("reason", reason)],
+            1,
+        );
+    }
+
+    pub fn repair_skipped(&self, reason: &str) {
+        self.counter(
+            "sockudo_push_repair_skipped_total",
+            &[("reason", reason)],
+            1,
+        );
+    }
+
     pub fn cleanup_scanned(&self, category: &str, count: u64) {
         self.counter(
             "sockudo_push_cleanup_scanned_total",
@@ -720,6 +764,19 @@ pub fn provider_label(provider: PushProviderKind) -> &'static str {
     }
 }
 
+pub fn queue_stage_label(stage: PushQueueStage) -> String {
+    match stage {
+        PushQueueStage::PublishLog => "publish_log".to_owned(),
+        PushQueueStage::ShardJobs => "shard_jobs".to_owned(),
+        PushQueueStage::DeliveryJobs(provider) => {
+            format!("delivery_jobs_{}", provider_label(provider))
+        }
+        PushQueueStage::DeliveryResults => "delivery_results".to_owned(),
+        PushQueueStage::DeadLetters => "dead_letters".to_owned(),
+        PushQueueStage::RetrySchedule => "retry_schedule".to_owned(),
+    }
+}
+
 pub fn delivery_outcome_label(outcome: DeliveryOutcome) -> &'static str {
     match outcome {
         DeliveryOutcome::Accepted => "accepted",
@@ -759,6 +816,7 @@ mod tests {
             "sockudo_push_publish_accepted_total",
             "sockudo_push_publish_acceptance_duration_seconds",
             "sockudo_push_publish_log_lag_seconds",
+            "sockudo_push_queue_oldest_age_seconds",
             "sockudo_push_planner_duration_seconds",
             "sockudo_push_fanout_size",
             "sockudo_push_delivery_jobs_emitted_total",
@@ -800,6 +858,9 @@ mod tests {
             "sockudo_push_cleanup_deleted_total",
             "sockudo_push_cleanup_errors_total",
             "sockudo_push_cleanup_tick_duration_seconds",
+            "sockudo_push_repair_scanned_total",
+            "sockudo_push_repair_requeued_total",
+            "sockudo_push_repair_skipped_total",
         ];
 
         for name in required {

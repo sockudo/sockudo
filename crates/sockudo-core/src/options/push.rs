@@ -109,6 +109,9 @@ pub struct PushConfig {
     pub analytics_retention_days: u64,
     pub payload_redaction: PushPayloadRedactionConfig,
     pub scheduler_interval_secs: u64,
+    pub repair_interval_secs: u64,
+    pub repair_min_age_secs: u64,
+    pub repair_batch_size: usize,
     pub cleanup_interval_secs: u64,
     pub cleanup_batch_size: usize,
     pub cleanup_max_deleted_per_tick: usize,
@@ -262,6 +265,9 @@ impl Default for PushConfig {
             analytics_retention_days: 30,
             payload_redaction: PushPayloadRedactionConfig::default(),
             scheduler_interval_secs: 5,
+            repair_interval_secs: 30,
+            repair_min_age_secs: 30,
+            repair_batch_size: 100,
             cleanup_interval_secs: 300,
             cleanup_batch_size: 1_000,
             cleanup_max_deleted_per_tick: 100_000,
@@ -459,6 +465,9 @@ mod tests {
             "PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS",
             "PUSH_FAILURE_THRESHOLD",
             "PUSH_SCHEDULER_INTERVAL_SECS",
+            "PUSH_REPAIR_INTERVAL_SECS",
+            "PUSH_REPAIR_MIN_AGE_SECS",
+            "PUSH_REPAIR_BATCH_SIZE",
             "PUSH_CLEANUP_INTERVAL_SECS",
             "PUSH_CLEANUP_BATCH_SIZE",
             "PUSH_CLEANUP_MAX_DELETED_PER_TICK",
@@ -492,6 +501,9 @@ mod tests {
             std::env::set_var("PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS", "17");
             std::env::set_var("PUSH_FAILURE_THRESHOLD", "9");
             std::env::set_var("PUSH_SCHEDULER_INTERVAL_SECS", "11");
+            std::env::set_var("PUSH_REPAIR_INTERVAL_SECS", "12");
+            std::env::set_var("PUSH_REPAIR_MIN_AGE_SECS", "10");
+            std::env::set_var("PUSH_REPAIR_BATCH_SIZE", "1200");
             std::env::set_var("PUSH_CLEANUP_INTERVAL_SECS", "13");
             std::env::set_var("PUSH_CLEANUP_BATCH_SIZE", "1400");
             std::env::set_var("PUSH_CLEANUP_MAX_DELETED_PER_TICK", "15000");
@@ -536,6 +548,9 @@ mod tests {
         assert_eq!(options.push.dispatch_max_outbound_requests, 17);
         assert_eq!(options.push.circuit_breaker.failure_threshold, 9);
         assert_eq!(options.push.scheduler_interval_secs, 11);
+        assert_eq!(options.push.repair_interval_secs, 12);
+        assert_eq!(options.push.repair_min_age_secs, 10);
+        assert_eq!(options.push.repair_batch_size, 1_200);
         assert_eq!(options.push.cleanup_interval_secs, 13);
         assert_eq!(options.push.cleanup_batch_size, 1_400);
         assert_eq!(options.push.cleanup_max_deleted_per_tick, 15_000);

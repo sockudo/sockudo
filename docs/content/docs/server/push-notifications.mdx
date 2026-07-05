@@ -83,11 +83,13 @@ worker restart; stored credentials are reloaded when a supervised provider worke
 
 External queue adapters pull broker messages into a bounded node-local ready/pending handoff before
 Sockudo workers ack, nack, or dead-letter them. If the local worker does not finish before the local
-lease timeout, the adapter requeues the envelope with backoff. Broker-wide visibility timeout and
-dead-node redelivery still depend on the configured `[queue]` backend. Queue health and lag reported
-by the generic queue manager adapter distinguish this node's local pull-ahead depth from
-broker-wide backlog, so operators should watch both provider/stage lag and backend-native queue
-metrics where the backend exposes them.
+lease timeout, the adapter requeues the envelope with backoff. Queue health and lag reported by the
+generic queue manager adapter distinguish this node's local pull-ahead depth and oldest actionable
+handoff age from broker-wide backlog, so operators can alert on Sockudo-owned worker staleness with
+`sockudo_push_queue_oldest_age_seconds` and use backend-native tools for deeper broker visibility.
+The monolith repair worker also scans durable publish-log entries that remain `queued` past
+`push.repair_min_age_secs` and recreates missing `push.publish.v1` work if an accepted publish
+lost its queue message before planning began.
 
 ## Retry and dead letters
 
@@ -113,6 +115,7 @@ Retry scheduling preserves the original timing window and does not run past publ
 
 Operators inspect aggregate status with `GET /apps/{appId}/push/publish/{publishId}/status`, retry
 and dead-letter queue lag through the health/backpressure surfaces, and metrics such as
+`sockudo_push_queue_oldest_age_seconds{stage=...,state=...}`,
 `sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`,
 `sockudo_push_retry_dead_lettered_total`, `sockudo_push_retry_malformed_total`, and
 `sockudo_push_provider_failures_total{failure_class=...}`.
@@ -383,7 +386,7 @@ for retry scheduling overhead.
 | Channel push misses users | Verify channel push subscriptions and `client_id` mapping. |
 | Large push is rejected | Check platform payload limits and remove nonessential data. |
 | Push publish returns `503` | Check push queue health, memory-driver production guard, provider feature flags, provider credentials, and dispatch worker count. |
-| Push publish returns `429` | Check publish-log, shard, delivery result, retry, dead-letter, and active provider delivery queue lag. |
+| Push publish returns `429` | Check publish-log, shard, delivery result, retry, dead-letter, active provider delivery queue depth, and `sockudo_push_queue_oldest_age_seconds`. |
 | Publish remains `dispatching` | Check retry scheduler workers, `push.retry.v1` lag, dead-letter lag, and provider retry-after deadlines. |
 | Publish becomes `dead_lettered` | Inspect `GET /apps/{appId}/push/deadLetters`, retry metrics, provider outage history, and `max_attempts`/`max_elapsed_secs`; replay only entries marked `replayable`. |
 | Cleanup failures increase | Check `sockudo_push_cleanup_errors_total`, store connectivity, and batch limits. |

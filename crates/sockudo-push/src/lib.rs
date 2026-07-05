@@ -16,6 +16,7 @@ pub mod nosql;
 pub mod pipeline;
 pub mod planner;
 pub mod ratelimit;
+pub mod reconcile;
 pub mod registry;
 pub mod retry;
 pub mod rules;
@@ -102,6 +103,7 @@ pub use pipeline::{
     page_dead_letter_entries, publish_idempotency_key, publish_uid_key,
 };
 pub use planner::{PushPlanner, PushShardWorker};
+pub use reconcile::{PushPublishLogRepairWorker, PushRepairPolicy, PushRepairReport};
 pub use retry::{PushRetryScheduler, RetryPolicy};
 pub use rules::{
     ChannelPushRule, PushRuleError, PushRulePayloadMapping, any_rule_matches, matching_rule_indices,

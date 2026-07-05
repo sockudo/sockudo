@@ -5,7 +5,8 @@ icon: Activity
 ---
 
 Push operations revolve around four questions: is work being admitted, is it moving through each
-queue stage, are providers accepting it, and is old operational state being cleaned up.
+queue stage, are providers accepting it, can stale queued work be repaired, and is old operational
+state being cleaned up.
 
 ## Retention and cleanup
 
@@ -46,10 +47,11 @@ Watch these metrics by app, provider, stage, or bounded category labels:
 | Signal | Metrics |
 | --- | --- |
 | Admission | `sockudo_push_publish_accepted_total`, `sockudo_push_quota_acceptance_rejections_total` |
-| Queue lag | `sockudo_push_publish_log_lag_seconds`, `sockudo_push_delivery_jobs_lag_seconds`, queue backend lag |
+| Queue lag | `sockudo_push_publish_log_lag_seconds`, `sockudo_push_delivery_jobs_lag_seconds`, `sockudo_push_queue_oldest_age_seconds`, queue backend lag |
 | Provider outcomes | `sockudo_push_dispatched_total`, `sockudo_push_dispatch_duration_seconds`, `sockudo_push_provider_failures_total` |
 | Retries | `sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`, `sockudo_push_retry_deferred_total`, `sockudo_push_retry_expired_total` |
 | Dead letters | `sockudo_push_retry_dead_lettered_total`, dead-letter queue depth, `GET /apps/{appId}/push/deadLetters` |
+| Repair | `sockudo_push_repair_scanned_total`, `sockudo_push_repair_requeued_total`, `sockudo_push_repair_skipped_total` |
 | Credentials | `sockudo_push_provider_failures_total{failure_class="credential_auth"}` |
 | Device invalidation | `sockudo_push_token_invalidations_total`, `sockudo_push_token_invalidation_guard_total` |
 | Cleanup | `sockudo_push_cleanup_scanned_total`, `sockudo_push_cleanup_deleted_total`, `sockudo_push_cleanup_errors_total`, `sockudo_push_cleanup_tick_duration_seconds` |
@@ -63,12 +65,13 @@ Start with these alert shapes and tune them against normal traffic:
 
 | Alert | Suggested condition |
 | --- | --- |
-| Retry backlog age | `push.retry.v1` oldest due message exceeds the retry SLO |
+| Retry backlog age | `sockudo_push_queue_oldest_age_seconds` for `retry_schedule` ready or inflight work exceeds the retry SLO |
 | Dead-letter rate | `sockudo_push_retry_dead_lettered_total` increases above baseline |
 | Provider auth failures | `sockudo_push_provider_failures_total{failure_class="credential_auth"}` is nonzero |
 | Invalidation spike | `sockudo_push_token_invalidation_guard_total` is nonzero or invalidation ratio jumps |
 | Dispatching age | publish statuses remain `dispatching` beyond retry max elapsed plus provider timeout |
-| Queue lag | critical stage lag crosses `PUSH_CRITICAL_QUEUE_MAX_LAG` |
+| Queue lag | critical stage depth crosses `PUSH_CRITICAL_QUEUE_MAX_LAG` or oldest actionable age crosses `PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS` |
+| Repair requeues | `sockudo_push_repair_requeued_total` increases outside a queue-loss or worker-crash incident |
 | Cleanup failures | `sockudo_push_cleanup_errors_total` increases |
 
 ## Runbooks
@@ -107,6 +110,16 @@ backend. After the replacement worker starts, verify `push.publish.v1`, `push.sh
 
 Check which stage crossed lag first. Publish-log lag points to planner capacity or queue health.
 Shard lag points to channel fanout. Provider delivery lag points to provider throughput or
-credentials. Retry lag points to provider outage or retry policy. Dead-letter lag means operators
-need to inspect `GET /apps/{appId}/push/deadLetters`, fix the underlying provider/credential/queue
-incident, then replay only entries marked `replayable` or republish from the original source.
+credentials. Retry lag points to provider outage or retry policy. Use
+`sockudo_push_queue_oldest_age_seconds` to separate a shallow but stale stage from ordinary depth
+growth. Dead-letter lag means operators need to inspect `GET /apps/{appId}/push/deadLetters`, fix
+the underlying provider/credential/queue incident, then replay only entries marked `replayable` or
+republish from the original source.
+
+### Publish-log repair
+
+When `push.repair_interval_secs > 0`, the monolith repair worker scans durable publish-log entries
+that are still in `queued` state after `push.repair_min_age_secs` and re-enqueues the missing
+`push.publish.v1` queue item. It is meant for accepted publish work whose queue message was lost or
+acknowledged by a crashing worker before planning began. It does not recreate active retry,
+provider-delivery, or terminal publish work.

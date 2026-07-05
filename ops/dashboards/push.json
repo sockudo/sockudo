@@ -189,9 +189,15 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (stage,state) (sockudo_push_queue_oldest_age_seconds)",
+          "legendFormat": "{{stage}} {{state}} age",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum by (provider) (sockudo_push_worker_pool_busy{provider=~\"$provider\"}) / clamp_min(sum by (provider) (sockudo_push_worker_pool_size{provider=~\"$provider\"}), 1)",
           "legendFormat": "{{provider}} busy ratio",
-          "refId": "C"
+          "refId": "D"
         }
       ],
       "title": "Delivery Queues And Workers",
@@ -328,6 +334,24 @@
           "expr": "sum by (provider) (rate(sockudo_push_token_invalidation_guard_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
           "legendFormat": "{{provider}} invalidation guard",
           "refId": "F"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (category) (rate(sockudo_push_repair_scanned_total[5m]))",
+          "legendFormat": "repair scanned {{category}}",
+          "refId": "G"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (stage,reason) (rate(sockudo_push_repair_requeued_total[5m]))",
+          "legendFormat": "repair {{stage}} {{reason}}",
+          "refId": "H"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(sockudo_push_repair_skipped_total[5m]))",
+          "legendFormat": "repair skipped {{reason}}",
+          "refId": "I"
         }
       ],
       "title": "Feedback And Cleanup",

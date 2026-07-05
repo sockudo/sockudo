@@ -79,7 +79,7 @@ struct QueueManagerPushQueueState {
     >,
     pending: std::collections::BTreeMap<
         (sockudo_push::PushQueueStage, String),
-        tokio::sync::oneshot::Sender<PushQueueAction>,
+        QueueManagerPendingMessage,
     >,
     dead_letters: Vec<QueueManagerDeadLetterRecord>,
 }
@@ -106,6 +106,12 @@ enum PushQueueAction {
 }
 
 #[cfg(feature = "push")]
+struct QueueManagerPendingMessage {
+    enqueued_at_ms: u64,
+    tx: tokio::sync::oneshot::Sender<PushQueueAction>,
+}
+
+#[cfg(feature = "push")]
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PushQueueEnvelope {
@@ -114,6 +120,7 @@ struct PushQueueEnvelope {
     key: String,
     payload: sockudo_push::PushQueuePayload,
     attempt: u32,
+    enqueued_at_ms: u64,
     not_before_ms: Option<u64>,
 }
 
@@ -126,6 +133,7 @@ struct PushQueueEnvelopeWire {
     key: String,
     payload_json: String,
     attempt: u32,
+    enqueued_at_ms: Option<u64>,
     not_before_ms: Option<u64>,
 }
 
@@ -141,6 +149,7 @@ impl TryFrom<&PushQueueEnvelope> for PushQueueEnvelopeWire {
             payload_json: sonic_rs::to_string(&envelope.payload)
                 .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?,
             attempt: envelope.attempt,
+            enqueued_at_ms: Some(envelope.enqueued_at_ms),
             not_before_ms: envelope.not_before_ms,
         })
     }
@@ -157,6 +166,7 @@ impl TryFrom<PushQueueEnvelopeWire> for PushQueueEnvelope {
             key: wire.key,
             payload: push_queue_payload_from_json(&wire.payload_json)?,
             attempt: wire.attempt,
+            enqueued_at_ms: wire.enqueued_at_ms.unwrap_or(0),
             not_before_ms: wire.not_before_ms,
         })
     }
@@ -314,6 +324,7 @@ impl QueueManagerPushQueue {
             partition: route.partition,
             payload: envelope.payload.clone(),
             attempt: envelope.attempt,
+            enqueued_at_ms: envelope.enqueued_at_ms,
             not_before_ms: envelope.not_before_ms,
             lease_deadline_ms: now.saturating_add(LOCAL_LEASE_TIMEOUT_MS),
             ack: token.clone(),
@@ -321,9 +332,13 @@ impl QueueManagerPushQueue {
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
             let mut state = self.state.lock().await;
-            state
-                .pending
-                .insert((envelope.stage, envelope.message_id.clone()), tx);
+            state.pending.insert(
+                (envelope.stage, envelope.message_id.clone()),
+                QueueManagerPendingMessage {
+                    enqueued_at_ms: envelope.enqueued_at_ms,
+                    tx,
+                },
+            );
             state
                 .ready
                 .entry(envelope.stage)
@@ -381,6 +396,7 @@ impl QueueManagerPushQueue {
                     key: dead_letter.key.clone(),
                     payload: sockudo_push::PushQueuePayload::DeadLetter(Box::new(dead_letter)),
                     attempt: 1,
+                    enqueued_at_ms: push_queue_now_ms(),
                     not_before_ms: None,
                 };
                 self.enqueue_envelope(dlq).await
@@ -422,14 +438,14 @@ impl QueueManagerPushQueue {
         token: sockudo_push::QueueAckToken,
         action: PushQueueAction,
     ) -> sockudo_push::PushQueueResult<()> {
-        if let Some(tx) = self
+        if let Some(pending) = self
             .state
             .lock()
             .await
             .pending
             .remove(&(token.stage, token.message_id))
         {
-            let _ = tx.send(action);
+            let _ = pending.tx.send(action);
         }
         Ok(())
     }
@@ -456,6 +472,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
             key,
             payload,
             attempt: 1,
+            enqueued_at_ms: push_queue_now_ms(),
             not_before_ms: None,
         })
         .await?;
@@ -491,6 +508,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
             key,
             payload,
             attempt: 1,
+            enqueued_at_ms: push_queue_now_ms(),
             not_before_ms: Some(not_before_ms),
         })
         .await?;
@@ -624,6 +642,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
             key: replay.1,
             payload: replay.2,
             attempt: 1,
+            enqueued_at_ms: push_queue_now_ms(),
             not_before_ms: None,
         })
         .await?;
@@ -653,19 +672,67 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
     ) -> sockudo_push::PushQueueResult<sockudo_push::QueueLagMetrics> {
         let state = self.state.lock().await;
         Ok(sockudo_push::QueueLagMetrics {
-            ready_depth: state
-                .ready
-                .get(&stage)
-                .map_or(0, |queue| queue.len() as u64),
+            ready_depth: ready_queue_depth(&state, stage),
             delayed_depth: 0,
-            inflight_depth: state
-                .pending
-                .keys()
-                .filter(|(pending_stage, _)| pending_stage == &stage)
-                .count() as u64,
+            inflight_depth: pending_stage_depth(&state, stage),
             dead_letter_depth: state.dead_letters.len() as u64,
+            oldest_ready_age_ms: oldest_ready_age_ms(&state, stage),
+            oldest_delayed_age_ms: None,
+            oldest_inflight_age_ms: oldest_pending_age_ms(&state, stage),
         })
     }
+}
+
+#[cfg(feature = "push")]
+fn ready_queue_depth(
+    state: &QueueManagerPushQueueState,
+    stage: sockudo_push::PushQueueStage,
+) -> u64 {
+    state
+        .ready
+        .get(&stage)
+        .map_or(0, |queue| queue.len() as u64)
+}
+
+#[cfg(feature = "push")]
+fn pending_stage_depth(
+    state: &QueueManagerPushQueueState,
+    stage: sockudo_push::PushQueueStage,
+) -> u64 {
+    state
+        .pending
+        .keys()
+        .filter(|(pending_stage, _)| pending_stage == &stage)
+        .count() as u64
+}
+
+#[cfg(feature = "push")]
+fn oldest_ready_age_ms(
+    state: &QueueManagerPushQueueState,
+    stage: sockudo_push::PushQueueStage,
+) -> Option<u64> {
+    let now = push_queue_now_ms();
+    state.ready.get(&stage).and_then(|queue| {
+        queue
+            .iter()
+            .map(|message| now.saturating_sub(message.enqueued_at_ms))
+            .max()
+    })
+}
+
+#[cfg(feature = "push")]
+fn oldest_pending_age_ms(
+    state: &QueueManagerPushQueueState,
+    stage: sockudo_push::PushQueueStage,
+) -> Option<u64> {
+    let now = push_queue_now_ms();
+    state
+        .pending
+        .iter()
+        .filter_map(|((pending_stage, _), pending)| {
+            (*pending_stage == stage).then_some(now.saturating_sub(pending.enqueued_at_ms))
+        })
+        .max()
 }
 
 #[cfg(feature = "push")]
@@ -699,10 +766,18 @@ fn push_queue_envelope_value(
 fn parse_push_queue_job(
     job: sockudo_core::webhook_types::JobData,
 ) -> sockudo_push::PushQueueResult<PushQueueEnvelope> {
+    let fallback_enqueued_at_ms = u64::try_from(job.payload.time_ms)
+        .ok()
+        .filter(|time_ms| *time_ms > 0)
+        .unwrap_or_else(push_queue_now_ms);
     let event = job.payload.events.into_iter().next().ok_or_else(|| {
         sockudo_push::PushQueueError::Backend("push queue job missing envelope".to_owned())
     })?;
-    push_queue_envelope_from_value(&event)
+    let mut envelope = push_queue_envelope_from_value(&event)?;
+    if envelope.enqueued_at_ms == 0 {
+        envelope.enqueued_at_ms = fallback_enqueued_at_ms;
+    }
+    Ok(envelope)
 }
 
 #[cfg(feature = "push")]
@@ -911,6 +986,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lag_reports_local_ready_and_pending_age() {
+        let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
+        let queue = test_queue(QueueManagerPushQueueStageOwnership::testing([stage]));
+        insert_local_message(&queue, stage).await;
+
+        let lag = queue.lag(stage).await.unwrap();
+        assert_eq!(lag.ready_depth, 1);
+        assert_eq!(lag.inflight_depth, 1);
+        assert!(lag.oldest_ready_age_ms.is_some());
+        assert!(lag.oldest_inflight_age_ms.is_some());
+
+        let message = next_message(&queue, stage).await;
+        let lag = queue.lag(stage).await.unwrap();
+        assert_eq!(lag.ready_depth, 0);
+        assert_eq!(lag.inflight_depth, 1);
+        assert!(lag.oldest_ready_age_ms.is_none());
+        assert!(lag.oldest_inflight_age_ms.is_some());
+
+        queue.ack(message.ack).await.unwrap();
+        let lag = queue.lag(stage).await.unwrap();
+        assert_eq!(lag.inflight_depth, 0);
+        assert!(lag.oldest_inflight_age_ms.is_none());
+    }
+
+    #[tokio::test]
     async fn produce_does_not_start_provider_stage_processor() {
         let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
         let queue = test_queue(QueueManagerPushQueueStageOwnership::testing([stage]));
@@ -965,6 +1065,7 @@ mod tests {
                 key: event.queue_key(),
                 payload: PushQueuePayload::PublishLog(Box::new(event)),
                 attempt: 1,
+                enqueued_at_ms: push_queue_now_ms(),
                 not_before_ms: None,
             },
         );
@@ -1093,9 +1194,13 @@ mod tests {
             stage,
             message_id: message_id.clone(),
         };
+        let enqueued_at_ms = push_queue_now_ms();
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let mut state = queue.state.lock().await;
-        state.pending.insert((stage, message_id.clone()), tx);
+        state.pending.insert(
+            (stage, message_id.clone()),
+            QueueManagerPendingMessage { enqueued_at_ms, tx },
+        );
         state
             .ready
             .entry(stage)
@@ -1108,6 +1213,7 @@ mod tests {
                 partition: route.partition,
                 payload,
                 attempt: 1,
+                enqueued_at_ms,
                 not_before_ms: None,
                 lease_deadline_ms: 0,
                 ack: token,
