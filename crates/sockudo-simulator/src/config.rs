@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::error::{SimulatorError, SimulatorResult};
+use crate::push_lab::PushLabConfig;
 use crate::workload::WorkloadConfig;
 
 /// Deterministic simulator configuration.
@@ -23,6 +24,8 @@ pub struct SimulatorConfig {
     pub presence_retention_events: Option<usize>,
     pub workload: WorkloadConfig,
     pub fault: FaultConfig,
+    #[serde(default)]
+    pub push: PushLabConfig,
 }
 
 impl Default for SimulatorConfig {
@@ -40,6 +43,7 @@ impl Default for SimulatorConfig {
             presence_retention_events: Some(512),
             workload: WorkloadConfig::default(),
             fault: FaultConfig::default(),
+            push: PushLabConfig::default(),
         }
     }
 }
@@ -87,7 +91,8 @@ impl SimulatorConfig {
             ));
         }
         self.workload.validate()?;
-        self.fault.validate()
+        self.fault.validate()?;
+        self.push.validate()
     }
 
     pub(crate) fn retention_window(&self) -> Duration {
@@ -103,8 +108,12 @@ pub struct FaultConfig {
     pub max_fanout_delay_ticks: u64,
     pub node_crash_probability: f64,
     pub node_restart_probability: f64,
+    pub node_pause_probability: f64,
+    pub node_resume_probability: f64,
     pub node_partition_probability: f64,
     pub node_heal_probability: f64,
+    pub node_slow_probability: f64,
+    pub node_stale_probability: f64,
     pub stream_reset_probability: f64,
 }
 
@@ -116,8 +125,12 @@ impl Default for FaultConfig {
             max_fanout_delay_ticks: 12,
             node_crash_probability: 0.002,
             node_restart_probability: 0.020,
+            node_pause_probability: 0.002,
+            node_resume_probability: 0.030,
             node_partition_probability: 0.003,
             node_heal_probability: 0.020,
+            node_slow_probability: 0.003,
+            node_stale_probability: 0.002,
             stream_reset_probability: 0.0005,
         }
     }
@@ -133,11 +146,15 @@ impl FaultConfig {
             ),
             ("node_crash_probability", self.node_crash_probability),
             ("node_restart_probability", self.node_restart_probability),
+            ("node_pause_probability", self.node_pause_probability),
+            ("node_resume_probability", self.node_resume_probability),
             (
                 "node_partition_probability",
                 self.node_partition_probability,
             ),
             ("node_heal_probability", self.node_heal_probability),
+            ("node_slow_probability", self.node_slow_probability),
+            ("node_stale_probability", self.node_stale_probability),
             ("stream_reset_probability", self.stream_reset_probability),
         ] {
             if !(0.0..=1.0).contains(&value) {

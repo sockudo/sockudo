@@ -16,17 +16,33 @@ pub enum WorkloadAction {
     PresenceTransition,
     RecoveryProbe,
     PurgeHistory,
+    PushRegisterDevice,
+    PushDeleteDevice,
+    PushSubscribe,
+    PushUnsubscribe,
+    PushPublish,
+    PushScheduledPublish,
+    PushProviderFeedback,
+    PushRepair,
     OracleCheck,
 }
 
 impl WorkloadAction {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 15] = [
         Self::PublishMessage,
         Self::CreateVersionedMessage,
         Self::MutateVersionedMessage,
         Self::PresenceTransition,
         Self::RecoveryProbe,
         Self::PurgeHistory,
+        Self::PushRegisterDevice,
+        Self::PushDeleteDevice,
+        Self::PushSubscribe,
+        Self::PushUnsubscribe,
+        Self::PushPublish,
+        Self::PushScheduledPublish,
+        Self::PushProviderFeedback,
+        Self::PushRepair,
         Self::OracleCheck,
     ];
 
@@ -39,6 +55,14 @@ impl WorkloadAction {
             Self::PresenceTransition => "presence_transition",
             Self::RecoveryProbe => "recovery_probe",
             Self::PurgeHistory => "purge_history",
+            Self::PushRegisterDevice => "push_register_device",
+            Self::PushDeleteDevice => "push_delete_device",
+            Self::PushSubscribe => "push_subscribe",
+            Self::PushUnsubscribe => "push_unsubscribe",
+            Self::PushPublish => "push_publish",
+            Self::PushScheduledPublish => "push_scheduled_publish",
+            Self::PushProviderFeedback => "push_provider_feedback",
+            Self::PushRepair => "push_repair",
             Self::OracleCheck => "oracle_check",
         }
     }
@@ -53,6 +77,14 @@ pub struct ActionWeights {
     pub presence_transition: u32,
     pub recovery_probe: u32,
     pub purge_history: u32,
+    pub push_register_device: u32,
+    pub push_delete_device: u32,
+    pub push_subscribe: u32,
+    pub push_unsubscribe: u32,
+    pub push_publish: u32,
+    pub push_scheduled_publish: u32,
+    pub push_provider_feedback: u32,
+    pub push_repair: u32,
     pub oracle_check: u32,
 }
 
@@ -65,6 +97,14 @@ impl Default for ActionWeights {
             presence_transition: 20,
             recovery_probe: 7,
             purge_history: 2,
+            push_register_device: 8,
+            push_delete_device: 3,
+            push_subscribe: 8,
+            push_unsubscribe: 5,
+            push_publish: 12,
+            push_scheduled_publish: 4,
+            push_provider_feedback: 2,
+            push_repair: 2,
             oracle_check: 1,
         }
     }
@@ -88,6 +128,14 @@ impl ActionWeights {
             WorkloadAction::PresenceTransition => self.presence_transition,
             WorkloadAction::RecoveryProbe => self.recovery_probe,
             WorkloadAction::PurgeHistory => self.purge_history,
+            WorkloadAction::PushRegisterDevice => self.push_register_device,
+            WorkloadAction::PushDeleteDevice => self.push_delete_device,
+            WorkloadAction::PushSubscribe => self.push_subscribe,
+            WorkloadAction::PushUnsubscribe => self.push_unsubscribe,
+            WorkloadAction::PushPublish => self.push_publish,
+            WorkloadAction::PushScheduledPublish => self.push_scheduled_publish,
+            WorkloadAction::PushProviderFeedback => self.push_provider_feedback,
+            WorkloadAction::PushRepair => self.push_repair,
             WorkloadAction::OracleCheck => self.oracle_check,
         }
     }
@@ -123,6 +171,14 @@ pub struct WorkloadActionCounts {
     pub presence_transition: u64,
     pub recovery_probe: u64,
     pub purge_history: u64,
+    pub push_register_device: u64,
+    pub push_delete_device: u64,
+    pub push_subscribe: u64,
+    pub push_unsubscribe: u64,
+    pub push_publish: u64,
+    pub push_scheduled_publish: u64,
+    pub push_provider_feedback: u64,
+    pub push_repair: u64,
     pub oracle_check: u64,
 }
 
@@ -147,6 +203,30 @@ impl WorkloadActionCounts {
             WorkloadAction::PurgeHistory => {
                 self.purge_history = self.purge_history.saturating_add(1);
             }
+            WorkloadAction::PushRegisterDevice => {
+                self.push_register_device = self.push_register_device.saturating_add(1);
+            }
+            WorkloadAction::PushDeleteDevice => {
+                self.push_delete_device = self.push_delete_device.saturating_add(1);
+            }
+            WorkloadAction::PushSubscribe => {
+                self.push_subscribe = self.push_subscribe.saturating_add(1);
+            }
+            WorkloadAction::PushUnsubscribe => {
+                self.push_unsubscribe = self.push_unsubscribe.saturating_add(1);
+            }
+            WorkloadAction::PushPublish => {
+                self.push_publish = self.push_publish.saturating_add(1);
+            }
+            WorkloadAction::PushScheduledPublish => {
+                self.push_scheduled_publish = self.push_scheduled_publish.saturating_add(1);
+            }
+            WorkloadAction::PushProviderFeedback => {
+                self.push_provider_feedback = self.push_provider_feedback.saturating_add(1);
+            }
+            WorkloadAction::PushRepair => {
+                self.push_repair = self.push_repair.saturating_add(1);
+            }
             WorkloadAction::OracleCheck => {
                 self.oracle_check = self.oracle_check.saturating_add(1);
             }
@@ -162,6 +242,14 @@ impl WorkloadActionCounts {
             WorkloadAction::PresenceTransition => self.presence_transition,
             WorkloadAction::RecoveryProbe => self.recovery_probe,
             WorkloadAction::PurgeHistory => self.purge_history,
+            WorkloadAction::PushRegisterDevice => self.push_register_device,
+            WorkloadAction::PushDeleteDevice => self.push_delete_device,
+            WorkloadAction::PushSubscribe => self.push_subscribe,
+            WorkloadAction::PushUnsubscribe => self.push_unsubscribe,
+            WorkloadAction::PushPublish => self.push_publish,
+            WorkloadAction::PushScheduledPublish => self.push_scheduled_publish,
+            WorkloadAction::PushProviderFeedback => self.push_provider_feedback,
+            WorkloadAction::PushRepair => self.push_repair,
             WorkloadAction::OracleCheck => self.oracle_check,
         }
     }
@@ -239,6 +327,14 @@ mod tests {
                 presence_transition: 5,
                 recovery_probe: 0,
                 purge_history: 0,
+                push_register_device: 0,
+                push_delete_device: 0,
+                push_subscribe: 0,
+                push_unsubscribe: 0,
+                push_publish: 0,
+                push_scheduled_publish: 0,
+                push_provider_feedback: 0,
+                push_repair: 0,
                 oracle_check: 0,
             },
         };
@@ -267,6 +363,14 @@ mod tests {
                     presence_transition: 0,
                     recovery_probe: 0,
                     purge_history: 0,
+                    push_register_device: 0,
+                    push_delete_device: 0,
+                    push_subscribe: 0,
+                    push_unsubscribe: 0,
+                    push_publish: 0,
+                    push_scheduled_publish: 0,
+                    push_provider_feedback: 0,
+                    push_repair: 0,
                     oracle_check: 0,
                 },
             },

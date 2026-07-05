@@ -187,6 +187,33 @@ simulator: ## Run deterministic indestructibility simulator (override SIM_SEED/S
 	@echo "$(BLUE)Running Sockudo deterministic simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
 	@cargo run -p sockudo-simulator --bin sockudo-sim -- --seed $(SIM_SEED) --ticks $(SIM_TICKS) $(SIM_ARGS)
 
+.PHONY: simulator-disaster
+simulator-disaster: ## Run disaster-heavy deterministic simulator profile with JSON output
+	@echo "$(BLUE)Running Sockudo disaster simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
+	@cargo run -p sockudo-simulator --bin sockudo-sim -- \
+		--seed $(SIM_SEED) \
+		--ticks $(SIM_TICKS) \
+		--nodes 9 \
+		--drop-prob 0.14 \
+		--duplicate-prob 0.08 \
+		--crash-prob 0.006 \
+		--pause-prob 0.006 \
+		--partition-prob 0.008 \
+		--slow-prob 0.010 \
+		--stale-prob 0.006 \
+		--queue-produce-lost-prob 0.050 \
+		--queue-ack-lost-prob 0.030 \
+		--queue-lease-timeout-prob 0.025 \
+		--write-fail-before-commit-prob 0.020 \
+		--write-fail-after-commit-prob 0.015 \
+		--response-lost-prob 0.020 \
+		--provider-retryable-prob 0.180 \
+		--provider-reject-prob 0.070 \
+		--provider-invalid-token-prob 0.050 \
+		--provider-lost-response-prob 0.040 \
+		--json \
+		$(SIM_ARGS)
+
 .PHONY: sentinel-tls-up
 sentinel-tls-up: ## Start the opt-in Redis Sentinel + TLS test fixture
 	@echo "$(BLUE)Generating Sentinel TLS test certificates...$(RESET)"

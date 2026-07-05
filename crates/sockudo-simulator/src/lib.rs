@@ -7,10 +7,12 @@
 
 mod config;
 mod error;
+mod push_lab;
 mod simulator;
 mod workload;
 
 pub use config::{FaultConfig, SimulatorConfig};
 pub use error::{SimulatorError, SimulatorResult};
+pub use push_lab::{PushLabConfig, PushSimulationReport};
 pub use simulator::{DeterministicSimulator, SimulationReport};
 pub use workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadConfig};

@@ -1,15 +1,22 @@
 ---
 title: Indestructibility simulator
-description: Run Sockudo's deterministic workload simulator for durable history, recovery, presence history, and mutable messages.
+description: Run Sockudo's deterministic disaster simulator for durable realtime and push invariants.
 icon: ShieldCheck
 ---
 
-The Sockudo simulator is a seed-replayable workload fuzzer for durable Protocol V2 state. It runs
-inside one process, drives real `sockudo-core` memory stores, injects node and fanout faults, and
-checks a shadow model continuously.
+The Sockudo simulator is a seed-replayable disaster lab for durable Protocol V2 state. It runs
+inside one process, drives real `sockudo-core` memory stores, models Sockudo-side push storage and
+queues, injects node, network, IO, queue, and fake-provider faults, and checks a shadow model
+continuously.
 
-Use it to prove that core durability contracts survive dropped live fanout, duplicated delivery,
-node crashes, partitions, stream resets, retention purges, and reconnect recovery.
+Use it to prove that Sockudo-side durability contracts survive dropped live fanout, duplicated
+delivery, node crashes, pauses, partitions, stream resets, retention purges, reconnect recovery,
+push queue loss, lost write responses, retryable provider failures, invalid tokens, and repair.
+
+The simulator deliberately does **not** claim that APNs, FCM, WebPush, HMS, WNS, browsers, mobile
+OSes, radios, or devices will deliver every notification. External providers are modeled as
+fallible systems. "Indestructible" means Sockudo does not lose, corrupt, double-apply logically, or
+make unrecoverable an accepted Sockudo-side operation.
 
 ```bash
 cargo run -p sockudo-simulator --bin sockudo-sim -- --seed 42 --ticks 10000
@@ -21,12 +28,18 @@ or through the Makefile wrapper:
 make simulator SIM_SEED=42 SIM_TICKS=10000
 ```
 
+For a disaster-heavy JSON profile:
+
+```bash
+make simulator-disaster SIM_SEED=12648430 SIM_TICKS=50000
+```
+
 Every failure prints a replay command with the seed. Keep the seed, tick count, and fault arguments
 unchanged when reducing a failure.
 
 ## What It Exercises
 
-The simulator currently covers four high-value durability surfaces:
+The simulator covers these high-value durability surfaces:
 
 | Surface | Oracle |
 | --- | --- |
@@ -34,6 +47,7 @@ The simulator currently covers four high-value durability surfaces:
 | Connection recovery | Simulated clients recover dropped live fanout from durable history unless retention has legitimately truncated the gap. |
 | Versioned messages | Delivery serial replay is contiguous, version chains page in both directions, latest reads match the shadow, and `latest_by_history` preserves original history ordering. |
 | Presence history | Transition dedupe, retained events, cursor paging, stream inspection, and reconstructed snapshots match the shadow model. |
+| Push workflow | Accepted publishes have durable status and publish logs, idempotency maps to one publish, queue loss is repaired from durable state, provider outcomes converge to terminal/retry/dead-letter states, and invalid devices stop receiving sends. |
 
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
 deterministic inner loop for the durable primitives those tests rely on.
@@ -51,6 +65,14 @@ runner. Each tick samples one action from these weights:
 | `--weight-presence` | `20` | Record a presence join/leave transition. |
 | `--weight-recovery` | `7` | Probe durable recovery for one simulated client/channel. |
 | `--weight-purge` | `2` | Purge an older retained history prefix. |
+| `--weight-push-register` | `8` | Register or update a push device. |
+| `--weight-push-delete` | `3` | Delete a push device and its subscriptions. |
+| `--weight-push-subscribe` | `8` | Subscribe a device to a channel. |
+| `--weight-push-unsubscribe` | `5` | Unsubscribe a device from a channel. |
+| `--weight-push-publish` | `12` | Accept a push publish and drive durable fanout. |
+| `--weight-push-scheduled` | `4` | Store and release a scheduled push publish. |
+| `--weight-push-feedback` | `2` | Replay duplicate provider feedback. |
+| `--weight-push-repair` | `2` | Run durable push queue repair. |
 | `--weight-oracle` | `1` | Force a full oracle sweep outside the periodic cadence. |
 
 Set a weight to `0` to disable that action family. At least one action weight must be non-zero.
@@ -66,13 +88,43 @@ The default fault model injects:
 | `--max-delay-ticks` | `12` | Maximum deterministic fanout delay. |
 | `--crash-prob` | `0.002` | Per-tick probability that one live node crashes. |
 | `--restart-prob` | `0.020` | Per-tick probability that one crashed node restarts. |
+| `--pause-prob` | `0.002` | Per-tick probability that one live node pauses without losing durable state. |
+| `--resume-prob` | `0.030` | Per-tick probability that one paused node resumes. |
 | `--partition-prob` | `0.003` | Per-tick probability that one live node is isolated from traffic. |
 | `--heal-prob` | `0.020` | Per-tick probability that one partitioned node heals. |
+| `--slow-prob` | `0.003` | Per-tick probability that one node adds deterministic fanout delay. |
+| `--stale-prob` | `0.002` | Per-tick probability that one node rejects traffic as stale until it catches up. |
 | `--stream-reset-prob` | `0.0005` | Per-tick probability of an operator history/presence stream reset. |
+| `--queue-produce-lost-prob` | `0.015` | Probability that a push queue produce disappears after durable state was written. |
+| `--queue-ack-lost-prob` | `0.010` | Probability that a consumed push queue item is redelivered because ack was lost. |
+| `--queue-lease-timeout-prob` | `0.010` | Probability that a queue lease times out and duplicates work. |
+| `--write-fail-before-commit-prob` | `0.006` | Probability a push/device/subscription write fails before commit. |
+| `--write-fail-after-commit-prob` | `0.004` | Probability a write commits durably but reports failure. |
+| `--response-lost-prob` | `0.006` | Probability a committed write loses its response. |
+| `--read-stale-prob` | `0.010` | Probability a push worker sees a stale/empty read and fails closed. |
+| `--provider-retryable-prob` | `0.100` | Probability a fake provider returns quota/timeout/transient failure. |
+| `--provider-reject-prob` | `0.040` | Probability a fake provider permanently rejects a delivery. |
+| `--provider-invalid-token-prob` | `0.025` | Probability a fake provider reports an invalid or expired token. |
+| `--provider-lost-response-prob` | `0.020` | Probability a fake provider accepted externally but Sockudo lost the response. |
 
 Rejected operations are part of the model: a workload request may route to a crashed or partitioned
 node and fail before it reaches durable storage. The shadow only advances after durable Sockudo
 stores accept the operation.
+
+## Push Oracles
+
+Push disasters are checked against Sockudo-side invariants:
+
+| Oracle | Meaning |
+| --- | --- |
+| Durable acceptance | Every accepted push publish has a durable status row and durable publish-log event. |
+| Idempotency | Duplicate publish keys map back to the same logical publish and do not create a second effect. |
+| Queue repair | Lost publish-log and delivery queue messages are recreated from durable state by idempotent repair scans. |
+| Provider convergence | Each planned eligible target eventually becomes accepted, retryable, rejected, expired, cancelled, or dead-lettered. |
+| Retry bounds | Retryable outcomes schedule bounded retries and then converge. |
+| Token invalidation | Invalid/unregistered/expired tokens are marked terminal and removed from future eligible sends. |
+| Counters | Status counters never exceed planned logical deliveries and terminal statuses match terminal counters. |
+| Safety after removal | No provider send is allowed after the model-visible state says the device is unsubscribed, deleted, or invalid. |
 
 ## CI Profile
 
@@ -82,6 +134,15 @@ A good pull-request smoke profile is:
 cargo test -p sockudo-simulator
 cargo run -p sockudo-simulator --bin sockudo-sim -- \
   --seed 12648430 \
+  --ticks 5000 \
+  --json
+```
+
+To replay the checked-in seed corpus:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --corpus-file crates/sockudo-simulator/corpus/disaster-seeds.json \
   --ticks 5000 \
   --json
 ```
@@ -101,11 +162,21 @@ Invariant failures include the seed and simulator tick:
 ```text
 sockudo-sim: FAILED - reproduce with --seed 42
 simulator invariant failed at tick 812 (seed=42): history serial gap on sim-channel-1: 41 then 43
+recent trace:
+  tick=807 push queue produce lost for PublishLog { publish_id: "push-00000000000000000042" }
+  tick=811 node 2 restarted
 ```
 
 Treat these as product bugs unless the invariant is deliberately stronger than the subsystem's
 documented contract. If the contract changes, update the simulator shadow and this page in the same
 change.
+
+## JSON Shape
+
+The final JSON includes top-level core counters plus a nested `push` object with durable status/log
+counts, provider results, queue losses, repair counts, and recent push trace entries. Keep sample
+outputs with the exact seed and tick count that produced them so they remain replayable. A compact
+example lives at `crates/sockudo-simulator/examples/disaster-report.example.json`.
 
 ## Extending It
 
