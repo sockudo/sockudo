@@ -399,6 +399,9 @@ This page lists every runtime environment variable referenced by the server, cor
 | `PUSH_RETRY_RESPECT_RETRY_AFTER` | Uses provider `Retry-After` deadlines when present. |
 | `PUSH_FAILURE_THRESHOLD` | Push circuit-breaker failure threshold. |
 | `PUSH_SCHEDULER_INTERVAL_SECS` | Scheduled push scan interval. |
+| `PUSH_CLEANUP_INTERVAL_SECS` | Push cleanup worker interval. Set `0` to disable the worker. |
+| `PUSH_CLEANUP_BATCH_SIZE` | Maximum rows considered per cleanup category per tick. |
+| `PUSH_CLEANUP_MAX_DELETED_PER_TICK` | Overall cap on rows deleted by one push cleanup tick. |
 | `PUSH_STALE_DEVICE_MAX_AGE_DAYS` | Stale device age threshold. |
 | `PUSH_DEFAULT_ACCEPTANCE_RPS` | Default per-app push acceptance RPS quota. |
 | `PUSH_DEFAULT_DELIVERY_QUOTA_DAILY` | Default per-app daily delivery quota. |

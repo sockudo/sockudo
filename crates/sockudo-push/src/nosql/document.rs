@@ -1,3 +1,4 @@
+use super::constants::{FAMILY_CLEANUP_APP, GLOBAL_APP_ID};
 use super::helpers::*;
 use crate::domain::DeleteDeviceOutcome;
 use crate::storage::PushStorageResult;
@@ -131,6 +132,18 @@ impl<B> DocumentPushStore<B>
 where
     B: DocumentBackend,
 {
+    pub(super) async fn remember_cleanup_app(&self, app_id: &str) -> PushStorageResult<()> {
+        self.backend
+            .put(
+                FAMILY_CLEANUP_APP,
+                GLOBAL_APP_ID,
+                "apps",
+                app_id,
+                to_json_string(&app_id.to_owned())?,
+            )
+            .await
+    }
+
     pub(super) async fn put_json<T: Serialize>(
         &self,
         family: &'static str,

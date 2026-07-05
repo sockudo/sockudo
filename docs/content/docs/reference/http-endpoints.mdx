@@ -189,6 +189,10 @@ over template overrides, and retries reuse the accepted rendered payload semanti
 templates, missing template variables, malformed overrides, and oversized provider payloads fail
 before provider dispatch.
 
+Publish status inspection is available through `GET /apps/{appId}/push/publish/{publishId}/status`.
+Dead-letter messages are retained in the configured queue backend and are not exposed through a
+public HTTP listing endpoint yet.
+
 Push headers:
 
 | Header | Values | Meaning |

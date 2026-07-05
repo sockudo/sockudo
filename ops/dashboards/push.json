@@ -459,6 +459,39 @@
       ],
       "title": "Provider Capacity And Breakers",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 63 },
+      "id": 15,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (category) (rate(sockudo_push_cleanup_scanned_total[5m]))",
+          "legendFormat": "{{category}} scanned",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (category) (rate(sockudo_push_cleanup_deleted_total[5m]))",
+          "legendFormat": "{{category}} deleted",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (backend,category) (rate(sockudo_push_cleanup_errors_total[5m]))",
+          "legendFormat": "{{backend}} {{category}} errors",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum(rate(sockudo_push_cleanup_tick_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "cleanup p99",
+          "refId": "D"
+        }
+      ],
+      "title": "Cleanup",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

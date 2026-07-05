@@ -13,6 +13,7 @@
     "mutable-messages",
     "webhooks",
     "push-notifications",
+    "push-operations",
     "ai-transport-overview",
     "ably-ai-transport-compatibility",
     "ai-transport-conventions",

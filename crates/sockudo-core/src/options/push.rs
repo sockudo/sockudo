@@ -109,6 +109,9 @@ pub struct PushConfig {
     pub analytics_retention_days: u64,
     pub payload_redaction: PushPayloadRedactionConfig,
     pub scheduler_interval_secs: u64,
+    pub cleanup_interval_secs: u64,
+    pub cleanup_batch_size: usize,
+    pub cleanup_max_deleted_per_tick: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +262,9 @@ impl Default for PushConfig {
             analytics_retention_days: 30,
             payload_redaction: PushPayloadRedactionConfig::default(),
             scheduler_interval_secs: 5,
+            cleanup_interval_secs: 300,
+            cleanup_batch_size: 1_000,
+            cleanup_max_deleted_per_tick: 100_000,
         }
     }
 }
@@ -409,6 +415,9 @@ mod tests {
         assert_eq!(options.push.fanout_fast_threshold, 10_000);
         assert_eq!(options.push.fanout_shard_size, 100_000);
         assert_eq!(options.push.publish_status_ttl_days, 30);
+        assert_eq!(options.push.cleanup_interval_secs, 300);
+        assert_eq!(options.push.cleanup_batch_size, 1_000);
+        assert_eq!(options.push.cleanup_max_deleted_per_tick, 100_000);
         assert_eq!(options.push.default_quotas.acceptance_rps, 100);
         assert_eq!(options.push.circuit_breaker.failure_threshold, 5);
         assert!(options.push.payload_redaction.redact_payload);
@@ -450,6 +459,9 @@ mod tests {
             "PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS",
             "PUSH_FAILURE_THRESHOLD",
             "PUSH_SCHEDULER_INTERVAL_SECS",
+            "PUSH_CLEANUP_INTERVAL_SECS",
+            "PUSH_CLEANUP_BATCH_SIZE",
+            "PUSH_CLEANUP_MAX_DELETED_PER_TICK",
             "PUSH_STALE_DEVICE_MAX_AGE_DAYS",
             "PUSH_ANALYTICS_ENABLED",
             "PUSH_DEFAULT_ACCEPTANCE_RPS",
@@ -480,6 +492,9 @@ mod tests {
             std::env::set_var("PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS", "17");
             std::env::set_var("PUSH_FAILURE_THRESHOLD", "9");
             std::env::set_var("PUSH_SCHEDULER_INTERVAL_SECS", "11");
+            std::env::set_var("PUSH_CLEANUP_INTERVAL_SECS", "13");
+            std::env::set_var("PUSH_CLEANUP_BATCH_SIZE", "1400");
+            std::env::set_var("PUSH_CLEANUP_MAX_DELETED_PER_TICK", "15000");
             std::env::set_var("PUSH_STALE_DEVICE_MAX_AGE_DAYS", "120");
             std::env::set_var("PUSH_ANALYTICS_ENABLED", "true");
             std::env::set_var("PUSH_DEFAULT_ACCEPTANCE_RPS", "700");
@@ -521,6 +536,9 @@ mod tests {
         assert_eq!(options.push.dispatch_max_outbound_requests, 17);
         assert_eq!(options.push.circuit_breaker.failure_threshold, 9);
         assert_eq!(options.push.scheduler_interval_secs, 11);
+        assert_eq!(options.push.cleanup_interval_secs, 13);
+        assert_eq!(options.push.cleanup_batch_size, 1_400);
+        assert_eq!(options.push.cleanup_max_deleted_per_tick, 15_000);
         assert_eq!(options.push.stale_device_max_age_days, 120);
         assert!(options.push.analytics_enabled);
         assert_eq!(options.push.default_quotas.acceptance_rps, 700);

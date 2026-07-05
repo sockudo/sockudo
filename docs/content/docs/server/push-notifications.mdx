@@ -122,6 +122,18 @@ Upgrade note: provider workers now enqueue internal `deliveryFeedback` payloads 
 `deliveryResult` payloads are still accepted, but retryable legacy results without job context are
 dead-lettered instead of being retried blindly.
 
+## Retention and cleanup
+
+The cleanup worker runs in monolith deployments when `push.cleanup_interval_secs > 0`. It removes
+terminal publish statuses older than `push.publish_status_ttl_days`, delivery events and operator
+invalidation events older than `push.analytics_retention_days`, expired idempotency records, and
+expired scheduler locks. It does not delete active scheduled jobs, active retry work, credentials,
+templates, or active device registrations.
+
+Cleanup is incremental: each tick is bounded by `push.cleanup_batch_size` per category and
+`push.cleanup_max_deleted_per_tick` overall. See [Push operations](/docs/server/push-operations)
+for metrics, alerts, and outage runbooks.
+
 ## Device invalidation safety
 
 Sockudo deletes or terminally invalidates a device only for device-specific terminal failures:
@@ -150,40 +162,27 @@ invalidation spike threshold.
 
 ```toml
 [push]
-enabled = true
-async_only = true
-default_ttl_seconds = 3600
-publish_status_ttl_seconds = 86400
-max_recipients_per_publish = 10000
+storage_driver = "postgres"
+queue_driver = "redis"
+allow_memory_drivers = false
+fcm_enabled = true
+apns_enabled = true
+publish_status_ttl_days = 30
+analytics_retention_days = 30
+scheduler_interval_secs = 5
+cleanup_interval_secs = 300
+cleanup_batch_size = 1000
+cleanup_max_deleted_per_tick = 100000
 
 # Runtime env for FCM monolith workers:
 # PUSH_FCM_ENABLED=true
 # PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH=/run/secrets/fcm-service-account.json
 # PUSH_FCM_PROJECT_ID is optional when the service account JSON has project_id.
 
-[push.providers.apns]
-enabled = true
-environment = "production"
-team_id = "TEAMID1234"
-key_id = "KEYID12345"
-bundle_id = "com.example.app"
-private_key_path = "/run/secrets/AuthKey_KEYID12345.p8"
-
-[push.providers.webpush]
-enabled = true
-vapid_subject = "mailto:ops@example.com"
-vapid_public_key = "${WEB_PUSH_PUBLIC_KEY}"
-vapid_private_key = "${WEB_PUSH_PRIVATE_KEY}"
-
-[push.providers.hms]
-enabled = true
-app_id = "${HMS_APP_ID}"
-app_secret = "${HMS_APP_SECRET}"
-
-[push.providers.wns]
-enabled = true
-package_sid = "${WNS_PACKAGE_SID}"
-client_secret = "${WNS_CLIENT_SECRET}"
+# Runtime env for APNs monolith workers:
+# PUSH_APNS_ENABLED=true
+# PUSH_APNS_TOPIC=com.example.app
+# PUSH_APNS_PRIVATE_KEY_PATH=/run/secrets/AuthKey_KEYID12345.p8
 ```
 
 ## Register devices
@@ -386,5 +385,6 @@ for retry scheduling overhead.
 | Push publish returns `429` | Check publish-log, shard, delivery result, retry, dead-letter, and active provider delivery queue lag. |
 | Publish remains `dispatching` | Check retry scheduler workers, `push.retry.v1` lag, dead-letter lag, and provider retry-after deadlines. |
 | Publish becomes `dead_lettered` | Inspect the dead-letter queue reason, retry metrics, provider outage history, and `max_attempts`/`max_elapsed_secs`. |
+| Cleanup failures increase | Check `sockudo_push_cleanup_errors_total`, store connectivity, and batch limits. |
 
 Push payloads should wake the app and include stable IDs. Fetch authoritative application state after the user opens the notification.

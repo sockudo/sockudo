@@ -4,6 +4,7 @@ use sonic_rs::Value;
 use std::sync::Arc;
 use thiserror::Error;
 
+use crate::cleanup::{PushCleanupReport, PushCleanupRequest};
 use crate::domain::{
     ChannelSubscription, DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, NotificationTemplate,
     ProviderCredential, PublishLogEvent, PublishStatus, PushCursor, PushDomainError, ShardJob,
@@ -404,6 +405,14 @@ pub trait PushOperatorEventStore: Send + Sync {
     ) -> PushStorageResult<Page<OperatorInvalidationEvent>>;
 }
 
+#[async_trait]
+pub trait PushCleanupStore: Send + Sync {
+    async fn cleanup_expired_push_data(
+        &self,
+        request: PushCleanupRequest,
+    ) -> PushStorageResult<PushCleanupReport>;
+}
+
 pub trait PushStore:
     PushDeviceStore
     + PushSubscriptionStore
@@ -417,6 +426,7 @@ pub trait PushStore:
     + PushIdempotencyStore
     + PushSchedulerLockStore
     + PushOperatorEventStore
+    + PushCleanupStore
 {
 }
 
@@ -433,6 +443,7 @@ impl<T> PushStore for T where
         + PushIdempotencyStore
         + PushSchedulerLockStore
         + PushOperatorEventStore
+        + PushCleanupStore
 {
 }
 

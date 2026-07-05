@@ -111,6 +111,13 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
         "sockudo_push_queue_local_requeued_total",
         &["stage", "reason"],
     ),
+    PushMetricSpec::counter("sockudo_push_cleanup_scanned_total", &["category"]),
+    PushMetricSpec::counter("sockudo_push_cleanup_deleted_total", &["category"]),
+    PushMetricSpec::counter(
+        "sockudo_push_cleanup_errors_total",
+        &["backend", "category"],
+    ),
+    PushMetricSpec::histogram("sockudo_push_cleanup_tick_duration_seconds", &[]),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -591,6 +598,38 @@ impl PushMetrics {
         );
     }
 
+    pub fn cleanup_scanned(&self, category: &str, count: u64) {
+        self.counter(
+            "sockudo_push_cleanup_scanned_total",
+            &[("category", category)],
+            count,
+        );
+    }
+
+    pub fn cleanup_deleted(&self, category: &str, count: u64) {
+        self.counter(
+            "sockudo_push_cleanup_deleted_total",
+            &[("category", category)],
+            count,
+        );
+    }
+
+    pub fn cleanup_error(&self, backend: &str, category: &str) {
+        self.counter(
+            "sockudo_push_cleanup_errors_total",
+            &[("backend", backend), ("category", category)],
+            1,
+        );
+    }
+
+    pub fn cleanup_tick_duration(&self, duration: Duration) {
+        self.observe(
+            "sockudo_push_cleanup_tick_duration_seconds",
+            &[],
+            duration.as_secs_f64(),
+        );
+    }
+
     pub fn delivery_result(&self, provider: PushProviderKind, app_id: &str, outcome: &str) {
         self.counter(
             "sockudo_push_dispatched_total",
@@ -757,6 +796,10 @@ mod tests {
             "sockudo_push_retry_expired_total",
             "sockudo_push_retry_dead_lettered_total",
             "sockudo_push_retry_malformed_total",
+            "sockudo_push_cleanup_scanned_total",
+            "sockudo_push_cleanup_deleted_total",
+            "sockudo_push_cleanup_errors_total",
+            "sockudo_push_cleanup_tick_duration_seconds",
         ];
 
         for name in required {
@@ -792,5 +835,24 @@ mod tests {
         assert!(metrics.snapshot().iter().any(|((name, _), sample)| *name
             == "sockudo_push_dispatch_duration_seconds"
             && sample.count == 1));
+    }
+
+    #[test]
+    fn cleanup_metrics_use_bounded_labels() {
+        let metrics = PushMetrics::default();
+        metrics.cleanup_scanned("delivery_event", 10);
+        metrics.cleanup_deleted("delivery_event", 3);
+        metrics.cleanup_error("memory", "tick");
+        metrics.cleanup_tick_duration(Duration::from_millis(25));
+
+        assert_eq!(metrics.get("sockudo_push_cleanup_scanned_total"), 10);
+        assert_eq!(metrics.get("sockudo_push_cleanup_deleted_total"), 3);
+        assert_eq!(metrics.get("sockudo_push_cleanup_errors_total"), 1);
+        assert!(metrics.snapshot().iter().all(|((name, labels), _)| {
+            !name.starts_with("sockudo_push_cleanup")
+                || labels
+                    .iter()
+                    .all(|(key, _)| !matches!(*key, "publish_id" | "device_id" | "token"))
+        }));
     }
 }

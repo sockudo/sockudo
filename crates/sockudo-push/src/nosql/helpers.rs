@@ -104,6 +104,15 @@ pub(super) fn delivery_event_position(event: &DeliveryEvent) -> String {
     format!("{:020}:{}", event.occurred_at_ms, event.event_id)
 }
 
+pub(super) fn status_updated_position(updated_at_ms: u64, publish_id: &str) -> String {
+    format!("{updated_at_ms:020}:{publish_id}")
+}
+
+pub(super) fn parse_status_updated_position(position: &str) -> Option<(u64, String)> {
+    let (timestamp, publish_id) = position.split_once(':')?;
+    Some((timestamp.parse().ok()?, publish_id.to_owned()))
+}
+
 pub(super) fn to_json_string<T: Serialize>(value: &T) -> PushStorageResult<String> {
     let data = to_json_value(value).map_err(json_error)?;
     sonic_rs::to_string(&sonic_rs::json!({ "_v": 1, "data": data })).map_err(json_error)

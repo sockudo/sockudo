@@ -1,6 +1,6 @@
 use super::queue::push_queue_now_ms;
 use futures_util::FutureExt;
-use sockudo_core::options::ServerOptions;
+use sockudo_core::options::{PushStorageDriver, ServerOptions};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
@@ -39,6 +39,28 @@ fn push_retry_policy(config: &ServerOptions) -> sockudo_push::RetryPolicy {
         respect_retry_after: config.push.retry.respect_retry_after,
     }
     .bounded()
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
+fn push_cleanup_policy(config: &ServerOptions) -> sockudo_push::PushCleanupPolicy {
+    sockudo_push::PushCleanupPolicy::from_days(
+        config.push.publish_status_ttl_days,
+        config.push.analytics_retention_days,
+        config.push.cleanup_batch_size,
+        config.push.cleanup_max_deleted_per_tick,
+    )
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
+fn push_storage_backend_label(config: &ServerOptions) -> &'static str {
+    match config.push.storage_driver {
+        PushStorageDriver::Memory => "memory",
+        PushStorageDriver::Postgres => "postgres",
+        PushStorageDriver::Mysql => "mysql",
+        PushStorageDriver::DynamoDb => "dynamodb",
+        PushStorageDriver::SurrealDb => "surrealdb",
+        PushStorageDriver::ScyllaDb => "scylladb",
+    }
 }
 
 const PUSH_WORKER_RESTART_BACKOFF: Duration = Duration::from_secs(1);
@@ -80,6 +102,9 @@ pub(crate) fn start_push_monolith_workers(
 ) -> Vec<JoinHandle<()>> {
     let fanout_config = push_fanout_config(config);
     let retry_policy = push_retry_policy(config);
+    let cleanup_policy = push_cleanup_policy(config);
+    let cleanup_interval = sockudo_push::interval_from_secs(config.push.cleanup_interval_secs);
+    let cleanup_backend = push_storage_backend_label(config);
     let mut handles = Vec::new();
 
     for worker_index in 0..config.push.planner_worker_count {
@@ -231,6 +256,38 @@ pub(crate) fn start_push_monolith_workers(
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+                }
+            },
+        ));
+    }
+
+    if config.push.cleanup_interval_secs > 0 {
+        let cleanup = sockudo_push::PushCleanupWorker::new(store.clone(), cleanup_policy)
+            .with_backend_label(cleanup_backend);
+        handles.push(spawn_supervised_worker(
+            "cleanup",
+            "sockudo-monolith-cleanup".to_owned(),
+            move |group| {
+                let cleanup = cleanup.clone();
+                async move {
+            warn!(worker = %group, "push cleanup worker started");
+            loop {
+                match cleanup.run_once(push_queue_now_ms()).await {
+                    Ok(report) if report.total_deleted() > 0 => {
+                        warn!(
+                            worker = %group,
+                            scanned = report.total_scanned(),
+                            deleted = report.total_deleted(),
+                            "push cleanup worker purged expired state"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "push cleanup worker tick failed");
+                    }
+                }
+                tokio::time::sleep(cleanup_interval).await;
             }
                 }
             },

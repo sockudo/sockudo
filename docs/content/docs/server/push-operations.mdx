@@ -1,0 +1,104 @@
+---
+title: Push operations
+description: Operate Sockudo push cleanup, metrics, backpressure, and provider outage runbooks.
+icon: Activity
+---
+
+Push operations revolve around four questions: is work being admitted, is it moving through each
+queue stage, are providers accepting it, and is old operational state being cleaned up.
+
+## Retention and cleanup
+
+The monolith push cleanup worker runs when `push.cleanup_interval_secs > 0`.
+
+| State | Retention |
+| --- | --- |
+| Terminal publish statuses | `push.publish_status_ttl_days` |
+| Delivery events | `push.analytics_retention_days` |
+| Operator invalidation events | `push.analytics_retention_days` |
+| Expired idempotency records | The record `expires_at_ms`; legacy non-epoch expiries are retained |
+| Expired scheduler locks | Removed after `expires_at_ms` |
+| Completed scheduled jobs | Deleted synchronously when emitted or cancelled |
+| Active scheduled jobs and active retries | Retained until they run, expire, or are cancelled |
+| Credentials, templates, and active device registrations | Never removed by cleanup |
+
+Cleanup is bounded by `push.cleanup_batch_size` per category and
+`push.cleanup_max_deleted_per_tick` overall. SQL stores use bounded deletes. Document stores clean
+new writes through internal app and time indexes where available; families without a time index are
+cleaned by bounded app-partition scans. Memory cleanup is for tests and local development only.
+
+Dead-letter queue messages remain owned by the configured queue backend. SQL schemas include
+`push_dead_letters` for durable inspection records, and cleanup removes expired rows if a backend
+has written them, but the current public API does not expose dead-letter listing yet.
+
+## Metrics
+
+Watch these metrics by app, provider, stage, or bounded category labels:
+
+| Signal | Metrics |
+| --- | --- |
+| Admission | `sockudo_push_publish_accepted_total`, `sockudo_push_quota_acceptance_rejections_total` |
+| Queue lag | `sockudo_push_publish_log_lag_seconds`, `sockudo_push_delivery_jobs_lag_seconds`, queue backend lag |
+| Provider outcomes | `sockudo_push_dispatched_total`, `sockudo_push_dispatch_duration_seconds`, `sockudo_push_provider_failures_total` |
+| Retries | `sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`, `sockudo_push_retry_deferred_total`, `sockudo_push_retry_expired_total` |
+| Dead letters | `sockudo_push_retry_dead_lettered_total`, dead-letter queue depth |
+| Credentials | `sockudo_push_provider_failures_total{failure_class="credential_auth"}` |
+| Device invalidation | `sockudo_push_token_invalidations_total`, `sockudo_push_token_invalidation_guard_total` |
+| Cleanup | `sockudo_push_cleanup_scanned_total`, `sockudo_push_cleanup_deleted_total`, `sockudo_push_cleanup_errors_total`, `sockudo_push_cleanup_tick_duration_seconds` |
+| Worker health | `sockudo_push_worker_exits_total` |
+
+Do not add labels for `publish_id`, `device_id`, tokens, endpoint URLs, or raw provider reasons.
+
+## Alerts
+
+Start with these alert shapes and tune them against normal traffic:
+
+| Alert | Suggested condition |
+| --- | --- |
+| Retry backlog age | `push.retry.v1` oldest due message exceeds the retry SLO |
+| Dead-letter rate | `sockudo_push_retry_dead_lettered_total` increases above baseline |
+| Provider auth failures | `sockudo_push_provider_failures_total{failure_class="credential_auth"}` is nonzero |
+| Invalidation spike | `sockudo_push_token_invalidation_guard_total` is nonzero or invalidation ratio jumps |
+| Dispatching age | publish statuses remain `dispatching` beyond retry max elapsed plus provider timeout |
+| Queue lag | critical stage lag crosses `PUSH_CRITICAL_QUEUE_MAX_LAG` |
+| Cleanup failures | `sockudo_push_cleanup_errors_total` increases |
+
+## Runbooks
+
+### APNs outage
+
+Confirm `sockudo_push_provider_failures_total{provider="apns"}` and APNs HTTP status family. If
+failures are `credential_auth`, rotate or roll back the APNs key/topic/environment configuration and
+restart provider workers so credentials reload. If failures are provider transient or quota, keep
+devices intact, watch retry/dead-letter rate, and reduce campaign admission until `push.delivery.apns.v1`
+lag drains.
+
+### FCM outage
+
+Separate project/auth failures from provider `5xx` or quota responses using
+`sockudo_push_provider_failures_total{provider="fcm",failure_class=...}`. For auth failures, fix
+the service account or stored credential and restart workers. For provider outage, leave device
+registrations in place, verify retries are scheduled, and throttle new fanout if retry lag or
+publish-log lag crosses the configured backpressure thresholds.
+
+### Credential rotation failure
+
+Stop new publishes for the affected provider if admission is still accepting work. Restore the last
+known-good credential or upload a corrected credential, then restart provider workers. Watch
+`credential_auth` failures, provider worker exits, and `dispatching` publish age. Do not delete
+devices for credential failures.
+
+### Dead node with pending queue work
+
+Use the queue backend's visibility timeout and redelivery tools first. Sockudo queue adapters keep a
+bounded local ready/pending handoff; if a node dies, broker redelivery depends on the selected
+backend. After the replacement worker starts, verify `push.publish.v1`, `push.shards.v1`,
+`push.results.v1`, `push.retry.v1`, and provider delivery stages are draining.
+
+### Backlog or backpressure
+
+Check which stage crossed lag first. Publish-log lag points to planner capacity or queue health.
+Shard lag points to channel fanout. Provider delivery lag points to provider throughput or
+credentials. Retry lag points to provider outage or retry policy. Dead-letter lag means operators
+need to inspect queue-native dead-letter details and retry/dead-letter metrics before replaying or
+republishing.

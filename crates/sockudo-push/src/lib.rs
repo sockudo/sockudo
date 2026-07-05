@@ -31,6 +31,10 @@ pub mod testing;
 pub mod transform;
 pub mod transformer;
 
+pub use cleanup::{
+    PushCleanupCounters, PushCleanupPolicy, PushCleanupReport, PushCleanupRequest,
+    PushCleanupWorker, days_to_ms, interval_from_secs, terminal_publish_state,
+};
 #[cfg(any(test, feature = "testing"))]
 pub use conformance::PushStoreConformance;
 #[cfg(feature = "push-fcm")]
@@ -109,11 +113,11 @@ pub use sql::PostgresPushStore;
 pub use storage::{
     DeviceRegistrationChange, DeviceRegistrationOutcome, DynPushStore,
     EXPECTED_PUSH_SCHEMA_VERSION, IdempotencyRecord, OperatorInvalidationEvent, Page,
-    PushCredentialStore, PushDeliveryEventStore, PushDeviceStore, PushFanoutShardStore,
-    PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore, PushPublishStatusStore,
-    PushScheduleStore, PushSchedulerLockStore, PushStorageBackendKind, PushStorageError,
-    PushStorageResult, PushStore, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob,
-    SchedulerLock,
+    PushCleanupStore, PushCredentialStore, PushDeliveryEventStore, PushDeviceStore,
+    PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore,
+    PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore, PushStorageBackendKind,
+    PushStorageError, PushStorageResult, PushStore, PushSubscriptionStore, PushTemplateStore,
+    ScheduledPushJob, SchedulerLock,
 };
 pub use transform::{
     EffectivePushPayload, PUSH_PROVIDER_RENDER_ORDER, PayloadTransformError,

@@ -201,6 +201,9 @@ dry_run = false
 analytics_enabled = false
 analytics_retention_days = 30
 scheduler_interval_secs = 5
+cleanup_interval_secs = 300
+cleanup_batch_size = 1000
+cleanup_max_deleted_per_tick = 100000
 
 [push.retry]
 max_attempts = 5
@@ -250,6 +253,12 @@ Push publish admission also requires a healthy queue, a safe store, local pipeli
 local provider-worker capability. Raw provider-specific recipients require the matching provider
 worker before the request is accepted; shard-path publishes also require a local shard worker.
 
+Push cleanup runs in monolith workers when `cleanup_interval_secs > 0`. It purges terminal publish
+statuses older than `publish_status_ttl_days`, delivery events and operator invalidations older
+than `analytics_retention_days`, expired idempotency records, expired scheduler locks, and persisted
+dead-letter inspection rows where the selected store supports them. Cleanup is bounded by
+`cleanup_batch_size` per category and `cleanup_max_deleted_per_tick` overall.
+
 ## Observability
 
 | Section | Purpose |
@@ -286,7 +295,9 @@ port = 5000
 buffer_size = 1024
 
 [push]
-enabled = true
-async_only = true
-publish_status_ttl_seconds = 86400
+storage_driver = "postgres"
+queue_driver = "redis"
+publish_status_ttl_days = 30
+analytics_retention_days = 30
+cleanup_interval_secs = 300
 ```

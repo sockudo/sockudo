@@ -137,6 +137,9 @@ dry_run = false
 analytics_enabled = true
 analytics_retention_days = 30
 scheduler_interval_secs = 5
+cleanup_interval_secs = 300
+cleanup_batch_size = 1000
+cleanup_max_deleted_per_tick = 100000
 
 [push.retry]
 max_attempts = 5
