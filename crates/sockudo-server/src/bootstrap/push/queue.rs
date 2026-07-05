@@ -1,15 +1,71 @@
 use sockudo_core::error::Error;
 use sockudo_webhook::integration::QueueManager;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
+
+#[cfg(feature = "push")]
+const LOCAL_READY_CAP_PER_STAGE: usize = 4_096;
+#[cfg(feature = "push")]
+const LOCAL_PENDING_CAP_PER_STAGE: usize = 8_192;
+#[cfg(feature = "push")]
+const LOCAL_LEASE_TIMEOUT_MS: u64 = 30_000;
 
 #[cfg(feature = "push")]
 #[derive(Clone)]
 pub(crate) struct QueueManagerPushQueue {
     backend: sockudo_push::PushQueueBackendKind,
     manager: Arc<QueueManager>,
+    ownership: QueueManagerPushQueueStageOwnership,
     state: Arc<tokio::sync::Mutex<QueueManagerPushQueueState>>,
     notify: Arc<tokio::sync::Notify>,
+    metrics: sockudo_push::PushMetrics,
+}
+
+#[cfg(feature = "push")]
+#[derive(Clone, Debug)]
+pub(crate) struct QueueManagerPushQueueStageOwnership {
+    stages: Arc<BTreeSet<sockudo_push::PushQueueStage>>,
+}
+
+#[cfg(feature = "push")]
+impl QueueManagerPushQueueStageOwnership {
+    pub(crate) fn from_config(
+        config: &sockudo_core::options::ServerOptions,
+        admission: &super::capability::PushAdmissionSnapshot,
+    ) -> Self {
+        let mut stages = BTreeSet::new();
+        if config.push.planner_worker_count > 0 {
+            stages.insert(sockudo_push::PushQueueStage::PublishLog);
+        }
+        if config.push.shard_worker_count > 0 {
+            stages.insert(sockudo_push::PushQueueStage::ShardJobs);
+        }
+        if config.push.feedback_worker_count > 0 {
+            stages.insert(sockudo_push::PushQueueStage::DeliveryResults);
+        }
+        if config.push.retry_worker_count > 0 {
+            stages.insert(sockudo_push::PushQueueStage::RetrySchedule);
+        }
+        stages.insert(sockudo_push::PushQueueStage::DeadLetters);
+        for provider in admission.active_providers() {
+            stages.insert(sockudo_push::PushQueueStage::DeliveryJobs(provider));
+        }
+        Self {
+            stages: Arc::new(stages),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing(stages: impl IntoIterator<Item = sockudo_push::PushQueueStage>) -> Self {
+        Self {
+            stages: Arc::new(stages.into_iter().collect()),
+        }
+    }
+
+    fn can_process(&self, stage: sockudo_push::PushQueueStage) -> bool {
+        self.stages.contains(&stage)
+    }
 }
 
 #[cfg(feature = "push")]
@@ -63,14 +119,17 @@ impl QueueManagerPushQueue {
     pub(crate) fn new(
         backend: sockudo_push::PushQueueBackendKind,
         manager: Arc<QueueManager>,
+        ownership: QueueManagerPushQueueStageOwnership,
     ) -> Self {
         Self {
             backend,
             manager,
+            ownership,
             state: Arc::new(tokio::sync::Mutex::new(
                 QueueManagerPushQueueState::default(),
             )),
             notify: Arc::new(tokio::sync::Notify::new()),
+            metrics: sockudo_push::PushMetrics::default(),
         }
     }
 
@@ -97,6 +156,12 @@ impl QueueManagerPushQueue {
         &self,
         stage: sockudo_push::PushQueueStage,
     ) -> sockudo_push::PushQueueResult<()> {
+        if !self.ownership.can_process(stage) {
+            return Err(sockudo_push::PushQueueError::UnsupportedBackend {
+                backend: "queue-manager",
+                reason: "this node is not configured to process the requested push queue stage",
+            });
+        }
         {
             let mut state = self.state.lock().await;
             if !state.started.insert(stage) {
@@ -106,7 +171,8 @@ impl QueueManagerPushQueue {
 
         let queue_name = stage.logical_topic();
         let queue = self.clone();
-        self.manager
+        match self
+            .manager
             .process_queue(
                 &queue_name,
                 Box::new(move |job| {
@@ -120,7 +186,13 @@ impl QueueManagerPushQueue {
                 }),
             )
             .await
-            .map_err(push_queue_manager_error)
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.state.lock().await.started.remove(&stage);
+                Err(push_queue_manager_error(error))
+            }
+        }
     }
 
     async fn handle_queue_job(
@@ -137,6 +209,26 @@ impl QueueManagerPushQueue {
 
         let route =
             sockudo_push::QueueRoute::for_message(envelope.stage, &envelope.key, &envelope.payload);
+        let now = push_queue_now_ms();
+        let should_requeue = {
+            let state = self.state.lock().await;
+            let ready_depth = state
+                .ready
+                .get(&envelope.stage)
+                .map_or(0, std::collections::VecDeque::len);
+            let pending_depth = state
+                .pending
+                .keys()
+                .filter(|(pending_stage, _)| pending_stage == &envelope.stage)
+                .count();
+            ready_depth >= LOCAL_READY_CAP_PER_STAGE || pending_depth >= LOCAL_PENDING_CAP_PER_STAGE
+        };
+        if should_requeue {
+            self.requeue_envelope(envelope, Some(now.saturating_add(1_000)), "local_capacity")
+                .await?;
+            return Ok(());
+        }
+
         let token = sockudo_push::QueueAckToken {
             stage: envelope.stage,
             message_id: envelope.message_id.clone(),
@@ -150,7 +242,7 @@ impl QueueManagerPushQueue {
             payload: envelope.payload.clone(),
             attempt: envelope.attempt,
             not_before_ms: envelope.not_before_ms,
-            lease_deadline_ms: push_queue_now_ms().saturating_add(30_000),
+            lease_deadline_ms: now.saturating_add(LOCAL_LEASE_TIMEOUT_MS),
             ack: token.clone(),
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -167,13 +259,22 @@ impl QueueManagerPushQueue {
         }
         self.notify.notify_waiters();
 
-        match rx.await.unwrap_or(PushQueueAction::Ack) {
+        let action = match tokio::time::timeout(Duration::from_millis(LOCAL_LEASE_TIMEOUT_MS), rx)
+            .await
+        {
+            Ok(Ok(action)) => action,
+            Ok(Err(_)) => PushQueueAction::Nack(Some(push_queue_now_ms().saturating_add(1_000))),
+            Err(_) => PushQueueAction::Nack(Some(push_queue_now_ms().saturating_add(1_000))),
+        };
+
+        self.remove_pending_and_ready(envelope.stage, &envelope.message_id)
+            .await;
+
+        match action {
             PushQueueAction::Ack => Ok(()),
             PushQueueAction::Nack(retry_at_ms) => {
-                let mut retry = envelope;
-                retry.attempt = retry.attempt.saturating_add(1);
-                retry.not_before_ms = retry_at_ms;
-                self.enqueue_envelope(retry).await
+                self.requeue_envelope(envelope, retry_at_ms, "nack_or_lease_timeout")
+                    .await
             }
             PushQueueAction::DeadLetter(reason) => {
                 let dead_letter = sockudo_push::DeadLetter {
@@ -194,6 +295,35 @@ impl QueueManagerPushQueue {
                 };
                 self.enqueue_envelope(dlq).await
             }
+        }
+    }
+
+    async fn requeue_envelope(
+        &self,
+        mut envelope: PushQueueEnvelope,
+        retry_at_ms: Option<u64>,
+        reason: &'static str,
+    ) -> sockudo_push::PushQueueResult<()> {
+        envelope.attempt = envelope.attempt.saturating_add(1);
+        envelope.not_before_ms = retry_at_ms;
+        self.metrics
+            .queue_local_requeued(&push_queue_stage_label(envelope.stage), reason);
+        self.enqueue_envelope(envelope).await
+    }
+
+    async fn remove_pending_and_ready(
+        &self,
+        stage: sockudo_push::PushQueueStage,
+        message_id: &str,
+    ) {
+        let mut state = self.state.lock().await;
+        state.pending.remove(&(stage, message_id.to_owned()));
+        if let Some(ready) = state.ready.get_mut(&stage)
+            && let Some(index) = ready
+                .iter()
+                .position(|message| message.message_id == message_id)
+        {
+            ready.remove(index);
         }
     }
 
@@ -228,7 +358,6 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
         key: String,
         payload: sockudo_push::PushQueuePayload,
     ) -> sockudo_push::PushQueueResult<String> {
-        self.ensure_stage_processor(stage).await?;
         let message_id = self.next_message_id().await;
         self.enqueue_envelope(PushQueueEnvelope {
             message_id: message_id.clone(),
@@ -249,7 +378,6 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
         payload: sockudo_push::PushQueuePayload,
         not_before_ms: u64,
     ) -> sockudo_push::PushQueueResult<String> {
-        self.ensure_stage_processor(stage).await?;
         let message_id = self.next_message_id().await;
         self.enqueue_envelope(PushQueueEnvelope {
             message_id: message_id.clone(),
@@ -284,12 +412,17 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
 
         let now = push_queue_now_ms();
         let mut state = self.state.lock().await;
-        let queue = state.ready.entry(stage).or_default();
         let mut messages = Vec::new();
         for _ in 0..max_messages.max(1) {
-            let Some(mut message) = queue.pop_front() else {
+            let Some(mut message) = state.ready.entry(stage).or_default().pop_front() else {
                 break;
             };
+            if !state
+                .pending
+                .contains_key(&(stage, message.message_id.clone()))
+            {
+                continue;
+            }
             message.lease_deadline_ms = now.saturating_add(lease_timeout_ms);
             messages.push(message);
         }
@@ -326,7 +459,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
         Ok(sockudo_push::QueueHealth {
             backend: self.backend,
             healthy: true,
-            details: "push queue is backed by the configured Sockudo queue manager".to_owned(),
+            details: "push queue is backed by the configured Sockudo queue manager; lag reports this node's local pull-ahead ready/pending depth, not broker-wide backlog".to_owned(),
         })
     }
 
@@ -436,9 +569,203 @@ fn push_queue_payload_publish_id(payload: &sockudo_push::PushQueuePayload) -> St
 }
 
 #[cfg(feature = "push")]
+fn push_queue_stage_label(stage: sockudo_push::PushQueueStage) -> String {
+    match stage {
+        sockudo_push::PushQueueStage::PublishLog => "publish_log".to_owned(),
+        sockudo_push::PushQueueStage::ShardJobs => "shard_jobs".to_owned(),
+        sockudo_push::PushQueueStage::DeliveryJobs(provider) => {
+            format!("delivery_jobs_{}", sockudo_push::provider_label(provider))
+        }
+        sockudo_push::PushQueueStage::DeliveryResults => "delivery_results".to_owned(),
+        sockudo_push::PushQueueStage::DeadLetters => "dead_letters".to_owned(),
+        sockudo_push::PushQueueStage::RetrySchedule => "retry_schedule".to_owned(),
+    }
+}
+
+#[cfg(feature = "push")]
 pub(crate) fn push_queue_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(all(test, feature = "push"))]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use sockudo_push::{
+        DeliveryBatch, DeliveryJob, PushPayload, PushProviderKind, PushQueue, PushQueuePayload,
+        PushQueueStage, PushRecipient, SecretString,
+    };
+    use sonic_rs::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn node_without_provider_worker_does_not_consume_provider_stage() {
+        let queue = test_queue(QueueManagerPushQueueStageOwnership::testing([
+            PushQueueStage::PublishLog,
+        ]));
+        let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
+        queue
+            .produce(
+                stage,
+                "delivery".to_owned(),
+                PushQueuePayload::DeliveryBatch(Box::new(sample_batch())),
+            )
+            .await
+            .unwrap();
+
+        let error = queue.consume(stage, "node-without-fcm", 1, 30_000).await;
+        assert!(matches!(
+            error,
+            Err(sockudo_push::PushQueueError::UnsupportedBackend { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn node_with_provider_worker_consumes_provider_stage() {
+        let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
+        let queue = test_queue(QueueManagerPushQueueStageOwnership::testing([stage]));
+        insert_local_message(&queue, stage).await;
+
+        let message = next_message(&queue, stage).await;
+        assert_eq!(message.stage, stage);
+        let PushQueuePayload::DeliveryBatch(batch) = &message.payload else {
+            panic!("expected delivery batch");
+        };
+        assert_eq!(batch.provider, PushProviderKind::Fcm);
+        queue.ack(message.ack).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn produce_does_not_start_provider_stage_processor() {
+        let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
+        let queue = test_queue(QueueManagerPushQueueStageOwnership::testing([stage]));
+        queue
+            .produce(
+                stage,
+                "delivery".to_owned(),
+                PushQueuePayload::DeliveryBatch(Box::new(sample_batch())),
+            )
+            .await
+            .unwrap();
+
+        assert!(queue.state.lock().await.started.get(&stage).is_none());
+    }
+
+    #[tokio::test]
+    async fn non_provider_stages_are_consumable_when_owned() {
+        let stages = [
+            PushQueueStage::PublishLog,
+            PushQueueStage::ShardJobs,
+            PushQueueStage::DeliveryResults,
+            PushQueueStage::RetrySchedule,
+            PushQueueStage::DeadLetters,
+        ];
+        let queue = test_queue(QueueManagerPushQueueStageOwnership::testing(stages));
+
+        for stage in stages {
+            assert!(
+                queue
+                    .consume(stage, "pipeline-worker", 1, 30_000)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "{stage:?}"
+            );
+        }
+    }
+
+    fn test_queue(ownership: QueueManagerPushQueueStageOwnership) -> QueueManagerPushQueue {
+        let driver = sockudo_queue::MemoryQueueManager::new();
+        driver.start_processing();
+        let manager = Arc::new(QueueManager::new(Box::new(driver)));
+        QueueManagerPushQueue::new(
+            sockudo_push::PushQueueBackendKind::Redis,
+            manager,
+            ownership,
+        )
+    }
+
+    async fn next_message(
+        queue: &QueueManagerPushQueue,
+        stage: PushQueueStage,
+    ) -> sockudo_push::QueueMessage {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let mut messages = queue.consume(stage, "worker", 1, 30_000).await.unwrap();
+                if let Some(message) = messages.pop() {
+                    return message;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn insert_local_message(queue: &QueueManagerPushQueue, stage: PushQueueStage) {
+        let payload = PushQueuePayload::DeliveryBatch(Box::new(sample_batch()));
+        let route = sockudo_push::QueueRoute::for_message(stage, "delivery", &payload);
+        let message_id = "external-1".to_owned();
+        let token = sockudo_push::QueueAckToken {
+            stage,
+            message_id: message_id.clone(),
+        };
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let mut state = queue.state.lock().await;
+        state.pending.insert((stage, message_id.clone()), tx);
+        state
+            .ready
+            .entry(stage)
+            .or_default()
+            .push_back(sockudo_push::QueueMessage {
+                message_id,
+                stage,
+                key: "delivery".to_owned(),
+                partition_key: route.partition_key,
+                partition: route.partition,
+                payload,
+                attempt: 1,
+                not_before_ms: None,
+                lease_deadline_ms: 0,
+                ack: token,
+            });
+    }
+
+    fn sample_batch() -> DeliveryBatch {
+        DeliveryBatch {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            provider: PushProviderKind::Fcm,
+            batch_id: "batch-1".to_owned(),
+            jobs: vec![DeliveryJob {
+                app_id: "app-1".to_owned(),
+                publish_id: "publish-1".to_owned(),
+                provider: PushProviderKind::Fcm,
+                batch_id: "batch-1".to_owned(),
+                device_id: Some("device-1".to_owned()),
+                recipient: PushRecipient::Fcm {
+                    registration_token: SecretString::new("fcm-token").unwrap(),
+                },
+                payload: Arc::new(PushPayload {
+                    template_id: None,
+                    template_data: json!({}),
+                    title: Some("hello".to_owned()),
+                    body: Some("body".to_owned()),
+                    icon: None,
+                    sound: None,
+                    collapse_key: Some("collapse".to_owned()),
+                }),
+                rendered_payload: None,
+                attempt: 1,
+                first_attempt_at_ms: None,
+                not_before_ms: None,
+                expires_at_ms: None,
+            }],
+        }
+    }
 }

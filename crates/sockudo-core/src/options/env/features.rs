@@ -82,6 +82,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     );
     options.push.retry_worker_count =
         parse_env::<u32>("PUSH_RETRY_WORKER_COUNT", options.push.retry_worker_count);
+    options.push.dispatch_max_outbound_requests = parse_env::<usize>(
+        "PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS",
+        options.push.dispatch_max_outbound_requests,
+    );
     options.push.circuit_breaker.failure_threshold = parse_env::<u32>(
         "PUSH_FAILURE_THRESHOLD",
         options.push.circuit_breaker.failure_threshold,

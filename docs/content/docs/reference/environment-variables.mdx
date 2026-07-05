@@ -388,6 +388,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | `PUSH_PUBLISH_LOG_MAX_LAG` | Maximum publish-log lag tolerated before push backpressure. |
 | `PUSH_CRITICAL_QUEUE_MAX_LAG` | Maximum lag tolerated for shard, delivery result, retry, dead-letter, and active provider delivery stages. |
 | `PUSH_PUBLISH_STATUS_TTL_DAYS` | Retention for push publish status records. |
+| `PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS` | Maximum outbound provider requests each dispatch worker hands to a provider dispatcher at once. |
 | `PUSH_RETRY_WORKER_COUNT` | Number of monolith retry scheduler workers consuming `push.retry.v1`. |
 | `PUSH_RETRY_MAX_ATTEMPTS` | Maximum provider delivery attempts before retry work is dead-lettered. |
 | `PUSH_RETRY_INITIAL_BACKOFF_MS` | Initial retry backoff when the provider does not send `Retry-After`. |

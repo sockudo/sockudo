@@ -1,6 +1,10 @@
 use super::queue::push_queue_now_ms;
+use futures_util::FutureExt;
 use sockudo_core::options::ServerOptions;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tracing::warn;
 
 mod providers;
@@ -37,20 +41,56 @@ fn push_retry_policy(config: &ServerOptions) -> sockudo_push::RetryPolicy {
     .bounded()
 }
 
+const PUSH_WORKER_RESTART_BACKOFF: Duration = Duration::from_secs(1);
+
+pub(super) fn spawn_supervised_worker<F, Fut>(
+    kind: &'static str,
+    group: String,
+    mut build: F,
+) -> JoinHandle<()>
+where
+    F: FnMut(String) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let metrics = sockudo_push::PushMetrics::default();
+        loop {
+            let worker = group.clone();
+            let reason = match AssertUnwindSafe(build(worker.clone())).catch_unwind().await {
+                Ok(()) => "returned",
+                Err(_) => "panic",
+            };
+            metrics.worker_exit(kind, &worker, reason);
+            warn!(
+                worker = %worker,
+                kind,
+                reason,
+                "push worker exited; restarting after backoff"
+            );
+            tokio::time::sleep(PUSH_WORKER_RESTART_BACKOFF).await;
+        }
+    })
+}
+
 #[cfg(all(feature = "push", feature = "monolith"))]
 pub(crate) fn start_push_monolith_workers(
     config: &ServerOptions,
     store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<JoinHandle<()>> {
     let fanout_config = push_fanout_config(config);
     let retry_policy = push_retry_policy(config);
+    let mut handles = Vec::new();
 
     for worker_index in 0..config.push.planner_worker_count {
         let planner =
             sockudo_push::PushPlanner::new(store.clone(), queue.clone(), fanout_config.clone());
-        tokio::spawn(async move {
-            let group = format!("sockudo-monolith-planner-{worker_index}");
+        handles.push(spawn_supervised_worker(
+            "planner",
+            format!("sockudo-monolith-planner-{worker_index}"),
+            move |group| {
+                let planner = planner.clone();
+                async move {
             warn!(worker = %group, "push planner worker started");
             loop {
                 match planner.run_once(&group).await {
@@ -64,14 +104,20 @@ pub(crate) fn start_push_monolith_workers(
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-        });
+                }
+            },
+        ));
     }
 
     for worker_index in 0..config.push.shard_worker_count {
         let worker =
             sockudo_push::PushShardWorker::new(store.clone(), queue.clone(), fanout_config.clone());
-        tokio::spawn(async move {
-            let group = format!("sockudo-monolith-shard-{worker_index}");
+        handles.push(spawn_supervised_worker(
+            "shard",
+            format!("sockudo-monolith-shard-{worker_index}"),
+            move |group| {
+                let worker = worker.clone();
+                async move {
             warn!(worker = %group, "push shard worker started");
             loop {
                 match worker.run_once(&group).await {
@@ -85,14 +131,20 @@ pub(crate) fn start_push_monolith_workers(
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-        });
+                }
+            },
+        ));
     }
 
     for worker_index in 0..config.push.feedback_worker_count {
         let processor = sockudo_push::PushFeedbackProcessor::new(store.clone(), queue.clone())
             .with_retry_policy(retry_policy.clone());
-        tokio::spawn(async move {
-            let group = format!("sockudo-monolith-feedback-{worker_index}");
+        handles.push(spawn_supervised_worker(
+            "feedback",
+            format!("sockudo-monolith-feedback-{worker_index}"),
+            move |group| {
+                let processor = processor.clone();
+                async move {
             warn!(worker = %group, "push feedback worker started");
             loop {
                 match processor.run_once(&group).await {
@@ -106,7 +158,9 @@ pub(crate) fn start_push_monolith_workers(
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-        });
+                }
+            },
+        ));
     }
 
     for worker_index in 0..config.push.retry_worker_count {
@@ -115,8 +169,12 @@ pub(crate) fn start_push_monolith_workers(
             queue.clone(),
             format!("sockudo-monolith-retry-{worker_index}"),
         );
-        tokio::spawn(async move {
-            let group = format!("sockudo-monolith-retry-{worker_index}");
+        handles.push(spawn_supervised_worker(
+            "retry",
+            format!("sockudo-monolith-retry-{worker_index}"),
+            move |group| {
+                let scheduler = scheduler.clone();
+                async move {
             warn!(worker = %group, "push retry scheduler worker started");
             loop {
                 match scheduler.run_once(&group).await {
@@ -130,7 +188,9 @@ pub(crate) fn start_push_monolith_workers(
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-        });
+                }
+            },
+        ));
     }
 
     {
@@ -141,8 +201,13 @@ pub(crate) fn start_push_monolith_workers(
             fanout_config.clone(),
         );
         let store = store.clone();
-        tokio::spawn(async move {
-            let group = "sockudo-monolith-scheduler";
+        handles.push(spawn_supervised_worker(
+            "scheduler",
+            "sockudo-monolith-scheduler".to_owned(),
+            move |group| {
+                let scheduler = scheduler.clone();
+                let store = store.clone();
+                async move {
             warn!(worker = %group, "push scheduler worker started");
             loop {
                 let now = push_queue_now_ms();
@@ -167,10 +232,13 @@ pub(crate) fn start_push_monolith_workers(
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-        });
+                }
+            },
+        ));
     }
 
-    start_push_provider_workers(config, store, queue);
+    handles.extend(start_push_provider_workers(config, store, queue));
+    handles
 }
 
 #[cfg(all(feature = "push", feature = "monolith"))]
@@ -178,24 +246,34 @@ fn start_push_provider_workers(
     config: &ServerOptions,
     store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
-) {
+) -> Vec<JoinHandle<()>> {
+    let mut handles = Vec::new();
     if config.push.webpush_enabled {
-        start_webpush_provider_workers(config, queue.clone());
+        handles.extend(start_webpush_provider_workers(config, queue.clone()));
     }
 
     if config.push.apns_enabled {
-        start_apns_provider_workers(config, store.clone(), queue.clone());
+        handles.extend(start_apns_provider_workers(
+            config,
+            store.clone(),
+            queue.clone(),
+        ));
     }
 
     if config.push.fcm_enabled {
-        start_fcm_provider_workers(config, store.clone(), queue.clone());
+        handles.extend(start_fcm_provider_workers(
+            config,
+            store.clone(),
+            queue.clone(),
+        ));
     }
 
     if config.push.hms_enabled {
-        start_hms_provider_workers(config, queue.clone());
+        handles.extend(start_hms_provider_workers(config, queue.clone()));
     }
 
     if config.push.wns_enabled {
-        start_wns_provider_workers(config, queue);
+        handles.extend(start_wns_provider_workers(config, queue));
     }
+    handles
 }

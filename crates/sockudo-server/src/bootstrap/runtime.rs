@@ -548,6 +548,17 @@ impl SockudoServer {
             info!("Cleanup system will shutdown when server process ends");
         }
 
+        #[cfg(all(feature = "push", feature = "monolith"))]
+        {
+            for handle in &self.state.push_worker_handles {
+                handle.abort();
+            }
+            info!(
+                "Aborted {} push worker supervisor tasks",
+                self.state.push_worker_handles.len()
+            );
+        }
+
         // Stop delta compression cleanup task gracefully
         #[cfg(feature = "delta")]
         self.state.delta_compression.stop_cleanup_task().await;

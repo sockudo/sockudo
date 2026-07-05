@@ -87,6 +87,7 @@ pub struct PushConfig {
     pub planner_worker_count: u32,
     pub shard_worker_count: u32,
     pub dispatch_worker_count: u32,
+    pub dispatch_max_outbound_requests: usize,
     pub feedback_worker_count: u32,
     pub retry_worker_count: u32,
     pub queue_partition_count: u32,
@@ -236,6 +237,7 @@ impl Default for PushConfig {
             planner_worker_count: 1,
             shard_worker_count: 1,
             dispatch_worker_count: 1,
+            dispatch_max_outbound_requests: 32,
             feedback_worker_count: 1,
             retry_worker_count: 1,
             queue_partition_count: 1,
@@ -445,6 +447,7 @@ mod tests {
             "PUSH_FANOUT_SYNC_THRESHOLD",
             "PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS",
             "PUSH_PUBLISH_STATUS_TTL_DAYS",
+            "PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS",
             "PUSH_FAILURE_THRESHOLD",
             "PUSH_SCHEDULER_INTERVAL_SECS",
             "PUSH_STALE_DEVICE_MAX_AGE_DAYS",
@@ -474,6 +477,7 @@ mod tests {
             std::env::set_var("PUSH_FANOUT_SYNC_THRESHOLD", "250");
             std::env::set_var("PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS", "42");
             std::env::set_var("PUSH_PUBLISH_STATUS_TTL_DAYS", "14");
+            std::env::set_var("PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS", "17");
             std::env::set_var("PUSH_FAILURE_THRESHOLD", "9");
             std::env::set_var("PUSH_SCHEDULER_INTERVAL_SECS", "11");
             std::env::set_var("PUSH_STALE_DEVICE_MAX_AGE_DAYS", "120");
@@ -514,6 +518,7 @@ mod tests {
         assert_eq!(options.push.fanout_sync_threshold, 250);
         assert_eq!(options.push.backpressure_lag_threshold_secs, 42);
         assert_eq!(options.push.publish_status_ttl_days, 14);
+        assert_eq!(options.push.dispatch_max_outbound_requests, 17);
         assert_eq!(options.push.circuit_breaker.failure_threshold, 9);
         assert_eq!(options.push.scheduler_interval_secs, 11);
         assert_eq!(options.push.stale_device_max_age_days, 120);
