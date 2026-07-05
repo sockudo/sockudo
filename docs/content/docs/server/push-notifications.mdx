@@ -151,8 +151,9 @@ retry or dead-letter work according to the retry policy, and emit classified met
 
 Operators should treat `credential_auth` and project/topic mismatch failures as credential or
 configuration incidents: rotate or fix the provider credential, project id, APNs topic/environment,
-or VAPID configuration, then replay or republish as appropriate. Do not purge device registries for
-these classes. The `sockudo_push_provider_failures_total{failure_class=...}` metric separates
+or VAPID configuration, then inspect `GET /apps/{appId}/push/deadLetters` and replay entries marked
+`replayable` or republish from the original source as appropriate. Do not purge device registries
+for these classes. The `sockudo_push_provider_failures_total{failure_class=...}` metric separates
 `device_terminal`, `provider_transient`, `provider_quota`, `credential_auth`, `caller_payload`,
 `network_transport`, and `unknown` failures. The `sockudo_push_token_invalidation_guard_total`
 metric and `token-invalidation-guard` meta event fire when a publish crosses the built-in
@@ -384,7 +385,7 @@ for retry scheduling overhead.
 | Push publish returns `503` | Check push queue health, memory-driver production guard, provider feature flags, provider credentials, and dispatch worker count. |
 | Push publish returns `429` | Check publish-log, shard, delivery result, retry, dead-letter, and active provider delivery queue lag. |
 | Publish remains `dispatching` | Check retry scheduler workers, `push.retry.v1` lag, dead-letter lag, and provider retry-after deadlines. |
-| Publish becomes `dead_lettered` | Inspect the dead-letter queue reason, retry metrics, provider outage history, and `max_attempts`/`max_elapsed_secs`. |
+| Publish becomes `dead_lettered` | Inspect `GET /apps/{appId}/push/deadLetters`, retry metrics, provider outage history, and `max_attempts`/`max_elapsed_secs`; replay only entries marked `replayable`. |
 | Cleanup failures increase | Check `sockudo_push_cleanup_errors_total`, store connectivity, and batch limits. |
 
 Push payloads should wake the app and include stable IDs. Fetch authoritative application state after the user opens the notification.

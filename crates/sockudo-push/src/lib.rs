@@ -94,11 +94,12 @@ pub use nosql::{ScyllaDbDocumentBackend, ScyllaDbPushStore};
 #[cfg(feature = "surrealdb")]
 pub use nosql::{SurrealDbDocumentBackend, SurrealDbPushStore};
 pub use pipeline::{
-    DynPushQueue, MemoryPushQueue, PushAcceptOutcome, PushAcceptRequest, PushPipeline,
-    PushPipelineError, PushPipelineResult, PushQueue, PushQueueBackendKind, PushQueueError,
-    PushQueuePayload, PushQueueResult, PushQueueStage, QueueAckToken, QueueHealth, QueueLagMetrics,
-    QueueMessage, QueueRoute, channel_delivery_idempotency_key, publish_idempotency_key,
-    publish_uid_key,
+    DeadLetterQueueEntry, DeadLetterQueueFilter, DeadLetterReplayResult, DynPushQueue,
+    MemoryPushQueue, PushAcceptOutcome, PushAcceptRequest, PushPipeline, PushPipelineError,
+    PushPipelineResult, PushQueue, PushQueueBackendKind, PushQueueError, PushQueuePayload,
+    PushQueueResult, PushQueueStage, QueueAckToken, QueueHealth, QueueLagMetrics, QueueMessage,
+    QueueRoute, channel_delivery_idempotency_key, dead_letter_entry_id, dead_letter_entry_position,
+    page_dead_letter_entries, publish_idempotency_key, publish_uid_key,
 };
 pub use planner::{PushPlanner, PushShardWorker};
 pub use retry::{PushRetryScheduler, RetryPolicy};

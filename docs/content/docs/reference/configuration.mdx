@@ -255,8 +255,9 @@ worker before the request is accepted; shard-path publishes also require a local
 
 Push cleanup runs in monolith workers when `cleanup_interval_secs > 0`. It purges terminal publish
 statuses older than `publish_status_ttl_days`, delivery events and operator invalidations older
-than `analytics_retention_days`, expired idempotency records, expired scheduler locks, and persisted
-dead-letter inspection rows where the selected store supports them. Cleanup is bounded by
+than `analytics_retention_days`, expired idempotency records, expired scheduler locks, and any
+persisted dead-letter inspection rows written by a selected backend. Queue-native dead-letter
+metadata is inspected through `/apps/{appId}/push/deadLetters`. Cleanup is bounded by
 `cleanup_batch_size` per category and `cleanup_max_deleted_per_tick` overall.
 
 ## Observability

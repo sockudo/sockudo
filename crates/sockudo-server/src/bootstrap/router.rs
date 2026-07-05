@@ -17,10 +17,11 @@ use crate::middleware::pusher_api_auth_middleware;
 use crate::push_http::{
     batch_publish as push_batch_publish, delete_channel_subscriptions, delete_device,
     delete_devices_where, delete_scheduled_job, delete_template, get_device, get_publish_status,
-    get_template, list_channel_subscriptions, list_credentials, list_devices,
+    get_template, list_channel_subscriptions, list_credentials, list_dead_letters, list_devices,
     list_subscription_channels, list_templates, post_apns_credential, post_delivery_status,
     post_fcm_credential, post_hms_credential, post_template, post_webpush_credential,
-    post_wns_credential, publish as push_publish, register_device, upsert_channel_subscription,
+    post_wns_credential, publish as push_publish, register_device, replay_dead_letter,
+    upsert_channel_subscription,
 };
 use crate::ws_handler::handle_ws_upgrade;
 use axum::extract::DefaultBodyLimit;
@@ -509,6 +510,20 @@ impl SockudoServer {
                 .route(
                     "/apps/{appId}/push/publish/{publishId}/status",
                     get(get_publish_status).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/deadLetters",
+                    get(list_dead_letters).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/deadLetters/{deadLetterId}/replay",
+                    post(replay_dead_letter).route_layer(axum_middleware::from_fn_with_state(
                         self.handler.clone(),
                         pusher_api_auth_middleware,
                     )),

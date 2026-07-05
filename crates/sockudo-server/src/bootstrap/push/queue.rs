@@ -1,5 +1,6 @@
 use sockudo_core::error::Error;
 use sockudo_webhook::integration::QueueManager;
+use sonic_rs::JsonValueTrait;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,6 +81,7 @@ struct QueueManagerPushQueueState {
         (sockudo_push::PushQueueStage, String),
         tokio::sync::oneshot::Sender<PushQueueAction>,
     >,
+    dead_letters: Vec<QueueManagerDeadLetterRecord>,
 }
 
 #[cfg(feature = "push")]
@@ -90,6 +92,7 @@ impl Default for QueueManagerPushQueueState {
             started: std::collections::BTreeSet::new(),
             ready: std::collections::BTreeMap::new(),
             pending: std::collections::BTreeMap::new(),
+            dead_letters: Vec::new(),
         }
     }
 }
@@ -112,6 +115,76 @@ struct PushQueueEnvelope {
     payload: sockudo_push::PushQueuePayload,
     attempt: u32,
     not_before_ms: Option<u64>,
+}
+
+#[cfg(feature = "push")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushQueueEnvelopeWire {
+    message_id: String,
+    stage: sockudo_push::PushQueueStage,
+    key: String,
+    payload_json: String,
+    attempt: u32,
+    not_before_ms: Option<u64>,
+}
+
+#[cfg(feature = "push")]
+impl TryFrom<&PushQueueEnvelope> for PushQueueEnvelopeWire {
+    type Error = sockudo_push::PushQueueError;
+
+    fn try_from(envelope: &PushQueueEnvelope) -> Result<Self, Self::Error> {
+        Ok(Self {
+            message_id: envelope.message_id.clone(),
+            stage: envelope.stage,
+            key: envelope.key.clone(),
+            payload_json: sonic_rs::to_string(&envelope.payload)
+                .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?,
+            attempt: envelope.attempt,
+            not_before_ms: envelope.not_before_ms,
+        })
+    }
+}
+
+#[cfg(feature = "push")]
+impl TryFrom<PushQueueEnvelopeWire> for PushQueueEnvelope {
+    type Error = sockudo_push::PushQueueError;
+
+    fn try_from(wire: PushQueueEnvelopeWire) -> Result<Self, Self::Error> {
+        Ok(Self {
+            message_id: wire.message_id,
+            stage: wire.stage,
+            key: wire.key,
+            payload: push_queue_payload_from_json(&wire.payload_json)?,
+            attempt: wire.attempt,
+            not_before_ms: wire.not_before_ms,
+        })
+    }
+}
+
+#[cfg(feature = "push")]
+#[derive(Clone)]
+struct QueueManagerDeadLetterRecord {
+    dead_letter_id: String,
+    dead_letter: sockudo_push::DeadLetter,
+    provider: Option<sockudo_push::PushProviderKind>,
+    original_stage: Option<sockudo_push::PushQueueStage>,
+    original_key: Option<String>,
+    original_payload: Option<sockudo_push::PushQueuePayload>,
+}
+
+#[cfg(feature = "push")]
+impl QueueManagerDeadLetterRecord {
+    fn entry(&self) -> sockudo_push::DeadLetterQueueEntry {
+        sockudo_push::DeadLetterQueueEntry {
+            dead_letter_id: self.dead_letter_id.clone(),
+            dead_letter: self.dead_letter.clone(),
+            provider: self.provider,
+            replayable: self.original_stage.is_some()
+                && self.original_key.is_some()
+                && self.original_payload.is_some(),
+        }
+    }
 }
 
 #[cfg(feature = "push")]
@@ -280,11 +353,28 @@ impl QueueManagerPushQueue {
                 let dead_letter = sockudo_push::DeadLetter {
                     app_id: push_queue_payload_app_id(&envelope.payload),
                     publish_id: push_queue_payload_publish_id(&envelope.payload),
-                    key: envelope.key,
+                    key: envelope.key.clone(),
                     stage: format!("{:?}", envelope.stage),
                     reason,
                     occurred_at_ms: push_queue_now_ms(),
                 };
+                {
+                    self.state
+                        .lock()
+                        .await
+                        .dead_letters
+                        .push(QueueManagerDeadLetterRecord {
+                            dead_letter_id: sockudo_push::dead_letter_entry_id(
+                                &dead_letter,
+                                &envelope.message_id,
+                            ),
+                            dead_letter: dead_letter.clone(),
+                            provider: push_queue_payload_provider(&envelope.payload),
+                            original_stage: Some(envelope.stage),
+                            original_key: Some(envelope.key.clone()),
+                            original_payload: Some(envelope.payload.clone()),
+                        });
+                }
                 let dlq = PushQueueEnvelope {
                     message_id: self.next_message_id().await,
                     stage: sockudo_push::PushQueueStage::DeadLetters,
@@ -359,6 +449,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
         payload: sockudo_push::PushQueuePayload,
     ) -> sockudo_push::PushQueueResult<String> {
         let message_id = self.next_message_id().await;
+        let dead_letter_marker = push_queue_direct_dead_letter(stage, &payload);
         self.enqueue_envelope(PushQueueEnvelope {
             message_id: message_id.clone(),
             stage,
@@ -368,6 +459,20 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
             not_before_ms: None,
         })
         .await?;
+        if let Some(dead_letter) = dead_letter_marker {
+            self.state
+                .lock()
+                .await
+                .dead_letters
+                .push(QueueManagerDeadLetterRecord {
+                    dead_letter_id: sockudo_push::dead_letter_entry_id(&dead_letter, &message_id),
+                    dead_letter,
+                    provider: None,
+                    original_stage: None,
+                    original_key: None,
+                    original_payload: None,
+                });
+        }
         Ok(message_id)
     }
 
@@ -379,6 +484,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
         not_before_ms: u64,
     ) -> sockudo_push::PushQueueResult<String> {
         let message_id = self.next_message_id().await;
+        let dead_letter_marker = push_queue_direct_dead_letter(stage, &payload);
         self.enqueue_envelope(PushQueueEnvelope {
             message_id: message_id.clone(),
             stage,
@@ -388,6 +494,20 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
             not_before_ms: Some(not_before_ms),
         })
         .await?;
+        if let Some(dead_letter) = dead_letter_marker {
+            self.state
+                .lock()
+                .await
+                .dead_letters
+                .push(QueueManagerDeadLetterRecord {
+                    dead_letter_id: sockudo_push::dead_letter_entry_id(&dead_letter, &message_id),
+                    dead_letter,
+                    provider: None,
+                    original_stage: None,
+                    original_key: None,
+                    original_payload: None,
+                });
+        }
         Ok(message_id)
     }
 
@@ -451,6 +571,70 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
             .await
     }
 
+    async fn list_dead_letters(
+        &self,
+        app_id: &str,
+        filter: sockudo_push::DeadLetterQueueFilter,
+        limit: usize,
+        cursor: Option<sockudo_push::PushCursor>,
+    ) -> sockudo_push::PushQueueResult<sockudo_push::Page<sockudo_push::DeadLetterQueueEntry>> {
+        let entries = self
+            .state
+            .lock()
+            .await
+            .dead_letters
+            .iter()
+            .map(QueueManagerDeadLetterRecord::entry)
+            .collect::<Vec<_>>();
+        sockudo_push::page_dead_letter_entries(app_id, filter, limit, cursor, entries)
+    }
+
+    async fn replay_dead_letter(
+        &self,
+        app_id: &str,
+        dead_letter_id: &str,
+    ) -> sockudo_push::PushQueueResult<Option<sockudo_push::DeadLetterReplayResult>> {
+        let replay = {
+            let state = self.state.lock().await;
+            let Some(stored) = state.dead_letters.iter().find(|stored| {
+                stored.dead_letter.app_id == app_id && stored.dead_letter_id == dead_letter_id
+            }) else {
+                return Ok(None);
+            };
+            let (Some(stage), Some(key), Some(payload)) = (
+                stored.original_stage,
+                stored.original_key.clone(),
+                stored.original_payload.clone(),
+            ) else {
+                return Ok(Some(sockudo_push::DeadLetterReplayResult {
+                    dead_letter_id: dead_letter_id.to_owned(),
+                    replayed: false,
+                    message_id: None,
+                    reason: Some(
+                        "dead-letter does not retain an original queue payload".to_owned(),
+                    ),
+                }));
+            };
+            (stage, key, payload)
+        };
+        let message_id = self.next_message_id().await;
+        self.enqueue_envelope(PushQueueEnvelope {
+            message_id: message_id.clone(),
+            stage: replay.0,
+            key: replay.1,
+            payload: replay.2,
+            attempt: 1,
+            not_before_ms: None,
+        })
+        .await?;
+        Ok(Some(sockudo_push::DeadLetterReplayResult {
+            dead_letter_id: dead_letter_id.to_owned(),
+            replayed: true,
+            message_id: Some(message_id),
+            reason: None,
+        }))
+    }
+
     async fn health(&self) -> sockudo_push::PushQueueResult<sockudo_push::QueueHealth> {
         self.manager
             .check_health()
@@ -479,10 +663,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
                 .keys()
                 .filter(|(pending_stage, _)| pending_stage == &stage)
                 .count() as u64,
-            dead_letter_depth: state
-                .ready
-                .get(&sockudo_push::PushQueueStage::DeadLetters)
-                .map_or(0, |queue| queue.len() as u64),
+            dead_letter_depth: state.dead_letters.len() as u64,
         })
     }
 }
@@ -497,10 +678,7 @@ fn push_queue_job_data(
         app_secret: String::new(),
         payload: sockudo_core::webhook_types::JobPayload {
             time_ms: push_queue_now_ms().min(i64::MAX as u64) as i64,
-            events: vec![
-                push_queue_envelope_value(envelope)
-                    .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?,
-            ],
+            events: vec![push_queue_envelope_value(envelope)?],
         },
         original_signature: "push-queue".to_owned(),
     })
@@ -509,9 +687,12 @@ fn push_queue_job_data(
 #[cfg(feature = "push")]
 fn push_queue_envelope_value(
     envelope: &PushQueueEnvelope,
-) -> Result<sonic_rs::Value, sonic_rs::Error> {
-    let bytes = sonic_rs::to_vec(envelope)?;
-    sonic_rs::from_slice(&bytes)
+) -> sockudo_push::PushQueueResult<sonic_rs::Value> {
+    let wire = PushQueueEnvelopeWire::try_from(envelope)?;
+    let json = serde_json::to_string(&wire)
+        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?;
+    sonic_rs::to_value(&json)
+        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))
 }
 
 #[cfg(feature = "push")]
@@ -522,15 +703,73 @@ fn parse_push_queue_job(
         sockudo_push::PushQueueError::Backend("push queue job missing envelope".to_owned())
     })?;
     push_queue_envelope_from_value(&event)
-        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))
 }
 
 #[cfg(feature = "push")]
 fn push_queue_envelope_from_value(
     value: &sonic_rs::Value,
-) -> Result<PushQueueEnvelope, sonic_rs::Error> {
-    let bytes = sonic_rs::to_vec(value)?;
-    sonic_rs::from_slice(&bytes)
+) -> sockudo_push::PushQueueResult<PushQueueEnvelope> {
+    let raw = value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string());
+    match serde_json::from_str::<PushQueueEnvelopeWire>(&raw) {
+        Ok(wire) => PushQueueEnvelope::try_from(wire),
+        Err(wire_error) => sonic_rs::from_str(&raw).map_err(|legacy_error| {
+            sockudo_push::PushQueueError::Backend(format!(
+                "invalid push queue envelope: {wire_error}; legacy decode failed: {legacy_error}"
+            ))
+        }),
+    }
+}
+
+#[cfg(feature = "push")]
+fn push_queue_payload_from_json(
+    raw: &str,
+) -> sockudo_push::PushQueueResult<sockudo_push::PushQueuePayload> {
+    let value: sonic_rs::Value = sonic_rs::from_str(raw)
+        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?;
+    let kind = value
+        .get("kind")
+        .and_then(sonic_rs::Value::as_str)
+        .ok_or_else(|| {
+            sockudo_push::PushQueueError::Backend("push queue payload missing kind".to_owned())
+        })?;
+    match kind {
+        "publishLog" => Ok(sockudo_push::PushQueuePayload::PublishLog(Box::new(
+            push_queue_payload_decode(raw)?,
+        ))),
+        "shardJob" => Ok(sockudo_push::PushQueuePayload::ShardJob(Box::new(
+            push_queue_payload_decode(raw)?,
+        ))),
+        "deliveryBatch" => Ok(sockudo_push::PushQueuePayload::DeliveryBatch(Box::new(
+            push_queue_payload_decode(raw)?,
+        ))),
+        "deliveryResult" => Ok(sockudo_push::PushQueuePayload::DeliveryResult(Box::new(
+            push_queue_payload_decode(raw)?,
+        ))),
+        "deliveryFeedback" => Ok(sockudo_push::PushQueuePayload::DeliveryFeedback(Box::new(
+            push_queue_payload_decode(raw)?,
+        ))),
+        "deadLetter" => Ok(sockudo_push::PushQueuePayload::DeadLetter(Box::new(
+            push_queue_payload_decode(raw)?,
+        ))),
+        "retrySchedule" => Ok(sockudo_push::PushQueuePayload::RetrySchedule(Box::new(
+            push_queue_payload_decode(raw)?,
+        ))),
+        _ => Err(sockudo_push::PushQueueError::Backend(format!(
+            "unsupported push queue payload kind {kind}"
+        ))),
+    }
+}
+
+#[cfg(feature = "push")]
+fn push_queue_payload_decode<T>(raw: &str) -> sockudo_push::PushQueueResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    sonic_rs::from_str(raw)
+        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))
 }
 
 #[cfg(feature = "push")]
@@ -565,6 +804,37 @@ fn push_queue_payload_publish_id(payload: &sockudo_push::PushQueuePayload) -> St
         }
         sockudo_push::PushQueuePayload::DeadLetter(dead_letter) => dead_letter.publish_id.clone(),
         sockudo_push::PushQueuePayload::RetrySchedule(entry) => entry.publish_id.clone(),
+    }
+}
+
+#[cfg(feature = "push")]
+fn push_queue_payload_provider(
+    payload: &sockudo_push::PushQueuePayload,
+) -> Option<sockudo_push::PushProviderKind> {
+    match payload {
+        sockudo_push::PushQueuePayload::DeliveryBatch(batch) => Some(batch.provider),
+        sockudo_push::PushQueuePayload::DeliveryResult(result) => Some(result.provider),
+        sockudo_push::PushQueuePayload::DeliveryFeedback(feedback) => {
+            Some(feedback.result.provider)
+        }
+        sockudo_push::PushQueuePayload::RetrySchedule(entry) => entry.provider,
+        sockudo_push::PushQueuePayload::PublishLog(_)
+        | sockudo_push::PushQueuePayload::ShardJob(_)
+        | sockudo_push::PushQueuePayload::DeadLetter(_) => None,
+    }
+}
+
+#[cfg(feature = "push")]
+fn push_queue_direct_dead_letter(
+    stage: sockudo_push::PushQueueStage,
+    payload: &sockudo_push::PushQueuePayload,
+) -> Option<sockudo_push::DeadLetter> {
+    match (stage, payload) {
+        (
+            sockudo_push::PushQueueStage::DeadLetters,
+            sockudo_push::PushQueuePayload::DeadLetter(dead_letter),
+        ) => Some(dead_letter.as_ref().clone()),
+        _ => None,
     }
 }
 
@@ -679,6 +949,79 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn dead_letters_are_listed_and_replayed() {
+        let stage = PushQueueStage::PublishLog;
+        let event = sample_publish_log_event();
+        let queue = test_queue(QueueManagerPushQueueStageOwnership::testing([
+            stage,
+            PushQueueStage::DeadLetters,
+        ]));
+        let handle = spawn_queue_job(
+            &queue,
+            PushQueueEnvelope {
+                message_id: "external-1".to_owned(),
+                stage,
+                key: event.queue_key(),
+                payload: PushQueuePayload::PublishLog(Box::new(event)),
+                attempt: 1,
+                not_before_ms: None,
+            },
+        );
+
+        let message = next_message(&queue, stage).await;
+        queue
+            .dead_letter(message.ack, "provider worker failed".to_owned())
+            .await
+            .unwrap();
+
+        let entry = next_dead_letter_entry(&queue).await;
+        assert_eq!(entry.provider, None);
+        assert!(entry.replayable);
+
+        let replay = queue
+            .replay_dead_letter("app-1", &entry.dead_letter_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(replay.replayed);
+        assert!(replay.message_id.is_some());
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn marker_dead_letters_are_listed_as_not_replayable() {
+        let queue = test_queue(QueueManagerPushQueueStageOwnership::testing([
+            PushQueueStage::DeadLetters,
+        ]));
+        let dead_letter = sockudo_push::DeadLetter {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            stage: "retry_schedule".to_owned(),
+            key: "retry-key".to_owned(),
+            reason: "retry attempts exhausted".to_owned(),
+            occurred_at_ms: push_queue_now_ms(),
+        };
+        queue
+            .produce(
+                PushQueueStage::DeadLetters,
+                dead_letter.key.clone(),
+                PushQueuePayload::DeadLetter(Box::new(dead_letter)),
+            )
+            .await
+            .unwrap();
+
+        let entry = next_dead_letter_entry(&queue).await;
+        assert!(!entry.replayable);
+        let replay = queue
+            .replay_dead_letter("app-1", &entry.dead_letter_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!replay.replayed);
+        assert!(replay.reason.unwrap().contains("original queue payload"));
+    }
+
     fn test_queue(ownership: QueueManagerPushQueueStageOwnership) -> QueueManagerPushQueue {
         let driver = sockudo_queue::MemoryQueueManager::new();
         driver.start_processing();
@@ -699,6 +1042,41 @@ mod tests {
                 let mut messages = queue.consume(stage, "worker", 1, 30_000).await.unwrap();
                 if let Some(message) = messages.pop() {
                     return message;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    fn spawn_queue_job(
+        queue: &QueueManagerPushQueue,
+        envelope: PushQueueEnvelope,
+    ) -> tokio::task::JoinHandle<()> {
+        let queue = queue.clone();
+        tokio::spawn(async move {
+            let job = push_queue_job_data(&envelope).unwrap();
+            queue.handle_queue_job(job).await.unwrap();
+        })
+    }
+
+    async fn next_dead_letter_entry(
+        queue: &QueueManagerPushQueue,
+    ) -> sockudo_push::DeadLetterQueueEntry {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let page = queue
+                    .list_dead_letters(
+                        "app-1",
+                        sockudo_push::DeadLetterQueueFilter::default(),
+                        10,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                if let Some(entry) = page.items.into_iter().next() {
+                    return entry;
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
@@ -766,6 +1144,36 @@ mod tests {
                 not_before_ms: None,
                 expires_at_ms: None,
             }],
+        }
+    }
+
+    fn sample_publish_log_event() -> sockudo_push::PublishLogEvent {
+        sockudo_push::PublishLogEvent {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            event_id: "event-1".to_owned(),
+            occurred_at_ms: push_queue_now_ms(),
+            intent: sockudo_push::PublishIntent {
+                app_id: "app-1".to_owned(),
+                publish_id: "publish-1".to_owned(),
+                targets: vec![],
+                payload: PushPayload {
+                    template_id: None,
+                    template_data: json!({}),
+                    title: Some("hello".to_owned()),
+                    body: Some("body".to_owned()),
+                    icon: None,
+                    sound: None,
+                    collapse_key: None,
+                },
+                provider_overrides: vec![],
+                not_before_ms: None,
+                expires_at_ms: None,
+            },
+            fanout_regime: sockudo_push::FanoutRegime::FastPath,
+            expected_recipients: 0,
+            fast_threshold: 10_000,
+            shard_size: 100_000,
         }
     }
 }

@@ -27,9 +27,17 @@ Cleanup is bounded by `push.cleanup_batch_size` per category and
 new writes through internal app and time indexes where available; families without a time index are
 cleaned by bounded app-partition scans. Memory cleanup is for tests and local development only.
 
-Dead-letter queue messages remain owned by the configured queue backend. SQL schemas include
-`push_dead_letters` for durable inspection records, and cleanup removes expired rows if a backend
-has written them, but the current public API does not expose dead-letter listing yet.
+Dead-letter queue messages remain owned by the configured queue backend. Operators can inspect
+queue-native dead-letter metadata through `GET /apps/{appId}/push/deadLetters`, filter by
+`provider`, `sinceMs`, and `untilMs`, and page with `limit` plus `cursor`. Responses include safe
+metadata only: dead-letter id, app/publish ids, provider when known, stage, key, reason, timestamp,
+and `replayable`. They do not expose original push payloads, recipient tokens, endpoints, or
+credential material.
+
+Use `POST /apps/{appId}/push/deadLetters/{deadLetterId}/replay` to re-enqueue a replayable
+dead-letter's original queue item after fixing the underlying incident. Marker-only dead letters
+that were emitted without retained original queue payload stay inspectable but are returned as
+`replayable: false`.
 
 ## Metrics
 
@@ -41,7 +49,7 @@ Watch these metrics by app, provider, stage, or bounded category labels:
 | Queue lag | `sockudo_push_publish_log_lag_seconds`, `sockudo_push_delivery_jobs_lag_seconds`, queue backend lag |
 | Provider outcomes | `sockudo_push_dispatched_total`, `sockudo_push_dispatch_duration_seconds`, `sockudo_push_provider_failures_total` |
 | Retries | `sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`, `sockudo_push_retry_deferred_total`, `sockudo_push_retry_expired_total` |
-| Dead letters | `sockudo_push_retry_dead_lettered_total`, dead-letter queue depth |
+| Dead letters | `sockudo_push_retry_dead_lettered_total`, dead-letter queue depth, `GET /apps/{appId}/push/deadLetters` |
 | Credentials | `sockudo_push_provider_failures_total{failure_class="credential_auth"}` |
 | Device invalidation | `sockudo_push_token_invalidations_total`, `sockudo_push_token_invalidation_guard_total` |
 | Cleanup | `sockudo_push_cleanup_scanned_total`, `sockudo_push_cleanup_deleted_total`, `sockudo_push_cleanup_errors_total`, `sockudo_push_cleanup_tick_duration_seconds` |
@@ -100,5 +108,5 @@ backend. After the replacement worker starts, verify `push.publish.v1`, `push.sh
 Check which stage crossed lag first. Publish-log lag points to planner capacity or queue health.
 Shard lag points to channel fanout. Provider delivery lag points to provider throughput or
 credentials. Retry lag points to provider outage or retry policy. Dead-letter lag means operators
-need to inspect queue-native dead-letter details and retry/dead-letter metrics before replaying or
-republishing.
+need to inspect `GET /apps/{appId}/push/deadLetters`, fix the underlying provider/credential/queue
+incident, then replay only entries marked `replayable` or republish from the original source.

@@ -21,15 +21,16 @@ use sockudo_core::options::{PushRuleConfig, PushRulePayloadMappingConfig};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_protocol::messages::ApiMessageData;
 use sockudo_push::{
-    ChannelPushRule, ChannelSubscription, DeliveryEvent, DeviceDetails, DeviceRegistrationChange,
-    DynPushQueue, DynPushStore, EncryptedSecret, FanoutRegime, IdempotencyRecord,
-    NotificationTemplate, OperatorInvalidationEvent, ProviderCredential,
-    ProviderCredentialMaterial, ProviderOverridePayload, PublishCounters, PublishIntent,
-    PublishLifecycleState, PublishLogEvent, PublishStatus, PublishTarget, PushCursor,
-    PushMetaEvent, PushMetrics, PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage,
-    PushRecipient, PushRulePayloadMapping, RenderedProviderPayload, SecretString,
-    emit_push_meta_event, generate_device_identity_token, hash_device_identity_token,
-    render_all_provider_payloads, resolve_template_payload, verify_device_identity_token,
+    ChannelPushRule, ChannelSubscription, DeadLetterQueueEntry, DeadLetterQueueFilter,
+    DeliveryEvent, DeviceDetails, DeviceRegistrationChange, DynPushQueue, DynPushStore,
+    EncryptedSecret, FanoutRegime, IdempotencyRecord, NotificationTemplate,
+    OperatorInvalidationEvent, ProviderCredential, ProviderCredentialMaterial,
+    ProviderOverridePayload, PublishCounters, PublishIntent, PublishLifecycleState,
+    PublishLogEvent, PublishStatus, PublishTarget, PushCursor, PushMetaEvent, PushMetrics,
+    PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage, PushRecipient,
+    PushRulePayloadMapping, RenderedProviderPayload, SecretString, emit_push_meta_event,
+    generate_device_identity_token, hash_device_identity_token, render_all_provider_payloads,
+    resolve_template_payload, verify_device_identity_token,
 };
 use sonic_rs::{Value, json};
 use tracing::{info, warn};
@@ -152,6 +153,16 @@ pub struct PaginationQuery {
     pub cursor: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadLetterQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+    pub provider: Option<String>,
+    pub since_ms: Option<u64>,
+    pub until_ms: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ListResponse<T> {
     pub items: Vec<T>,
@@ -189,6 +200,21 @@ pub struct DeviceResponse {
     pub push_state: sockudo_push::DevicePushState,
     pub push_failure_count: u32,
     pub recipient: DeviceRecipientResponse,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadLetterResponse {
+    pub dead_letter_id: String,
+    pub app_id: String,
+    pub publish_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PushProviderKind>,
+    pub stage: String,
+    pub key: String,
+    pub reason: String,
+    pub occurred_at_ms: u64,
+    pub replayable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -866,6 +892,53 @@ pub async fn get_publish_status(
     Ok(Json(status))
 }
 
+pub async fn list_dead_letters(
+    Path(app_id): Path<String>,
+    Query(query): Query<DeadLetterQuery>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(queue): Extension<DynPushQueue>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let filter = dead_letter_filter(&query)?;
+    let page = queue
+        .list_dead_letters(
+            &app_id,
+            filter,
+            limit(query.limit)?,
+            decode_cursor(query.cursor, &app_id)?,
+        )
+        .await
+        .map_err(push_queue_error)?;
+    list_response(
+        page.items.into_iter().map(dead_letter_response).collect(),
+        page.next_cursor,
+    )
+}
+
+pub async fn replay_dead_letter(
+    Path((app_id, dead_letter_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(queue): Extension<DynPushQueue>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let result = queue
+        .replay_dead_letter(&app_id, &dead_letter_id)
+        .await
+        .map_err(push_queue_error)?
+        .ok_or_else(|| AppError::NotFound("dead letter not found".to_owned()))?;
+    if !result.replayed {
+        return Err(AppError::InvalidInput(result.reason.unwrap_or_else(|| {
+            "dead letter cannot be replayed by this queue backend".to_owned()
+        })));
+    }
+    audit_log(&app_id, "deadLetterReplay", Some(&dead_letter_id));
+    Ok((StatusCode::ACCEPTED, Json(result)))
+}
+
 pub async fn delete_scheduled_job(
     Path((app_id, job_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1375,6 +1448,20 @@ fn credential_response(credential: ProviderCredential) -> CredentialResponse {
     }
 }
 
+fn dead_letter_response(entry: DeadLetterQueueEntry) -> DeadLetterResponse {
+    DeadLetterResponse {
+        dead_letter_id: entry.dead_letter_id,
+        app_id: entry.dead_letter.app_id,
+        publish_id: entry.dead_letter.publish_id,
+        provider: entry.provider,
+        stage: entry.dead_letter.stage,
+        key: entry.dead_letter.key,
+        reason: entry.dead_letter.reason,
+        occurred_at_ms: entry.dead_letter.occurred_at_ms,
+        replayable: entry.replayable,
+    }
+}
+
 fn ensure_app_scope(app_id: &str, app: &App) -> Result<(), AppError> {
     if app.id == app_id {
         Ok(())
@@ -1821,6 +1908,38 @@ fn queue_stage_label(stage: PushQueueStage) -> String {
     }
 }
 
+fn dead_letter_filter(query: &DeadLetterQuery) -> Result<DeadLetterQueueFilter, AppError> {
+    if let (Some(since_ms), Some(until_ms)) = (query.since_ms, query.until_ms)
+        && since_ms > until_ms
+    {
+        return Err(AppError::InvalidInput(
+            "sinceMs must be less than or equal to untilMs".to_owned(),
+        ));
+    }
+    Ok(DeadLetterQueueFilter {
+        provider: query
+            .provider
+            .as_deref()
+            .map(parse_push_provider)
+            .transpose()?,
+        since_ms: query.since_ms,
+        until_ms: query.until_ms,
+    })
+}
+
+fn parse_push_provider(raw: &str) -> Result<PushProviderKind, AppError> {
+    match raw {
+        "fcm" => Ok(PushProviderKind::Fcm),
+        "apns" => Ok(PushProviderKind::Apns),
+        "webpush" | "webPush" | "web_push" => Ok(PushProviderKind::WebPush),
+        "hms" => Ok(PushProviderKind::Hms),
+        "wns" => Ok(PushProviderKind::Wns),
+        _ => Err(AppError::InvalidInput(
+            "provider must be one of fcm, apns, webpush, hms, or wns".to_owned(),
+        )),
+    }
+}
+
 fn audit_log(app_id: &str, action: &'static str, subject: Option<&str>) {
     info!(
         target: "sockudo_push_audit",
@@ -1961,6 +2080,10 @@ fn credential_nonce_bytes() -> [u8; 12] {
 }
 
 fn push_error(error: sockudo_push::PushStorageError) -> AppError {
+    AppError::InternalError(error.to_string())
+}
+
+fn push_queue_error(error: sockudo_push::PushQueueError) -> AppError {
     AppError::InternalError(error.to_string())
 }
 
@@ -2396,6 +2519,42 @@ mod tests {
             PushCapability::Subscribe
         );
         assert!(ensure_push_admin(&headers).is_err());
+    }
+
+    #[test]
+    fn dead_letter_filter_parses_provider_and_time_bounds() {
+        let filter = dead_letter_filter(&DeadLetterQuery {
+            limit: Some(50),
+            cursor: None,
+            provider: Some("webpush".to_owned()),
+            since_ms: Some(10),
+            until_ms: Some(20),
+        })
+        .unwrap();
+
+        assert_eq!(filter.provider, Some(PushProviderKind::WebPush));
+        assert_eq!(filter.since_ms, Some(10));
+        assert_eq!(filter.until_ms, Some(20));
+
+        let error = dead_letter_filter(&DeadLetterQuery {
+            limit: None,
+            cursor: None,
+            provider: Some("unknown".to_owned()),
+            since_ms: None,
+            until_ms: None,
+        })
+        .unwrap_err();
+        assert!(matches!(error, AppError::InvalidInput(_)));
+
+        let error = dead_letter_filter(&DeadLetterQuery {
+            limit: None,
+            cursor: None,
+            provider: None,
+            since_ms: Some(20),
+            until_ms: Some(10),
+        })
+        .unwrap_err();
+        assert!(matches!(error, AppError::InvalidInput(_)));
     }
 
     #[test]
