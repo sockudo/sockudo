@@ -21,7 +21,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use url::{Host, Url};
 
-use crate::domain::{ProviderError, SecretString};
+use crate::domain::{ProviderError, ProviderFailureClass, SecretString};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderHttpMethod {
@@ -208,6 +208,7 @@ impl ProviderEndpointConfig {
 pub(super) fn validate_webpush_target(endpoint: &str) -> Result<(), ProviderError> {
     let parsed = Url::parse(endpoint).map_err(|_| ProviderError {
         class: "invalid_token".to_owned(),
+        failure_class: ProviderFailureClass::DeviceTerminal,
         reason: Some("web push endpoint must be a URL".to_owned()),
         retry_after_ms: None,
     })?;
@@ -218,6 +219,7 @@ pub(super) fn validate_webpush_target(endpoint: &str) -> Result<(), ProviderErro
     {
         return Err(ProviderError {
             class: "invalid_token".to_owned(),
+            failure_class: ProviderFailureClass::DeviceTerminal,
             reason: Some("web push endpoint host is not allowed".to_owned()),
             retry_after_ms: None,
         });
@@ -303,6 +305,7 @@ fn validate_parsed_https_url(parsed: &Url, class: &str) -> Result<(), ProviderEr
     if parsed.scheme() != "https" {
         return Err(ProviderError {
             class: class.to_owned(),
+            failure_class: ProviderFailureClass::from_legacy_url_class(class),
             reason: Some("provider URL must use https".to_owned()),
             retry_after_ms: None,
         });
@@ -310,6 +313,7 @@ fn validate_parsed_https_url(parsed: &Url, class: &str) -> Result<(), ProviderEr
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(ProviderError {
             class: class.to_owned(),
+            failure_class: ProviderFailureClass::from_legacy_url_class(class),
             reason: Some("provider URL must not include userinfo".to_owned()),
             retry_after_ms: None,
         });

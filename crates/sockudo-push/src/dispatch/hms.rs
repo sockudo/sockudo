@@ -15,7 +15,8 @@ use super::outcome::{
 };
 use super::{HealthStatus, PushDispatcher};
 use crate::domain::{
-    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,
+    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
+    ProviderFailureClass, PushProviderKind,
 };
 use crate::pipeline::now_ms;
 
@@ -113,16 +114,40 @@ pub(super) fn classify_hms_response(response: &ProviderHttpResponse) -> Provider
     if matches!(response.status, 404 | 410)
         || (body.contains("token") && (body.contains("invalid") || body.contains("not exist")))
     {
-        rejected("invalid_token", response, None)
+        rejected(
+            "invalid_token",
+            ProviderFailureClass::DeviceTerminal,
+            response,
+            None,
+        )
     } else if response.status == 413 {
-        rejected("invalid_payload", response, Some("payload_too_large"))
+        rejected(
+            "invalid_payload",
+            ProviderFailureClass::CallerPayload,
+            response,
+            Some("payload_too_large"),
+        )
     } else if response.status == 429 || body.contains("quota") {
-        retryable("quota", response)
+        retryable("quota", ProviderFailureClass::ProviderQuota, response)
     } else if matches!(response.status, 401 | 403) {
-        rejected("auth_failure", response, None)
+        rejected(
+            "auth_failure",
+            ProviderFailureClass::CredentialAuth,
+            response,
+            None,
+        )
     } else if response.status >= 500 {
-        retryable("unavailable", response)
+        retryable(
+            "unavailable",
+            ProviderFailureClass::ProviderTransient,
+            response,
+        )
     } else {
-        rejected("provider_rejected", response, None)
+        rejected(
+            "provider_rejected",
+            ProviderFailureClass::Unknown,
+            response,
+            None,
+        )
     }
 }

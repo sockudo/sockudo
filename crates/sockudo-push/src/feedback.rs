@@ -2,13 +2,16 @@ use futures_util::StreamExt;
 
 use crate::domain::{
     DeadLetter, DeliveryEvent, DeliveryFeedback, DeliveryOutcome, DeliveryResult, DevicePushState,
-    PublishLifecycleState,
+    ProviderError, ProviderFailureClass, PublishLifecycleState, PublishStatus,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::{PushMetrics, provider_label};
 use crate::pipeline::{PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, now_ms};
 use crate::retry::RetryPolicy;
 use crate::storage::{DynPushStore, IdempotencyRecord};
+
+const INVALIDATION_GUARD_MIN_SAMPLES: u64 = 10;
+const INVALIDATION_GUARD_RATIO_PERCENT: u64 = 20;
 
 #[derive(Clone)]
 pub struct PushFeedbackProcessor {
@@ -123,19 +126,31 @@ impl PushFeedbackProcessor {
         };
         self.store.append_delivery_event(event).await?;
         if !matches!(result.outcome, DeliveryOutcome::Accepted) {
+            let failure_class = result_failure_class(result);
             emit_push_meta_event(PushMetaEvent::provider_rejected(
                 &result.app_id,
                 &result.publish_id,
                 result.provider,
                 result.outcome,
                 result.error.as_ref().map(|error| error.class.as_str()),
+                Some(failure_class),
             ));
+            self.metrics.provider_failure_class(
+                result.provider,
+                &result.app_id,
+                failure_class.label(),
+            );
         }
 
         if let Some(device_id) = result.device_id.as_deref() {
             self.update_device_state(result, device_id).await?;
         }
-        self.update_publish_status(result).await?;
+        let status = self.update_publish_status(result).await?;
+        if is_device_terminal_failure(result)
+            && let Some(status) = status.as_ref()
+        {
+            self.emit_invalidation_guard_if_needed(result, status);
+        }
         self.handle_retry_or_dlq(&feedback).await?;
         emit_feedback_meta_event(result);
         Ok(())
@@ -168,7 +183,7 @@ impl PushFeedbackProcessor {
                     self.store.upsert_device(device).await?;
                 }
             }
-            DeliveryOutcome::Rejected if is_invalid_token(result) => {
+            DeliveryOutcome::Rejected if is_device_terminal_failure(result) => {
                 self.store.delete_device(&result.app_id, device_id).await?;
                 self.metrics
                     .token_invalidated(result.provider, &result.app_id);
@@ -178,7 +193,9 @@ impl PushFeedbackProcessor {
                     result.provider,
                 ));
             }
-            DeliveryOutcome::Rejected | DeliveryOutcome::Retryable => {
+            DeliveryOutcome::Rejected | DeliveryOutcome::Retryable
+                if is_device_transient_failure(result) =>
+            {
                 if let Some(mut device) = self.store.get_device(&result.app_id, device_id).await? {
                     let previous = device.push.state;
                     if device.push.failure_count == 0 {
@@ -223,18 +240,22 @@ impl PushFeedbackProcessor {
                     self.store.upsert_device(device).await?;
                 }
             }
+            DeliveryOutcome::Rejected | DeliveryOutcome::Retryable => {}
             DeliveryOutcome::Expired | DeliveryOutcome::Cancelled => {}
         }
         Ok(())
     }
 
-    async fn update_publish_status(&self, result: &DeliveryResult) -> PushPipelineResult<()> {
+    async fn update_publish_status(
+        &self,
+        result: &DeliveryResult,
+    ) -> PushPipelineResult<Option<PublishStatus>> {
         let Some(mut status) = self
             .store
             .get_publish_status(&result.app_id, &result.publish_id)
             .await?
         else {
-            return Ok(());
+            return Ok(None);
         };
 
         match result.outcome {
@@ -285,8 +306,33 @@ impl PushFeedbackProcessor {
                 "push publish completed"
             );
         }
-        self.store.put_publish_status(status).await?;
-        Ok(())
+        self.store.put_publish_status(status.clone()).await?;
+        Ok(Some(status))
+    }
+
+    fn emit_invalidation_guard_if_needed(&self, result: &DeliveryResult, status: &PublishStatus) {
+        if !invalidation_guard_threshold_crossed(status) {
+            return;
+        }
+        self.metrics
+            .token_invalidation_guard(result.provider, &result.app_id);
+        emit_push_meta_event(PushMetaEvent::token_invalidation_guard(
+            &result.app_id,
+            &result.publish_id,
+            result.provider,
+            status.counters.planned,
+            status.counters.failed,
+            INVALIDATION_GUARD_RATIO_PERCENT,
+        ));
+        tracing::warn!(
+            app_id = %result.app_id,
+            publish_id = %result.publish_id,
+            provider = ?result.provider,
+            planned = status.counters.planned,
+            failed = status.counters.failed,
+            threshold_percent = INVALIDATION_GUARD_RATIO_PERCENT,
+            "push token invalidation guard threshold crossed"
+        );
     }
 
     async fn handle_retry_or_dlq(&self, feedback: &DeliveryFeedback) -> PushPipelineResult<()> {
@@ -335,7 +381,9 @@ impl PushFeedbackProcessor {
                 &result.publish_id,
                 "retry-scheduled",
             ));
-        } else if matches!(result.outcome, DeliveryOutcome::Rejected) && !is_invalid_token(result) {
+        } else if matches!(result.outcome, DeliveryOutcome::Rejected)
+            && !is_device_terminal_failure(result)
+        {
             let dead_letter = DeadLetter {
                 app_id: result.app_id.clone(),
                 publish_id: result.publish_id.clone(),
@@ -473,13 +521,34 @@ fn terminal_state(
     }
 }
 
-fn is_invalid_token(result: &DeliveryResult) -> bool {
-    result.error.as_ref().is_some_and(|error| {
-        matches!(
-            error.class.as_str(),
-            "invalid_token" | "unregistered" | "not_registered" | "expired_channel"
-        )
-    })
+fn result_failure_class(result: &DeliveryResult) -> ProviderFailureClass {
+    result
+        .error
+        .as_ref()
+        .map(ProviderError::resolved_failure_class)
+        .unwrap_or(ProviderFailureClass::Unknown)
+}
+
+fn is_device_terminal_failure(result: &DeliveryResult) -> bool {
+    result_failure_class(result).is_device_terminal()
+}
+
+fn is_device_transient_failure(result: &DeliveryResult) -> bool {
+    result_failure_class(result).is_device_transient()
+}
+
+fn invalidation_guard_threshold_crossed(status: &PublishStatus) -> bool {
+    let planned = status.counters.planned;
+    if planned == 0 || status.counters.failed < INVALIDATION_GUARD_MIN_SAMPLES {
+        return false;
+    }
+    let threshold = planned
+        .saturating_mul(INVALIDATION_GUARD_RATIO_PERCENT)
+        .saturating_add(99)
+        / 100;
+    let threshold = threshold.max(INVALIDATION_GUARD_MIN_SAMPLES);
+    let previous_failed = status.counters.failed.saturating_sub(1);
+    status.counters.failed >= threshold && previous_failed < threshold
 }
 
 pub fn device_is_terminally_failed(state: DevicePushState) -> bool {
@@ -495,7 +564,8 @@ fn emit_feedback_meta_event(result: &DeliveryResult) {
         batch_id = %result.batch_id,
         device_id = result.device_id.as_deref().unwrap_or("[provider-target]"),
         outcome = outcome_label(result.outcome),
-        invalid_token = is_invalid_token(result),
+        failure_class = result_failure_class(result).label(),
+        device_terminal = is_device_terminal_failure(result),
         "push provider feedback processed"
     );
 }
@@ -507,15 +577,16 @@ mod tests {
     use sonic_rs::json;
 
     use crate::domain::{
-        DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
+        DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult, DeviceDetails,
+        DevicePushDetails, FormFactor, Platform, ProviderError, ProviderFailureClass,
         PublishCounters, PublishLifecycleState, PublishStatus, PushPayload, PushProviderKind,
-        PushRecipient, SecretString,
+        PushRecipient, SecretString, generate_device_identity_token, hash_device_identity_token,
     };
     use crate::memory::MemoryPushStore;
     use crate::metrics::PushMetrics;
     use crate::pipeline::{MemoryPushQueue, PushQueue};
     use crate::retry::RetryPolicy;
-    use crate::storage::PushPublishStatusStore;
+    use crate::storage::{PushDeviceStore, PushPublishStatusStore};
 
     use super::*;
 
@@ -709,13 +780,164 @@ mod tests {
         assert_eq!(lag.ready_depth + lag.delayed_depth, 1);
     }
 
+    #[tokio::test]
+    async fn feedback_provider_transient_does_not_increment_device_failure_count() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.put_publish_status(status()).await.unwrap();
+        store.upsert_device(device("device-1")).await.unwrap();
+        let metrics = PushMetrics::default();
+        let processor = PushFeedbackProcessor::new(store.clone(), queue)
+            .with_metrics(metrics.clone())
+            .with_retry_policy(RetryPolicy {
+                initial_backoff_ms: 1,
+                max_backoff_ms: 1,
+                jitter_ratio_percent: 0,
+                ..RetryPolicy::default()
+            });
+
+        processor
+            .apply_feedback(retryable_feedback())
+            .await
+            .unwrap();
+
+        let device = store
+            .get_device("app-1", "device-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(device.push.state, DevicePushState::Active);
+        assert_eq!(device.push.failure_count, 0);
+        assert_eq!(metrics.get("sockudo_push_provider_failures_total"), 1);
+    }
+
+    #[tokio::test]
+    async fn feedback_device_transient_increments_only_that_device_failure_count() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.put_publish_status(status()).await.unwrap();
+        store.upsert_device(device("device-1")).await.unwrap();
+        store.upsert_device(device("device-2")).await.unwrap();
+        let processor = PushFeedbackProcessor::new(store.clone(), queue);
+
+        processor
+            .apply_result(rejected_result(
+                "publish-1",
+                "device-1",
+                "device_transient",
+                ProviderFailureClass::DeviceTransient,
+            ))
+            .await
+            .unwrap();
+
+        let device_1 = store
+            .get_device("app-1", "device-1")
+            .await
+            .unwrap()
+            .unwrap();
+        let device_2 = store
+            .get_device("app-1", "device-2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(device_1.push.state, DevicePushState::Failing);
+        assert_eq!(device_1.push.failure_count, 1);
+        assert_eq!(device_2.push.state, DevicePushState::Active);
+        assert_eq!(device_2.push.failure_count, 0);
+    }
+
+    #[tokio::test]
+    async fn feedback_device_terminal_deletes_only_target_and_is_idempotent() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.put_publish_status(status()).await.unwrap();
+        store.upsert_device(device("device-1")).await.unwrap();
+        store.upsert_device(device("device-2")).await.unwrap();
+        let metrics = PushMetrics::default();
+        let processor =
+            PushFeedbackProcessor::new(store.clone(), queue).with_metrics(metrics.clone());
+        let result = rejected_result(
+            "publish-1",
+            "device-1",
+            "invalid_token",
+            ProviderFailureClass::DeviceTerminal,
+        );
+
+        processor.apply_result(result.clone()).await.unwrap();
+        processor.apply_result(result).await.unwrap();
+
+        assert!(
+            store
+                .get_device("app-1", "device-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_device("app-1", "device-2")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(metrics.get("sockudo_push_token_invalidations_total"), 1);
+        assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 1);
+    }
+
+    #[tokio::test]
+    async fn feedback_mass_provider_auth_outage_preserves_device_registry() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .put_publish_status(status_with_planned("publish-auth", 3))
+            .await
+            .unwrap();
+        for device_id in ["device-1", "device-2", "device-3"] {
+            store.upsert_device(device(device_id)).await.unwrap();
+        }
+        let metrics = PushMetrics::default();
+        let processor =
+            PushFeedbackProcessor::new(store.clone(), queue).with_metrics(metrics.clone());
+
+        for device_id in ["device-1", "device-2", "device-3"] {
+            processor
+                .apply_result(rejected_result(
+                    "publish-auth",
+                    device_id,
+                    "auth_failure",
+                    ProviderFailureClass::CredentialAuth,
+                ))
+                .await
+                .unwrap();
+        }
+
+        for device_id in ["device-1", "device-2", "device-3"] {
+            let device = store.get_device("app-1", device_id).await.unwrap().unwrap();
+            assert_eq!(device.push.state, DevicePushState::Active);
+            assert_eq!(device.push.failure_count, 0);
+        }
+        let status = store
+            .get_publish_status("app-1", "publish-auth")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.counters.failed, 3);
+        assert_eq!(status.state, PublishLifecycleState::Failed);
+        assert_eq!(metrics.get("sockudo_push_provider_failures_total"), 3);
+        assert_eq!(metrics.get("sockudo_push_token_invalidations_total"), 0);
+    }
+
     fn status() -> PublishStatus {
+        status_with_planned("publish-1", 1)
+    }
+
+    fn status_with_planned(publish_id: &str, planned: u64) -> PublishStatus {
         PublishStatus {
             app_id: "app-1".to_owned(),
-            publish_id: "publish-1".to_owned(),
+            publish_id: publish_id.to_owned(),
             state: PublishLifecycleState::Dispatching,
             counters: PublishCounters {
-                planned: 1,
+                planned,
                 dispatched: 0,
                 succeeded: 0,
                 failed: 0,
@@ -727,6 +949,55 @@ mod tests {
             fanout_regime: None,
             retry_after_ms: None,
             error_reason: None,
+        }
+    }
+
+    fn rejected_result(
+        publish_id: &str,
+        device_id: &str,
+        class: &str,
+        failure_class: ProviderFailureClass,
+    ) -> DeliveryResult {
+        DeliveryResult {
+            app_id: "app-1".to_owned(),
+            publish_id: publish_id.to_owned(),
+            provider: PushProviderKind::Fcm,
+            batch_id: format!("batch-{device_id}"),
+            device_id: Some(device_id.to_owned()),
+            outcome: DeliveryOutcome::Rejected,
+            provider_message_id: None,
+            error: Some(ProviderError {
+                class: class.to_owned(),
+                failure_class,
+                reason: Some(class.to_owned()),
+                retry_after_ms: None,
+            }),
+            attempt: 1,
+        }
+    }
+
+    fn device(device_id: &str) -> DeviceDetails {
+        let identity_token = generate_device_identity_token();
+        DeviceDetails {
+            app_id: "app-1".to_owned(),
+            id: device_id.to_owned(),
+            client_id: None,
+            form_factor: FormFactor::Phone,
+            platform: Platform::Android,
+            metadata: json!({}),
+            device_secret: hash_device_identity_token(&identity_token),
+            timezone: "UTC".to_owned(),
+            locale: "en-US".to_owned(),
+            last_active_at_ms: 1,
+            push: DevicePushDetails {
+                recipient: PushRecipient::Fcm {
+                    registration_token: SecretString::new(format!("token-{device_id}")).unwrap(),
+                },
+                state: DevicePushState::Active,
+                failure_count: 0,
+                error_reason: None,
+            },
+            push_rate_policy: None,
         }
     }
 
@@ -742,6 +1013,7 @@ mod tests {
                 provider_message_id: None,
                 error: Some(ProviderError {
                     class: "unavailable".to_owned(),
+                    failure_class: ProviderFailureClass::ProviderTransient,
                     reason: Some("provider unavailable".to_owned()),
                     retry_after_ms: Some(now_ms()),
                 }),

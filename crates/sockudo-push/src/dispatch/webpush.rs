@@ -25,8 +25,8 @@ use super::outcome::{
 };
 use super::{HealthStatus, PushDispatcher};
 use crate::domain::{
-    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,
-    PushRecipient, SecretString,
+    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
+    ProviderFailureClass, PushProviderKind, PushRecipient, SecretString,
 };
 use crate::pipeline::now_ms;
 
@@ -141,17 +141,20 @@ impl NativeWebPushCrypto {
         let vapid_key = self.vapid_key.as_ref().map_err(|error| match error {
             NativeWebPushKeyError::Encoding => ProviderError {
                 class: "auth_failure".to_owned(),
+                failure_class: ProviderFailureClass::CredentialAuth,
                 reason: Some("invalid VAPID private key encoding".to_owned()),
                 retry_after_ms: None,
             },
             NativeWebPushKeyError::Key => ProviderError {
                 class: "auth_failure".to_owned(),
+                failure_class: ProviderFailureClass::CredentialAuth,
                 reason: Some("invalid VAPID private key".to_owned()),
                 retry_after_ms: None,
             },
         })?;
         let endpoint_uri = Url::parse(endpoint).map_err(|_| ProviderError {
             class: "invalid_token".to_owned(),
+            failure_class: ProviderFailureClass::DeviceTerminal,
             reason: Some("invalid Web Push endpoint".to_owned()),
             retry_after_ms: None,
         })?;
@@ -159,12 +162,14 @@ impl NativeWebPushCrypto {
         if scheme.is_empty() {
             return Err(ProviderError {
                 class: "invalid_token".to_owned(),
+                failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("invalid Web Push endpoint scheme".to_owned()),
                 retry_after_ms: None,
             });
         }
         let host = endpoint_uri.host_str().ok_or_else(|| ProviderError {
             class: "invalid_token".to_owned(),
+            failure_class: ProviderFailureClass::DeviceTerminal,
             reason: Some("invalid Web Push endpoint host".to_owned()),
             retry_after_ms: None,
         })?;
@@ -172,6 +177,7 @@ impl NativeWebPushCrypto {
             .duration_since(UNIX_EPOCH)
             .map_err(|_| ProviderError {
                 class: "auth_failure".to_owned(),
+                failure_class: ProviderFailureClass::CredentialAuth,
                 reason: Some("system clock before Unix epoch".to_owned()),
                 retry_after_ms: None,
             })?
@@ -186,6 +192,7 @@ impl NativeWebPushCrypto {
             }))
             .map_err(|_| ProviderError {
                 class: "auth_failure".to_owned(),
+                failure_class: ProviderFailureClass::CredentialAuth,
                 reason: Some("failed to serialize VAPID claims".to_owned()),
                 retry_after_ms: None,
             })?,
@@ -199,6 +206,7 @@ impl NativeWebPushCrypto {
         SecretString::new(format!("vapid t={token}, k={}", vapid_key.public_key)).map_err(|_| {
             ProviderError {
                 class: "auth_failure".to_owned(),
+                failure_class: ProviderFailureClass::CredentialAuth,
                 reason: Some("invalid VAPID authorization header".to_owned()),
                 retry_after_ms: None,
             }
@@ -223,6 +231,7 @@ impl WebPushCrypto for NativeWebPushCrypto {
             .decode(p256dh.expose_secret().as_bytes())
             .map_err(|_| ProviderError {
                 class: "invalid_token".to_owned(),
+                failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("invalid Web Push p256dh encoding".to_owned()),
                 retry_after_ms: None,
             })?;
@@ -230,12 +239,14 @@ impl WebPushCrypto for NativeWebPushCrypto {
             .decode(auth.expose_secret().as_bytes())
             .map_err(|_| ProviderError {
                 class: "invalid_token".to_owned(),
+                failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("invalid Web Push auth encoding".to_owned()),
                 retry_after_ms: None,
             })?;
         if auth_bytes.len() != 16 {
             return Err(ProviderError {
                 class: "invalid_token".to_owned(),
+                failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("invalid Web Push auth length".to_owned()),
                 retry_after_ms: None,
             });
@@ -244,11 +255,13 @@ impl WebPushCrypto for NativeWebPushCrypto {
         let request = WebPushBuilder::new(
             endpoint.parse().map_err(|_| ProviderError {
                 class: "invalid_token".to_owned(),
+                failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("invalid Web Push endpoint".to_owned()),
                 retry_after_ms: None,
             })?,
             PublicKey::from_sec1_bytes(&p256dh_bytes).map_err(|_| ProviderError {
                 class: "invalid_token".to_owned(),
+                failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("invalid Web Push p256dh key".to_owned()),
                 retry_after_ms: None,
             })?,
@@ -258,6 +271,7 @@ impl WebPushCrypto for NativeWebPushCrypto {
         .build(payload.to_vec())
         .map_err(|error| ProviderError {
             class: "invalid_payload".to_owned(),
+            failure_class: ProviderFailureClass::CallerPayload,
             reason: Some(format!("web push encryption failed: {error}")),
             retry_after_ms: None,
         })?;
@@ -307,6 +321,7 @@ impl WebPushDispatcher {
         else {
             return Err(ProviderError {
                 class: "invalid_token".to_owned(),
+                failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("web push recipient is missing subscription material".to_owned()),
                 retry_after_ms: None,
             });
@@ -321,6 +336,7 @@ impl WebPushDispatcher {
         let rendered = render_payload_json(PushProviderKind::WebPush, job)?;
         let body = sonic_rs::to_vec(&rendered).map_err(|_| ProviderError {
             class: "invalid_payload".to_owned(),
+            failure_class: ProviderFailureClass::CallerPayload,
             reason: Some("web push payload serialization failed".to_owned()),
             retry_after_ms: None,
         })?;
@@ -383,6 +399,7 @@ fn web_push_headers(rendered: &Value) -> Result<BTreeMap<String, String>, Provid
             .or_else(|| ttl.as_str().map(str::to_owned))
             .ok_or_else(|| ProviderError {
                 class: "invalid_payload".to_owned(),
+                failure_class: ProviderFailureClass::CallerPayload,
                 reason: Some("web push ttl must be a positive integer".to_owned()),
                 retry_after_ms: None,
             })?;
@@ -392,6 +409,7 @@ fn web_push_headers(rendered: &Value) -> Result<BTreeMap<String, String>, Provid
         if let Some(value) = rendered_headers.get(&name) {
             let value = value.as_str().ok_or_else(|| ProviderError {
                 class: "invalid_payload".to_owned(),
+                failure_class: ProviderFailureClass::CallerPayload,
                 reason: Some(format!("web push {name} must be a string")),
                 retry_after_ms: None,
             })?;
@@ -410,12 +428,36 @@ pub(super) fn classify_webpush_response(response: &ProviderHttpResponse) -> Prov
         );
     }
     match response.status {
-        404 | 410 => rejected("invalid_token", response, None),
-        413 => rejected("invalid_payload", response, Some("payload_too_large")),
-        429 => retryable("quota", response),
-        500..=599 => retryable("unavailable", response),
-        401 | 403 => rejected("auth_failure", response, None),
-        _ => rejected("provider_rejected", response, None),
+        404 | 410 => rejected(
+            "invalid_token",
+            ProviderFailureClass::DeviceTerminal,
+            response,
+            None,
+        ),
+        413 => rejected(
+            "invalid_payload",
+            ProviderFailureClass::CallerPayload,
+            response,
+            Some("payload_too_large"),
+        ),
+        429 => retryable("quota", ProviderFailureClass::ProviderQuota, response),
+        500..=599 => retryable(
+            "unavailable",
+            ProviderFailureClass::ProviderTransient,
+            response,
+        ),
+        401 | 403 => rejected(
+            "auth_failure",
+            ProviderFailureClass::CredentialAuth,
+            response,
+            None,
+        ),
+        _ => rejected(
+            "provider_rejected",
+            ProviderFailureClass::Unknown,
+            response,
+            None,
+        ),
     }
 }
 

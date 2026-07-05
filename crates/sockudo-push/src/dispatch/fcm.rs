@@ -25,7 +25,8 @@ use super::{HealthStatus, PushDispatcher};
 #[cfg(feature = "push-fcm")]
 use crate::domain::SecretString;
 use crate::domain::{
-    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,
+    DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError,
+    ProviderFailureClass, PushProviderKind,
 };
 use crate::pipeline::now_ms;
 
@@ -319,24 +320,67 @@ pub(super) fn classify_fcm_response(response: &ProviderHttpResponse) -> Provider
         );
     }
     let body = String::from_utf8_lossy(&response.body).to_ascii_uppercase();
-    if matches!(response.status, 404 | 410)
-        || body.contains("UNREGISTERED")
-        || body.contains("NOT_FOUND")
-    {
-        rejected("invalid_token", response, None)
-    } else if matches!(response.status, 400 | 413) {
-        rejected("invalid_payload", response, None)
+    if is_fcm_terminal_token_failure(&body) {
+        rejected(
+            "invalid_token",
+            ProviderFailureClass::DeviceTerminal,
+            response,
+            None,
+        )
     } else if response.status == 403 && body.contains("SENDER_ID_MISMATCH") {
-        rejected("invalid_token", response, Some("sender_id_mismatch"))
+        rejected(
+            "project_mismatch",
+            ProviderFailureClass::CredentialAuth,
+            response,
+            Some("sender_id_mismatch"),
+        )
+    } else if matches!(response.status, 400 | 413) {
+        rejected(
+            "invalid_payload",
+            ProviderFailureClass::CallerPayload,
+            response,
+            None,
+        )
+    } else if response.status == 404 || body.contains("NOT_FOUND") {
+        rejected(
+            "project_mismatch",
+            ProviderFailureClass::CredentialAuth,
+            response,
+            None,
+        )
     } else if matches!(response.status, 401 | 403) {
-        rejected("auth_failure", response, None)
+        rejected(
+            "auth_failure",
+            ProviderFailureClass::CredentialAuth,
+            response,
+            None,
+        )
     } else if response.status == 429 {
-        retryable("quota", response)
+        retryable("quota", ProviderFailureClass::ProviderQuota, response)
     } else if matches!(response.status, 500 | 502 | 503 | 504) {
-        retryable("unavailable", response)
+        retryable(
+            "unavailable",
+            ProviderFailureClass::ProviderTransient,
+            response,
+        )
     } else {
-        rejected("provider_rejected", response, None)
+        rejected(
+            "provider_rejected",
+            ProviderFailureClass::Unknown,
+            response,
+            None,
+        )
     }
+}
+
+fn is_fcm_terminal_token_failure(body: &str) -> bool {
+    body.contains("UNREGISTERED")
+        || body.contains("REGISTRATION-TOKEN-NOT-REGISTERED")
+        || (body.contains("INVALID_ARGUMENT")
+            && body.contains("REGISTRATION TOKEN")
+            && (body.contains("NOT A VALID")
+                || body.contains("INVALID")
+                || body.contains("MALFORMED")))
 }
 
 fn is_fcm_auth_failure_response(response: &ProviderHttpResponse) -> bool {

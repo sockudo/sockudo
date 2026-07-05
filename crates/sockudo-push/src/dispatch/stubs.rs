@@ -2,7 +2,8 @@ use async_trait::async_trait;
 
 use super::{HealthStatus, PushDispatcher};
 use crate::domain::{
-    DeliveryBatch, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,
+    DeliveryBatch, DeliveryOutcome, DeliveryResult, ProviderError, ProviderFailureClass,
+    PushProviderKind,
 };
 
 pub struct AcceptAllDispatcher {
@@ -82,6 +83,7 @@ impl PushDispatcher for RetryAfterDispatcher {
                 provider_message_id: None,
                 error: Some(ProviderError {
                     class: "quota".to_owned(),
+                    failure_class: ProviderFailureClass::ProviderQuota,
                     reason: Some("retry-after".to_owned()),
                     retry_after_ms: Some(self.retry_after_ms),
                 }),
