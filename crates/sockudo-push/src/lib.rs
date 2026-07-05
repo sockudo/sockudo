@@ -68,9 +68,10 @@ pub use domain::{
     NotificationTemplate, Platform, ProviderCredential, ProviderCredentialMaterial, ProviderError,
     ProviderOverridePayload, PublishCounters, PublishIntent, PublishLifecycleState,
     PublishLogEvent, PublishStatus, PublishTarget, PushCursor, PushCursorKind, PushDomainError,
-    PushPayload, PushProviderKind, PushRecipient, RetryScheduleEntry, SecretString, ShardJob,
-    ShardJobStatus, TemplateContent, TokenBucketPolicy, generate_device_identity_token,
-    hash_device_identity_token, is_hashed_device_secret, stable_hash, verify_device_identity_token,
+    PushPayload, PushProviderKind, PushRecipient, RenderedProviderPayload, RetryScheduleEntry,
+    SecretString, ShardJob, ShardJobStatus, TemplateContent, TokenBucketPolicy,
+    generate_device_identity_token, hash_device_identity_token, is_hashed_device_secret,
+    stable_hash, verify_device_identity_token,
 };
 pub use feedback::{PushFeedbackProcessor, device_is_terminally_failed};
 pub use memory::MemoryPushStore;
@@ -114,4 +115,8 @@ pub use storage::{
     PushStorageResult, PushStore, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob,
     SchedulerLock,
 };
-pub use transform::{PayloadTransformError, RenderedProviderPayload, render_provider_payload};
+pub use transform::{
+    EffectivePushPayload, PUSH_PROVIDER_RENDER_ORDER, PayloadTransformError,
+    render_all_provider_payloads, render_provider_payload, requested_template_locale,
+    resolve_template_payload,
+};

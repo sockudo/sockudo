@@ -1,11 +1,15 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
 use thiserror::Error;
 
 use crate::domain::{
-    MAX_RENDERED_TEMPLATE_BYTES, ProviderOverridePayload, PushPayload, PushProviderKind,
-    validate_web_push_endpoint,
+    MAX_APNS_PAYLOAD_BYTES, MAX_FCM_PAYLOAD_BYTES, MAX_HMS_PAYLOAD_BYTES,
+    MAX_RENDERED_TEMPLATE_BYTES, MAX_WEB_PUSH_PAYLOAD_BYTES, MAX_WNS_PAYLOAD_BYTES,
+    NotificationTemplate, ProviderOverridePayload, PushPayload, PushProviderKind,
+    RenderedProviderPayload, validate_web_push_endpoint,
 };
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -17,14 +21,38 @@ pub enum PayloadTransformError {
     },
     #[error("invalid template substitution: {reason}")]
     InvalidTemplate { reason: &'static str },
+    #[error("{provider} payload exceeds {max_bytes} bytes")]
+    PayloadTooLarge {
+        provider: &'static str,
+        max_bytes: usize,
+    },
+    #[error("{provider} payload serialization failed")]
+    PayloadSerialization { provider: &'static str },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RenderedProviderPayload {
-    pub provider: PushProviderKind,
-    pub payload: Value,
-    pub used_override: bool,
+pub struct EffectivePushPayload {
+    pub payload: PushPayload,
+    pub provider_overrides: Vec<ProviderOverridePayload>,
+}
+
+pub const PUSH_PROVIDER_RENDER_ORDER: [PushProviderKind; 5] = [
+    PushProviderKind::Fcm,
+    PushProviderKind::Apns,
+    PushProviderKind::WebPush,
+    PushProviderKind::Hms,
+    PushProviderKind::Wns,
+];
+
+pub fn render_all_provider_payloads(
+    payload: &PushPayload,
+    overrides: &[ProviderOverridePayload],
+) -> Result<Vec<RenderedProviderPayload>, PayloadTransformError> {
+    PUSH_PROVIDER_RENDER_ORDER
+        .into_iter()
+        .map(|provider| render_provider_payload(provider, payload, overrides))
+        .collect()
 }
 
 pub fn render_provider_payload(
@@ -37,11 +65,7 @@ pub fn render_provider_payload(
         .find(|candidate| candidate.provider == provider)
     {
         validate_provider_override(provider, &provider_override.payload)?;
-        return Ok(RenderedProviderPayload {
-            provider,
-            payload: provider_override.payload.clone(),
-            used_override: true,
-        });
+        return rendered_provider_payload(provider, provider_override.payload.clone(), true);
     }
 
     let payload = render_template_fields(payload)?;
@@ -113,10 +137,81 @@ pub fn render_provider_payload(
         }),
     };
 
+    rendered_provider_payload(provider, rendered, false)
+}
+
+pub fn resolve_template_payload(
+    template: &NotificationTemplate,
+    payload: &PushPayload,
+    request_overrides: &[ProviderOverridePayload],
+) -> Result<EffectivePushPayload, PayloadTransformError> {
+    let content = template
+        .resolve_locale(requested_template_locale(payload))
+        .ok_or(PayloadTransformError::InvalidTemplate {
+            reason: "template locale is missing",
+        })?;
+    let payload = PushPayload {
+        template_id: payload.template_id.clone(),
+        template_data: payload.template_data.clone(),
+        title: payload
+            .title
+            .clone()
+            .or_else(|| Some(content.title.clone())),
+        body: payload.body.clone().or_else(|| Some(content.body.clone())),
+        icon: payload.icon.clone().or_else(|| content.icon.clone()),
+        sound: payload.sound.clone().or_else(|| content.sound.clone()),
+        collapse_key: payload
+            .collapse_key
+            .clone()
+            .or_else(|| content.collapse_key.clone()),
+    };
+    Ok(EffectivePushPayload {
+        payload,
+        provider_overrides: merge_template_overrides(template, request_overrides)?,
+    })
+}
+
+pub fn requested_template_locale(payload: &PushPayload) -> Option<&str> {
+    payload
+        .template_data
+        .get("locale")
+        .and_then(Value::as_str)
+        .filter(|locale| !locale.trim().is_empty())
+}
+
+fn merge_template_overrides(
+    template: &NotificationTemplate,
+    request_overrides: &[ProviderOverridePayload],
+) -> Result<Vec<ProviderOverridePayload>, PayloadTransformError> {
+    let mut by_provider = BTreeMap::new();
+    for (provider, override_payload) in &template.provider_overrides {
+        if override_payload.provider != *provider {
+            return Err(PayloadTransformError::InvalidTemplate {
+                reason: "template provider override key mismatch",
+            });
+        }
+        by_provider.insert(*provider, override_payload.clone());
+    }
+    for override_payload in request_overrides {
+        by_provider.insert(override_payload.provider, override_payload.clone());
+    }
+    let overrides = by_provider.into_values().collect::<Vec<_>>();
+    for override_payload in &overrides {
+        validate_provider_override(override_payload.provider, &override_payload.payload)?;
+    }
+    Ok(overrides)
+}
+
+fn rendered_provider_payload(
+    provider: PushProviderKind,
+    payload: Value,
+    used_override: bool,
+) -> Result<RenderedProviderPayload, PayloadTransformError> {
+    validate_rendered_payload_size(provider, &payload)?;
     Ok(RenderedProviderPayload {
         provider,
-        payload: rendered,
-        used_override: false,
+        payload,
+        used_override,
     })
 }
 
@@ -241,6 +336,61 @@ fn validate_provider_override(
     }
 }
 
+fn validate_rendered_payload_size(
+    provider: PushProviderKind,
+    payload: &Value,
+) -> Result<(), PayloadTransformError> {
+    let provider_name = provider_label(provider);
+    let max_bytes = provider_payload_limit(provider);
+    let apns_body;
+    let sized_payload = if provider == PushProviderKind::Apns {
+        apns_body = payload
+            .get("aps")
+            .map(|aps| {
+                json!({
+                    "aps": aps,
+                    "data": payload.get("data").cloned().unwrap_or_else(Value::new_null)
+                })
+            })
+            .unwrap_or_else(|| payload.clone());
+        &apns_body
+    } else {
+        payload
+    };
+    let bytes = sonic_rs::to_vec(sized_payload).map_err(|_| {
+        PayloadTransformError::PayloadSerialization {
+            provider: provider_name,
+        }
+    })?;
+    if bytes.len() > max_bytes {
+        return Err(PayloadTransformError::PayloadTooLarge {
+            provider: provider_name,
+            max_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn provider_payload_limit(provider: PushProviderKind) -> usize {
+    match provider {
+        PushProviderKind::Fcm => MAX_FCM_PAYLOAD_BYTES,
+        PushProviderKind::Apns => MAX_APNS_PAYLOAD_BYTES,
+        PushProviderKind::WebPush => MAX_WEB_PUSH_PAYLOAD_BYTES,
+        PushProviderKind::Hms => MAX_HMS_PAYLOAD_BYTES,
+        PushProviderKind::Wns => MAX_WNS_PAYLOAD_BYTES,
+    }
+}
+
+fn provider_label(provider: PushProviderKind) -> &'static str {
+    match provider {
+        PushProviderKind::Fcm => "fcm",
+        PushProviderKind::Apns => "apns",
+        PushProviderKind::WebPush => "webPush",
+        PushProviderKind::Hms => "hms",
+        PushProviderKind::Wns => "wns",
+    }
+}
+
 fn validate_apns_fields(payload: &Value) -> Result<(), PayloadTransformError> {
     let Some(headers) = payload.get("headers").and_then(Value::as_object) else {
         return Ok(());
@@ -354,7 +504,10 @@ fn validate_wns_fields(payload: &Value) -> Result<(), PayloadTransformError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::domain::{NotificationTemplate, TemplateContent};
 
     fn payload() -> PushPayload {
         PushPayload {
@@ -424,6 +577,154 @@ mod tests {
             payload: json!({"headers": {"urgency": "now"}}),
         }];
         assert!(render_provider_payload(PushProviderKind::WebPush, &payload(), &invalid).is_err());
+    }
+
+    #[test]
+    fn provider_overrides_apply_to_all_supported_providers() {
+        let overrides = vec![
+            ProviderOverridePayload {
+                provider: PushProviderKind::Fcm,
+                payload: json!({"message": {"data": {"provider": "fcm"}}}),
+            },
+            ProviderOverridePayload {
+                provider: PushProviderKind::Apns,
+                payload: json!({
+                    "headers": {"apns-priority": "5"},
+                    "aps": {"alert": "apns"}
+                }),
+            },
+            ProviderOverridePayload {
+                provider: PushProviderKind::WebPush,
+                payload: json!({
+                    "headers": {"ttl": 60, "urgency": "high", "topic": "topic-1"},
+                    "notification": {"title": "web"}
+                }),
+            },
+            ProviderOverridePayload {
+                provider: PushProviderKind::Hms,
+                payload: json!({"message": {"data": {"provider": "hms"}}}),
+            },
+            ProviderOverridePayload {
+                provider: PushProviderKind::Wns,
+                payload: json!({"type": "toast", "toast": {"visual": {}}}),
+            },
+        ];
+
+        for provider in PUSH_PROVIDER_RENDER_ORDER {
+            let rendered = render_provider_payload(provider, &payload(), &overrides).unwrap();
+            assert!(rendered.used_override, "{provider:?}");
+        }
+        assert_eq!(
+            render_provider_payload(PushProviderKind::Fcm, &payload(), &overrides)
+                .unwrap()
+                .payload["message"]["data"]["provider"],
+            "fcm"
+        );
+        assert_eq!(
+            render_provider_payload(PushProviderKind::WebPush, &payload(), &overrides)
+                .unwrap()
+                .payload["headers"]["urgency"],
+            "high"
+        );
+        assert_eq!(
+            render_provider_payload(PushProviderKind::Wns, &payload(), &overrides)
+                .unwrap()
+                .payload["type"],
+            "toast"
+        );
+    }
+
+    #[test]
+    fn notification_template_resolves_locale_fallback_and_merges_overrides() {
+        let template = NotificationTemplate {
+            app_id: "app-1".to_owned(),
+            template_id: "welcome".to_owned(),
+            default_locale: "en".to_owned(),
+            locales: BTreeMap::from([
+                (
+                    "en".to_owned(),
+                    TemplateContent {
+                        title: "Hello {{ data.name }}".to_owned(),
+                        body: "Body".to_owned(),
+                        icon: None,
+                        sound: None,
+                        collapse_key: Some("welcome".to_owned()),
+                    },
+                ),
+                (
+                    "fr".to_owned(),
+                    TemplateContent {
+                        title: "Bonjour {{ data.name }}".to_owned(),
+                        body: "Corps".to_owned(),
+                        icon: None,
+                        sound: Some("default".to_owned()),
+                        collapse_key: Some("bienvenue".to_owned()),
+                    },
+                ),
+            ]),
+            provider_overrides: BTreeMap::from([(
+                PushProviderKind::Fcm,
+                ProviderOverridePayload {
+                    provider: PushProviderKind::Fcm,
+                    payload: json!({"message": {"data": {"source": "template"}}}),
+                },
+            )]),
+        };
+        let mut input = payload();
+        input.template_data = json!({"locale": "fr-CA", "name": "Ada"});
+        input.title = None;
+        input.body = None;
+        input.sound = None;
+        input.collapse_key = None;
+        let request_override = ProviderOverridePayload {
+            provider: PushProviderKind::Fcm,
+            payload: json!({"message": {"data": {"source": "request"}}}),
+        };
+
+        let effective = resolve_template_payload(&template, &input, &[request_override]).unwrap();
+        assert_eq!(
+            effective.payload.title.as_deref(),
+            Some("Bonjour {{ data.name }}")
+        );
+        assert_eq!(effective.payload.body.as_deref(), Some("Corps"));
+        assert_eq!(effective.payload.sound.as_deref(), Some("default"));
+        assert_eq!(effective.payload.collapse_key.as_deref(), Some("bienvenue"));
+
+        let apns =
+            render_provider_payload(PushProviderKind::Apns, &effective.payload, &[]).unwrap();
+        assert_eq!(apns.payload["aps"]["alert"]["title"], "Bonjour Ada");
+
+        let fcm = render_provider_payload(
+            PushProviderKind::Fcm,
+            &effective.payload,
+            &effective.provider_overrides,
+        )
+        .unwrap();
+        assert!(fcm.used_override);
+        assert_eq!(fcm.payload["message"]["data"]["source"], "request");
+    }
+
+    #[test]
+    fn missing_template_variable_and_oversized_payload_fail_before_dispatch() {
+        let mut missing_variable = payload();
+        missing_variable.title = Some("Hello {{ data.missing }}".to_owned());
+        missing_variable.template_data = json!({"name": "Ada"});
+        assert_eq!(
+            render_provider_payload(PushProviderKind::Fcm, &missing_variable, &[]).unwrap_err(),
+            PayloadTransformError::InvalidTemplate {
+                reason: "placeholder key is missing"
+            }
+        );
+
+        let mut oversized = payload();
+        oversized.template_data = json!({"blob": "x".repeat(MAX_FCM_PAYLOAD_BYTES)});
+        assert!(matches!(
+            render_provider_payload(PushProviderKind::Fcm, &oversized, &[]),
+            Err(PayloadTransformError::PayloadTooLarge {
+                provider: "fcm",
+                max_bytes: MAX_FCM_PAYLOAD_BYTES
+            })
+        ));
     }
 
     #[test]

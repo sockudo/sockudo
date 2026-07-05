@@ -183,6 +183,12 @@ delivery and retry. The public API does not expose `POST /push/scheduled`; delay
 created through `/push/publish`, while `DELETE /push/scheduled/{jobId}` only cancels jobs already
 persisted by scheduler/store integrations.
 
+Publish responses include `renderedPayloads`. These previews are rendered from the same effective
+payload queued for delivery: templates are resolved at admission, request `providerOverrides` win
+over template overrides, and retries reuse the accepted rendered payload semantics. Missing
+templates, missing template variables, malformed overrides, and oversized provider payloads fail
+before provider dispatch.
+
 Push headers:
 
 | Header | Values | Meaning |

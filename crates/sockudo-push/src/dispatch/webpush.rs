@@ -7,8 +7,10 @@ use async_trait::async_trait;
 #[cfg(feature = "push-webpush")]
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::future::join_all;
+use sonic_rs::Value;
 #[cfg(feature = "push-webpush")]
 use sonic_rs::json;
+use sonic_rs::prelude::*;
 #[cfg(feature = "push-webpush")]
 use url::Url;
 
@@ -326,10 +328,12 @@ impl WebPushDispatcher {
             .crypto
             .prepare_request(&endpoint, p256dh, auth, &body, authorization)
             .await?;
+        let mut headers = prepared.headers;
+        headers.extend(web_push_headers(&rendered)?);
         Ok(ProviderHttpRequest {
             method: ProviderHttpMethod::Post,
             url: endpoint,
-            headers: prepared.headers,
+            headers,
             authorization: prepared.authorization,
             body: prepared.body,
         })
@@ -365,6 +369,36 @@ impl PushDispatcher for WebPushDispatcher {
                 .to_owned(),
         }
     }
+}
+
+fn web_push_headers(rendered: &Value) -> Result<BTreeMap<String, String>, ProviderError> {
+    let mut headers = BTreeMap::new();
+    let Some(rendered_headers) = rendered.get("headers").and_then(Value::as_object) else {
+        return Ok(headers);
+    };
+    if let Some(ttl) = rendered_headers.get(&"ttl") {
+        let ttl = ttl
+            .as_u64()
+            .map(|ttl| ttl.to_string())
+            .or_else(|| ttl.as_str().map(str::to_owned))
+            .ok_or_else(|| ProviderError {
+                class: "invalid_payload".to_owned(),
+                reason: Some("web push ttl must be a positive integer".to_owned()),
+                retry_after_ms: None,
+            })?;
+        headers.insert("ttl".to_owned(), ttl);
+    }
+    for name in ["urgency", "topic"] {
+        if let Some(value) = rendered_headers.get(&name) {
+            let value = value.as_str().ok_or_else(|| ProviderError {
+                class: "invalid_payload".to_owned(),
+                reason: Some(format!("web push {name} must be a string")),
+                retry_after_ms: None,
+            })?;
+            headers.insert(name.to_owned(), value.to_owned());
+        }
+    }
+    Ok(headers)
 }
 
 pub(super) fn classify_webpush_response(response: &ProviderHttpResponse) -> ProviderClassification {

@@ -894,6 +894,7 @@ mod tests {
                 sound: None,
                 collapse_key: None,
             }),
+            rendered_payload: None,
             attempt: 1,
             first_attempt_at_ms: Some(1_000),
             not_before_ms: None,

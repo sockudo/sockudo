@@ -215,6 +215,31 @@ console.log(response.publish_id);
 Use `sync: false` for most production traffic. Async admission returns quickly, then workers fan out
 to providers and update publish status records.
 
+### Payload fidelity, templates, and overrides
+
+Publish responses include `renderedPayloads`, one provider-specific preview for FCM, APNs, Web
+Push, HMS, and WNS. The same renderer is used by admission and dispatch. Provider workers send the
+previewed provider payload, except for runtime-only fields such as provider tokens, APNs device
+tokens, generated authorization headers, and provider request IDs.
+
+`providerOverrides` are provider-specific complete payloads. When an override exists for a
+provider, it replaces the generic payload mapping for that provider. APNs override headers become
+APNs request headers, Web Push `headers.ttl`, `headers.urgency`, and `headers.topic` become Web
+Push request headers, and FCM/HMS/WNS overrides are sent as the provider body with runtime recipient
+tokens added by the worker. Overrides are validated and size-checked before dispatch.
+
+Templates are resolved during publish admission. A `payload.templateId` must reference an existing
+template; missing templates fail the publish request before work is accepted. Sockudo selects the
+template locale from `payload.templateData.locale`, falling back from exact locale to language and
+then the template's `defaultLocale`. Template fields fill missing payload fields, while explicit
+payload fields win. Template provider overrides are applied first and request `providerOverrides`
+win when both define the same provider. The resolved payload is stored in the accepted publish work,
+so later template edits do not change queued delivery or retry attempts.
+
+Template placeholders use bounded `{{ data.path }}` substitutions against `payload.templateData`.
+Missing placeholders fail admission with a precise invalid-template error; objects and arrays are
+not coerced into strings.
+
 ## Delayed delivery and cancellation
 
 ```ts
