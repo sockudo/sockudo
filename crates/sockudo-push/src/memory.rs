@@ -4,16 +4,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
+use crate::cleanup::{
+    PushCleanupCounters, PushCleanupReport, PushCleanupRequest, terminal_publish_state,
+};
 use crate::domain::{
     ChannelSubscription, DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, NotificationTemplate,
     ProviderCredential, PublishLogEvent, PublishStatus, PushCursor, PushCursorKind, ShardJob,
 };
 use crate::storage::{
     DeviceRegistrationChange, DeviceRegistrationOutcome, IdempotencyRecord,
-    OperatorInvalidationEvent, Page, PushCredentialStore, PushDeliveryEventStore, PushDeviceStore,
-    PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore,
-    PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore, PushStorageResult,
-    PushSubscriptionStore, PushTemplateStore, ScheduledPushJob, SchedulerLock,
+    OperatorInvalidationEvent, Page, PushCleanupStore, PushCredentialStore, PushDeliveryEventStore,
+    PushDeviceStore, PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore,
+    PushPublishLogStore, PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore,
+    PushStorageResult, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob, SchedulerLock,
 };
 
 const MEMORY_DELIVERY_EVENT_CAP: usize = 100_000;
@@ -30,6 +33,7 @@ struct MemoryPushState {
     credentials: BTreeMap<(String, String), ProviderCredential>,
     templates: BTreeMap<(String, String), NotificationTemplate>,
     publish_status: BTreeMap<(String, String), PublishStatus>,
+    publish_status_updated_at: BTreeMap<(String, String), u64>,
     publish_log: BTreeMap<(String, u64, String), PublishLogEvent>,
     fanout_shards: BTreeMap<(String, String, String), ShardJob>,
     scheduled_by_id: BTreeMap<(String, String), ScheduledPushJob>,
@@ -42,6 +46,20 @@ struct MemoryPushState {
 impl MemoryPushStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn set_publish_status_updated_at_for_test(
+        &self,
+        app_id: &str,
+        publish_id: &str,
+        updated_at_ms: u64,
+    ) {
+        self.inner
+            .write()
+            .await
+            .publish_status_updated_at
+            .insert((app_id.to_owned(), publish_id.to_owned()), updated_at_ms);
     }
 }
 
@@ -495,11 +513,12 @@ impl PushTemplateStore for MemoryPushStore {
 #[async_trait]
 impl PushPublishStatusStore for MemoryPushStore {
     async fn put_publish_status(&self, status: PublishStatus) -> PushStorageResult<()> {
-        self.inner
-            .write()
-            .await
-            .publish_status
-            .insert((status.app_id.clone(), status.publish_id.clone()), status);
+        let key = (status.app_id.clone(), status.publish_id.clone());
+        let mut inner = self.inner.write().await;
+        inner
+            .publish_status_updated_at
+            .insert(key.clone(), crate::pipeline::now_ms());
+        inner.publish_status.insert(key, status);
         Ok(())
     }
 
@@ -881,6 +900,102 @@ impl PushOperatorEventStore for MemoryPushStore {
     }
 }
 
+#[async_trait]
+impl PushCleanupStore for MemoryPushStore {
+    async fn cleanup_expired_push_data(
+        &self,
+        request: PushCleanupRequest,
+    ) -> PushStorageResult<PushCleanupReport> {
+        let mut inner = self.inner.write().await;
+        let mut report = PushCleanupReport::default();
+        let mut remaining = request.policy.max_deleted_per_tick;
+
+        if remaining > 0
+            && let Some(cutoff_ms) = request.publish_status_cutoff_ms()
+        {
+            let limit = request.limit_for(remaining);
+            let (counters, keys) = cleanup_status_keys(&inner, cutoff_ms, limit);
+            for key in keys {
+                inner.publish_status.remove(&key);
+                inner.publish_status_updated_at.remove(&key);
+            }
+            remaining = remaining.saturating_sub(counters.deleted as usize);
+            report.publish_statuses = counters;
+        }
+
+        if remaining > 0
+            && let Some(cutoff_ms) = request.delivery_event_cutoff_ms()
+        {
+            let limit = request.limit_for(remaining);
+            let (counters, keys) = cleanup_keys(
+                inner.delivery_events.iter(),
+                limit,
+                |item| {
+                    let ((_, _, occurred_at_ms, _), _) = *item;
+                    *occurred_at_ms < cutoff_ms
+                },
+                |item| item.0.clone(),
+            );
+            for key in keys {
+                inner.delivery_events.remove(&key);
+            }
+            remaining = remaining.saturating_sub(counters.deleted as usize);
+            report.delivery_events = counters;
+        }
+
+        if remaining > 0 {
+            let limit = request.limit_for(remaining);
+            let (counters, keys) = cleanup_keys(
+                inner.idempotency.iter(),
+                limit,
+                |item| idempotency_record_expired(item.1, request.now_ms),
+                |item| item.0.clone(),
+            );
+            for key in keys {
+                inner.idempotency.remove(&key);
+            }
+            remaining = remaining.saturating_sub(counters.deleted as usize);
+            report.idempotency_records = counters;
+        }
+
+        if remaining > 0 {
+            let limit = request.limit_for(remaining);
+            let (counters, keys) = cleanup_keys(
+                inner.scheduler_locks.iter(),
+                limit,
+                |item| item.1.expires_at_ms <= request.now_ms,
+                |item| item.0.clone(),
+            );
+            for key in keys {
+                inner.scheduler_locks.remove(&key);
+            }
+            remaining = remaining.saturating_sub(counters.deleted as usize);
+            report.scheduler_locks = counters;
+        }
+
+        if remaining > 0
+            && let Some(cutoff_ms) = request.operator_event_cutoff_ms()
+        {
+            let limit = request.limit_for(remaining);
+            let (counters, keys) = cleanup_keys(
+                inner.operator_invalidations.iter(),
+                limit,
+                |item| {
+                    let ((_, occurred_at_ms, _), _) = *item;
+                    *occurred_at_ms < cutoff_ms
+                },
+                |item| item.0.clone(),
+            );
+            for key in keys {
+                inner.operator_invalidations.remove(&key);
+            }
+            report.operator_invalidations = counters;
+        }
+
+        Ok(report)
+    }
+}
+
 fn cursor_position(cursor: Option<PushCursor>, app_id: &str) -> PushStorageResult<Option<String>> {
     match cursor {
         Some(cursor) => {
@@ -933,6 +1048,56 @@ fn page_from_rows<T: Clone>(
 
 fn day_bucket_for_ms(timestamp_ms: u64) -> String {
     (timestamp_ms / 86_400_000).to_string()
+}
+
+fn cleanup_status_keys(
+    inner: &MemoryPushState,
+    cutoff_ms: u64,
+    limit: usize,
+) -> (PushCleanupCounters, Vec<(String, String)>) {
+    cleanup_keys(
+        inner.publish_status.iter(),
+        limit,
+        |item| {
+            let (key, status) = *item;
+            terminal_publish_state(status.state)
+                && inner
+                    .publish_status_updated_at
+                    .get(key)
+                    .is_some_and(|updated_at_ms| *updated_at_ms < cutoff_ms)
+        },
+        |item| item.0.clone(),
+    )
+}
+
+fn cleanup_keys<I, T, K, F, M>(
+    iter: I,
+    limit: usize,
+    should_delete: F,
+    map_key: M,
+) -> (PushCleanupCounters, Vec<K>)
+where
+    I: Iterator<Item = T>,
+    F: Fn(&T) -> bool,
+    M: Fn(T) -> K,
+{
+    let mut counters = PushCleanupCounters::default();
+    let mut keys = Vec::new();
+    for item in iter {
+        counters.scanned = counters.scanned.saturating_add(1);
+        if should_delete(&item) {
+            counters.deleted = counters.deleted.saturating_add(1);
+            keys.push(map_key(item));
+            if keys.len() >= limit.max(1) {
+                break;
+            }
+        }
+    }
+    (counters, keys)
+}
+
+fn idempotency_record_expired(record: &IdempotencyRecord, now_ms: u64) -> bool {
+    record.expires_at_ms >= 1_000_000_000_000 && record.expires_at_ms <= now_ms
 }
 
 #[cfg(test)]

@@ -175,6 +175,8 @@ Push notifications are a core Sockudo API surface. Push endpoints are available 
 | `POST` | `/apps/{appId}/push/publish` | Signed app API, push admin | Admit one push publish request. |
 | `POST` | `/apps/{appId}/push/batch/publish` | Signed app API, push admin | Admit multiple push publish requests. |
 | `GET` | `/apps/{appId}/push/publish/{publishId}/status` | Signed app API, push admin | Read aggregate push publish status. |
+| `GET` | `/apps/{appId}/push/deadLetters` | Signed app API, push admin | List safe queue-native dead-letter metadata with optional `provider`, `sinceMs`, `untilMs`, `limit`, and `cursor` filters. |
+| `POST` | `/apps/{appId}/push/deadLetters/{deadLetterId}/replay` | Signed app API, push admin | Re-enqueue a replayable dead-letter's original queue item. |
 | `DELETE` | `/apps/{appId}/push/scheduled/{jobId}` | Signed app API, push admin | Cancel a scheduled publish before dispatch when possible. |
 | `POST` | `/apps/{appId}/push/deliveryStatus` | Signed app API, push admin | Ingest worker or provider delivery feedback. |
 
@@ -188,6 +190,10 @@ payload queued for delivery: templates are resolved at admission, request `provi
 over template overrides, and retries reuse the accepted rendered payload semantics. Missing
 templates, missing template variables, malformed overrides, and oversized provider payloads fail
 before provider dispatch.
+
+Publish status inspection is available through `GET /apps/{appId}/push/publish/{publishId}/status`.
+Dead-letter messages are retained in the configured queue backend and are not exposed through a
+public HTTP listing endpoint yet.
 
 Push headers:
 

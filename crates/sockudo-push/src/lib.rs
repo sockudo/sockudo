@@ -16,6 +16,7 @@ pub mod nosql;
 pub mod pipeline;
 pub mod planner;
 pub mod ratelimit;
+pub mod reconcile;
 pub mod registry;
 pub mod retry;
 pub mod rules;
@@ -31,6 +32,10 @@ pub mod testing;
 pub mod transform;
 pub mod transformer;
 
+pub use cleanup::{
+    PushCleanupCounters, PushCleanupPolicy, PushCleanupReport, PushCleanupRequest,
+    PushCleanupWorker, days_to_ms, interval_from_secs, terminal_publish_state,
+};
 #[cfg(any(test, feature = "testing"))]
 pub use conformance::PushStoreConformance;
 #[cfg(feature = "push-fcm")]
@@ -90,13 +95,15 @@ pub use nosql::{ScyllaDbDocumentBackend, ScyllaDbPushStore};
 #[cfg(feature = "surrealdb")]
 pub use nosql::{SurrealDbDocumentBackend, SurrealDbPushStore};
 pub use pipeline::{
-    DynPushQueue, MemoryPushQueue, PushAcceptOutcome, PushAcceptRequest, PushPipeline,
-    PushPipelineError, PushPipelineResult, PushQueue, PushQueueBackendKind, PushQueueError,
-    PushQueuePayload, PushQueueResult, PushQueueStage, QueueAckToken, QueueHealth, QueueLagMetrics,
-    QueueMessage, QueueRoute, channel_delivery_idempotency_key, publish_idempotency_key,
-    publish_uid_key,
+    DeadLetterQueueEntry, DeadLetterQueueFilter, DeadLetterReplayResult, DynPushQueue,
+    MemoryPushQueue, PushAcceptOutcome, PushAcceptRequest, PushPipeline, PushPipelineError,
+    PushPipelineResult, PushQueue, PushQueueBackendKind, PushQueueError, PushQueuePayload,
+    PushQueueResult, PushQueueStage, QueueAckToken, QueueHealth, QueueLagMetrics, QueueMessage,
+    QueueRoute, channel_delivery_idempotency_key, dead_letter_entry_id, dead_letter_entry_position,
+    page_dead_letter_entries, publish_idempotency_key, publish_uid_key,
 };
 pub use planner::{PushPlanner, PushShardWorker};
+pub use reconcile::{PushPublishLogRepairWorker, PushRepairPolicy, PushRepairReport};
 pub use retry::{PushRetryScheduler, RetryPolicy};
 pub use rules::{
     ChannelPushRule, PushRuleError, PushRulePayloadMapping, any_rule_matches, matching_rule_indices,
@@ -109,11 +116,11 @@ pub use sql::PostgresPushStore;
 pub use storage::{
     DeviceRegistrationChange, DeviceRegistrationOutcome, DynPushStore,
     EXPECTED_PUSH_SCHEMA_VERSION, IdempotencyRecord, OperatorInvalidationEvent, Page,
-    PushCredentialStore, PushDeliveryEventStore, PushDeviceStore, PushFanoutShardStore,
-    PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore, PushPublishStatusStore,
-    PushScheduleStore, PushSchedulerLockStore, PushStorageBackendKind, PushStorageError,
-    PushStorageResult, PushStore, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob,
-    SchedulerLock,
+    PushCleanupStore, PushCredentialStore, PushDeliveryEventStore, PushDeviceStore,
+    PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore,
+    PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore, PushStorageBackendKind,
+    PushStorageError, PushStorageResult, PushStore, PushSubscriptionStore, PushTemplateStore,
+    ScheduledPushJob, SchedulerLock,
 };
 pub use transform::{
     EffectivePushPayload, PUSH_PROVIDER_RENDER_ORDER, PayloadTransformError,

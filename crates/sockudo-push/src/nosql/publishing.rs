@@ -2,6 +2,7 @@
 use super::constants::*;
 use super::document::{DocumentBackend, DocumentPushStore};
 use super::helpers::*;
+use crate::cleanup::terminal_publish_state;
 use crate::domain::{
     ChannelSubscription, DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, NotificationTemplate,
     ProviderCredential, PublishLogEvent, PublishStatus, PushCursor, PushCursorKind, ShardJob,
@@ -21,6 +22,42 @@ where
     B: DocumentBackend,
 {
     async fn put_publish_status(&self, status: PublishStatus) -> PushStorageResult<()> {
+        let now_ms = crate::pipeline::now_ms();
+        if let Some(previous_updated_at_ms) = self
+            .get_json::<u64>(
+                FAMILY_STATUS_UPDATED,
+                &status.app_id,
+                &status.publish_id,
+                DEFAULT_SK,
+            )
+            .await?
+        {
+            self.backend
+                .delete(
+                    FAMILY_STATUS_UPDATED_TIME,
+                    &status.app_id,
+                    "time",
+                    &status_updated_position(previous_updated_at_ms, &status.publish_id),
+                )
+                .await?;
+        }
+        self.remember_cleanup_app(&status.app_id).await?;
+        self.put_json(
+            FAMILY_STATUS_UPDATED,
+            &status.app_id,
+            &status.publish_id,
+            DEFAULT_SK,
+            &now_ms,
+        )
+        .await?;
+        self.put_json(
+            FAMILY_STATUS_UPDATED_TIME,
+            &status.app_id,
+            "time",
+            &status_updated_position(now_ms, &status.publish_id),
+            &status.publish_id,
+        )
+        .await?;
         self.put_json(
             FAMILY_STATUS,
             &status.app_id,
@@ -234,6 +271,7 @@ where
     B: DocumentBackend,
 {
     async fn append_delivery_event(&self, event: DeliveryEvent) -> PushStorageResult<()> {
+        self.remember_cleanup_app(&event.app_id).await?;
         let position = delivery_event_position(&event);
         self.put_json(
             FAMILY_DELIVERY_EVENT,
@@ -308,4 +346,63 @@ where
             .await?;
         Ok(deleted)
     }
+}
+
+pub(super) async fn document_cleanup_publish_statuses<B>(
+    store: &DocumentPushStore<B>,
+    app_id: &str,
+    cutoff_ms: u64,
+    limit: usize,
+) -> PushStorageResult<crate::cleanup::PushCleanupCounters>
+where
+    B: DocumentBackend,
+{
+    let rows = store
+        .scan_pk_page_json::<String>(
+            FAMILY_STATUS_UPDATED_TIME,
+            app_id,
+            "time",
+            None,
+            limit.max(1),
+        )
+        .await?;
+    let mut counters = crate::cleanup::PushCleanupCounters::default();
+    for (_, position, publish_id) in rows {
+        counters.scanned = counters.scanned.saturating_add(1);
+        let Some((updated_at_ms, _)) = parse_status_updated_position(&position) else {
+            continue;
+        };
+        if updated_at_ms >= cutoff_ms {
+            continue;
+        }
+        let Some(status) = store
+            .get_json::<PublishStatus>(FAMILY_STATUS, app_id, &publish_id, DEFAULT_SK)
+            .await?
+        else {
+            store
+                .backend
+                .delete(FAMILY_STATUS_UPDATED_TIME, app_id, "time", &position)
+                .await?;
+            continue;
+        };
+        if !terminal_publish_state(status.state) {
+            continue;
+        }
+        if store
+            .backend
+            .delete(FAMILY_STATUS, app_id, &publish_id, DEFAULT_SK)
+            .await?
+        {
+            counters.deleted = counters.deleted.saturating_add(1);
+        }
+        store
+            .backend
+            .delete(FAMILY_STATUS_UPDATED, app_id, &publish_id, DEFAULT_SK)
+            .await?;
+        store
+            .backend
+            .delete(FAMILY_STATUS_UPDATED_TIME, app_id, "time", &position)
+            .await?;
+    }
+    Ok(counters)
 }

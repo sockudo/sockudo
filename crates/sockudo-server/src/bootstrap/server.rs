@@ -697,8 +697,12 @@ impl SockudoServer {
         #[cfg(feature = "push")]
         let push_queue = create_push_queue(&config, queue_manager_opt.clone(), &push_admission)?;
         #[cfg(all(feature = "push", feature = "monolith"))]
-        let push_worker_handles =
-            start_push_monolith_workers(&config, push_store.clone(), push_queue.clone());
+        let push_worker_handles = start_push_monolith_workers(
+            &config,
+            push_store.clone(),
+            push_queue.clone(),
+            app_manager.clone(),
+        );
 
         let state = ServerState {
             app_manager: app_manager.clone(),

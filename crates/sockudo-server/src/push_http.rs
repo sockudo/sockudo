@@ -21,15 +21,16 @@ use sockudo_core::options::{PushRuleConfig, PushRulePayloadMappingConfig};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_protocol::messages::ApiMessageData;
 use sockudo_push::{
-    ChannelPushRule, ChannelSubscription, DeliveryEvent, DeviceDetails, DeviceRegistrationChange,
-    DynPushQueue, DynPushStore, EncryptedSecret, FanoutRegime, IdempotencyRecord,
-    NotificationTemplate, OperatorInvalidationEvent, ProviderCredential,
-    ProviderCredentialMaterial, ProviderOverridePayload, PublishCounters, PublishIntent,
-    PublishLifecycleState, PublishLogEvent, PublishStatus, PublishTarget, PushCursor,
-    PushMetaEvent, PushMetrics, PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage,
-    PushRecipient, PushRulePayloadMapping, RenderedProviderPayload, SecretString,
-    emit_push_meta_event, generate_device_identity_token, hash_device_identity_token,
-    render_all_provider_payloads, resolve_template_payload, verify_device_identity_token,
+    ChannelPushRule, ChannelSubscription, DeadLetterQueueEntry, DeadLetterQueueFilter,
+    DeliveryEvent, DeviceDetails, DeviceRegistrationChange, DynPushQueue, DynPushStore,
+    EncryptedSecret, FanoutRegime, IdempotencyRecord, NotificationTemplate,
+    OperatorInvalidationEvent, ProviderCredential, ProviderCredentialMaterial,
+    ProviderOverridePayload, PublishCounters, PublishIntent, PublishLifecycleState,
+    PublishLogEvent, PublishStatus, PublishTarget, PushCursor, PushMetaEvent, PushMetrics,
+    PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage, PushRecipient,
+    PushRulePayloadMapping, RenderedProviderPayload, SecretString, emit_push_meta_event,
+    generate_device_identity_token, hash_device_identity_token, render_all_provider_payloads,
+    resolve_template_payload, verify_device_identity_token,
 };
 use sonic_rs::{Value, json};
 use tracing::{info, warn};
@@ -152,6 +153,16 @@ pub struct PaginationQuery {
     pub cursor: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadLetterQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+    pub provider: Option<String>,
+    pub since_ms: Option<u64>,
+    pub until_ms: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ListResponse<T> {
     pub items: Vec<T>,
@@ -189,6 +200,21 @@ pub struct DeviceResponse {
     pub push_state: sockudo_push::DevicePushState,
     pub push_failure_count: u32,
     pub recipient: DeviceRecipientResponse,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadLetterResponse {
+    pub dead_letter_id: String,
+    pub app_id: String,
+    pub publish_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PushProviderKind>,
+    pub stage: String,
+    pub key: String,
+    pub reason: String,
+    pub occurred_at_ms: u64,
+    pub replayable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -866,6 +892,53 @@ pub async fn get_publish_status(
     Ok(Json(status))
 }
 
+pub async fn list_dead_letters(
+    Path(app_id): Path<String>,
+    Query(query): Query<DeadLetterQuery>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(queue): Extension<DynPushQueue>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let filter = dead_letter_filter(&query)?;
+    let page = queue
+        .list_dead_letters(
+            &app_id,
+            filter,
+            limit(query.limit)?,
+            decode_cursor(query.cursor, &app_id)?,
+        )
+        .await
+        .map_err(push_queue_error)?;
+    list_response(
+        page.items.into_iter().map(dead_letter_response).collect(),
+        page.next_cursor,
+    )
+}
+
+pub async fn replay_dead_letter(
+    Path((app_id, dead_letter_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(queue): Extension<DynPushQueue>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let result = queue
+        .replay_dead_letter(&app_id, &dead_letter_id)
+        .await
+        .map_err(push_queue_error)?
+        .ok_or_else(|| AppError::NotFound("dead letter not found".to_owned()))?;
+    if !result.replayed {
+        return Err(AppError::InvalidInput(result.reason.unwrap_or_else(|| {
+            "dead letter cannot be replayed by this queue backend".to_owned()
+        })));
+    }
+    audit_log(&app_id, "deadLetterReplay", Some(&dead_letter_id));
+    Ok((StatusCode::ACCEPTED, Json(result)))
+}
+
 pub async fn delete_scheduled_job(
     Path((app_id, job_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1375,6 +1448,20 @@ fn credential_response(credential: ProviderCredential) -> CredentialResponse {
     }
 }
 
+fn dead_letter_response(entry: DeadLetterQueueEntry) -> DeadLetterResponse {
+    DeadLetterResponse {
+        dead_letter_id: entry.dead_letter_id,
+        app_id: entry.dead_letter.app_id,
+        publish_id: entry.dead_letter.publish_id,
+        provider: entry.provider,
+        stage: entry.dead_letter.stage,
+        key: entry.dead_letter.key,
+        reason: entry.dead_letter.reason,
+        occurred_at_ms: entry.dead_letter.occurred_at_ms,
+        replayable: entry.replayable,
+    }
+}
+
 fn ensure_app_scope(app_id: &str, app: &App) -> Result<(), AppError> {
     if app.id == app_id {
         Ok(())
@@ -1750,12 +1837,20 @@ async fn enforce_backpressure(
     }
     let max_publish_log_lag =
         env_u64("PUSH_PUBLISH_LOG_MAX_LAG").unwrap_or(DEFAULT_PUSH_CRITICAL_QUEUE_MAX_LAG);
-    reject_on_stage_lag(queue, PushQueueStage::PublishLog, max_publish_log_lag).await?;
+    let max_queue_age_secs = env_u64("PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS")
+        .unwrap_or_else(|| admission.backpressure_lag_threshold_secs());
+    reject_on_stage_lag(
+        queue,
+        PushQueueStage::PublishLog,
+        max_publish_log_lag,
+        max_queue_age_secs,
+    )
+    .await?;
 
     let max_critical_lag =
         env_u64("PUSH_CRITICAL_QUEUE_MAX_LAG").unwrap_or(DEFAULT_PUSH_CRITICAL_QUEUE_MAX_LAG);
     for stage in critical_backpressure_stages(admission) {
-        reject_on_stage_lag(queue, stage, max_critical_lag).await?;
+        reject_on_stage_lag(queue, stage, max_critical_lag, max_queue_age_secs).await?;
     }
 
     Ok(())
@@ -1765,11 +1860,13 @@ async fn reject_on_stage_lag(
     queue: &DynPushQueue,
     stage: PushQueueStage,
     max_lag: u64,
+    max_queue_age_secs: u64,
 ) -> Result<(), AppError> {
     let lag = queue
         .lag(stage)
         .await
         .map_err(|error| AppError::InternalError(error.to_string()))?;
+    PUSH_HTTP_METRICS.queue_lag(stage, &lag);
     if stage == PushQueueStage::PublishLog {
         PUSH_HTTP_METRICS.publish_log_lag_seconds(lag.ready_depth as f64);
     }
@@ -1783,6 +1880,24 @@ async fn reject_on_stage_lag(
         );
         return Err(AppError::TooManyRequests {
             message: format!("push {} lag exceeded", queue_stage_label(stage)),
+            retry_after_seconds: env_u64("PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS")
+                .unwrap_or(DEFAULT_PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS),
+        });
+    }
+    let max_queue_age_ms = max_queue_age_secs.saturating_mul(1_000);
+    if max_queue_age_ms > 0
+        && lag
+            .oldest_actionable_age_ms()
+            .is_some_and(|age_ms| age_ms >= max_queue_age_ms)
+    {
+        warn!(
+            stage = %queue_stage_label(stage),
+            oldest_actionable_age_ms = lag.oldest_actionable_age_ms().unwrap_or_default(),
+            max_queue_age_ms,
+            "push publish rejected by queue-stage age backpressure"
+        );
+        return Err(AppError::TooManyRequests {
+            message: format!("push {} age exceeded", queue_stage_label(stage)),
             retry_after_seconds: env_u64("PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS")
                 .unwrap_or(DEFAULT_PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS),
         });
@@ -1818,6 +1933,38 @@ fn queue_stage_label(stage: PushQueueStage) -> String {
         PushQueueStage::DeliveryResults => "delivery_results".to_owned(),
         PushQueueStage::DeadLetters => "dead_letters".to_owned(),
         PushQueueStage::RetrySchedule => "retry_schedule".to_owned(),
+    }
+}
+
+fn dead_letter_filter(query: &DeadLetterQuery) -> Result<DeadLetterQueueFilter, AppError> {
+    if let (Some(since_ms), Some(until_ms)) = (query.since_ms, query.until_ms)
+        && since_ms > until_ms
+    {
+        return Err(AppError::InvalidInput(
+            "sinceMs must be less than or equal to untilMs".to_owned(),
+        ));
+    }
+    Ok(DeadLetterQueueFilter {
+        provider: query
+            .provider
+            .as_deref()
+            .map(parse_push_provider)
+            .transpose()?,
+        since_ms: query.since_ms,
+        until_ms: query.until_ms,
+    })
+}
+
+fn parse_push_provider(raw: &str) -> Result<PushProviderKind, AppError> {
+    match raw {
+        "fcm" => Ok(PushProviderKind::Fcm),
+        "apns" => Ok(PushProviderKind::Apns),
+        "webpush" | "webPush" | "web_push" => Ok(PushProviderKind::WebPush),
+        "hms" => Ok(PushProviderKind::Hms),
+        "wns" => Ok(PushProviderKind::Wns),
+        _ => Err(AppError::InvalidInput(
+            "provider must be one of fcm, apns, webpush, hms, or wns".to_owned(),
+        )),
     }
 }
 
@@ -1961,6 +2108,10 @@ fn credential_nonce_bytes() -> [u8; 12] {
 }
 
 fn push_error(error: sockudo_push::PushStorageError) -> AppError {
+    AppError::InternalError(error.to_string())
+}
+
+fn push_queue_error(error: sockudo_push::PushQueueError) -> AppError {
     AppError::InternalError(error.to_string())
 }
 
@@ -2260,6 +2411,84 @@ mod tests {
         }
     }
 
+    struct LagOnlyQueue {
+        lag: sockudo_push::QueueLagMetrics,
+    }
+
+    #[async_trait::async_trait]
+    impl PushQueue for LagOnlyQueue {
+        fn backend(&self) -> sockudo_push::PushQueueBackendKind {
+            sockudo_push::PushQueueBackendKind::Memory
+        }
+
+        async fn produce(
+            &self,
+            _stage: PushQueueStage,
+            _key: String,
+            _payload: PushQueuePayload,
+        ) -> sockudo_push::PushQueueResult<String> {
+            Ok("lag-only".to_owned())
+        }
+
+        async fn retry_at(
+            &self,
+            _stage: PushQueueStage,
+            _key: String,
+            _payload: PushQueuePayload,
+            _not_before_ms: u64,
+        ) -> sockudo_push::PushQueueResult<String> {
+            Ok("lag-only".to_owned())
+        }
+
+        async fn consume(
+            &self,
+            _stage: PushQueueStage,
+            _consumer_group: &str,
+            _max_messages: usize,
+            _lease_timeout_ms: u64,
+        ) -> sockudo_push::PushQueueResult<Vec<sockudo_push::QueueMessage>> {
+            Ok(Vec::new())
+        }
+
+        async fn ack(
+            &self,
+            _token: sockudo_push::QueueAckToken,
+        ) -> sockudo_push::PushQueueResult<()> {
+            Ok(())
+        }
+
+        async fn nack(
+            &self,
+            _token: sockudo_push::QueueAckToken,
+            _retry_at_ms: Option<u64>,
+        ) -> sockudo_push::PushQueueResult<()> {
+            Ok(())
+        }
+
+        async fn dead_letter(
+            &self,
+            _token: sockudo_push::QueueAckToken,
+            _reason: String,
+        ) -> sockudo_push::PushQueueResult<()> {
+            Ok(())
+        }
+
+        async fn health(&self) -> sockudo_push::PushQueueResult<sockudo_push::QueueHealth> {
+            Ok(sockudo_push::QueueHealth {
+                backend: sockudo_push::PushQueueBackendKind::Memory,
+                healthy: true,
+                details: "test lag-only queue".to_owned(),
+            })
+        }
+
+        async fn lag(
+            &self,
+            _stage: PushQueueStage,
+        ) -> sockudo_push::PushQueueResult<sockudo_push::QueueLagMetrics> {
+            Ok(self.lag.clone())
+        }
+    }
+
     fn hashed_token(raw: &str) -> SecretString {
         hash_device_identity_token(&SecretString::new(raw).unwrap())
     }
@@ -2396,6 +2625,42 @@ mod tests {
             PushCapability::Subscribe
         );
         assert!(ensure_push_admin(&headers).is_err());
+    }
+
+    #[test]
+    fn dead_letter_filter_parses_provider_and_time_bounds() {
+        let filter = dead_letter_filter(&DeadLetterQuery {
+            limit: Some(50),
+            cursor: None,
+            provider: Some("webpush".to_owned()),
+            since_ms: Some(10),
+            until_ms: Some(20),
+        })
+        .unwrap();
+
+        assert_eq!(filter.provider, Some(PushProviderKind::WebPush));
+        assert_eq!(filter.since_ms, Some(10));
+        assert_eq!(filter.until_ms, Some(20));
+
+        let error = dead_letter_filter(&DeadLetterQuery {
+            limit: None,
+            cursor: None,
+            provider: Some("unknown".to_owned()),
+            since_ms: None,
+            until_ms: None,
+        })
+        .unwrap_err();
+        assert!(matches!(error, AppError::InvalidInput(_)));
+
+        let error = dead_letter_filter(&DeadLetterQuery {
+            limit: None,
+            cursor: None,
+            provider: None,
+            since_ms: Some(20),
+            until_ms: Some(10),
+        })
+        .unwrap_err();
+        assert!(matches!(error, AppError::InvalidInput(_)));
     }
 
     #[test]
@@ -2826,6 +3091,25 @@ mod tests {
         let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
 
         enforce_backpressure(&queue, &admission).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_queue_age_rejects_admission_even_when_depth_is_small() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
+        let _depth_threshold = EnvVarGuard::set("PUSH_PUBLISH_LOG_MAX_LAG", "10");
+        let _age_threshold = EnvVarGuard::set("PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS", "1");
+        let queue: DynPushQueue = Arc::new(LagOnlyQueue {
+            lag: sockudo_push::QueueLagMetrics {
+                ready_depth: 1,
+                oldest_ready_age_ms: Some(1_000),
+                ..Default::default()
+            },
+        });
+        let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
+
+        let error = enforce_backpressure(&queue, &admission).await.unwrap_err();
+
+        assert!(matches!(error, AppError::TooManyRequests { .. }));
     }
 
     #[test]

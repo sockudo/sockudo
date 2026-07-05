@@ -382,11 +382,11 @@ This page lists every runtime environment variable referenced by the server, cor
 | `PUSH_FANOUT_FAST_THRESHOLD` | Recipient threshold for fast-path push fanout. |
 | `PUSH_FANOUT_SHARD_SIZE` | Recipient shard size for large fanout. |
 | `PUSH_FANOUT_SYNC_THRESHOLD` | Threshold below which fanout can remain synchronous. |
-| `PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS` | Queue lag threshold that marks push backpressure. |
+| `PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS` | Oldest actionable push queue age, in seconds, tolerated before push backpressure; `0` disables age-based queue backpressure. |
 | `PUSH_BACKPRESSURE` | Forces push backpressure responses in the HTTP layer. |
 | `PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS` | Retry-After value emitted for push backpressure. |
-| `PUSH_PUBLISH_LOG_MAX_LAG` | Maximum publish-log lag tolerated before push backpressure. |
-| `PUSH_CRITICAL_QUEUE_MAX_LAG` | Maximum lag tolerated for shard, delivery result, retry, dead-letter, and active provider delivery stages. |
+| `PUSH_PUBLISH_LOG_MAX_LAG` | Maximum publish-log queue depth tolerated before push backpressure. |
+| `PUSH_CRITICAL_QUEUE_MAX_LAG` | Maximum queue depth tolerated for shard, delivery result, retry, dead-letter, and active provider delivery stages. |
 | `PUSH_PUBLISH_STATUS_TTL_DAYS` | Retention for push publish status records. |
 | `PUSH_DISPATCH_MAX_OUTBOUND_REQUESTS` | Maximum outbound provider requests each dispatch worker hands to a provider dispatcher at once. |
 | `PUSH_RETRY_WORKER_COUNT` | Number of monolith retry scheduler workers consuming `push.retry.v1`. |
@@ -397,8 +397,14 @@ This page lists every runtime environment variable referenced by the server, cor
 | `PUSH_RETRY_JITTER` | Enables deterministic retry jitter. |
 | `PUSH_RETRY_JITTER_RATIO_PERCENT` | Retry jitter spread as a percentage of the selected backoff. |
 | `PUSH_RETRY_RESPECT_RETRY_AFTER` | Uses provider `Retry-After` deadlines when present. |
+| `PUSH_REPAIR_INTERVAL_SECS` | Interval for the monolith push repair worker; `0` disables durable publish-log repair. |
+| `PUSH_REPAIR_MIN_AGE_SECS` | Minimum queued publish-log age before repair recreates missing `push.publish.v1` work. |
+| `PUSH_REPAIR_BATCH_SIZE` | Maximum durable publish-log rows scanned per app and repair tick. |
 | `PUSH_FAILURE_THRESHOLD` | Push circuit-breaker failure threshold. |
 | `PUSH_SCHEDULER_INTERVAL_SECS` | Scheduled push scan interval. |
+| `PUSH_CLEANUP_INTERVAL_SECS` | Push cleanup worker interval. Set `0` to disable the worker. |
+| `PUSH_CLEANUP_BATCH_SIZE` | Maximum rows considered per cleanup category per tick. |
+| `PUSH_CLEANUP_MAX_DELETED_PER_TICK` | Overall cap on rows deleted by one push cleanup tick. |
 | `PUSH_STALE_DEVICE_MAX_AGE_DAYS` | Stale device age threshold. |
 | `PUSH_DEFAULT_ACCEPTANCE_RPS` | Default per-app push acceptance RPS quota. |
 | `PUSH_DEFAULT_DELIVERY_QUOTA_DAILY` | Default per-app daily delivery quota. |

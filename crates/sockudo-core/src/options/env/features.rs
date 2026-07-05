@@ -94,6 +94,24 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "PUSH_SCHEDULER_INTERVAL_SECS",
         options.push.scheduler_interval_secs,
     );
+    options.push.repair_interval_secs = parse_env::<u64>(
+        "PUSH_REPAIR_INTERVAL_SECS",
+        options.push.repair_interval_secs,
+    );
+    options.push.repair_min_age_secs =
+        parse_env::<u64>("PUSH_REPAIR_MIN_AGE_SECS", options.push.repair_min_age_secs);
+    options.push.repair_batch_size =
+        parse_env::<usize>("PUSH_REPAIR_BATCH_SIZE", options.push.repair_batch_size);
+    options.push.cleanup_interval_secs = parse_env::<u64>(
+        "PUSH_CLEANUP_INTERVAL_SECS",
+        options.push.cleanup_interval_secs,
+    );
+    options.push.cleanup_batch_size =
+        parse_env::<usize>("PUSH_CLEANUP_BATCH_SIZE", options.push.cleanup_batch_size);
+    options.push.cleanup_max_deleted_per_tick = parse_env::<usize>(
+        "PUSH_CLEANUP_MAX_DELETED_PER_TICK",
+        options.push.cleanup_max_deleted_per_tick,
+    );
     options.push.stale_device_max_age_days = parse_env::<u64>(
         "PUSH_STALE_DEVICE_MAX_AGE_DAYS",
         options.push.stale_device_max_age_days,

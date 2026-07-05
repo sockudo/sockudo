@@ -9,11 +9,12 @@ use thiserror::Error;
 use crate::domain::{
     DeadLetter, DeliveryBatch, DeliveryFeedback, DeliveryResult, FanoutConfig, FanoutRegime,
     PublishCounters, PublishIntent, PublishLifecycleState, PublishLogEvent, PublishStatus,
-    PushDomainError, RetryScheduleEntry, provider_key, stable_hash,
+    PushCursor, PushCursorKind, PushDomainError, PushProviderKind, RetryScheduleEntry,
+    provider_key, stable_hash,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
-use crate::storage::{DynPushStore, IdempotencyRecord, PushStorageError};
+use crate::storage::{DynPushStore, IdempotencyRecord, Page, PushStorageError};
 use crate::transform::{render_all_provider_payloads, resolve_template_payload};
 
 pub type DynPushQueue = Arc<dyn PushQueue + Send + Sync>;
@@ -61,6 +62,8 @@ pub struct QueueMessage {
     pub partition: u32,
     pub payload: PushQueuePayload,
     pub attempt: u32,
+    #[serde(default = "now_ms")]
+    pub enqueued_at_ms: u64,
     pub not_before_ms: Option<u64>,
     pub lease_deadline_ms: u64,
     pub ack: QueueAckToken,
@@ -73,6 +76,18 @@ pub struct QueueLagMetrics {
     pub delayed_depth: u64,
     pub inflight_depth: u64,
     pub dead_letter_depth: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_ready_age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_delayed_age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_inflight_age_ms: Option<u64>,
+}
+
+impl QueueLagMetrics {
+    pub fn oldest_actionable_age_ms(&self) -> Option<u64> {
+        max_optional_u64(self.oldest_ready_age_ms, self.oldest_inflight_age_ms)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +121,121 @@ impl QueueRoute {
             partitions,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadLetterQueueEntry {
+    pub dead_letter_id: String,
+    pub dead_letter: DeadLetter,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PushProviderKind>,
+    pub replayable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeadLetterQueueFilter {
+    pub provider: Option<PushProviderKind>,
+    pub since_ms: Option<u64>,
+    pub until_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadLetterReplayResult {
+    pub dead_letter_id: String,
+    pub replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+pub fn dead_letter_entry_id(dead_letter: &DeadLetter, source_message_id: &str) -> String {
+    stable_hash(
+        format!(
+            "{}\0{}\0{}\0{}\0{}\0{}\0{}",
+            dead_letter.app_id,
+            dead_letter.publish_id,
+            dead_letter.stage,
+            dead_letter.key,
+            dead_letter.reason,
+            dead_letter.occurred_at_ms,
+            source_message_id
+        )
+        .as_bytes(),
+    )
+}
+
+pub fn dead_letter_entry_position(entry: &DeadLetterQueueEntry) -> String {
+    format!(
+        "{:020}:{}",
+        entry.dead_letter.occurred_at_ms, entry.dead_letter_id
+    )
+}
+
+pub fn page_dead_letter_entries(
+    app_id: &str,
+    filter: DeadLetterQueueFilter,
+    limit: usize,
+    cursor: Option<PushCursor>,
+    mut entries: Vec<DeadLetterQueueEntry>,
+) -> PushQueueResult<Page<DeadLetterQueueEntry>> {
+    let position = if let Some(cursor) = cursor {
+        if cursor.app_id != app_id {
+            return Err(PushQueueError::Backend(format!(
+                "dead-letter cursor belongs to app {}, expected {}",
+                cursor.app_id, app_id
+            )));
+        }
+        if cursor.kind != PushCursorKind::DeadLetter {
+            return Err(PushQueueError::Backend(
+                "cursor is not a dead-letter cursor".to_owned(),
+            ));
+        }
+        Some(cursor.position)
+    } else {
+        None
+    };
+
+    entries.retain(|entry| {
+        entry.dead_letter.app_id == app_id
+            && filter
+                .provider
+                .is_none_or(|provider| entry.provider == Some(provider))
+            && filter
+                .since_ms
+                .is_none_or(|since_ms| entry.dead_letter.occurred_at_ms >= since_ms)
+            && filter
+                .until_ms
+                .is_none_or(|until_ms| entry.dead_letter.occurred_at_ms <= until_ms)
+            && position.as_deref().is_none_or(|cursor_position| {
+                dead_letter_entry_position(entry).as_str() > cursor_position
+            })
+    });
+    entries.sort_by_key(dead_letter_entry_position);
+
+    let limit = limit.max(1);
+    let mut page_items = entries
+        .into_iter()
+        .take(limit.saturating_add(1))
+        .collect::<Vec<_>>();
+    let next_cursor = if page_items.len() > limit {
+        page_items.truncate(limit);
+        page_items.last().map(|entry| PushCursor {
+            app_id: app_id.to_owned(),
+            kind: PushCursorKind::DeadLetter,
+            position: dead_letter_entry_position(entry),
+            issued_at_ms: now_ms(),
+        })
+    } else {
+        None
+    };
+
+    Ok(Page {
+        items: page_items,
+        next_cursor,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -241,6 +371,18 @@ fn payload_app_id(payload: &PushQueuePayload) -> Option<String> {
     }
 }
 
+fn payload_provider(payload: &PushQueuePayload) -> Option<PushProviderKind> {
+    match payload {
+        PushQueuePayload::DeliveryBatch(batch) => Some(batch.provider),
+        PushQueuePayload::DeliveryResult(result) => Some(result.provider),
+        PushQueuePayload::DeliveryFeedback(feedback) => Some(feedback.result.provider),
+        PushQueuePayload::RetrySchedule(entry) => entry.provider,
+        PushQueuePayload::PublishLog(_)
+        | PushQueuePayload::ShardJob(_)
+        | PushQueuePayload::DeadLetter(_) => None,
+    }
+}
+
 fn partition_for_key(key: &str, partitions: u32) -> u32 {
     let hash = stable_hash(key.as_bytes());
     let prefix = hash
@@ -305,6 +447,32 @@ pub trait PushQueue: Send + Sync {
 
     async fn dead_letter(&self, token: QueueAckToken, reason: String) -> PushQueueResult<()>;
 
+    async fn list_dead_letters(
+        &self,
+        _app_id: &str,
+        _filter: DeadLetterQueueFilter,
+        _limit: usize,
+        _cursor: Option<PushCursor>,
+    ) -> PushQueueResult<Page<DeadLetterQueueEntry>> {
+        Ok(Page {
+            items: Vec::new(),
+            next_cursor: None,
+        })
+    }
+
+    async fn replay_dead_letter(
+        &self,
+        _app_id: &str,
+        dead_letter_id: &str,
+    ) -> PushQueueResult<Option<DeadLetterReplayResult>> {
+        Ok(Some(DeadLetterReplayResult {
+            dead_letter_id: dead_letter_id.to_owned(),
+            replayed: false,
+            message_id: None,
+            reason: Some("dead-letter replay is not supported by this queue backend".to_owned()),
+        }))
+    }
+
     async fn health(&self) -> PushQueueResult<QueueHealth>;
 
     async fn lag(&self, stage: PushQueueStage) -> PushQueueResult<QueueLagMetrics>;
@@ -331,7 +499,7 @@ struct MemoryQueueState {
     ready: BTreeMap<PushQueueStage, VecDeque<StoredMessage>>,
     inflight: BTreeMap<(PushQueueStage, String), StoredMessage>,
     produced_keys: BTreeMap<(PushQueueStage, String), String>,
-    dead_letters: Vec<DeadLetter>,
+    dead_letters: Vec<StoredDeadLetter>,
 }
 
 #[derive(Clone)]
@@ -341,8 +509,32 @@ struct StoredMessage {
     route: QueueRoute,
     payload: PushQueuePayload,
     attempt: u32,
+    enqueued_at_ms: u64,
     not_before_ms: Option<u64>,
     lease_deadline_ms: u64,
+}
+
+#[derive(Clone)]
+struct StoredDeadLetter {
+    dead_letter_id: String,
+    dead_letter: DeadLetter,
+    provider: Option<PushProviderKind>,
+    original_stage: Option<PushQueueStage>,
+    original_key: Option<String>,
+    original_payload: Option<PushQueuePayload>,
+}
+
+impl StoredDeadLetter {
+    fn entry(&self) -> DeadLetterQueueEntry {
+        DeadLetterQueueEntry {
+            dead_letter_id: self.dead_letter_id.clone(),
+            dead_letter: self.dead_letter.clone(),
+            provider: self.provider,
+            replayable: self.original_stage.is_some()
+                && self.original_key.is_some()
+                && self.original_payload.is_some(),
+        }
+    }
 }
 
 impl MemoryPushQueue {
@@ -430,6 +622,7 @@ impl PushQueue for MemoryPushQueue {
                 partition: stored.route.partition,
                 payload: stored.payload.clone(),
                 attempt: stored.attempt,
+                enqueued_at_ms: stored.enqueued_at_ms,
                 not_before_ms: stored.not_before_ms,
                 lease_deadline_ms: stored.lease_deadline_ms,
                 ack: token.clone(),
@@ -474,7 +667,14 @@ impl PushQueue for MemoryPushQueue {
                 .produced_keys
                 .remove(&(token.stage, stored.key.clone()));
             let dead_letter = dead_letter_from_message(token.stage, &stored, reason);
-            inner.dead_letters.push(dead_letter.clone());
+            inner.dead_letters.push(StoredDeadLetter {
+                dead_letter_id: dead_letter_entry_id(&dead_letter, &stored.message_id),
+                dead_letter: dead_letter.clone(),
+                provider: payload_provider(&stored.payload),
+                original_stage: Some(token.stage),
+                original_key: Some(stored.key.clone()),
+                original_payload: Some(stored.payload.clone()),
+            });
             inner
                 .ready
                 .entry(PushQueueStage::DeadLetters)
@@ -489,11 +689,65 @@ impl PushQueue for MemoryPushQueue {
                     ),
                     payload: PushQueuePayload::DeadLetter(Box::new(dead_letter)),
                     attempt: 1,
+                    enqueued_at_ms: now_ms(),
                     not_before_ms: None,
                     lease_deadline_ms: 0,
                 });
         }
         Ok(())
+    }
+
+    async fn list_dead_letters(
+        &self,
+        app_id: &str,
+        filter: DeadLetterQueueFilter,
+        limit: usize,
+        cursor: Option<PushCursor>,
+    ) -> PushQueueResult<Page<DeadLetterQueueEntry>> {
+        let entries = self
+            .lock()?
+            .dead_letters
+            .iter()
+            .map(StoredDeadLetter::entry)
+            .collect::<Vec<_>>();
+        page_dead_letter_entries(app_id, filter, limit, cursor, entries)
+    }
+
+    async fn replay_dead_letter(
+        &self,
+        app_id: &str,
+        dead_letter_id: &str,
+    ) -> PushQueueResult<Option<DeadLetterReplayResult>> {
+        let replay = {
+            let inner = self.lock()?;
+            let Some(stored) = inner.dead_letters.iter().find(|stored| {
+                stored.dead_letter.app_id == app_id && stored.dead_letter_id == dead_letter_id
+            }) else {
+                return Ok(None);
+            };
+            let (Some(stage), Some(key), Some(payload)) = (
+                stored.original_stage,
+                stored.original_key.clone(),
+                stored.original_payload.clone(),
+            ) else {
+                return Ok(Some(DeadLetterReplayResult {
+                    dead_letter_id: dead_letter_id.to_owned(),
+                    replayed: false,
+                    message_id: None,
+                    reason: Some(
+                        "dead-letter does not retain an original queue payload".to_owned(),
+                    ),
+                }));
+            };
+            (stage, key, payload)
+        };
+        let message_id = self.enqueue(replay.0, replay.1, replay.2, None)?;
+        Ok(Some(DeadLetterReplayResult {
+            dead_letter_id: dead_letter_id.to_owned(),
+            replayed: true,
+            message_id: Some(message_id),
+            reason: None,
+        }))
     }
 
     async fn health(&self) -> PushQueueResult<QueueHealth> {
@@ -522,16 +776,28 @@ impl PushQueue for MemoryPushQueue {
                     .is_some_and(|not_before| not_before > now)
                 {
                     metrics.delayed_depth += 1;
+                    metrics.oldest_delayed_age_ms = max_optional_u64(
+                        metrics.oldest_delayed_age_ms,
+                        Some(queue_message_age_ms(message, now)),
+                    );
                 } else {
                     metrics.ready_depth += 1;
+                    metrics.oldest_ready_age_ms = max_optional_u64(
+                        metrics.oldest_ready_age_ms,
+                        Some(queue_message_age_ms(message, now)),
+                    );
                 }
             }
         }
-        metrics.inflight_depth = inner
-            .inflight
-            .keys()
-            .filter(|(message_stage, _)| *message_stage == stage)
-            .count() as u64;
+        for ((message_stage, _), message) in &inner.inflight {
+            if *message_stage == stage {
+                metrics.inflight_depth += 1;
+                metrics.oldest_inflight_age_ms = max_optional_u64(
+                    metrics.oldest_inflight_age_ms,
+                    Some(queue_message_age_ms(message, now)),
+                );
+            }
+        }
         metrics.dead_letter_depth = inner.dead_letters.len() as u64;
         Ok(metrics)
     }
@@ -556,6 +822,18 @@ impl MemoryPushQueue {
         inner
             .produced_keys
             .insert((stage, key.clone()), message_id.clone());
+        if let (PushQueueStage::DeadLetters, PushQueuePayload::DeadLetter(dead_letter)) =
+            (stage, &payload)
+        {
+            inner.dead_letters.push(StoredDeadLetter {
+                dead_letter_id: dead_letter_entry_id(dead_letter, &message_id),
+                dead_letter: dead_letter.as_ref().clone(),
+                provider: None,
+                original_stage: None,
+                original_key: None,
+                original_payload: None,
+            });
+        }
         inner
             .ready
             .entry(stage)
@@ -566,6 +844,7 @@ impl MemoryPushQueue {
                 route,
                 payload,
                 attempt: 1,
+                enqueued_at_ms: now_ms(),
                 not_before_ms,
                 lease_deadline_ms: 0,
             });
@@ -594,6 +873,18 @@ fn reclaim_expired_leases(inner: &mut MemoryQueueState, now_ms: u64) {
             message.lease_deadline_ms = 0;
             inner.ready.entry(stage).or_default().push_back(message);
         }
+    }
+}
+
+fn queue_message_age_ms(message: &StoredMessage, now_ms: u64) -> u64 {
+    now_ms.saturating_sub(message.enqueued_at_ms)
+}
+
+fn max_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
     }
 }
 
@@ -711,6 +1002,7 @@ impl PushPipeline {
             .map_err(|error| PushPipelineError::InvalidPayload(error.to_string()))?;
         let lag = self.queue.lag(PushQueueStage::PublishLog).await?;
         self.metrics.publish_log_lag_seconds(lag.ready_depth as f64);
+        self.metrics.queue_lag(PushQueueStage::PublishLog, &lag);
         if lag.ready_depth.saturating_add(lag.delayed_depth) >= self.max_publish_log_lag {
             self.metrics.publish_accepted(
                 &request.intent.app_id,
@@ -1078,6 +1370,9 @@ mod tests {
         let lag = queue.lag(PushQueueStage::PublishLog).await.unwrap();
         assert_eq!(lag.ready_depth, 1);
         assert_eq!(lag.delayed_depth, 1);
+        assert!(lag.oldest_ready_age_ms.is_some());
+        assert!(lag.oldest_delayed_age_ms.is_some());
+        assert_eq!(lag.oldest_inflight_age_ms, None);
 
         let mut messages = queue
             .consume(PushQueueStage::PublishLog, "worker", 1, 30_000)
@@ -1086,6 +1381,12 @@ mod tests {
         assert_eq!(messages.len(), 1);
         let message = messages.pop().unwrap();
         assert_eq!(message.attempt, 1);
+        assert!(message.enqueued_at_ms > 0);
+
+        let lag = queue.lag(PushQueueStage::PublishLog).await.unwrap();
+        assert_eq!(lag.ready_depth, 0);
+        assert_eq!(lag.inflight_depth, 1);
+        assert!(lag.oldest_inflight_age_ms.is_some());
 
         queue.nack(message.ack.clone(), None).await.unwrap();
         let message = queue
@@ -1100,6 +1401,98 @@ mod tests {
         let lag = queue.lag(PushQueueStage::PublishLog).await.unwrap();
         assert_eq!(lag.ready_depth, 0);
         assert_eq!(lag.delayed_depth, 1);
+        assert_eq!(lag.oldest_ready_age_ms, None);
+        assert!(lag.oldest_delayed_age_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn memory_queue_lists_and_replays_dead_letters() {
+        let queue = MemoryPushQueue::new();
+        let event = sample_publish_log_event();
+        queue
+            .produce(
+                PushQueueStage::PublishLog,
+                event.queue_key(),
+                PushQueuePayload::PublishLog(Box::new(event.clone())),
+            )
+            .await
+            .unwrap();
+        let message = queue
+            .consume(PushQueueStage::PublishLog, "worker", 1, 30_000)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        queue
+            .dead_letter(message.ack, "planner failed".to_owned())
+            .await
+            .unwrap();
+
+        let page = queue
+            .list_dead_letters("app-1", DeadLetterQueueFilter::default(), 10, None)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        let entry = &page.items[0];
+        assert_eq!(entry.dead_letter.publish_id, "publish-1");
+        assert_eq!(entry.dead_letter.stage, "PublishLog");
+        assert!(entry.replayable);
+
+        let replay = queue
+            .replay_dead_letter("app-1", &entry.dead_letter_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(replay.replayed);
+        assert!(replay.message_id.is_some());
+
+        let replayed = queue
+            .consume(PushQueueStage::PublishLog, "worker", 1, 30_000)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let PushQueuePayload::PublishLog(replayed_event) = replayed.payload else {
+            panic!("expected replayed publish log");
+        };
+        assert_eq!(replayed_event.publish_id, event.publish_id);
+    }
+
+    #[tokio::test]
+    async fn memory_queue_lists_marker_dead_letters_as_not_replayable() {
+        let queue = MemoryPushQueue::new();
+        let dead_letter = DeadLetter {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            stage: "retry_schedule".to_owned(),
+            key: "retry-key".to_owned(),
+            reason: "retry attempts exhausted".to_owned(),
+            occurred_at_ms: 20,
+        };
+        queue
+            .produce(
+                PushQueueStage::DeadLetters,
+                dead_letter.key.clone(),
+                PushQueuePayload::DeadLetter(Box::new(dead_letter)),
+            )
+            .await
+            .unwrap();
+
+        let page = queue
+            .list_dead_letters("app-1", DeadLetterQueueFilter::default(), 10, None)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert!(!page.items[0].replayable);
+
+        let replay = queue
+            .replay_dead_letter("app-1", &page.items[0].dead_letter_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!replay.replayed);
+        assert!(replay.reason.unwrap().contains("original queue payload"));
     }
 
     #[tokio::test]

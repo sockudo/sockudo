@@ -3,12 +3,13 @@ use super::helpers::*;
 use super::stores::MySqlPushStore;
 #[cfg(feature = "postgres")]
 use super::stores::PostgresPushStore;
+use crate::cleanup::{PushCleanupReport, PushCleanupRequest};
 use crate::domain::{
     DeleteDeviceOutcome, DeliveryEvent, NotificationTemplate, ProviderCredential, PublishLogEvent,
     PublishStatus, PushCursor, PushCursorKind, ShardJob,
 };
 use crate::storage::{
-    IdempotencyRecord, OperatorInvalidationEvent, Page, PushCredentialStore,
+    IdempotencyRecord, OperatorInvalidationEvent, Page, PushCleanupStore, PushCredentialStore,
     PushDeliveryEventStore, PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore,
     PushPublishLogStore, PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore,
     PushStorageResult, PushTemplateStore, ScheduledPushJob, SchedulerLock,
@@ -535,6 +536,263 @@ macro_rules! impl_common_sql_traits {
                         occurred_at_ms: occurred as u64,
                     }))
                 })
+            }
+        }
+
+        #[async_trait]
+        impl PushCleanupStore for $store {
+            async fn cleanup_expired_push_data(&self, request: PushCleanupRequest) -> PushStorageResult<PushCleanupReport> {
+                let mut report = PushCleanupReport::default();
+                let mut remaining = request.policy.max_deleted_per_tick;
+
+                if remaining > 0 {
+                    if let Some(cutoff_ms) = request.publish_status_cutoff_ms() {
+                        let limit = request.limit_for(remaining) as i64;
+                        let raw = if $postgres {
+                            "WITH doomed AS (
+                                SELECT app_id, publish_id
+                                FROM push_publish_status
+                                WHERE updated_at_ms < ?
+                                  AND state IN ('succeeded', 'partiallysucceeded', 'failed', 'expired', 'cancelled', 'quotaexceeded', 'deadlettered')
+                                ORDER BY updated_at_ms, app_id, publish_id
+                                LIMIT ?
+                             )
+                             DELETE FROM push_publish_status
+                             WHERE (app_id, publish_id) IN (SELECT app_id, publish_id FROM doomed)"
+                                .to_owned()
+                        } else {
+                            "DELETE s
+                             FROM push_publish_status s
+                             JOIN (
+                                SELECT app_id, publish_id
+                                FROM push_publish_status
+                                WHERE updated_at_ms < ?
+                                  AND state IN ('succeeded', 'partiallysucceeded', 'failed', 'expired', 'cancelled', 'quotaexceeded', 'deadlettered')
+                                ORDER BY updated_at_ms, app_id, publish_id
+                                LIMIT ?
+                             ) doomed ON doomed.app_id = s.app_id AND doomed.publish_id = s.publish_id"
+                                .to_owned()
+                        };
+                        let q = sql_query(raw, $postgres);
+                        let deleted = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                            .bind(cutoff_ms as i64)
+                            .bind(limit)
+                            .execute(&self.$pool)
+                            .await
+                            .map_err(sql_error)?
+                            .rows_affected();
+                        report.publish_statuses.record(deleted, deleted);
+                        remaining = remaining.saturating_sub(deleted as usize);
+                    }
+                }
+
+                if remaining > 0 {
+                    if let Some(cutoff_ms) = request.delivery_event_cutoff_ms() {
+                        let limit = request.limit_for(remaining) as i64;
+                        let raw = if $postgres {
+                            "WITH doomed AS (
+                                SELECT app_id, publish_id, occurred_at_ms, event_id
+                                FROM push_delivery_events
+                                WHERE occurred_at_ms < ?
+                                ORDER BY occurred_at_ms, app_id, publish_id, event_id
+                                LIMIT ?
+                             )
+                             DELETE FROM push_delivery_events
+                             WHERE (app_id, publish_id, occurred_at_ms, event_id) IN (
+                                SELECT app_id, publish_id, occurred_at_ms, event_id FROM doomed
+                             )"
+                                .to_owned()
+                        } else {
+                            "DELETE e
+                             FROM push_delivery_events e
+                             JOIN (
+                                SELECT app_id, publish_id, occurred_at_ms, event_id
+                                FROM push_delivery_events
+                                WHERE occurred_at_ms < ?
+                                ORDER BY occurred_at_ms, app_id, publish_id, event_id
+                                LIMIT ?
+                             ) doomed
+                               ON doomed.app_id = e.app_id
+                              AND doomed.publish_id = e.publish_id
+                              AND doomed.occurred_at_ms = e.occurred_at_ms
+                              AND doomed.event_id = e.event_id"
+                                .to_owned()
+                        };
+                        let q = sql_query(raw, $postgres);
+                        let deleted = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                            .bind(cutoff_ms as i64)
+                            .bind(limit)
+                            .execute(&self.$pool)
+                            .await
+                            .map_err(sql_error)?
+                            .rows_affected();
+                        report.delivery_events.record(deleted, deleted);
+                        remaining = remaining.saturating_sub(deleted as usize);
+                    }
+                }
+
+                if remaining > 0 {
+                    let limit = request.limit_for(remaining) as i64;
+                    let raw = if $postgres {
+                        "WITH doomed AS (
+                            SELECT app_id, idempotency_key
+                            FROM push_idempotency
+                            WHERE expires_at_ms >= 1000000000000 AND expires_at_ms <= ?
+                            ORDER BY expires_at_ms, app_id, idempotency_key
+                            LIMIT ?
+                         )
+                         DELETE FROM push_idempotency
+                         WHERE (app_id, idempotency_key) IN (SELECT app_id, idempotency_key FROM doomed)"
+                            .to_owned()
+                    } else {
+                        "DELETE i
+                         FROM push_idempotency i
+                         JOIN (
+                            SELECT app_id, idempotency_key
+                            FROM push_idempotency
+                            WHERE expires_at_ms >= 1000000000000 AND expires_at_ms <= ?
+                            ORDER BY expires_at_ms, app_id, idempotency_key
+                            LIMIT ?
+                         ) doomed ON doomed.app_id = i.app_id AND doomed.idempotency_key = i.idempotency_key"
+                            .to_owned()
+                    };
+                    let q = sql_query(raw, $postgres);
+                    let deleted = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                        .bind(request.now_ms as i64)
+                        .bind(limit)
+                        .execute(&self.$pool)
+                        .await
+                        .map_err(sql_error)?
+                        .rows_affected();
+                    report.idempotency_records.record(deleted, deleted);
+                    remaining = remaining.saturating_sub(deleted as usize);
+                }
+
+                if remaining > 0 {
+                    let limit = request.limit_for(remaining) as i64;
+                    let raw = if $postgres {
+                        "WITH doomed AS (
+                            SELECT app_id, publish_id
+                            FROM push_scheduler_locks
+                            WHERE expires_at_ms <= ?
+                            ORDER BY expires_at_ms, app_id, publish_id
+                            LIMIT ?
+                         )
+                         DELETE FROM push_scheduler_locks
+                         WHERE (app_id, publish_id) IN (SELECT app_id, publish_id FROM doomed)"
+                            .to_owned()
+                    } else {
+                        "DELETE l
+                         FROM push_scheduler_locks l
+                         JOIN (
+                            SELECT app_id, publish_id
+                            FROM push_scheduler_locks
+                            WHERE expires_at_ms <= ?
+                            ORDER BY expires_at_ms, app_id, publish_id
+                            LIMIT ?
+                         ) doomed ON doomed.app_id = l.app_id AND doomed.publish_id = l.publish_id"
+                            .to_owned()
+                    };
+                    let q = sql_query(raw, $postgres);
+                    let deleted = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                        .bind(request.now_ms as i64)
+                        .bind(limit)
+                        .execute(&self.$pool)
+                        .await
+                        .map_err(sql_error)?
+                        .rows_affected();
+                    report.scheduler_locks.record(deleted, deleted);
+                    remaining = remaining.saturating_sub(deleted as usize);
+                }
+
+                if remaining > 0 {
+                    if let Some(cutoff_ms) = request.operator_event_cutoff_ms() {
+                        let limit = request.limit_for(remaining) as i64;
+                        let raw = if $postgres {
+                            "WITH doomed AS (
+                                SELECT app_id, occurred_at_ms, event_id
+                                FROM push_operator_invalidations
+                                WHERE occurred_at_ms < ?
+                                ORDER BY occurred_at_ms, app_id, event_id
+                                LIMIT ?
+                             )
+                             DELETE FROM push_operator_invalidations
+                             WHERE (app_id, occurred_at_ms, event_id) IN (
+                                SELECT app_id, occurred_at_ms, event_id FROM doomed
+                             )"
+                                .to_owned()
+                        } else {
+                            "DELETE oi
+                             FROM push_operator_invalidations oi
+                             JOIN (
+                                SELECT app_id, occurred_at_ms, event_id
+                                FROM push_operator_invalidations
+                                WHERE occurred_at_ms < ?
+                                ORDER BY occurred_at_ms, app_id, event_id
+                                LIMIT ?
+                             ) doomed
+                               ON doomed.app_id = oi.app_id
+                              AND doomed.occurred_at_ms = oi.occurred_at_ms
+                              AND doomed.event_id = oi.event_id"
+                                .to_owned()
+                        };
+                        let q = sql_query(raw, $postgres);
+                        let deleted = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                            .bind(cutoff_ms as i64)
+                            .bind(limit)
+                            .execute(&self.$pool)
+                            .await
+                            .map_err(sql_error)?
+                            .rows_affected();
+                        report.operator_invalidations.record(deleted, deleted);
+                        remaining = remaining.saturating_sub(deleted as usize);
+                    }
+                }
+
+                if remaining > 0 {
+                    if let Some(cutoff_ms) = request.dead_letter_cutoff_ms() {
+                        let limit = request.limit_for(remaining) as i64;
+                        let raw = if $postgres {
+                            "WITH doomed AS (
+                                SELECT app_id, publish_id, dead_letter_id
+                                FROM push_dead_letters
+                                WHERE occurred_at_ms < ?
+                                ORDER BY occurred_at_ms, app_id, publish_id, dead_letter_id
+                                LIMIT ?
+                             )
+                             DELETE FROM push_dead_letters
+                             WHERE (app_id, publish_id, dead_letter_id) IN (
+                                SELECT app_id, publish_id, dead_letter_id FROM doomed
+                             )"
+                                .to_owned()
+                        } else {
+                            "DELETE dl
+                             FROM push_dead_letters dl
+                             JOIN (
+                                SELECT app_id, publish_id, dead_letter_id
+                                FROM push_dead_letters
+                                WHERE occurred_at_ms < ?
+                                ORDER BY occurred_at_ms, app_id, publish_id, dead_letter_id
+                                LIMIT ?
+                             ) doomed
+                               ON doomed.app_id = dl.app_id
+                              AND doomed.publish_id = dl.publish_id
+                              AND doomed.dead_letter_id = dl.dead_letter_id"
+                                .to_owned()
+                        };
+                        let q = sql_query(raw, $postgres);
+                        let deleted = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                            .bind(cutoff_ms as i64)
+                            .bind(limit)
+                            .execute(&self.$pool)
+                            .await
+                            .map_err(sql_error)?
+                            .rows_affected();
+                        report.dead_letters.record(deleted, deleted);
+                    }
+                }
+
+                Ok(report)
             }
         }
     };

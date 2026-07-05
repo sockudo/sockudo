@@ -201,6 +201,12 @@ dry_run = false
 analytics_enabled = false
 analytics_retention_days = 30
 scheduler_interval_secs = 5
+repair_interval_secs = 30
+repair_min_age_secs = 30
+repair_batch_size = 100
+cleanup_interval_secs = 300
+cleanup_batch_size = 1000
+cleanup_max_deleted_per_tick = 100000
 
 [push.retry]
 max_attempts = 5
@@ -249,6 +255,18 @@ external key refs default to unset and are omitted from the checked block.
 Push publish admission also requires a healthy queue, a safe store, local pipeline workers, and
 local provider-worker capability. Raw provider-specific recipients require the matching provider
 worker before the request is accepted; shard-path publishes also require a local shard worker.
+`backpressure_lag_threshold_secs` limits the oldest actionable ready or inflight push queue item
+age; set it to `0` to rely only on queue-depth thresholds.
+Push repair runs in monolith workers when `repair_interval_secs > 0`; it scans stale queued
+durable publish logs and recreates missing `push.publish.v1` queue work after the publish has been
+queued for at least `repair_min_age_secs`.
+
+Push cleanup runs in monolith workers when `cleanup_interval_secs > 0`. It purges terminal publish
+statuses older than `publish_status_ttl_days`, delivery events and operator invalidations older
+than `analytics_retention_days`, expired idempotency records, expired scheduler locks, and any
+persisted dead-letter inspection rows written by a selected backend. Queue-native dead-letter
+metadata is inspected through `/apps/{appId}/push/deadLetters`. Cleanup is bounded by
+`cleanup_batch_size` per category and `cleanup_max_deleted_per_tick` overall.
 
 ## Observability
 
@@ -286,7 +304,9 @@ port = 5000
 buffer_size = 1024
 
 [push]
-enabled = true
-async_only = true
-publish_status_ttl_seconds = 86400
+storage_driver = "postgres"
+queue_driver = "redis"
+publish_status_ttl_days = 30
+analytics_retention_days = 30
+cleanup_interval_secs = 300
 ```

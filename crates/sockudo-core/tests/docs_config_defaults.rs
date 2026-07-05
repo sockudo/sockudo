@@ -241,6 +241,21 @@ fn documented_ai_transport_related_defaults_match_code() {
     );
     assert_u64(
         &docs,
+        "push.repair_interval_secs",
+        options.push.repair_interval_secs,
+    );
+    assert_u64(
+        &docs,
+        "push.repair_min_age_secs",
+        options.push.repair_min_age_secs,
+    );
+    assert_u64(
+        &docs,
+        "push.repair_batch_size",
+        options.push.repair_batch_size as u64,
+    );
+    assert_u64(
+        &docs,
         "push.retry.max_attempts",
         options.push.retry.max_attempts,
     );

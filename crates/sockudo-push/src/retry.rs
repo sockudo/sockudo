@@ -1,7 +1,7 @@
 use crate::domain::{
     DEFAULT_PUSH_RETRY_INITIAL_BACKOFF_MS, DEFAULT_PUSH_RETRY_JITTER_RATIO_PERCENT,
     DEFAULT_PUSH_RETRY_MAX_AGE_MS, DEFAULT_PUSH_RETRY_MAX_ATTEMPTS,
-    DEFAULT_PUSH_RETRY_MAX_BACKOFF_MS, DeadLetter, DeliveryBatch, DeliveryFeedback, DeliveryJob,
+    DEFAULT_PUSH_RETRY_MAX_BACKOFF_MS, DeliveryBatch, DeliveryFeedback, DeliveryJob,
     DeliveryOutcome, ProviderError, PublishLifecycleState, PublishStatus, PushProviderKind,
     RetryScheduleEntry, provider_key, stable_hash,
 };
@@ -385,21 +385,6 @@ impl PushRetryScheduler {
         reason: &'static str,
     ) -> PushPipelineResult<()> {
         self.mark_terminal_status(entry, kind, reason).await?;
-        let dead_letter = DeadLetter {
-            app_id: entry.app_id.clone(),
-            publish_id: entry.publish_id.clone(),
-            stage: "retry_schedule".to_owned(),
-            key: entry.retry_idempotency_key.clone(),
-            reason: reason.to_owned(),
-            occurred_at_ms: now_ms(),
-        };
-        self.queue
-            .produce(
-                PushQueueStage::DeadLetters,
-                dead_letter.key.clone(),
-                PushQueuePayload::DeadLetter(Box::new(dead_letter)),
-            )
-            .await?;
         self.put_retry_idempotency(entry).await?;
         match kind {
             RetryTerminalKind::Expired => {
@@ -417,7 +402,9 @@ impl PushRetryScheduler {
             "retry_schedule",
             reason,
         ));
-        self.queue.ack(message.ack).await?;
+        self.queue
+            .dead_letter(message.ack, reason.to_owned())
+            .await?;
         Ok(())
     }
 
@@ -947,6 +934,7 @@ mod tests {
                 partition: 0,
                 payload,
                 attempt: 1,
+                enqueued_at_ms: crate::pipeline::now_ms(),
                 not_before_ms: None,
                 lease_deadline_ms: u64::MAX,
                 ack: QueueAckToken {

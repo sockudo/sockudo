@@ -1510,6 +1510,7 @@ pub enum PushCursorKind {
     PublishStatus,
     PublishLog,
     DeliveryEvent,
+    DeadLetter,
     OperatorInvalidation,
 }
 

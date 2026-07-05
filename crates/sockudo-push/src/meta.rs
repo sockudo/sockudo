@@ -36,6 +36,7 @@ pub enum PushMetaEventKind {
     SchedulerEvent,
     CircuitBreakerEvent,
     DeadLetter,
+    CleanupEvent,
 }
 
 impl PushMetaEvent {
@@ -174,6 +175,33 @@ impl PushMetaEvent {
             publish_id: Some(publish_id.to_owned()),
             provider: None,
             detail: json!({ "stage": stage, "reason": reason }),
+        }
+    }
+
+    pub fn cleanup_event(scanned: u64, deleted: u64) -> Self {
+        Self {
+            event: PushMetaEventKind::CleanupEvent,
+            app_id: "_system".to_owned(),
+            publish_id: None,
+            provider: None,
+            detail: json!({
+                "action": "cleanup-tick",
+                "scanned": scanned,
+                "deleted": deleted
+            }),
+        }
+    }
+
+    pub fn cleanup_error() -> Self {
+        Self {
+            event: PushMetaEventKind::CleanupEvent,
+            app_id: "_system".to_owned(),
+            publish_id: None,
+            provider: None,
+            detail: json!({
+                "action": "cleanup-error",
+                "errorClass": "backend"
+            }),
         }
     }
 }
