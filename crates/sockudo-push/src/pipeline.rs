@@ -14,6 +14,7 @@ use crate::domain::{
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
 use crate::storage::{DynPushStore, IdempotencyRecord, PushStorageError};
+use crate::transform::{render_all_provider_payloads, resolve_template_payload};
 
 pub type DynPushQueue = Arc<dyn PushQueue + Send + Sync>;
 pub type PushQueueResult<T> = Result<T, PushQueueError>;
@@ -698,12 +699,16 @@ impl PushPipeline {
 
     pub async fn accept_publish(
         &self,
-        request: PushAcceptRequest,
+        mut request: PushAcceptRequest,
         occurred_at_ms: u64,
     ) -> PushPipelineResult<PushAcceptOutcome> {
         let started = Instant::now();
         self.config.validate()?;
         request.intent.validate()?;
+        request.intent = self.resolve_intent_templates(request.intent).await?;
+        request.intent.validate()?;
+        render_all_provider_payloads(&request.intent.payload, &request.intent.provider_overrides)
+            .map_err(|error| PushPipelineError::InvalidPayload(error.to_string()))?;
         let lag = self.queue.lag(PushQueueStage::PublishLog).await?;
         self.metrics.publish_log_lag_seconds(lag.ready_depth as f64);
         if lag.ready_depth.saturating_add(lag.delayed_depth) >= self.max_publish_log_lag {
@@ -869,6 +874,28 @@ impl PushPipeline {
         })
     }
 
+    async fn resolve_intent_templates(
+        &self,
+        mut intent: PublishIntent,
+    ) -> PushPipelineResult<PublishIntent> {
+        let Some(template_id) = intent.payload.template_id.clone() else {
+            return Ok(intent);
+        };
+        let template = self
+            .store
+            .get_template(&intent.app_id, &template_id)
+            .await?
+            .ok_or_else(|| {
+                PushPipelineError::InvalidPayload(format!("push template {template_id} not found"))
+            })?;
+        let effective =
+            resolve_template_payload(&template, &intent.payload, &intent.provider_overrides)
+                .map_err(|error| PushPipelineError::InvalidPayload(error.to_string()))?;
+        intent.payload = effective.payload;
+        intent.provider_overrides = effective.provider_overrides;
+        Ok(intent)
+    }
+
     async fn duplicate_accept(
         &self,
         app_id: &str,
@@ -971,8 +998,9 @@ mod tests {
     use crate::dispatch::{AcceptAllDispatcher, ProviderDispatchWorker, RetryAfterDispatcher};
     use crate::domain::{
         ChannelSubscription, DeviceDetails, DevicePushDetails, DevicePushState, FanoutConfig,
-        FormFactor, Platform, PublishIntent, PublishLifecycleState, PublishTarget, PushPayload,
-        PushProviderKind, PushRecipient, SecretString, hash_device_identity_token,
+        FormFactor, NotificationTemplate, Platform, PublishIntent, PublishLifecycleState,
+        PublishTarget, PushPayload, PushProviderKind, PushRecipient, SecretString, TemplateContent,
+        hash_device_identity_token,
     };
     use crate::feedback::PushFeedbackProcessor;
     use crate::memory::MemoryPushStore;
@@ -980,6 +1008,7 @@ mod tests {
     use crate::retry::{PushRetryScheduler, RetryPolicy};
     use crate::storage::{
         PushDeviceStore, PushFanoutShardStore, PushPublishStatusStore, PushSubscriptionStore,
+        PushTemplateStore,
     };
 
     use super::*;
@@ -1173,6 +1202,148 @@ mod tests {
                 .ready_depth,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn accept_rejects_missing_template_before_queueing() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let mut intent = sample_intent(vec![PublishTarget::Recipient {
+            recipient: recipient(PushProviderKind::Fcm),
+        }]);
+        intent.payload.template_id = Some("missing".to_owned());
+        let pipeline = PushPipeline::new(store, queue.clone(), FanoutConfig::default());
+
+        let error = pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent,
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PushPipelineError::InvalidPayload(_)));
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn template_edit_after_accept_does_not_change_planned_delivery() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .upsert_device(sample_device("device-1"))
+            .await
+            .unwrap();
+        store.put_template(sample_template("Hello")).await.unwrap();
+
+        let mut intent = sample_intent(vec![PublishTarget::Device {
+            device_id: "device-1".to_owned(),
+        }]);
+        intent.payload.template_id = Some("welcome".to_owned());
+        intent.payload.template_data = json!({"name": "Ada"});
+        intent.payload.title = None;
+        intent.payload.body = None;
+        let pipeline = PushPipeline::new(store.clone(), queue.clone(), FanoutConfig::default());
+        pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent,
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+
+        store.put_template(sample_template("Edited")).await.unwrap();
+        let planner = PushPlanner::new(store, queue.clone(), FanoutConfig::default());
+        assert_eq!(planner.run_once("planner").await.unwrap(), 1);
+        let message = queue
+            .consume(
+                PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                "delivery",
+                1,
+                30_000,
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let PushQueuePayload::DeliveryBatch(batch) = message.payload else {
+            panic!("expected delivery batch");
+        };
+        let rendered = batch.jobs[0].rendered_payload.as_ref().unwrap();
+        assert_eq!(
+            rendered.payload["message"]["notification"]["title"],
+            "Hello Ada"
+        );
+    }
+
+    #[tokio::test]
+    async fn planner_reuses_rendered_payload_for_large_channel_fanout() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        for index in 0..128 {
+            let device = sample_device(&format!("device-{index}"));
+            store.upsert_device(device.clone()).await.unwrap();
+            store
+                .upsert_subscription(ChannelSubscription::from_device("room", &device))
+                .await
+                .unwrap();
+        }
+        let config = FanoutConfig {
+            fast_threshold: 1_000,
+            shard_size: 1_000,
+            page_size: 64,
+            provider_batch_size: 256,
+            status_retention_days: 30,
+        };
+        let pipeline = PushPipeline::new(store.clone(), queue.clone(), config.clone());
+        pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent: sample_intent(vec![PublishTarget::Channel {
+                        channel: "room".to_owned(),
+                    }]),
+                    expected_recipients: 128,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+
+        let planner = PushPlanner::new(store, queue.clone(), config);
+        assert_eq!(planner.run_once("planner").await.unwrap(), 1);
+        let message = queue
+            .consume(
+                PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                "delivery",
+                1,
+                30_000,
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let PushQueuePayload::DeliveryBatch(batch) = message.payload else {
+            panic!("expected delivery batch");
+        };
+        assert_eq!(batch.jobs.len(), 128);
+        let rendered = batch.jobs[0].rendered_payload.as_ref().unwrap();
+        assert!(batch.jobs.iter().all(|job| {
+            job.rendered_payload
+                .as_ref()
+                .is_some_and(|candidate| Arc::ptr_eq(candidate, rendered))
+        }));
     }
 
     #[tokio::test]
@@ -1654,6 +1825,47 @@ mod tests {
             expected_recipients: 1,
             fast_threshold: 10_000,
             shard_size: 100_000,
+        }
+    }
+
+    fn recipient(provider: PushProviderKind) -> PushRecipient {
+        match provider {
+            PushProviderKind::Fcm => PushRecipient::Fcm {
+                registration_token: SecretString::new("fcm-token").unwrap(),
+            },
+            PushProviderKind::Apns => PushRecipient::Apns {
+                device_token: SecretString::new("apns-token").unwrap(),
+            },
+            PushProviderKind::WebPush => PushRecipient::Web {
+                endpoint: SecretString::new("https://push.example/subscription").unwrap(),
+                p256dh: SecretString::new("p256dh").unwrap(),
+                auth: SecretString::new("auth").unwrap(),
+            },
+            PushProviderKind::Hms => PushRecipient::Hms {
+                registration_token: SecretString::new("hms-token").unwrap(),
+            },
+            PushProviderKind::Wns => PushRecipient::Wns {
+                channel_uri: SecretString::new("https://wns.example/channel").unwrap(),
+            },
+        }
+    }
+
+    fn sample_template(title_prefix: &str) -> NotificationTemplate {
+        NotificationTemplate {
+            app_id: "app-1".to_owned(),
+            template_id: "welcome".to_owned(),
+            default_locale: "en".to_owned(),
+            locales: BTreeMap::from([(
+                "en".to_owned(),
+                TemplateContent {
+                    title: format!("{title_prefix} {{{{ data.name }}}}"),
+                    body: "Body".to_owned(),
+                    icon: None,
+                    sound: None,
+                    collapse_key: Some("welcome".to_owned()),
+                },
+            )]),
+            provider_overrides: BTreeMap::new(),
         }
     }
 }

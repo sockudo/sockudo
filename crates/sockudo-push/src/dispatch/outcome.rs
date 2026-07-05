@@ -18,6 +18,16 @@ pub(super) fn render_payload_json(
     provider: PushProviderKind,
     job: &DeliveryJob,
 ) -> Result<Value, ProviderError> {
+    if let Some(rendered) = job.rendered_payload.as_deref() {
+        if rendered.provider != provider {
+            return Err(ProviderError {
+                class: "invalid_payload".to_owned(),
+                reason: Some("cached provider payload does not match dispatcher".to_owned()),
+                retry_after_ms: None,
+            });
+        }
+        return Ok(rendered.payload.clone());
+    }
     render_provider_payload(provider, &job.payload, &[])
         .map(|rendered| rendered.payload)
         .map_err(|error| ProviderError {

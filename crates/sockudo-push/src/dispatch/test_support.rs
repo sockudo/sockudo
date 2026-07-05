@@ -84,6 +84,7 @@ pub(crate) fn batch(provider: PushProviderKind) -> DeliveryBatch {
                 sound: None,
                 collapse_key: Some("collapse".to_owned()),
             }),
+            rendered_payload: None,
             attempt: 1,
             first_attempt_at_ms: None,
             not_before_ms: None,

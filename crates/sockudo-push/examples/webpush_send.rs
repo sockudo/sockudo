@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sound: None,
                 collapse_key: Some(collapse_key),
             }),
+            rendered_payload: None,
             attempt: 1,
             first_attempt_at_ms: Some(now_ms),
             not_before_ms: None,

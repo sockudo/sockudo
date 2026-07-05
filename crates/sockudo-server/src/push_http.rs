@@ -29,7 +29,7 @@ use sockudo_push::{
     PushMetaEvent, PushMetrics, PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage,
     PushRecipient, PushRulePayloadMapping, RenderedProviderPayload, SecretString,
     emit_push_meta_event, generate_device_identity_token, hash_device_identity_token,
-    render_provider_payload, verify_device_identity_token,
+    render_all_provider_payloads, resolve_template_payload, verify_device_identity_token,
 };
 use sonic_rs::{Value, json};
 use tracing::{info, warn};
@@ -943,7 +943,7 @@ async fn accept_publish_inner(
     };
     let forced_async = sync_requested;
 
-    let intent = PublishIntent {
+    let mut intent = PublishIntent {
         app_id: app_id.to_owned(),
         publish_id: publish_id.clone(),
         targets: request.recipients.clone(),
@@ -952,6 +952,10 @@ async fn accept_publish_inner(
         not_before_ms: request.not_before_ms,
         expires_at_ms: request.expires_at_ms,
     };
+    intent
+        .validate()
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    intent = resolve_publish_templates(context.store, intent).await?;
     intent
         .validate()
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -971,7 +975,7 @@ async fn accept_publish_inner(
         audit_log(app_id, "quotaOverride", Some(&publish_id));
     }
 
-    let rendered_payloads = render_all_payloads(&request.payload, &request.provider_overrides)?;
+    let rendered_payloads = render_all_payloads(&intent.payload, &intent.provider_overrides)?;
     let idempotency_key = intent.idempotency_key();
     let existing_idempotency = context
         .store
@@ -1306,19 +1310,28 @@ fn render_all_payloads(
     payload: &PushPayload,
     overrides: &[ProviderOverridePayload],
 ) -> Result<Vec<RenderedProviderPayload>, AppError> {
-    [
-        PushProviderKind::Fcm,
-        PushProviderKind::Apns,
-        PushProviderKind::WebPush,
-        PushProviderKind::Hms,
-        PushProviderKind::Wns,
-    ]
-    .into_iter()
-    .map(|provider| {
-        render_provider_payload(provider, payload, overrides)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))
-    })
-    .collect()
+    render_all_provider_payloads(payload, overrides)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
+}
+
+async fn resolve_publish_templates(
+    store: &DynPushStore,
+    mut intent: PublishIntent,
+) -> Result<PublishIntent, AppError> {
+    let Some(template_id) = intent.payload.template_id.clone() else {
+        return Ok(intent);
+    };
+    let template = store
+        .get_template(&intent.app_id, &template_id)
+        .await
+        .map_err(push_error)?
+        .ok_or_else(|| AppError::InvalidInput(format!("push template {template_id} not found")))?;
+    let effective =
+        resolve_template_payload(&template, &intent.payload, &intent.provider_overrides)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    intent.payload = effective.payload;
+    intent.provider_overrides = effective.provider_overrides;
+    Ok(intent)
 }
 
 fn device_response(device: DeviceDetails) -> DeviceResponse {
@@ -2200,9 +2213,9 @@ mod tests {
     use axum::http::HeaderValue;
     use sockudo_push::{
         DevicePushDetails, DevicePushState, FormFactor, IdempotencyRecord, MemoryPushQueue,
-        MemoryPushStore, Platform, PublishIntent, PublishLifecycleState, PushDeviceStore,
-        PushIdempotencyStore, PushPublishLogStore, PushPublishStatusStore, PushQueue,
-        PushRecipient,
+        MemoryPushStore, NotificationTemplate, Platform, PublishIntent, PublishLifecycleState,
+        PushDeviceStore, PushIdempotencyStore, PushPublishLogStore, PushPublishStatusStore,
+        PushQueue, PushRecipient, PushTemplateStore, TemplateContent,
     };
     use sonic_rs::{JsonValueTrait, json};
     use std::sync::{Arc, Mutex};
@@ -2644,6 +2657,71 @@ mod tests {
                 .ready_depth,
             0
         );
+    }
+
+    #[tokio::test]
+    async fn publish_preview_and_queued_intent_use_resolved_template() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.upsert_device(sample_device()).await.unwrap();
+        store
+            .put_template(NotificationTemplate {
+                app_id: "app-1".to_owned(),
+                template_id: "welcome".to_owned(),
+                default_locale: "en".to_owned(),
+                locales: BTreeMap::from([(
+                    "en".to_owned(),
+                    TemplateContent {
+                        title: "Hello {{ data.name }}".to_owned(),
+                        body: "Ready".to_owned(),
+                        icon: None,
+                        sound: None,
+                        collapse_key: Some("welcome".to_owned()),
+                    },
+                )]),
+                provider_overrides: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+        let dyn_store: DynPushStore = store;
+        let dyn_queue: DynPushQueue = queue.clone();
+        let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
+        let mut request = sample_publish_request("template-publish");
+        request.payload.template_id = Some("welcome".to_owned());
+        request.payload.template_data = json!({"name": "Ada"});
+        request.payload.title = None;
+        request.payload.body = None;
+
+        let (_, Json(body), _) = accept_publish_inner(
+            "app-1",
+            request,
+            false,
+            &HeaderMap::new(),
+            test_publish_context(&dyn_store, &dyn_queue, &admission),
+        )
+        .await
+        .unwrap();
+
+        let fcm = body
+            .rendered_payloads
+            .iter()
+            .find(|rendered| rendered.provider == PushProviderKind::Fcm)
+            .unwrap();
+        assert_eq!(fcm.payload["message"]["notification"]["title"], "Hello Ada");
+        let message = queue
+            .consume(PushQueueStage::PublishLog, "planner", 1, 30_000)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let PushQueuePayload::PublishLog(event) = message.payload else {
+            panic!("expected publish log");
+        };
+        assert_eq!(
+            event.intent.payload.title.as_deref(),
+            Some("Hello {{ data.name }}")
+        );
+        assert_eq!(event.intent.payload.body.as_deref(), Some("Ready"));
     }
 
     #[tokio::test]

@@ -26,6 +26,11 @@ pub const MAX_PUSH_TARGETS: usize = 1024;
 pub const MAX_PUSH_TITLE_BYTES: usize = 256;
 pub const MAX_PUSH_BODY_BYTES: usize = 4096;
 pub const MAX_PUSH_ICON_BYTES: usize = 2048;
+pub const MAX_APNS_PAYLOAD_BYTES: usize = 4096;
+pub const MAX_FCM_PAYLOAD_BYTES: usize = 4096;
+pub const MAX_WEB_PUSH_PAYLOAD_BYTES: usize = 4096;
+pub const MAX_HMS_PAYLOAD_BYTES: usize = 4096;
+pub const MAX_WNS_PAYLOAD_BYTES: usize = 5000;
 pub const DEVICE_IDENTITY_TOKEN_BYTES: usize = 32;
 pub const DEVICE_SECRET_PBKDF2_ITERATIONS: u32 = 120_000;
 pub const DEFAULT_PUSH_FANOUT_FAST_THRESHOLD: u64 = 10_000;
@@ -799,6 +804,24 @@ impl fmt::Debug for ProviderOverridePayload {
     }
 }
 
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedProviderPayload {
+    pub provider: PushProviderKind,
+    pub payload: Value,
+    pub used_override: bool,
+}
+
+impl fmt::Debug for RenderedProviderPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RenderedProviderPayload")
+            .field("provider", &self.provider)
+            .field("payload", &"[REDACTED]")
+            .field("used_override", &self.used_override)
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PublishTarget {
@@ -1064,6 +1087,8 @@ pub struct ShardJob {
     pub shard_id: String,
     pub target: PublishTarget,
     pub payload: PushPayload,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_overrides: Vec<ProviderOverridePayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_before_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1095,6 +1120,12 @@ pub struct DeliveryJob {
     pub recipient: PushRecipient,
     #[serde(with = "arc_push_payload")]
     pub payload: Arc<PushPayload>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_arc_rendered_provider_payload"
+    )]
+    pub rendered_payload: Option<Arc<RenderedProviderPayload>>,
     pub attempt: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_attempt_at_ms: Option<u64>,
@@ -1124,6 +1155,32 @@ mod arc_push_payload {
     }
 }
 
+mod optional_arc_rendered_provider_payload {
+    use super::RenderedProviderPayload;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    pub fn serialize<S>(
+        payload: &Option<Arc<RenderedProviderPayload>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        payload.as_deref().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<Arc<RenderedProviderPayload>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<RenderedProviderPayload>::deserialize(deserializer)
+            .map(|payload| payload.map(Arc::new))
+    }
+}
+
 impl DeliveryJob {
     pub fn idempotency_key(&self) -> String {
         format!(
@@ -1147,6 +1204,10 @@ impl fmt::Debug for DeliveryJob {
             .field("device_id", &self.device_id)
             .field("recipient", &self.recipient)
             .field("payload", &self.payload)
+            .field(
+                "rendered_payload",
+                &self.rendered_payload.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("attempt", &self.attempt)
             .field("first_attempt_at_ms", &self.first_attempt_at_ms)
             .field("not_before_ms", &self.not_before_ms)

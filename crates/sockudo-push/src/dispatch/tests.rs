@@ -3,8 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Mutex;
 
-use crate::domain::{PushPayload, PushRecipient, SecretString};
+use crate::domain::{ProviderOverridePayload, PushPayload, PushRecipient, SecretString};
 use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueuePayload, PushQueueStage, QueueMessage};
+use crate::transform::render_provider_payload;
 
 use super::apns::classify_apns_response;
 use super::fcm::classify_fcm_response;
@@ -169,6 +170,87 @@ async fn provider_dispatchers_build_expected_headers_and_payloads() {
             Some("Bearer access-token")
         );
     }
+}
+
+#[tokio::test]
+async fn cached_preview_payload_is_provider_dispatch_input() {
+    let http = MockHttpClient::with_responses(vec![
+        response(200, json!({"name": "fcm-message"})),
+        response(200, json!({})),
+        response(201, json!({})),
+        response(200, json!({"code": "80000000", "requestId": "hms-id"})),
+        response(201, json!({})),
+    ]);
+    let token = cached_static_token("access-token", now_ms() + 600_000);
+    let dispatchers: Vec<Box<dyn PushDispatcher + Send + Sync>> = vec![
+        Box::new(
+            FcmDispatcher::new("project-1", token.clone(), http.clone())
+                .with_base_url("https://fcm.test"),
+        ),
+        Box::new(
+            ApnsDispatcher::new("com.example.app", token.clone(), http.clone())
+                .with_base_url("https://apns.test"),
+        ),
+        Box::new(WebPushDispatcher::new(
+            "https://updates.push.services.mozilla.com",
+            token.clone(),
+            Arc::new(PassthroughWebPushCrypto),
+            http.clone(),
+        )),
+        Box::new(
+            HmsDispatcher::new("hms-app", token.clone(), http.clone())
+                .with_base_url("https://hms.test"),
+        ),
+        Box::new(WnsDispatcher::new(token, http.clone())),
+    ];
+    let overrides = parity_overrides();
+
+    for (dispatcher, provider) in dispatchers.into_iter().zip([
+        PushProviderKind::Fcm,
+        PushProviderKind::Apns,
+        PushProviderKind::WebPush,
+        PushProviderKind::Hms,
+        PushProviderKind::Wns,
+    ]) {
+        let preview = render_provider_payload(provider, &parity_payload(), &overrides).unwrap();
+        let mut batch = batch(provider);
+        batch.jobs[0].rendered_payload = Some(Arc::new(preview));
+        let results = dispatcher.dispatch(batch).await;
+        assert_eq!(
+            results[0].outcome,
+            DeliveryOutcome::Accepted,
+            "{provider:?}"
+        );
+    }
+
+    let requests = http.requests().await;
+    assert_eq!(requests.len(), 5);
+    let fcm: Value = sonic_rs::from_slice(&requests[0].body).unwrap();
+    assert_eq!(fcm["message"]["data"]["marker"], "fcm-preview");
+    assert_eq!(fcm["message"]["android"]["priority"], "HIGH");
+    assert!(fcm["message"]["token"].is_str());
+
+    let apns: Value = sonic_rs::from_slice(&requests[1].body).unwrap();
+    assert_eq!(requests[1].headers["apns-priority"], "5");
+    assert_eq!(requests[1].headers["apns-collapse-id"], "apns-collapse");
+    assert_eq!(apns["aps"]["alert"], "apns-preview");
+    assert_eq!(apns["data"]["marker"], "apns-preview");
+
+    let web: Value = sonic_rs::from_slice(&requests[2].body).unwrap();
+    assert_eq!(requests[2].headers["ttl"], "30");
+    assert_eq!(requests[2].headers["urgency"], "high");
+    assert_eq!(requests[2].headers["topic"], "web-topic");
+    assert_eq!(web["notification"]["title"], "web-preview");
+    assert_eq!(web["data"]["marker"], "web-preview");
+
+    let hms: Value = sonic_rs::from_slice(&requests[3].body).unwrap();
+    assert_eq!(hms["message"]["data"]["marker"], "hms-preview");
+    assert!(hms["message"]["token"].is_array());
+
+    let wns: Value = sonic_rs::from_slice(&requests[4].body).unwrap();
+    assert_eq!(requests[4].headers["x-wns-type"], "wns/toast");
+    assert_eq!(wns["toast"]["visual"]["binding"]["text"][0], "wns-preview");
+    assert_eq!(wns["data"]["marker"], "wns-preview");
 }
 
 #[tokio::test]
@@ -531,12 +613,84 @@ fn batch(provider: PushProviderKind) -> DeliveryBatch {
                 sound: None,
                 collapse_key: Some("collapse".to_owned()),
             }),
+            rendered_payload: None,
             attempt: 1,
             first_attempt_at_ms: None,
             not_before_ms: None,
             expires_at_ms: None,
         }],
     }
+}
+
+fn parity_payload() -> PushPayload {
+    PushPayload {
+        template_id: None,
+        template_data: json!({"marker": "generic"}),
+        title: Some("Generic".to_owned()),
+        body: Some("Body".to_owned()),
+        icon: None,
+        sound: None,
+        collapse_key: Some("generic-collapse".to_owned()),
+    }
+}
+
+fn parity_overrides() -> Vec<ProviderOverridePayload> {
+    vec![
+        ProviderOverridePayload {
+            provider: PushProviderKind::Fcm,
+            payload: json!({
+                "message": {
+                    "notification": {"title": "fcm-preview", "body": "body"},
+                    "data": {"marker": "fcm-preview"},
+                    "android": {"priority": "HIGH"}
+                }
+            }),
+        },
+        ProviderOverridePayload {
+            provider: PushProviderKind::Apns,
+            payload: json!({
+                "headers": {
+                    "apns-push-type": "alert",
+                    "apns-priority": "5",
+                    "apns-collapse-id": "apns-collapse"
+                },
+                "aps": {"alert": "apns-preview"},
+                "data": {"marker": "apns-preview"}
+            }),
+        },
+        ProviderOverridePayload {
+            provider: PushProviderKind::WebPush,
+            payload: json!({
+                "headers": {"ttl": 30, "urgency": "high", "topic": "web-topic"},
+                "notification": {"title": "web-preview", "body": "body"},
+                "data": {"marker": "web-preview"}
+            }),
+        },
+        ProviderOverridePayload {
+            provider: PushProviderKind::Hms,
+            payload: json!({
+                "message": {
+                    "notification": {"title": "hms-preview", "body": "body"},
+                    "data": {"marker": "hms-preview"}
+                }
+            }),
+        },
+        ProviderOverridePayload {
+            provider: PushProviderKind::Wns,
+            payload: json!({
+                "type": "toast",
+                "toast": {
+                    "visual": {
+                        "binding": {
+                            "template": "ToastGeneric",
+                            "text": ["wns-preview", "body"]
+                        }
+                    }
+                },
+                "data": {"marker": "wns-preview"}
+            }),
+        },
+    ]
 }
 
 fn recipient(provider: PushProviderKind) -> PushRecipient {
