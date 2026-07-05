@@ -653,7 +653,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(queue.state.lock().await.started.get(&stage).is_none());
+        assert!(!queue.state.lock().await.started.contains(&stage));
     }
 
     #[tokio::test]
