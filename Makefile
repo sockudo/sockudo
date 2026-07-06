@@ -214,6 +214,25 @@ simulator-disaster: ## Run disaster-heavy deterministic simulator profile with J
 		--json \
 		$(SIM_ARGS)
 
+.PHONY: simulator-swarm
+simulator-swarm: ## Run deterministic swarm profile derived from SIM_SEED
+	@echo "$(BLUE)Running Sockudo simulator swarm seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
+	@cargo run -p sockudo-simulator --bin sockudo-sim -- \
+		--seed $(SIM_SEED) \
+		--ticks $(SIM_TICKS) \
+		--swarm \
+		$(SIM_ARGS)
+
+.PHONY: simulator-liveness
+simulator-liveness: ## Run simulator liveness mode with deterministic swarm faults
+	@echo "$(BLUE)Running Sockudo simulator liveness seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
+	@cargo run -p sockudo-simulator --bin sockudo-sim -- \
+		--seed $(SIM_SEED) \
+		--ticks $(SIM_TICKS) \
+		--mode liveness \
+		--swarm \
+		$(SIM_ARGS)
+
 .PHONY: sentinel-tls-up
 sentinel-tls-up: ## Start the opt-in Redis Sentinel + TLS test fixture
 	@echo "$(BLUE)Generating Sentinel TLS test certificates...$(RESET)"

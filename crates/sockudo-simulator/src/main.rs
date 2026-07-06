@@ -1,9 +1,24 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use sockudo_simulator::{
     ActionWeights, DeterministicSimulator, FaultConfig, PushLabConfig, SimulationReport,
-    SimulatorConfig, WorkloadConfig,
+    SimulatorConfig, SimulatorMode, WorkloadConfig,
 };
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliMode {
+    Safety,
+    Liveness,
+}
+
+impl From<CliMode> for SimulatorMode {
+    fn from(value: CliMode) -> Self {
+        match value {
+            CliMode::Safety => Self::Safety,
+            CliMode::Liveness => Self::Liveness,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -16,6 +31,24 @@ struct Cli {
     seed: Option<u64>,
     #[arg(long, default_value_t = 5_000)]
     ticks: u64,
+    /// Safety checks invariants; liveness also asserts bounded convergence after faults stop.
+    #[arg(long, value_enum, default_value_t = CliMode::Safety)]
+    mode: CliMode,
+    /// Randomize topology, workload, and fault distributions deterministically from the seed.
+    #[arg(long)]
+    swarm: bool,
+    /// Binary-search the smallest tick count that still reproduces a failing seed/config.
+    #[arg(long)]
+    shrink_failure: bool,
+    /// Lower bound for shrink search.
+    #[arg(long, default_value_t = 1)]
+    shrink_min_ticks: u64,
+    /// Write a deterministic JSON failure capsule when a run fails.
+    #[arg(long)]
+    failure_artifact: Option<PathBuf>,
+    /// Maximum allowed post-workload drain time in liveness mode.
+    #[arg(long, default_value_t = 10_000)]
+    liveness_max_quiesce_ticks: u64,
     #[arg(long, default_value_t = 5)]
     nodes: usize,
     #[arg(long, default_value_t = 8)]
@@ -123,12 +156,17 @@ struct Cli {
 }
 
 impl Cli {
-    fn into_config(self) -> (SimulatorConfig, bool, Option<PathBuf>) {
+    fn into_run(self) -> SimulatorRun {
         let seed = self.seed.unwrap_or_else(rand::random);
         let corpus_file = self.corpus_file.clone();
-        let config = SimulatorConfig {
+        let mut config = SimulatorConfig {
             seed,
             ticks: self.ticks,
+            mode: self.mode.into(),
+            liveness: sockudo_simulator::LivenessConfig {
+                max_quiesce_ticks: self.liveness_max_quiesce_ticks,
+                ..Default::default()
+            },
             nodes: self.nodes,
             clients: self.clients,
             channels: self.channels,
@@ -194,15 +232,46 @@ impl Cli {
                 provider_duplicate_result_probability: self.duplicate_prob,
             },
         };
-        (config, self.json, corpus_file)
+        if self.swarm {
+            config.apply_swarm_profile();
+        }
+        SimulatorRun {
+            config,
+            json: self.json,
+            corpus_file,
+            swarm: self.swarm,
+            shrink_failure: self.shrink_failure,
+            shrink_min_ticks: self.shrink_min_ticks,
+            failure_artifact: self.failure_artifact,
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let (config, json, corpus_file) = Cli::parse().into_config();
-    if let Some(path) = corpus_file {
-        match run_corpus(config, path, json).await {
+    let run = Cli::parse().into_run();
+    if run.shrink_failure {
+        match shrink_failure(run.config, run.shrink_min_ticks).await {
+            Ok(Some(result)) => {
+                println!(
+                    "sockudo-sim: shrink reproduced failure seed={} minimal_ticks={} original_ticks={}",
+                    result.seed, result.minimal_failing_ticks, result.original_ticks
+                );
+                println!("failure: {}", result.error);
+                return;
+            }
+            Ok(None) => {
+                println!("sockudo-sim: shrink found no failure for the provided seed/config");
+                return;
+            }
+            Err(error) => {
+                eprintln!("sockudo-sim: shrink failed\n{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(path) = run.corpus_file {
+        match run_corpus(run.config, path, run.json, run.swarm).await {
             Ok(()) => return,
             Err(error) => {
                 eprintln!("sockudo-sim: corpus failed\n{error}");
@@ -210,17 +279,17 @@ async fn main() {
             }
         }
     }
-    run_one(config, json).await;
+    run_one(run.config, run.json, run.failure_artifact).await;
 }
 
-async fn run_one(config: SimulatorConfig, json: bool) {
+async fn run_one(config: SimulatorConfig, json: bool, failure_artifact: Option<PathBuf>) {
     println!(
-        "sockudo-sim: seed={} ticks={} nodes={} clients={} channels={}",
-        config.seed, config.ticks, config.nodes, config.clients, config.channels
+        "sockudo-sim: seed={} ticks={} mode={:?} nodes={} clients={} channels={}",
+        config.seed, config.ticks, config.mode, config.nodes, config.clients, config.channels
     );
 
     let seed = config.seed;
-    let mut simulator = match DeterministicSimulator::new(config) {
+    let mut simulator = match DeterministicSimulator::new(config.clone()) {
         Ok(simulator) => simulator,
         Err(error) => {
             eprintln!("sockudo-sim: invalid configuration: {error}");
@@ -240,9 +309,11 @@ async fn run_one(config: SimulatorConfig, json: bool) {
                 }
             } else {
                 println!(
-                    "sockudo-sim: OK seed={} ticks={} operations={} oracles={} history_commits={} version_commits={} presence_events={} push_publishes={} push_results={} push_repairs={} recovered={} dropped={} duplicated={} resets={}",
+                    "sockudo-sim: OK seed={} ticks={} mode={:?} quiesce_ticks={} operations={} oracles={} history_commits={} version_commits={} presence_events={} push_publishes={} push_results={} push_repairs={} recovered={} dropped={} duplicated={} resets={}",
                     report.seed,
                     report.ticks,
+                    report.mode,
+                    report.quiesce_ticks,
                     report.operations,
                     report.oracle_checks,
                     report.history_commits,
@@ -259,6 +330,11 @@ async fn run_one(config: SimulatorConfig, json: bool) {
             }
         }
         Err(error) => {
+            if let Some(path) = failure_artifact
+                && let Err(write_error) = write_failure_artifact(&path, &config, &error.to_string())
+            {
+                eprintln!("sockudo-sim: failed to write failure artifact: {write_error}");
+            }
             eprintln!("sockudo-sim: FAILED - reproduce with --seed {seed}\n{error}");
             std::process::exit(1);
         }
@@ -269,6 +345,7 @@ async fn run_corpus(
     base: SimulatorConfig,
     path: PathBuf,
     json: bool,
+    swarm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let contents = std::fs::read_to_string(&path)?;
     let configs = match serde_json::from_str::<CorpusSpec>(&contents)? {
@@ -277,6 +354,9 @@ async fn run_corpus(
             .map(|seed| {
                 let mut config = base.clone();
                 config.seed = seed;
+                if swarm {
+                    config.apply_swarm_profile();
+                }
                 config
             })
             .collect::<Vec<_>>(),
@@ -301,6 +381,76 @@ async fn run_corpus(
     Ok(())
 }
 
+async fn shrink_failure(
+    mut config: SimulatorConfig,
+    min_ticks: u64,
+) -> Result<Option<ShrinkResult>, Box<dyn std::error::Error>> {
+    let original_ticks = config.ticks;
+    let original_error = match run_config_once(config.clone()).await {
+        Ok(()) => return Ok(None),
+        Err(error) => error,
+    };
+
+    let mut low = min_ticks.max(1);
+    let mut high = original_ticks;
+    let mut best_error = original_error.clone();
+    while low < high {
+        let mid = low.saturating_add(high.saturating_sub(low) / 2);
+        config.ticks = mid;
+        match run_config_once(config.clone()).await {
+            Ok(()) => {
+                low = mid.saturating_add(1);
+            }
+            Err(error) => {
+                best_error = error;
+                high = mid;
+            }
+        }
+    }
+
+    Ok(Some(ShrinkResult {
+        seed: config.seed,
+        original_ticks,
+        minimal_failing_ticks: high,
+        error: best_error,
+    }))
+}
+
+async fn run_config_once(config: SimulatorConfig) -> Result<(), String> {
+    let mut simulator = DeterministicSimulator::new(config).map_err(|error| error.to_string())?;
+    simulator
+        .run()
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn write_failure_artifact(
+    path: &PathBuf,
+    config: &SimulatorConfig,
+    error: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let artifact = FailureArtifact {
+        config,
+        error,
+        replay_command: format!(
+            "cargo run -p sockudo-simulator --bin sockudo-sim -- --seed {} --ticks {} --mode {}",
+            config.seed,
+            config.ticks,
+            mode_arg(config.mode)
+        ),
+    };
+    std::fs::write(path, serde_json::to_string_pretty(&artifact)?)?;
+    Ok(())
+}
+
+fn mode_arg(mode: SimulatorMode) -> &'static str {
+    match mode {
+        SimulatorMode::Safety => "safety",
+        SimulatorMode::Liveness => "liveness",
+    }
+}
+
 fn print_corpus_summary(reports: &[SimulationReport]) {
     println!("sockudo-sim: corpus OK entries={}", reports.len());
     for report in reports {
@@ -321,4 +471,31 @@ fn print_corpus_summary(reports: &[SimulationReport]) {
 enum CorpusSpec {
     Seeds(Vec<u64>),
     Configs(Vec<SimulatorConfig>),
+}
+
+#[derive(Debug)]
+struct SimulatorRun {
+    config: SimulatorConfig,
+    json: bool,
+    corpus_file: Option<PathBuf>,
+    swarm: bool,
+    shrink_failure: bool,
+    shrink_min_ticks: u64,
+    failure_artifact: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ShrinkResult {
+    seed: u64,
+    original_ticks: u64,
+    minimal_failing_ticks: u64,
+    error: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailureArtifact<'a> {
+    config: &'a SimulatorConfig,
+    error: &'a str,
+    replay_command: String,
 }

@@ -1,6 +1,7 @@
 {
   "seed": 12648430,
   "ticks": 50016,
+  "mode": "safety",
   "operations": 50000,
   "rejected_operations": 2104,
   "oracle_checks": 2335,
@@ -23,6 +24,8 @@
   "node_stale_marks": 94,
   "stream_resets": 33,
   "purges": 629,
+  "quiesce_ticks": 16,
+  "liveness_max_quiesce_ticks": 10000,
   "live_nodes": 9,
   "paused_nodes": 0,
   "partitioned_nodes": 0,
