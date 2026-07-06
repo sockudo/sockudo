@@ -8,6 +8,7 @@ on:
       - ".github/workflows/sdk-ci.yml"
       - ".github/workflows/sdk-release.yml"
       - ".github/workflows/mirror-php-sdk.yml"
+      - ".github/workflows/mirror-swift-sdks.yml"
       - "client-sdks/**"
       - "server-sdks/**"
   push:
@@ -16,6 +17,7 @@ on:
       - ".github/workflows/sdk-ci.yml"
       - ".github/workflows/sdk-release.yml"
       - ".github/workflows/mirror-php-sdk.yml"
+      - ".github/workflows/mirror-swift-sdks.yml"
       - "client-sdks/**"
       - "server-sdks/**"
 
@@ -61,6 +63,7 @@ jobs:
           .github/workflows/sdk-ci.yml
           .github/workflows/sdk-release.yml
           .github/workflows/mirror-php-sdk.yml
+          .github/workflows/mirror-swift-sdks.yml
 
   dependency-review:
     name: Dependency Review

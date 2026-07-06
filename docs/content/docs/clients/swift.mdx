@@ -8,18 +8,18 @@ icon: Smartphone
 
 ## Install
 
-Install through Swift Package Manager from the Sockudo monorepo package. SwiftPM resolves this from
-the `v2.1.0` Git tag and the root `Package.swift` manifest:
+Install through Swift Package Manager from the SockudoSwift mirror. SwiftPM resolves this from
+the `v2.1.0` Git tag and the mirror repository's root `Package.swift` manifest:
 
 ```swift
-.package(url: "https://github.com/sockudo/sockudo", from: "2.1.0")
+.package(url: "https://github.com/sockudo/sockudo-swift", from: "2.1.0")
 ```
 
 ```swift
 .target(
     name: "YourApp",
     dependencies: [
-        .product(name: "SockudoSwift", package: "sockudo"),
+        .product(name: "SockudoSwift", package: "sockudo-swift"),
     ]
 )
 ```

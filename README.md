@@ -153,13 +153,13 @@ Realtime clients live under [client-sdks/](client-sdks/).
 SDK CI and publishing are managed from root workflows. See the
 [2026 SDK publishing runbook](docs/sdk-publishing-2026.md) before releasing packages or changing
 registry setup. Registry-native packages publish through protected workflows where supported.
-SwiftPM packages are published from this monorepo through the root `Package.swift`.
+SwiftPM packages are mirrored to standalone package repositories.
 
 | Runtime | Package |
 | --- | --- |
 | JavaScript / TypeScript | `@sockudo/client` |
 | AI Transport TypeScript | `@sockudo/ai-transport` |
-| Swift / Apple platforms | `SockudoSwift` via SwiftPM (`https://github.com/sockudo/sockudo`) |
+| Swift / Apple platforms | `SockudoSwift` via SwiftPM (`https://github.com/sockudo/sockudo-swift`) |
 | Kotlin / JVM / Android | `io.sockudo:sockudo-kotlin` |
 | Flutter / Dart | `sockudo_flutter` |
 | .NET | `Sockudo.Client` |
@@ -217,7 +217,7 @@ PHP SDK is mirrored to `sockudo/sockudo-http-php` for Packagist.
 | Rust | `sockudo-http` |
 | Java | `io.sockudo:sockudo-http-java` |
 | .NET | `SockudoServer` |
-| Swift | `Sockudo` via SwiftPM (`https://github.com/sockudo/sockudo`) |
+| Swift | `Sockudo` via SwiftPM (`https://github.com/sockudo/sockudo-http-swift`) |
 
 Node.js example:
 

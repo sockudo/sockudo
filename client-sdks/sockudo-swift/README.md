@@ -27,14 +27,14 @@ Official Swift client for Sockudo.
 - Protocol V2 presence updates and append rollup window selection
 - Proxy-backed mutable message create/update/append/delete helpers
 - Live integration tests against Sockudo on `127.0.0.1:6001`
-- Swift Package Manager distribution with root GitHub Actions CI
+- Swift Package Manager distribution through the `sockudo/sockudo-swift` mirror
 
 ## Installation
 
-Use Swift Package Manager with the monorepo package URL:
+Use Swift Package Manager with the SockudoSwift mirror URL:
 
 ```swift
-.package(url: "https://github.com/sockudo/sockudo", from: "2.1.0")
+.package(url: "https://github.com/sockudo/sockudo-swift", from: "2.1.0")
 ```
 
 Then depend on the `SockudoSwift` product:
@@ -43,7 +43,7 @@ Then depend on the `SockudoSwift` product:
 .target(
     name: "YourApp",
     dependencies: [
-        .product(name: "SockudoSwift", package: "sockudo"),
+        .product(name: "SockudoSwift", package: "sockudo-swift"),
     ]
 )
 ```
@@ -51,7 +51,7 @@ Then depend on the `SockudoSwift` product:
 For local development:
 
 ```swift
-.package(path: "../sockudo")
+.package(path: "../sockudo/client-sdks/sockudo-swift")
 ```
 
 ## Quick Start
@@ -492,8 +492,8 @@ race. Wrap the `@MainActor` work in `Task { @MainActor in }` inside the callback
 Swift packages are distributed by git tag rather than a central package registry by default.
 
 - CI: root workflow `.github/workflows/sdk-ci.yml`
-- Release gate: root workflow `.github/workflows/sdk-release.yml` with root tag `vX.Y.Z`
-- Distribution: SwiftPM package in the root `Package.swift`
+- Release gate: root workflow `.github/workflows/sdk-release.yml` with tag `client-swift-vX.Y.Z`
+- Distribution: SwiftPM package mirrored to `https://github.com/sockudo/sockudo-swift`
 
 ## Status
 

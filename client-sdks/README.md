@@ -7,8 +7,9 @@ and issue references recognizable.
 SDK CI and package publishing are managed from the monorepo root through
 `.github/workflows/sdk-ci.yml` and `.github/workflows/sdk-release.yml`. See the
 [2026 SDK publishing runbook](../docs/sdk-publishing-2026.md) before publishing
-or changing registry setup. SwiftPM distribution uses the root `Package.swift`
-in this monorepo.
+or changing registry setup. SwiftPM distribution uses the
+`sockudo/sockudo-swift` mirror because SwiftPM packages need `Package.swift` at
+the repository root.
 
 ## Packages
 
@@ -20,4 +21,4 @@ in this monorepo.
 | `@sockudo/client` | `client-sdks/sockudo-js` |
 | `io.sockudo:sockudo-kotlin` | `client-sdks/sockudo-kotlin` |
 | `sockudo-python` | `client-sdks/sockudo-python` |
-| `SockudoSwift` via SwiftPM | `client-sdks/sockudo-swift` |
+| `SockudoSwift` via SwiftPM (`sockudo/sockudo-swift`) | `client-sdks/sockudo-swift` |

@@ -20,7 +20,7 @@ A Swift server SDK for interacting with the [Sockudo](https://github.com/sockudo
 
 ## Installation
 
-Use Swift Package Manager with the monorepo package URL:
+Use Swift Package Manager with the Sockudo HTTP Swift mirror URL:
 
 ```swift
 // swift-tools-version:5.9
@@ -34,13 +34,13 @@ let package = Package(
             targets: ["YourPackage"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/sockudo/sockudo", from: "2.1.0"),
+        .package(url: "https://github.com/sockudo/sockudo-http-swift", from: "2.1.0"),
     ],
     targets: [
         .target(
             name: "YourPackage",
             dependencies: [
-                .product(name: "Sockudo", package: "sockudo")
+                .product(name: "Sockudo", package: "sockudo-http-swift")
             ]),
     ]
 )
@@ -53,7 +53,7 @@ This package exports both products:
 - `Sockudo`: native Sockudo module and recommended default for new integrations
 - `Pusher`: compatibility module for existing Pusher-shaped integrations
 
-Examples in this README use the native `Sockudo` module. If you are migrating an existing Pusher integration, you can depend on `.product(name: "Pusher", package: "sockudo")` and keep `import Pusher`.
+Examples in this README use the native `Sockudo` module. If you are migrating an existing Pusher integration, you can depend on `.product(name: "Pusher", package: "sockudo-http-swift")` and keep `import Pusher`.
 
 ## Usage
 
