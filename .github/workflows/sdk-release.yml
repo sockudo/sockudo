@@ -43,7 +43,6 @@ on:
       - "server-node-v*"
       - "server-python-v*"
       - "server-php-v*"
-      - "v*"
       - "server-ruby-v*"
       - "server-sdks/sockudo-http-go/v*"
       - "server-rust-v*"
@@ -730,8 +729,7 @@ jobs:
     if: >-
       ${{
         (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-swift')) ||
-        startsWith(github.ref_name, 'client-swift-v') ||
-        startsWith(github.ref_name, 'v')
+        startsWith(github.ref_name, 'client-swift-v')
       }}
     defaults:
       run:
@@ -755,7 +753,7 @@ jobs:
       - name: Swift package publish notice
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         run: |
-          echo "SwiftPM packages publish from root SemVer Git tags like v1.0.0 through https://github.com/sockudo/sockudo."
+          echo "SwiftPM publishes from the SockudoSwift mirror. Ensure SwiftPM users reference https://github.com/sockudo/sockudo-swift."
 
   server-swift:
     name: Gate Sockudo HTTP Swift
@@ -763,8 +761,7 @@ jobs:
     if: >-
       ${{
         (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-swift')) ||
-        startsWith(github.ref_name, 'server-swift-v') ||
-        startsWith(github.ref_name, 'v')
+        startsWith(github.ref_name, 'server-swift-v')
       }}
     defaults:
       run:
@@ -788,4 +785,4 @@ jobs:
       - name: Swift package publish notice
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         run: |
-          echo "SwiftPM packages publish from root SemVer Git tags like v1.0.0 through https://github.com/sockudo/sockudo."
+          echo "SwiftPM publishes from the Sockudo HTTP Swift mirror. Ensure SwiftPM users reference https://github.com/sockudo/sockudo-http-swift."

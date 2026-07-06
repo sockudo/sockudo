@@ -42,6 +42,7 @@ or signing credentials:
 | `MAVEN_GPG_PASSPHRASE` | Maven Central | signing key passphrase |
 | `CRATES_IO_TOKEN` | crates.io | fallback token used only when trusted publishing is not configured |
 | `PHP_SDK_MIRROR_TOKEN` | Packagist/PHP mirror | fine-grained PAT or GitHub App token with contents write access to `sockudo/sockudo-http-php` |
+| `SWIFT_SDK_MIRROR_TOKEN` | SwiftPM mirrors | fine-grained PAT or GitHub App token with contents and workflows write access to `sockudo/sockudo-swift` and `sockudo/sockudo-http-swift` |
 
 ## Browser Setup Checklist
 
@@ -184,15 +185,20 @@ git push origin server-sdks/sockudo-http-go/v2.0.0
 
 Packages: `SockudoSwift`, `Sockudo`
 
-SwiftPM packages publish from Git tags on repositories whose root contains `Package.swift`. The root
-`Package.swift` exposes `SockudoSwift`, `Sockudo`, and the compatibility `Pusher` product from this
-monorepo package URL:
+SwiftPM packages publish from Git tags on repositories whose root contains `Package.swift`. The
+monorepo is the source of truth, and `.github/workflows/mirror-swift-sdks.yml` mirrors the package
+directories into standalone SwiftPM repositories:
 
-```text
-https://github.com/sockudo/sockudo
-```
+| Package | Source directory | SwiftPM repository |
+| --- | --- | --- |
+| `SockudoSwift` | `client-sdks/sockudo-swift` | `https://github.com/sockudo/sockudo-swift` |
+| `Sockudo` and `Pusher` | `server-sdks/sockudo-http-swift` | `https://github.com/sockudo/sockudo-http-swift` |
 
-SwiftPM consumers only see root SemVer tags, so Swift releases use root tags such as `v1.0.0`.
+Create Swift release tags in this monorepo as `client-swift-vX.Y.Z` or `server-swift-vX.Y.Z`; the
+mirror workflow publishes matching `vX.Y.Z` tags to the relevant mirror repository.
+
+The mirror workflow requires `SWIFT_SDK_MIRROR_TOKEN`. Configure the mirror repositories as
+read-only and direct issues and pull requests back to this monorepo.
 
 ## Package Commands
 
@@ -204,7 +210,7 @@ SwiftPM consumers only see root SemVer tags, so Swift releases use root tags suc
 | `sockudo_flutter` | `dart format`, analyze, test, publish dry-run | `client-flutter-vX.Y.Z` |
 | `io.sockudo:sockudo-kotlin` | Gradle check and `publishToMavenLocal` | `client-kotlin-vX.Y.Z` |
 | `sockudo-python` | Ruff format/check, pytest, build, twine check | `client-python-vX.Y.Z` |
-| `SockudoSwift` | Swift build/test and SwiftLint | `vX.Y.Z` |
+| `SockudoSwift` | Swift build/test and SwiftLint | `client-swift-vX.Y.Z` |
 | `sockudo` Node server SDK | npm lint/typecheck/local-test and `npm pack --dry-run` | `server-node-vX.Y.Z` |
 | `sockudo-http-python` | Ruff format/check, pytest, build, twine check | `server-python-vX.Y.Z` |
 | `sockudo/sockudo-php-server` | Composer validate, PHP-CS-Fixer, PHPLint, PHPUnit | `server-php-vX.Y.Z` |
@@ -213,7 +219,7 @@ SwiftPM consumers only see root SemVer tags, so Swift releases use root tags suc
 | `sockudo-http` | cargo fmt, clippy, test, package | `server-rust-vX.Y.Z` |
 | `io.sockudo:sockudo-http-java` | Gradle check and `publishToMavenLocal` | `server-java-vX.Y.Z` |
 | `SockudoServer`, `PusherServer` | `dotnet format`, build, test, pack | `server-dotnet-vX.Y.Z` |
-| `Sockudo` Swift server SDK | Swift build/test and SwiftLint | `vX.Y.Z` |
+| `Sockudo` Swift server SDK | Swift build/test and SwiftLint | `server-swift-vX.Y.Z` |
 
 ## Release Procedure
 

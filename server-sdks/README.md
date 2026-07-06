@@ -9,7 +9,9 @@ SDK CI and package publishing are managed from the monorepo root through
 [2026 SDK publishing runbook](../docs/sdk-publishing-2026.md) before publishing
 or changing registry setup. Most registry-native packages publish from this
 monorepo directly; the PHP SDK is mirrored to `sockudo/sockudo-http-php`
-because public Packagist expects `composer.json` at the repository root.
+because public Packagist expects `composer.json` at the repository root, and the
+Swift server SDK is mirrored to `sockudo/sockudo-http-swift` because SwiftPM
+expects `Package.swift` at the repository root.
 
 ## Packages
 
@@ -23,4 +25,4 @@ because public Packagist expects `composer.json` at the repository root.
 | `sockudo-http-python` | `server-sdks/sockudo-http-python` |
 | `sockudo` | `server-sdks/sockudo-http-ruby` |
 | `sockudo-http` | `server-sdks/sockudo-http-rust` |
-| `Sockudo` via SwiftPM | `server-sdks/sockudo-http-swift` |
+| `Sockudo` via SwiftPM (`sockudo/sockudo-http-swift`) | `server-sdks/sockudo-http-swift` |

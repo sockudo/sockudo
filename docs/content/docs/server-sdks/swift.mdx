@@ -6,15 +6,15 @@ icon: FileCode
 
 ## Install
 
-Install through Swift Package Manager from the Sockudo monorepo package. SwiftPM resolves this from
-the `v2.1.0` Git tag and the root `Package.swift` manifest:
+Install through Swift Package Manager from the Sockudo HTTP Swift mirror. SwiftPM resolves this from
+the `v2.1.0` Git tag and the mirror repository's root `Package.swift` manifest:
 
 ```swift
-.package(url: "https://github.com/sockudo/sockudo", from: "2.1.0")
+.package(url: "https://github.com/sockudo/sockudo-http-swift", from: "2.1.0")
 ```
 
 ```swift
-.product(name: "Sockudo", package: "sockudo")
+.product(name: "Sockudo", package: "sockudo-http-swift")
 ```
 
 ## Configure

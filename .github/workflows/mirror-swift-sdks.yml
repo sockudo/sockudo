@@ -1,0 +1,164 @@
+name: Mirror Swift SDKs
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Swift package to mirror"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - client-swift
+          - server-swift
+      source_ref:
+        description: "Git ref, tag, or SHA to mirror"
+        required: false
+        default: master
+      mirror_tag:
+        description: "Optional mirror tag to publish, for example v2.1.0"
+        required: false
+        default: ""
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/mirror-swift-sdks.yml"
+      - "client-sdks/sockudo-swift/**"
+      - "server-sdks/sockudo-http-swift/**"
+    tags:
+      - "client-swift-v*"
+      - "server-swift-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swift-sdk-mirror-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror ${{ matrix.package }}
+    runs-on: ubuntu-24.04
+    if: github.repository == 'sockudo/sockudo'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: client-swift
+            source_path: client-sdks/sockudo-swift
+            mirror_repository: sockudo/sockudo-swift
+            mirror_branch: main
+            tag_prefix: client-swift-
+          - package: server-swift
+            source_path: server-sdks/sockudo-http-swift
+            mirror_repository: sockudo/sockudo-http-swift
+            mirror_branch: main
+            tag_prefix: server-swift-
+    steps:
+      - name: Select package
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PACKAGE: ${{ inputs.package || 'all' }}
+          MATRIX_PACKAGE: ${{ matrix.package }}
+          TAG_PREFIX: ${{ matrix.tag_prefix }}
+        run: |
+          set -euo pipefail
+
+          selected=false
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${INPUT_PACKAGE}" = "all" ] || [ "${INPUT_PACKAGE}" = "${MATRIX_PACKAGE}" ]; then
+              selected=true
+            fi
+          elif [ "${REF_TYPE}" = "tag" ]; then
+            if [[ "${REF_NAME}" == "${TAG_PREFIX}"* ]]; then
+              selected=true
+            fi
+          else
+            selected=true
+          fi
+
+          echo "selected=${selected}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source
+        if: steps.select.outputs.selected == 'true'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+          ref: ${{ inputs.source_ref || github.ref }}
+
+      - name: Install git-filter-repo
+        if: steps.select.outputs.selected == 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/git-filter-repo"
+          "$RUNNER_TEMP/git-filter-repo/bin/pip" install git-filter-repo==2.47.0
+          echo "$RUNNER_TEMP/git-filter-repo/bin" >> "$GITHUB_PATH"
+
+      - name: Mirror Swift SDK
+        if: steps.select.outputs.selected == 'true'
+        env:
+          MIRROR_TOKEN: ${{ secrets.SWIFT_SDK_MIRROR_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          MANUAL_MIRROR_TAG: ${{ inputs.mirror_tag || '' }}
+          SOURCE_PATH: ${{ matrix.source_path }}
+          MIRROR_REPOSITORY: ${{ matrix.mirror_repository }}
+          MIRROR_BRANCH: ${{ matrix.mirror_branch }}
+          TAG_PREFIX: ${{ matrix.tag_prefix }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MIRROR_TOKEN}" ]; then
+            echo "SWIFT_SDK_MIRROR_TOKEN is required to push to ${MIRROR_REPOSITORY}." >&2
+            exit 1
+          fi
+
+          split_repo="$(mktemp -d)"
+          trap 'rm -rf "${split_repo}"' EXIT
+
+          git clone --no-local --no-hardlinks . "${split_repo}"
+          cd "${split_repo}"
+
+          git filter-repo \
+            --path "${SOURCE_PATH}/" \
+            --path-rename "${SOURCE_PATH}/:" \
+            --force
+
+          git remote add mirror "https://github.com/${MIRROR_REPOSITORY}.git"
+          git fetch --no-tags mirror \
+            "${MIRROR_BRANCH}:refs/remotes/mirror/${MIRROR_BRANCH}" || true
+          git remote set-url mirror \
+            "https://x-access-token:${MIRROR_TOKEN}@github.com/${MIRROR_REPOSITORY}.git"
+
+          mirror_tag="${MANUAL_MIRROR_TAG}"
+          if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
+            mirror_tag="${REF_NAME#${TAG_PREFIX}}"
+          fi
+
+          if [ -n "${mirror_tag}" ]; then
+            if [[ ! "${mirror_tag}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+ ]]; then
+              echo "Mirror tag must look like v2.1.0; got ${mirror_tag}." >&2
+              exit 1
+            fi
+
+            git tag --force --annotate "${mirror_tag}" \
+              --message "Mirror ${REF_NAME} from sockudo/sockudo@${GITHUB_SHA}"
+            git push --force mirror "refs/tags/${mirror_tag}"
+            exit 0
+          fi
+
+          if git rev-parse --verify "refs/remotes/mirror/${MIRROR_BRANCH}" >/dev/null 2>&1; then
+            lease="$(git rev-parse "refs/remotes/mirror/${MIRROR_BRANCH}")"
+            git push mirror "HEAD:refs/heads/${MIRROR_BRANCH}" \
+              --force-with-lease="refs/heads/${MIRROR_BRANCH}:${lease}"
+          else
+            git push --force mirror "HEAD:refs/heads/${MIRROR_BRANCH}"
+          fi
