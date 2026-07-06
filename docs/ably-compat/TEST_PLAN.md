@@ -18,6 +18,7 @@ channel prefix `private-ai-`.
 
 ```bash
 make ably-compat-test
+make ably-protocol-discovery
 make ably-ai-transport-test
 make ably-ai-demo
 ```
@@ -25,12 +26,15 @@ make ably-ai-demo
 The `make` targets use `tests/ably-compat`, stock `ably@2.23.0`, and
 `@ably/ai-transport@0.4.0`. The Ably facade is expected at the Sockudo root WebSocket/REST endpoint;
 existing Sockudo/Pusher clients continue to use `/app/{appKey}` and `/apps/{appId}`.
+`make ably-protocol-discovery` also installs Playwright Chromium and runs one stock browser bundle
+Pub/Sub/history lane from an allowed localhost origin.
 
 ## Required Test Cases
 
 | Case | Command |
 | --- | --- |
 | Ably Realtime connect, attach, publish, receive, history, detach | `make ably-compat-test` |
+| Broader stock `ably` SDK discovery across JSON, REST publish/history, presence, token, token capability enforcement, MsgPack, and browser lanes | `make ably-protocol-discovery` |
 | Ably mutable message create/append/update/delete/version reads | `make ably-compat-test` |
 | Ably recovery/history replay during streamed output | `make ably-compat-test` |
 | Stock `@ably/ai-transport` chat smoke | `make ably-ai-transport-test` |

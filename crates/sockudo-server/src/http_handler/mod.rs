@@ -17,8 +17,9 @@ pub(crate) mod test_support;
 
 #[cfg(feature = "ably-compat")]
 pub use ably_compat::{
-    ably_channel_history, ably_channel_message, ably_channel_message_versions, ably_channel_status,
-    ably_request_token, ably_time, global_ably_hub, handle_ably_realtime_upgrade,
+    ably_channel_history, ably_channel_message, ably_channel_message_versions,
+    ably_channel_publish, ably_channel_status, ably_request_token, ably_time, global_ably_hub,
+    handle_ably_realtime_upgrade,
 };
 pub use annotations::{channel_message_annotations, delete_annotation, publish_annotation};
 pub use channels::{

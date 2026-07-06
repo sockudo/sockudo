@@ -22,8 +22,8 @@ against Sockudo and the scorecard records that evidence.
 
 | Surface | Status | Scope |
 | --- | --- | --- |
-| Ably Realtime WebSocket JSON protocol | Supported for AI Transport only | Root WebSocket endpoint accepts Ably JSON `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows needed by the smoke harness. |
-| Ably REST time/token/history/message reads | Supported for AI Transport only | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. |
+| Ably Realtime WebSocket JSON/MsgPack protocol | Supported for tested Pub/Sub subset | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows covered by stock `ably@2.23.0` discovery lanes in JSON and MsgPack modes. Full Ably Realtime parity is not claimed. |
+| Ably REST time/token/history/message reads and publish | Supported for tested Pub/Sub subset | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. REST publish/history and token capability enforcement are covered in discovery lanes. Full Ably REST API parity is not claimed. |
 | Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
 | Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
 | Mutable output streaming | Supported for AI Transport only | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
@@ -32,7 +32,7 @@ against Sockudo and the scorecard records that evidence.
 | Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes, but Ably mode capability enforcement is not complete. Sockudo app auth remains authoritative. |
 | LiveObjects/object modes | Intentionally out of scope | The current compatibility target does not implement Ably LiveObjects. |
 | Ably Push | Intentionally out of scope | Sockudo has native push APIs, but Ably Push compatibility is not part of this target. |
-| Binary MsgPack Ably protocol | Not yet implemented | The documented harness sets `useBinaryProtocol: false`. |
+| Binary MsgPack Ably protocol | Supported for tested Pub/Sub subset | Realtime Pub/Sub and REST publish/history/time pass the stock `ably@2.23.0` discovery lanes with `useBinaryProtocol: true`. Full Ably platform MsgPack parity is not claimed. |
 | Full Ably platform API parity | Intentionally out of scope | This surface is for AI Transport compatibility, not a replacement for all Ably services. |
 
 ## Test Commands
@@ -50,9 +50,14 @@ Then run the compatibility lanes:
 
 ```bash
 make ably-compat-test
+make ably-protocol-discovery
 make ably-ai-transport-test
 make ably-ai-demo
 ```
+
+`make ably-protocol-discovery` installs Playwright Chromium and includes a real
+stock Ably browser bundle lane for JSON Pub/Sub/history. The other stable targets
+remain headless Node.js checks.
 
 The targets read these environment variables:
 
@@ -66,6 +71,7 @@ The targets read these environment variables:
 | `ABLY_AGENT_CLIENT_ID` | `sockudo-ably-ait-agent` |
 | `ABLY_CHANNEL` | generated per run |
 | `ABLY_DEMO_PROMPT` | `Say hello from Sockudo AI Transport.` |
+| `ABLY_BROWSER_ORIGIN_PORTS` | `4173,3001,5174` |
 
 ## Demos
 
@@ -78,7 +84,8 @@ The targets read these environment variables:
    additional fragments while offline, reconnects with an Ably recovery key, and
    verifies that only missed fragments replay and the final aggregate is intact.
 
-These are deliberately Node-based so CI can run them without a browser.
+These AI Transport demos are deliberately Node-based so CI can run them without
+a browser.
 
 ## Evidence Files
 

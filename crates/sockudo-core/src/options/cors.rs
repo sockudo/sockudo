@@ -43,6 +43,14 @@ impl Default for CorsConfig {
                 "Content-Type".to_string(),
                 "X-Requested-With".to_string(),
                 "Accept".to_string(),
+                "X-Ably-ClientId".to_string(),
+                "X-Ably-Version".to_string(),
+                "X-Ably-Lib".to_string(),
+                "X-Ably-DeviceToken".to_string(),
+                "Ably-Agent".to_string(),
+                "Ably-Version".to_string(),
+                "Ably-ClientId".to_string(),
+                "X-Idempotency-Key".to_string(),
             ],
         }
     }
@@ -90,5 +98,25 @@ mod cors_config_tests {
     #[test]
     fn test_deserialize_rejects_mixed_valid_and_invalid() {
         assert!(cors_from_json(r#"{"origin": ["https://good.com", "*.*bad"]}"#).is_err());
+    }
+
+    #[test]
+    fn default_allows_ably_browser_headers() {
+        let config = CorsConfig::default();
+        for header in [
+            "X-Ably-ClientId",
+            "X-Ably-Version",
+            "X-Ably-Lib",
+            "X-Ably-DeviceToken",
+            "Ably-Agent",
+            "Ably-Version",
+            "Ably-ClientId",
+            "X-Idempotency-Key",
+        ] {
+            assert!(
+                config.allowed_headers.iter().any(|value| value == header),
+                "missing default CORS header {header}"
+            );
+        }
     }
 }
