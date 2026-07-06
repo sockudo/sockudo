@@ -1,0 +1,113 @@
+name: Mirror PHP SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git ref, tag, or SHA to mirror"
+        required: false
+        default: master
+      mirror_tag:
+        description: "Optional mirror tag to publish, for example v2.1.0"
+        required: false
+        default: ""
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/mirror-php-sdk.yml"
+      - "server-sdks/sockudo-http-php/**"
+    tags:
+      - "server-php-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: php-sdk-mirror-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PHP_SDK_PATH: server-sdks/sockudo-http-php
+  MIRROR_REPOSITORY: sockudo/sockudo-http-php
+  MIRROR_BRANCH: main
+
+jobs:
+  mirror:
+    name: Mirror subtree
+    runs-on: ubuntu-24.04
+    if: github.repository == 'sockudo/sockudo'
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+          ref: ${{ inputs.source_ref || github.ref }}
+
+      - name: Install git-filter-repo
+        run: |
+          python3 -m venv "$RUNNER_TEMP/git-filter-repo"
+          "$RUNNER_TEMP/git-filter-repo/bin/pip" install git-filter-repo==2.47.0
+          echo "$RUNNER_TEMP/git-filter-repo/bin" >> "$GITHUB_PATH"
+
+      - name: Mirror PHP SDK
+        env:
+          MIRROR_TOKEN: ${{ secrets.PHP_SDK_MIRROR_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          MANUAL_MIRROR_TAG: ${{ inputs.mirror_tag || '' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MIRROR_TOKEN}" ]; then
+            echo "PHP_SDK_MIRROR_TOKEN is required to push to ${MIRROR_REPOSITORY}." >&2
+            exit 1
+          fi
+
+          split_repo="$(mktemp -d)"
+          trap 'rm -rf "${split_repo}"' EXIT
+
+          git clone --no-local --no-hardlinks . "${split_repo}"
+          cd "${split_repo}"
+
+          git filter-repo \
+            --path "${PHP_SDK_PATH}/" \
+            --path-rename "${PHP_SDK_PATH}/:" \
+            --force
+
+          git remote add mirror "https://github.com/${MIRROR_REPOSITORY}.git"
+          git fetch --no-tags mirror \
+            "${MIRROR_BRANCH}:refs/remotes/mirror/${MIRROR_BRANCH}" || true
+
+          mirror_tag="${MANUAL_MIRROR_TAG}"
+          if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
+            mirror_tag="${REF_NAME#server-php-}"
+          fi
+
+          auth_header="AUTHORIZATION: bearer ${MIRROR_TOKEN}"
+
+          if [ -n "${mirror_tag}" ]; then
+            if [[ ! "${mirror_tag}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+ ]]; then
+              echo "Mirror tag must look like v2.1.0; got ${mirror_tag}." >&2
+              exit 1
+            fi
+
+            git tag --force --annotate "${mirror_tag}" \
+              --message "Mirror ${REF_NAME} from sockudo/sockudo@${GITHUB_SHA}"
+            git -c http.https://github.com/.extraheader="${auth_header}" \
+              push --force mirror "refs/tags/${mirror_tag}"
+            exit 0
+          fi
+
+          if git rev-parse --verify "refs/remotes/mirror/${MIRROR_BRANCH}" >/dev/null 2>&1; then
+            lease="$(git rev-parse "refs/remotes/mirror/${MIRROR_BRANCH}")"
+            git -c http.https://github.com/.extraheader="${auth_header}" \
+              push mirror "HEAD:refs/heads/${MIRROR_BRANCH}" \
+              --force-with-lease="refs/heads/${MIRROR_BRANCH}:${lease}"
+          else
+            git -c http.https://github.com/.extraheader="${auth_header}" \
+              push --force mirror "HEAD:refs/heads/${MIRROR_BRANCH}"
+          fi

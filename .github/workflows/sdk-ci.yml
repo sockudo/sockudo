@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/sdk-ci.yml"
       - ".github/workflows/sdk-release.yml"
+      - ".github/workflows/mirror-php-sdk.yml"
       - "client-sdks/**"
       - "server-sdks/**"
   push:
@@ -14,6 +15,7 @@ on:
     paths:
       - ".github/workflows/sdk-ci.yml"
       - ".github/workflows/sdk-release.yml"
+      - ".github/workflows/mirror-php-sdk.yml"
       - "client-sdks/**"
       - "server-sdks/**"
 
@@ -58,6 +60,7 @@ jobs:
           -d "{extends: default, rules: {line-length: disable, truthy: disable}}"
           .github/workflows/sdk-ci.yml
           .github/workflows/sdk-release.yml
+          .github/workflows/mirror-php-sdk.yml
 
   dependency-review:
     name: Dependency Review
@@ -388,7 +391,6 @@ jobs:
 
       - name: Verify PHP package
         run: |
-          composer validate --strict "$GITHUB_WORKSPACE/composer.json"
           composer validate --strict
           composer install --no-interaction --prefer-dist
           vendor/bin/php-cs-fixer fix --dry-run --diff --using-cache=no

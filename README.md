@@ -204,7 +204,8 @@ where implemented.
 SDK CI and publishing are managed from root workflows. See the
 [2026 SDK publishing runbook](docs/sdk-publishing-2026.md) before releasing packages or changing
 registry setup. Registry-native packages publish through protected workflows where supported. Go
-modules and SwiftPM publish from this monorepo with package-manager-native tags and manifests.
+modules and SwiftPM publish from this monorepo with package-manager-native tags and manifests. The
+PHP SDK is mirrored to `sockudo/sockudo-http-php` for Packagist.
 
 | Language | Package |
 | --- | --- |

@@ -7,8 +7,9 @@ scripts, and issue references recognizable.
 SDK CI and package publishing are managed from the monorepo root through
 `.github/workflows/sdk-ci.yml` and `.github/workflows/sdk-release.yml`. See the
 [2026 SDK publishing runbook](../docs/sdk-publishing-2026.md) before publishing
-or changing registry setup. Go modules, SwiftPM, and Packagist now publish from
-this monorepo using their package-manager-native release rules.
+or changing registry setup. Most registry-native packages publish from this
+monorepo directly; the PHP SDK is mirrored to `sockudo/sockudo-http-php`
+because public Packagist expects `composer.json` at the repository root.
 
 ## Packages
 

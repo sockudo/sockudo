@@ -659,8 +659,7 @@ jobs:
     if: >-
       ${{
         (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-php')) ||
-        startsWith(github.ref_name, 'server-php-v') ||
-        startsWith(github.ref_name, 'v')
+        startsWith(github.ref_name, 'server-php-v')
       }}
     defaults:
       run:
@@ -680,7 +679,6 @@ jobs:
 
       - name: Verify package
         run: |
-          composer validate --strict "$GITHUB_WORKSPACE/composer.json"
           composer validate --strict
           composer install --no-interaction --prefer-dist
           vendor/bin/php-cs-fixer fix --dry-run --diff --using-cache=no
@@ -690,7 +688,7 @@ jobs:
       - name: Packagist publish notice
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
         run: |
-          echo "Packagist publishes from root VCS tags. Ensure Packagist is hooked to https://github.com/sockudo/sockudo."
+          echo "Packagist publishes from the PHP mirror. Ensure Packagist is hooked to https://github.com/sockudo/sockudo-http-php."
 
   server-go:
     name: Gate sockudo-http-go
