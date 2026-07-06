@@ -27,10 +27,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::config::SimulatorConfig;
 use crate::error::{SimulatorError, SimulatorResult};
+use crate::push_lab::{PushLab, PushSimulationReport};
 use crate::workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadGenerator};
 
 const APP_ID: &str = "sim-app";
 const BASE_TIME_MS: i64 = 1_893_456_000_000;
+const MAX_TRACE_EVENTS: usize = 96;
 
 /// Summary emitted by a successful simulator run.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -51,13 +53,22 @@ pub struct SimulationReport {
     pub stale_deliveries: u64,
     pub node_crashes: u64,
     pub node_restarts: u64,
+    pub node_pauses: u64,
+    pub node_resumes: u64,
     pub node_partitions: u64,
     pub node_heals: u64,
+    pub node_slowdowns: u64,
+    pub node_stale_marks: u64,
     pub stream_resets: u64,
     pub purges: u64,
     pub live_nodes: usize,
+    pub paused_nodes: usize,
     pub partitioned_nodes: usize,
+    pub slow_nodes: usize,
+    pub stale_nodes: usize,
     pub queued_fanout: usize,
+    pub push: PushSimulationReport,
+    pub recent_trace: Vec<String>,
     pub workload_weights: ActionWeights,
     pub workload_actions: WorkloadActionCounts,
 }
@@ -74,9 +85,11 @@ pub struct DeterministicSimulator {
     clients: Vec<ClientState>,
     channels: Vec<String>,
     network: Vec<NetworkEvent>,
+    push: PushLab,
     shadow: Shadow,
     workload: WorkloadGenerator,
     stats: Stats,
+    trace: VecDeque<String>,
     next_message_serial: u64,
     next_version_serial: u64,
 }
@@ -92,6 +105,7 @@ impl DeterministicSimulator {
             .map(|idx| ClientState::new(idx, &channels))
             .collect();
         let nodes = (0..config.nodes).map(NodeState::new).collect();
+        let push = PushLab::new(&channels, config.clients, config.push.clone())?;
         let history_store = MemoryHistoryStore::new(MemoryHistoryStoreConfig {
             retention_window: config.retention_window(),
             max_messages_per_channel: config.history_retention_messages,
@@ -120,8 +134,10 @@ impl DeterministicSimulator {
             clients,
             channels,
             network: Vec::new(),
+            push,
             stats: Stats::default(),
             workload,
+            trace: VecDeque::new(),
             next_message_serial: 1,
             next_version_serial: 1,
         })
@@ -131,6 +147,7 @@ impl DeterministicSimulator {
         for tick in 0..self.config.ticks {
             self.tick = tick;
             self.deliver_due_fanout();
+            self.push.on_tick(self.tick, &mut self.rng);
             self.inject_faults().await?;
             self.drive_workload().await?;
             if self.config.oracle_every > 0 && tick % self.config.oracle_every == 0 {
@@ -141,6 +158,9 @@ impl DeterministicSimulator {
         self.quiesce().await?;
         self.recover_all_clients().await?;
         self.check_oracles().await?;
+        self.push
+            .check_oracles(true)
+            .map_err(|message| self.fail(message))?;
         Ok(self.report())
     }
 
@@ -162,13 +182,30 @@ impl DeterministicSimulator {
             stale_deliveries: self.stats.stale_deliveries,
             node_crashes: self.stats.node_crashes,
             node_restarts: self.stats.node_restarts,
+            node_pauses: self.stats.node_pauses,
+            node_resumes: self.stats.node_resumes,
             node_partitions: self.stats.node_partitions,
             node_heals: self.stats.node_heals,
+            node_slowdowns: self.stats.node_slowdowns,
+            node_stale_marks: self.stats.node_stale_marks,
             stream_resets: self.stats.stream_resets,
             purges: self.stats.purges,
             live_nodes: self.nodes.iter().filter(|node| node.alive).count(),
+            paused_nodes: self.nodes.iter().filter(|node| node.paused).count(),
             partitioned_nodes: self.nodes.iter().filter(|node| node.partitioned).count(),
+            slow_nodes: self
+                .nodes
+                .iter()
+                .filter(|node| node.is_slow(self.tick))
+                .count(),
+            stale_nodes: self
+                .nodes
+                .iter()
+                .filter(|node| node.is_stale(self.tick))
+                .count(),
             queued_fanout: self.network.len(),
+            push: self.push.report(),
+            recent_trace: self.trace.iter().cloned().collect(),
             workload_weights: self.workload.weights(),
             workload_actions: self.workload.selected().clone(),
         }
@@ -189,16 +226,60 @@ impl DeterministicSimulator {
             WorkloadAction::PresenceTransition => self.record_presence_transition().await,
             WorkloadAction::RecoveryProbe => self.recovery_probe().await,
             WorkloadAction::PurgeHistory => self.purge_history_prefix().await,
+            WorkloadAction::PushRegisterDevice => {
+                self.push
+                    .register_or_update_device(self.tick, &mut self.rng);
+                Ok(())
+            }
+            WorkloadAction::PushDeleteDevice => {
+                self.push.delete_device(self.tick, &mut self.rng);
+                Ok(())
+            }
+            WorkloadAction::PushSubscribe => {
+                self.push.subscribe_device(self.tick, &mut self.rng);
+                Ok(())
+            }
+            WorkloadAction::PushUnsubscribe => {
+                self.push.unsubscribe_device(self.tick, &mut self.rng);
+                Ok(())
+            }
+            WorkloadAction::PushPublish => {
+                self.push.publish_now(self.tick, &mut self.rng);
+                Ok(())
+            }
+            WorkloadAction::PushScheduledPublish => {
+                self.push.schedule_publish(self.tick, &mut self.rng);
+                Ok(())
+            }
+            WorkloadAction::PushProviderFeedback => {
+                self.push
+                    .duplicate_provider_feedback(self.tick, &mut self.rng);
+                Ok(())
+            }
+            WorkloadAction::PushRepair => {
+                self.push.repair_now(self.tick, &mut self.rng);
+                Ok(())
+            }
             WorkloadAction::OracleCheck => self.check_oracles().await,
         }
     }
 
     fn route_rejects(&mut self) -> bool {
-        if !self.nodes.iter().any(NodeState::can_accept_traffic) {
+        if !self
+            .nodes
+            .iter()
+            .any(|node| node.can_accept_traffic(self.tick))
+        {
             return true;
         }
         let node_idx = self.rng.random_range(0..self.nodes.len());
-        !self.nodes[node_idx].can_accept_traffic()
+        if !self.nodes[node_idx].can_accept_traffic(self.tick) {
+            return true;
+        }
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            node.accepted_operations = node.accepted_operations.saturating_add(1);
+        }
+        false
     }
 
     async fn inject_faults(&mut self) -> SimulatorResult<()> {
@@ -208,11 +289,23 @@ impl DeterministicSimulator {
         if self.roll(self.config.fault.node_restart_probability) {
             self.restart_random_node();
         }
+        if self.roll(self.config.fault.node_pause_probability) {
+            self.pause_random_node();
+        }
+        if self.roll(self.config.fault.node_resume_probability) {
+            self.resume_random_node();
+        }
         if self.roll(self.config.fault.node_partition_probability) {
             self.partition_random_node();
         }
         if self.roll(self.config.fault.node_heal_probability) {
             self.heal_random_node();
+        }
+        if self.roll(self.config.fault.node_slow_probability) {
+            self.slow_random_node();
+        }
+        if self.roll(self.config.fault.node_stale_probability) {
+            self.stale_random_node();
         }
         if self.roll(self.config.fault.stream_reset_probability) {
             self.reset_random_stream().await?;
@@ -235,6 +328,7 @@ impl DeterministicSimulator {
             node.alive = false;
             node.partitioned = false;
             self.stats.node_crashes = self.stats.node_crashes.saturating_add(1);
+            self.trace(format!("node {victim} crashed"));
         }
     }
 
@@ -251,7 +345,45 @@ impl DeterministicSimulator {
         let node_idx = down[self.rng.random_range(0..down.len())];
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.alive = true;
+            node.paused = false;
             self.stats.node_restarts = self.stats.node_restarts.saturating_add(1);
+            self.trace(format!("node {node_idx} restarted"));
+        }
+    }
+
+    fn pause_random_node(&mut self) {
+        let eligible = self
+            .nodes
+            .iter()
+            .filter(|node| node.alive && !node.paused)
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        if eligible.len() <= 1 {
+            return;
+        }
+        let node_idx = eligible[self.rng.random_range(0..eligible.len())];
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            node.paused = true;
+            self.stats.node_pauses = self.stats.node_pauses.saturating_add(1);
+            self.trace(format!("node {node_idx} paused"));
+        }
+    }
+
+    fn resume_random_node(&mut self) {
+        let paused = self
+            .nodes
+            .iter()
+            .filter(|node| node.paused)
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        if paused.is_empty() {
+            return;
+        }
+        let node_idx = paused[self.rng.random_range(0..paused.len())];
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            node.paused = false;
+            self.stats.node_resumes = self.stats.node_resumes.saturating_add(1);
+            self.trace(format!("node {node_idx} resumed"));
         }
     }
 
@@ -269,6 +401,7 @@ impl DeterministicSimulator {
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.partitioned = true;
             self.stats.node_partitions = self.stats.node_partitions.saturating_add(1);
+            self.trace(format!("node {node_idx} partitioned"));
         }
     }
 
@@ -286,6 +419,45 @@ impl DeterministicSimulator {
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.partitioned = false;
             self.stats.node_heals = self.stats.node_heals.saturating_add(1);
+            self.trace(format!("node {node_idx} healed"));
+        }
+    }
+
+    fn slow_random_node(&mut self) {
+        let eligible = self
+            .nodes
+            .iter()
+            .filter(|node| node.alive)
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        if eligible.is_empty() {
+            return;
+        }
+        let node_idx = eligible[self.rng.random_range(0..eligible.len())];
+        let slow_until = self.tick.saturating_add(self.random_delay().max(3));
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            node.slow_until = slow_until;
+            self.stats.node_slowdowns = self.stats.node_slowdowns.saturating_add(1);
+            self.trace(format!("node {node_idx} slow until {slow_until}"));
+        }
+    }
+
+    fn stale_random_node(&mut self) {
+        let eligible = self
+            .nodes
+            .iter()
+            .filter(|node| node.alive)
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        if eligible.is_empty() {
+            return;
+        }
+        let node_idx = eligible[self.rng.random_range(0..eligible.len())];
+        let stale_until = self.tick.saturating_add(self.random_delay().max(2));
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            node.stale_until = stale_until;
+            self.stats.node_stale_marks = self.stats.node_stale_marks.saturating_add(1);
+            self.trace(format!("node {node_idx} stale until {stale_until}"));
         }
     }
 
@@ -322,6 +494,7 @@ impl DeterministicSimulator {
         }
         self.network.retain(|event| event.channel != channel);
         self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
+        self.trace(format!("stream reset on {channel}"));
         Ok(())
     }
 
@@ -335,6 +508,10 @@ impl DeterministicSimulator {
             .append_history(&channel, "client-event", "publish", payload)
             .await?;
         self.schedule_fanout(&channel, &message);
+        self.trace(format!(
+            "history publish {channel} serial={}",
+            message.serial
+        ));
         Ok(())
     }
 
@@ -380,6 +557,10 @@ impl DeterministicSimulator {
         self.shadow.channel_mut(&channel).append_version(record);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
+        self.trace(format!(
+            "versioned create {channel} history_serial={}",
+            history.serial
+        ));
         Ok(())
     }
 
@@ -461,6 +642,10 @@ impl DeterministicSimulator {
         self.shadow.channel_mut(&channel).append_version(record);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
+        self.trace(format!(
+            "versioned mutation {channel} history_serial={}",
+            history.serial
+        ));
         Ok(())
     }
 
@@ -509,6 +694,10 @@ impl DeterministicSimulator {
                 .channel_mut(&channel)
                 .append_presence(item.clone());
             self.stats.presence_events = self.stats.presence_events.saturating_add(1);
+            self.trace(format!(
+                "presence {:?} {channel}/{user_id} serial={}",
+                event, item.serial
+            ));
         }
         Ok(())
     }
@@ -541,6 +730,9 @@ impl DeterministicSimulator {
             client.rewind_below(&channel, before_serial.saturating_sub(1));
         }
         self.stats.purges = self.stats.purges.saturating_add(1);
+        self.trace(format!(
+            "history purge {channel} before_serial={before_serial}"
+        ));
         Ok(())
     }
 
@@ -590,12 +782,26 @@ impl DeterministicSimulator {
                 self.stats.dropped_fanout = self.stats.dropped_fanout.saturating_add(1);
                 continue;
             }
+            let source_node = self.rng.random_range(0..self.nodes.len());
+            if !self.nodes[source_node].can_fanout(self.tick) {
+                self.stats.dropped_fanout = self.stats.dropped_fanout.saturating_add(1);
+                continue;
+            }
+            let slow_delay = if self.nodes[source_node].is_slow(self.tick) {
+                self.random_delay()
+            } else {
+                0
+            };
             let event = NetworkEvent {
-                deliver_at: self.tick.saturating_add(self.random_delay()),
+                deliver_at: self
+                    .tick
+                    .saturating_add(self.random_delay())
+                    .saturating_add(slow_delay),
                 client_idx,
                 channel: channel.to_string(),
                 stream_id: message.stream_id.clone(),
                 serial: message.serial,
+                source_node,
             };
             self.network.push(event.clone());
             if self.roll(self.config.fault.fanout_duplicate_probability) {
@@ -615,6 +821,9 @@ impl DeterministicSimulator {
                 let accepted = self.clients[event.client_idx].deliver(&event);
                 if accepted {
                     self.stats.delivered_messages = self.stats.delivered_messages.saturating_add(1);
+                    if let Some(node) = self.nodes.get_mut(event.source_node) {
+                        node.fanout_deliveries = node.fanout_deliveries.saturating_add(1);
+                    }
                 } else {
                     self.stats.stale_deliveries = self.stats.stale_deliveries.saturating_add(1);
                 }
@@ -630,6 +839,7 @@ impl DeterministicSimulator {
         for _ in 0..max_steps {
             let Some(next_delivery_tick) = self.network.iter().map(|event| event.deliver_at).min()
             else {
+                self.tick = self.push.quiesce(self.tick, &mut self.rng);
                 return Ok(());
             };
             self.tick = self.tick.saturating_add(1).max(next_delivery_tick);
@@ -641,6 +851,7 @@ impl DeterministicSimulator {
                 self.network.len()
             )));
         }
+        self.tick = self.push.quiesce(self.tick, &mut self.rng);
         Ok(())
     }
 
@@ -707,6 +918,7 @@ impl DeterministicSimulator {
                 channel: channel.to_string(),
                 stream_id: item.stream_id,
                 serial: item.serial,
+                source_node: 0,
             };
             if self.clients[client_idx].deliver(&event) {
                 self.stats.recovered_messages = self.stats.recovered_messages.saturating_add(1);
@@ -724,6 +936,9 @@ impl DeterministicSimulator {
             self.check_presence_oracle(channel).await?;
             self.check_client_recovery_oracle(channel)?;
         }
+        self.push
+            .check_oracles(false)
+            .map_err(|message| self.fail(message))?;
         Ok(())
     }
 
@@ -1354,11 +1569,33 @@ impl DeterministicSimulator {
     }
 
     fn fail(&self, message: String) -> SimulatorError {
+        let mut message = message;
+        let push_trace = self.push.recent_trace();
+        let trace = self
+            .trace
+            .iter()
+            .cloned()
+            .chain(push_trace)
+            .collect::<Vec<_>>();
+        if !trace.is_empty() {
+            message.push_str("\nrecent trace:");
+            for event in trace.iter().rev().take(30).rev() {
+                message.push_str("\n  ");
+                message.push_str(event);
+            }
+        }
         SimulatorError::Invariant {
             seed: self.config.seed,
             tick: self.tick,
             message,
         }
+    }
+
+    fn trace(&mut self, event: String) {
+        if self.trace.len() == MAX_TRACE_EVENTS {
+            self.trace.pop_front();
+        }
+        self.trace.push_back(format!("tick={} {event}", self.tick));
     }
 }
 
@@ -1366,7 +1603,12 @@ impl DeterministicSimulator {
 struct NodeState {
     id: usize,
     alive: bool,
+    paused: bool,
     partitioned: bool,
+    slow_until: u64,
+    stale_until: u64,
+    accepted_operations: u64,
+    fanout_deliveries: u64,
 }
 
 impl NodeState {
@@ -1374,12 +1616,29 @@ impl NodeState {
         Self {
             id,
             alive: true,
+            paused: false,
             partitioned: false,
+            slow_until: 0,
+            stale_until: 0,
+            accepted_operations: 0,
+            fanout_deliveries: 0,
         }
     }
 
-    fn can_accept_traffic(&self) -> bool {
-        self.alive && !self.partitioned
+    fn can_accept_traffic(&self, tick: u64) -> bool {
+        self.alive && !self.paused && !self.partitioned && !self.is_stale(tick)
+    }
+
+    fn can_fanout(&self, tick: u64) -> bool {
+        self.alive && !self.paused && !self.partitioned && !self.is_stale(tick)
+    }
+
+    fn is_slow(&self, tick: u64) -> bool {
+        self.slow_until > tick
+    }
+
+    fn is_stale(&self, tick: u64) -> bool {
+        self.stale_until > tick
     }
 }
 
@@ -1390,6 +1649,7 @@ struct NetworkEvent {
     channel: String,
     stream_id: String,
     serial: u64,
+    source_node: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1688,8 +1948,12 @@ struct Stats {
     stale_deliveries: u64,
     node_crashes: u64,
     node_restarts: u64,
+    node_pauses: u64,
+    node_resumes: u64,
     node_partitions: u64,
     node_heals: u64,
+    node_slowdowns: u64,
+    node_stale_marks: u64,
     stream_resets: u64,
     purges: u64,
 }
@@ -1717,10 +1981,15 @@ mod tests {
                 max_fanout_delay_ticks: 6,
                 node_crash_probability: 0.01,
                 node_restart_probability: 0.05,
+                node_pause_probability: 0.01,
+                node_resume_probability: 0.05,
                 node_partition_probability: 0.01,
                 node_heal_probability: 0.05,
+                node_slow_probability: 0.01,
+                node_stale_probability: 0.01,
                 stream_reset_probability: 0.001,
             },
+            push: crate::PushLabConfig::default(),
         }
     }
 
@@ -1755,5 +2024,66 @@ mod tests {
         );
         assert!(report.history_commits > 0);
         assert!(report.oracle_checks > 0);
+    }
+
+    #[tokio::test]
+    async fn seed_corpus_small_medium_and_disaster_heavy_passes() {
+        let corpus = [
+            (12648430, 120, 0.05, 0.01),
+            (3735928559, 240, 0.10, 0.03),
+            (16045690984503098046, 360, 0.18, 0.06),
+        ];
+
+        for (seed, ticks, drop_probability, queue_loss) in corpus {
+            let mut config = test_config(seed);
+            config.ticks = ticks;
+            config.fault.fanout_drop_probability = drop_probability;
+            config.push.queue_produce_lost_probability = queue_loss;
+            config.push.queue_ack_lost_probability = queue_loss / 2.0;
+            config.push.provider_retryable_probability = 0.16;
+            config.push.provider_lost_response_probability = 0.04;
+
+            let report = DeterministicSimulator::new(config)
+                .unwrap()
+                .run()
+                .await
+                .unwrap();
+
+            assert_eq!(report.queued_fanout, 0);
+            assert_eq!(report.push.queued_items, 0);
+            assert_eq!(report.push.pending_schedules, 0);
+            assert_eq!(report.push.outstanding_deliveries, 0);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "nightly disaster burn-in profile"]
+    async fn nightly_disaster_burn_in_seed_passes() {
+        let mut config = test_config(0x05ee_dd15_a57e_57ab);
+        config.ticks = 50_000;
+        config.nodes = 9;
+        config.clients = 24;
+        config.channels = 12;
+        config.fault.fanout_drop_probability = 0.14;
+        config.fault.fanout_duplicate_probability = 0.08;
+        config.fault.node_crash_probability = 0.006;
+        config.fault.node_partition_probability = 0.008;
+        config.push.queue_produce_lost_probability = 0.05;
+        config.push.queue_ack_lost_probability = 0.03;
+        config.push.queue_lease_timeout_probability = 0.025;
+        config.push.write_fail_after_commit_probability = 0.015;
+        config.push.provider_retryable_probability = 0.18;
+        config.push.provider_permanent_rejection_probability = 0.07;
+        config.push.provider_invalid_token_probability = 0.05;
+        config.push.provider_lost_response_probability = 0.04;
+
+        let report = DeterministicSimulator::new(config)
+            .unwrap()
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(report.queued_fanout, 0);
+        assert_eq!(report.push.outstanding_deliveries, 0);
     }
 }
