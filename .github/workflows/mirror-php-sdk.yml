@@ -89,6 +89,8 @@ jobs:
 
           git remote set-url mirror \
             "https://x-access-token:${MIRROR_TOKEN}@github.com/${MIRROR_REPOSITORY}.git"
+          git config user.name "sockudo-mirror[bot]"
+          git config user.email "sockudo-mirror[bot]@users.noreply.github.com"
 
           if [ -n "${mirror_tag}" ]; then
             if [[ ! "${mirror_tag}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+ ]]; then

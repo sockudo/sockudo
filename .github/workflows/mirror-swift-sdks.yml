@@ -137,6 +137,8 @@ jobs:
             "${MIRROR_BRANCH}:refs/remotes/mirror/${MIRROR_BRANCH}" || true
           git remote set-url mirror \
             "https://x-access-token:${MIRROR_TOKEN}@github.com/${MIRROR_REPOSITORY}.git"
+          git config user.name "sockudo-mirror[bot]"
+          git config user.email "sockudo-mirror[bot]@users.noreply.github.com"
 
           mirror_tag="${MANUAL_MIRROR_TAG}"
           if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
