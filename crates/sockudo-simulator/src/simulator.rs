@@ -25,7 +25,7 @@ use sockudo_core::versioned_messages::{
 use sockudo_protocol::messages::{MessageData, MessageExtras};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::config::SimulatorConfig;
+use crate::config::{SimulatorConfig, SimulatorMode};
 use crate::error::{SimulatorError, SimulatorResult};
 use crate::push_lab::{PushLab, PushSimulationReport};
 use crate::workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadGenerator};
@@ -39,6 +39,7 @@ const MAX_TRACE_EVENTS: usize = 96;
 pub struct SimulationReport {
     pub seed: u64,
     pub ticks: u64,
+    pub mode: SimulatorMode,
     pub operations: u64,
     pub rejected_operations: u64,
     pub oracle_checks: u64,
@@ -61,6 +62,8 @@ pub struct SimulationReport {
     pub node_stale_marks: u64,
     pub stream_resets: u64,
     pub purges: u64,
+    pub quiesce_ticks: u64,
+    pub liveness_max_quiesce_ticks: u64,
     pub live_nodes: usize,
     pub paused_nodes: usize,
     pub partitioned_nodes: usize,
@@ -92,6 +95,7 @@ pub struct DeterministicSimulator {
     trace: VecDeque<String>,
     next_message_serial: u64,
     next_version_serial: u64,
+    quiesce_started_at: Option<u64>,
 }
 
 impl DeterministicSimulator {
@@ -140,6 +144,7 @@ impl DeterministicSimulator {
             trace: VecDeque::new(),
             next_message_serial: 1,
             next_version_serial: 1,
+            quiesce_started_at: None,
         })
     }
 
@@ -161,6 +166,7 @@ impl DeterministicSimulator {
         self.push
             .check_oracles(true)
             .map_err(|message| self.fail(message))?;
+        self.check_liveness_oracles()?;
         Ok(self.report())
     }
 
@@ -168,6 +174,7 @@ impl DeterministicSimulator {
         SimulationReport {
             seed: self.config.seed,
             ticks: self.tick.saturating_add(1),
+            mode: self.config.mode,
             operations: self.stats.operations,
             rejected_operations: self.stats.rejected_operations,
             oracle_checks: self.stats.oracle_checks,
@@ -190,6 +197,8 @@ impl DeterministicSimulator {
             node_stale_marks: self.stats.node_stale_marks,
             stream_resets: self.stats.stream_resets,
             purges: self.stats.purges,
+            quiesce_ticks: self.quiesce_ticks(),
+            liveness_max_quiesce_ticks: self.config.liveness.max_quiesce_ticks,
             live_nodes: self.nodes.iter().filter(|node| node.alive).count(),
             paused_nodes: self.nodes.iter().filter(|node| node.paused).count(),
             partitioned_nodes: self.nodes.iter().filter(|node| node.partitioned).count(),
@@ -835,6 +844,7 @@ impl DeterministicSimulator {
     }
 
     async fn quiesce(&mut self) -> SimulatorResult<()> {
+        self.quiesce_started_at = Some(self.tick);
         let max_steps = self.network.len();
         for _ in 0..max_steps {
             let Some(next_delivery_tick) = self.network.iter().map(|event| event.deliver_at).min()
@@ -853,6 +863,51 @@ impl DeterministicSimulator {
         }
         self.tick = self.push.quiesce(self.tick, &mut self.rng);
         Ok(())
+    }
+
+    fn check_liveness_oracles(&self) -> SimulatorResult<()> {
+        if self.config.mode != SimulatorMode::Liveness {
+            return Ok(());
+        }
+
+        let quiesce_ticks = self.quiesce_ticks();
+        if quiesce_ticks > self.config.liveness.max_quiesce_ticks {
+            return Err(self.fail(format!(
+                "liveness quiesce budget exceeded: quiesce_ticks={quiesce_ticks} max={}",
+                self.config.liveness.max_quiesce_ticks
+            )));
+        }
+        if self.config.liveness.require_recovery_after_drop
+            && self.stats.dropped_fanout > 0
+            && self.stats.history_commits > 0
+            && self.stats.recovered_messages == 0
+        {
+            return Err(self.fail(
+                "liveness expected durable recovery after dropped live fanout, but no messages recovered"
+                    .to_string(),
+            ));
+        }
+        let push = self.push.report();
+        let queue_loss = push
+            .queue_produce_lost
+            .saturating_add(push.queue_ack_lost)
+            .saturating_add(push.queue_lease_timeouts);
+        if self.config.liveness.require_repair_after_queue_loss
+            && queue_loss > 0
+            && push.accepted_publishes > 0
+            && push.repair_requeued == 0
+        {
+            return Err(self.fail(
+                "liveness expected push repair after queue loss, but repair never requeued work"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn quiesce_ticks(&self) -> u64 {
+        self.quiesce_started_at
+            .map_or(0, |started_at| self.tick.saturating_sub(started_at))
     }
 
     async fn recovery_probe(&mut self) -> SimulatorResult<()> {
@@ -1966,6 +2021,8 @@ mod tests {
         SimulatorConfig {
             seed,
             ticks: 300,
+            mode: crate::SimulatorMode::Safety,
+            liveness: crate::LivenessConfig::default(),
             nodes: 4,
             clients: 4,
             channels: 3,
@@ -2054,6 +2111,25 @@ mod tests {
             assert_eq!(report.push.pending_schedules, 0);
             assert_eq!(report.push.outstanding_deliveries, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn liveness_mode_enforces_bounded_quiesce() {
+        let mut config = test_config(0x11fe_11fe);
+        config.mode = crate::SimulatorMode::Liveness;
+        config.liveness.max_quiesce_ticks = 2_000;
+        config.ticks = 250;
+
+        let report = DeterministicSimulator::new(config)
+            .unwrap()
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(report.mode, crate::SimulatorMode::Liveness);
+        assert!(report.quiesce_ticks <= report.liveness_max_quiesce_ticks);
+        assert_eq!(report.queued_fanout, 0);
+        assert_eq!(report.push.outstanding_deliveries, 0);
     }
 
     #[tokio::test]

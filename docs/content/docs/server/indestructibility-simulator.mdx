@@ -34,6 +34,13 @@ For a disaster-heavy JSON profile:
 make simulator-disaster SIM_SEED=12648430 SIM_TICKS=50000
 ```
 
+For VOPR-style randomized distributions and liveness checks:
+
+```bash
+make simulator-swarm SIM_SEED=3735928559 SIM_TICKS=50000
+make simulator-liveness SIM_SEED=3735928559 SIM_TICKS=50000
+```
+
 Every failure prints a replay command with the seed. Keep the seed, tick count, and fault arguments
 unchanged when reducing a failure.
 
@@ -51,6 +58,42 @@ The simulator covers these high-value durability surfaces:
 
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
 deterministic inner loop for the durable primitives those tests rely on.
+
+## VOPR-Style Maturity
+
+The simulator has three layers:
+
+| Layer | Command | Purpose |
+| --- | --- | --- |
+| Fixed safety | `make simulator` | Replays one fixed profile. Use this for direct bug reproduction. |
+| Swarm safety | `make simulator-swarm` | Randomizes topology, workload weights, page sizes, retention, and fault distributions from the seed before checking safety invariants. |
+| Swarm liveness | `make simulator-liveness` | Runs the same deterministic swarm profile, then asserts bounded convergence after workload generation stops. |
+
+Swarm profiles are deterministic: the seed generates both the simulator run and the profile
+distribution. A failing swarm seed can be replayed without recording a separate config.
+
+Safety mode answers: did accepted Sockudo-side work remain correct? Liveness mode adds: after
+faults stop, did durable work become available and drain within a bounded number of ticks?
+
+Use failure capsules when saving CI failures:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 42 \
+  --ticks 50000 \
+  --swarm \
+  --failure-artifact /tmp/sockudo-sim-failure.json
+```
+
+Use shrink mode to binary-search the smallest tick count that still fails for a seed/config:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 42 \
+  --ticks 50000 \
+  --swarm \
+  --shrink-failure
+```
 
 ## Fault Model
 
@@ -74,6 +117,9 @@ runner. Each tick samples one action from these weights:
 | `--weight-push-feedback` | `2` | Replay duplicate provider feedback. |
 | `--weight-push-repair` | `2` | Run durable push queue repair. |
 | `--weight-oracle` | `1` | Force a full oracle sweep outside the periodic cadence. |
+
+`--swarm` replaces these fixed defaults with seed-derived distributions. Use fixed weights when
+reproducing a concrete bug and swarm weights when hunting for new combinations.
 
 Set a weight to `0` to disable that action family. At least one action weight must be non-zero.
 The final JSON report includes the weights and selected action counts so coverage is visible for a
@@ -153,6 +199,25 @@ For nightly burn-in, run multiple fixed seeds and keep any new failing seed as a
 for seed in 1 2 3 4 5 12648430 3735928559; do
   cargo run -p sockudo-simulator --bin sockudo-sim -- --seed "$seed" --ticks 50000
 done
+```
+
+For nightly swarm burn-in:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --corpus-file crates/sockudo-simulator/corpus/swarm-seeds.json \
+  --ticks 50000 \
+  --swarm
+```
+
+For liveness-focused nightly burn-in:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --corpus-file crates/sockudo-simulator/corpus/swarm-seeds.json \
+  --ticks 50000 \
+  --mode liveness \
+  --swarm
 ```
 
 ## Reading Failures
