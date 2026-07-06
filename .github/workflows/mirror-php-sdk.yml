@@ -87,7 +87,8 @@ jobs:
             mirror_tag="${REF_NAME#server-php-}"
           fi
 
-          auth_header="AUTHORIZATION: bearer ${MIRROR_TOKEN}"
+          git remote set-url mirror \
+            "https://x-access-token:${MIRROR_TOKEN}@github.com/${MIRROR_REPOSITORY}.git"
 
           if [ -n "${mirror_tag}" ]; then
             if [[ ! "${mirror_tag}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+ ]]; then
@@ -97,17 +98,14 @@ jobs:
 
             git tag --force --annotate "${mirror_tag}" \
               --message "Mirror ${REF_NAME} from sockudo/sockudo@${GITHUB_SHA}"
-            git -c http.https://github.com/.extraheader="${auth_header}" \
-              push --force mirror "refs/tags/${mirror_tag}"
+            git push --force mirror "refs/tags/${mirror_tag}"
             exit 0
           fi
 
           if git rev-parse --verify "refs/remotes/mirror/${MIRROR_BRANCH}" >/dev/null 2>&1; then
             lease="$(git rev-parse "refs/remotes/mirror/${MIRROR_BRANCH}")"
-            git -c http.https://github.com/.extraheader="${auth_header}" \
-              push mirror "HEAD:refs/heads/${MIRROR_BRANCH}" \
+            git push mirror "HEAD:refs/heads/${MIRROR_BRANCH}" \
               --force-with-lease="refs/heads/${MIRROR_BRANCH}:${lease}"
           else
-            git -c http.https://github.com/.extraheader="${auth_header}" \
-              push --force mirror "HEAD:refs/heads/${MIRROR_BRANCH}"
+            git push --force mirror "HEAD:refs/heads/${MIRROR_BRANCH}"
           fi
