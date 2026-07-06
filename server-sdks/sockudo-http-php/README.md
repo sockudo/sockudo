@@ -14,6 +14,10 @@ Official PHP server SDK for [Sockudo](https://github.com/sockudo/sockudo) — a 
 composer require sockudo/sockudo-php-server:^2.0
 ```
 
+Packagist reads this package from the read-only
+[`sockudo/sockudo-http-php`](https://github.com/sockudo/sockudo-http-php) mirror.
+Development happens in the Sockudo monorepo under `server-sdks/sockudo-http-php`.
+
 For local monorepo development, add a path repository to `composer.json`:
 
 ```json

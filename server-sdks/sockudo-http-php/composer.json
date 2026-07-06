@@ -3,6 +3,10 @@
     "description" : "Library for interacting with the Sockudo REST API",
     "keywords": ["php-sockudo-server", "sockudo", "rest", "realtime", "real-time", "real time", "messaging", "push", "trigger", "publish", "events"],
     "license": "MIT",
+    "support": {
+        "issues": "https://github.com/sockudo/sockudo/issues",
+        "source": "https://github.com/sockudo/sockudo/tree/master/server-sdks/sockudo-http-php"
+    },
     "require": {
         "php": "^7.3|^8.0",
         "ext-curl": "*",
@@ -29,7 +33,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-master": "2.1-dev"
+            "dev-main": "2.1-dev"
         }
     },
     "minimum-stability": "dev",

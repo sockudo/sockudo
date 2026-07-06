@@ -41,6 +41,7 @@ or signing credentials:
 | `MAVEN_GPG_PRIVATE_KEY` | Maven Central | ASCII-armored private key, escaped-newline string, or base64-encoded ASCII-armored key |
 | `MAVEN_GPG_PASSPHRASE` | Maven Central | signing key passphrase |
 | `CRATES_IO_TOKEN` | crates.io | fallback token used only when trusted publishing is not configured |
+| `PHP_SDK_MIRROR_TOKEN` | Packagist/PHP mirror | fine-grained PAT or GitHub App token with contents write access to `sockudo/sockudo-http-php` |
 
 ## Browser Setup Checklist
 
@@ -144,21 +145,28 @@ configured yet, it falls back to `CRATES_IO_TOKEN`.
 Package: `sockudo/sockudo-php-server`
 
 Packagist publishes from VCS tags and repository hooks, not from an uploaded artifact. Public
-Packagist.org does not publish packages from a subdirectory, so this monorepo has a root
-`composer.json` whose autoload paths point at `server-sdks/sockudo-http-php`.
+Packagist.org does not publish packages from a subdirectory, so the monorepo is the source of truth
+and `.github/workflows/mirror-php-sdk.yml` mirrors `server-sdks/sockudo-http-php` to the root of the
+standalone `sockudo/sockudo-http-php` repository.
 
 Submit this repository URL to Packagist:
 
 ```text
-https://github.com/sockudo/sockudo
+https://github.com/sockudo/sockudo-http-php
 ```
 
-Stable Packagist versions come from Composer-compatible root tags such as `v2.0.0`. Before pushing a
-root PHP release tag, run the PHP release dry run:
+Stable Packagist versions come from Composer-compatible mirror tags such as `v2.1.0`. Create PHP
+release tags in this monorepo as `server-php-vX.Y.Z`; the mirror workflow publishes the matching
+`vX.Y.Z` tag to `sockudo/sockudo-http-php`.
+
+Before pushing a PHP release tag, run the PHP release dry run:
 
 ```bash
 gh workflow run sdk-release.yml -f package=server-php -f dry_run=true
 ```
+
+The mirror workflow requires `PHP_SDK_MIRROR_TOKEN`. Configure the mirror repository description as
+read-only and direct issues and pull requests back to this monorepo.
 
 ### Go Modules
 
@@ -199,7 +207,7 @@ SwiftPM consumers only see root SemVer tags, so Swift releases use root tags suc
 | `SockudoSwift` | Swift build/test and SwiftLint | `vX.Y.Z` |
 | `sockudo` Node server SDK | npm lint/typecheck/local-test and `npm pack --dry-run` | `server-node-vX.Y.Z` |
 | `sockudo-http-python` | Ruff format/check, pytest, build, twine check | `server-python-vX.Y.Z` |
-| `sockudo/sockudo-php-server` | Composer validate, PHP-CS-Fixer, PHPLint, PHPUnit | `vX.Y.Z` |
+| `sockudo/sockudo-php-server` | Composer validate, PHP-CS-Fixer, PHPLint, PHPUnit | `server-php-vX.Y.Z` |
 | `sockudo` Ruby gem | RuboCop, RSpec, gem build | `server-ruby-vX.Y.Z` |
 | `github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2` | gofmt, go vet, go test | `server-sdks/sockudo-http-go/vX.Y.Z` |
 | `sockudo-http` | cargo fmt, clippy, test, package | `server-rust-vX.Y.Z` |
