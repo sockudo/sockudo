@@ -5,18 +5,17 @@ use serde::Serialize;
 use sockudo_core::history::{
     HistoryAppendRecord, HistoryCursor, HistoryDirection, HistoryItem, HistoryPurgeMode,
     HistoryPurgeRequest, HistoryQueryBounds, HistoryReadRequest, HistoryRetentionPolicy,
-    HistoryStore, MemoryHistoryStore, MemoryHistoryStoreConfig,
+    HistoryStore,
 };
 use sockudo_core::presence_history::{
-    MemoryPresenceHistoryStore, MemoryPresenceHistoryStoreConfig, PresenceHistoryCursor,
-    PresenceHistoryDirection, PresenceHistoryEventCause, PresenceHistoryEventKind,
-    PresenceHistoryItem, PresenceHistoryQueryBounds, PresenceHistoryReadRequest,
-    PresenceHistoryRetentionPolicy, PresenceHistoryStore, PresenceHistoryTransitionRecord,
-    PresenceSnapshotRequest,
+    PresenceHistoryCursor, PresenceHistoryDirection, PresenceHistoryEventCause,
+    PresenceHistoryEventKind, PresenceHistoryItem, PresenceHistoryQueryBounds,
+    PresenceHistoryReadRequest, PresenceHistoryRetentionPolicy, PresenceHistoryStore,
+    PresenceHistoryTransitionRecord, PresenceSnapshotRequest,
 };
 use sockudo_core::version_store::{
-    MemoryVersionStore, StoredVersionRecord, VersionReplayRequest, VersionStore,
-    VersionStoreCursor, VersionStoreDirection, VersionStoreReadRequest,
+    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
+    VersionStoreDirection, VersionStoreReadRequest,
 };
 use sockudo_core::versioned_messages::{
     FieldPatch, MessageAction, MessageAppend, MessageFieldDelta, MessageSerial, VersionMetadata,
@@ -28,9 +27,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::config::{SimulatorConfig, SimulatorMode};
 use crate::error::{SimulatorError, SimulatorResult};
 use crate::push_lab::{PushLab, PushSimulationReport};
+use crate::real_subsystems::{APP_ID, RealSubsystemHarness};
 use crate::workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadGenerator};
 
-const APP_ID: &str = "sim-app";
 const BASE_TIME_MS: i64 = 1_893_456_000_000;
 const MAX_TRACE_EVENTS: usize = 96;
 
@@ -81,9 +80,7 @@ pub struct DeterministicSimulator {
     config: SimulatorConfig,
     rng: StdRng,
     tick: u64,
-    history_store: MemoryHistoryStore,
-    version_store: MemoryVersionStore,
-    presence_store: MemoryPresenceHistoryStore,
+    real: RealSubsystemHarness,
     nodes: Vec<NodeState>,
     clients: Vec<ClientState>,
     channels: Vec<String>,
@@ -110,17 +107,7 @@ impl DeterministicSimulator {
             .collect();
         let nodes = (0..config.nodes).map(NodeState::new).collect();
         let push = PushLab::new(&channels, config.clients, config.push.clone())?;
-        let history_store = MemoryHistoryStore::new(MemoryHistoryStoreConfig {
-            retention_window: config.retention_window(),
-            max_messages_per_channel: config.history_retention_messages,
-            max_bytes_per_channel: None,
-        });
-        let presence_store = MemoryPresenceHistoryStore::new(MemoryPresenceHistoryStoreConfig {
-            retention_window: config.retention_window(),
-            max_events_per_channel: config.presence_retention_events,
-            max_bytes_per_channel: None,
-            metrics: None,
-        });
+        let real = RealSubsystemHarness::new(&config);
 
         Ok(Self {
             rng: StdRng::seed_from_u64(config.seed),
@@ -131,9 +118,7 @@ impl DeterministicSimulator {
             ),
             config,
             tick: 0,
-            history_store,
-            version_store: MemoryVersionStore::new(),
-            presence_store,
+            real,
             nodes,
             clients,
             channels,
@@ -152,7 +137,7 @@ impl DeterministicSimulator {
         for tick in 0..self.config.ticks {
             self.tick = tick;
             self.deliver_due_fanout();
-            self.push.on_tick(self.tick, &mut self.rng);
+            self.push.on_tick(self.tick, &mut self.rng).await?;
             self.inject_faults().await?;
             self.drive_workload().await?;
             if self.config.oracle_every > 0 && tick % self.config.oracle_every == 0 {
@@ -164,7 +149,8 @@ impl DeterministicSimulator {
         self.recover_all_clients().await?;
         self.check_oracles().await?;
         self.push
-            .check_oracles(true)
+            .check_oracles(true, self.config.page_limit)
+            .await
             .map_err(|message| self.fail(message))?;
         self.check_liveness_oracles()?;
         Ok(self.report())
@@ -237,28 +223,21 @@ impl DeterministicSimulator {
             WorkloadAction::PurgeHistory => self.purge_history_prefix().await,
             WorkloadAction::PushRegisterDevice => {
                 self.push
-                    .register_or_update_device(self.tick, &mut self.rng);
-                Ok(())
+                    .register_or_update_device(self.tick, &mut self.rng)
+                    .await
             }
             WorkloadAction::PushDeleteDevice => {
-                self.push.delete_device(self.tick, &mut self.rng);
-                Ok(())
+                self.push.delete_device(self.tick, &mut self.rng).await
             }
             WorkloadAction::PushSubscribe => {
-                self.push.subscribe_device(self.tick, &mut self.rng);
-                Ok(())
+                self.push.subscribe_device(self.tick, &mut self.rng).await
             }
             WorkloadAction::PushUnsubscribe => {
-                self.push.unsubscribe_device(self.tick, &mut self.rng);
-                Ok(())
+                self.push.unsubscribe_device(self.tick, &mut self.rng).await
             }
-            WorkloadAction::PushPublish => {
-                self.push.publish_now(self.tick, &mut self.rng);
-                Ok(())
-            }
+            WorkloadAction::PushPublish => self.push.publish_now(self.tick, &mut self.rng).await,
             WorkloadAction::PushScheduledPublish => {
-                self.push.schedule_publish(self.tick, &mut self.rng);
-                Ok(())
+                self.push.schedule_publish(self.tick, &mut self.rng).await
             }
             WorkloadAction::PushProviderFeedback => {
                 self.push
@@ -473,7 +452,8 @@ impl DeterministicSimulator {
     async fn reset_random_stream(&mut self) -> SimulatorResult<()> {
         let channel = self.random_channel();
         let history = self
-            .history_store
+            .real
+            .history
             .reset_stream(
                 APP_ID,
                 &channel,
@@ -486,7 +466,8 @@ impl DeterministicSimulator {
             .reset_history(history.new_stream_id.clone());
 
         let presence = self
-            .presence_store
+            .real
+            .presence
             .reset_stream(
                 APP_ID,
                 &channel,
@@ -535,7 +516,8 @@ impl DeterministicSimulator {
             )
             .await?;
         let delivery = self
-            .version_store
+            .real
+            .version
             .reserve_delivery_position(APP_ID, &channel)
             .await?;
         let message_serial = MessageSerial::new(format!("msg-{:020}", self.next_message_serial))?;
@@ -562,7 +544,7 @@ impl DeterministicSimulator {
             )),
             message: message.clone(),
         };
-        self.version_store.append_version(record.clone()).await?;
+        self.real.version.append_version(record.clone()).await?;
         self.shadow.channel_mut(&channel).append_version(record);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
@@ -600,7 +582,8 @@ impl DeterministicSimulator {
             )
             .await?;
         let delivery = self
-            .version_store
+            .real
+            .version
             .reserve_delivery_position_after(
                 APP_ID,
                 &channel,
@@ -647,7 +630,7 @@ impl DeterministicSimulator {
             original_client_id: current.original_client_id.clone(),
             message: next,
         };
-        self.version_store.append_version(record.clone()).await?;
+        self.real.version.append_version(record.clone()).await?;
         self.shadow.channel_mut(&channel).append_version(record);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
@@ -689,7 +672,7 @@ impl DeterministicSimulator {
             published_at_ms: self.timestamp_ms(),
             retention: self.presence_retention_policy(),
         };
-        self.presence_store.record_transition(record).await?;
+        self.real.presence.record_transition(record).await?;
         if should_record {
             let newest = self
                 .read_presence_page(&channel, PresenceHistoryDirection::NewestFirst)
@@ -719,7 +702,8 @@ impl DeterministicSimulator {
         }
         let idx = self.rng.random_range(1..shadow.history.len());
         let before_serial = shadow.history[idx].serial;
-        self.history_store
+        self.real
+            .history
             .purge_stream(
                 APP_ID,
                 &channel,
@@ -753,7 +737,8 @@ impl DeterministicSimulator {
         payload: Bytes,
     ) -> SimulatorResult<ShadowHistoryMessage> {
         let reservation = self
-            .history_store
+            .real
+            .history
             .reserve_publish_position(APP_ID, channel)
             .await?;
         let record = HistoryAppendRecord {
@@ -768,7 +753,7 @@ impl DeterministicSimulator {
             payload_bytes: payload.clone(),
             retention: self.history_retention_policy(),
         };
-        self.history_store.append(record.clone()).await?;
+        self.real.history.append(record.clone()).await?;
         let message = ShadowHistoryMessage {
             stream_id: record.stream_id,
             serial: record.serial,
@@ -849,7 +834,7 @@ impl DeterministicSimulator {
         for _ in 0..max_steps {
             let Some(next_delivery_tick) = self.network.iter().map(|event| event.deliver_at).min()
             else {
-                self.tick = self.push.quiesce(self.tick, &mut self.rng);
+                self.tick = self.push.quiesce(self.tick, &mut self.rng).await?;
                 return Ok(());
             };
             self.tick = self.tick.saturating_add(1).max(next_delivery_tick);
@@ -861,7 +846,7 @@ impl DeterministicSimulator {
                 self.network.len()
             )));
         }
-        self.tick = self.push.quiesce(self.tick, &mut self.rng);
+        self.tick = self.push.quiesce(self.tick, &mut self.rng).await?;
         Ok(())
     }
 
@@ -992,7 +977,8 @@ impl DeterministicSimulator {
             self.check_client_recovery_oracle(channel)?;
         }
         self.push
-            .check_oracles(false)
+            .check_oracles(false, self.config.page_limit)
+            .await
             .map_err(|message| self.fail(message))?;
         Ok(())
     }
@@ -1039,7 +1025,7 @@ impl DeterministicSimulator {
             }
         }
 
-        let head = self.history_store.channel_head(APP_ID, channel).await?;
+        let head = self.real.history.channel_head(APP_ID, channel).await?;
         if head.retained_messages != expected.len() as u64 {
             return Err(self.fail(format!(
                 "history retained_messages mismatch on {channel}: expected {}, got {}",
@@ -1071,10 +1057,7 @@ impl DeterministicSimulator {
             )));
         }
         if shadow.history_stream_id.is_some() {
-            let inspection = self
-                .history_store
-                .stream_inspection(APP_ID, channel)
-                .await?;
+            let inspection = self.real.history.stream_inspection(APP_ID, channel).await?;
             let expected_next = expected
                 .last()
                 .map_or(1, |message| message.serial.saturating_add(1));
@@ -1118,7 +1101,8 @@ impl DeterministicSimulator {
     async fn check_version_oracle(&self, channel: &str) -> SimulatorResult<()> {
         let shadow = self.shadow.channel(channel);
         let replay = self
-            .version_store
+            .real
+            .version
             .replay_after(VersionReplayRequest {
                 app_id: APP_ID.to_string(),
                 channel: channel.to_string(),
@@ -1147,7 +1131,7 @@ impl DeterministicSimulator {
             }
         }
 
-        let state = self.version_store.stream_state(APP_ID, channel).await?;
+        let state = self.real.version.stream_state(APP_ID, channel).await?;
         if shadow.version_replay.is_empty() {
             if state.newest_available_delivery_serial.is_some() {
                 return Err(self.fail(format!(
@@ -1167,7 +1151,8 @@ impl DeterministicSimulator {
 
         for (message_serial, chain) in &shadow.version_messages {
             let latest = self
-                .version_store
+                .real
+                .version
                 .get_latest(
                     APP_ID,
                     channel,
@@ -1220,10 +1205,7 @@ impl DeterministicSimulator {
             }
         }
 
-        let latest_by_history = self
-            .version_store
-            .latest_by_history(APP_ID, channel)
-            .await?;
+        let latest_by_history = self.real.version.latest_by_history(APP_ID, channel).await?;
         let expected_latest = shadow.latest_versions_by_history();
         if latest_by_history.len() != expected_latest.len() {
             return Err(self.fail(format!(
@@ -1309,7 +1291,8 @@ impl DeterministicSimulator {
         }
 
         let snapshot = self
-            .presence_store
+            .real
+            .presence
             .snapshot_at(PresenceSnapshotRequest {
                 app_id: APP_ID.to_string(),
                 channel: channel.to_string(),
@@ -1342,7 +1325,8 @@ impl DeterministicSimulator {
 
         if shadow.presence_stream_id.is_some() {
             let inspection = self
-                .presence_store
+                .real
+                .presence
                 .stream_inspection(APP_ID, channel)
                 .await?;
             let expected_next = expected
@@ -1435,7 +1419,8 @@ impl DeterministicSimulator {
         let mut cursor: Option<HistoryCursor> = None;
         loop {
             let page = self
-                .history_store
+                .real
+                .history
                 .read_page(HistoryReadRequest {
                     app_id: APP_ID.to_string(),
                     channel: channel.to_string(),
@@ -1477,7 +1462,8 @@ impl DeterministicSimulator {
         };
         loop {
             let page = self
-                .history_store
+                .real
+                .history
                 .read_page(HistoryReadRequest {
                     app_id: APP_ID.to_string(),
                     channel: channel.to_string(),
@@ -1509,7 +1495,8 @@ impl DeterministicSimulator {
         let mut cursor: Option<VersionStoreCursor> = None;
         loop {
             let page = self
-                .version_store
+                .real
+                .version
                 .get_versions(VersionStoreReadRequest {
                     app_id: APP_ID.to_string(),
                     channel: channel.to_string(),
@@ -1542,7 +1529,8 @@ impl DeterministicSimulator {
         let mut cursor: Option<PresenceHistoryCursor> = None;
         loop {
             let page = self
-                .presence_store
+                .real
+                .presence
                 .read_page(PresenceHistoryReadRequest {
                     app_id: APP_ID.to_string(),
                     channel: channel.to_string(),
@@ -2061,6 +2049,46 @@ mod tests {
 
         assert_eq!(left_report, right_report);
         assert_eq!(left_report.queued_fanout, 0);
+    }
+
+    #[tokio::test]
+    async fn same_seed_replays_across_real_push_boundary() {
+        let mut config = test_config(0x5150_600d);
+        config.ticks = 180;
+        config.workload.weights = ActionWeights {
+            publish_message: 0,
+            create_versioned_message: 0,
+            mutate_versioned_message: 0,
+            presence_transition: 0,
+            recovery_probe: 0,
+            purge_history: 0,
+            push_register_device: 24,
+            push_delete_device: 4,
+            push_subscribe: 20,
+            push_unsubscribe: 5,
+            push_publish: 32,
+            push_scheduled_publish: 10,
+            push_provider_feedback: 4,
+            push_repair: 6,
+            oracle_check: 3,
+        };
+        config.push.queue_produce_lost_probability = 0.04;
+        config.push.queue_ack_lost_probability = 0.02;
+        config.push.provider_retryable_probability = 0.18;
+        config.push.provider_invalid_token_probability = 0.03;
+
+        let mut left = DeterministicSimulator::new(config.clone()).unwrap();
+        let mut right = DeterministicSimulator::new(config).unwrap();
+
+        let left_report = left.run().await.unwrap();
+        let right_report = right.run().await.unwrap();
+
+        assert_eq!(left_report, right_report);
+        assert!(left_report.push.accepted_publishes > 0);
+        assert_eq!(
+            left_report.push.durable_statuses,
+            left_report.push.durable_publish_logs
+        );
     }
 
     #[tokio::test]

@@ -20,7 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sockudo-core = { workspace = true }
 sockudo-protocol = { workspace = true }
+sockudo-push = { workspace = true }
 sonic-rs = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-
