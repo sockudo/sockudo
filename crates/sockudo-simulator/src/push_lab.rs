@@ -1,9 +1,11 @@
 use rand::Rng;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
+use sockudo_push::PushProviderKind;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::error::{SimulatorError, SimulatorResult};
+use crate::real_subsystems::RealPushHarness;
 
 const MAX_TRACE_EVENTS: usize = 80;
 const DEFAULT_PUSH_DEVICES: usize = 32;
@@ -188,9 +190,10 @@ pub struct PushSimulationReport {
 }
 
 /// Deterministic model of Sockudo-side push durability and provider fallibility.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PushLab {
     config: PushLabConfig,
+    real: RealPushHarness,
     clients: usize,
     channels: Vec<String>,
     devices: BTreeMap<String, SimDevice>,
@@ -216,6 +219,7 @@ impl PushLab {
         config.validate()?;
         Ok(Self {
             config,
+            real: RealPushHarness::new(),
             clients,
             channels: channels.to_vec(),
             devices: BTreeMap::new(),
@@ -233,21 +237,26 @@ impl PushLab {
         })
     }
 
-    pub(crate) fn on_tick(&mut self, tick: u64, rng: &mut StdRng) {
+    pub(crate) async fn on_tick(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
         self.maybe_toggle_backend(tick, rng);
-        self.release_due_schedules(tick, rng);
-        self.process_queue(tick, rng);
+        self.release_due_schedules(tick, rng).await?;
+        self.process_queue(tick, rng).await?;
         if self.config.repair_every_ticks > 0 && tick.is_multiple_of(self.config.repair_every_ticks)
         {
             self.repair(tick, rng);
         }
+        Ok(())
     }
 
-    pub(crate) fn register_or_update_device(&mut self, tick: u64, rng: &mut StdRng) {
+    pub(crate) async fn register_or_update_device(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+    ) -> SimulatorResult<()> {
         if self.backend_outage || self.write_fails_before_commit(tick, rng, "device_upsert") {
-            return;
+            return Ok(());
         }
-        let provider = PushProvider::random(rng);
+        let provider = random_provider(rng);
         let device_id = if self.devices.len() < self.config.devices {
             let id = format!("device-{:020}", self.next_device_id);
             self.next_device_id = self.next_device_id.saturating_add(1);
@@ -257,6 +266,9 @@ impl PushLab {
                 .unwrap_or_else(|| "device-00000000000000000001".to_string())
         };
         let client_id = format!("client-{}", rng.random_range(0..self.clients));
+        self.real
+            .upsert_device(&device_id, &client_id, provider, tick)
+            .await?;
         if !self.devices.contains_key(&device_id) {
             self.stats.registered_devices = self.stats.registered_devices.saturating_add(1);
             self.devices.insert(
@@ -279,16 +291,22 @@ impl PushLab {
         }
         self.after_commit_fault(tick, rng, "device_upsert");
         self.trace(tick, format!("push device upserted {device_id}"));
+        Ok(())
     }
 
-    pub(crate) fn delete_device(&mut self, tick: u64, rng: &mut StdRng) {
+    pub(crate) async fn delete_device(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+    ) -> SimulatorResult<()> {
         let Some(device_id) = self.random_device_id(rng) else {
-            self.register_or_update_device(tick, rng);
-            return;
+            self.register_or_update_device(tick, rng).await?;
+            return Ok(());
         };
         if self.backend_outage || self.write_fails_before_commit(tick, rng, "device_delete") {
-            return;
+            return Ok(());
         }
+        self.real.delete_device(&device_id).await?;
         if let Some(device) = self.devices.get_mut(&device_id) {
             device.state = DeviceState::Deleted;
             device.subscriptions.clear();
@@ -296,31 +314,43 @@ impl PushLab {
             self.after_commit_fault(tick, rng, "device_delete");
             self.trace(tick, format!("push device deleted {device_id}"));
         }
+        Ok(())
     }
 
-    pub(crate) fn subscribe_device(&mut self, tick: u64, rng: &mut StdRng) {
-        let device_id = self.ensure_active_device(tick, rng);
+    pub(crate) async fn subscribe_device(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+    ) -> SimulatorResult<()> {
+        let device_id = self.ensure_active_device(tick, rng).await?;
         let channel = self.random_channel(rng);
         if self.backend_outage || self.write_fails_before_commit(tick, rng, "subscribe") {
-            return;
+            return Ok(());
         }
         if let Some(device) = self.devices.get_mut(&device_id) {
+            self.real.upsert_subscription(&channel, &device_id).await?;
             device.state = DeviceState::Active;
             device.visible_removed_at = None;
             device.subscriptions.insert(channel.clone());
             self.after_commit_fault(tick, rng, "subscribe");
             self.trace(tick, format!("push subscribed {device_id} to {channel}"));
         }
+        Ok(())
     }
 
-    pub(crate) fn unsubscribe_device(&mut self, tick: u64, rng: &mut StdRng) {
+    pub(crate) async fn unsubscribe_device(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+    ) -> SimulatorResult<()> {
         let Some(device_id) = self.random_device_id(rng) else {
-            return;
+            return Ok(());
         };
         let channel = self.random_channel(rng);
         if self.backend_outage || self.write_fails_before_commit(tick, rng, "unsubscribe") {
-            return;
+            return Ok(());
         }
+        self.real.delete_subscription(&channel, &device_id).await?;
         if let Some(device) = self.devices.get_mut(&device_id) {
             device.subscriptions.remove(&channel);
             if device.subscriptions.is_empty() {
@@ -332,22 +362,31 @@ impl PushLab {
                 format!("push unsubscribed {device_id} from {channel}"),
             );
         }
+        Ok(())
     }
 
-    pub(crate) fn publish_now(&mut self, tick: u64, rng: &mut StdRng) {
+    pub(crate) async fn publish_now(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
         let channel = self.random_channel(rng);
-        self.ensure_subscriber(tick, rng, &channel);
-        self.accept_publish(tick, rng, channel, None);
+        self.ensure_subscriber(tick, rng, &channel).await?;
+        self.accept_publish(tick, rng, channel, None).await
     }
 
-    pub(crate) fn schedule_publish(&mut self, tick: u64, rng: &mut StdRng) {
+    pub(crate) async fn schedule_publish(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+    ) -> SimulatorResult<()> {
         let channel = self.random_channel(rng);
-        self.ensure_subscriber(tick, rng, &channel);
+        self.ensure_subscriber(tick, rng, &channel).await?;
         let delay = self.random_queue_delay(rng).saturating_add(1);
         let publish_id = self.next_publish_key();
         let idempotency_key = format!("schedule:{publish_id}");
+        let due_tick = tick.saturating_add(delay);
+        self.real
+            .put_scheduled_publish(&publish_id, &channel, due_tick)
+            .await?;
         self.schedules.push(ScheduledPush {
-            due_tick: tick.saturating_add(delay),
+            due_tick,
             channel: channel.clone(),
             publish_id,
             idempotency_key,
@@ -360,6 +399,7 @@ impl PushLab {
                 tick + delay
             ),
         );
+        Ok(())
     }
 
     pub(crate) fn duplicate_provider_feedback(&mut self, tick: u64, rng: &mut StdRng) {
@@ -402,7 +442,11 @@ impl PushLab {
         self.repair(tick, rng);
     }
 
-    pub(crate) fn quiesce(&mut self, mut tick: u64, rng: &mut StdRng) -> u64 {
+    pub(crate) async fn quiesce(
+        &mut self,
+        mut tick: u64,
+        rng: &mut StdRng,
+    ) -> SimulatorResult<u64> {
         let previous_quiescing = self.quiescing;
         self.quiescing = true;
         let max_steps = self
@@ -419,26 +463,80 @@ impl PushLab {
                 && self.outstanding_deliveries() == 0
             {
                 self.quiescing = previous_quiescing;
-                return tick;
+                return Ok(tick);
             }
             tick = tick.saturating_add(1);
             self.backend_outage = false;
-            self.release_due_schedules(tick, rng);
+            self.release_due_schedules(tick, rng).await?;
             self.repair(tick, rng);
-            self.process_queue(tick, rng);
+            self.process_queue(tick, rng).await?;
             self.prune_obsolete_queue();
         }
         self.quiescing = previous_quiescing;
-        tick
+        Ok(tick)
     }
 
-    pub(crate) fn check_oracles(&self, final_quiesce: bool) -> Result<(), String> {
+    pub(crate) async fn check_oracles(
+        &self,
+        final_quiesce: bool,
+        page_limit: usize,
+    ) -> Result<(), String> {
         for (key, publish_id) in &self.idempotency {
             if !self.publishes.contains_key(publish_id) {
                 return Err(format!(
                     "push idempotency key {key} points to missing publish {publish_id}"
                 ));
             }
+        }
+
+        let expected_devices = self
+            .devices
+            .values()
+            .filter(|device| device.state == DeviceState::Active)
+            .map(|device| device.id.clone())
+            .collect::<BTreeSet<_>>();
+        let actual_devices = self
+            .real
+            .active_device_ids(page_limit)
+            .await
+            .map_err(|error| format!("real push device scan failed: {error}"))?;
+        if actual_devices != expected_devices {
+            return Err(format!(
+                "real push devices mismatch: expected {expected_devices:?}, got {actual_devices:?}"
+            ));
+        }
+
+        let expected_subscriptions = self
+            .devices
+            .values()
+            .flat_map(|device| {
+                device
+                    .subscriptions
+                    .iter()
+                    .map(|channel| (channel.clone(), device.id.clone()))
+            })
+            .collect::<BTreeSet<_>>();
+        let actual_subscriptions = self
+            .real
+            .subscription_keys(page_limit)
+            .await
+            .map_err(|error| format!("real push subscription scan failed: {error}"))?;
+        if actual_subscriptions != expected_subscriptions {
+            return Err(format!(
+                "real push subscriptions mismatch: expected {expected_subscriptions:?}, got {actual_subscriptions:?}"
+            ));
+        }
+
+        let expected_publish_ids = self.publishes.keys().cloned().collect::<BTreeSet<_>>();
+        let actual_publish_log_ids = self
+            .real
+            .publish_log_ids(page_limit)
+            .await
+            .map_err(|error| format!("real push publish-log scan failed: {error}"))?;
+        if actual_publish_log_ids != expected_publish_ids {
+            return Err(format!(
+                "real push publish logs mismatch: expected {expected_publish_ids:?}, got {actual_publish_log_ids:?}"
+            ));
         }
 
         for publish in self.publishes.values() {
@@ -451,6 +549,36 @@ impl PushLab {
             if !publish.durable_log {
                 return Err(format!(
                     "accepted push publish {} is missing durable publish log",
+                    publish.id
+                ));
+            }
+            let status = self
+                .real
+                .publish_status(&publish.id)
+                .await
+                .map_err(|error| {
+                    format!("real push status read failed for {}: {error}", publish.id)
+                })?
+                .ok_or_else(|| format!("real push status missing for {}", publish.id))?;
+            if status.counters.planned != publish.planned {
+                return Err(format!(
+                    "real push planned count mismatch for {}: expected {}, got {}",
+                    publish.id, publish.planned, status.counters.planned
+                ));
+            }
+            let idempotency_target = self
+                .real
+                .publish_idempotency_target(&publish.id)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "real push idempotency read failed for {}: {error}",
+                        publish.id
+                    )
+                })?;
+            if idempotency_target.as_deref() != Some(publish.id.as_str()) {
+                return Err(format!(
+                    "real push idempotency mismatch for {}: got {idempotency_target:?}",
                     publish.id
                 ));
             }
@@ -494,6 +622,25 @@ impl PushLab {
                     "push publish {} still has {} outstanding deliveries after quiesce",
                     publish.id,
                     publish.outstanding_deliveries()
+                ));
+            }
+        }
+
+        for schedule in &self.schedules {
+            let exists = self
+                .real
+                .scheduled_publish_exists(&schedule.publish_id)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "real push schedule read failed for {}: {error}",
+                        schedule.publish_id
+                    )
+                })?;
+            if !exists {
+                return Err(format!(
+                    "real push schedule missing for pending publish {}",
+                    schedule.publish_id
                 ));
             }
         }
@@ -574,15 +721,15 @@ impl PushLab {
         self.trace.iter().cloned().collect()
     }
 
-    fn accept_publish(
+    async fn accept_publish(
         &mut self,
         tick: u64,
         rng: &mut StdRng,
         channel: String,
         requested: Option<(String, String)>,
-    ) {
+    ) -> SimulatorResult<()> {
         if self.backend_outage || self.write_fails_before_commit(tick, rng, "push_publish") {
-            return;
+            return Ok(());
         }
         let (publish_id, idempotency_key) = requested.unwrap_or_else(|| {
             let publish_id = if !self.idempotency.is_empty() && rng.random_ratio(1, 8) {
@@ -605,11 +752,23 @@ impl PushLab {
                     format!("push duplicate idempotency {idempotency_key} -> {publish_id}"),
                 );
             }
-            return;
+            return Ok(());
         }
 
         let planned_targets = self.eligible_targets(&channel);
         let planned = planned_targets.len() as u64;
+        let accepted = self
+            .real
+            .accept_channel_publish(&publish_id, &channel, planned, tick)
+            .await?;
+        if accepted.duplicate {
+            self.stats.duplicate_publishes = self.stats.duplicate_publishes.saturating_add(1);
+            self.trace(
+                tick,
+                format!("push duplicate real pipeline accept -> {publish_id}"),
+            );
+            return Ok(());
+        }
         let deliveries = planned_targets
             .into_iter()
             .enumerate()
@@ -659,29 +818,35 @@ impl PushLab {
             tick,
             format!("push publish accepted {publish_id} channel={channel} planned={planned}"),
         );
+        Ok(())
     }
 
-    fn release_due_schedules(&mut self, tick: u64, rng: &mut StdRng) {
+    async fn release_due_schedules(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
         let mut pending = Vec::with_capacity(self.schedules.len());
         let schedules = std::mem::take(&mut self.schedules);
         for schedule in schedules {
             if schedule.due_tick <= tick {
+                self.real
+                    .delete_scheduled_publish(&schedule.publish_id)
+                    .await?;
                 self.accept_publish(
                     tick,
                     rng,
                     schedule.channel,
                     Some((schedule.publish_id, schedule.idempotency_key)),
-                );
+                )
+                .await?;
             } else {
                 pending.push(schedule);
             }
         }
         self.schedules = pending;
+        Ok(())
     }
 
-    fn process_queue(&mut self, tick: u64, rng: &mut StdRng) {
+    async fn process_queue(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
         if self.backend_outage {
-            return;
+            return Ok(());
         }
 
         let mut pending = VecDeque::with_capacity(self.queue.len());
@@ -698,7 +863,7 @@ impl PushLab {
                 pending.push_back(duplicate);
                 self.stats.queue_lease_timeouts = self.stats.queue_lease_timeouts.saturating_add(1);
             }
-            self.apply_queue_item(tick, rng, item.clone());
+            self.apply_queue_item(tick, rng, item.clone()).await?;
             if !self.quiescing && self.roll(self.config.queue_ack_lost_probability, rng) {
                 let mut redelivery = item;
                 redelivery.id = self.next_queue_id();
@@ -709,9 +874,15 @@ impl PushLab {
         }
         pending.append(&mut self.queue);
         self.queue = pending;
+        Ok(())
     }
 
-    fn apply_queue_item(&mut self, tick: u64, rng: &mut StdRng, item: QueueItem) {
+    async fn apply_queue_item(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+        item: QueueItem,
+    ) -> SimulatorResult<()> {
         match item.stage {
             QueueStage::PublishLog { publish_id } => {
                 let Some(delivery_ids) = self.publishes.get(&publish_id).map(|publish| {
@@ -722,7 +893,7 @@ impl PushLab {
                         .map(|delivery| delivery.id.clone())
                         .collect::<Vec<_>>()
                 }) else {
-                    return;
+                    return Ok(());
                 };
                 for delivery_id in delivery_ids {
                     self.enqueue(
@@ -745,22 +916,29 @@ impl PushLab {
             QueueStage::Delivery {
                 publish_id,
                 delivery_id,
-            } => self.dispatch_delivery(tick, rng, &publish_id, &delivery_id),
+            } => {
+                self.dispatch_delivery(tick, rng, &publish_id, &delivery_id)
+                    .await?
+            }
             QueueStage::ProviderResult {
                 publish_id,
                 delivery_id,
                 result,
-            } => self.apply_provider_result(tick, rng, &publish_id, &delivery_id, result),
+            } => {
+                self.apply_provider_result(tick, rng, &publish_id, &delivery_id, result)
+                    .await?;
+            }
         }
+        Ok(())
     }
 
-    fn dispatch_delivery(
+    async fn dispatch_delivery(
         &mut self,
         tick: u64,
         rng: &mut StdRng,
         publish_id: &str,
         delivery_id: &str,
-    ) {
+    ) -> SimulatorResult<()> {
         let Some((device_id, provider, attempts, terminal)) = self
             .publishes
             .get(publish_id)
@@ -774,18 +952,18 @@ impl PushLab {
                 )
             })
         else {
-            return;
+            return Ok(());
         };
         if terminal.is_some() {
-            return;
+            return Ok(());
         }
         if !self.device_is_eligible_for_publish(publish_id, &device_id, rng) {
             self.apply_terminal(publish_id, delivery_id, ProviderResult::Cancelled, tick);
-            return;
+            return Ok(());
         }
         if attempts >= self.config.max_retries {
             self.dead_letter(publish_id, delivery_id, tick);
-            return;
+            return Ok(());
         }
 
         if let Some(publish) = self.publishes.get_mut(publish_id)
@@ -806,8 +984,9 @@ impl PushLab {
                 publish_id,
                 delivery_id,
                 ProviderResult::Retryable,
-            );
-            return;
+            )
+            .await?;
+            return Ok(());
         }
         if self.roll(self.config.provider_delayed_result_probability, rng) {
             self.enqueue(
@@ -820,7 +999,8 @@ impl PushLab {
                 },
             );
         } else {
-            self.apply_provider_result(tick, rng, publish_id, delivery_id, result);
+            self.apply_provider_result(tick, rng, publish_id, delivery_id, result)
+                .await?;
         }
         if self.roll(self.config.provider_duplicate_result_probability, rng) {
             self.enqueue(
@@ -833,16 +1013,17 @@ impl PushLab {
                 },
             );
         }
+        Ok(())
     }
 
-    fn apply_provider_result(
+    async fn apply_provider_result(
         &mut self,
         tick: u64,
         rng: &mut StdRng,
         publish_id: &str,
         delivery_id: &str,
         result: ProviderResult,
-    ) {
+    ) -> SimulatorResult<()> {
         let Some((attempt, duplicate)) = self
             .publishes
             .get_mut(publish_id)
@@ -853,10 +1034,10 @@ impl PushLab {
                 (delivery.attempts, duplicate)
             })
         else {
-            return;
+            return Ok(());
         };
         if duplicate {
-            return;
+            return Ok(());
         }
 
         match result {
@@ -872,13 +1053,14 @@ impl PushLab {
                     .get(publish_id)
                     .and_then(|publish| publish.deliveries.get(delivery_id))
                     .map(|delivery| delivery.device_id.clone());
-                if let Some(device_id) = device_id
-                    && let Some(device) = self.devices.get_mut(&device_id)
-                {
-                    device.state = DeviceState::Invalid;
-                    device.subscriptions.clear();
-                    device.visible_removed_at = Some(tick);
-                    self.stats.invalid_tokens = self.stats.invalid_tokens.saturating_add(1);
+                if let Some(device_id) = device_id {
+                    self.real.delete_device(&device_id).await?;
+                    if let Some(device) = self.devices.get_mut(&device_id) {
+                        device.state = DeviceState::Invalid;
+                        device.subscriptions.clear();
+                        device.visible_removed_at = Some(tick);
+                        self.stats.invalid_tokens = self.stats.invalid_tokens.saturating_add(1);
+                    }
                 }
                 self.apply_terminal(publish_id, delivery_id, ProviderResult::Expired, tick);
             }
@@ -886,7 +1068,7 @@ impl PushLab {
                 self.stats.retryable_results = self.stats.retryable_results.saturating_add(1);
                 if attempt >= self.config.max_retries {
                     self.dead_letter(publish_id, delivery_id, tick);
-                    return;
+                    return Ok(());
                 }
                 if let Some(publish) = self.publishes.get_mut(publish_id)
                     && let Some(delivery) = publish.deliveries.get_mut(delivery_id)
@@ -905,6 +1087,7 @@ impl PushLab {
                 );
             }
         }
+        Ok(())
     }
 
     fn apply_terminal(
@@ -1126,7 +1309,7 @@ impl PushLab {
         }
     }
 
-    fn provider_result(&mut self, _provider: PushProvider, rng: &mut StdRng) -> ProviderResult {
+    fn provider_result(&mut self, _provider: PushProviderKind, rng: &mut StdRng) -> ProviderResult {
         if self.roll(self.config.provider_lost_response_probability, rng) {
             ProviderResult::LostResponseAfterAccepted
         } else if self.roll(self.config.provider_invalid_token_probability, rng) {
@@ -1140,29 +1323,44 @@ impl PushLab {
         }
     }
 
-    fn ensure_subscriber(&mut self, tick: u64, rng: &mut StdRng, channel: &str) {
+    async fn ensure_subscriber(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+        channel: &str,
+    ) -> SimulatorResult<()> {
         if self.devices.values().any(|device| {
             device.state == DeviceState::Active && device.subscriptions.contains(channel)
         }) {
-            return;
+            return Ok(());
         }
-        let device_id = self.ensure_active_device(tick, rng);
+        let device_id = self.ensure_active_device(tick, rng).await?;
         if let Some(device) = self.devices.get_mut(&device_id) {
+            self.real.upsert_subscription(channel, &device_id).await?;
             device.subscriptions.insert(channel.to_string());
         }
+        Ok(())
     }
 
-    fn ensure_active_device(&mut self, tick: u64, rng: &mut StdRng) -> String {
+    async fn ensure_active_device(
+        &mut self,
+        tick: u64,
+        rng: &mut StdRng,
+    ) -> SimulatorResult<String> {
         if let Some(device) = self
             .devices
             .values()
             .find(|device| device.state == DeviceState::Active)
         {
-            return device.id.clone();
+            return Ok(device.id.clone());
         }
-        self.register_or_update_device(tick, rng);
-        self.random_device_id(rng)
-            .unwrap_or_else(|| "device-00000000000000000001".to_string())
+        self.register_or_update_device(tick, rng).await?;
+        Ok(self
+            .devices
+            .values()
+            .find(|device| device.state == DeviceState::Active)
+            .map(|device| device.id.clone())
+            .unwrap_or_else(|| "device-00000000000000000001".to_string()))
     }
 
     fn random_device_id(&self, rng: &mut StdRng) -> Option<String> {
@@ -1266,25 +1464,13 @@ impl PushLab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PushProvider {
-    Fcm,
-    Apns,
-    WebPush,
-    Hms,
-    Wns,
-}
-
-impl PushProvider {
-    fn random(rng: &mut StdRng) -> Self {
-        match rng.random_range(0..5) {
-            0 => Self::Fcm,
-            1 => Self::Apns,
-            2 => Self::WebPush,
-            3 => Self::Hms,
-            _ => Self::Wns,
-        }
+fn random_provider(rng: &mut StdRng) -> PushProviderKind {
+    match rng.random_range(0..5) {
+        0 => PushProviderKind::Fcm,
+        1 => PushProviderKind::Apns,
+        2 => PushProviderKind::WebPush,
+        3 => PushProviderKind::Hms,
+        _ => PushProviderKind::Wns,
     }
 }
 
@@ -1292,7 +1478,7 @@ impl PushProvider {
 struct SimDevice {
     id: String,
     client_id: String,
-    provider: PushProvider,
+    provider: PushProviderKind,
     state: DeviceState,
     subscriptions: BTreeSet<String>,
     visible_removed_at: Option<u64>,
@@ -1390,7 +1576,7 @@ impl PushCounters {
 struct Delivery {
     id: String,
     device_id: String,
-    provider: PushProvider,
+    provider: PushProviderKind,
     state: DeliveryState,
     attempts: u32,
     terminal: Option<ProviderResult>,
@@ -1420,7 +1606,7 @@ enum ProviderResult {
 #[derive(Debug, Clone)]
 struct PushTarget {
     device_id: String,
-    provider: PushProvider,
+    provider: PushProviderKind,
 }
 
 #[derive(Debug, Clone)]

@@ -8,6 +8,7 @@
 mod config;
 mod error;
 mod push_lab;
+mod real_subsystems;
 mod simulator;
 mod workload;
 

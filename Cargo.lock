@@ -8228,6 +8228,7 @@ dependencies = [
  "serde_json",
  "sockudo-core",
  "sockudo-protocol",
+ "sockudo-push",
  "sonic-rs",
  "thiserror 2.0.18",
  "tokio",

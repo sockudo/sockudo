@@ -15,5 +15,11 @@ pub enum SimulatorError {
     #[error(transparent)]
     Core(#[from] sockudo_core::error::Error),
     #[error(transparent)]
+    PushDomain(#[from] sockudo_push::PushDomainError),
+    #[error(transparent)]
+    PushPipeline(#[from] sockudo_push::PushPipelineError),
+    #[error(transparent)]
+    PushStorage(#[from] sockudo_push::PushStorageError),
+    #[error(transparent)]
     Json(#[from] serde_json::Error),
 }

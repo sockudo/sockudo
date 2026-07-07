@@ -5,8 +5,9 @@ icon: ShieldCheck
 ---
 
 The Sockudo simulator is a seed-replayable disaster lab for durable Protocol V2 state. It runs
-inside one process, drives real `sockudo-core` memory stores, models Sockudo-side push storage and
-queues, injects node, network, IO, queue, and fake-provider faults, and checks a shadow model
+inside one process, drives real `sockudo-core` memory stores, calls the real `sockudo-push` memory
+store and accept pipeline for durable push boundaries, injects node, network, IO, queue, and
+fake-provider faults, and checks a shadow model
 continuously.
 
 Use it to prove that Sockudo-side durability contracts survive dropped live fanout, duplicated
@@ -54,10 +55,26 @@ The simulator covers these high-value durability surfaces:
 | Connection recovery | Simulated clients recover dropped live fanout from durable history unless retention has legitimately truncated the gap. |
 | Versioned messages | Delivery serial replay is contiguous, version chains page in both directions, latest reads match the shadow, and `latest_by_history` preserves original history ordering. |
 | Presence history | Transition dedupe, retained events, cursor paging, stream inspection, and reconstructed snapshots match the shadow model. |
-| Push workflow | Accepted publishes have durable status and publish logs, idempotency maps to one publish, queue loss is repaired from durable state, provider outcomes converge to terminal/retry/dead-letter states, and invalid devices stop receiving sends. |
+| Push workflow | Device registration, channel subscription, scheduled-job storage, publish acceptance, initial status, publish logs, and publish-id idempotency go through real `sockudo-push` memory store/pipeline APIs. The simulator then faults modeled worker queues and provider outcomes and checks they converge. |
 
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
 deterministic inner loop for the durable primitives those tests rely on.
+
+## Real-Code Boundary
+
+The simulator is intentionally not a full server-in-a-process. Its current real-code boundary is:
+
+| Path | Boundary |
+| --- | --- |
+| History | Real `MemoryHistoryStore` reservations, appends, reads, cursors, stream inspection, purges, and resets. |
+| Versioned messages | Real `MemoryVersionStore` delivery reservations, version appends, replay, latest reads, paged chain reads, and `latest_by_history`. |
+| Presence history | Real `MemoryPresenceHistoryStore` transition recording, dedupe, reads, cursors, stream inspection, snapshot reconstruction, and resets. |
+| Push durable state | Real `MemoryPushStore` device, subscription, schedule, status, publish-log, and idempotency APIs, with publish acceptance through `PushPipeline::accept_publish`. |
+
+Still modeled: live socket fanout, horizontal transport timing, replay-buffer hot recovery,
+operator routing, push worker queues after accept, provider dispatch, provider feedback, and repair
+timing. Those modeled paths exist to make deterministic faults cheap and replayable; they are
+checked against the durable stores above rather than replacing them.
 
 ## VOPR-Style Maturity
 
