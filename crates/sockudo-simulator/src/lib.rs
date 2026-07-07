@@ -7,6 +7,7 @@
 
 mod config;
 mod error;
+mod io;
 mod push_lab;
 mod real_subsystems;
 mod simulator;

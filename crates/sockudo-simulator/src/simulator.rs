@@ -1,6 +1,4 @@
 use bytes::Bytes;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use serde::Serialize;
 use sockudo_core::history::{
     HistoryAppendRecord, HistoryCursor, HistoryDirection, HistoryItem, HistoryPurgeMode,
@@ -26,11 +24,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::config::{SimulatorConfig, SimulatorMode};
 use crate::error::{SimulatorError, SimulatorResult};
+use crate::io::{
+    DeterministicClock, DeterministicFaultScheduler, DeterministicNetwork, ScheduledIoEvent,
+};
 use crate::push_lab::{PushLab, PushSimulationReport};
 use crate::real_subsystems::{APP_ID, RealSubsystemHarness};
 use crate::workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadGenerator};
 
-const BASE_TIME_MS: i64 = 1_893_456_000_000;
 const MAX_TRACE_EVENTS: usize = 96;
 
 /// Summary emitted by a successful simulator run.
@@ -71,6 +71,7 @@ pub struct SimulationReport {
     pub queued_fanout: usize,
     pub push: PushSimulationReport,
     pub recent_trace: Vec<String>,
+    pub io_trace: Vec<String>,
     pub workload_weights: ActionWeights,
     pub workload_actions: WorkloadActionCounts,
 }
@@ -78,13 +79,13 @@ pub struct SimulationReport {
 /// Seed-deterministic simulator over Sockudo's durable core primitives.
 pub struct DeterministicSimulator {
     config: SimulatorConfig,
-    rng: StdRng,
-    tick: u64,
+    clock: DeterministicClock,
+    scheduler: DeterministicFaultScheduler,
     real: RealSubsystemHarness,
     nodes: Vec<NodeState>,
     clients: Vec<ClientState>,
     channels: Vec<String>,
-    network: Vec<NetworkEvent>,
+    network: DeterministicNetwork<NetworkEvent>,
     push: PushLab,
     shadow: Shadow,
     workload: WorkloadGenerator,
@@ -110,19 +111,19 @@ impl DeterministicSimulator {
         let real = RealSubsystemHarness::new(&config);
 
         Ok(Self {
-            rng: StdRng::seed_from_u64(config.seed),
+            clock: DeterministicClock::default(),
+            scheduler: DeterministicFaultScheduler::new(config.seed),
             shadow: Shadow::new(
                 &channels,
                 config.history_retention_messages,
                 config.presence_retention_events,
             ),
             config,
-            tick: 0,
             real,
             nodes,
             clients,
             channels,
-            network: Vec::new(),
+            network: DeterministicNetwork::default(),
             push,
             stats: Stats::default(),
             workload,
@@ -135,9 +136,9 @@ impl DeterministicSimulator {
 
     pub async fn run(&mut self) -> SimulatorResult<SimulationReport> {
         for tick in 0..self.config.ticks {
-            self.tick = tick;
+            self.clock.set_tick(tick);
             self.deliver_due_fanout();
-            self.push.on_tick(self.tick, &mut self.rng).await?;
+            self.push.on_tick(self.tick(), &mut self.scheduler).await?;
             self.inject_faults().await?;
             self.drive_workload().await?;
             if self.config.oracle_every > 0 && tick % self.config.oracle_every == 0 {
@@ -157,9 +158,10 @@ impl DeterministicSimulator {
     }
 
     fn report(&self) -> SimulationReport {
+        let tick = self.tick();
         SimulationReport {
             seed: self.config.seed,
-            ticks: self.tick.saturating_add(1),
+            ticks: tick.saturating_add(1),
             mode: self.config.mode,
             operations: self.stats.operations,
             rejected_operations: self.stats.rejected_operations,
@@ -188,19 +190,12 @@ impl DeterministicSimulator {
             live_nodes: self.nodes.iter().filter(|node| node.alive).count(),
             paused_nodes: self.nodes.iter().filter(|node| node.paused).count(),
             partitioned_nodes: self.nodes.iter().filter(|node| node.partitioned).count(),
-            slow_nodes: self
-                .nodes
-                .iter()
-                .filter(|node| node.is_slow(self.tick))
-                .count(),
-            stale_nodes: self
-                .nodes
-                .iter()
-                .filter(|node| node.is_stale(self.tick))
-                .count(),
+            slow_nodes: self.nodes.iter().filter(|node| node.is_slow(tick)).count(),
+            stale_nodes: self.nodes.iter().filter(|node| node.is_stale(tick)).count(),
             queued_fanout: self.network.len(),
             push: self.push.report(),
             recent_trace: self.trace.iter().cloned().collect(),
+            io_trace: self.scheduler.recent_trace(),
             workload_weights: self.workload.weights(),
             workload_actions: self.workload.selected().clone(),
         }
@@ -209,8 +204,12 @@ impl DeterministicSimulator {
     async fn drive_workload(&mut self) -> SimulatorResult<()> {
         self.stats.operations = self.stats.operations.saturating_add(1);
         let action = self.workload.next_action();
+        self.scheduler
+            .record(self.tick(), format!("operation {}", action.as_str()));
         if self.route_rejects() {
             self.stats.rejected_operations = self.stats.rejected_operations.saturating_add(1);
+            self.scheduler
+                .record(self.tick(), "operation route_rejected");
             return Ok(());
         }
 
@@ -223,29 +222,41 @@ impl DeterministicSimulator {
             WorkloadAction::PurgeHistory => self.purge_history_prefix().await,
             WorkloadAction::PushRegisterDevice => {
                 self.push
-                    .register_or_update_device(self.tick, &mut self.rng)
+                    .register_or_update_device(self.tick(), &mut self.scheduler)
                     .await
             }
             WorkloadAction::PushDeleteDevice => {
-                self.push.delete_device(self.tick, &mut self.rng).await
+                self.push
+                    .delete_device(self.tick(), &mut self.scheduler)
+                    .await
             }
             WorkloadAction::PushSubscribe => {
-                self.push.subscribe_device(self.tick, &mut self.rng).await
+                self.push
+                    .subscribe_device(self.tick(), &mut self.scheduler)
+                    .await
             }
             WorkloadAction::PushUnsubscribe => {
-                self.push.unsubscribe_device(self.tick, &mut self.rng).await
+                self.push
+                    .unsubscribe_device(self.tick(), &mut self.scheduler)
+                    .await
             }
-            WorkloadAction::PushPublish => self.push.publish_now(self.tick, &mut self.rng).await,
+            WorkloadAction::PushPublish => {
+                self.push
+                    .publish_now(self.tick(), &mut self.scheduler)
+                    .await
+            }
             WorkloadAction::PushScheduledPublish => {
-                self.push.schedule_publish(self.tick, &mut self.rng).await
+                self.push
+                    .schedule_publish(self.tick(), &mut self.scheduler)
+                    .await
             }
             WorkloadAction::PushProviderFeedback => {
                 self.push
-                    .duplicate_provider_feedback(self.tick, &mut self.rng);
+                    .duplicate_provider_feedback(self.tick(), &mut self.scheduler);
                 Ok(())
             }
             WorkloadAction::PushRepair => {
-                self.push.repair_now(self.tick, &mut self.rng);
+                self.push.repair_now(self.tick(), &mut self.scheduler);
                 Ok(())
             }
             WorkloadAction::OracleCheck => self.check_oracles().await,
@@ -253,15 +264,12 @@ impl DeterministicSimulator {
     }
 
     fn route_rejects(&mut self) -> bool {
-        if !self
-            .nodes
-            .iter()
-            .any(|node| node.can_accept_traffic(self.tick))
-        {
+        let tick = self.tick();
+        if !self.nodes.iter().any(|node| node.can_accept_traffic(tick)) {
             return true;
         }
-        let node_idx = self.rng.random_range(0..self.nodes.len());
-        if !self.nodes[node_idx].can_accept_traffic(self.tick) {
+        let node_idx = self.scheduler.usize_below(self.nodes.len());
+        if !self.nodes[node_idx].can_accept_traffic(tick) {
             return true;
         }
         if let Some(node) = self.nodes.get_mut(node_idx) {
@@ -271,31 +279,34 @@ impl DeterministicSimulator {
     }
 
     async fn inject_faults(&mut self) -> SimulatorResult<()> {
-        if self.roll(self.config.fault.node_crash_probability) {
+        if self.roll("node_crash", self.config.fault.node_crash_probability) {
             self.crash_random_node();
         }
-        if self.roll(self.config.fault.node_restart_probability) {
+        if self.roll("node_restart", self.config.fault.node_restart_probability) {
             self.restart_random_node();
         }
-        if self.roll(self.config.fault.node_pause_probability) {
+        if self.roll("node_pause", self.config.fault.node_pause_probability) {
             self.pause_random_node();
         }
-        if self.roll(self.config.fault.node_resume_probability) {
+        if self.roll("node_resume", self.config.fault.node_resume_probability) {
             self.resume_random_node();
         }
-        if self.roll(self.config.fault.node_partition_probability) {
+        if self.roll(
+            "node_partition",
+            self.config.fault.node_partition_probability,
+        ) {
             self.partition_random_node();
         }
-        if self.roll(self.config.fault.node_heal_probability) {
+        if self.roll("node_heal", self.config.fault.node_heal_probability) {
             self.heal_random_node();
         }
-        if self.roll(self.config.fault.node_slow_probability) {
+        if self.roll("node_slow", self.config.fault.node_slow_probability) {
             self.slow_random_node();
         }
-        if self.roll(self.config.fault.node_stale_probability) {
+        if self.roll("node_stale", self.config.fault.node_stale_probability) {
             self.stale_random_node();
         }
-        if self.roll(self.config.fault.stream_reset_probability) {
+        if self.roll("stream_reset", self.config.fault.stream_reset_probability) {
             self.reset_random_stream().await?;
         }
         Ok(())
@@ -311,7 +322,7 @@ impl DeterministicSimulator {
         if live.len() <= 1 {
             return;
         }
-        let victim = live[self.rng.random_range(0..live.len())];
+        let victim = live[self.scheduler.usize_below(live.len())];
         if let Some(node) = self.nodes.get_mut(victim) {
             node.alive = false;
             node.partitioned = false;
@@ -330,7 +341,7 @@ impl DeterministicSimulator {
         if down.is_empty() {
             return;
         }
-        let node_idx = down[self.rng.random_range(0..down.len())];
+        let node_idx = down[self.scheduler.usize_below(down.len())];
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.alive = true;
             node.paused = false;
@@ -349,7 +360,7 @@ impl DeterministicSimulator {
         if eligible.len() <= 1 {
             return;
         }
-        let node_idx = eligible[self.rng.random_range(0..eligible.len())];
+        let node_idx = eligible[self.scheduler.usize_below(eligible.len())];
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.paused = true;
             self.stats.node_pauses = self.stats.node_pauses.saturating_add(1);
@@ -367,7 +378,7 @@ impl DeterministicSimulator {
         if paused.is_empty() {
             return;
         }
-        let node_idx = paused[self.rng.random_range(0..paused.len())];
+        let node_idx = paused[self.scheduler.usize_below(paused.len())];
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.paused = false;
             self.stats.node_resumes = self.stats.node_resumes.saturating_add(1);
@@ -385,7 +396,7 @@ impl DeterministicSimulator {
         if eligible.len() <= 1 {
             return;
         }
-        let node_idx = eligible[self.rng.random_range(0..eligible.len())];
+        let node_idx = eligible[self.scheduler.usize_below(eligible.len())];
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.partitioned = true;
             self.stats.node_partitions = self.stats.node_partitions.saturating_add(1);
@@ -403,7 +414,7 @@ impl DeterministicSimulator {
         if partitioned.is_empty() {
             return;
         }
-        let node_idx = partitioned[self.rng.random_range(0..partitioned.len())];
+        let node_idx = partitioned[self.scheduler.usize_below(partitioned.len())];
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.partitioned = false;
             self.stats.node_heals = self.stats.node_heals.saturating_add(1);
@@ -421,8 +432,8 @@ impl DeterministicSimulator {
         if eligible.is_empty() {
             return;
         }
-        let node_idx = eligible[self.rng.random_range(0..eligible.len())];
-        let slow_until = self.tick.saturating_add(self.random_delay().max(3));
+        let node_idx = eligible[self.scheduler.usize_below(eligible.len())];
+        let slow_until = self.tick().saturating_add(self.random_delay().max(3));
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.slow_until = slow_until;
             self.stats.node_slowdowns = self.stats.node_slowdowns.saturating_add(1);
@@ -440,8 +451,8 @@ impl DeterministicSimulator {
         if eligible.is_empty() {
             return;
         }
-        let node_idx = eligible[self.rng.random_range(0..eligible.len())];
-        let stale_until = self.tick.saturating_add(self.random_delay().max(2));
+        let node_idx = eligible[self.scheduler.usize_below(eligible.len())];
+        let stale_until = self.tick().saturating_add(self.random_delay().max(2));
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.stale_until = stale_until;
             self.stats.node_stale_marks = self.stats.node_stale_marks.saturating_add(1);
@@ -490,10 +501,8 @@ impl DeterministicSimulator {
 
     async fn publish_message(&mut self) -> SimulatorResult<()> {
         let channel = self.random_channel();
-        let payload = Bytes::from(format!(
-            "payload:{}:{}",
-            self.tick, self.stats.history_commits
-        ));
+        let tick = self.tick();
+        let payload = Bytes::from(format!("payload:{}:{}", tick, self.stats.history_commits));
         let message = self
             .append_history(&channel, "client-event", "publish", payload)
             .await?;
@@ -507,12 +516,13 @@ impl DeterministicSimulator {
 
     async fn create_versioned_message(&mut self) -> SimulatorResult<()> {
         let channel = self.random_channel();
+        let tick = self.tick();
         let history = self
             .append_history(
                 &channel,
                 "sockudo:message.create",
                 MessageAction::Create.as_str(),
-                Bytes::from(format!("version-create:{}", self.tick)),
+                Bytes::from(format!("version-create:{tick}")),
             )
             .await?;
         let delivery = self
@@ -529,10 +539,7 @@ impl DeterministicSimulator {
             history.serial,
             delivery.delivery_serial,
             Some("sockudo:message.create".to_string()),
-            Some(MessageData::String(format!(
-                "created at tick {}",
-                self.tick
-            ))),
+            Some(MessageData::String(format!("created at tick {}", tick))),
             Some(MessageExtras::default()),
         );
         let record = StoredVersionRecord {
@@ -540,7 +547,7 @@ impl DeterministicSimulator {
             channel: channel.clone(),
             original_client_id: Some(format!(
                 "client-{}",
-                self.rng.random_range(0..self.config.clients)
+                self.scheduler.usize_below(self.config.clients)
             )),
             message: message.clone(),
         };
@@ -557,15 +564,16 @@ impl DeterministicSimulator {
 
     async fn mutate_versioned_message(&mut self) -> SimulatorResult<()> {
         let channel = self.random_channel();
+        let tick = self.tick();
         let Some(current) = self
             .shadow
             .channel(&channel)
-            .random_live_version(&mut self.rng)
+            .random_live_version(&mut self.scheduler, tick)
         else {
             return self.create_versioned_message().await;
         };
 
-        let action_roll = self.rng.random_range(0..100);
+        let action_roll = self.scheduler.u32_below(100);
         let (action, payload) = if action_roll < 40 {
             (MessageAction::Update, "message.update")
         } else if action_roll < 75 {
@@ -578,7 +586,7 @@ impl DeterministicSimulator {
                 &channel,
                 action.as_str(),
                 action.as_str(),
-                Bytes::from(format!("{payload}:{}", self.tick)),
+                Bytes::from(format!("{payload}:{tick}")),
             )
             .await?;
         let delivery = self
@@ -599,7 +607,7 @@ impl DeterministicSimulator {
                 MessageFieldDelta {
                     data: FieldPatch::Replace(MessageData::String(format!(
                         "updated at tick {}",
-                        self.tick
+                        tick
                     ))),
                     ..Default::default()
                 },
@@ -618,7 +626,7 @@ impl DeterministicSimulator {
                 version,
                 delivery.delivery_serial,
                 MessageAppend {
-                    data_fragment: format!("|{}", self.tick),
+                    data_fragment: format!("|{tick}"),
                     extras: None,
                 },
             )?,
@@ -643,8 +651,9 @@ impl DeterministicSimulator {
 
     async fn record_presence_transition(&mut self) -> SimulatorResult<()> {
         let channel = self.random_channel();
-        let user_id = format!("user-{}", self.rng.random_range(0..self.config.users));
-        let event = if self.rng.random::<bool>() {
+        let tick = self.tick();
+        let user_id = format!("user-{}", self.scheduler.usize_below(self.config.users));
+        let event = if self.scheduler.bool() {
             PresenceHistoryEventKind::MemberAdded
         } else {
             PresenceHistoryEventKind::MemberRemoved
@@ -668,7 +677,7 @@ impl DeterministicSimulator {
             connection_id: Some(format!("socket-{user_id}")),
             user_info: None,
             dead_node_id: None,
-            dedupe_key: format!("presence:{}:{}:{user_id}", self.tick, self.stats.operations),
+            dedupe_key: format!("presence:{tick}:{}:{user_id}", self.stats.operations),
             published_at_ms: self.timestamp_ms(),
             retention: self.presence_retention_policy(),
         };
@@ -700,7 +709,10 @@ impl DeterministicSimulator {
         if shadow.history.len() < 4 {
             return Ok(());
         }
-        let idx = self.rng.random_range(1..shadow.history.len());
+        let idx = self
+            .scheduler
+            .usize_below(shadow.history.len().saturating_sub(1))
+            .saturating_add(1);
         let before_serial = shadow.history[idx].serial;
         self.real
             .history
@@ -771,24 +783,25 @@ impl DeterministicSimulator {
     }
 
     fn schedule_fanout(&mut self, channel: &str, message: &ShadowHistoryMessage) {
+        let tick = self.tick();
         for client_idx in 0..self.clients.len() {
-            if self.roll(self.config.fault.fanout_drop_probability) {
+            if self.roll("fanout_drop", self.config.fault.fanout_drop_probability) {
                 self.stats.dropped_fanout = self.stats.dropped_fanout.saturating_add(1);
                 continue;
             }
-            let source_node = self.rng.random_range(0..self.nodes.len());
-            if !self.nodes[source_node].can_fanout(self.tick) {
+            let source_node = self.scheduler.usize_below(self.nodes.len());
+            if !self.nodes[source_node].can_fanout(tick) {
                 self.stats.dropped_fanout = self.stats.dropped_fanout.saturating_add(1);
                 continue;
             }
-            let slow_delay = if self.nodes[source_node].is_slow(self.tick) {
+            let slow_delay = if self.nodes[source_node].is_slow(tick) {
                 self.random_delay()
             } else {
                 0
             };
             let event = NetworkEvent {
                 deliver_at: self
-                    .tick
+                    .tick()
                     .saturating_add(self.random_delay())
                     .saturating_add(slow_delay),
                 client_idx,
@@ -797,47 +810,44 @@ impl DeterministicSimulator {
                 serial: message.serial,
                 source_node,
             };
-            self.network.push(event.clone());
-            if self.roll(self.config.fault.fanout_duplicate_probability) {
+            self.network.schedule(event.clone());
+            if self.roll(
+                "fanout_duplicate",
+                self.config.fault.fanout_duplicate_probability,
+            ) {
                 let mut duplicate = event;
                 duplicate.deliver_at = duplicate.deliver_at.saturating_add(self.random_delay());
-                self.network.push(duplicate);
+                self.network.schedule(duplicate);
                 self.stats.duplicated_fanout = self.stats.duplicated_fanout.saturating_add(1);
             }
         }
     }
 
     fn deliver_due_fanout(&mut self) {
-        let mut pending = Vec::with_capacity(self.network.len());
-        let due = std::mem::take(&mut self.network);
-        for event in due {
-            if event.deliver_at <= self.tick {
-                let accepted = self.clients[event.client_idx].deliver(&event);
-                if accepted {
-                    self.stats.delivered_messages = self.stats.delivered_messages.saturating_add(1);
-                    if let Some(node) = self.nodes.get_mut(event.source_node) {
-                        node.fanout_deliveries = node.fanout_deliveries.saturating_add(1);
-                    }
-                } else {
-                    self.stats.stale_deliveries = self.stats.stale_deliveries.saturating_add(1);
+        for event in self.network.drain_due(self.tick()) {
+            let accepted = self.clients[event.client_idx].deliver(&event);
+            if accepted {
+                self.stats.delivered_messages = self.stats.delivered_messages.saturating_add(1);
+                if let Some(node) = self.nodes.get_mut(event.source_node) {
+                    node.fanout_deliveries = node.fanout_deliveries.saturating_add(1);
                 }
             } else {
-                pending.push(event);
+                self.stats.stale_deliveries = self.stats.stale_deliveries.saturating_add(1);
             }
         }
-        self.network = pending;
     }
 
     async fn quiesce(&mut self) -> SimulatorResult<()> {
-        self.quiesce_started_at = Some(self.tick);
+        self.quiesce_started_at = Some(self.tick());
         let max_steps = self.network.len();
         for _ in 0..max_steps {
-            let Some(next_delivery_tick) = self.network.iter().map(|event| event.deliver_at).min()
-            else {
-                self.tick = self.push.quiesce(self.tick, &mut self.rng).await?;
+            let Some(next_delivery_tick) = self.network.next_delivery_tick() else {
+                let tick = self.push.quiesce(self.tick(), &mut self.scheduler).await?;
+                self.clock.set_tick(tick);
                 return Ok(());
             };
-            self.tick = self.tick.saturating_add(1).max(next_delivery_tick);
+            self.clock.advance_by(1);
+            self.clock.advance_to(next_delivery_tick);
             self.deliver_due_fanout();
         }
         if !self.network.is_empty() {
@@ -846,7 +856,8 @@ impl DeterministicSimulator {
                 self.network.len()
             )));
         }
-        self.tick = self.push.quiesce(self.tick, &mut self.rng).await?;
+        let tick = self.push.quiesce(self.tick(), &mut self.scheduler).await?;
+        self.clock.set_tick(tick);
         Ok(())
     }
 
@@ -892,11 +903,11 @@ impl DeterministicSimulator {
 
     fn quiesce_ticks(&self) -> u64 {
         self.quiesce_started_at
-            .map_or(0, |started_at| self.tick.saturating_sub(started_at))
+            .map_or(0, |started_at| self.tick().saturating_sub(started_at))
     }
 
     async fn recovery_probe(&mut self) -> SimulatorResult<()> {
-        let client_idx = self.rng.random_range(0..self.clients.len());
+        let client_idx = self.scheduler.usize_below(self.clients.len());
         let channel = self.random_channel();
         self.recover_client_channel(client_idx, &channel).await
     }
@@ -953,7 +964,7 @@ impl DeterministicSimulator {
         }
         for item in recovered {
             let event = NetworkEvent {
-                deliver_at: self.tick,
+                deliver_at: self.tick(),
                 client_idx,
                 channel: channel.to_string(),
                 stream_id: item.stream_id,
@@ -1582,7 +1593,7 @@ impl DeterministicSimulator {
             serial,
             client_id: Some(format!(
                 "client-{}",
-                self.rng.random_range(0..self.config.clients)
+                self.scheduler.usize_below(self.config.clients)
             )),
             timestamp_ms: self.timestamp_ms(),
             description: None,
@@ -1591,24 +1602,28 @@ impl DeterministicSimulator {
     }
 
     fn random_channel(&mut self) -> String {
-        self.channels[self.rng.random_range(0..self.channels.len())].clone()
+        self.channels[self.scheduler.usize_below(self.channels.len())].clone()
     }
 
     fn random_delay(&mut self) -> u64 {
         if self.config.fault.max_fanout_delay_ticks == 0 {
             0
         } else {
-            self.rng
-                .random_range(0..=self.config.fault.max_fanout_delay_ticks)
+            self.scheduler
+                .u64_inclusive(self.config.fault.max_fanout_delay_ticks)
         }
     }
 
-    fn roll(&mut self, probability: f64) -> bool {
-        probability > 0.0 && self.rng.random::<f64>() < probability
+    fn roll(&mut self, label: &str, probability: f64) -> bool {
+        self.scheduler.roll(self.tick(), label, probability)
+    }
+
+    fn tick(&self) -> u64 {
+        self.clock.tick()
     }
 
     fn timestamp_ms(&self) -> i64 {
-        BASE_TIME_MS.saturating_add(self.tick as i64)
+        self.clock.timestamp_ms()
     }
 
     fn fail(&self, message: String) -> SimulatorError {
@@ -1629,7 +1644,7 @@ impl DeterministicSimulator {
         }
         SimulatorError::Invariant {
             seed: self.config.seed,
-            tick: self.tick,
+            tick: self.tick(),
             message,
         }
     }
@@ -1638,7 +1653,8 @@ impl DeterministicSimulator {
         if self.trace.len() == MAX_TRACE_EVENTS {
             self.trace.pop_front();
         }
-        self.trace.push_back(format!("tick={} {event}", self.tick));
+        self.trace
+            .push_back(format!("tick={} {event}", self.tick()));
     }
 }
 
@@ -1693,6 +1709,12 @@ struct NetworkEvent {
     stream_id: String,
     serial: u64,
     source_node: usize,
+}
+
+impl ScheduledIoEvent for NetworkEvent {
+    fn deliver_at(&self) -> u64 {
+        self.deliver_at
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1865,7 +1887,11 @@ impl ShadowChannel {
             .push(record);
     }
 
-    fn random_live_version(&self, rng: &mut StdRng) -> Option<StoredVersionRecord> {
+    fn random_live_version(
+        &self,
+        scheduler: &mut DeterministicFaultScheduler,
+        _tick: u64,
+    ) -> Option<StoredVersionRecord> {
         let candidates = self
             .version_messages
             .values()
@@ -1876,7 +1902,7 @@ impl ShadowChannel {
         if candidates.is_empty() {
             None
         } else {
-            Some(candidates[rng.random_range(0..candidates.len())].clone())
+            Some(candidates[scheduler.usize_below(candidates.len())].clone())
         }
     }
 
@@ -2048,6 +2074,67 @@ mod tests {
         let right_report = right.run().await.unwrap();
 
         assert_eq!(left_report, right_report);
+        assert_eq!(left_report.queued_fanout, 0);
+    }
+
+    #[tokio::test]
+    async fn same_seed_replays_operation_fault_trace_and_report() {
+        let mut config = test_config(0x105e_ed10);
+        config.ticks = 32;
+        config.workload.weights = ActionWeights {
+            publish_message: 1,
+            create_versioned_message: 0,
+            mutate_versioned_message: 0,
+            presence_transition: 0,
+            recovery_probe: 0,
+            purge_history: 0,
+            push_register_device: 0,
+            push_delete_device: 0,
+            push_subscribe: 0,
+            push_unsubscribe: 0,
+            push_publish: 0,
+            push_scheduled_publish: 0,
+            push_provider_feedback: 0,
+            push_repair: 0,
+            oracle_check: 0,
+        };
+        config.fault.fanout_drop_probability = 1.0;
+        config.fault.fanout_duplicate_probability = 0.0;
+        config.fault.node_crash_probability = 0.0;
+        config.fault.node_restart_probability = 0.0;
+        config.fault.node_pause_probability = 0.0;
+        config.fault.node_resume_probability = 0.0;
+        config.fault.node_partition_probability = 0.0;
+        config.fault.node_heal_probability = 0.0;
+        config.fault.node_slow_probability = 0.0;
+        config.fault.node_stale_probability = 0.0;
+        config.fault.stream_reset_probability = 0.0;
+
+        let mut left = DeterministicSimulator::new(config.clone()).unwrap();
+        let mut right = DeterministicSimulator::new(config).unwrap();
+
+        let left_report = left.run().await.unwrap();
+        let right_report = right.run().await.unwrap();
+
+        assert_eq!(left_report.io_trace, right_report.io_trace);
+        assert_eq!(left_report.recent_trace, right_report.recent_trace);
+        assert_eq!(left_report, right_report);
+        assert!(
+            left_report
+                .io_trace
+                .iter()
+                .any(|event| event.contains("operation publish_message")),
+            "operation trace should be replayable"
+        );
+        assert!(
+            left_report
+                .io_trace
+                .iter()
+                .any(|event| event.contains("fault fanout_drop")),
+            "fault trace should be replayable"
+        );
+        assert!(left_report.history_commits > 0);
+        assert!(left_report.dropped_fanout > 0);
         assert_eq!(left_report.queued_fanout, 0);
     }
 

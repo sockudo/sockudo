@@ -76,6 +76,34 @@ operator routing, push worker queues after accept, provider dispatch, provider f
 timing. Those modeled paths exist to make deterministic faults cheap and replayable; they are
 checked against the durable stores above rather than replacing them.
 
+## Deterministic IO Model
+
+The simulator keeps deterministic IO under `crates/sockudo-simulator/src/io.rs`. The production
+server does not use these wrappers; they are simulator-local boundaries around modeled IO and real
+memory-store calls.
+
+| Wrapper | Controls |
+| --- | --- |
+| `DeterministicClock` | The logical tick and durable timestamps. Timer advancement during quiesce jumps through due fanout and push work instead of sleeping wall-clock time. |
+| `DeterministicFaultScheduler` | Seeded random choices, operation trace entries, and named fault rolls such as `fanout_drop`, `queue.ack_lost`, and `storage.push_publish.write_after_commit`. |
+| `DeterministicNetwork` | Modeled live fanout delivery order, delivery tick, dropped messages, duplicates, and delayed delivery. |
+| `DeterministicQueue` | Modeled push worker queue order, delayed delivery, redelivery, lease timeout duplication, and repair requeueing. |
+| `DeterministicStorage` | Storage read/write behavior around real memory-store calls: fail-before-commit, fail-after-commit, lost responses, stale reads, and backend outages. |
+
+The final JSON report includes a bounded `io_trace` with the most recent operation and fault
+decisions. That trace is intentionally compact: it is for replay orientation, not a full event log.
+Use the seed, tick count, mode, fault flags, and workload weights as the canonical replay input.
+
+Current limitations:
+
+| Limitation | Why |
+| --- | --- |
+| No real sockets or multi-process transport | Fanout is a deterministic in-process queue so drops, duplicates, and delays are exactly replayable. |
+| No wall-clock timer waits | Logical ticks make timer behavior reproducible and keep shrink/replay fast. |
+| No real provider calls | Provider responses are seeded outcomes so retry, invalid-token, and lost-response paths can be covered without external services. |
+| No real production storage backend faults | The simulator wraps real memory stores and injects storage behavior at the simulator boundary; Redis/Postgres/disk failures still need integration or chaos tests. |
+| Bounded trace memory | `recent_trace`, `push.recent_trace`, and `io_trace` keep recent context only; failure capsules and replay commands should preserve the full seed/config. |
+
 ## VOPR-Style Maturity
 
 The simulator has three layers:
@@ -256,15 +284,17 @@ change.
 ## JSON Shape
 
 The final JSON includes top-level core counters plus a nested `push` object with durable status/log
-counts, provider results, queue losses, repair counts, and recent push trace entries. Keep sample
-outputs with the exact seed and tick count that produced them so they remain replayable. A compact
-example lives at `crates/sockudo-simulator/examples/disaster-report.example.json`.
+counts, provider results, queue losses, repair counts, recent push trace entries, and top-level
+`io_trace` entries for recent deterministic operation/fault decisions. Keep sample outputs with the
+exact seed and tick count that produced them so they remain replayable. A compact example generated
+with `--seed 12648430 --ticks 16 --json` lives at
+`crates/sockudo-simulator/examples/disaster-report.example.json`.
 
 ## Extending It
 
 Add new workloads by following the existing pattern:
 
-1. Generate the operation from the seeded RNG.
+1. Generate the operation through the deterministic scheduler or workload generator.
 2. Apply it to the real Sockudo store or subsystem first.
 3. Advance the shadow only after the real operation succeeds.
 4. Add a cheap per-run oracle and a quiesce oracle.
