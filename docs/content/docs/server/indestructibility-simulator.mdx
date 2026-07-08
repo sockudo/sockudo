@@ -64,6 +64,58 @@ The simulator covers these high-value durability surfaces:
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
 deterministic inner loop for the durable primitives those tests rely on.
 
+## Outside-In Binary Chaos Harness
+
+Sockudo also has a separate **outside-in chaos** runner for manual local experiments against actual
+`sockudo` server binaries and real client traffic. It is inspired by TigerBeetle Vortex in spirit,
+but it is not deterministic, not a CI gate, and not part of the simulator's seed-replayable model.
+
+```bash
+make binary-chaos CHAOS_SEED=42 CHAOS_DURATION_MS=12000
+```
+
+The Make target builds `target/debug/sockudo`, starts it as a child process with a generated local
+memory-backed config, connects clients over WebSocket, publishes signed HTTP API events, and injects
+bounded outside-in faults:
+
+| Fault surface | Current behavior |
+| --- | --- |
+| Process restart/kill | Sends `SIGKILL`, restarts the binary, waits for `/up/app-id`, and reconnects clients. |
+| Network delay/drop/duplication | By default runs clients and HTTP publishes through a local TCP proxy that applies seeded connection/chunk delay and stream drops. Duplicate publish probes remain application-level and reuse the same idempotency key. |
+| Config changes/reloads | Writes a second config and applies it by process restart because Sockudo loads config at startup. |
+| Push-provider fake outcomes | Optionally starts seeded `scripts/push-mock-provider.mjs`, points FCM worker env vars at it when the binary is built with push/monolith features, and can require the mock provider to produce a seeded fake outcome. |
+| Recovery/reconnect | Enables Protocol V2 connection recovery, drops client connections, reconnects, and records resume success/failure counters. |
+
+Every run writes an artifact directory under `target/outside-in-chaos/<timestamp>-seed-<seed>/`
+containing:
+
+| File | Purpose |
+| --- | --- |
+| `artifact.json` | Seed, command, replay command with effective flags, generated config paths, fault timeline, counters, publish results, provider metrics, and recovery observations. |
+| `sockudo-chaos.toml` | Initial generated server config. |
+| `sockudo-chaos-restart.toml` | Restart config used for the config-change fault. |
+| `sockudo.log` | Captured server stdout/stderr. |
+| `push-provider.log` | Captured mock provider stdout/stderr when enabled. |
+
+Push-provider exercise is opt-in because it requires a compatible feature build:
+
+```bash
+make binary-chaos-push CHAOS_SEED=42 CHAOS_DURATION_MS=12000
+```
+
+For network experiments, the default `--network-fault-mode proxy` is unprivileged and local-only.
+Use `--network-fault-mode publisher` to limit faults to HTTP publisher delay/drop behavior, or
+`--network-fault-mode off` to run only process/client/config/push chaos. The replay command in
+`artifact.json` reuses the same seed, ports, timings, probabilities, and push-provider settings;
+outside-in wall-clock scheduling can still vary between runs.
+
+Sockudo's provider dispatch layer rejects private/local provider URLs by design. If that guard
+prevents the server process from calling the local mock provider, the artifact records the guarded
+dispatch attempt and the harness performs a direct mock-provider probe so the fake provider outcome
+is still captured with the same seed.
+
+Keep this harness local/manual only. Do not add CI, scheduled jobs, or GitHub Actions for it.
+
 ## Real-Code Boundary
 
 The simulator is intentionally not a full server-in-a-process. Its current real-code boundary is:
