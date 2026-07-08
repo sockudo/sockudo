@@ -387,6 +387,14 @@ async fn run_corpus(
             })
             .collect::<Vec<_>>(),
         CorpusSpec::Configs(configs) => configs,
+        CorpusSpec::FailureArtifact {
+            config,
+            error,
+            replay_command,
+        } => {
+            drop((error, replay_command));
+            vec![*config]
+        }
     };
     let mut reports = Vec::with_capacity(configs.len());
     for config in configs {
@@ -460,21 +468,12 @@ fn write_failure_artifact(
         config,
         error,
         replay_command: format!(
-            "cargo run -p sockudo-simulator --bin sockudo-sim -- --seed {} --ticks {} --mode {}",
-            config.seed,
-            config.ticks,
-            mode_arg(config.mode)
+            "cargo run -p sockudo-simulator --bin sockudo-sim -- --corpus-file {}",
+            path.display()
         ),
     };
     std::fs::write(path, serde_json::to_string_pretty(&artifact)?)?;
     Ok(())
-}
-
-fn mode_arg(mode: SimulatorMode) -> &'static str {
-    match mode {
-        SimulatorMode::Safety => "safety",
-        SimulatorMode::Liveness => "liveness",
-    }
 }
 
 fn print_corpus_summary(reports: &[SimulationReport]) {
@@ -502,6 +501,13 @@ fn print_corpus_summary(reports: &[SimulationReport]) {
 enum CorpusSpec {
     Seeds(Vec<u64>),
     Configs(Vec<SimulatorConfig>),
+    FailureArtifact {
+        config: Box<SimulatorConfig>,
+        #[serde(default)]
+        error: Option<String>,
+        #[serde(default, rename = "replayCommand")]
+        replay_command: Option<String>,
+    },
 }
 
 #[derive(Debug)]

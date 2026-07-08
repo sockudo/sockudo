@@ -15,8 +15,8 @@ fn v1_compatible_message_strips_v2_only_fields_for_plain_messages() {
         name: Some("chat.message".to_string()),
         user_id: None,
         tags: None,
-        sequence: None,
-        conflation_key: None,
+        sequence: Some(7),
+        conflation_key: Some("room".to_string()),
         message_id: Some("mid-1".to_string()),
         stream_id: Some("stream-1".to_string()),
         serial: Some(9),
@@ -32,8 +32,8 @@ fn v1_compatible_message_strips_v2_only_fields_for_plain_messages() {
             echo: Some(false),
             ai: None,
         }),
-        delta_sequence: None,
-        delta_conflation_key: None,
+        delta_sequence: Some(8),
+        delta_conflation_key: Some("room".to_string()),
     };
 
     let v1 = LocalAdapter::v1_compatible_message(&message).unwrap();
@@ -41,8 +41,12 @@ fn v1_compatible_message_strips_v2_only_fields_for_plain_messages() {
     assert!(v1.serial.is_none());
     assert!(v1.message_id.is_none());
     assert!(v1.stream_id.is_none());
+    assert!(v1.sequence.is_none());
+    assert!(v1.conflation_key.is_none());
     assert!(v1.idempotency_key.is_none());
     assert!(v1.extras.is_none());
+    assert!(v1.delta_sequence.is_none());
+    assert!(v1.delta_conflation_key.is_none());
 }
 
 #[test]

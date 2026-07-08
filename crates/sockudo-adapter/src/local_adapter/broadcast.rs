@@ -1014,8 +1014,12 @@ impl LocalAdapter {
         v1_message.message_id = None;
         v1_message.stream_id = None;
         v1_message.tags = None;
+        v1_message.sequence = None;
+        v1_message.conflation_key = None;
         v1_message.idempotency_key = None;
         v1_message.extras = None;
+        v1_message.delta_sequence = None;
+        v1_message.delta_conflation_key = None;
         Some(v1_message)
     }
 

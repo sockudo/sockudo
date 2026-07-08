@@ -16,5 +16,5 @@ mod workload;
 pub use config::{FaultConfig, LivenessConfig, SimulatorConfig, SimulatorMode, StorageFaultConfig};
 pub use error::{SimulatorError, SimulatorResult};
 pub use push_lab::{PushLabConfig, PushSimulationReport};
-pub use simulator::{DeterministicSimulator, SimulationReport};
+pub use simulator::{DeterministicSimulator, ProtocolOracleReport, SimulationReport};
 pub use workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadConfig};
