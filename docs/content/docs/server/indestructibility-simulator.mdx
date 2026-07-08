@@ -53,11 +53,12 @@ The simulator covers these high-value durability surfaces:
 
 | Surface | Oracle |
 | --- | --- |
+| Protocol delivery | V1 renderings are serialized through `sockudo-protocol` and must not contain V2-only fields; V2 renderings must preserve continuity fields and strip internal idempotency keys. |
 | Durable history | Reserved serials, retained rows, page cursors, stream inspection, retention purges, and reset behavior match the shadow model. |
-| Connection recovery | Simulated clients recover dropped live fanout from durable history unless retention has legitimately truncated the gap; stale and corrupt storage reads must fail closed or return a valid prefix. |
-| Versioned messages | Delivery serial replay is contiguous, version chains page in both directions, cursors round-trip through JSON, latest reads match the shadow, and `latest_by_history` preserves original history ordering. |
-| Presence history | Transition dedupe, retained events, cursor paging, stream inspection, and reconstructed snapshots match the shadow model. |
-| Push workflow | Device registration, channel subscription, scheduled-job storage, publish acceptance, initial status, publish logs, and publish-id idempotency go through real `sockudo-push` memory store/pipeline APIs. The simulator then faults modeled worker queues and provider outcomes and checks they converge. |
+| Connection recovery | Simulated V2 clients recover dropped live fanout from durable history unless retention has legitimately truncated the gap; stale and corrupt storage reads must fail closed or return a valid prefix, and recovery cursors must remain contiguous. |
+| Versioned messages | Delivery serial replay is contiguous, version chains page in both directions, cursors round-trip through JSON, latest reads match the shadow, version/history/delivery serials stay monotonic, and `latest_by_history` preserves original history ordering. |
+| Presence history | First-join/last-leave edge decisions, retained events, cursor paging, stream inspection, and reconstructed snapshots match the shadow model under deterministic reconnect churn. |
+| Push workflow | Device registration, channel subscription, scheduled-job storage, publish acceptance, initial status, publish logs, and publish-id idempotency go through real `sockudo-push` memory store/pipeline APIs. The simulator then faults modeled worker queues, status transitions, and provider outcomes and checks they converge. |
 | Crash/restart recovery | Restarted nodes immediately re-read durable history, versions, presence history, and push status/log/idempotency state through the same safety oracles. |
 
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
@@ -71,7 +72,7 @@ The simulator is intentionally not a full server-in-a-process. Its current real-
 | --- | --- |
 | History | Real `MemoryHistoryStore` reservations, appends, reads, cursors, stream inspection, purges, and resets. |
 | Versioned messages | Real `MemoryVersionStore` delivery reservations, version appends, replay, latest reads, paged chain reads, and `latest_by_history`. |
-| Presence history | Real `MemoryPresenceHistoryStore` transition recording, dedupe, reads, cursors, stream inspection, snapshot reconstruction, and resets. |
+| Presence history | Real `MemoryPresenceHistoryStore` transition recording, dedupe, reads, cursors, stream inspection, snapshot reconstruction, and resets; the simulator separately models active connection counts for first-join/last-leave edge decisions. |
 | Push durable state | Real `MemoryPushStore` device, subscription, schedule, status, publish-log, and idempotency APIs, with publish acceptance through `PushPipeline::accept_publish`. |
 
 Still modeled: live socket fanout, horizontal transport timing, replay-buffer hot recovery,
@@ -228,6 +229,7 @@ Push disasters are checked against Sockudo-side invariants:
 | Idempotency | Duplicate publish keys map back to the same logical publish and do not create a second effect. |
 | Queue repair | Lost publish-log and delivery queue messages are recreated from durable state by idempotent repair scans. |
 | Provider convergence | Each planned eligible target eventually becomes accepted, retryable, rejected, expired, cancelled, or dead-lettered. |
+| Status transitions | Modeled publish lifecycle transitions never move backward, never leave a terminal state, and agree with terminal counters. |
 | Retry bounds | Retryable outcomes schedule bounded retries and then converge. |
 | Token invalidation | Invalid/unregistered/expired tokens are marked terminal and removed from future eligible sends. |
 | Counters | Status counters never exceed planned logical deliveries and terminal statuses match terminal counters. |
@@ -296,10 +298,17 @@ Invariant failures include the seed and simulator tick:
 ```text
 sockudo-sim: FAILED - reproduce with --seed 42
 simulator invariant failed at tick 812 (seed=42): history serial gap on sim-channel-1: 41 then 43
+replay command:
+  cargo run -p sockudo-simulator --bin sockudo-sim -- --seed 42 --ticks 5000 --mode safety
+config_json:
+  {"seed":42,"ticks":5000,...}
 recent trace:
   tick=807 push queue produce lost for PublishLog { publish_id: "push-00000000000000000042" }
   tick=811 node 2 restarted
 ```
+
+Failure artifacts written with `--failure-artifact` include the full config and can be replayed
+directly with `--corpus-file`.
 
 Treat these as product bugs unless the invariant is deliberately stronger than the subsystem's
 documented contract. If the contract changes, update the simulator shadow and this page in the same
@@ -307,12 +316,13 @@ change.
 
 ## JSON Shape
 
-The final JSON includes top-level core counters, storage fault counters, restart recovery check
-counts, a nested `push` object with durable status/log counts, provider results, queue losses,
-repair counts, recent push trace entries, and top-level `io_trace` entries for recent deterministic
-operation/fault decisions. Keep sample outputs with the exact seed and tick count that produced
-them so they remain replayable. A compact example generated with `--seed 12648430 --ticks 16
---json` lives at
+The final JSON includes top-level core counters, a `protocol_oracles` object with V1/V2 delivery,
+cursor, identity, monotonicity, rewind, and presence-edge check counts, storage fault counters,
+restart recovery check counts, a nested `push` object with durable status/log counts, status
+transition counts, provider results, queue losses, repair counts, recent push trace entries, and
+top-level `io_trace` entries for recent deterministic operation/fault decisions. Keep sample
+outputs with the exact seed and tick count that produced them so they remain replayable. A compact
+example generated with `--seed 12648430 --ticks 16 --json` lives at
 `crates/sockudo-simulator/examples/disaster-report.example.json`.
 
 ## Extending It

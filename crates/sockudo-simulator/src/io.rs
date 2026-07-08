@@ -78,10 +78,6 @@ impl DeterministicFaultScheduler {
         fired
     }
 
-    pub(crate) fn bool(&mut self) -> bool {
-        self.rng.random::<bool>()
-    }
-
     pub(crate) fn ratio(&mut self, numerator: u32, denominator: u32) -> bool {
         self.rng.random_ratio(numerator, denominator)
     }

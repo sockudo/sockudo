@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sockudo_push::PushProviderKind;
+use sockudo_push::{PublishLifecycleState, PushProviderKind};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::error::{SimulatorError, SimulatorResult};
@@ -158,6 +158,7 @@ pub struct PushSimulationReport {
     pub scheduled_publishes: u64,
     pub durable_statuses: usize,
     pub durable_publish_logs: usize,
+    pub status_transitions: u64,
     pub planned_deliveries: u64,
     pub provider_sends: u64,
     pub delivery_results: u64,
@@ -579,6 +580,12 @@ impl PushLab {
                     publish.id, publish.planned, status.counters.planned
                 ));
             }
+            if status.state != PublishLifecycleState::Queued {
+                return Err(format!(
+                    "real push status for {} changed outside simulator worker model: expected Queued, got {:?}",
+                    publish.id, status.state
+                ));
+            }
             let idempotency_target = self
                 .real
                 .publish_idempotency_target(&publish.id)
@@ -612,6 +619,32 @@ impl PushLab {
                 return Err(format!(
                     "push publish {} is terminal with incomplete deliveries: terminal={} planned={}",
                     publish.id, terminal, publish.planned
+                ));
+            }
+            let expected_state = publish.expected_lifecycle_state();
+            if publish.status_state != expected_state {
+                return Err(format!(
+                    "push publish {} lifecycle state mismatch: expected {:?} from counters {:?}, got {:?}",
+                    publish.id, expected_state, publish.counters, publish.status_state
+                ));
+            }
+            for transition in &publish.status_transitions {
+                if !valid_status_transition(transition.from, transition.to) {
+                    return Err(format!(
+                        "push publish {} invalid status transition at tick {}: {:?} -> {:?} ({})",
+                        publish.id,
+                        transition.tick,
+                        transition.from,
+                        transition.to,
+                        transition.reason
+                    ));
+                }
+            }
+            if publish.state == PublishState::Terminal && !is_terminal_status(publish.status_state)
+            {
+                return Err(format!(
+                    "push publish {} is terminal but lifecycle state is {:?}",
+                    publish.id, publish.status_state
                 ));
             }
             for delivery in publish.deliveries.values() {
@@ -699,6 +732,11 @@ impl PushLab {
                 .values()
                 .filter(|publish| publish.durable_log)
                 .count(),
+            status_transitions: self
+                .publishes
+                .values()
+                .map(|publish| publish.status_transitions.len() as u64)
+                .sum(),
             planned_deliveries: self.publishes.values().map(|publish| publish.planned).sum(),
             provider_sends: self.stats.provider_sends,
             delivery_results: self.stats.delivery_results,
@@ -812,6 +850,8 @@ impl PushLab {
                 durable_status: true,
                 durable_log: true,
                 state: PublishState::Queued,
+                status_state: PublishLifecycleState::Queued,
+                status_transitions: Vec::new(),
                 planned,
                 counters: PushCounters::default(),
                 deliveries,
@@ -943,10 +983,22 @@ impl PushLab {
                     );
                 }
                 if let Some(publish) = self.publishes.get_mut(&publish_id) {
-                    publish.state = if publish.planned == 0 {
-                        PublishState::Terminal
+                    if publish.terminal_deliveries() == publish.planned {
+                        publish.state = PublishState::Terminal;
+                        let next = publish.expected_lifecycle_state();
+                        publish.transition_status(tick, next, "publish_log_after_terminal");
                     } else {
-                        PublishState::Running
+                        publish.state = if publish.planned == 0 {
+                            PublishState::Terminal
+                        } else {
+                            PublishState::Running
+                        };
+                        let next = if publish.planned == 0 {
+                            PublishLifecycleState::Succeeded
+                        } else {
+                            PublishLifecycleState::Dispatching
+                        };
+                        publish.transition_status(tick, next, "publish_log_planned");
                     };
                 }
             }
@@ -1158,6 +1210,10 @@ impl PushLab {
         delivery.last_result = Some(result);
         publish.counters.record(result);
         publish.refresh_state();
+        if publish.state == PublishState::Terminal {
+            let next = publish.expected_lifecycle_state();
+            publish.transition_status(tick, next, "delivery_terminal");
+        }
         self.stats.delivery_results = self.stats.delivery_results.saturating_add(1);
         match result {
             ProviderResult::Accepted => {
@@ -1195,6 +1251,10 @@ impl PushLab {
         delivery.last_result = Some(ProviderResult::Rejected);
         publish.counters.dead_lettered = publish.counters.dead_lettered.saturating_add(1);
         publish.refresh_state();
+        if publish.state == PublishState::Terminal {
+            let next = publish.expected_lifecycle_state();
+            publish.transition_status(tick, next, "delivery_dead_lettered");
+        }
         self.stats.delivery_results = self.stats.delivery_results.saturating_add(1);
         self.stats.dead_letters = self.stats.dead_letters.saturating_add(1);
         self.trace(
@@ -1213,17 +1273,17 @@ impl PushLab {
             let Some(publish) = self.publishes.get(&publish_id) else {
                 continue;
             };
-            if publish.state == PublishState::Queued
-                && !self.queue_contains_publish_log(&publish_id)
-            {
-                self.enqueue(
-                    tick,
-                    scheduler,
-                    QueueStage::PublishLog {
-                        publish_id: publish_id.clone(),
-                    },
-                );
-                self.stats.repair_requeued = self.stats.repair_requeued.saturating_add(1);
+            if publish.state == PublishState::Queued {
+                if !self.queue_contains_publish_log(&publish_id) {
+                    self.enqueue(
+                        tick,
+                        scheduler,
+                        QueueStage::PublishLog {
+                            publish_id: publish_id.clone(),
+                        },
+                    );
+                    self.stats.repair_requeued = self.stats.repair_requeued.saturating_add(1);
+                }
                 continue;
             }
             let missing = publish
@@ -1609,6 +1669,50 @@ fn random_provider(scheduler: &mut DeterministicFaultScheduler) -> PushProviderK
     }
 }
 
+fn valid_status_transition(from: PublishLifecycleState, to: PublishLifecycleState) -> bool {
+    match from {
+        PublishLifecycleState::Queued => matches!(
+            to,
+            PublishLifecycleState::Planning
+                | PublishLifecycleState::Dispatching
+                | PublishLifecycleState::Succeeded
+                | PublishLifecycleState::Failed
+                | PublishLifecycleState::Expired
+                | PublishLifecycleState::DeadLettered
+                | PublishLifecycleState::PartiallySucceeded
+        ),
+        PublishLifecycleState::Planning => matches!(
+            to,
+            PublishLifecycleState::Dispatching
+                | PublishLifecycleState::Failed
+                | PublishLifecycleState::Expired
+                | PublishLifecycleState::DeadLettered
+        ),
+        PublishLifecycleState::Dispatching
+        | PublishLifecycleState::Throttled
+        | PublishLifecycleState::QuotaExceeded => is_terminal_status(to),
+        state if is_terminal_status(state) => false,
+        PublishLifecycleState::Cancelled
+        | PublishLifecycleState::Expired
+        | PublishLifecycleState::Failed
+        | PublishLifecycleState::DeadLettered
+        | PublishLifecycleState::Succeeded
+        | PublishLifecycleState::PartiallySucceeded => false,
+    }
+}
+
+fn is_terminal_status(state: PublishLifecycleState) -> bool {
+    matches!(
+        state,
+        PublishLifecycleState::Cancelled
+            | PublishLifecycleState::Expired
+            | PublishLifecycleState::Failed
+            | PublishLifecycleState::DeadLettered
+            | PublishLifecycleState::Succeeded
+            | PublishLifecycleState::PartiallySucceeded
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SimDevice {
     id: String,
@@ -1634,6 +1738,8 @@ struct PushPublish {
     durable_status: bool,
     durable_log: bool,
     state: PublishState,
+    status_state: PublishLifecycleState,
+    status_transitions: Vec<StatusTransition>,
     planned: u64,
     counters: PushCounters,
     deliveries: BTreeMap<String, Delivery>,
@@ -1661,6 +1767,59 @@ impl PushPublish {
             PublishState::Running
         };
     }
+
+    fn transition_status(&mut self, tick: u64, next: PublishLifecycleState, reason: &'static str) {
+        if self.status_state == next {
+            return;
+        }
+        let previous = self.status_state;
+        self.status_state = next;
+        self.status_transitions.push(StatusTransition {
+            tick,
+            from: previous,
+            to: next,
+            reason,
+        });
+    }
+
+    fn expected_lifecycle_state(&self) -> PublishLifecycleState {
+        if self.state == PublishState::Queued {
+            return PublishLifecycleState::Queued;
+        }
+        if self.planned == 0 {
+            return PublishLifecycleState::Succeeded;
+        }
+        let succeeded = self.counters.succeeded;
+        let failed = self.counters.failed.saturating_add(self.counters.cancelled);
+        let expired = self.counters.expired;
+        let dead_lettered = self.counters.dead_lettered;
+        let terminal = succeeded
+            .saturating_add(failed)
+            .saturating_add(expired)
+            .saturating_add(dead_lettered);
+        if terminal < self.planned {
+            return PublishLifecycleState::Dispatching;
+        }
+        if failed == 0 && expired == 0 && dead_lettered == 0 {
+            PublishLifecycleState::Succeeded
+        } else if succeeded > 0 {
+            PublishLifecycleState::PartiallySucceeded
+        } else if expired > 0 {
+            PublishLifecycleState::Expired
+        } else if dead_lettered > 0 {
+            PublishLifecycleState::DeadLettered
+        } else {
+            PublishLifecycleState::Failed
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusTransition {
+    tick: u64,
+    from: PublishLifecycleState,
+    to: PublishLifecycleState,
+    reason: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

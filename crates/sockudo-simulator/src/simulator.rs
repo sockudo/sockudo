@@ -19,8 +19,14 @@ use sockudo_core::versioned_messages::{
     FieldPatch, MessageAction, MessageAppend, MessageFieldDelta, MessageSerial, VersionMetadata,
     VersionSerial, VersionedMessage,
 };
-use sockudo_protocol::messages::{MessageData, MessageExtras};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use sockudo_protocol::messages::{ExtrasValue, MessageData, MessageExtras, PusherMessage};
+use sockudo_protocol::versioned_messages::{
+    MessageAction as ProtocolMessageAction, MessageVersionMetadata, apply_runtime_metadata,
+    clear_runtime_append_fragment, extract_runtime_action,
+};
+use sockudo_protocol::wire::{deserialize_message, serialize_message};
+use sockudo_protocol::{ProtocolVersion, WireFormat};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use crate::config::{SimulatorConfig, SimulatorMode};
 use crate::error::{SimulatorError, SimulatorResult};
@@ -43,6 +49,7 @@ pub struct SimulationReport {
     pub operations: u64,
     pub rejected_operations: u64,
     pub oracle_checks: u64,
+    pub protocol_oracles: ProtocolOracleReport,
     pub history_commits: u64,
     pub version_commits: u64,
     pub presence_events: u64,
@@ -83,6 +90,19 @@ pub struct SimulationReport {
     pub workload_actions: WorkloadActionCounts,
 }
 
+/// Protocol-aware oracle counters emitted in the simulator report.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct ProtocolOracleReport {
+    pub v1_deliveries_checked: u64,
+    pub v1_suppressed_deliveries: u64,
+    pub v2_deliveries_checked: u64,
+    pub v2_recovery_cursors_checked: u64,
+    pub duplicate_identity_checks: u64,
+    pub serial_monotonicity_checks: u64,
+    pub attach_rewind_gap_checks: u64,
+    pub presence_edge_checks: u64,
+}
+
 /// Seed-deterministic simulator over Sockudo's durable core primitives.
 pub struct DeterministicSimulator {
     config: SimulatorConfig,
@@ -102,6 +122,7 @@ pub struct DeterministicSimulator {
     trace: VecDeque<String>,
     next_message_serial: u64,
     next_version_serial: u64,
+    next_presence_connection: u64,
     quiesce_started_at: Option<u64>,
 }
 
@@ -113,7 +134,14 @@ impl DeterministicSimulator {
             .map(|idx| format!("sim-channel-{idx}"))
             .collect::<Vec<_>>();
         let clients = (0..config.clients)
-            .map(|idx| ClientState::new(idx, &channels))
+            .map(|idx| {
+                let protocol = if idx.is_multiple_of(2) {
+                    ProtocolVersion::V2
+                } else {
+                    ProtocolVersion::V1
+                };
+                ClientState::new(idx, protocol, &channels)
+            })
             .collect();
         let nodes = (0..config.nodes).map(NodeState::new).collect();
         let push = PushLab::new(&channels, config.clients, config.push.clone())?;
@@ -141,6 +169,7 @@ impl DeterministicSimulator {
             trace: VecDeque::new(),
             next_message_serial: 1,
             next_version_serial: 1,
+            next_presence_connection: 1,
             quiesce_started_at: None,
         })
     }
@@ -149,7 +178,7 @@ impl DeterministicSimulator {
         for tick in 0..self.config.ticks {
             self.clock.set_tick(tick);
             self.storage_visibility.flush(tick);
-            self.deliver_due_fanout();
+            self.deliver_due_fanout()?;
             self.push.on_tick(self.tick(), &mut self.scheduler).await?;
             self.inject_faults().await?;
             self.drive_workload().await?;
@@ -178,6 +207,7 @@ impl DeterministicSimulator {
             operations: self.stats.operations,
             rejected_operations: self.stats.rejected_operations,
             oracle_checks: self.stats.oracle_checks,
+            protocol_oracles: self.stats.protocol.report(),
             history_commits: self.stats.history_commits,
             version_commits: self.stats.version_commits,
             presence_events: self.stats.presence_events,
@@ -544,7 +574,7 @@ impl DeterministicSimulator {
     async fn create_versioned_message(&mut self) -> SimulatorResult<()> {
         let channel = self.random_channel();
         let tick = self.tick();
-        let Some(history) = self
+        let Some(mut history) = self
             .append_history(
                 &channel,
                 "sockudo:message.create",
@@ -591,7 +621,11 @@ impl DeterministicSimulator {
         };
         self.real.version.append_version(record.clone()).await?;
         self.record_version_visibility(&channel, record.delivery_serial());
+        history.version_delivery_serial = Some(record.delivery_serial());
         self.shadow.channel_mut(&channel).append_version(record);
+        self.shadow
+            .channel_mut(&channel)
+            .link_version_history(history.serial, history.version_delivery_serial);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
         self.trace(format!(
@@ -620,7 +654,7 @@ impl DeterministicSimulator {
         } else {
             (MessageAction::Delete, "message.delete")
         };
-        let Some(history) = self
+        let Some(mut history) = self
             .append_history(
                 &channel,
                 action.as_str(),
@@ -690,7 +724,11 @@ impl DeterministicSimulator {
         };
         self.real.version.append_version(record.clone()).await?;
         self.record_version_visibility(&channel, record.delivery_serial());
+        history.version_delivery_serial = Some(record.delivery_serial());
         self.shadow.channel_mut(&channel).append_version(record);
+        self.shadow
+            .channel_mut(&channel)
+            .link_version_history(history.serial, history.version_delivery_serial);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
         self.trace(format!(
@@ -704,39 +742,78 @@ impl DeterministicSimulator {
         let channel = self.random_channel();
         let tick = self.tick();
         let user_id = format!("user-{}", self.scheduler.usize_below(self.config.users));
-        let event = if self.scheduler.bool() {
-            PresenceHistoryEventKind::MemberAdded
-        } else {
-            PresenceHistoryEventKind::MemberRemoved
-        };
-        let cause = match event {
-            PresenceHistoryEventKind::MemberAdded | PresenceHistoryEventKind::MemberUpdated => {
-                PresenceHistoryEventCause::Join
+        let active_connections = self.shadow.channel(&channel).presence_connections(&user_id);
+        let action = if active_connections.is_empty() {
+            if self.scheduler.ratio(1, 5) {
+                PresenceConnectionAction::Leave
+            } else {
+                PresenceConnectionAction::Join
             }
-            PresenceHistoryEventKind::MemberRemoved => PresenceHistoryEventCause::Disconnect,
+        } else if self.scheduler.ratio(2, 5) {
+            PresenceConnectionAction::Join
+        } else {
+            PresenceConnectionAction::Leave
         };
-        let should_record = self
-            .shadow
-            .channel(&channel)
-            .presence_would_record(event, &user_id);
+        let connection_id = match action {
+            PresenceConnectionAction::Join => self.next_presence_connection_id(&user_id),
+            PresenceConnectionAction::Leave => {
+                let connection_idx = if active_connections.is_empty() {
+                    0
+                } else {
+                    self.scheduler.usize_below(active_connections.len())
+                };
+                active_connections
+                    .get(connection_idx)
+                    .cloned()
+                    .unwrap_or_else(|| format!("socket-{user_id}-ghost-{tick}"))
+            }
+        };
+        let before_connections = active_connections.len();
+        let after_connections = match action {
+            PresenceConnectionAction::Join => before_connections.saturating_add(1),
+            PresenceConnectionAction::Leave if before_connections > 0 => {
+                before_connections.saturating_sub(1)
+            }
+            PresenceConnectionAction::Leave => before_connections,
+        };
+        let expected_event = match (before_connections, after_connections, action) {
+            (0, after, PresenceConnectionAction::Join) if after > 0 => {
+                Some(PresenceHistoryEventKind::MemberAdded)
+            }
+            (before, 0, PresenceConnectionAction::Leave) if before > 0 => {
+                Some(PresenceHistoryEventKind::MemberRemoved)
+            }
+            _ => None,
+        };
+
         if self.storage_write_dropped("presence_transition") {
             return Ok(());
         }
-        let record = PresenceHistoryTransitionRecord {
-            app_id: APP_ID.to_string(),
-            channel: channel.clone(),
-            event_kind: event,
-            cause,
-            user_id: user_id.clone(),
-            connection_id: Some(format!("socket-{user_id}")),
-            user_info: None,
-            dead_node_id: None,
-            dedupe_key: format!("presence:{tick}:{}:{user_id}", self.stats.operations),
-            published_at_ms: self.timestamp_ms(),
-            retention: self.presence_retention_policy(),
-        };
-        self.real.presence.record_transition(record).await?;
-        if should_record {
+
+        if let Some(event) = expected_event {
+            let cause = match event {
+                PresenceHistoryEventKind::MemberAdded | PresenceHistoryEventKind::MemberUpdated => {
+                    PresenceHistoryEventCause::Join
+                }
+                PresenceHistoryEventKind::MemberRemoved => PresenceHistoryEventCause::Disconnect,
+            };
+            let record = PresenceHistoryTransitionRecord {
+                app_id: APP_ID.to_string(),
+                channel: channel.clone(),
+                event_kind: event,
+                cause,
+                user_id: user_id.clone(),
+                connection_id: Some(connection_id.clone()),
+                user_info: None,
+                dead_node_id: None,
+                dedupe_key: format!(
+                    "presence:{tick}:{}:{user_id}:{connection_id}",
+                    self.stats.operations
+                ),
+                published_at_ms: self.timestamp_ms(),
+                retention: self.presence_retention_policy(),
+            };
+            self.real.presence.record_transition(record).await?;
             let newest = self
                 .read_presence_page(&channel, PresenceHistoryDirection::NewestFirst)
                 .await?;
@@ -745,16 +822,28 @@ impl DeterministicSimulator {
                     "presence transition for {channel}/{user_id} was predicted to record but store returned no newest item"
                 )));
             };
-            self.shadow
-                .channel_mut(&channel)
-                .append_presence(item.clone());
+            self.shadow.channel_mut(&channel).append_presence(
+                item.clone(),
+                before_connections,
+                after_connections,
+            );
             self.record_presence_visibility(&channel, item.serial);
             self.stats.presence_events = self.stats.presence_events.saturating_add(1);
             self.trace(format!(
-                "presence {:?} {channel}/{user_id} serial={}",
+                "presence {:?} {channel}/{user_id} connection={connection_id} before={before_connections} after={after_connections} serial={}",
                 event, item.serial
             ));
+        } else {
+            self.trace(format!(
+                "presence {:?} {channel}/{user_id} connection={connection_id} before={before_connections} after={after_connections} no_edge",
+                action
+            ));
         }
+        self.shadow.channel_mut(&channel).apply_presence_connection(
+            &user_id,
+            &connection_id,
+            action,
+        );
         Ok(())
     }
 
@@ -829,6 +918,8 @@ impl DeterministicSimulator {
             serial: record.serial,
             published_at_ms: record.published_at_ms,
             message_id: record.message_id,
+            idempotency_key: None,
+            version_delivery_serial: None,
             event_name: record.event_name,
             operation_kind: record.operation_kind,
             payload,
@@ -961,6 +1052,8 @@ impl DeterministicSimulator {
                 stream_id: message.stream_id.clone(),
                 serial: message.serial,
                 source_node,
+                message: message.clone(),
+                source: DeliverySource::LiveFanout,
             };
             self.network.schedule(event.clone());
             if self.roll(
@@ -975,8 +1068,9 @@ impl DeterministicSimulator {
         }
     }
 
-    fn deliver_due_fanout(&mut self) {
+    fn deliver_due_fanout(&mut self) -> SimulatorResult<()> {
         for event in self.network.drain_due(self.tick()) {
+            self.check_delivery_protocol_oracles(&event)?;
             let accepted = self.clients[event.client_idx].deliver(&event);
             if accepted {
                 self.stats.delivered_messages = self.stats.delivered_messages.saturating_add(1);
@@ -987,6 +1081,7 @@ impl DeterministicSimulator {
                 self.stats.stale_deliveries = self.stats.stale_deliveries.saturating_add(1);
             }
         }
+        Ok(())
     }
 
     async fn quiesce(&mut self) -> SimulatorResult<()> {
@@ -1003,7 +1098,7 @@ impl DeterministicSimulator {
             self.clock.advance_by(1);
             self.clock.advance_to(next_delivery_tick);
             self.storage_visibility.flush(self.tick());
-            self.deliver_due_fanout();
+            self.deliver_due_fanout()?;
         }
         if !self.network.is_empty() {
             return Err(self.fail(format!(
@@ -1049,10 +1144,12 @@ impl DeterministicSimulator {
             && queue_loss > 0
             && push.accepted_publishes > 0
             && push.repair_requeued == 0
+            && (push.queued_items > 0
+                || push.pending_schedules > 0
+                || push.outstanding_deliveries > 0)
         {
             return Err(self.fail(
-                "liveness expected push repair after queue loss, but repair never requeued work"
-                    .to_string(),
+                "liveness expected push repair after queue loss left unresolved work".to_string(),
             ));
         }
         Ok(())
@@ -1139,14 +1236,18 @@ impl DeterministicSimulator {
             )));
         }
         for item in recovered.items {
+            let message = ShadowHistoryMessage::from_history_item(item);
             let event = NetworkEvent {
                 deliver_at: self.tick(),
                 client_idx,
                 channel: channel.to_string(),
-                stream_id: item.stream_id,
-                serial: item.serial,
+                stream_id: message.stream_id.clone(),
+                serial: message.serial,
                 source_node: 0,
+                message,
+                source: DeliverySource::Recovery,
             };
+            self.check_delivery_protocol_oracles(&event)?;
             if self.clients[client_idx].deliver(&event) {
                 self.stats.recovered_messages = self.stats.recovered_messages.saturating_add(1);
             }
@@ -1161,7 +1262,11 @@ impl DeterministicSimulator {
             self.check_history_oracle(channel).await?;
             self.check_version_oracle(channel).await?;
             self.check_presence_oracle(channel).await?;
+            self.check_serial_monotonicity_oracle(channel)?;
+            self.check_committed_identity_oracle(channel)?;
+            self.check_attach_rewind_gaplessness_oracle(channel).await?;
             self.check_client_recovery_oracle(channel)?;
+            self.check_v2_recovery_cursor_oracle(channel)?;
         }
         self.push
             .check_oracles(false, self.config.page_limit)
@@ -1177,13 +1282,244 @@ impl DeterministicSimulator {
             self.check_history_oracle(channel).await?;
             self.check_version_oracle(channel).await?;
             self.check_presence_oracle(channel).await?;
+            self.check_serial_monotonicity_oracle(channel)?;
+            self.check_committed_identity_oracle(channel)?;
+            self.check_attach_rewind_gaplessness_oracle(channel).await?;
             self.check_client_recovery_oracle(channel)?;
+            self.check_v2_recovery_cursor_oracle(channel)?;
         }
         self.push
             .check_oracles(false, self.config.page_limit)
             .await
             .map_err(|message| self.fail(message))?;
         Ok(())
+    }
+
+    fn check_delivery_protocol_oracles(&mut self, event: &NetworkEvent) -> SimulatorResult<()> {
+        self.check_protocol_v1_delivery(event)?;
+        self.check_protocol_v2_delivery(event)
+    }
+
+    fn check_protocol_v1_delivery(&mut self, event: &NetworkEvent) -> SimulatorResult<()> {
+        let base = self.delivery_message(event);
+        let rendered = self.v1_compatible_message(&base);
+        let runtime_action = extract_runtime_action(&base);
+        if matches!(
+            runtime_action,
+            Some(
+                ProtocolMessageAction::Update
+                    | ProtocolMessageAction::Delete
+                    | ProtocolMessageAction::Append
+                    | ProtocolMessageAction::Summary
+            )
+        ) {
+            if rendered.is_some() {
+                return Err(self.fail(format!(
+                    "V1 rendered V2-only mutation for client {} on {} serial={} source={:?}",
+                    event.client_idx, event.channel, event.serial, event.source
+                )));
+            }
+            self.stats.protocol.v1_suppressed_deliveries = self
+                .stats
+                .protocol
+                .v1_suppressed_deliveries
+                .saturating_add(1);
+            return Ok(());
+        }
+
+        let Some(rendered) = rendered else {
+            return Err(self.fail(format!(
+                "V1 unexpectedly suppressed deliverable message on {} serial={} source={:?}",
+                event.channel, event.serial, event.source
+            )));
+        };
+        let rendered = self.serialize_round_trip(rendered)?;
+        let value = serde_json::to_value(&rendered)?;
+        for key in [
+            "serial",
+            "stream_id",
+            "message_id",
+            "tags",
+            "sequence",
+            "conflation_key",
+            "idempotency_key",
+            "extras",
+            "__delta_seq",
+            "__conflation_key",
+        ] {
+            if value.get(key).is_some() {
+                return Err(self.fail(format!(
+                    "V1 delivery leaked V2-only field '{key}' on {} serial={} payload={value}",
+                    event.channel, event.serial
+                )));
+            }
+        }
+        if rendered.event.as_deref().is_some_and(|name| {
+            name.starts_with("sockudo:") || name.starts_with("sockudo_internal:")
+        }) {
+            return Err(self.fail(format!(
+                "V1 delivery leaked Sockudo protocol prefix on {} serial={} event={:?}",
+                event.channel, event.serial, rendered.event
+            )));
+        }
+        self.stats.protocol.v1_deliveries_checked =
+            self.stats.protocol.v1_deliveries_checked.saturating_add(1);
+        Ok(())
+    }
+
+    fn check_protocol_v2_delivery(&mut self, event: &NetworkEvent) -> SimulatorResult<()> {
+        let mut message = self.delivery_message(event);
+        clear_runtime_append_fragment(&mut message);
+        message.rewrite_prefix(ProtocolVersion::V2);
+        message.idempotency_key = None;
+        let rendered = self.serialize_round_trip(message)?;
+        if rendered.stream_id.as_deref() != Some(event.stream_id.as_str())
+            || rendered.serial != Some(event.serial)
+            || rendered.message_id.as_deref() != event.message.message_id.as_deref()
+        {
+            return Err(self.fail(format!(
+                "V2 continuity fields mismatch on {} serial={}: rendered stream={:?} serial={:?} message_id={:?} expected stream={} message_id={:?}",
+                event.channel,
+                event.serial,
+                rendered.stream_id,
+                rendered.serial,
+                rendered.message_id,
+                event.stream_id,
+                event.message.message_id
+            )));
+        }
+        if rendered.idempotency_key.is_some() {
+            return Err(self.fail(format!(
+                "V2 delivery leaked internal idempotency key on {} serial={}",
+                event.channel, event.serial
+            )));
+        }
+        if rendered.extras.is_none() {
+            return Err(self.fail(format!(
+                "V2 delivery dropped extras envelope on {} serial={}",
+                event.channel, event.serial
+            )));
+        }
+        self.stats.protocol.v2_deliveries_checked =
+            self.stats.protocol.v2_deliveries_checked.saturating_add(1);
+        Ok(())
+    }
+
+    fn delivery_message(&self, event: &NetworkEvent) -> PusherMessage {
+        let mut headers = HashMap::from([(
+            "simulator".to_string(),
+            ExtrasValue::String("protocol-oracle".to_string()),
+        )]);
+        let mut message = PusherMessage {
+            event: event.message.event_name.clone(),
+            channel: Some(event.channel.clone()),
+            data: Some(MessageData::String(
+                String::from_utf8_lossy(&event.message.payload).to_string(),
+            )),
+            name: Some(event.message.operation_kind.clone()),
+            user_id: None,
+            tags: Some(BTreeMap::from([(
+                "simulator".to_string(),
+                "true".to_string(),
+            )])),
+            sequence: Some(event.serial),
+            conflation_key: Some(event.channel.clone()),
+            message_id: event.message.message_id.clone(),
+            stream_id: Some(event.stream_id.clone()),
+            serial: Some(event.serial),
+            idempotency_key: Some(format!("internal-{}", event.serial)),
+            extras: Some(MessageExtras {
+                headers: Some(std::mem::take(&mut headers)),
+                ephemeral: None,
+                idempotency_key: event.message.idempotency_key.clone(),
+                push: None,
+                echo: Some(true),
+                ai: None,
+            }),
+            delta_sequence: Some(event.serial),
+            delta_conflation_key: Some(event.channel.clone()),
+        };
+
+        if let Some(action) = protocol_action_from_operation(&event.message.operation_kind) {
+            let shadow = self.shadow.channel(&event.channel);
+            let (message_serial, version) = self
+                .delivery_version_record(event, shadow)
+                .map(|record| {
+                    (
+                        record.message_serial().as_str().to_string(),
+                        MessageVersionMetadata {
+                            serial: record.version_serial().as_str().to_string(),
+                            client_id: record.message.version.client_id.clone(),
+                            timestamp_ms: record.message.version.timestamp_ms,
+                            description: record.message.version.description.clone(),
+                            metadata: record.message.version.metadata.clone(),
+                        },
+                    )
+                })
+                .unwrap_or_else(|| {
+                    (
+                        format!("torn-msg-{:020}", event.serial),
+                        MessageVersionMetadata {
+                            serial: format!("torn-ver-{:020}", event.serial),
+                            client_id: None,
+                            timestamp_ms: event.message.published_at_ms,
+                            description: None,
+                            metadata: None,
+                        },
+                    )
+                });
+            apply_runtime_metadata(
+                &mut message,
+                action,
+                &message_serial,
+                &version,
+                Some(event.serial),
+            );
+        }
+        message
+    }
+
+    fn delivery_version_record<'a>(
+        &self,
+        event: &NetworkEvent,
+        shadow: &'a ShadowChannel,
+    ) -> Option<&'a StoredVersionRecord> {
+        event
+            .message
+            .version_delivery_serial
+            .and_then(|delivery_serial| shadow.version_replay.get(&delivery_serial))
+            .or_else(|| shadow.version_by_history_serial(event.serial))
+    }
+
+    fn v1_compatible_message(&self, message: &PusherMessage) -> Option<PusherMessage> {
+        let runtime_action = extract_runtime_action(message);
+        match runtime_action {
+            Some(ProtocolMessageAction::Create) | None => {}
+            Some(_) => return None,
+        }
+
+        let mut v1_message = message.clone();
+        if runtime_action == Some(ProtocolMessageAction::Create) {
+            v1_message.rewrite_prefix(ProtocolVersion::V1);
+        }
+        v1_message.serial = None;
+        v1_message.message_id = None;
+        v1_message.stream_id = None;
+        v1_message.tags = None;
+        v1_message.sequence = None;
+        v1_message.conflation_key = None;
+        v1_message.idempotency_key = None;
+        v1_message.extras = None;
+        v1_message.delta_sequence = None;
+        v1_message.delta_conflation_key = None;
+        Some(v1_message)
+    }
+
+    fn serialize_round_trip(&self, message: PusherMessage) -> SimulatorResult<PusherMessage> {
+        let bytes = serialize_message(&message, WireFormat::Json)
+            .map_err(|error| self.fail(format!("protocol oracle serialization failed: {error}")))?;
+        deserialize_message(&bytes, WireFormat::Json)
+            .map_err(|error| self.fail(format!("protocol oracle deserialization failed: {error}")))
     }
 
     async fn check_history_oracle(&self, channel: &str) -> SimulatorResult<()> {
@@ -1454,7 +1790,7 @@ impl DeterministicSimulator {
         Ok(())
     }
 
-    async fn check_presence_oracle(&self, channel: &str) -> SimulatorResult<()> {
+    async fn check_presence_oracle(&mut self, channel: &str) -> SimulatorResult<()> {
         let shadow = self.shadow.channel(channel);
         let oldest = self
             .read_presence_page(channel, PresenceHistoryDirection::OldestFirst)
@@ -1472,6 +1808,33 @@ impl DeterministicSimulator {
         }
         for (actual, expected) in oldest.iter().zip(expected.iter()) {
             self.assert_presence_item(channel, actual, expected)?;
+            match expected.event {
+                PresenceHistoryEventKind::MemberAdded => {
+                    if expected.connections_before != 0 || expected.connections_after == 0 {
+                        return Err(self.fail(format!(
+                            "presence first-join oracle failed on {channel}/{}: before={} after={} serial={}",
+                            expected.user_id,
+                            expected.connections_before,
+                            expected.connections_after,
+                            expected.serial
+                        )));
+                    }
+                }
+                PresenceHistoryEventKind::MemberRemoved => {
+                    if expected.connections_before != 1 || expected.connections_after != 0 {
+                        return Err(self.fail(format!(
+                            "presence last-leave oracle failed on {channel}/{}: before={} after={} serial={}",
+                            expected.user_id,
+                            expected.connections_before,
+                            expected.connections_after,
+                            expected.serial
+                        )));
+                    }
+                }
+                PresenceHistoryEventKind::MemberUpdated => {}
+            }
+            self.stats.protocol.presence_edge_checks =
+                self.stats.protocol.presence_edge_checks.saturating_add(1);
         }
         let newest_serials = newest.iter().map(|item| item.serial).collect::<Vec<_>>();
         let expected_newest = expected
@@ -1610,6 +1973,239 @@ impl DeterministicSimulator {
                 )));
             }
         }
+        Ok(())
+    }
+
+    fn check_v2_recovery_cursor_oracle(&mut self, channel: &str) -> SimulatorResult<()> {
+        let shadow = self.shadow.channel(channel);
+        let Some(stream_id) = shadow.history_stream_id.as_deref() else {
+            return Ok(());
+        };
+        let newest = shadow.history.back().map_or(0, |message| message.serial);
+        let oldest = shadow
+            .history
+            .front()
+            .map(|message| message.serial)
+            .unwrap_or(1);
+        for client in &self.clients {
+            if client.protocol != ProtocolVersion::V2 {
+                continue;
+            }
+            let Some(state) = client.channels.get(channel) else {
+                continue;
+            };
+            if state.stream_id.as_deref() != Some(stream_id) {
+                continue;
+            }
+            if state.last_contiguous > newest {
+                return Err(self.fail(format!(
+                    "V2 recovery cursor for client {} is ahead of {channel}: last={} newest={newest}",
+                    client.id, state.last_contiguous
+                )));
+            }
+            if state.last_contiguous.saturating_add(1) >= oldest {
+                let recomputed = contiguous_prefix_from(&state.delivered, oldest.saturating_sub(1));
+                if recomputed != state.last_contiguous {
+                    return Err(self.fail(format!(
+                        "V2 recovery cursor for client {} is not the delivered contiguous prefix on {channel}: cursor={} recomputed={recomputed} delivered={:?}",
+                        client.id, state.last_contiguous, state.delivered
+                    )));
+                }
+            }
+            self.stats.protocol.v2_recovery_cursors_checked = self
+                .stats
+                .protocol
+                .v2_recovery_cursors_checked
+                .saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn check_committed_identity_oracle(&mut self, channel: &str) -> SimulatorResult<()> {
+        let shadow = self.shadow.channel(channel);
+        let mut history_ids: BTreeMap<String, u64> = BTreeMap::new();
+        for message in &shadow.history {
+            let identity = message
+                .message_id
+                .clone()
+                .unwrap_or_else(|| format!("{}:{}:{}", message.stream_id, channel, message.serial));
+            if let Some(previous) = history_ids.insert(identity.clone(), message.serial)
+                && message.idempotency_key.is_none()
+            {
+                return Err(self.fail(format!(
+                    "duplicate committed history identity on {channel}: identity={identity} previous_serial={previous} duplicate_serial={}",
+                    message.serial
+                )));
+            }
+            self.stats.protocol.duplicate_identity_checks = self
+                .stats
+                .protocol
+                .duplicate_identity_checks
+                .saturating_add(1);
+        }
+
+        let mut version_serials = BTreeMap::new();
+        let mut delivery_serials = BTreeMap::new();
+        for record in shadow.version_replay.values() {
+            let version_serial = record.version_serial().as_str().to_string();
+            if let Some(previous) =
+                version_serials.insert(version_serial.clone(), record.delivery_serial())
+            {
+                return Err(self.fail(format!(
+                    "duplicate committed version identity on {channel}: version_serial={version_serial} previous_delivery={previous} duplicate_delivery={}",
+                    record.delivery_serial()
+                )));
+            }
+            if let Some(previous) =
+                delivery_serials.insert(record.delivery_serial(), version_serial.clone())
+            {
+                return Err(self.fail(format!(
+                    "duplicate committed delivery identity on {channel}: delivery_serial={} previous_version={previous} duplicate_version={version_serial}",
+                    record.delivery_serial()
+                )));
+            }
+            self.stats.protocol.duplicate_identity_checks = self
+                .stats
+                .protocol
+                .duplicate_identity_checks
+                .saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn check_serial_monotonicity_oracle(&mut self, channel: &str) -> SimulatorResult<()> {
+        let shadow = self.shadow.channel(channel);
+        for pair in shadow.history.iter().collect::<Vec<_>>().windows(2) {
+            if pair[0].serial.saturating_add(1) != pair[1].serial {
+                return Err(self.fail(format!(
+                    "history serial monotonicity failed on {channel}: {} then {}",
+                    pair[0].serial, pair[1].serial
+                )));
+            }
+            self.stats.protocol.serial_monotonicity_checks = self
+                .stats
+                .protocol
+                .serial_monotonicity_checks
+                .saturating_add(1);
+        }
+        for pair in shadow.presence_events.iter().collect::<Vec<_>>().windows(2) {
+            if pair[0].serial.saturating_add(1) != pair[1].serial {
+                return Err(self.fail(format!(
+                    "presence serial monotonicity failed on {channel}: {} then {}",
+                    pair[0].serial, pair[1].serial
+                )));
+            }
+            self.stats.protocol.serial_monotonicity_checks = self
+                .stats
+                .protocol
+                .serial_monotonicity_checks
+                .saturating_add(1);
+        }
+        for pair in shadow
+            .version_replay
+            .values()
+            .collect::<Vec<_>>()
+            .windows(2)
+        {
+            if pair[0].delivery_serial().saturating_add(1) != pair[1].delivery_serial() {
+                return Err(self.fail(format!(
+                    "version delivery serial monotonicity failed on {channel}: {} then {}",
+                    pair[0].delivery_serial(),
+                    pair[1].delivery_serial()
+                )));
+            }
+            self.stats.protocol.serial_monotonicity_checks = self
+                .stats
+                .protocol
+                .serial_monotonicity_checks
+                .saturating_add(1);
+        }
+        for (message_serial, chain) in &shadow.version_messages {
+            for pair in chain.versions.windows(2) {
+                let left = version_serial_ordinal(pair[0].version_serial().as_str());
+                let right = version_serial_ordinal(pair[1].version_serial().as_str());
+                if left >= right {
+                    return Err(self.fail(format!(
+                        "version serial monotonicity failed on {channel}/{message_serial}: {} then {}",
+                        pair[0].version_serial().as_str(),
+                        pair[1].version_serial().as_str()
+                    )));
+                }
+                if pair[0].history_serial() != pair[1].history_serial() {
+                    return Err(self.fail(format!(
+                        "version chain history identity changed on {channel}/{message_serial}: {} then {}",
+                        pair[0].history_serial(),
+                        pair[1].history_serial()
+                    )));
+                }
+                self.stats.protocol.serial_monotonicity_checks = self
+                    .stats
+                    .protocol
+                    .serial_monotonicity_checks
+                    .saturating_add(1);
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_attach_rewind_gaplessness_oracle(
+        &mut self,
+        channel: &str,
+    ) -> SimulatorResult<()> {
+        let shadow = self.shadow.channel(channel);
+        let Some(newest) = shadow.history.back().map(|message| message.serial) else {
+            return Ok(());
+        };
+        let rewind_count = self.config.page_limit.min(shadow.history.len()).max(1);
+        let start_serial = newest.saturating_sub(rewind_count as u64).saturating_add(1);
+        let expected = shadow
+            .history
+            .iter()
+            .filter(|message| message.serial >= start_serial && message.serial <= newest)
+            .map(|message| message.serial)
+            .collect::<Vec<_>>();
+        let page = self
+            .real
+            .history
+            .read_page(HistoryReadRequest {
+                app_id: APP_ID.to_string(),
+                channel: channel.to_string(),
+                direction: HistoryDirection::OldestFirst,
+                limit: rewind_count,
+                cursor: None,
+                bounds: HistoryQueryBounds {
+                    start_serial: Some(start_serial),
+                    end_serial: Some(newest),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        let actual = page
+            .items
+            .iter()
+            .map(|item| item.serial)
+            .collect::<Vec<_>>();
+        if page.truncated_by_retention {
+            return Ok(());
+        }
+        if actual != expected {
+            return Err(self.fail(format!(
+                "attach/rewind gaplessness mismatch on {channel}: promised range {start_serial}..={newest}, expected {expected:?}, got {actual:?}"
+            )));
+        }
+        for pair in actual.windows(2) {
+            if pair[0].saturating_add(1) != pair[1] {
+                return Err(self.fail(format!(
+                    "attach/rewind gap on {channel}: {} then {}",
+                    pair[0], pair[1]
+                )));
+            }
+        }
+        self.stats.protocol.attach_rewind_gap_checks = self
+            .stats
+            .protocol
+            .attach_rewind_gap_checks
+            .saturating_add(1);
         Ok(())
     }
 
@@ -1867,6 +2463,12 @@ impl DeterministicSimulator {
         })
     }
 
+    fn next_presence_connection_id(&mut self, user_id: &str) -> String {
+        let id = self.next_presence_connection;
+        self.next_presence_connection = self.next_presence_connection.saturating_add(1);
+        format!("socket-{user_id}-{id:020}")
+    }
+
     fn random_channel(&mut self) -> String {
         self.channels[self.scheduler.usize_below(self.channels.len())].clone()
     }
@@ -1894,6 +2496,14 @@ impl DeterministicSimulator {
 
     fn fail(&self, message: String) -> SimulatorError {
         let mut message = message;
+        message.push_str("\nreplay command:");
+        message.push_str("\n  ");
+        message.push_str(&self.replay_command());
+        if let Ok(config_json) = serde_json::to_string(&self.config) {
+            message.push_str("\nconfig_json:");
+            message.push_str("\n  ");
+            message.push_str(&config_json);
+        }
         let push_trace = self.push.recent_trace();
         let trace = self
             .trace
@@ -1913,6 +2523,18 @@ impl DeterministicSimulator {
             tick: self.tick(),
             message,
         }
+    }
+
+    fn replay_command(&self) -> String {
+        format!(
+            "cargo run -p sockudo-simulator --bin sockudo-sim -- --seed {} --ticks {} --mode {}",
+            self.config.seed,
+            self.config.ticks,
+            match self.config.mode {
+                SimulatorMode::Safety => "safety",
+                SimulatorMode::Liveness => "liveness",
+            }
+        )
     }
 
     fn trace(&mut self, event: String) {
@@ -2094,12 +2716,20 @@ struct NetworkEvent {
     stream_id: String,
     serial: u64,
     source_node: usize,
+    message: ShadowHistoryMessage,
+    source: DeliverySource,
 }
 
 impl ScheduledIoEvent for NetworkEvent {
     fn deliver_at(&self) -> u64 {
         self.deliver_at
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliverySource {
+    LiveFanout,
+    Recovery,
 }
 
 #[derive(Debug, Default)]
@@ -2113,13 +2743,15 @@ struct RecoveryRead {
 #[derive(Debug, Clone)]
 struct ClientState {
     id: usize,
+    protocol: ProtocolVersion,
     channels: BTreeMap<String, ClientChannelState>,
 }
 
 impl ClientState {
-    fn new(id: usize, channels: &[String]) -> Self {
+    fn new(id: usize, protocol: ProtocolVersion, channels: &[String]) -> Self {
         Self {
             id,
+            protocol,
             channels: channels
                 .iter()
                 .map(|channel| (channel.clone(), ClientChannelState::default()))
@@ -2160,6 +2792,12 @@ impl ClientState {
         let state = self.channels.entry(channel.to_string()).or_default();
         state.delivered.retain(|delivered| *delivered >= serial);
         state.last_contiguous = state.last_contiguous.max(serial);
+        while state
+            .delivered
+            .contains(&state.last_contiguous.saturating_add(1))
+        {
+            state.last_contiguous = state.last_contiguous.saturating_add(1);
+        }
     }
 
     fn recovery_position(&self, channel: &str) -> (Option<String>, u64) {
@@ -2227,10 +2865,12 @@ struct ShadowChannel {
     history_limit: Option<usize>,
     version_messages: BTreeMap<String, ShadowVersionChain>,
     version_replay: BTreeMap<u64, StoredVersionRecord>,
+    version_delivery_by_history_serial: BTreeMap<u64, u64>,
     presence_stream_id: Option<String>,
     presence_events: VecDeque<ShadowPresenceEvent>,
     presence_latest_event_by_user: BTreeMap<String, PresenceHistoryEventKind>,
     presence_members: BTreeMap<String, PresenceHistoryEventKind>,
+    presence_active_connections: BTreeMap<String, BTreeSet<String>>,
     presence_limit: Option<usize>,
 }
 
@@ -2242,10 +2882,12 @@ impl ShadowChannel {
             history_limit,
             version_messages: BTreeMap::new(),
             version_replay: BTreeMap::new(),
+            version_delivery_by_history_serial: BTreeMap::new(),
             presence_stream_id: None,
             presence_events: VecDeque::new(),
             presence_latest_event_by_user: BTreeMap::new(),
             presence_members: BTreeMap::new(),
+            presence_active_connections: BTreeMap::new(),
             presence_limit,
         }
     }
@@ -2263,10 +2905,13 @@ impl ShadowChannel {
     fn reset_history(&mut self, stream_id: String) {
         self.history_stream_id = Some(stream_id);
         self.history.clear();
+        self.version_delivery_by_history_serial.clear();
     }
 
     fn purge_history_before(&mut self, serial: u64) {
         self.history.retain(|message| message.serial >= serial);
+        self.version_delivery_by_history_serial
+            .retain(|history_serial, _| *history_serial >= serial);
     }
 
     fn append_version(&mut self, record: StoredVersionRecord) {
@@ -2278,6 +2923,21 @@ impl ShadowChannel {
             .or_default()
             .versions
             .push(record);
+    }
+
+    fn link_version_history(&mut self, history_serial: u64, delivery_serial: Option<u64>) {
+        let Some(delivery_serial) = delivery_serial else {
+            return;
+        };
+        self.version_delivery_by_history_serial
+            .insert(history_serial, delivery_serial);
+        if let Some(message) = self
+            .history
+            .iter_mut()
+            .find(|message| message.serial == history_serial)
+        {
+            message.version_delivery_serial = Some(delivery_serial);
+        }
     }
 
     fn random_live_version(
@@ -2309,11 +2969,25 @@ impl ShadowChannel {
         latest
     }
 
-    fn presence_would_record(&self, event: PresenceHistoryEventKind, user_id: &str) -> bool {
-        self.presence_latest_event_by_user.get(user_id) != Some(&event)
+    fn version_by_history_serial(&self, history_serial: u64) -> Option<&StoredVersionRecord> {
+        self.version_delivery_by_history_serial
+            .get(&history_serial)
+            .and_then(|delivery_serial| self.version_replay.get(delivery_serial))
     }
 
-    fn append_presence(&mut self, item: PresenceHistoryItem) {
+    fn presence_connections(&self, user_id: &str) -> Vec<String> {
+        self.presence_active_connections
+            .get(user_id)
+            .map(|connections| connections.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn append_presence(
+        &mut self,
+        item: PresenceHistoryItem,
+        connections_before: usize,
+        connections_after: usize,
+    ) {
         self.presence_stream_id = Some(item.stream_id.clone());
         self.presence_events.push_back(ShadowPresenceEvent {
             stream_id: item.stream_id,
@@ -2324,6 +2998,8 @@ impl ShadowChannel {
             user_id: item.user_id,
             connection_id: item.connection_id,
             dead_node_id: item.dead_node_id,
+            connections_before,
+            connections_after,
         });
         self.rebuild_presence_members();
         if let Some(limit) = self.presence_limit {
@@ -2339,6 +3015,31 @@ impl ShadowChannel {
         self.presence_events.clear();
         self.presence_latest_event_by_user.clear();
         self.presence_members.clear();
+        self.presence_active_connections.clear();
+    }
+
+    fn apply_presence_connection(
+        &mut self,
+        user_id: &str,
+        connection_id: &str,
+        action: PresenceConnectionAction,
+    ) {
+        match action {
+            PresenceConnectionAction::Join => {
+                self.presence_active_connections
+                    .entry(user_id.to_string())
+                    .or_default()
+                    .insert(connection_id.to_string());
+            }
+            PresenceConnectionAction::Leave => {
+                if let Some(connections) = self.presence_active_connections.get_mut(user_id) {
+                    connections.remove(connection_id);
+                    if connections.is_empty() {
+                        self.presence_active_connections.remove(user_id);
+                    }
+                }
+            }
+        }
     }
 
     fn rebuild_presence_members(&mut self) {
@@ -2366,9 +3067,27 @@ struct ShadowHistoryMessage {
     serial: u64,
     published_at_ms: i64,
     message_id: Option<String>,
+    idempotency_key: Option<String>,
+    version_delivery_serial: Option<u64>,
     event_name: Option<String>,
     operation_kind: String,
     payload: Bytes,
+}
+
+impl ShadowHistoryMessage {
+    fn from_history_item(item: HistoryItem) -> Self {
+        Self {
+            stream_id: item.stream_id,
+            serial: item.serial,
+            published_at_ms: item.published_at_ms,
+            message_id: item.message_id,
+            idempotency_key: None,
+            version_delivery_serial: None,
+            event_name: item.event_name,
+            operation_kind: item.operation_kind,
+            payload: item.payload_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2382,6 +3101,32 @@ impl ShadowVersionChain {
     }
 }
 
+fn protocol_action_from_operation(operation: &str) -> Option<ProtocolMessageAction> {
+    match operation {
+        "message.create" => Some(ProtocolMessageAction::Create),
+        "message.update" => Some(ProtocolMessageAction::Update),
+        "message.delete" => Some(ProtocolMessageAction::Delete),
+        "message.append" => Some(ProtocolMessageAction::Append),
+        "message.summary" => Some(ProtocolMessageAction::Summary),
+        _ => None,
+    }
+}
+
+fn contiguous_prefix_from(delivered: &BTreeSet<u64>, baseline: u64) -> u64 {
+    let mut prefix = baseline;
+    while delivered.contains(&prefix.saturating_add(1)) {
+        prefix = prefix.saturating_add(1);
+    }
+    prefix
+}
+
+fn version_serial_ordinal(serial: &str) -> u64 {
+    serial
+        .rsplit_once('-')
+        .and_then(|(_, suffix)| suffix.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone)]
 struct ShadowPresenceEvent {
     stream_id: String,
@@ -2392,6 +3137,14 @@ struct ShadowPresenceEvent {
     user_id: String,
     connection_id: Option<String>,
     dead_node_id: Option<String>,
+    connections_before: usize,
+    connections_after: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresenceConnectionAction {
+    Join,
+    Leave,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -2399,6 +3152,7 @@ struct Stats {
     operations: u64,
     rejected_operations: u64,
     oracle_checks: u64,
+    protocol: ProtocolOracleStats,
     history_commits: u64,
     version_commits: u64,
     presence_events: u64,
@@ -2424,6 +3178,33 @@ struct Stats {
     storage_stale_reads: u64,
     storage_corrupted_reads: u64,
     storage_recovery_checks: u64,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ProtocolOracleStats {
+    v1_deliveries_checked: u64,
+    v1_suppressed_deliveries: u64,
+    v2_deliveries_checked: u64,
+    v2_recovery_cursors_checked: u64,
+    duplicate_identity_checks: u64,
+    serial_monotonicity_checks: u64,
+    attach_rewind_gap_checks: u64,
+    presence_edge_checks: u64,
+}
+
+impl ProtocolOracleStats {
+    fn report(&self) -> ProtocolOracleReport {
+        ProtocolOracleReport {
+            v1_deliveries_checked: self.v1_deliveries_checked,
+            v1_suppressed_deliveries: self.v1_suppressed_deliveries,
+            v2_deliveries_checked: self.v2_deliveries_checked,
+            v2_recovery_cursors_checked: self.v2_recovery_cursors_checked,
+            duplicate_identity_checks: self.duplicate_identity_checks,
+            serial_monotonicity_checks: self.serial_monotonicity_checks,
+            attach_rewind_gap_checks: self.attach_rewind_gap_checks,
+            presence_edge_checks: self.presence_edge_checks,
+        }
+    }
 }
 
 #[cfg(test)]
