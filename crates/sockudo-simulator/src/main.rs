@@ -1,7 +1,8 @@
 use clap::{Parser, ValueEnum};
 use sockudo_simulator::{
-    ActionWeights, DeterministicSimulator, FaultConfig, PushLabConfig, SimulationReport,
-    SimulatorConfig, SimulatorMode, StorageFaultConfig, WorkloadConfig,
+    ActionWeights, DeterministicSimulator, FailureArtifact, FaultConfig, PushLabConfig,
+    SeedDerivedProfile, SimulationReport, SimulatorConfig, SimulatorMode, StorageFaultConfig,
+    WorkloadConfig,
 };
 use std::path::PathBuf;
 
@@ -37,12 +38,15 @@ struct Cli {
     /// Randomize topology, workload, and fault distributions deterministically from the seed.
     #[arg(long)]
     swarm: bool,
-    /// Binary-search the smallest tick count that still reproduces a failing seed/config.
+    /// Shrink a failing seed/config or one-entry corpus into a smaller replay artifact.
     #[arg(long)]
     shrink_failure: bool,
     /// Lower bound for shrink search.
     #[arg(long, default_value_t = 1)]
     shrink_min_ticks: u64,
+    /// Write the shrunk replay artifact to this path. Defaults to sockudo-sim-shrunk-failure.json.
+    #[arg(long)]
+    shrink_output: Option<PathBuf>,
     /// Write a deterministic JSON failure capsule when a run fails.
     #[arg(long)]
     failure_artifact: Option<PathBuf>,
@@ -174,6 +178,8 @@ impl Cli {
         let mut config = SimulatorConfig {
             seed,
             ticks: self.ticks,
+            max_operations: None,
+            max_faults: None,
             mode: self.mode.into(),
             liveness: sockudo_simulator::LivenessConfig {
                 max_quiesce_ticks: self.liveness_max_quiesce_ticks,
@@ -252,8 +258,10 @@ impl Cli {
                 provider_duplicate_result_probability: self.duplicate_prob,
             },
         };
+        let mut seed_derived_profile = None;
         if self.swarm {
             config.apply_swarm_profile();
+            seed_derived_profile = Some(SeedDerivedProfile::swarm(&config));
         }
         SimulatorRun {
             config,
@@ -262,7 +270,9 @@ impl Cli {
             swarm: self.swarm,
             shrink_failure: self.shrink_failure,
             shrink_min_ticks: self.shrink_min_ticks,
+            shrink_output: self.shrink_output,
             failure_artifact: self.failure_artifact,
+            seed_derived_profile,
         }
     }
 }
@@ -271,12 +281,40 @@ impl Cli {
 async fn main() {
     let run = Cli::parse().into_run();
     if run.shrink_failure {
-        match shrink_failure(run.config, run.shrink_min_ticks).await {
+        let (config, seed_derived_profile) = match run.corpus_file.clone() {
+            Some(path) => match load_single_corpus_config(run.config.clone(), path, run.swarm) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    eprintln!("sockudo-sim: failed to load shrink corpus\n{error}");
+                    std::process::exit(1);
+                }
+            },
+            None => (run.config, run.seed_derived_profile),
+        };
+        let output_path = run
+            .shrink_output
+            .clone()
+            .or_else(|| run.failure_artifact.clone())
+            .unwrap_or_else(|| PathBuf::from("sockudo-sim-shrunk-failure.json"));
+        match sockudo_simulator::shrink_failure(config, run.shrink_min_ticks).await {
             Ok(Some(result)) => {
+                let artifact = result.artifact(&output_path, seed_derived_profile);
+                if let Err(error) = write_failure_artifact(&output_path, &artifact) {
+                    eprintln!("sockudo-sim: failed to write shrunk failure artifact: {error}");
+                    std::process::exit(1);
+                }
                 println!(
-                    "sockudo-sim: shrink reproduced failure seed={} minimal_ticks={} original_ticks={}",
-                    result.seed, result.minimal_failing_ticks, result.original_ticks
+                    "sockudo-sim: shrink reproduced failure seed={} ticks {} -> {} operations {} -> {} faults {} -> {}",
+                    artifact.config.seed,
+                    result.original_config.ticks,
+                    result.config.ticks,
+                    result.original_observation.operations,
+                    result.final_observation.operations,
+                    result.original_observation.fault_events,
+                    result.final_observation.fault_events,
                 );
+                println!("artifact: {}", output_path.display());
+                println!("replay command: {}", artifact.replay_command);
                 println!("failure: {}", result.error);
                 return;
             }
@@ -299,10 +337,21 @@ async fn main() {
             }
         }
     }
-    run_one(run.config, run.json, run.failure_artifact).await;
+    run_one(
+        run.config,
+        run.json,
+        run.failure_artifact,
+        run.seed_derived_profile,
+    )
+    .await;
 }
 
-async fn run_one(config: SimulatorConfig, json: bool, failure_artifact: Option<PathBuf>) {
+async fn run_one(
+    config: SimulatorConfig,
+    json: bool,
+    failure_artifact: Option<PathBuf>,
+    seed_derived_profile: Option<SeedDerivedProfile>,
+) {
     println!(
         "sockudo-sim: seed={} ticks={} mode={:?} nodes={} clients={} channels={}",
         config.seed, config.ticks, config.mode, config.nodes, config.clients, config.channels
@@ -356,8 +405,16 @@ async fn run_one(config: SimulatorConfig, json: bool, failure_artifact: Option<P
             }
         }
         Err(error) => {
-            if let Some(path) = failure_artifact
-                && let Err(write_error) = write_failure_artifact(&path, &config, &error.to_string())
+            if let Some(path) = failure_artifact.as_ref()
+                && let Err(write_error) = write_failure_artifact(
+                    path,
+                    &FailureArtifact::new(
+                        config.clone(),
+                        error.to_string(),
+                        path,
+                        seed_derived_profile.clone(),
+                    ),
+                )
             {
                 eprintln!("sockudo-sim: failed to write failure artifact: {write_error}");
             }
@@ -387,14 +444,7 @@ async fn run_corpus(
             })
             .collect::<Vec<_>>(),
         CorpusSpec::Configs(configs) => configs,
-        CorpusSpec::FailureArtifact {
-            config,
-            error,
-            replay_command,
-        } => {
-            drop((error, replay_command));
-            vec![*config]
-        }
+        CorpusSpec::FailureArtifact(artifact) => vec![*artifact.config],
     };
     let mut reports = Vec::with_capacity(configs.len());
     for config in configs {
@@ -415,63 +465,51 @@ async fn run_corpus(
     Ok(())
 }
 
-async fn shrink_failure(
-    mut config: SimulatorConfig,
-    min_ticks: u64,
-) -> Result<Option<ShrinkResult>, Box<dyn std::error::Error>> {
-    let original_ticks = config.ticks;
-    let original_error = match run_config_once(config.clone()).await {
-        Ok(()) => return Ok(None),
-        Err(error) => error,
-    };
-
-    let mut low = min_ticks.max(1);
-    let mut high = original_ticks;
-    let mut best_error = original_error.clone();
-    while low < high {
-        let mid = low.saturating_add(high.saturating_sub(low) / 2);
-        config.ticks = mid;
-        match run_config_once(config.clone()).await {
-            Ok(()) => {
-                low = mid.saturating_add(1);
-            }
-            Err(error) => {
-                best_error = error;
-                high = mid;
-            }
+fn load_single_corpus_config(
+    base: SimulatorConfig,
+    path: PathBuf,
+    swarm: bool,
+) -> Result<(SimulatorConfig, Option<SeedDerivedProfile>), Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(&path)?;
+    match serde_json::from_str::<CorpusSpec>(&contents)? {
+        CorpusSpec::Seeds(seeds) => {
+            let [seed] = seeds.as_slice() else {
+                return Err(format!(
+                    "shrink corpus must contain exactly one seed, got {}",
+                    seeds.len()
+                )
+                .into());
+            };
+            let mut config = base;
+            config.seed = *seed;
+            let seed_derived_profile = if swarm {
+                config.apply_swarm_profile();
+                Some(SeedDerivedProfile::swarm(&config))
+            } else {
+                None
+            };
+            Ok((config, seed_derived_profile))
+        }
+        CorpusSpec::Configs(configs) => {
+            let [config] = configs.as_slice() else {
+                return Err(format!(
+                    "shrink corpus must contain exactly one config, got {}",
+                    configs.len()
+                )
+                .into());
+            };
+            Ok((config.clone(), None))
+        }
+        CorpusSpec::FailureArtifact(artifact) => {
+            Ok((*artifact.config, artifact.seed_derived_profile))
         }
     }
-
-    Ok(Some(ShrinkResult {
-        seed: config.seed,
-        original_ticks,
-        minimal_failing_ticks: high,
-        error: best_error,
-    }))
-}
-
-async fn run_config_once(config: SimulatorConfig) -> Result<(), String> {
-    let mut simulator = DeterministicSimulator::new(config).map_err(|error| error.to_string())?;
-    simulator
-        .run()
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
 }
 
 fn write_failure_artifact(
     path: &PathBuf,
-    config: &SimulatorConfig,
-    error: &str,
+    artifact: &FailureArtifact,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let artifact = FailureArtifact {
-        config,
-        error,
-        replay_command: format!(
-            "cargo run -p sockudo-simulator --bin sockudo-sim -- --corpus-file {}",
-            path.display()
-        ),
-    };
     std::fs::write(path, serde_json::to_string_pretty(&artifact)?)?;
     Ok(())
 }
@@ -501,13 +539,7 @@ fn print_corpus_summary(reports: &[SimulationReport]) {
 enum CorpusSpec {
     Seeds(Vec<u64>),
     Configs(Vec<SimulatorConfig>),
-    FailureArtifact {
-        config: Box<SimulatorConfig>,
-        #[serde(default)]
-        error: Option<String>,
-        #[serde(default, rename = "replayCommand")]
-        replay_command: Option<String>,
-    },
+    FailureArtifact(FailureArtifact),
 }
 
 #[derive(Debug)]
@@ -518,21 +550,7 @@ struct SimulatorRun {
     swarm: bool,
     shrink_failure: bool,
     shrink_min_ticks: u64,
+    shrink_output: Option<PathBuf>,
     failure_artifact: Option<PathBuf>,
-}
-
-#[derive(Debug)]
-struct ShrinkResult {
-    seed: u64,
-    original_ticks: u64,
-    minimal_failing_ticks: u64,
-    error: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FailureArtifact<'a> {
-    config: &'a SimulatorConfig,
-    error: &'a str,
-    replay_command: String,
+    seed_derived_profile: Option<SeedDerivedProfile>,
 }

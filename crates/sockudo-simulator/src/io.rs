@@ -46,6 +46,9 @@ pub(crate) struct DeterministicFaultScheduler {
     rng: StdRng,
     schedule_rng: StdRng,
     trace: VecDeque<String>,
+    max_faults: Option<u64>,
+    fired_faults: u64,
+    suppressed_faults: u64,
 }
 
 impl DeterministicFaultScheduler {
@@ -54,7 +57,23 @@ impl DeterministicFaultScheduler {
             rng: StdRng::seed_from_u64(seed),
             schedule_rng: StdRng::seed_from_u64(seed ^ SCHEDULE_SEED_DOMAIN),
             trace: VecDeque::new(),
+            max_faults: None,
+            fired_faults: 0,
+            suppressed_faults: 0,
         }
+    }
+
+    pub(crate) fn with_max_faults(mut self, max_faults: Option<u64>) -> Self {
+        self.max_faults = max_faults;
+        self
+    }
+
+    pub(crate) fn fired_faults(&self) -> u64 {
+        self.fired_faults
+    }
+
+    pub(crate) fn suppressed_faults(&self) -> u64 {
+        self.suppressed_faults
     }
 
     pub(crate) fn record(&mut self, tick: u64, event: impl Into<String>) {
@@ -112,6 +131,14 @@ impl DeterministicFaultScheduler {
     pub(crate) fn roll(&mut self, tick: u64, label: &str, probability: f64) -> bool {
         let fired = probability > 0.0 && self.rng.random::<f64>() < probability;
         if fired {
+            if self
+                .max_faults
+                .is_some_and(|max_faults| self.fired_faults >= max_faults)
+            {
+                self.suppressed_faults = self.suppressed_faults.saturating_add(1);
+                return false;
+            }
+            self.fired_faults = self.fired_faults.saturating_add(1);
             self.record(tick, format!("fault {label}"));
         }
         fired

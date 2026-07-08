@@ -18,6 +18,10 @@ const SWARM_SEED_DOMAIN: u64 = 0x51a9_5a6d_b33f_500d;
 pub struct SimulatorConfig {
     pub seed: u64,
     pub ticks: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_operations: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_faults: Option<u64>,
     #[serde(default)]
     pub mode: SimulatorMode,
     #[serde(default)]
@@ -41,6 +45,8 @@ impl Default for SimulatorConfig {
         Self {
             seed: 0x5eed_5eed_cafe_f00d,
             ticks: 5_000,
+            max_operations: None,
+            max_faults: None,
             mode: SimulatorMode::default(),
             liveness: LivenessConfig::default(),
             nodes: 5,
