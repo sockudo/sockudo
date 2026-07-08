@@ -14,6 +14,14 @@ SIM_SEED ?= 12648430
 SIM_TICKS ?= 5000
 SIM_ARGS ?=
 
+# Manual outside-in binary chaos defaults. Override on the command line, e.g.
+# `make binary-chaos CHAOS_SEED=42 CHAOS_DURATION_MS=15000`.
+CHAOS_SEED ?= 12648430
+CHAOS_DURATION_MS ?= 12000
+CHAOS_FEATURES ?= v2
+CHAOS_SERVER_BIN ?= target/debug/sockudo
+CHAOS_ARGS ?=
+
 # Compose file set per environment (dashboard included for dev/prod)
 ifeq ($(ENV),dev)
 COMPOSE_ARGS := -f $(COMPOSE_FILE) -f docker-compose.dev.yml -f $(COMPOSE_DASHBOARD)
@@ -238,6 +246,17 @@ simulator-liveness: ## Run simulator liveness mode with deterministic swarm faul
 		--mode liveness \
 		--swarm \
 		$(SIM_ARGS)
+
+.PHONY: binary-chaos
+binary-chaos: ## Run manual outside-in binary chaos harness (local only; override CHAOS_ARGS)
+	@echo "$(BLUE)Building Sockudo for manual outside-in binary chaos...$(RESET)"
+	@cargo build -p sockudo --features "$(CHAOS_FEATURES)"
+	@echo "$(BLUE)Running outside-in binary chaos seed=$(CHAOS_SEED) durationMs=$(CHAOS_DURATION_MS)...$(RESET)"
+	@node tools/chaos/sockudo-binary-chaos.mjs \
+		--seed $(CHAOS_SEED) \
+		--duration-ms $(CHAOS_DURATION_MS) \
+		--server-bin $(CHAOS_SERVER_BIN) \
+		$(CHAOS_ARGS)
 
 .PHONY: sentinel-tls-up
 sentinel-tls-up: ## Start the opt-in Redis Sentinel + TLS test fixture
