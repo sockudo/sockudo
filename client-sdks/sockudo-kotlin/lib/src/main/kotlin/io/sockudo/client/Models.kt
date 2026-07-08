@@ -24,6 +24,7 @@ enum class SockudoAppendMode(
 enum class ConnectionState {
     INITIALIZED,
     CONNECTING,
+    RECONNECTING,
     CONNECTED,
     DISCONNECTED,
     UNAVAILABLE,
@@ -475,6 +476,8 @@ data class SockudoOptions(
     val wireFormat: SockudoWireFormat = SockudoWireFormat.json,
     val appendMode: SockudoAppendMode = SockudoAppendMode.delta,
     val appendRollupWindow: Int? = null,
+    val maxReconnectAttempts: Int? = 6,
+    val maxReconnectGapInSeconds: Double = 120.0,
     val authToken: String? = null,
     val authTokenProvider: ClientAuthTokenProvider? = null,
 ) {
