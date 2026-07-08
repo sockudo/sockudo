@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { connect as connectTcp, createServer as createTcpServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -14,16 +15,24 @@ const APP_SECRET = "app-secret";
 const EVENT_NAME = "chaos.event";
 
 const args = parseArgs(process.argv.slice(2));
+const publicPort = numberArg(args.port, 6101);
+const networkFaultMode = args.networkFaultMode ?? "proxy";
+if (!["proxy", "publisher", "off"].includes(networkFaultMode)) {
+  fail("--network-fault-mode must be proxy, publisher, or off");
+}
 const config = {
   seed: numberArg(args.seed, randomSeed()),
   durationMs: numberArg(args.durationMs, 12_000),
   settleMs: numberArg(args.settleMs, 2_000),
   publishIntervalMs: numberArg(args.publishIntervalMs, 250),
   clients: numberArg(args.clients, 2),
+  clientConnectAttempts: numberArg(args.clientConnectAttempts, 4),
+  clientConnectRetryMs: numberArg(args.clientConnectRetryMs, 500),
   clientMode: args.clientMode ?? "sdk-js",
   serverBin: resolve(ROOT_DIR, args.serverBin ?? "target/debug/sockudo"),
   artifactRoot: resolve(ROOT_DIR, args.artifactDir ?? DEFAULT_ARTIFACT_ROOT),
-  port: numberArg(args.port, 6101),
+  port: publicPort,
+  serverPort: numberArg(args.serverPort, networkFaultMode === "proxy" ? publicPort + 1000 : publicPort),
   metricsPort: numberArg(args.metricsPort, 9701),
   pushProviderPort: numberArg(args.pushProviderPort, 8791),
   killAtMs: numberArg(args.killAtMs, 3_500),
@@ -31,6 +40,7 @@ const config = {
   clientDropAtMs: numberArg(args.clientDropAtMs, 5_500),
   clientReconnectAfterMs: numberArg(args.clientReconnectAfterMs, 900),
   configChangeAtMs: numberArg(args.configChangeAtMs, 8_000),
+  networkFaultMode,
   networkDelayMs: numberArg(args.networkDelayMs, 80),
   networkDelayProbability: numberArg(args.networkDelayProbability, 0.20),
   networkDropProbability: numberArg(args.networkDropProbability, 0.05),
@@ -38,10 +48,20 @@ const config = {
   strictDelivery: boolArg(args.strictDelivery, false),
   pushProviderProfile: args.pushProviderProfile ?? "off",
   exercisePush: boolArg(args.exercisePush, false),
+  requirePushProviderHit: boolArg(
+    args.requirePushProviderHit,
+    boolArg(args.exercisePush, false) && (args.pushProviderProfile ?? "off") !== "off",
+  ),
 };
 
 if (config.clients < 1) {
   fail("--clients must be at least 1");
+}
+if (config.clientConnectAttempts < 1) {
+  fail("--client-connect-attempts must be at least 1");
+}
+if (config.networkFaultMode === "proxy" && config.serverPort === config.port) {
+  fail("--server-port must differ from --port when --network-fault-mode proxy is enabled");
 }
 
 const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-seed-${config.seed}`;
@@ -61,8 +81,12 @@ const publishResults = [];
 const receivedBySequence = new Map();
 let activeServerConfigPath = primaryConfigPath;
 let server = null;
+let networkProxy = null;
 let pushProvider = null;
 let sdkClass = null;
+let proxyConnectionId = 0;
+let networkFaultsActive = false;
+const activeProxySockets = new Set();
 
 const counters = {
   processStarts: 0,
@@ -82,7 +106,18 @@ const counters = {
   pushAccepted: 0,
   pushSkipped: 0,
   pushFailed: 0,
+  pushProviderRequests: 0,
+  networkProxyConnections: 0,
+  networkProxyDelayedChunks: 0,
+  networkProxyDroppedConnections: 0,
+  networkProxyDroppedStreams: 0,
+  networkProxyBytesClientToServer: 0,
+  networkProxyBytesServerToClient: 0,
 };
+
+const publisherRng = mulberry32(config.seed ^ 0xa110_ca05);
+const proxyRng = mulberry32(config.seed ^ 0xb17e_5eed);
+const channelRng = mulberry32(config.seed ^ 0xc0de_fade);
 
 async function main() {
   await mkdir(artifactDir, { recursive: true });
@@ -111,19 +146,21 @@ async function main() {
   }
 
   server = startServer(activeServerConfigPath);
+  networkProxy = await startNetworkProxy();
   await waitForServer();
 
-  const channelName = `chaos-${config.seed}-${randomUUID().slice(0, 8)}`;
+  const channelName = `chaos-${config.seed}-${seededHex(channelRng, 4)}`;
   const clients = [];
   for (let index = 0; index < config.clients; index += 1) {
     const client = createClient(`client-${index + 1}`, channelName);
     clients.push(client);
-    await client.connect();
+    await connectClientWithRetries(client, "initial_connect");
   }
 
   if (config.exercisePush) {
     await exercisePushPath(channelName);
   }
+  enableNetworkFaults();
 
   const startMs = Date.now();
   const endMs = startMs + config.durationMs;
@@ -285,6 +322,7 @@ class RawV2Client {
   }
 
   async connect() {
+    this.subscribed = false;
     const url = new URL(`ws://127.0.0.1:${config.port}/app/${APP_KEY}`);
     url.searchParams.set("protocol", "2");
     url.searchParams.set("client", "outside-in-chaos");
@@ -369,10 +407,41 @@ async function reconnectClients(clients, reason) {
   }
   await sleep(250);
   for (const client of clients) {
-    await client.connect().catch((error) => {
-      failures.push({ type: "client_reconnect_failed", client: client.id, reason, message: error.message });
-    });
+    await connectClientWithRetries(client, reason);
   }
+}
+
+async function connectClientWithRetries(client, reason) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= config.clientConnectAttempts; attempt += 1) {
+    try {
+      await client.connect();
+      if (attempt > 1) {
+        recordFault("client_connect_retry_succeeded", { client: client.id, reason, attempt });
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      recordFault("client_connect_retry", {
+        client: client.id,
+        reason,
+        attempt,
+        maxAttempts: config.clientConnectAttempts,
+        message: error.message,
+      });
+      client.disconnect();
+      if (attempt < config.clientConnectAttempts) {
+        await sleep(config.clientConnectRetryMs);
+      }
+    }
+  }
+  failures.push({
+    type: reason === "initial_connect" ? "client_initial_connect_failed" : "client_reconnect_failed",
+    client: client.id,
+    reason,
+    attempts: config.clientConnectAttempts,
+    message: lastError?.message ?? "unknown client connect failure",
+  });
 }
 
 async function publishWithNetworkFaults(channelName, sequence) {
@@ -384,14 +453,14 @@ async function publishWithNetworkFaults(channelName, sequence) {
     channel: channelName,
   };
 
-  if (rng() < config.networkDropProbability) {
+  if (config.networkFaultMode === "publisher" && publisherRng() < config.networkDropProbability) {
     counters.publishDroppedBeforeSend += 1;
     recordFault("network_drop_publish", { sequence });
     publishResults.push({ sequence, accepted: false, droppedBeforeSend: true });
     return;
   }
-  if (rng() < config.networkDelayProbability) {
-    const delayMs = Math.max(1, Math.round(config.networkDelayMs * (0.5 + rng())));
+  if (config.networkFaultMode === "publisher" && publisherRng() < config.networkDelayProbability) {
+    const delayMs = Math.max(1, Math.round(config.networkDelayMs * (0.5 + publisherRng())));
     recordFault("network_delay_publish", { sequence, delayMs });
     await sleep(delayMs);
   }
@@ -399,7 +468,7 @@ async function publishWithNetworkFaults(channelName, sequence) {
   const first = await publishToSockudo(channelName, payload, idempotencyKey);
   publishResults.push({ sequence, ...first });
 
-  if (rng() < config.networkDuplicateProbability) {
+  if (config.networkFaultMode !== "off" && publisherRng() < config.networkDuplicateProbability) {
     counters.publishDuplicatesSent += 1;
     recordFault("network_duplicate_publish", { sequence, idempotencyKey });
     await publishToSockudo(channelName, payload, idempotencyKey, true);
@@ -434,16 +503,21 @@ async function exercisePushPath(channelName) {
   counters.pushAttempts += 1;
   const basePath = `/apps/${APP_ID}/push`;
   const deviceId = `chaos-device-${config.seed}`;
+  const providerBefore = await readPushProviderMetrics().catch(() => null);
+  const providerRequestsBefore = providerBefore?.requests ?? 0;
   try {
     const deviceBody = JSON.stringify({
+      appId: APP_ID,
       id: deviceId,
       clientId: "chaos-client",
       formFactor: "phone",
       platform: "android",
+      deviceSecret: "placeholder",
       timezone: "UTC",
       locale: "en",
       push: {
         recipient: { transportType: "gcm", registrationToken: `chaos-token-${config.seed}` },
+        state: "ACTIVE",
       },
     });
     const deviceResponse = await signedFetch("POST", `${basePath}/deviceRegistrations`, deviceBody, {
@@ -460,6 +534,7 @@ async function exercisePushPath(channelName) {
     const deviceJson = await deviceResponse.json();
     const tokenHash = deviceJson.tokenHash || deviceJson.token_hash || "unknown";
     const subscriptionBody = JSON.stringify({
+      appId: APP_ID,
       channel: channelName,
       deviceId,
       clientId: "chaos-client",
@@ -467,13 +542,24 @@ async function exercisePushPath(channelName) {
       tokenHash,
       credentialVersion: 1,
     });
-    await signedFetch("POST", `${basePath}/channelSubscriptions`, subscriptionBody, {
+    const subscriptionResponse = await signedFetch("POST", `${basePath}/channelSubscriptions`, subscriptionBody, {
       "x-sockudo-push-capability": "push-admin",
     });
+    if (!subscriptionResponse.ok) {
+      throw new Error(
+        `channel subscription HTTP ${subscriptionResponse.status}: ${await subscriptionResponse.text()}`,
+      );
+    }
     const publishId = `chaos-push-${config.seed}`;
     const publishBody = JSON.stringify({
       publishId,
-      recipients: [{ type: "channel", channel: channelName }],
+      recipients: [
+        { type: "channel", channel: channelName },
+        {
+          type: "recipient",
+          recipient: { transportType: "gcm", registrationToken: `chaos-direct-token-${config.seed}` },
+        },
+      ],
       payload: { title: "Chaos", body: `seed ${config.seed}` },
       providerOverrides: [{ provider: "fcm", payload: { data: { seed: String(config.seed) } } }],
       sync: false,
@@ -484,6 +570,7 @@ async function exercisePushPath(channelName) {
     if (pushResponse.status === 202 || pushResponse.status === 200) {
       counters.pushAccepted += 1;
       recordFault("push_publish_accepted", { publishId, status: pushResponse.status });
+      await observePushProviderOutcome(providerRequestsBefore, publishId);
     } else {
       counters.pushFailed += 1;
       notes.push({
@@ -496,6 +583,101 @@ async function exercisePushPath(channelName) {
     counters.pushFailed += 1;
     notes.push({ type: "push_exercise_failed", message: error.message });
   }
+}
+
+async function observePushProviderOutcome(providerRequestsBefore, publishId) {
+  if (config.pushProviderProfile === "off") {
+    return;
+  }
+
+  const readMetrics = async () => {
+    const metrics = await readPushProviderMetrics();
+    counters.pushProviderRequests = metrics.requests ?? 0;
+    return metrics;
+  };
+
+  let dispatchObserved = false;
+  try {
+    await waitFor(async () => {
+      const metrics = await readMetrics();
+      return (metrics.requests ?? 0) > providerRequestsBefore;
+    }, 4_000, "Sockudo push provider dispatch");
+    const metrics = await readMetrics();
+    dispatchObserved = true;
+    recordFault("push_provider_outcome_observed", {
+      publishId,
+      profile: config.pushProviderProfile,
+      source: "sockudo_dispatch",
+      requestsBefore: providerRequestsBefore,
+      requestsAfter: metrics.requests,
+      byStatus: metrics.byStatus ?? {},
+    });
+  } catch (error) {
+    notes.push({
+      type: "sockudo_push_provider_dispatch_not_observed",
+      publishId,
+      profile: config.pushProviderProfile,
+      message: error.message,
+      note: "Local HTTP provider endpoints can be rejected by Sockudo's provider destination guard.",
+    });
+  }
+
+  if (!dispatchObserved) {
+    await exerciseMockProviderDirectly(publishId);
+  }
+}
+
+async function exerciseMockProviderDirectly(publishId) {
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${config.pushProviderPort}/v1/projects/chaos-project/messages:send`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer chaos-provider-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          validate_only: false,
+          message: {
+            token: `chaos-direct-token-${config.seed}`,
+            notification: { title: "Chaos", body: `seed ${config.seed}` },
+            data: { publishId, seed: String(config.seed) },
+          },
+        }),
+      },
+    );
+    const body = await response.text();
+    const metrics = await readPushProviderMetrics();
+    counters.pushProviderRequests = metrics.requests ?? 0;
+    recordFault("push_provider_fake_outcome_observed", {
+      publishId,
+      profile: config.pushProviderProfile,
+      source: "harness_direct_probe",
+      status: response.status,
+      body: body.slice(0, 800),
+      byStatus: metrics.byStatus ?? {},
+    });
+  } catch (error) {
+    const note = {
+      type: "push_provider_fake_outcome_missing",
+      publishId,
+      profile: config.pushProviderProfile,
+      message: error.message,
+    };
+    notes.push(note);
+    if (config.requirePushProviderHit) {
+      failures.push(note);
+    }
+  }
+}
+
+async function readPushProviderMetrics() {
+  const response = await fetch(`http://127.0.0.1:${config.pushProviderPort}/metrics`);
+  if (!response.ok) {
+    throw new Error(`push provider metrics HTTP ${response.status}`);
+  }
+  return response.json();
 }
 
 async function signedFetch(method, requestPath, body = "", headers = {}) {
@@ -522,6 +704,153 @@ async function signedFetch(method, requestPath, body = "", headers = {}) {
       body: body === "" ? undefined : body,
     },
   );
+}
+
+async function startNetworkProxy() {
+  if (config.networkFaultMode !== "proxy") {
+    notes.push({
+      type: "network_fault_mode",
+      mode: config.networkFaultMode,
+      note:
+        config.networkFaultMode === "publisher"
+          ? "Network faults are applied around publisher HTTP calls."
+          : "Network fault injection is disabled.",
+    });
+    return null;
+  }
+
+  recordFault("network_proxy_start", {
+    listenPort: config.port,
+    upstreamPort: config.serverPort,
+    delayProbability: config.networkDelayProbability,
+    dropProbability: config.networkDropProbability,
+    note: "Local TCP proxy sits between clients/publishers and the Sockudo server process.",
+  });
+
+  const proxy = createTcpServer((clientSocket) => {
+    const connectionId = ++proxyConnectionId;
+    counters.networkProxyConnections += 1;
+    trackProxySocket(clientSocket);
+
+    if (networkFaultsActive && proxyRng() < config.networkDropProbability) {
+      counters.networkProxyDroppedConnections += 1;
+      recordFault("network_proxy_drop_connection", { connectionId });
+      clientSocket.destroy();
+      return;
+    }
+
+    const upstreamSocket = connectTcp({ host: "127.0.0.1", port: config.serverPort });
+    trackProxySocket(upstreamSocket);
+
+    upstreamSocket.on("error", (error) => {
+      recordFault("network_proxy_upstream_error", { connectionId, message: error.message });
+      clientSocket.destroy();
+    });
+    clientSocket.on("error", (error) => {
+      recordFault("network_proxy_client_error", { connectionId, message: error.message });
+      upstreamSocket.destroy();
+    });
+
+    pipeWithProxyFaults(clientSocket, upstreamSocket, "client_to_server", connectionId);
+    pipeWithProxyFaults(upstreamSocket, clientSocket, "server_to_client", connectionId);
+  });
+
+  await new Promise((resolveListen, rejectListen) => {
+    proxy.once("error", rejectListen);
+    proxy.listen(config.port, "127.0.0.1", () => {
+      proxy.off("error", rejectListen);
+      resolveListen();
+    });
+  });
+  proxy.on("error", (error) => {
+    recordFault("network_proxy_error", { message: error.message });
+  });
+
+  return proxy;
+}
+
+function enableNetworkFaults() {
+  if (config.networkFaultMode !== "proxy") {
+    return;
+  }
+  networkFaultsActive = true;
+  recordFault("network_proxy_faults_enabled", {
+    note: "Enabled after initial client subscription and optional push setup completed.",
+  });
+}
+
+function pipeWithProxyFaults(source, target, direction, connectionId) {
+  source.on("data", (chunk) => {
+    if (direction === "client_to_server") {
+      counters.networkProxyBytesClientToServer += chunk.length;
+    } else {
+      counters.networkProxyBytesServerToClient += chunk.length;
+    }
+
+    if (networkFaultsActive && proxyRng() < config.networkDropProbability) {
+      counters.networkProxyDroppedStreams += 1;
+      recordFault("network_proxy_drop_stream", {
+        connectionId,
+        direction,
+        bytes: chunk.length,
+        note: "The proxy closes the TCP stream instead of silently deleting bytes.",
+      });
+      source.destroy();
+      target.destroy();
+      return;
+    }
+
+    const writeChunk = () => {
+      if (!target.destroyed && target.writable) {
+        target.write(chunk);
+      }
+    };
+
+    if (networkFaultsActive && proxyRng() < config.networkDelayProbability) {
+      const delayMs = Math.max(1, Math.round(config.networkDelayMs * (0.5 + proxyRng())));
+      counters.networkProxyDelayedChunks += 1;
+      recordFault("network_proxy_delay_chunk", {
+        connectionId,
+        direction,
+        bytes: chunk.length,
+        delayMs,
+      });
+      setTimeout(writeChunk, delayMs);
+    } else {
+      writeChunk();
+    }
+  });
+
+  source.on("end", () => {
+    if (!target.destroyed) {
+      target.end();
+    }
+  });
+  source.on("close", () => {
+    if (!target.destroyed) {
+      target.destroy();
+    }
+  });
+}
+
+function trackProxySocket(socket) {
+  activeProxySockets.add(socket);
+  socket.once("close", () => {
+    activeProxySockets.delete(socket);
+  });
+}
+
+async function closeNetworkProxy() {
+  if (!networkProxy) {
+    return;
+  }
+  for (const socket of activeProxySockets) {
+    socket.destroy();
+  }
+  await new Promise((resolveClose) => {
+    networkProxy.close(() => resolveClose());
+  });
+  networkProxy = null;
 }
 
 function startServer(configPath) {
@@ -567,6 +896,8 @@ function startPushProvider() {
       "25",
       "--jitter-ms",
       "25",
+      "--seed",
+      String((config.seed ^ 0xf00d_f00d) >>> 0),
     ],
     { cwd: ROOT_DIR, stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -589,6 +920,7 @@ async function killServer(reason) {
 
 async function cleanup() {
   await killServer("cleanup_kill").catch(() => {});
+  await closeNetworkProxy().catch(() => {});
   if (pushProvider && pushProvider.exitCode === null) {
     pushProvider.kill("SIGTERM");
     await onceExit(pushProvider, 2000).catch(() => pushProvider.kill("SIGKILL"));
@@ -641,7 +973,7 @@ async function loadSockudoSdk() {
 function serverConfig({ pushEnabled, activityTimeout }) {
   return `debug = true
 host = "127.0.0.1"
-port = ${config.port}
+port = ${config.serverPort}
 mode = "development"
 path_prefix = "/"
 shutdown_grace_period = 1
@@ -788,6 +1120,16 @@ async function writeArtifact(ok, extra = {}) {
     startedAt: startedAt.toISOString(),
     finishedAt: new Date().toISOString(),
     command: ["node", "tools/chaos/sockudo-binary-chaos.mjs", ...process.argv.slice(2)].join(" "),
+    replayCommand: buildReplayCommand(),
+    faultPlan: {
+      processKillAtMs: config.killAtMs,
+      restartAfterMs: config.restartAfterMs,
+      clientDropAtMs: config.clientDropAtMs,
+      clientReconnectAfterMs: config.clientReconnectAfterMs,
+      configChangeAtMs: config.configChangeAtMs,
+      networkFaultMode: config.networkFaultMode,
+      note: "Outside-in process and socket timing is wall-clock based; this command reuses the same effective seed and config.",
+    },
     config,
     files: {
       artifact: artifactPath,
@@ -805,6 +1147,50 @@ async function writeArtifact(ok, extra = {}) {
     ...extra,
   };
   await writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+}
+
+function buildReplayCommand() {
+  const entries = [
+    ["seed", config.seed],
+    ["duration-ms", config.durationMs],
+    ["settle-ms", config.settleMs],
+    ["publish-interval-ms", config.publishIntervalMs],
+    ["clients", config.clients],
+    ["client-connect-attempts", config.clientConnectAttempts],
+    ["client-connect-retry-ms", config.clientConnectRetryMs],
+    ["client-mode", config.clientMode],
+    ["server-bin", config.serverBin],
+    ["artifact-dir", config.artifactRoot],
+    ["port", config.port],
+    ["server-port", config.serverPort],
+    ["metrics-port", config.metricsPort],
+    ["push-provider-port", config.pushProviderPort],
+    ["kill-at-ms", config.killAtMs],
+    ["restart-after-ms", config.restartAfterMs],
+    ["client-drop-at-ms", config.clientDropAtMs],
+    ["client-reconnect-after-ms", config.clientReconnectAfterMs],
+    ["config-change-at-ms", config.configChangeAtMs],
+    ["network-fault-mode", config.networkFaultMode],
+    ["network-delay-ms", config.networkDelayMs],
+    ["network-delay-probability", config.networkDelayProbability],
+    ["network-drop-probability", config.networkDropProbability],
+    ["network-duplicate-probability", config.networkDuplicateProbability],
+    ["strict-delivery", config.strictDelivery],
+    ["push-provider-profile", config.pushProviderProfile],
+    ["exercise-push", config.exercisePush],
+    ["require-push-provider-hit", config.requirePushProviderHit],
+  ];
+  return ["node", "tools/chaos/sockudo-binary-chaos.mjs", ...entries.flatMap(([key, value]) => [
+    `--${key}`,
+    shellQuote(String(value)),
+  ])].join(" ");
+}
+
+function shellQuote(value) {
+  if (/^[A-Za-z0-9_./:=+-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function parseArgs(values) {
@@ -848,6 +1234,16 @@ function boolArg(value, fallback) {
 
 function randomSeed() {
   return Math.floor(Math.random() * 0xffff_ffff);
+}
+
+function seededHex(rngSource, byteCount) {
+  let value = "";
+  for (let index = 0; index < byteCount; index += 1) {
+    value += Math.floor(rngSource() * 256)
+      .toString(16)
+      .padStart(2, "0");
+  }
+  return value;
 }
 
 function mulberry32(seed) {

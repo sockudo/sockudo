@@ -13,6 +13,7 @@ const config = {
   throttleEvery: numberArg(args.throttleEvery, 0),
   failureRate: numberArg(args.failureRate, 0),
   retryAfterSeconds: numberArg(args.retryAfterSeconds, 2),
+  seed: args.seed === undefined ? null : numberArg(args.seed, 0),
 };
 
 if (!["ok", "throttle", "invalid-token", "auth-failure", "flaky"].includes(config.profile)) {
@@ -26,6 +27,7 @@ const stats = {
   byPath: {},
   latenciesMs: [],
 };
+const rng = config.seed === null ? Math.random : mulberry32(config.seed);
 
 const server = createServer(async (req, res) => {
   const started = performance.now();
@@ -47,7 +49,7 @@ const server = createServer(async (req, res) => {
 
   stats.requests += 1;
   stats.byPath[req.url] = (stats.byPath[req.url] ?? 0) + 1;
-  await sleep(config.latencyMs + Math.random() * config.jitterMs);
+  await sleep(config.latencyMs + rng() * config.jitterMs);
 
   const response = providerResponse(req, Buffer.concat(chunks).toString("utf8"));
   stats.byStatus[response.status] = (stats.byStatus[response.status] ?? 0) + 1;
@@ -143,7 +145,7 @@ function forcedResponse() {
       body: { reason: "InvalidProviderToken", error: "auth_failure" },
     };
   }
-  if (config.profile === "flaky" && Math.random() < config.failureRate) {
+  if (config.profile === "flaky" && rng() < config.failureRate) {
     return {
       status: 503,
       headers: {},
@@ -195,6 +197,17 @@ function sleep(ms) {
 
 function round(value) {
   return Math.round(value * 100) / 100;
+}
+
+function mulberry32(seed) {
+  let state = seed >>> 0;
+  return function next() {
+    state += 0x6d2b79f5;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function parseArgs(values) {

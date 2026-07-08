@@ -21,6 +21,8 @@ CHAOS_DURATION_MS ?= 12000
 CHAOS_FEATURES ?= v2
 CHAOS_SERVER_BIN ?= target/debug/sockudo
 CHAOS_ARGS ?=
+CHAOS_PUSH_FEATURES ?= v2,monolith,push-fcm
+CHAOS_PUSH_ARGS ?= --push-provider-profile flaky --exercise-push true --require-push-provider-hit true
 
 # Compose file set per environment (dashboard included for dev/prod)
 ifeq ($(ENV),dev)
@@ -257,6 +259,10 @@ binary-chaos: ## Run manual outside-in binary chaos harness (local only; overrid
 		--duration-ms $(CHAOS_DURATION_MS) \
 		--server-bin $(CHAOS_SERVER_BIN) \
 		$(CHAOS_ARGS)
+
+.PHONY: binary-chaos-push
+binary-chaos-push: ## Run manual outside-in binary chaos with fake FCM provider outcomes (local only)
+	@$(MAKE) binary-chaos CHAOS_FEATURES="$(CHAOS_PUSH_FEATURES)" CHAOS_ARGS="$(CHAOS_PUSH_ARGS) $(CHAOS_ARGS)"
 
 .PHONY: sentinel-tls-up
 sentinel-tls-up: ## Start the opt-in Redis Sentinel + TLS test fixture
