@@ -12,7 +12,9 @@ continuously.
 
 Use it to prove that Sockudo-side durability contracts survive dropped live fanout, duplicated
 delivery, node crashes, pauses, partitions, stream resets, retention purges, reconnect recovery,
-push queue loss, lost write responses, retryable provider failures, invalid tokens, and repair.
+storage-level dropped writes, torn multi-record writes, stale or corrupted reads, delayed commit
+visibility, push queue loss, lost write responses, retryable provider failures, invalid tokens, and
+repair.
 
 The simulator deliberately does **not** claim that APNs, FCM, WebPush, HMS, WNS, browsers, mobile
 OSes, radios, or devices will deliver every notification. External providers are modeled as
@@ -52,10 +54,11 @@ The simulator covers these high-value durability surfaces:
 | Surface | Oracle |
 | --- | --- |
 | Durable history | Reserved serials, retained rows, page cursors, stream inspection, retention purges, and reset behavior match the shadow model. |
-| Connection recovery | Simulated clients recover dropped live fanout from durable history unless retention has legitimately truncated the gap. |
-| Versioned messages | Delivery serial replay is contiguous, version chains page in both directions, latest reads match the shadow, and `latest_by_history` preserves original history ordering. |
+| Connection recovery | Simulated clients recover dropped live fanout from durable history unless retention has legitimately truncated the gap; stale and corrupt storage reads must fail closed or return a valid prefix. |
+| Versioned messages | Delivery serial replay is contiguous, version chains page in both directions, cursors round-trip through JSON, latest reads match the shadow, and `latest_by_history` preserves original history ordering. |
 | Presence history | Transition dedupe, retained events, cursor paging, stream inspection, and reconstructed snapshots match the shadow model. |
 | Push workflow | Device registration, channel subscription, scheduled-job storage, publish acceptance, initial status, publish logs, and publish-id idempotency go through real `sockudo-push` memory store/pipeline APIs. The simulator then faults modeled worker queues and provider outcomes and checks they converge. |
+| Crash/restart recovery | Restarted nodes immediately re-read durable history, versions, presence history, and push status/log/idempotency state through the same safety oracles. |
 
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
 deterministic inner loop for the durable primitives those tests rely on.
@@ -88,7 +91,7 @@ memory-store calls.
 | `DeterministicFaultScheduler` | Seeded random choices, operation trace entries, and named fault rolls such as `fanout_drop`, `queue.ack_lost`, and `storage.push_publish.write_after_commit`. |
 | `DeterministicNetwork` | Modeled live fanout delivery order, delivery tick, dropped messages, duplicates, and delayed delivery. |
 | `DeterministicQueue` | Modeled push worker queue order, delayed delivery, redelivery, lease timeout duplication, and repair requeueing. |
-| `DeterministicStorage` | Storage read/write behavior around real memory-store calls: fail-before-commit, fail-after-commit, lost responses, stale reads, and backend outages. |
+| `DeterministicStorage` | Storage read/write behavior around real memory-store calls: dropped writes before reservation, torn multi-record writes, fail-after-commit, lost responses, stale reads, corrupted reads, delayed commit visibility, and backend outages. |
 
 The final JSON report includes a bounded `io_trace` with the most recent operation and fault
 decisions. That trace is intentionally compact: it is for replay orientation, not a full event log.
@@ -186,6 +189,12 @@ The default fault model injects:
 | `--slow-prob` | `0.003` | Per-tick probability that one node adds deterministic fanout delay. |
 | `--stale-prob` | `0.002` | Per-tick probability that one node rejects traffic as stale until it catches up. |
 | `--stream-reset-prob` | `0.0005` | Per-tick probability of an operator history/presence stream reset. |
+| `--storage-drop-write-prob` | `0.004` | Probability a core durable write is dropped before taking a reservation or changing the store. |
+| `--storage-torn-write-prob` | `0.002` | Probability a multi-record versioned-message operation commits history but tears before the version record. |
+| `--storage-stale-read-prob` | `0.006` | Probability a recovery read sees an older visible history prefix. |
+| `--storage-corrupt-read-prob` | `0.002` | Probability a recovery read is treated as corrupted and ignored fail-closed. |
+| `--storage-delayed-commit-prob` | `0.006` | Probability a committed core durable write is hidden from recovery reads until a later deterministic tick. |
+| `--storage-max-commit-delay-ticks` | `8` | Maximum delayed commit visibility window for core durable writes. |
 | `--queue-produce-lost-prob` | `0.015` | Probability that a push queue produce disappears after durable state was written. |
 | `--queue-ack-lost-prob` | `0.010` | Probability that a consumed push queue item is redelivered because ack was lost. |
 | `--queue-lease-timeout-prob` | `0.010` | Probability that a queue lease times out and duplicates work. |
@@ -201,6 +210,13 @@ The default fault model injects:
 Rejected operations are part of the model: a workload request may route to a crashed or partitioned
 node and fail before it reaches durable storage. The shadow only advances after durable Sockudo
 stores accept the operation.
+
+Storage faults are injected at simulator-local boundaries. Dropped core writes are rejected before
+serial reservations so the model does not create artificial gaps. Torn writes are limited to
+multi-record operations where a safe prefix can exist, such as a versioned-message history row
+committing before its version row. Delayed commits are tracked as per-channel visible prefixes; a
+recovery read may lag, but it must never expose a gap or invalid cursor. Corrupted reads fail closed
+and are retried by later recovery probes.
 
 ## Push Oracles
 
@@ -235,6 +251,14 @@ To replay the checked-in seed corpus:
 cargo run -p sockudo-simulator --bin sockudo-sim -- \
   --corpus-file crates/sockudo-simulator/corpus/disaster-seeds.json \
   --ticks 5000 \
+  --json
+```
+
+To replay the storage-fault corpus:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --corpus-file crates/sockudo-simulator/corpus/storage-faults.json \
   --json
 ```
 
@@ -283,11 +307,12 @@ change.
 
 ## JSON Shape
 
-The final JSON includes top-level core counters plus a nested `push` object with durable status/log
-counts, provider results, queue losses, repair counts, recent push trace entries, and top-level
-`io_trace` entries for recent deterministic operation/fault decisions. Keep sample outputs with the
-exact seed and tick count that produced them so they remain replayable. A compact example generated
-with `--seed 12648430 --ticks 16 --json` lives at
+The final JSON includes top-level core counters, storage fault counters, restart recovery check
+counts, a nested `push` object with durable status/log counts, provider results, queue losses,
+repair counts, recent push trace entries, and top-level `io_trace` entries for recent deterministic
+operation/fault decisions. Keep sample outputs with the exact seed and tick count that produced
+them so they remain replayable. A compact example generated with `--seed 12648430 --ticks 16
+--json` lives at
 `crates/sockudo-simulator/examples/disaster-report.example.json`.
 
 ## Extending It

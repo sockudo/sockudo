@@ -25,7 +25,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::config::{SimulatorConfig, SimulatorMode};
 use crate::error::{SimulatorError, SimulatorResult};
 use crate::io::{
-    DeterministicClock, DeterministicFaultScheduler, DeterministicNetwork, ScheduledIoEvent,
+    DeterministicClock, DeterministicFaultScheduler, DeterministicNetwork, DeterministicStorage,
+    ScheduledIoEvent,
 };
 use crate::push_lab::{PushLab, PushSimulationReport};
 use crate::real_subsystems::{APP_ID, RealSubsystemHarness};
@@ -61,6 +62,12 @@ pub struct SimulationReport {
     pub node_stale_marks: u64,
     pub stream_resets: u64,
     pub purges: u64,
+    pub storage_dropped_writes: u64,
+    pub storage_torn_writes: u64,
+    pub storage_delayed_commits: u64,
+    pub storage_stale_reads: u64,
+    pub storage_corrupted_reads: u64,
+    pub storage_recovery_checks: u64,
     pub quiesce_ticks: u64,
     pub liveness_max_quiesce_ticks: u64,
     pub live_nodes: usize,
@@ -87,6 +94,8 @@ pub struct DeterministicSimulator {
     channels: Vec<String>,
     network: DeterministicNetwork<NetworkEvent>,
     push: PushLab,
+    storage: DeterministicStorage,
+    storage_visibility: StorageVisibility,
     shadow: Shadow,
     workload: WorkloadGenerator,
     stats: Stats,
@@ -125,6 +134,8 @@ impl DeterministicSimulator {
             channels,
             network: DeterministicNetwork::default(),
             push,
+            storage: DeterministicStorage,
+            storage_visibility: StorageVisibility::default(),
             stats: Stats::default(),
             workload,
             trace: VecDeque::new(),
@@ -137,6 +148,7 @@ impl DeterministicSimulator {
     pub async fn run(&mut self) -> SimulatorResult<SimulationReport> {
         for tick in 0..self.config.ticks {
             self.clock.set_tick(tick);
+            self.storage_visibility.flush(tick);
             self.deliver_due_fanout();
             self.push.on_tick(self.tick(), &mut self.scheduler).await?;
             self.inject_faults().await?;
@@ -185,6 +197,12 @@ impl DeterministicSimulator {
             node_stale_marks: self.stats.node_stale_marks,
             stream_resets: self.stats.stream_resets,
             purges: self.stats.purges,
+            storage_dropped_writes: self.stats.storage_dropped_writes,
+            storage_torn_writes: self.stats.storage_torn_writes,
+            storage_delayed_commits: self.stats.storage_delayed_commits,
+            storage_stale_reads: self.stats.storage_stale_reads,
+            storage_corrupted_reads: self.stats.storage_corrupted_reads,
+            storage_recovery_checks: self.stats.storage_recovery_checks,
             quiesce_ticks: self.quiesce_ticks(),
             liveness_max_quiesce_ticks: self.config.liveness.max_quiesce_ticks,
             live_nodes: self.nodes.iter().filter(|node| node.alive).count(),
@@ -282,8 +300,10 @@ impl DeterministicSimulator {
         if self.roll("node_crash", self.config.fault.node_crash_probability) {
             self.crash_random_node();
         }
-        if self.roll("node_restart", self.config.fault.node_restart_probability) {
-            self.restart_random_node();
+        if self.roll("node_restart", self.config.fault.node_restart_probability)
+            && self.restart_random_node()
+        {
+            self.check_durable_recovery_after_restart().await?;
         }
         if self.roll("node_pause", self.config.fault.node_pause_probability) {
             self.pause_random_node();
@@ -331,7 +351,7 @@ impl DeterministicSimulator {
         }
     }
 
-    fn restart_random_node(&mut self) {
+    fn restart_random_node(&mut self) -> bool {
         let down = self
             .nodes
             .iter()
@@ -339,7 +359,7 @@ impl DeterministicSimulator {
             .map(|node| node.id)
             .collect::<Vec<_>>();
         if down.is_empty() {
-            return;
+            return false;
         }
         let node_idx = down[self.scheduler.usize_below(down.len())];
         if let Some(node) = self.nodes.get_mut(node_idx) {
@@ -347,7 +367,9 @@ impl DeterministicSimulator {
             node.paused = false;
             self.stats.node_restarts = self.stats.node_restarts.saturating_add(1);
             self.trace(format!("node {node_idx} restarted"));
+            return true;
         }
+        false
     }
 
     fn pause_random_node(&mut self) {
@@ -475,6 +497,7 @@ impl DeterministicSimulator {
         self.shadow
             .channel_mut(&channel)
             .reset_history(history.new_stream_id.clone());
+        self.storage_visibility.reset_history(&channel);
 
         let presence = self
             .real
@@ -489,6 +512,7 @@ impl DeterministicSimulator {
         self.shadow
             .channel_mut(&channel)
             .reset_presence(presence.new_stream_id.clone());
+        self.storage_visibility.reset_presence(&channel);
 
         for client in &mut self.clients {
             client.reset_channel(&channel, history.inspection.stream_id.clone());
@@ -503,9 +527,12 @@ impl DeterministicSimulator {
         let channel = self.random_channel();
         let tick = self.tick();
         let payload = Bytes::from(format!("payload:{}:{}", tick, self.stats.history_commits));
-        let message = self
+        let Some(message) = self
             .append_history(&channel, "client-event", "publish", payload)
-            .await?;
+            .await?
+        else {
+            return Ok(());
+        };
         self.schedule_fanout(&channel, &message);
         self.trace(format!(
             "history publish {channel} serial={}",
@@ -517,14 +544,25 @@ impl DeterministicSimulator {
     async fn create_versioned_message(&mut self) -> SimulatorResult<()> {
         let channel = self.random_channel();
         let tick = self.tick();
-        let history = self
+        let Some(history) = self
             .append_history(
                 &channel,
                 "sockudo:message.create",
                 MessageAction::Create.as_str(),
                 Bytes::from(format!("version-create:{tick}")),
             )
-            .await?;
+            .await?
+        else {
+            return Ok(());
+        };
+        if self.storage_write_torn("version_create") {
+            self.schedule_fanout(&channel, &history);
+            self.trace(format!(
+                "versioned create torn after history {channel} history_serial={}",
+                history.serial
+            ));
+            return Ok(());
+        }
         let delivery = self
             .real
             .version
@@ -552,6 +590,7 @@ impl DeterministicSimulator {
             message: message.clone(),
         };
         self.real.version.append_version(record.clone()).await?;
+        self.record_version_visibility(&channel, record.delivery_serial());
         self.shadow.channel_mut(&channel).append_version(record);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
@@ -581,14 +620,25 @@ impl DeterministicSimulator {
         } else {
             (MessageAction::Delete, "message.delete")
         };
-        let history = self
+        let Some(history) = self
             .append_history(
                 &channel,
                 action.as_str(),
                 action.as_str(),
                 Bytes::from(format!("{payload}:{tick}")),
             )
-            .await?;
+            .await?
+        else {
+            return Ok(());
+        };
+        if self.storage_write_torn("version_mutation") {
+            self.schedule_fanout(&channel, &history);
+            self.trace(format!(
+                "versioned mutation torn after history {channel} history_serial={}",
+                history.serial
+            ));
+            return Ok(());
+        }
         let delivery = self
             .real
             .version
@@ -639,6 +689,7 @@ impl DeterministicSimulator {
             message: next,
         };
         self.real.version.append_version(record.clone()).await?;
+        self.record_version_visibility(&channel, record.delivery_serial());
         self.shadow.channel_mut(&channel).append_version(record);
         self.stats.version_commits = self.stats.version_commits.saturating_add(1);
         self.schedule_fanout(&channel, &history);
@@ -668,6 +719,9 @@ impl DeterministicSimulator {
             .shadow
             .channel(&channel)
             .presence_would_record(event, &user_id);
+        if self.storage_write_dropped("presence_transition") {
+            return Ok(());
+        }
         let record = PresenceHistoryTransitionRecord {
             app_id: APP_ID.to_string(),
             channel: channel.clone(),
@@ -694,6 +748,7 @@ impl DeterministicSimulator {
             self.shadow
                 .channel_mut(&channel)
                 .append_presence(item.clone());
+            self.record_presence_visibility(&channel, item.serial);
             self.stats.presence_events = self.stats.presence_events.saturating_add(1);
             self.trace(format!(
                 "presence {:?} {channel}/{user_id} serial={}",
@@ -747,7 +802,10 @@ impl DeterministicSimulator {
         event_name: &str,
         operation_kind: &str,
         payload: Bytes,
-    ) -> SimulatorResult<ShadowHistoryMessage> {
+    ) -> SimulatorResult<Option<ShadowHistoryMessage>> {
+        if self.storage_write_dropped(operation_kind) {
+            return Ok(None);
+        }
         let reservation = self
             .real
             .history
@@ -778,8 +836,102 @@ impl DeterministicSimulator {
         self.shadow
             .channel_mut(channel)
             .append_history(message.clone());
+        self.record_history_visibility(channel, message.serial);
         self.stats.history_commits = self.stats.history_commits.saturating_add(1);
-        Ok(message)
+        Ok(Some(message))
+    }
+
+    fn storage_write_dropped(&mut self, boundary: &str) -> bool {
+        let tick = self.tick();
+        if self.storage.write_is_dropped(
+            &mut self.scheduler,
+            tick,
+            boundary,
+            self.config.fault.storage.dropped_write_probability,
+        ) {
+            self.stats.storage_dropped_writes = self.stats.storage_dropped_writes.saturating_add(1);
+            self.trace(format!("storage dropped write at {boundary}"));
+            return true;
+        }
+        false
+    }
+
+    fn storage_write_torn(&mut self, boundary: &str) -> bool {
+        let tick = self.tick();
+        if self.storage.write_is_torn(
+            &mut self.scheduler,
+            tick,
+            boundary,
+            self.config.fault.storage.torn_write_probability,
+        ) {
+            self.stats.storage_torn_writes = self.stats.storage_torn_writes.saturating_add(1);
+            self.trace(format!("storage torn write at {boundary}"));
+            return true;
+        }
+        false
+    }
+
+    fn record_history_visibility(&mut self, channel: &str, serial: u64) {
+        let tick = self.tick();
+        let visible_at = self.storage.commit_visible_at(
+            &mut self.scheduler,
+            tick,
+            "history",
+            self.config.fault.storage.delayed_commit_probability,
+            self.config.fault.storage.max_commit_delay_ticks,
+        );
+        if visible_at > tick {
+            self.stats.storage_delayed_commits =
+                self.stats.storage_delayed_commits.saturating_add(1);
+        }
+        self.storage_visibility
+            .record_history(channel, serial, visible_at);
+        self.storage_visibility.flush(tick);
+    }
+
+    fn record_version_visibility(&mut self, channel: &str, delivery_serial: u64) {
+        let tick = self.tick();
+        let visible_at = self.storage.commit_visible_at(
+            &mut self.scheduler,
+            tick,
+            "version",
+            self.config.fault.storage.delayed_commit_probability,
+            self.config.fault.storage.max_commit_delay_ticks,
+        );
+        if visible_at > tick {
+            self.stats.storage_delayed_commits =
+                self.stats.storage_delayed_commits.saturating_add(1);
+        }
+        self.storage_visibility
+            .record_version(channel, delivery_serial, visible_at);
+        self.storage_visibility.flush(tick);
+    }
+
+    fn record_presence_visibility(&mut self, channel: &str, serial: u64) {
+        let tick = self.tick();
+        let visible_at = self.storage.commit_visible_at(
+            &mut self.scheduler,
+            tick,
+            "presence",
+            self.config.fault.storage.delayed_commit_probability,
+            self.config.fault.storage.max_commit_delay_ticks,
+        );
+        if visible_at > tick {
+            self.stats.storage_delayed_commits =
+                self.stats.storage_delayed_commits.saturating_add(1);
+        }
+        self.storage_visibility
+            .record_presence(channel, serial, visible_at);
+        self.storage_visibility.flush(tick);
+    }
+
+    fn drain_storage_visibility(&mut self) {
+        let tick = self
+            .storage_visibility
+            .next_due_tick()
+            .unwrap_or(self.tick());
+        self.clock.advance_to(tick);
+        self.storage_visibility.force_visible();
     }
 
     fn schedule_fanout(&mut self, channel: &str, message: &ShadowHistoryMessage) {
@@ -844,10 +996,13 @@ impl DeterministicSimulator {
             let Some(next_delivery_tick) = self.network.next_delivery_tick() else {
                 let tick = self.push.quiesce(self.tick(), &mut self.scheduler).await?;
                 self.clock.set_tick(tick);
+                self.storage_visibility.flush(tick);
+                self.drain_storage_visibility();
                 return Ok(());
             };
             self.clock.advance_by(1);
             self.clock.advance_to(next_delivery_tick);
+            self.storage_visibility.flush(self.tick());
             self.deliver_due_fanout();
         }
         if !self.network.is_empty() {
@@ -858,6 +1013,8 @@ impl DeterministicSimulator {
         }
         let tick = self.push.quiesce(self.tick(), &mut self.scheduler).await?;
         self.clock.set_tick(tick);
+        self.storage_visibility.flush(tick);
+        self.drain_storage_visibility();
         Ok(())
     }
 
@@ -927,8 +1084,7 @@ impl DeterministicSimulator {
         client_idx: usize,
         channel: &str,
     ) -> SimulatorResult<()> {
-        let shadow = self.shadow.channel(channel);
-        let Some(current_stream_id) = shadow.history_stream_id.clone() else {
+        let Some(current_stream_id) = self.shadow.channel(channel).history_stream_id.clone() else {
             return Ok(());
         };
         let (client_stream_id, last_contiguous) =
@@ -938,7 +1094,12 @@ impl DeterministicSimulator {
             return Ok(());
         }
 
-        let oldest = shadow.history.front().map(|message| message.serial);
+        let oldest = self
+            .shadow
+            .channel(channel)
+            .history
+            .front()
+            .map(|message| message.serial);
         if let Some(oldest_serial) = oldest
             && last_contiguous.saturating_add(1) < oldest_serial
         {
@@ -948,21 +1109,36 @@ impl DeterministicSimulator {
         }
 
         let recovered = self
-            .read_history_bounded(channel, last_contiguous.saturating_add(1))
+            .read_history_bounded_for_recovery(channel, last_contiguous.saturating_add(1))
             .await?;
-        let expected = shadow
+        if recovered.corrupted {
+            return Ok(());
+        }
+        if recovered.truncated_by_retention {
+            self.stats.recovery_truncations = self.stats.recovery_truncations.saturating_add(1);
+            return Ok(());
+        }
+        let expected = self
+            .shadow
+            .channel(channel)
             .history
             .iter()
-            .filter(|message| message.serial > last_contiguous)
+            .filter(|message| {
+                message.serial > last_contiguous && message.serial <= recovered.visible_serial
+            })
             .map(|message| message.serial)
             .collect::<Vec<_>>();
-        let actual = recovered.iter().map(|item| item.serial).collect::<Vec<_>>();
+        let actual = recovered
+            .items
+            .iter()
+            .map(|item| item.serial)
+            .collect::<Vec<_>>();
         if actual != expected {
             return Err(self.fail(format!(
                 "client recovery mismatch on {channel}: expected serials {expected:?}, got {actual:?}"
             )));
         }
-        for item in recovered {
+        for item in recovered.items {
             let event = NetworkEvent {
                 deliver_at: self.tick(),
                 client_idx,
@@ -980,6 +1156,22 @@ impl DeterministicSimulator {
 
     async fn check_oracles(&mut self) -> SimulatorResult<()> {
         self.stats.oracle_checks = self.stats.oracle_checks.saturating_add(1);
+        let channels = self.channels.clone();
+        for channel in &channels {
+            self.check_history_oracle(channel).await?;
+            self.check_version_oracle(channel).await?;
+            self.check_presence_oracle(channel).await?;
+            self.check_client_recovery_oracle(channel)?;
+        }
+        self.push
+            .check_oracles(false, self.config.page_limit)
+            .await
+            .map_err(|message| self.fail(message))?;
+        Ok(())
+    }
+
+    async fn check_durable_recovery_after_restart(&mut self) -> SimulatorResult<()> {
+        self.stats.storage_recovery_checks = self.stats.storage_recovery_checks.saturating_add(1);
         let channels = self.channels.clone();
         for channel in &channels {
             self.check_history_oracle(channel).await?;
@@ -1460,15 +1652,61 @@ impl DeterministicSimulator {
         Ok(items)
     }
 
-    async fn read_history_bounded(
-        &self,
+    async fn read_history_bounded_for_recovery(
+        &mut self,
         channel: &str,
         start_serial: u64,
-    ) -> SimulatorResult<Vec<HistoryItem>> {
+    ) -> SimulatorResult<RecoveryRead> {
+        let tick = self.tick();
+        if self.storage.read_is_corrupted(
+            &mut self.scheduler,
+            tick,
+            "history_recovery",
+            self.config.fault.storage.corrupt_read_probability,
+        ) {
+            self.stats.storage_corrupted_reads =
+                self.stats.storage_corrupted_reads.saturating_add(1);
+            self.trace(format!(
+                "storage corrupted recovery read on {channel} from serial {start_serial}"
+            ));
+            return Ok(RecoveryRead {
+                corrupted: true,
+                ..RecoveryRead::default()
+            });
+        }
+
+        let mut visible_serial = self.storage_visibility.visible_history_serial(channel);
+        if self.storage.read_is_stale(
+            &mut self.scheduler,
+            tick,
+            "history_recovery",
+            self.config.fault.storage.stale_read_probability,
+        ) {
+            self.stats.storage_stale_reads = self.stats.storage_stale_reads.saturating_add(1);
+            if visible_serial >= start_serial {
+                let rewind = self.scheduler.u64_inclusive(
+                    visible_serial
+                        .saturating_sub(start_serial)
+                        .saturating_add(1),
+                );
+                visible_serial = visible_serial.saturating_sub(rewind);
+            }
+            self.trace(format!(
+                "storage stale recovery read on {channel} visible_serial={visible_serial}"
+            ));
+        }
+        if visible_serial < start_serial {
+            return Ok(RecoveryRead {
+                visible_serial,
+                ..RecoveryRead::default()
+            });
+        }
+
         let mut items = Vec::new();
         let mut cursor: Option<HistoryCursor> = None;
         let bounds = HistoryQueryBounds {
             start_serial: Some(start_serial),
+            end_serial: Some(visible_serial),
             ..Default::default()
         };
         loop {
@@ -1485,15 +1723,36 @@ impl DeterministicSimulator {
                 })
                 .await?;
             if page.truncated_by_retention {
-                return Ok(Vec::new());
+                return Ok(RecoveryRead {
+                    visible_serial,
+                    truncated_by_retention: true,
+                    ..RecoveryRead::default()
+                });
             }
             items.extend(page.items);
             if !page.has_more {
                 break;
             }
-            cursor = page.next_cursor;
+            let Some(next) = page.next_cursor else {
+                return Err(self.fail(format!(
+                    "history recovery page on {channel} had has_more=true without a cursor"
+                )));
+            };
+            let encoded = next.encode()?;
+            let decoded = HistoryCursor::decode(&encoded)?;
+            if decoded != next {
+                return Err(self.fail(format!(
+                    "history recovery cursor round-trip mismatch on {channel}"
+                )));
+            }
+            cursor = Some(next);
         }
-        Ok(items)
+        Ok(RecoveryRead {
+            items,
+            visible_serial,
+            corrupted: false,
+            truncated_by_retention: false,
+        })
     }
 
     async fn read_versions(
@@ -1526,6 +1785,13 @@ impl DeterministicSimulator {
                     "version page on {channel}/{message_serial} had has_more=true without a cursor"
                 )));
             };
+            let encoded = serde_json::to_string(&next)?;
+            let decoded: VersionStoreCursor = serde_json::from_str(&encoded)?;
+            if decoded != next {
+                return Err(self.fail(format!(
+                    "version cursor round-trip mismatch on {channel}/{message_serial}"
+                )));
+            }
             cursor = Some(next);
         }
         Ok(items)
@@ -1658,6 +1924,125 @@ impl DeterministicSimulator {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct StorageVisibility {
+    history: BTreeMap<String, VisibilityWindow>,
+    version: BTreeMap<String, VisibilityWindow>,
+    presence: BTreeMap<String, VisibilityWindow>,
+}
+
+impl StorageVisibility {
+    fn record_history(&mut self, channel: &str, serial: u64, visible_at: u64) {
+        self.history
+            .entry(channel.to_string())
+            .or_default()
+            .record(serial, visible_at);
+    }
+
+    fn record_version(&mut self, channel: &str, delivery_serial: u64, visible_at: u64) {
+        self.version
+            .entry(channel.to_string())
+            .or_default()
+            .record(delivery_serial, visible_at);
+    }
+
+    fn record_presence(&mut self, channel: &str, serial: u64, visible_at: u64) {
+        self.presence
+            .entry(channel.to_string())
+            .or_default()
+            .record(serial, visible_at);
+    }
+
+    fn reset_history(&mut self, channel: &str) {
+        self.history.remove(channel);
+    }
+
+    fn reset_presence(&mut self, channel: &str) {
+        self.presence.remove(channel);
+    }
+
+    fn visible_history_serial(&self, channel: &str) -> u64 {
+        self.history
+            .get(channel)
+            .map_or(0, VisibilityWindow::visible_serial)
+    }
+
+    fn flush(&mut self, tick: u64) {
+        for window in self
+            .history
+            .values_mut()
+            .chain(self.version.values_mut())
+            .chain(self.presence.values_mut())
+        {
+            window.flush(tick);
+        }
+    }
+
+    fn next_due_tick(&self) -> Option<u64> {
+        self.history
+            .values()
+            .chain(self.version.values())
+            .chain(self.presence.values())
+            .filter_map(VisibilityWindow::max_due_tick)
+            .max()
+    }
+
+    fn force_visible(&mut self) {
+        for window in self
+            .history
+            .values_mut()
+            .chain(self.version.values_mut())
+            .chain(self.presence.values_mut())
+        {
+            window.force_visible();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct VisibilityWindow {
+    visible_serial: u64,
+    pending: BTreeMap<u64, u64>,
+}
+
+impl VisibilityWindow {
+    fn record(&mut self, serial: u64, visible_at: u64) {
+        if serial <= self.visible_serial {
+            return;
+        }
+        self.pending.insert(serial, visible_at);
+    }
+
+    fn visible_serial(&self) -> u64 {
+        self.visible_serial
+    }
+
+    fn flush(&mut self, tick: u64) {
+        loop {
+            let next_serial = self.visible_serial.saturating_add(1);
+            let Some(&visible_at) = self.pending.get(&next_serial) else {
+                break;
+            };
+            if visible_at > tick {
+                break;
+            }
+            self.pending.remove(&next_serial);
+            self.visible_serial = next_serial;
+        }
+    }
+
+    fn max_due_tick(&self) -> Option<u64> {
+        self.pending.values().copied().max()
+    }
+
+    fn force_visible(&mut self) {
+        if let Some(last) = self.pending.keys().next_back().copied() {
+            self.visible_serial = self.visible_serial.max(last);
+        }
+        self.pending.clear();
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NodeState {
     id: usize,
@@ -1715,6 +2100,14 @@ impl ScheduledIoEvent for NetworkEvent {
     fn deliver_at(&self) -> u64 {
         self.deliver_at
     }
+}
+
+#[derive(Debug, Default)]
+struct RecoveryRead {
+    items: Vec<HistoryItem>,
+    visible_serial: u64,
+    corrupted: bool,
+    truncated_by_retention: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2025,6 +2418,12 @@ struct Stats {
     node_stale_marks: u64,
     stream_resets: u64,
     purges: u64,
+    storage_dropped_writes: u64,
+    storage_torn_writes: u64,
+    storage_delayed_commits: u64,
+    storage_stale_reads: u64,
+    storage_corrupted_reads: u64,
+    storage_recovery_checks: u64,
 }
 
 #[cfg(test)]
@@ -2059,6 +2458,7 @@ mod tests {
                 node_slow_probability: 0.01,
                 node_stale_probability: 0.01,
                 stream_reset_probability: 0.001,
+                storage: crate::StorageFaultConfig::default(),
             },
             push: crate::PushLabConfig::default(),
         }
@@ -2226,6 +2626,67 @@ mod tests {
             assert_eq!(report.push.pending_schedules, 0);
             assert_eq!(report.push.outstanding_deliveries, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn storage_fault_seed_exercises_durable_recovery_oracles() {
+        let mut config = test_config(0x5702_a6e5_fa17_0001);
+        config.ticks = 360;
+        config.oracle_every = 7;
+        config.fault.fanout_drop_probability = 0.35;
+        config.fault.fanout_duplicate_probability = 0.04;
+        config.fault.node_crash_probability = 0.035;
+        config.fault.node_restart_probability = 0.180;
+        config.fault.node_pause_probability = 0.0;
+        config.fault.node_resume_probability = 0.0;
+        config.fault.node_partition_probability = 0.0;
+        config.fault.node_heal_probability = 0.0;
+        config.fault.node_slow_probability = 0.0;
+        config.fault.node_stale_probability = 0.0;
+        config.fault.stream_reset_probability = 0.0;
+        config.fault.storage = crate::StorageFaultConfig {
+            dropped_write_probability: 0.060,
+            torn_write_probability: 0.120,
+            stale_read_probability: 0.220,
+            corrupt_read_probability: 0.080,
+            delayed_commit_probability: 0.300,
+            max_commit_delay_ticks: 12,
+        };
+        config.workload.weights = ActionWeights {
+            publish_message: 24,
+            create_versioned_message: 18,
+            mutate_versioned_message: 24,
+            presence_transition: 18,
+            recovery_probe: 18,
+            purge_history: 0,
+            push_register_device: 8,
+            push_delete_device: 1,
+            push_subscribe: 8,
+            push_unsubscribe: 1,
+            push_publish: 10,
+            push_scheduled_publish: 2,
+            push_provider_feedback: 2,
+            push_repair: 3,
+            oracle_check: 3,
+        };
+
+        let report = DeterministicSimulator::new(config)
+            .unwrap()
+            .run()
+            .await
+            .unwrap();
+
+        assert!(report.storage_dropped_writes > 0);
+        assert!(report.storage_torn_writes > 0);
+        assert!(report.storage_delayed_commits > 0);
+        assert!(report.storage_stale_reads > 0);
+        assert!(report.storage_corrupted_reads > 0);
+        assert!(report.storage_recovery_checks > 0);
+        assert!(report.history_commits > 0);
+        assert!(report.version_commits > 0);
+        assert!(report.presence_events > 0);
+        assert_eq!(report.queued_fanout, 0);
+        assert_eq!(report.push.outstanding_deliveries, 0);
     }
 
     #[tokio::test]

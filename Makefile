@@ -207,6 +207,12 @@ simulator-disaster: ## Run disaster-heavy deterministic simulator profile with J
 		--write-fail-before-commit-prob 0.020 \
 		--write-fail-after-commit-prob 0.015 \
 		--response-lost-prob 0.020 \
+		--storage-drop-write-prob 0.020 \
+		--storage-torn-write-prob 0.014 \
+		--storage-stale-read-prob 0.030 \
+		--storage-corrupt-read-prob 0.010 \
+		--storage-delayed-commit-prob 0.025 \
+		--storage-max-commit-delay-ticks 18 \
 		--provider-retryable-prob 0.180 \
 		--provider-reject-prob 0.070 \
 		--provider-invalid-token-prob 0.050 \
