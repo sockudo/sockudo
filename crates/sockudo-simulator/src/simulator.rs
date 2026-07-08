@@ -178,10 +178,16 @@ impl DeterministicSimulator {
         for tick in 0..self.config.ticks {
             self.clock.set_tick(tick);
             self.storage_visibility.flush(tick);
-            self.deliver_due_fanout()?;
-            self.push.on_tick(self.tick(), &mut self.scheduler).await?;
-            self.inject_faults().await?;
-            self.drive_workload().await?;
+            for task in self.tick_task_order(tick) {
+                match task {
+                    TickTask::DeliverFanout => self.deliver_due_fanout()?,
+                    TickTask::PushTick => {
+                        self.push.on_tick(tick, &mut self.scheduler).await?;
+                    }
+                    TickTask::InjectFaults => self.inject_faults().await?,
+                    TickTask::DriveWorkload => self.drive_workload().await?,
+                }
+            }
             if self.config.oracle_every > 0 && tick % self.config.oracle_every == 0 {
                 self.check_oracles().await?;
             }
@@ -247,6 +253,21 @@ impl DeterministicSimulator {
             workload_weights: self.workload.weights(),
             workload_actions: self.workload.selected().clone(),
         }
+    }
+
+    fn tick_task_order(&mut self, tick: u64) -> Vec<TickTask> {
+        const TASKS: [TickTask; 4] = [
+            TickTask::DeliverFanout,
+            TickTask::PushTick,
+            TickTask::InjectFaults,
+            TickTask::DriveWorkload,
+        ];
+
+        self.scheduler
+            .schedule_order(tick, "tick.tasks", TASKS.len())
+            .into_iter()
+            .map(|idx| TASKS[idx])
+            .collect()
     }
 
     async fn drive_workload(&mut self) -> SimulatorResult<()> {
@@ -373,6 +394,10 @@ impl DeterministicSimulator {
             return;
         }
         let victim = live[self.scheduler.usize_below(live.len())];
+        self.scheduler.record(
+            self.tick(),
+            format!("schedule node.crash candidates={live:?} chosen={victim}"),
+        );
         if let Some(node) = self.nodes.get_mut(victim) {
             node.alive = false;
             node.partitioned = false;
@@ -392,6 +417,10 @@ impl DeterministicSimulator {
             return false;
         }
         let node_idx = down[self.scheduler.usize_below(down.len())];
+        self.scheduler.record(
+            self.tick(),
+            format!("schedule node.restart candidates={down:?} chosen={node_idx}"),
+        );
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.alive = true;
             node.paused = false;
@@ -413,6 +442,10 @@ impl DeterministicSimulator {
             return;
         }
         let node_idx = eligible[self.scheduler.usize_below(eligible.len())];
+        self.scheduler.record(
+            self.tick(),
+            format!("schedule node.pause candidates={eligible:?} chosen={node_idx}"),
+        );
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.paused = true;
             self.stats.node_pauses = self.stats.node_pauses.saturating_add(1);
@@ -431,6 +464,10 @@ impl DeterministicSimulator {
             return;
         }
         let node_idx = paused[self.scheduler.usize_below(paused.len())];
+        self.scheduler.record(
+            self.tick(),
+            format!("schedule node.resume candidates={paused:?} chosen={node_idx}"),
+        );
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.paused = false;
             self.stats.node_resumes = self.stats.node_resumes.saturating_add(1);
@@ -1017,10 +1054,11 @@ impl DeterministicSimulator {
     }
 
     fn drain_storage_visibility(&mut self) {
+        let current = self.tick();
+        let tick = self.storage_visibility.next_due_tick().unwrap_or(current);
         let tick = self
-            .storage_visibility
-            .next_due_tick()
-            .unwrap_or(self.tick());
+            .scheduler
+            .timer_advance(current, "storage.visibility", tick);
         self.clock.advance_to(tick);
         self.storage_visibility.force_visible();
     }
@@ -1042,11 +1080,12 @@ impl DeterministicSimulator {
             } else {
                 0
             };
+            let deliver_at = self
+                .tick()
+                .saturating_add(self.random_delay())
+                .saturating_add(slow_delay);
             let event = NetworkEvent {
-                deliver_at: self
-                    .tick()
-                    .saturating_add(self.random_delay())
-                    .saturating_add(slow_delay),
+                deliver_at,
                 client_idx,
                 channel: channel.to_string(),
                 stream_id: message.stream_id.clone(),
@@ -1055,6 +1094,13 @@ impl DeterministicSimulator {
                 message: message.clone(),
                 source: DeliverySource::LiveFanout,
             };
+            self.scheduler.record(
+                tick,
+                format!(
+                    "schedule fanout serial={} client={} source_node={} deliver_at={deliver_at}",
+                    message.serial, client_idx, source_node
+                ),
+            );
             self.network.schedule(event.clone());
             if self.roll(
                 "fanout_duplicate",
@@ -1062,6 +1108,13 @@ impl DeterministicSimulator {
             ) {
                 let mut duplicate = event;
                 duplicate.deliver_at = duplicate.deliver_at.saturating_add(self.random_delay());
+                self.scheduler.record(
+                    tick,
+                    format!(
+                        "schedule fanout.duplicate serial={} client={} deliver_at={}",
+                        message.serial, client_idx, duplicate.deliver_at
+                    ),
+                );
                 self.network.schedule(duplicate);
                 self.stats.duplicated_fanout = self.stats.duplicated_fanout.saturating_add(1);
             }
@@ -1069,7 +1122,11 @@ impl DeterministicSimulator {
     }
 
     fn deliver_due_fanout(&mut self) -> SimulatorResult<()> {
-        for event in self.network.drain_due(self.tick()) {
+        let tick = self.tick();
+        for event in self
+            .network
+            .drain_due_ordered(tick, &mut self.scheduler, "fanout.due")
+        {
             self.check_delivery_protocol_oracles(&event)?;
             let accepted = self.clients[event.client_idx].deliver(&event);
             if accepted {
@@ -1095,8 +1152,12 @@ impl DeterministicSimulator {
                 self.drain_storage_visibility();
                 return Ok(());
             };
-            self.clock.advance_by(1);
-            self.clock.advance_to(next_delivery_tick);
+            let current = self.tick();
+            let target = next_delivery_tick.max(current.saturating_add(1));
+            let target = self
+                .scheduler
+                .timer_advance(current, "fanout.quiesce", target);
+            self.clock.set_tick(target);
             self.storage_visibility.flush(self.tick());
             self.deliver_due_fanout()?;
         }
@@ -2732,6 +2793,14 @@ enum DeliverySource {
     Recovery,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TickTask {
+    DeliverFanout,
+    PushTick,
+    InjectFaults,
+    DriveWorkload,
+}
+
 #[derive(Debug, Default)]
 struct RecoveryRead {
     items: Vec<HistoryItem>,
@@ -3256,6 +3325,74 @@ mod tests {
 
         assert_eq!(left_report, right_report);
         assert_eq!(left_report.queued_fanout, 0);
+    }
+
+    #[tokio::test]
+    async fn same_seed_replays_schedule_and_timer_trace() {
+        let mut config = test_config(0x5c4e_d11e);
+        config.ticks = 1;
+        config.oracle_every = 0;
+        config.workload.weights = ActionWeights {
+            publish_message: 1,
+            create_versioned_message: 0,
+            mutate_versioned_message: 0,
+            presence_transition: 0,
+            recovery_probe: 0,
+            purge_history: 0,
+            push_register_device: 0,
+            push_delete_device: 0,
+            push_subscribe: 0,
+            push_unsubscribe: 0,
+            push_publish: 0,
+            push_scheduled_publish: 0,
+            push_provider_feedback: 0,
+            push_repair: 0,
+            oracle_check: 0,
+        };
+        config.fault.fanout_drop_probability = 0.0;
+        config.fault.fanout_duplicate_probability = 0.0;
+        config.fault.max_fanout_delay_ticks = 0;
+        config.fault.node_crash_probability = 0.0;
+        config.fault.node_restart_probability = 0.0;
+        config.fault.node_pause_probability = 0.0;
+        config.fault.node_resume_probability = 0.0;
+        config.fault.node_partition_probability = 0.0;
+        config.fault.node_heal_probability = 0.0;
+        config.fault.node_slow_probability = 0.0;
+        config.fault.node_stale_probability = 0.0;
+        config.fault.stream_reset_probability = 0.0;
+        config.fault.storage.delayed_commit_probability = 1.0;
+        config.fault.storage.max_commit_delay_ticks = 8;
+
+        let mut left = DeterministicSimulator::new(config.clone()).unwrap();
+        let mut right = DeterministicSimulator::new(config).unwrap();
+
+        let left_report = left.run().await.unwrap();
+        let right_report = right.run().await.unwrap();
+
+        assert_eq!(left_report, right_report);
+        assert_eq!(left_report.io_trace, right_report.io_trace);
+        assert!(
+            left_report
+                .io_trace
+                .iter()
+                .any(|event| event.contains("schedule tick.tasks")),
+            "top-level task ordering should be traced"
+        );
+        assert!(
+            left_report
+                .io_trace
+                .iter()
+                .any(|event| event.contains("schedule fanout")),
+            "fanout scheduling should be traced"
+        );
+        assert!(
+            left_report
+                .io_trace
+                .iter()
+                .any(|event| event.contains("timer ")),
+            "logical timer advancement should be traced"
+        );
     }
 
     #[tokio::test]
