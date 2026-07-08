@@ -395,6 +395,10 @@ impl PushLab {
         self.real
             .put_scheduled_publish(&publish_id, &channel, due_tick)
             .await?;
+        scheduler.record(
+            tick,
+            format!("schedule push.scheduled_publish publish={publish_id} due_tick={due_tick}"),
+        );
         self.schedules.push(ScheduledPush {
             due_tick,
             channel: channel.clone(),
@@ -448,6 +452,13 @@ impl PushLab {
                 result,
             },
         };
+        scheduler.record(
+            tick,
+            format!(
+                "schedule push.provider_feedback_duplicate item={} deliver_at={}",
+                item.id, item.deliver_at
+            ),
+        );
         self.queue.push_back(item);
         self.trace(tick, "push duplicate provider feedback queued".to_string());
     }
@@ -479,7 +490,7 @@ impl PushLab {
                 self.quiescing = previous_quiescing;
                 return Ok(tick);
             }
-            tick = tick.saturating_add(1);
+            tick = scheduler.timer_advance(tick, "push.quiesce", tick.saturating_add(1));
             self.backend_outage = false;
             self.release_due_schedules(tick, scheduler).await?;
             self.repair(tick, scheduler);
@@ -880,22 +891,27 @@ impl PushLab {
         scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<()> {
         let mut pending = Vec::with_capacity(self.schedules.len());
+        let mut due = Vec::new();
         let schedules = std::mem::take(&mut self.schedules);
         for schedule in schedules {
             if schedule.due_tick <= tick {
-                self.real
-                    .delete_scheduled_publish(&schedule.publish_id)
-                    .await?;
-                self.accept_publish(
-                    tick,
-                    scheduler,
-                    schedule.channel,
-                    Some((schedule.publish_id, schedule.idempotency_key)),
-                )
-                .await?;
+                due.push(schedule);
             } else {
                 pending.push(schedule);
             }
+        }
+        scheduler.shuffle_scheduled(tick, "push.schedules.due", &mut due);
+        for schedule in due {
+            self.real
+                .delete_scheduled_publish(&schedule.publish_id)
+                .await?;
+            self.accept_publish(
+                tick,
+                scheduler,
+                schedule.channel,
+                Some((schedule.publish_id, schedule.idempotency_key)),
+            )
+            .await?;
         }
         self.schedules = pending;
         Ok(())
@@ -911,12 +927,17 @@ impl PushLab {
         }
 
         let mut pending = VecDeque::with_capacity(self.queue.len());
+        let mut due = Vec::new();
         let queue = self.queue.take_all();
         for item in queue {
             if item.deliver_at > tick {
                 pending.push_back(item);
                 continue;
             }
+            due.push(item);
+        }
+        scheduler.shuffle_scheduled(tick, "push.queue.due", &mut due);
+        for item in due {
             if !self.quiescing
                 && self.roll(
                     tick,
@@ -1334,6 +1355,13 @@ impl PushLab {
             deliver_at: tick.saturating_add(self.random_queue_delay(scheduler)),
             stage,
         };
+        scheduler.record(
+            tick,
+            format!(
+                "schedule push.queue item={} deliver_at={} stage={:?}",
+                item.id, item.deliver_at, item.stage
+            ),
+        );
         self.queue.push_back(item.clone());
         if !self.quiescing
             && self.roll(
@@ -1348,6 +1376,13 @@ impl PushLab {
             duplicate.deliver_at = duplicate
                 .deliver_at
                 .saturating_add(self.random_queue_delay(scheduler).max(1));
+            scheduler.record(
+                tick,
+                format!(
+                    "schedule push.queue.duplicate item={} deliver_at={} stage={:?}",
+                    duplicate.id, duplicate.deliver_at, duplicate.stage
+                ),
+            );
             self.queue.push_back(duplicate);
             self.stats.queue_duplicates = self.stats.queue_duplicates.saturating_add(1);
         }

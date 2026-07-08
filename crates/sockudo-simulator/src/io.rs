@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 
 const BASE_TIME_MS: i64 = 1_893_456_000_000;
 const MAX_IO_TRACE_EVENTS: usize = 128;
+const SCHEDULE_SEED_DOMAIN: u64 = 0x5c4e_d11e_d15c_100d;
 
 /// Seeded logical clock for simulator timers and durable timestamps.
 #[derive(Debug, Clone)]
@@ -34,10 +35,6 @@ impl DeterministicClock {
         self.tick = self.tick.max(tick);
     }
 
-    pub(crate) fn advance_by(&mut self, ticks: u64) {
-        self.tick = self.tick.saturating_add(ticks);
-    }
-
     pub(crate) fn timestamp_ms(&self) -> i64 {
         self.base_time_ms.saturating_add(self.tick as i64)
     }
@@ -47,6 +44,7 @@ impl DeterministicClock {
 #[derive(Debug, Clone)]
 pub(crate) struct DeterministicFaultScheduler {
     rng: StdRng,
+    schedule_rng: StdRng,
     trace: VecDeque<String>,
 }
 
@@ -54,6 +52,7 @@ impl DeterministicFaultScheduler {
     pub(crate) fn new(seed: u64) -> Self {
         Self {
             rng: StdRng::seed_from_u64(seed),
+            schedule_rng: StdRng::seed_from_u64(seed ^ SCHEDULE_SEED_DOMAIN),
             trace: VecDeque::new(),
         }
     }
@@ -68,6 +67,46 @@ impl DeterministicFaultScheduler {
 
     pub(crate) fn recent_trace(&self) -> Vec<String> {
         self.trace.iter().cloned().collect()
+    }
+
+    pub(crate) fn schedule_order(&mut self, tick: u64, label: &str, len: usize) -> Vec<usize> {
+        let mut order = (0..len).collect::<Vec<_>>();
+        self.shuffle_order(&mut order);
+        self.record(
+            tick,
+            format!("schedule {label} order={}", format_order(&order)),
+        );
+        order
+    }
+
+    pub(crate) fn shuffle_scheduled<T>(&mut self, tick: u64, label: &str, items: &mut [T]) {
+        if items.len() <= 1 {
+            return;
+        }
+
+        let mut order = (0..items.len()).collect::<Vec<_>>();
+        for idx in (1..items.len()).rev() {
+            let swap_idx = self.schedule_rng.random_range(0..=idx);
+            items.swap(idx, swap_idx);
+            order.swap(idx, swap_idx);
+        }
+        self.record(
+            tick,
+            format!("schedule {label} order={}", format_order(&order)),
+        );
+    }
+
+    pub(crate) fn timer_advance(&mut self, tick: u64, label: &str, target: u64) -> u64 {
+        if target > tick {
+            self.record(
+                tick,
+                format!(
+                    "timer {label} advance_to={target} delta={}",
+                    target.saturating_sub(tick)
+                ),
+            );
+        }
+        target
     }
 
     pub(crate) fn roll(&mut self, tick: u64, label: &str, probability: f64) -> bool {
@@ -95,6 +134,25 @@ impl DeterministicFaultScheduler {
         debug_assert!(upper > 0, "deterministic choice requires a non-empty set");
         self.rng.random_range(0..upper)
     }
+
+    fn shuffle_order(&mut self, order: &mut [usize]) {
+        for idx in (1..order.len()).rev() {
+            let swap_idx = self.schedule_rng.random_range(0..=idx);
+            order.swap(idx, swap_idx);
+        }
+    }
+}
+
+fn format_order(order: &[usize]) -> String {
+    let mut rendered = String::from("[");
+    for (idx, value) in order.iter().enumerate() {
+        if idx > 0 {
+            rendered.push(',');
+        }
+        rendered.push_str(&value.to_string());
+    }
+    rendered.push(']');
+    rendered
 }
 
 /// Event queued against a logical simulator tick.
@@ -147,8 +205,47 @@ impl<E: ScheduledIoEvent> DeterministicNetwork<E> {
         due
     }
 
+    pub(crate) fn drain_due_ordered(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+        label: &str,
+    ) -> Vec<E> {
+        let mut due = self.drain_due(tick);
+        scheduler.shuffle_scheduled(tick, label, &mut due);
+        due
+    }
+
     pub(crate) fn next_delivery_tick(&self) -> Option<u64> {
         self.events.iter().map(ScheduledIoEvent::deliver_at).min()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schedule_order_replays_for_same_seed() {
+        let mut left = DeterministicFaultScheduler::new(0x5eed);
+        let mut right = DeterministicFaultScheduler::new(0x5eed);
+
+        assert_eq!(
+            left.schedule_order(7, "test.tasks", 6),
+            right.schedule_order(7, "test.tasks", 6)
+        );
+        assert_eq!(left.recent_trace(), right.recent_trace());
+    }
+
+    #[test]
+    fn schedule_order_varies_by_seed() {
+        let mut left = DeterministicFaultScheduler::new(0x5eed);
+        let mut right = DeterministicFaultScheduler::new(0xbeef);
+
+        assert_ne!(
+            left.schedule_order(7, "test.tasks", 12),
+            right.schedule_order(7, "test.tasks", 12)
+        );
     }
 }
 

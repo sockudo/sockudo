@@ -90,13 +90,32 @@ memory-store calls.
 | --- | --- |
 | `DeterministicClock` | The logical tick and durable timestamps. Timer advancement during quiesce jumps through due fanout and push work instead of sleeping wall-clock time. |
 | `DeterministicFaultScheduler` | Seeded random choices, operation trace entries, and named fault rolls such as `fanout_drop`, `queue.ack_lost`, and `storage.push_publish.write_after_commit`. |
+| Schedule harness | A separate seed domain for simulator-executed task ordering: top-level tick tasks, due fanout deliveries, due push schedules, and ready push queue items. |
 | `DeterministicNetwork` | Modeled live fanout delivery order, delivery tick, dropped messages, duplicates, and delayed delivery. |
 | `DeterministicQueue` | Modeled push worker queue order, delayed delivery, redelivery, lease timeout duplication, and repair requeueing. |
 | `DeterministicStorage` | Storage read/write behavior around real memory-store calls: dropped writes before reservation, torn multi-record writes, fail-after-commit, lost responses, stale reads, corrupted reads, delayed commit visibility, and backend outages. |
 
-The final JSON report includes a bounded `io_trace` with the most recent operation and fault
-decisions. That trace is intentionally compact: it is for replay orientation, not a full event log.
-Use the seed, tick count, mode, fault flags, and workload weights as the canonical replay input.
+The final JSON report includes a bounded `io_trace` with the most recent operation, fault,
+scheduling, and logical-timer decisions. That trace is intentionally compact: it is for replay
+orientation, not a full event log. Use the seed, tick count, mode, fault flags, and workload
+weights as the canonical replay input.
+
+To inspect scheduler and timer decisions for a seed:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 42 \
+  --ticks 10000 \
+  --json | jq -r '.io_trace[]'
+```
+
+To replay a saved failure capsule and print the same trace window:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --corpus-file /tmp/sockudo-sim-failure.json \
+  --json | jq -r '.[0].io_trace[]'
+```
 
 Current limitations:
 
