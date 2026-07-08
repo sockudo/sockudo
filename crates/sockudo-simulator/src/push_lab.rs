@@ -1,10 +1,9 @@
-use rand::Rng;
-use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use sockudo_push::PushProviderKind;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::error::{SimulatorError, SimulatorResult};
+use crate::io::{DeterministicFaultScheduler, DeterministicQueue, DeterministicStorage};
 use crate::real_subsystems::RealPushHarness;
 
 const MAX_TRACE_EVENTS: usize = 80;
@@ -199,8 +198,9 @@ pub struct PushLab {
     devices: BTreeMap<String, SimDevice>,
     publishes: BTreeMap<String, PushPublish>,
     idempotency: BTreeMap<String, String>,
-    queue: VecDeque<QueueItem>,
+    queue: DeterministicQueue<QueueItem>,
     schedules: Vec<ScheduledPush>,
+    storage: DeterministicStorage,
     backend_outage: bool,
     quiescing: bool,
     next_device_id: u64,
@@ -225,8 +225,9 @@ impl PushLab {
             devices: BTreeMap::new(),
             publishes: BTreeMap::new(),
             idempotency: BTreeMap::new(),
-            queue: VecDeque::new(),
+            queue: DeterministicQueue::default(),
             schedules: Vec::new(),
+            storage: DeterministicStorage,
             backend_outage: false,
             quiescing: false,
             next_device_id: 1,
@@ -237,13 +238,17 @@ impl PushLab {
         })
     }
 
-    pub(crate) async fn on_tick(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
-        self.maybe_toggle_backend(tick, rng);
-        self.release_due_schedules(tick, rng).await?;
-        self.process_queue(tick, rng).await?;
+    pub(crate) async fn on_tick(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+    ) -> SimulatorResult<()> {
+        self.maybe_toggle_backend(tick, scheduler);
+        self.release_due_schedules(tick, scheduler).await?;
+        self.process_queue(tick, scheduler).await?;
         if self.config.repair_every_ticks > 0 && tick.is_multiple_of(self.config.repair_every_ticks)
         {
-            self.repair(tick, rng);
+            self.repair(tick, scheduler);
         }
         Ok(())
     }
@@ -251,21 +256,21 @@ impl PushLab {
     pub(crate) async fn register_or_update_device(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<()> {
-        if self.backend_outage || self.write_fails_before_commit(tick, rng, "device_upsert") {
+        if self.backend_outage || self.write_fails_before_commit(tick, scheduler, "device_upsert") {
             return Ok(());
         }
-        let provider = random_provider(rng);
+        let provider = random_provider(scheduler);
         let device_id = if self.devices.len() < self.config.devices {
             let id = format!("device-{:020}", self.next_device_id);
             self.next_device_id = self.next_device_id.saturating_add(1);
             id
         } else {
-            self.random_device_id(rng)
+            self.random_device_id(scheduler)
                 .unwrap_or_else(|| "device-00000000000000000001".to_string())
         };
-        let client_id = format!("client-{}", rng.random_range(0..self.clients));
+        let client_id = format!("client-{}", scheduler.usize_below(self.clients));
         self.real
             .upsert_device(&device_id, &client_id, provider, tick)
             .await?;
@@ -289,7 +294,7 @@ impl PushLab {
             device.state = DeviceState::Active;
             device.visible_removed_at = None;
         }
-        self.after_commit_fault(tick, rng, "device_upsert");
+        self.after_commit_fault(tick, scheduler, "device_upsert");
         self.trace(tick, format!("push device upserted {device_id}"));
         Ok(())
     }
@@ -297,13 +302,13 @@ impl PushLab {
     pub(crate) async fn delete_device(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<()> {
-        let Some(device_id) = self.random_device_id(rng) else {
-            self.register_or_update_device(tick, rng).await?;
+        let Some(device_id) = self.random_device_id(scheduler) else {
+            self.register_or_update_device(tick, scheduler).await?;
             return Ok(());
         };
-        if self.backend_outage || self.write_fails_before_commit(tick, rng, "device_delete") {
+        if self.backend_outage || self.write_fails_before_commit(tick, scheduler, "device_delete") {
             return Ok(());
         }
         self.real.delete_device(&device_id).await?;
@@ -311,7 +316,7 @@ impl PushLab {
             device.state = DeviceState::Deleted;
             device.subscriptions.clear();
             device.visible_removed_at = Some(tick);
-            self.after_commit_fault(tick, rng, "device_delete");
+            self.after_commit_fault(tick, scheduler, "device_delete");
             self.trace(tick, format!("push device deleted {device_id}"));
         }
         Ok(())
@@ -320,11 +325,11 @@ impl PushLab {
     pub(crate) async fn subscribe_device(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<()> {
-        let device_id = self.ensure_active_device(tick, rng).await?;
-        let channel = self.random_channel(rng);
-        if self.backend_outage || self.write_fails_before_commit(tick, rng, "subscribe") {
+        let device_id = self.ensure_active_device(tick, scheduler).await?;
+        let channel = self.random_channel(scheduler);
+        if self.backend_outage || self.write_fails_before_commit(tick, scheduler, "subscribe") {
             return Ok(());
         }
         if let Some(device) = self.devices.get_mut(&device_id) {
@@ -332,7 +337,7 @@ impl PushLab {
             device.state = DeviceState::Active;
             device.visible_removed_at = None;
             device.subscriptions.insert(channel.clone());
-            self.after_commit_fault(tick, rng, "subscribe");
+            self.after_commit_fault(tick, scheduler, "subscribe");
             self.trace(tick, format!("push subscribed {device_id} to {channel}"));
         }
         Ok(())
@@ -341,13 +346,13 @@ impl PushLab {
     pub(crate) async fn unsubscribe_device(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<()> {
-        let Some(device_id) = self.random_device_id(rng) else {
+        let Some(device_id) = self.random_device_id(scheduler) else {
             return Ok(());
         };
-        let channel = self.random_channel(rng);
-        if self.backend_outage || self.write_fails_before_commit(tick, rng, "unsubscribe") {
+        let channel = self.random_channel(scheduler);
+        if self.backend_outage || self.write_fails_before_commit(tick, scheduler, "unsubscribe") {
             return Ok(());
         }
         self.real.delete_subscription(&channel, &device_id).await?;
@@ -356,7 +361,7 @@ impl PushLab {
             if device.subscriptions.is_empty() {
                 device.visible_removed_at = Some(tick);
             }
-            self.after_commit_fault(tick, rng, "unsubscribe");
+            self.after_commit_fault(tick, scheduler, "unsubscribe");
             self.trace(
                 tick,
                 format!("push unsubscribed {device_id} from {channel}"),
@@ -365,20 +370,24 @@ impl PushLab {
         Ok(())
     }
 
-    pub(crate) async fn publish_now(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
-        let channel = self.random_channel(rng);
-        self.ensure_subscriber(tick, rng, &channel).await?;
-        self.accept_publish(tick, rng, channel, None).await
+    pub(crate) async fn publish_now(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+    ) -> SimulatorResult<()> {
+        let channel = self.random_channel(scheduler);
+        self.ensure_subscriber(tick, scheduler, &channel).await?;
+        self.accept_publish(tick, scheduler, channel, None).await
     }
 
     pub(crate) async fn schedule_publish(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<()> {
-        let channel = self.random_channel(rng);
-        self.ensure_subscriber(tick, rng, &channel).await?;
-        let delay = self.random_queue_delay(rng).saturating_add(1);
+        let channel = self.random_channel(scheduler);
+        self.ensure_subscriber(tick, scheduler, &channel).await?;
+        let delay = self.random_queue_delay(scheduler).saturating_add(1);
         let publish_id = self.next_publish_key();
         let idempotency_key = format!("schedule:{publish_id}");
         let due_tick = tick.saturating_add(delay);
@@ -402,7 +411,11 @@ impl PushLab {
         Ok(())
     }
 
-    pub(crate) fn duplicate_provider_feedback(&mut self, tick: u64, rng: &mut StdRng) {
+    pub(crate) fn duplicate_provider_feedback(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+    ) {
         let candidates = self
             .publishes
             .values()
@@ -424,10 +437,10 @@ impl PushLab {
             return;
         }
         let (publish_id, delivery_id, result) =
-            candidates[rng.random_range(0..candidates.len())].clone();
+            candidates[scheduler.usize_below(candidates.len())].clone();
         let item = QueueItem {
             id: self.next_queue_id(),
-            deliver_at: tick.saturating_add(self.random_provider_delay(rng)),
+            deliver_at: tick.saturating_add(self.random_provider_delay(scheduler)),
             stage: QueueStage::ProviderResult {
                 publish_id,
                 delivery_id,
@@ -438,14 +451,14 @@ impl PushLab {
         self.trace(tick, "push duplicate provider feedback queued".to_string());
     }
 
-    pub(crate) fn repair_now(&mut self, tick: u64, rng: &mut StdRng) {
-        self.repair(tick, rng);
+    pub(crate) fn repair_now(&mut self, tick: u64, scheduler: &mut DeterministicFaultScheduler) {
+        self.repair(tick, scheduler);
     }
 
     pub(crate) async fn quiesce(
         &mut self,
         mut tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<u64> {
         let previous_quiescing = self.quiescing;
         self.quiescing = true;
@@ -467,9 +480,9 @@ impl PushLab {
             }
             tick = tick.saturating_add(1);
             self.backend_outage = false;
-            self.release_due_schedules(tick, rng).await?;
-            self.repair(tick, rng);
-            self.process_queue(tick, rng).await?;
+            self.release_due_schedules(tick, scheduler).await?;
+            self.repair(tick, scheduler);
+            self.process_queue(tick, scheduler).await?;
             self.prune_obsolete_queue();
         }
         self.quiescing = previous_quiescing;
@@ -724,15 +737,15 @@ impl PushLab {
     async fn accept_publish(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
         channel: String,
         requested: Option<(String, String)>,
     ) -> SimulatorResult<()> {
-        if self.backend_outage || self.write_fails_before_commit(tick, rng, "push_publish") {
+        if self.backend_outage || self.write_fails_before_commit(tick, scheduler, "push_publish") {
             return Ok(());
         }
         let (publish_id, idempotency_key) = requested.unwrap_or_else(|| {
-            let publish_id = if !self.idempotency.is_empty() && rng.random_ratio(1, 8) {
+            let publish_id = if !self.idempotency.is_empty() && scheduler.ratio(1, 8) {
                 self.idempotency
                     .values()
                     .next()
@@ -806,10 +819,10 @@ impl PushLab {
         );
         self.idempotency.insert(idempotency_key, publish_id.clone());
         self.stats.accepted_publishes = self.stats.accepted_publishes.saturating_add(1);
-        self.after_commit_fault(tick, rng, "push_publish");
+        self.after_commit_fault(tick, scheduler, "push_publish");
         self.enqueue(
             tick,
-            rng,
+            scheduler,
             QueueStage::PublishLog {
                 publish_id: publish_id.clone(),
             },
@@ -821,7 +834,11 @@ impl PushLab {
         Ok(())
     }
 
-    async fn release_due_schedules(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
+    async fn release_due_schedules(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+    ) -> SimulatorResult<()> {
         let mut pending = Vec::with_capacity(self.schedules.len());
         let schedules = std::mem::take(&mut self.schedules);
         for schedule in schedules {
@@ -831,7 +848,7 @@ impl PushLab {
                     .await?;
                 self.accept_publish(
                     tick,
-                    rng,
+                    scheduler,
                     schedule.channel,
                     Some((schedule.publish_id, schedule.idempotency_key)),
                 )
@@ -844,43 +861,63 @@ impl PushLab {
         Ok(())
     }
 
-    async fn process_queue(&mut self, tick: u64, rng: &mut StdRng) -> SimulatorResult<()> {
+    async fn process_queue(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+    ) -> SimulatorResult<()> {
         if self.backend_outage {
             return Ok(());
         }
 
         let mut pending = VecDeque::with_capacity(self.queue.len());
-        let queue = std::mem::take(&mut self.queue);
+        let queue = self.queue.take_all();
         for item in queue {
             if item.deliver_at > tick {
                 pending.push_back(item);
                 continue;
             }
-            if !self.quiescing && self.roll(self.config.queue_lease_timeout_probability, rng) {
+            if !self.quiescing
+                && self.roll(
+                    tick,
+                    scheduler,
+                    "queue.lease_timeout",
+                    self.config.queue_lease_timeout_probability,
+                )
+            {
                 let mut duplicate = item.clone();
                 duplicate.id = self.next_queue_id();
-                duplicate.deliver_at = tick.saturating_add(self.random_queue_delay(rng).max(1));
+                duplicate.deliver_at =
+                    tick.saturating_add(self.random_queue_delay(scheduler).max(1));
                 pending.push_back(duplicate);
                 self.stats.queue_lease_timeouts = self.stats.queue_lease_timeouts.saturating_add(1);
             }
-            self.apply_queue_item(tick, rng, item.clone()).await?;
-            if !self.quiescing && self.roll(self.config.queue_ack_lost_probability, rng) {
+            self.apply_queue_item(tick, scheduler, item.clone()).await?;
+            if !self.quiescing
+                && self.roll(
+                    tick,
+                    scheduler,
+                    "queue.ack_lost",
+                    self.config.queue_ack_lost_probability,
+                )
+            {
                 let mut redelivery = item;
                 redelivery.id = self.next_queue_id();
-                redelivery.deliver_at = tick.saturating_add(self.random_queue_delay(rng).max(1));
+                redelivery.deliver_at =
+                    tick.saturating_add(self.random_queue_delay(scheduler).max(1));
                 pending.push_back(redelivery);
                 self.stats.queue_ack_lost = self.stats.queue_ack_lost.saturating_add(1);
             }
         }
-        pending.append(&mut self.queue);
-        self.queue = pending;
+        self.queue.append_to(&mut pending);
+        self.queue.replace(pending);
         Ok(())
     }
 
     async fn apply_queue_item(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
         item: QueueItem,
     ) -> SimulatorResult<()> {
         match item.stage {
@@ -898,7 +935,7 @@ impl PushLab {
                 for delivery_id in delivery_ids {
                     self.enqueue(
                         tick,
-                        rng,
+                        scheduler,
                         QueueStage::Delivery {
                             publish_id: publish_id.clone(),
                             delivery_id,
@@ -917,7 +954,7 @@ impl PushLab {
                 publish_id,
                 delivery_id,
             } => {
-                self.dispatch_delivery(tick, rng, &publish_id, &delivery_id)
+                self.dispatch_delivery(tick, scheduler, &publish_id, &delivery_id)
                     .await?
             }
             QueueStage::ProviderResult {
@@ -925,7 +962,7 @@ impl PushLab {
                 delivery_id,
                 result,
             } => {
-                self.apply_provider_result(tick, rng, &publish_id, &delivery_id, result)
+                self.apply_provider_result(tick, scheduler, &publish_id, &delivery_id, result)
                     .await?;
             }
         }
@@ -935,7 +972,7 @@ impl PushLab {
     async fn dispatch_delivery(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
         publish_id: &str,
         delivery_id: &str,
     ) -> SimulatorResult<()> {
@@ -957,7 +994,7 @@ impl PushLab {
         if terminal.is_some() {
             return Ok(());
         }
-        if !self.device_is_eligible_for_publish(publish_id, &device_id, rng) {
+        if !self.device_is_eligible_for_publish(tick, publish_id, &device_id, scheduler) {
             self.apply_terminal(publish_id, delivery_id, ProviderResult::Cancelled, tick);
             return Ok(());
         }
@@ -976,11 +1013,11 @@ impl PushLab {
         }
         self.stats.provider_sends = self.stats.provider_sends.saturating_add(1);
 
-        let result = self.provider_result(provider, rng);
+        let result = self.provider_result(tick, provider, scheduler);
         if result == ProviderResult::LostResponseAfterAccepted {
             self.apply_provider_result(
                 tick,
-                rng,
+                scheduler,
                 publish_id,
                 delivery_id,
                 ProviderResult::Retryable,
@@ -988,10 +1025,15 @@ impl PushLab {
             .await?;
             return Ok(());
         }
-        if self.roll(self.config.provider_delayed_result_probability, rng) {
+        if self.roll(
+            tick,
+            scheduler,
+            "provider.delayed_result",
+            self.config.provider_delayed_result_probability,
+        ) {
             self.enqueue(
-                tick.saturating_add(self.random_provider_delay(rng).max(1)),
-                rng,
+                tick.saturating_add(self.random_provider_delay(scheduler).max(1)),
+                scheduler,
                 QueueStage::ProviderResult {
                     publish_id: publish_id.to_string(),
                     delivery_id: delivery_id.to_string(),
@@ -999,13 +1041,18 @@ impl PushLab {
                 },
             );
         } else {
-            self.apply_provider_result(tick, rng, publish_id, delivery_id, result)
+            self.apply_provider_result(tick, scheduler, publish_id, delivery_id, result)
                 .await?;
         }
-        if self.roll(self.config.provider_duplicate_result_probability, rng) {
+        if self.roll(
+            tick,
+            scheduler,
+            "provider.duplicate_result",
+            self.config.provider_duplicate_result_probability,
+        ) {
             self.enqueue(
-                tick.saturating_add(self.random_provider_delay(rng).max(1)),
-                rng,
+                tick.saturating_add(self.random_provider_delay(scheduler).max(1)),
+                scheduler,
                 QueueStage::ProviderResult {
                     publish_id: publish_id.to_string(),
                     delivery_id: delivery_id.to_string(),
@@ -1019,7 +1066,7 @@ impl PushLab {
     async fn apply_provider_result(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
         publish_id: &str,
         delivery_id: &str,
         result: ProviderResult,
@@ -1078,8 +1125,8 @@ impl PushLab {
                 }
                 self.stats.retries_scheduled = self.stats.retries_scheduled.saturating_add(1);
                 self.enqueue(
-                    tick.saturating_add(self.random_queue_delay(rng).max(1)),
-                    rng,
+                    tick.saturating_add(self.random_queue_delay(scheduler).max(1)),
+                    scheduler,
                     QueueStage::Delivery {
                         publish_id: publish_id.to_string(),
                         delivery_id: delivery_id.to_string(),
@@ -1156,7 +1203,7 @@ impl PushLab {
         );
     }
 
-    fn repair(&mut self, tick: u64, rng: &mut StdRng) {
+    fn repair(&mut self, tick: u64, scheduler: &mut DeterministicFaultScheduler) {
         if self.backend_outage {
             return;
         }
@@ -1171,7 +1218,7 @@ impl PushLab {
             {
                 self.enqueue(
                     tick,
-                    rng,
+                    scheduler,
                     QueueStage::PublishLog {
                         publish_id: publish_id.clone(),
                     },
@@ -1193,7 +1240,7 @@ impl PushLab {
             for delivery_id in missing {
                 self.enqueue(
                     tick,
-                    rng,
+                    scheduler,
                     QueueStage::Delivery {
                         publish_id: publish_id.clone(),
                         delivery_id,
@@ -1204,24 +1251,43 @@ impl PushLab {
         }
     }
 
-    fn enqueue(&mut self, tick: u64, rng: &mut StdRng, stage: QueueStage) {
-        if !self.quiescing && self.roll(self.config.queue_produce_lost_probability, rng) {
+    fn enqueue(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+        stage: QueueStage,
+    ) {
+        if !self.quiescing
+            && self.roll(
+                tick,
+                scheduler,
+                "queue.produce_lost",
+                self.config.queue_produce_lost_probability,
+            )
+        {
             self.stats.queue_produce_lost = self.stats.queue_produce_lost.saturating_add(1);
             self.trace(tick, format!("push queue produce lost for {stage:?}"));
             return;
         }
         let item = QueueItem {
             id: self.next_queue_id(),
-            deliver_at: tick.saturating_add(self.random_queue_delay(rng)),
+            deliver_at: tick.saturating_add(self.random_queue_delay(scheduler)),
             stage,
         };
         self.queue.push_back(item.clone());
-        if !self.quiescing && self.roll(self.config.queue_duplicate_probability, rng) {
+        if !self.quiescing
+            && self.roll(
+                tick,
+                scheduler,
+                "queue.duplicate",
+                self.config.queue_duplicate_probability,
+            )
+        {
             let mut duplicate = item;
             duplicate.id = self.next_queue_id();
             duplicate.deliver_at = duplicate
                 .deliver_at
-                .saturating_add(self.random_queue_delay(rng).max(1));
+                .saturating_add(self.random_queue_delay(scheduler).max(1));
             self.queue.push_back(duplicate);
             self.stats.queue_duplicates = self.stats.queue_duplicates.saturating_add(1);
         }
@@ -1242,11 +1308,17 @@ impl PushLab {
 
     fn device_is_eligible_for_publish(
         &mut self,
+        tick: u64,
         publish_id: &str,
         device_id: &str,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> bool {
-        if self.roll(self.config.read_stale_probability, rng) {
+        if self.storage.read_is_stale(
+            scheduler,
+            tick,
+            "push_delivery_target",
+            self.config.read_stale_probability,
+        ) {
             self.stats.stale_reads = self.stats.stale_reads.saturating_add(1);
             return false;
         }
@@ -1262,22 +1334,42 @@ impl PushLab {
         })
     }
 
-    fn maybe_toggle_backend(&mut self, tick: u64, rng: &mut StdRng) {
+    fn maybe_toggle_backend(&mut self, tick: u64, scheduler: &mut DeterministicFaultScheduler) {
         if self.backend_outage {
-            if self.roll(self.config.backend_recovery_probability, rng) {
+            if self.roll(
+                tick,
+                scheduler,
+                "storage.backend_recovery",
+                self.config.backend_recovery_probability,
+            ) {
                 self.backend_outage = false;
                 self.stats.backend_recoveries = self.stats.backend_recoveries.saturating_add(1);
                 self.trace(tick, "push backend recovered".to_string());
             }
-        } else if self.roll(self.config.backend_outage_probability, rng) {
+        } else if self.roll(
+            tick,
+            scheduler,
+            "storage.backend_outage",
+            self.config.backend_outage_probability,
+        ) {
             self.backend_outage = true;
             self.stats.backend_outages = self.stats.backend_outages.saturating_add(1);
             self.trace(tick, "push backend outage".to_string());
         }
     }
 
-    fn write_fails_before_commit(&mut self, tick: u64, rng: &mut StdRng, boundary: &str) -> bool {
-        if self.roll(self.config.write_fail_before_commit_probability, rng) {
+    fn write_fails_before_commit(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+        boundary: &str,
+    ) -> bool {
+        if self.storage.write_fails_before_commit(
+            scheduler,
+            tick,
+            boundary,
+            self.config.write_fail_before_commit_probability,
+        ) {
             self.stats.write_fail_before_commit =
                 self.stats.write_fail_before_commit.saturating_add(1);
             self.trace(
@@ -1290,8 +1382,20 @@ impl PushLab {
         }
     }
 
-    fn after_commit_fault(&mut self, tick: u64, rng: &mut StdRng, boundary: &str) {
-        if self.roll(self.config.write_fail_after_commit_probability, rng) {
+    fn after_commit_fault(
+        &mut self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+        boundary: &str,
+    ) {
+        let fault = self.storage.after_commit(
+            scheduler,
+            tick,
+            boundary,
+            self.config.write_fail_after_commit_probability,
+            self.config.response_lost_probability,
+        );
+        if fault.write_failed {
             self.stats.write_fail_after_commit =
                 self.stats.write_fail_after_commit.saturating_add(1);
             self.trace(
@@ -1299,7 +1403,7 @@ impl PushLab {
                 format!("push write failed after commit at {boundary}"),
             );
         }
-        if self.roll(self.config.response_lost_probability, rng) {
+        if fault.response_lost {
             self.stats.response_lost_after_commit =
                 self.stats.response_lost_after_commit.saturating_add(1);
             self.trace(
@@ -1309,14 +1413,39 @@ impl PushLab {
         }
     }
 
-    fn provider_result(&mut self, _provider: PushProviderKind, rng: &mut StdRng) -> ProviderResult {
-        if self.roll(self.config.provider_lost_response_probability, rng) {
+    fn provider_result(
+        &mut self,
+        tick: u64,
+        _provider: PushProviderKind,
+        scheduler: &mut DeterministicFaultScheduler,
+    ) -> ProviderResult {
+        if self.roll(
+            tick,
+            scheduler,
+            "provider.lost_response",
+            self.config.provider_lost_response_probability,
+        ) {
             ProviderResult::LostResponseAfterAccepted
-        } else if self.roll(self.config.provider_invalid_token_probability, rng) {
+        } else if self.roll(
+            tick,
+            scheduler,
+            "provider.invalid_token",
+            self.config.provider_invalid_token_probability,
+        ) {
             ProviderResult::InvalidToken
-        } else if self.roll(self.config.provider_permanent_rejection_probability, rng) {
+        } else if self.roll(
+            tick,
+            scheduler,
+            "provider.permanent_rejection",
+            self.config.provider_permanent_rejection_probability,
+        ) {
             ProviderResult::Rejected
-        } else if self.roll(self.config.provider_retryable_probability, rng) {
+        } else if self.roll(
+            tick,
+            scheduler,
+            "provider.retryable",
+            self.config.provider_retryable_probability,
+        ) {
             ProviderResult::Retryable
         } else {
             ProviderResult::Accepted
@@ -1326,7 +1455,7 @@ impl PushLab {
     async fn ensure_subscriber(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
         channel: &str,
     ) -> SimulatorResult<()> {
         if self.devices.values().any(|device| {
@@ -1334,7 +1463,7 @@ impl PushLab {
         }) {
             return Ok(());
         }
-        let device_id = self.ensure_active_device(tick, rng).await?;
+        let device_id = self.ensure_active_device(tick, scheduler).await?;
         if let Some(device) = self.devices.get_mut(&device_id) {
             self.real.upsert_subscription(channel, &device_id).await?;
             device.subscriptions.insert(channel.to_string());
@@ -1345,7 +1474,7 @@ impl PushLab {
     async fn ensure_active_device(
         &mut self,
         tick: u64,
-        rng: &mut StdRng,
+        scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<String> {
         if let Some(device) = self
             .devices
@@ -1354,7 +1483,7 @@ impl PushLab {
         {
             return Ok(device.id.clone());
         }
-        self.register_or_update_device(tick, rng).await?;
+        self.register_or_update_device(tick, scheduler).await?;
         Ok(self
             .devices
             .values()
@@ -1363,16 +1492,16 @@ impl PushLab {
             .unwrap_or_else(|| "device-00000000000000000001".to_string()))
     }
 
-    fn random_device_id(&self, rng: &mut StdRng) -> Option<String> {
+    fn random_device_id(&self, scheduler: &mut DeterministicFaultScheduler) -> Option<String> {
         if self.devices.is_empty() {
             return None;
         }
-        let idx = rng.random_range(0..self.devices.len());
+        let idx = scheduler.usize_below(self.devices.len());
         self.devices.keys().nth(idx).cloned()
     }
 
-    fn random_channel(&self, rng: &mut StdRng) -> String {
-        self.channels[rng.random_range(0..self.channels.len())].clone()
+    fn random_channel(&self, scheduler: &mut DeterministicFaultScheduler) -> String {
+        self.channels[scheduler.usize_below(self.channels.len())].clone()
     }
 
     fn next_publish_key(&mut self) -> String {
@@ -1387,19 +1516,19 @@ impl PushLab {
         id
     }
 
-    fn random_queue_delay(&self, rng: &mut StdRng) -> u64 {
+    fn random_queue_delay(&self, scheduler: &mut DeterministicFaultScheduler) -> u64 {
         if self.config.max_queue_delay_ticks == 0 {
             0
         } else {
-            rng.random_range(0..=self.config.max_queue_delay_ticks)
+            scheduler.u64_inclusive(self.config.max_queue_delay_ticks)
         }
     }
 
-    fn random_provider_delay(&self, rng: &mut StdRng) -> u64 {
+    fn random_provider_delay(&self, scheduler: &mut DeterministicFaultScheduler) -> u64 {
         if self.config.max_provider_delay_ticks == 0 {
             0
         } else {
-            rng.random_range(0..=self.config.max_provider_delay_ticks)
+            scheduler.u64_inclusive(self.config.max_provider_delay_ticks)
         }
     }
 
@@ -1452,8 +1581,14 @@ impl PushLab {
             .sum()
     }
 
-    fn roll(&self, probability: f64, rng: &mut StdRng) -> bool {
-        probability > 0.0 && rng.random::<f64>() < probability
+    fn roll(
+        &self,
+        tick: u64,
+        scheduler: &mut DeterministicFaultScheduler,
+        label: &str,
+        probability: f64,
+    ) -> bool {
+        scheduler.roll(tick, label, probability)
     }
 
     fn trace(&mut self, tick: u64, event: String) {
@@ -1464,8 +1599,8 @@ impl PushLab {
     }
 }
 
-fn random_provider(rng: &mut StdRng) -> PushProviderKind {
-    match rng.random_range(0..5) {
+fn random_provider(scheduler: &mut DeterministicFaultScheduler) -> PushProviderKind {
+    match scheduler.u32_below(5) {
         0 => PushProviderKind::Fcm,
         1 => PushProviderKind::Apns,
         2 => PushProviderKind::WebPush,
