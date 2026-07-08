@@ -90,6 +90,20 @@ pub struct SimulationReport {
     pub workload_actions: WorkloadActionCounts,
 }
 
+/// Compact state captured after an intentionally failing simulator replay.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FailureObservation {
+    pub tick: u64,
+    pub operations: u64,
+    pub fault_events: u64,
+    pub suppressed_fault_events: u64,
+    pub nodes: usize,
+    pub clients: usize,
+    pub channels: usize,
+    pub users: usize,
+    pub workload_actions: WorkloadActionCounts,
+}
+
 /// Protocol-aware oracle counters emitted in the simulator report.
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct ProtocolOracleReport {
@@ -149,7 +163,8 @@ impl DeterministicSimulator {
 
         Ok(Self {
             clock: DeterministicClock::default(),
-            scheduler: DeterministicFaultScheduler::new(config.seed),
+            scheduler: DeterministicFaultScheduler::new(config.seed)
+                .with_max_faults(config.max_faults),
             shadow: Shadow::new(
                 &channels,
                 config.history_retention_messages,
@@ -185,7 +200,11 @@ impl DeterministicSimulator {
                         self.push.on_tick(tick, &mut self.scheduler).await?;
                     }
                     TickTask::InjectFaults => self.inject_faults().await?,
-                    TickTask::DriveWorkload => self.drive_workload().await?,
+                    TickTask::DriveWorkload => {
+                        if self.can_drive_workload() {
+                            self.drive_workload().await?;
+                        }
+                    }
                 }
             }
             if self.config.oracle_every > 0 && tick % self.config.oracle_every == 0 {
@@ -202,6 +221,20 @@ impl DeterministicSimulator {
             .map_err(|message| self.fail(message))?;
         self.check_liveness_oracles()?;
         Ok(self.report())
+    }
+
+    pub fn failure_observation(&self) -> FailureObservation {
+        FailureObservation {
+            tick: self.tick(),
+            operations: self.stats.operations,
+            fault_events: self.scheduler.fired_faults(),
+            suppressed_fault_events: self.scheduler.suppressed_faults(),
+            nodes: self.config.nodes,
+            clients: self.config.clients,
+            channels: self.config.channels,
+            users: self.config.users,
+            workload_actions: self.workload.selected().clone(),
+        }
     }
 
     fn report(&self) -> SimulationReport {
@@ -330,6 +363,12 @@ impl DeterministicSimulator {
             }
             WorkloadAction::OracleCheck => self.check_oracles().await,
         }
+    }
+
+    fn can_drive_workload(&self) -> bool {
+        self.config
+            .max_operations
+            .is_none_or(|max_operations| self.stats.operations < max_operations)
     }
 
     fn route_rejects(&mut self) -> bool {
@@ -3284,6 +3323,8 @@ mod tests {
         SimulatorConfig {
             seed,
             ticks: 300,
+            max_operations: None,
+            max_faults: None,
             mode: crate::SimulatorMode::Safety,
             liveness: crate::LivenessConfig::default(),
             nodes: 4,

@@ -153,15 +153,30 @@ cargo run -p sockudo-simulator --bin sockudo-sim -- \
   --failure-artifact /tmp/sockudo-sim-failure.json
 ```
 
-Use shrink mode to binary-search the smallest tick count that still fails for a seed/config:
+Use shrink mode to reduce the replay before debugging. The shrinker first proves the original
+config still fails, then deterministically tries smaller tick, operation, and fault prefixes,
+topology reductions, and workload/fault profile simplifications. It accepts only candidates that
+still fail and writes a smaller failure capsule:
 
 ```bash
 cargo run -p sockudo-simulator --bin sockudo-sim -- \
-  --seed 42 \
-  --ticks 50000 \
-  --swarm \
-  --shrink-failure
+  --corpus-file /tmp/sockudo-sim-failure.json \
+  --shrink-failure \
+  --shrink-output /tmp/sockudo-sim-failure.shrunk.json
 ```
+
+The shrink command prints the exact replay command, and the artifact stores the same command in
+`replayCommand`:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --corpus-file /tmp/sockudo-sim-failure.shrunk.json
+```
+
+When shrinking a `--swarm` run directly from seed flags, the artifact also includes
+`seedDerivedProfile`. That preserves the original seed-generated topology, workload, and fault
+profile before any shrink simplifications, while replay continues to use the explicit shrunk
+`config` from the capsule. Do not pass `--swarm` when replaying a failure capsule.
 
 ## Fault Model
 
@@ -327,7 +342,8 @@ recent trace:
 ```
 
 Failure artifacts written with `--failure-artifact` include the full config and can be replayed
-directly with `--corpus-file`.
+directly with `--corpus-file`. Shrunk artifacts add a `shrink` block with the original and reduced
+tick, operation, and fault counts plus each accepted simplification step.
 
 Treat these as product bugs unless the invariant is deliberately stronger than the subsystem's
 documented contract. If the contract changes, update the simulator shadow and this page in the same

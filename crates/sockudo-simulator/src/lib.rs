@@ -10,11 +10,19 @@ mod error;
 mod io;
 mod push_lab;
 mod real_subsystems;
+mod shrink;
 mod simulator;
 mod workload;
 
 pub use config::{FaultConfig, LivenessConfig, SimulatorConfig, SimulatorMode, StorageFaultConfig};
 pub use error::{SimulatorError, SimulatorResult};
 pub use push_lab::{PushLabConfig, PushSimulationReport};
-pub use simulator::{DeterministicSimulator, ProtocolOracleReport, SimulationReport};
+pub use shrink::{
+    FailureArtifact, FailureRun, RunOutcome, SeedDerivedProfile, SeedDerivedProfileKind,
+    ShrinkArtifact, ShrinkError, ShrinkOutcome, ShrinkStep, replay_command_for_artifact,
+    run_simulator_for_failure, shrink_failure, shrink_with_runner,
+};
+pub use simulator::{
+    DeterministicSimulator, FailureObservation, ProtocolOracleReport, SimulationReport,
+};
 pub use workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadConfig};
