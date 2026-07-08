@@ -113,6 +113,12 @@ impl SimulatorConfig {
         self.fault.node_slow_probability = rng.random_range(0.0005..=0.014);
         self.fault.node_stale_probability = rng.random_range(0.0005..=0.010);
         self.fault.stream_reset_probability = rng.random_range(0.0000..=0.0025);
+        self.fault.storage.dropped_write_probability = rng.random_range(0.000..=0.020);
+        self.fault.storage.torn_write_probability = rng.random_range(0.000..=0.014);
+        self.fault.storage.stale_read_probability = rng.random_range(0.000..=0.035);
+        self.fault.storage.corrupt_read_probability = rng.random_range(0.000..=0.012);
+        self.fault.storage.delayed_commit_probability = rng.random_range(0.000..=0.030);
+        self.fault.storage.max_commit_delay_ticks = rng.random_range(0..=25);
 
         self.push.devices =
             rng.random_range(self.clients.max(8)..=self.clients.saturating_mul(8).max(16));
@@ -241,6 +247,8 @@ pub struct FaultConfig {
     pub node_slow_probability: f64,
     pub node_stale_probability: f64,
     pub stream_reset_probability: f64,
+    #[serde(default)]
+    pub storage: StorageFaultConfig,
 }
 
 impl Default for FaultConfig {
@@ -258,6 +266,7 @@ impl Default for FaultConfig {
             node_slow_probability: 0.003,
             node_stale_probability: 0.002,
             stream_reset_probability: 0.0005,
+            storage: StorageFaultConfig::default(),
         }
     }
 }
@@ -282,6 +291,64 @@ impl FaultConfig {
             ("node_slow_probability", self.node_slow_probability),
             ("node_stale_probability", self.node_stale_probability),
             ("stream_reset_probability", self.stream_reset_probability),
+        ] {
+            if !(0.0..=1.0).contains(&value) {
+                return Err(SimulatorError::Config(format!(
+                    "{name} must be between 0.0 and 1.0"
+                )));
+            }
+        }
+        self.storage.validate()
+    }
+}
+
+/// Storage-specific fault injection probabilities for real durable-store calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageFaultConfig {
+    pub dropped_write_probability: f64,
+    pub torn_write_probability: f64,
+    pub stale_read_probability: f64,
+    pub corrupt_read_probability: f64,
+    pub delayed_commit_probability: f64,
+    pub max_commit_delay_ticks: u64,
+}
+
+impl Default for StorageFaultConfig {
+    fn default() -> Self {
+        Self {
+            dropped_write_probability: 0.004,
+            torn_write_probability: 0.002,
+            stale_read_probability: 0.006,
+            corrupt_read_probability: 0.002,
+            delayed_commit_probability: 0.006,
+            max_commit_delay_ticks: 8,
+        }
+    }
+}
+
+impl StorageFaultConfig {
+    fn validate(&self) -> SimulatorResult<()> {
+        for (name, value) in [
+            (
+                "storage.dropped_write_probability",
+                self.dropped_write_probability,
+            ),
+            (
+                "storage.torn_write_probability",
+                self.torn_write_probability,
+            ),
+            (
+                "storage.stale_read_probability",
+                self.stale_read_probability,
+            ),
+            (
+                "storage.corrupt_read_probability",
+                self.corrupt_read_probability,
+            ),
+            (
+                "storage.delayed_commit_probability",
+                self.delayed_commit_probability,
+            ),
         ] {
             if !(0.0..=1.0).contains(&value) {
                 return Err(SimulatorError::Config(format!(
@@ -319,6 +386,14 @@ mod tests {
         assert_eq!(
             left.push.queue_produce_lost_probability,
             right.push.queue_produce_lost_probability
+        );
+        assert_eq!(
+            left.fault.storage.dropped_write_probability,
+            right.fault.storage.dropped_write_probability
+        );
+        assert_eq!(
+            left.fault.storage.max_commit_delay_ticks,
+            right.fault.storage.max_commit_delay_ticks
         );
         left.validate().unwrap();
         right.validate().unwrap();

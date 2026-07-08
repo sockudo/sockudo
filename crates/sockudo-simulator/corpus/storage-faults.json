@@ -1,0 +1,56 @@
+[
+  {
+    "seed": 6269757137926684673,
+    "ticks": 360,
+    "mode": "safety",
+    "nodes": 4,
+    "clients": 4,
+    "channels": 3,
+    "users": 6,
+    "oracle_every": 7,
+    "page_limit": 3,
+    "history_retention_messages": 128,
+    "presence_retention_events": 128,
+    "workload": {
+      "weights": {
+        "publish_message": 24,
+        "create_versioned_message": 18,
+        "mutate_versioned_message": 24,
+        "presence_transition": 18,
+        "recovery_probe": 18,
+        "purge_history": 0,
+        "push_register_device": 8,
+        "push_delete_device": 1,
+        "push_subscribe": 8,
+        "push_unsubscribe": 1,
+        "push_publish": 10,
+        "push_scheduled_publish": 2,
+        "push_provider_feedback": 2,
+        "push_repair": 3,
+        "oracle_check": 3
+      }
+    },
+    "fault": {
+      "fanout_drop_probability": 0.35,
+      "fanout_duplicate_probability": 0.04,
+      "max_fanout_delay_ticks": 6,
+      "node_crash_probability": 0.035,
+      "node_restart_probability": 0.18,
+      "node_pause_probability": 0.0,
+      "node_resume_probability": 0.0,
+      "node_partition_probability": 0.0,
+      "node_heal_probability": 0.0,
+      "node_slow_probability": 0.0,
+      "node_stale_probability": 0.0,
+      "stream_reset_probability": 0.0,
+      "storage": {
+        "dropped_write_probability": 0.06,
+        "torn_write_probability": 0.12,
+        "stale_read_probability": 0.22,
+        "corrupt_read_probability": 0.08,
+        "delayed_commit_probability": 0.3,
+        "max_commit_delay_ticks": 12
+      }
+    }
+  }
+]

@@ -226,6 +226,28 @@ impl DeterministicStorage {
         scheduler.roll(tick, &label, probability)
     }
 
+    pub(crate) fn write_is_dropped(
+        &self,
+        scheduler: &mut DeterministicFaultScheduler,
+        tick: u64,
+        boundary: &str,
+        probability: f64,
+    ) -> bool {
+        let label = format!("storage.{boundary}.dropped_write");
+        scheduler.roll(tick, &label, probability)
+    }
+
+    pub(crate) fn write_is_torn(
+        &self,
+        scheduler: &mut DeterministicFaultScheduler,
+        tick: u64,
+        boundary: &str,
+        probability: f64,
+    ) -> bool {
+        let label = format!("storage.{boundary}.torn_write");
+        scheduler.roll(tick, &label, probability)
+    }
+
     pub(crate) fn after_commit(
         &self,
         scheduler: &mut DeterministicFaultScheduler,
@@ -251,5 +273,42 @@ impl DeterministicStorage {
     ) -> bool {
         let label = format!("storage.{boundary}.stale_read");
         scheduler.roll(tick, &label, probability)
+    }
+
+    pub(crate) fn read_is_corrupted(
+        &self,
+        scheduler: &mut DeterministicFaultScheduler,
+        tick: u64,
+        boundary: &str,
+        probability: f64,
+    ) -> bool {
+        let label = format!("storage.{boundary}.corrupt_read");
+        scheduler.roll(tick, &label, probability)
+    }
+
+    pub(crate) fn commit_visible_at(
+        &self,
+        scheduler: &mut DeterministicFaultScheduler,
+        tick: u64,
+        boundary: &str,
+        probability: f64,
+        max_delay_ticks: u64,
+    ) -> u64 {
+        if max_delay_ticks == 0
+            || !scheduler.roll(
+                tick,
+                &format!("storage.{boundary}.delayed_commit_visibility"),
+                probability,
+            )
+        {
+            return tick;
+        }
+        let delay = scheduler.u64_inclusive(max_delay_ticks).max(1);
+        let visible_at = tick.saturating_add(delay);
+        scheduler.record(
+            tick,
+            format!("storage.{boundary}.commit_visible_at tick={visible_at} delay={delay}"),
+        );
+        visible_at
     }
 }

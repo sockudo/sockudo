@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use sockudo_simulator::{
     ActionWeights, DeterministicSimulator, FaultConfig, PushLabConfig, SimulationReport,
-    SimulatorConfig, SimulatorMode, WorkloadConfig,
+    SimulatorConfig, SimulatorMode, StorageFaultConfig, WorkloadConfig,
 };
 use std::path::PathBuf;
 
@@ -103,6 +103,18 @@ struct Cli {
     stale_prob: f64,
     #[arg(long, default_value_t = 0.0005)]
     stream_reset_prob: f64,
+    #[arg(long, default_value_t = 0.004)]
+    storage_drop_write_prob: f64,
+    #[arg(long, default_value_t = 0.002)]
+    storage_torn_write_prob: f64,
+    #[arg(long, default_value_t = 0.006)]
+    storage_stale_read_prob: f64,
+    #[arg(long, default_value_t = 0.002)]
+    storage_corrupt_read_prob: f64,
+    #[arg(long, default_value_t = 0.006)]
+    storage_delayed_commit_prob: f64,
+    #[arg(long, default_value_t = 8)]
+    storage_max_commit_delay_ticks: u64,
     /// Emit the final report as JSON.
     #[arg(long)]
     json: bool,
@@ -207,6 +219,14 @@ impl Cli {
                 node_slow_probability: self.slow_prob,
                 node_stale_probability: self.stale_prob,
                 stream_reset_probability: self.stream_reset_prob,
+                storage: StorageFaultConfig {
+                    dropped_write_probability: self.storage_drop_write_prob,
+                    torn_write_probability: self.storage_torn_write_prob,
+                    stale_read_probability: self.storage_stale_read_prob,
+                    corrupt_read_probability: self.storage_corrupt_read_prob,
+                    delayed_commit_probability: self.storage_delayed_commit_prob,
+                    max_commit_delay_ticks: self.storage_max_commit_delay_ticks,
+                },
             },
             push: PushLabConfig {
                 devices: self.push_devices,
@@ -309,7 +329,7 @@ async fn run_one(config: SimulatorConfig, json: bool, failure_artifact: Option<P
                 }
             } else {
                 println!(
-                    "sockudo-sim: OK seed={} ticks={} mode={:?} quiesce_ticks={} operations={} oracles={} history_commits={} version_commits={} presence_events={} push_publishes={} push_results={} push_repairs={} recovered={} dropped={} duplicated={} resets={}",
+                    "sockudo-sim: OK seed={} ticks={} mode={:?} quiesce_ticks={} operations={} oracles={} history_commits={} version_commits={} presence_events={} push_publishes={} push_results={} push_repairs={} recovered={} dropped={} duplicated={} resets={} storage_dropped={} storage_torn={} storage_delayed={} storage_stale_reads={} storage_corrupt_reads={} storage_restarts_checked={}",
                     report.seed,
                     report.ticks,
                     report.mode,
@@ -326,6 +346,12 @@ async fn run_one(config: SimulatorConfig, json: bool, failure_artifact: Option<P
                     report.dropped_fanout,
                     report.duplicated_fanout,
                     report.stream_resets,
+                    report.storage_dropped_writes,
+                    report.storage_torn_writes,
+                    report.storage_delayed_commits,
+                    report.storage_stale_reads,
+                    report.storage_corrupted_reads,
+                    report.storage_recovery_checks,
                 );
             }
         }
@@ -455,13 +481,18 @@ fn print_corpus_summary(reports: &[SimulationReport]) {
     println!("sockudo-sim: corpus OK entries={}", reports.len());
     for report in reports {
         println!(
-            "  seed={} ticks={} ops={} push_publishes={} push_results={} repairs={}",
+            "  seed={} ticks={} ops={} push_publishes={} push_results={} repairs={} storage_dropped={} storage_torn={} storage_delayed={} storage_stale_reads={} storage_corrupt_reads={}",
             report.seed,
             report.ticks,
             report.operations,
             report.push.accepted_publishes,
             report.push.delivery_results,
             report.push.repair_requeued,
+            report.storage_dropped_writes,
+            report.storage_torn_writes,
+            report.storage_delayed_commits,
+            report.storage_stale_reads,
+            report.storage_corrupted_reads,
         );
     }
 }
