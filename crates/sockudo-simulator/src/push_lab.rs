@@ -1273,17 +1273,17 @@ impl PushLab {
             let Some(publish) = self.publishes.get(&publish_id) else {
                 continue;
             };
-            if publish.state == PublishState::Queued
-                && !self.queue_contains_publish_log(&publish_id)
-            {
-                self.enqueue(
-                    tick,
-                    scheduler,
-                    QueueStage::PublishLog {
-                        publish_id: publish_id.clone(),
-                    },
-                );
-                self.stats.repair_requeued = self.stats.repair_requeued.saturating_add(1);
+            if publish.state == PublishState::Queued {
+                if !self.queue_contains_publish_log(&publish_id) {
+                    self.enqueue(
+                        tick,
+                        scheduler,
+                        QueueStage::PublishLog {
+                            publish_id: publish_id.clone(),
+                        },
+                    );
+                    self.stats.repair_requeued = self.stats.repair_requeued.saturating_add(1);
+                }
                 continue;
             }
             let missing = publish

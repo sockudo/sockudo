@@ -1144,10 +1144,12 @@ impl DeterministicSimulator {
             && queue_loss > 0
             && push.accepted_publishes > 0
             && push.repair_requeued == 0
+            && (push.queued_items > 0
+                || push.pending_schedules > 0
+                || push.outstanding_deliveries > 0)
         {
             return Err(self.fail(
-                "liveness expected push repair after queue loss, but repair never requeued work"
-                    .to_string(),
+                "liveness expected push repair after queue loss left unresolved work".to_string(),
             ));
         }
         Ok(())
