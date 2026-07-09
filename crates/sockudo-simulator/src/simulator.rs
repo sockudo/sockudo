@@ -338,7 +338,7 @@ impl DeterministicSimulator {
 
     fn upgrade_report(&self) -> UpgradeSimulationReport {
         let push = self.push.report();
-        let mut report = UpgradeSimulationReport {
+        UpgradeSimulationReport {
             enabled: self.upgrade.enabled,
             schema_prepared: self.upgrade.schema_prepared,
             schema_active: self.upgrade.schema_active,
@@ -358,49 +358,16 @@ impl DeterministicSimulator {
             durable_phase_checks: self.stats.upgrade_durable_phase_checks,
             live_legacy_nodes: self.live_legacy_nodes(),
             live_target_nodes: self.live_target_nodes(),
+            history_before_feature_change: self.stats.upgrade_history_before_feature_change,
+            history_during_rolling_change: self.stats.upgrade_history_during_rolling_change,
+            history_after_feature_change: self.stats.upgrade_history_after_feature_change,
+            version_before_feature_change: self.stats.upgrade_version_before_feature_change,
+            version_during_rolling_change: self.stats.upgrade_version_during_rolling_change,
+            version_after_feature_change: self.stats.upgrade_version_after_feature_change,
             push_before_feature_change: push.accepted_before_feature_change,
             push_during_rolling_change: push.accepted_during_rolling_change,
             push_after_feature_change: push.accepted_after_feature_change,
-            ..UpgradeSimulationReport::default()
-        };
-
-        for channel in self.shadow.channels.values() {
-            for message in &channel.history {
-                match message.upgrade_phase {
-                    UpgradeDataPhase::Steady => {}
-                    UpgradeDataPhase::BeforeFeatureChange => {
-                        report.history_before_feature_change =
-                            report.history_before_feature_change.saturating_add(1);
-                    }
-                    UpgradeDataPhase::DuringRollingChange => {
-                        report.history_during_rolling_change =
-                            report.history_during_rolling_change.saturating_add(1);
-                    }
-                    UpgradeDataPhase::AfterFeatureChange => {
-                        report.history_after_feature_change =
-                            report.history_after_feature_change.saturating_add(1);
-                    }
-                }
-            }
-            for record in channel.version_replay.values() {
-                match version_record_phase(record) {
-                    UpgradeDataPhase::Steady => {}
-                    UpgradeDataPhase::BeforeFeatureChange => {
-                        report.version_before_feature_change =
-                            report.version_before_feature_change.saturating_add(1);
-                    }
-                    UpgradeDataPhase::DuringRollingChange => {
-                        report.version_during_rolling_change =
-                            report.version_during_rolling_change.saturating_add(1);
-                    }
-                    UpgradeDataPhase::AfterFeatureChange => {
-                        report.version_after_feature_change =
-                            report.version_after_feature_change.saturating_add(1);
-                    }
-                }
-            }
         }
-        report
     }
 
     fn tick_task_order(&mut self, tick: u64) -> Vec<TickTask> {
@@ -983,6 +950,8 @@ impl DeterministicSimulator {
         self.real.version.append_version(record.clone()).await?;
         self.record_version_visibility(&channel, record.delivery_serial());
         history.version_delivery_serial = Some(record.delivery_serial());
+        self.stats
+            .record_upgrade_version_phase(version_record_phase(&record));
         self.shadow.channel_mut(&channel).append_version(record);
         self.shadow
             .channel_mut(&channel)
@@ -1087,6 +1056,8 @@ impl DeterministicSimulator {
         self.real.version.append_version(record.clone()).await?;
         self.record_version_visibility(&channel, record.delivery_serial());
         history.version_delivery_serial = Some(record.delivery_serial());
+        self.stats
+            .record_upgrade_version_phase(version_record_phase(&record));
         self.shadow.channel_mut(&channel).append_version(record);
         self.shadow
             .channel_mut(&channel)
@@ -1295,6 +1266,8 @@ impl DeterministicSimulator {
             .channel_mut(channel)
             .append_history(message.clone());
         self.record_history_visibility(channel, message.serial);
+        self.stats
+            .record_upgrade_history_phase(message.upgrade_phase);
         self.stats.history_commits = self.stats.history_commits.saturating_add(1);
         Ok(Some(message))
     }
@@ -3959,6 +3932,50 @@ struct Stats {
     upgrade_wire_checks_during_upgrade: u64,
     upgrade_recovery_continuity_checks: u64,
     upgrade_durable_phase_checks: u64,
+    upgrade_history_before_feature_change: u64,
+    upgrade_history_during_rolling_change: u64,
+    upgrade_history_after_feature_change: u64,
+    upgrade_version_before_feature_change: u64,
+    upgrade_version_during_rolling_change: u64,
+    upgrade_version_after_feature_change: u64,
+}
+
+impl Stats {
+    fn record_upgrade_history_phase(&mut self, phase: UpgradeDataPhase) {
+        match phase {
+            UpgradeDataPhase::Steady => {}
+            UpgradeDataPhase::BeforeFeatureChange => {
+                self.upgrade_history_before_feature_change =
+                    self.upgrade_history_before_feature_change.saturating_add(1);
+            }
+            UpgradeDataPhase::DuringRollingChange => {
+                self.upgrade_history_during_rolling_change =
+                    self.upgrade_history_during_rolling_change.saturating_add(1);
+            }
+            UpgradeDataPhase::AfterFeatureChange => {
+                self.upgrade_history_after_feature_change =
+                    self.upgrade_history_after_feature_change.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_upgrade_version_phase(&mut self, phase: UpgradeDataPhase) {
+        match phase {
+            UpgradeDataPhase::Steady => {}
+            UpgradeDataPhase::BeforeFeatureChange => {
+                self.upgrade_version_before_feature_change =
+                    self.upgrade_version_before_feature_change.saturating_add(1);
+            }
+            UpgradeDataPhase::DuringRollingChange => {
+                self.upgrade_version_during_rolling_change =
+                    self.upgrade_version_during_rolling_change.saturating_add(1);
+            }
+            UpgradeDataPhase::AfterFeatureChange => {
+                self.upgrade_version_after_feature_change =
+                    self.upgrade_version_after_feature_change.saturating_add(1);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -4333,6 +4350,7 @@ mod tests {
         let mut config = test_config(0x00ab_6ade);
         config.ticks = 140;
         config.oracle_every = 7;
+        config.history_retention_messages = Some(8);
         config.fault.fanout_drop_probability = 0.0;
         config.fault.fanout_duplicate_probability = 0.0;
         config.fault.max_fanout_delay_ticks = 2;
