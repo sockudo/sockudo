@@ -55,6 +55,7 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
         &["provider", "tenant"],
     ),
     PushMetricSpec::counter("sockudo_push_duplicate_suppressed_total", &[]),
+    PushMetricSpec::counter("sockudo_push_invariant_violations_total", &["invariant"]),
     PushMetricSpec::gauge("sockudo_push_devices_total", &["app", "state"]),
     PushMetricSpec::counter(
         "sockudo_push_device_state_transitions_total",
@@ -404,6 +405,14 @@ impl PushMetrics {
 
     pub fn duplicate_suppressed(&self) {
         self.counter("sockudo_push_duplicate_suppressed_total", &[], 1);
+    }
+
+    pub fn status_transition_invariant_violation(&self) {
+        self.counter(
+            "sockudo_push_invariant_violations_total",
+            &[("invariant", "status_transition")],
+            1,
+        );
     }
 
     pub fn devices_total(&self, app_id: &str, state: DevicePushState, count: u64) {
@@ -809,6 +818,7 @@ mod tests {
             .iter()
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
+        assert!(names.contains("sockudo_push_invariant_violations_total"));
         let required = [
             "sockudo_push_dispatched_total",
             "sockudo_push_dispatch_duration_seconds",
@@ -880,10 +890,26 @@ mod tests {
             Duration::from_millis(100),
         );
         metrics.duplicate_suppressed();
+        metrics.status_transition_invariant_violation();
 
         assert_eq!(metrics.get("sockudo_push_publish_accepted_total"), 1);
         assert_eq!(metrics.get("sockudo_push_dispatched_total"), 1);
         assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 1);
+        assert_eq!(metrics.get("sockudo_push_invariant_violations_total"), 1);
+        let invariant_labels = metrics
+            .snapshot()
+            .into_iter()
+            .filter_map(|((name, labels), _)| {
+                (name == "sockudo_push_invariant_violations_total")
+                    .then(|| labels.into_iter().find(|(key, _)| *key == "invariant"))
+                    .flatten()
+                    .map(|(_, value)| value)
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            invariant_labels,
+            BTreeSet::from(["status_transition".to_owned()])
+        );
         assert_eq!(
             metrics
                 .snapshot()

@@ -21,6 +21,8 @@ pub(crate) struct QueueManagerPushQueue {
     state: Arc<tokio::sync::Mutex<QueueManagerPushQueueState>>,
     notify: Arc<tokio::sync::Notify>,
     metrics: sockudo_push::PushMetrics,
+    local_ready_cap_per_stage: usize,
+    local_pending_cap_per_stage: usize,
 }
 
 #[cfg(feature = "push")]
@@ -106,9 +108,20 @@ enum PushQueueAction {
 }
 
 #[cfg(feature = "push")]
+enum LocalQueueAdmission {
+    Admitted {
+        action_rx: tokio::sync::oneshot::Receiver<PushQueueAction>,
+        completion_tx: tokio::sync::watch::Sender<Option<bool>>,
+    },
+    AtCapacity,
+    Duplicate(tokio::sync::watch::Receiver<Option<bool>>),
+}
+
+#[cfg(feature = "push")]
 struct QueueManagerPendingMessage {
     enqueued_at_ms: u64,
-    tx: tokio::sync::oneshot::Sender<PushQueueAction>,
+    tx: Option<tokio::sync::oneshot::Sender<PushQueueAction>>,
+    completion_tx: tokio::sync::watch::Sender<Option<bool>>,
 }
 
 #[cfg(feature = "push")]
@@ -213,7 +226,18 @@ impl QueueManagerPushQueue {
             )),
             notify: Arc::new(tokio::sync::Notify::new()),
             metrics: sockudo_push::PushMetrics::default(),
+            local_ready_cap_per_stage: LOCAL_READY_CAP_PER_STAGE,
+            local_pending_cap_per_stage: LOCAL_PENDING_CAP_PER_STAGE,
         }
+    }
+
+    #[cfg(test)]
+    fn with_local_caps(mut self, ready: usize, pending: usize) -> Self {
+        assert!(ready > 0, "local ready capacity must be positive");
+        assert!(pending > 0, "local pending capacity must be positive");
+        self.local_ready_cap_per_stage = ready;
+        self.local_pending_cap_per_stage = pending;
+        self
     }
 
     async fn next_message_id(&self) -> String {
@@ -293,58 +317,112 @@ impl QueueManagerPushQueue {
         let route =
             sockudo_push::QueueRoute::for_message(envelope.stage, &envelope.key, &envelope.payload);
         let now = push_queue_now_ms();
-        let should_requeue = {
-            let state = self.state.lock().await;
-            let ready_depth = state
-                .ready
-                .get(&envelope.stage)
-                .map_or(0, std::collections::VecDeque::len);
-            let pending_depth = state
-                .pending
-                .keys()
-                .filter(|(pending_stage, _)| pending_stage == &envelope.stage)
-                .count();
-            ready_depth >= LOCAL_READY_CAP_PER_STAGE || pending_depth >= LOCAL_PENDING_CAP_PER_STAGE
-        };
-        if should_requeue {
-            self.requeue_envelope(envelope, Some(now.saturating_add(1_000)), "local_capacity")
-                .await?;
-            return Ok(());
-        }
-
-        let token = sockudo_push::QueueAckToken {
-            stage: envelope.stage,
-            message_id: envelope.message_id.clone(),
-        };
-        let message = sockudo_push::QueueMessage {
-            message_id: envelope.message_id.clone(),
-            stage: envelope.stage,
-            key: envelope.key.clone(),
-            partition_key: route.partition_key,
-            partition: route.partition,
-            payload: envelope.payload.clone(),
-            attempt: envelope.attempt,
-            enqueued_at_ms: envelope.enqueued_at_ms,
-            not_before_ms: envelope.not_before_ms,
-            lease_deadline_ms: now.saturating_add(LOCAL_LEASE_TIMEOUT_MS),
-            ack: token.clone(),
-        };
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        {
+        let admission = {
             let mut state = self.state.lock().await;
-            state.pending.insert(
-                (envelope.stage, envelope.message_id.clone()),
-                QueueManagerPendingMessage {
-                    enqueued_at_ms: envelope.enqueued_at_ms,
-                    tx,
-                },
-            );
-            state
-                .ready
-                .entry(envelope.stage)
-                .or_default()
-                .push_back(message);
-        }
+            let pending_key = (envelope.stage, envelope.message_id.clone());
+            if let Some(pending) = state.pending.get(&pending_key) {
+                LocalQueueAdmission::Duplicate(pending.completion_tx.subscribe())
+            } else {
+                let ready_depth = state
+                    .ready
+                    .get(&envelope.stage)
+                    .map_or(0, std::collections::VecDeque::len);
+                let pending_depth = state
+                    .pending
+                    .keys()
+                    .filter(|(pending_stage, _)| pending_stage == &envelope.stage)
+                    .count();
+                if ready_depth >= self.local_ready_cap_per_stage
+                    || pending_depth >= self.local_pending_cap_per_stage
+                {
+                    LocalQueueAdmission::AtCapacity
+                } else {
+                    let token = sockudo_push::QueueAckToken {
+                        stage: envelope.stage,
+                        message_id: envelope.message_id.clone(),
+                    };
+                    let message = sockudo_push::QueueMessage {
+                        message_id: envelope.message_id.clone(),
+                        stage: envelope.stage,
+                        key: envelope.key.clone(),
+                        partition_key: route.partition_key,
+                        partition: route.partition,
+                        payload: envelope.payload.clone(),
+                        attempt: envelope.attempt,
+                        enqueued_at_ms: envelope.enqueued_at_ms,
+                        not_before_ms: envelope.not_before_ms,
+                        lease_deadline_ms: now.saturating_add(LOCAL_LEASE_TIMEOUT_MS),
+                        ack: token,
+                    };
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let (completion_tx, _) = tokio::sync::watch::channel(None);
+                    let previous = state.pending.insert(
+                        pending_key,
+                        QueueManagerPendingMessage {
+                            enqueued_at_ms: envelope.enqueued_at_ms,
+                            tx: Some(tx),
+                            completion_tx: completion_tx.clone(),
+                        },
+                    );
+                    debug_assert!(
+                        previous.is_none(),
+                        "duplicate pending push message passed the admission check"
+                    );
+                    let ready_depth = {
+                        let ready = state.ready.entry(envelope.stage).or_default();
+                        ready.push_back(message);
+                        ready.len()
+                    };
+                    debug_assert!(ready_depth <= self.local_ready_cap_per_stage);
+                    debug_assert!(
+                        pending_depth.saturating_add(1) <= self.local_pending_cap_per_stage
+                    );
+                    LocalQueueAdmission::Admitted {
+                        action_rx: rx,
+                        completion_tx,
+                    }
+                }
+            }
+        };
+
+        let (rx, completion_tx) = match admission {
+            LocalQueueAdmission::Admitted {
+                action_rx,
+                completion_tx,
+            } => (action_rx, completion_tx),
+            LocalQueueAdmission::AtCapacity => {
+                self.requeue_envelope(envelope, Some(now.saturating_add(1_000)), "local_capacity")
+                    .await?;
+                return Ok(());
+            }
+            LocalQueueAdmission::Duplicate(mut completion_rx) => {
+                self.metrics.duplicate_suppressed();
+                let completed = if let Some(completed) = *completion_rx.borrow() {
+                    completed
+                } else {
+                    match tokio::time::timeout(
+                        Duration::from_millis(LOCAL_LEASE_TIMEOUT_MS.saturating_add(5_000)),
+                        completion_rx.wait_for(Option::is_some),
+                    )
+                    .await
+                    {
+                        Ok(Ok(completed)) => completed.unwrap_or(false),
+                        Ok(Err(_)) | Err(_) => {
+                            return Err(sockudo_push::PushQueueError::Backend(
+                                "canonical duplicate push work did not complete".to_owned(),
+                            ));
+                        }
+                    }
+                };
+                return if completed {
+                    Ok(())
+                } else {
+                    Err(sockudo_push::PushQueueError::Backend(
+                        "canonical duplicate push work failed".to_owned(),
+                    ))
+                };
+            }
+        };
         self.notify.notify_waiters();
 
         let action = match tokio::time::timeout(Duration::from_millis(LOCAL_LEASE_TIMEOUT_MS), rx)
@@ -355,10 +433,9 @@ impl QueueManagerPushQueue {
             Err(_) => PushQueueAction::Nack(Some(push_queue_now_ms().saturating_add(1_000))),
         };
 
-        self.remove_pending_and_ready(envelope.stage, &envelope.message_id)
-            .await;
-
-        match action {
+        let pending_stage = envelope.stage;
+        let pending_message_id = envelope.message_id.clone();
+        let result = match action {
             PushQueueAction::Ack => Ok(()),
             PushQueueAction::Nack(retry_at_ms) => {
                 self.requeue_envelope(envelope, retry_at_ms, "nack_or_lease_timeout")
@@ -401,7 +478,11 @@ impl QueueManagerPushQueue {
                 };
                 self.enqueue_envelope(dlq).await
             }
-        }
+        };
+        let _ = completion_tx.send(Some(result.is_ok()));
+        self.remove_pending_and_ready(pending_stage, &pending_message_id)
+            .await;
+        result
     }
 
     async fn requeue_envelope(
@@ -438,14 +519,29 @@ impl QueueManagerPushQueue {
         token: sockudo_push::QueueAckToken,
         action: PushQueueAction,
     ) -> sockudo_push::PushQueueResult<()> {
-        if let Some(pending) = self
-            .state
-            .lock()
-            .await
-            .pending
-            .remove(&(token.stage, token.message_id))
+        let key = (token.stage, token.message_id);
+        let mut state = self.state.lock().await;
+        let send_failed = if let Some(pending) = state.pending.get_mut(&key)
+            && let Some(tx) = pending.tx.take()
         {
-            let _ = pending.tx.send(action);
+            match tx.send(action) {
+                Ok(()) => None,
+                Err(_) => Some(pending.completion_tx.clone()),
+            }
+        } else {
+            None
+        };
+        if let Some(completion_tx) = send_failed {
+            let _ = completion_tx.send(Some(false));
+            state.pending.remove(&key);
+            if let Some(ready) = state.ready.get_mut(&key.0)
+                && let Some(index) = ready.iter().position(|message| message.message_id == key.1)
+            {
+                ready.remove(index);
+            }
+            return Err(sockudo_push::PushQueueError::Backend(
+                "canonical local push work is no longer running".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -945,6 +1041,7 @@ mod tests {
         PushQueueStage, PushRecipient, SecretString,
     };
     use sonic_rs::json;
+    use tokio::sync::Barrier;
 
     use super::*;
 
@@ -1005,9 +1102,133 @@ mod tests {
         assert!(lag.oldest_inflight_age_ms.is_some());
 
         queue.ack(message.ack).await.unwrap();
-        let lag = queue.lag(stage).await.unwrap();
+        let lag = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let lag = queue.lag(stage).await.unwrap();
+                if lag.inflight_depth == 0 {
+                    break lag;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("acknowledged local fixture should leave inflight state");
         assert_eq!(lag.inflight_depth, 0);
         assert!(lag.oldest_inflight_age_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn duplicate_broker_envelope_does_not_replace_pending_work() {
+        let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
+        let queue =
+            test_queue(QueueManagerPushQueueStageOwnership::testing([stage])).with_local_caps(2, 2);
+        let envelope = sample_queue_envelope("external-duplicate", stage);
+        let original = spawn_queue_job(&queue, envelope.clone());
+        wait_for_local_depths(&queue, stage, 1, 1).await;
+
+        let duplicate_job = push_queue_job_data(&envelope).unwrap();
+        let duplicate_queue = queue.clone();
+        let duplicate =
+            tokio::spawn(async move { duplicate_queue.handle_queue_job(duplicate_job).await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while queue.metrics.get("sockudo_push_duplicate_suppressed_total") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("duplicate should reach local suppression");
+
+        assert!(
+            !original.is_finished(),
+            "original pending work was replaced"
+        );
+        assert!(
+            !duplicate.is_finished(),
+            "duplicate broker work acknowledged before the canonical job"
+        );
+        assert_eq!(local_depths(&queue, stage).await, (1, 1));
+        assert_eq!(
+            queue.metrics.get("sockudo_push_duplicate_suppressed_total"),
+            1
+        );
+
+        queue
+            .ack(first_ready_ack(&queue, stage).await)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), original)
+            .await
+            .expect("original pending work should finish after acknowledgement")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), duplicate)
+            .await
+            .expect("duplicate should finish with the canonical acknowledgement")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_canonical_job_releases_pending_capacity() {
+        let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
+        let queue =
+            test_queue(QueueManagerPushQueueStageOwnership::testing([stage])).with_local_caps(1, 1);
+        let canonical = spawn_queue_job(&queue, sample_queue_envelope("external-cancelled", stage));
+        wait_for_local_depths(&queue, stage, 1, 1).await;
+        let ack = first_ready_ack(&queue, stage).await;
+
+        canonical.abort();
+        assert!(canonical.await.unwrap_err().is_cancelled());
+        let error = queue.ack(ack).await.unwrap_err();
+
+        assert!(error.to_string().contains("no longer running"));
+        assert_eq!(local_depths(&queue, stage).await, (0, 0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_local_admission_respects_ready_and_pending_caps() {
+        const JOBS: usize = 8;
+
+        let stage = PushQueueStage::DeliveryJobs(PushProviderKind::Fcm);
+        let queue =
+            test_queue(QueueManagerPushQueueStageOwnership::testing([stage])).with_local_caps(1, 1);
+        let barrier = Arc::new(Barrier::new(JOBS));
+        let mut handles = Vec::with_capacity(JOBS);
+
+        for index in 0..JOBS {
+            let queue = queue.clone();
+            let barrier = Arc::clone(&barrier);
+            let envelope = sample_queue_envelope(&format!("external-{index}"), stage);
+            handles.push(tokio::spawn(async move {
+                let job = push_queue_job_data(&envelope).unwrap();
+                barrier.wait().await;
+                queue.handle_queue_job(job).await.unwrap();
+            }));
+        }
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if queue.metrics.get("sockudo_push_queue_local_requeued_total") == (JOBS - 1) as u64
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("excess local work should be requeued");
+
+        assert_eq!(local_depths(&queue, stage).await, (1, 1));
+        queue
+            .ack(first_ready_ack(&queue, stage).await)
+            .await
+            .unwrap();
+
+        for handle in handles {
+            tokio::time::timeout(Duration::from_secs(1), handle)
+                .await
+                .expect("queue job should finish after capacity handling")
+                .unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1162,6 +1383,54 @@ mod tests {
         })
     }
 
+    async fn wait_for_local_depths(
+        queue: &QueueManagerPushQueue,
+        stage: PushQueueStage,
+        ready: usize,
+        pending: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if local_depths(queue, stage).await == (ready, pending) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("local queue depths should reach the expected values");
+    }
+
+    async fn local_depths(queue: &QueueManagerPushQueue, stage: PushQueueStage) -> (usize, usize) {
+        let state = queue.state.lock().await;
+        let ready = state
+            .ready
+            .get(&stage)
+            .map_or(0, std::collections::VecDeque::len);
+        let pending = state
+            .pending
+            .keys()
+            .filter(|(pending_stage, _)| *pending_stage == stage)
+            .count();
+        (ready, pending)
+    }
+
+    async fn first_ready_ack(
+        queue: &QueueManagerPushQueue,
+        stage: PushQueueStage,
+    ) -> sockudo_push::QueueAckToken {
+        queue
+            .state
+            .lock()
+            .await
+            .ready
+            .get(&stage)
+            .and_then(|ready| ready.front())
+            .expect("one local ready message")
+            .ack
+            .clone()
+    }
+
     async fn next_dead_letter_entry(
         queue: &QueueManagerPushQueue,
     ) -> sockudo_push::DeadLetterQueueEntry {
@@ -1190,16 +1459,23 @@ mod tests {
         let payload = PushQueuePayload::DeliveryBatch(Box::new(sample_batch()));
         let route = sockudo_push::QueueRoute::for_message(stage, "delivery", &payload);
         let message_id = "external-1".to_owned();
+        let cleanup_message_id = message_id.clone();
         let token = sockudo_push::QueueAckToken {
             stage,
             message_id: message_id.clone(),
         };
         let enqueued_at_ms = push_queue_now_ms();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (completion_tx, _) = tokio::sync::watch::channel(None);
+        let cleanup_completion_tx = completion_tx.clone();
         let mut state = queue.state.lock().await;
         state.pending.insert(
             (stage, message_id.clone()),
-            QueueManagerPendingMessage { enqueued_at_ms, tx },
+            QueueManagerPendingMessage {
+                enqueued_at_ms,
+                tx: Some(tx),
+                completion_tx,
+            },
         );
         state
             .ready
@@ -1218,6 +1494,29 @@ mod tests {
                 lease_deadline_ms: 0,
                 ack: token,
             });
+        drop(state);
+
+        let cleanup_queue = queue.clone();
+        tokio::spawn(async move {
+            if rx.await.is_ok() {
+                cleanup_queue
+                    .remove_pending_and_ready(stage, &cleanup_message_id)
+                    .await;
+                let _ = cleanup_completion_tx.send(Some(true));
+            }
+        });
+    }
+
+    fn sample_queue_envelope(message_id: &str, stage: PushQueueStage) -> PushQueueEnvelope {
+        PushQueueEnvelope {
+            message_id: message_id.to_owned(),
+            stage,
+            key: format!("delivery-{message_id}"),
+            payload: PushQueuePayload::DeliveryBatch(Box::new(sample_batch())),
+            attempt: 1,
+            enqueued_at_ms: push_queue_now_ms(),
+            not_before_ms: None,
+        }
     }
 
     fn sample_batch() -> DeliveryBatch {

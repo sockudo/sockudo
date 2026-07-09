@@ -37,6 +37,67 @@ mod replay_buffer_regression {
     }
 
     #[test]
+    fn out_of_order_arrival_is_replayed_in_serial_order() {
+        let buf = ReplayBuffer::new(100, Duration::from_secs(60));
+
+        buf.store("app1", "ch", Some("stream-1"), 2, Bytes::from("msg2"));
+        buf.store("app1", "ch", Some("stream-1"), 1, Bytes::from("msg1"));
+        buf.store("app1", "ch", Some("stream-1"), 3, Bytes::from("msg3"));
+
+        match buf.get_messages_after_position("app1", "ch", Some("stream-1"), 0) {
+            ReplayLookup::Recovered(messages) => {
+                assert_eq!(
+                    messages,
+                    vec![
+                        Bytes::from("msg1"),
+                        Bytes::from("msg2"),
+                        Bytes::from("msg3")
+                    ]
+                );
+            }
+            other => panic!("expected ordered recovery, got {}", variant_name(&other)),
+        }
+    }
+
+    #[test]
+    fn gap_and_duplicate_serials_fail_closed() {
+        let gap = ReplayBuffer::new(100, Duration::from_secs(60));
+        gap.store("app1", "ch", Some("stream-1"), 1, Bytes::from("msg1"));
+        gap.store("app1", "ch", Some("stream-1"), 3, Bytes::from("msg3"));
+
+        assert!(matches!(
+            gap.get_messages_after_position("app1", "ch", Some("stream-1"), 0),
+            ReplayLookup::ContinuityGap {
+                expected_serial: 2,
+                observed_serial: 3
+            }
+        ));
+
+        let duplicate = ReplayBuffer::new(100, Duration::from_secs(60));
+        duplicate.store("app1", "ch", Some("stream-1"), 1, Bytes::from("msg1"));
+        duplicate.store("app1", "ch", Some("stream-1"), 1, Bytes::from("msg1-again"));
+
+        assert!(matches!(
+            duplicate.get_messages_after_position("app1", "ch", Some("stream-1"), 0),
+            ReplayLookup::ContinuityGap {
+                expected_serial: 2,
+                observed_serial: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn cursor_ahead_of_hot_stream_fails_closed() {
+        let buf = ReplayBuffer::new(100, Duration::from_secs(60));
+        buf.store("app1", "ch", Some("stream-1"), 1, Bytes::from("msg1"));
+
+        assert!(matches!(
+            buf.get_messages_after_position("app1", "ch", Some("stream-1"), 2),
+            ReplayLookup::Ahead { newest_serial: 1 }
+        ));
+    }
+
+    #[test]
     fn test_store_updates_stream_id() {
         let buf = ReplayBuffer::new(100, Duration::from_secs(60));
 
@@ -224,6 +285,8 @@ mod replay_buffer_regression {
             ReplayLookup::Recovered(_) => "Recovered",
             ReplayLookup::Expired => "Expired",
             ReplayLookup::StreamReset { .. } => "StreamReset",
+            ReplayLookup::Ahead { .. } => "Ahead",
+            ReplayLookup::ContinuityGap { .. } => "ContinuityGap",
         }
     }
 }

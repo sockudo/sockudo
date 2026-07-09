@@ -217,12 +217,12 @@ fn test_rewind_gate_buffers_and_drains_messages() {
             delta_conflation_key: None,
         },
     };
-    gate.buffered.push(message.clone());
-    let drained = std::mem::take(&mut gate.buffered);
+    gate.try_buffer(message.clone(), 128).unwrap();
+    let drained = gate.drain();
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].serial, Some(1));
     assert_eq!(drained[0].message_id.as_deref(), Some("msg-1"));
-    assert!(gate.buffered.is_empty());
+    assert!(gate.drain().is_empty());
 }
 
 #[test]
@@ -292,9 +292,19 @@ async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
 }
 
 async fn create_websocket_ref() -> WebSocketRef {
+    create_websocket_ref_with_buffer_config(WebSocketBufferConfig::default()).await
+}
+
+async fn create_websocket_ref_with_buffer_config(
+    buffer_config: WebSocketBufferConfig,
+) -> WebSocketRef {
     let socket_id = SocketId::new();
     let (writer, _client) = create_server_writer_with_client().await;
-    WebSocketRef::new(WebSocket::new(socket_id, writer))
+    WebSocketRef::new(WebSocket::with_buffer_config(
+        socket_id,
+        writer,
+        buffer_config,
+    ))
 }
 
 fn create_test_pong_message(channel: &str, serial: u64, message_id: &str) -> PusherMessage {
@@ -502,7 +512,10 @@ async fn unsubscribe_removes_all_per_channel_state() {
 
 #[tokio::test]
 async fn finish_rewind_gate_drains_buffered_messages() {
-    let ws_ref = create_websocket_ref().await;
+    let ws_ref = create_websocket_ref_with_buffer_config(WebSocketBufferConfig::with_both_limits(
+        2, 1024, true,
+    ))
+    .await;
 
     ws_ref.start_rewind_gate("presence-room".to_string());
     assert!(
@@ -526,6 +539,7 @@ async fn finish_rewind_gate_drains_buffered_messages() {
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].message_id.as_deref(), Some("msg-1"));
     assert_eq!(drained[1].message_id.as_deref(), Some("msg-2"));
+    assert!(!ws_ref.cancellation_token().is_cancelled());
     assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
     assert!(
         !ws_ref
@@ -535,6 +549,66 @@ async fn finish_rewind_gate_drains_buffered_messages() {
             )
             .await
     );
+}
+
+#[tokio::test]
+async fn rewind_gate_message_overflow_shuts_down_connection() {
+    let ws_ref = create_websocket_ref_with_buffer_config(
+        WebSocketBufferConfig::with_message_limit(2, false),
+    )
+    .await;
+    ws_ref.start_rewind_gate("presence-room".to_string());
+
+    for serial in 1..=2 {
+        assert!(
+            ws_ref
+                .buffer_rewind_message(
+                    "presence-room",
+                    &create_test_pong_message("presence-room", serial, &format!("msg-{serial}"),),
+                )
+                .await
+        );
+    }
+    assert!(!ws_ref.cancellation_token().is_cancelled());
+
+    assert!(
+        ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 3, "msg-3"),
+            )
+            .await
+    );
+    assert!(ws_ref.cancellation_token().is_cancelled());
+    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
+}
+
+#[tokio::test]
+async fn rewind_gate_byte_overflow_shuts_down_connection() {
+    let first = create_test_pong_message("presence-room", 1, "msg-1");
+    let first_size =
+        sockudo_protocol::wire::serialize_message(&first, sockudo_protocol::WireFormat::Json)
+            .unwrap()
+            .len();
+    let ws_ref = create_websocket_ref_with_buffer_config(WebSocketBufferConfig::with_byte_limit(
+        first_size, false,
+    ))
+    .await;
+    ws_ref.start_rewind_gate("presence-room".to_string());
+
+    assert!(ws_ref.buffer_rewind_message("presence-room", &first).await);
+    assert!(!ws_ref.cancellation_token().is_cancelled());
+
+    assert!(
+        ws_ref
+            .buffer_rewind_message(
+                "presence-room",
+                &create_test_pong_message("presence-room", 2, "msg-2"),
+            )
+            .await
+    );
+    assert!(ws_ref.cancellation_token().is_cancelled());
+    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
 }
 
 #[tokio::test]

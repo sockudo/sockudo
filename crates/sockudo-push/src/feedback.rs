@@ -6,7 +6,9 @@ use crate::domain::{
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::{PushMetrics, provider_label};
-use crate::pipeline::{PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, now_ms};
+use crate::pipeline::{
+    PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, lock_publish_status, now_ms,
+};
 use crate::retry::RetryPolicy;
 use crate::storage::{DynPushStore, IdempotencyRecord};
 
@@ -250,13 +252,15 @@ impl PushFeedbackProcessor {
         &self,
         result: &DeliveryResult,
     ) -> PushPipelineResult<Option<PublishStatus>> {
-        let Some(mut status) = self
+        let _status_guard = lock_publish_status(&result.app_id, &result.publish_id).await;
+        let Some(current) = self
             .store
             .get_publish_status(&result.app_id, &result.publish_id)
             .await?
         else {
             return Ok(None);
         };
+        let mut status = current.clone();
 
         match result.outcome {
             DeliveryOutcome::Accepted => {
@@ -276,14 +280,10 @@ impl PushFeedbackProcessor {
         if let Some(retry_after_ms) = result.error.as_ref().and_then(|error| error.retry_after_ms) {
             status.retry_after_ms = Some(retry_after_ms);
         }
-        status.state = terminal_state(
-            status.counters.succeeded,
-            status.counters.failed,
-            status.counters.expired,
-            status.counters.dead_lettered,
-            status.counters.planned,
-            status.state,
-        );
+        let next = status.counters.resolve_lifecycle_state(current.state);
+        // Audience counts for channel/client targets are estimates until fanout. A late valid
+        // outcome may refine one terminal delivery summary into another, but never reactivates it.
+        status.state = next;
         self.metrics
             .delivery_status(&result.app_id, outcome_label(result.outcome));
         if matches!(
@@ -422,6 +422,7 @@ impl PushFeedbackProcessor {
         result: &DeliveryResult,
         next_attempt_at_ms: u64,
     ) -> PushPipelineResult<()> {
+        let _status_guard = lock_publish_status(&result.app_id, &result.publish_id).await;
         if let Some(mut status) = self
             .store
             .get_publish_status(&result.app_id, &result.publish_id)
@@ -435,21 +436,17 @@ impl PushFeedbackProcessor {
     }
 
     async fn mark_retry_context_missing(&self, result: &DeliveryResult) -> PushPipelineResult<()> {
-        if let Some(mut status) = self
+        let _status_guard = lock_publish_status(&result.app_id, &result.publish_id).await;
+        if let Some(current) = self
             .store
             .get_publish_status(&result.app_id, &result.publish_id)
             .await?
         {
+            let mut status = current.clone();
             status.counters.dead_lettered = status.counters.dead_lettered.saturating_add(1);
             status.error_reason = Some("retryable result missing retry context".to_owned());
-            status.state = terminal_state(
-                status.counters.succeeded,
-                status.counters.failed,
-                status.counters.expired,
-                status.counters.dead_lettered,
-                status.counters.planned,
-                status.state,
-            );
+            let next = status.counters.resolve_lifecycle_state(current.state);
+            status.state = next;
             self.store.put_publish_status(status).await?;
         }
         Ok(())
@@ -492,32 +489,6 @@ fn lifecycle_label(state: PublishLifecycleState) -> &'static str {
         PublishLifecycleState::DeadLettered => "dead_lettered",
         PublishLifecycleState::Succeeded => "succeeded",
         PublishLifecycleState::PartiallySucceeded => "partially_succeeded",
-    }
-}
-
-fn terminal_state(
-    succeeded: u64,
-    failed: u64,
-    expired: u64,
-    dead_lettered: u64,
-    planned: u64,
-    current: PublishLifecycleState,
-) -> PublishLifecycleState {
-    let terminal = succeeded.saturating_add(failed).saturating_add(expired);
-    let terminal = terminal.saturating_add(dead_lettered);
-    if planned == 0 || terminal < planned {
-        return current;
-    }
-    if failed == 0 && expired == 0 && dead_lettered == 0 {
-        PublishLifecycleState::Succeeded
-    } else if succeeded > 0 {
-        PublishLifecycleState::PartiallySucceeded
-    } else if expired > 0 {
-        PublishLifecycleState::Expired
-    } else if dead_lettered > 0 {
-        PublishLifecycleState::DeadLettered
-    } else {
-        PublishLifecycleState::Failed
     }
 }
 
@@ -682,6 +653,77 @@ mod tests {
         assert_eq!(status.counters.dispatched, 1);
         assert_eq!(status.counters.succeeded, 1);
         assert_eq!(status.state, PublishLifecycleState::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn feedback_can_refine_a_terminal_summary_without_reactivating_it() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let mut terminal = status_with_planned("publish-1", 2);
+        terminal.state = PublishLifecycleState::Succeeded;
+        terminal.counters.dispatched = 1;
+        terminal.counters.succeeded = 1;
+        store.put_publish_status(terminal).await.unwrap();
+        let processor = PushFeedbackProcessor::new(store.clone(), queue);
+
+        let observed = processor
+            .update_publish_status(&rejected_result(
+                "publish-1",
+                "device-2",
+                "rejected",
+                ProviderFailureClass::CallerPayload,
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(observed.state, PublishLifecycleState::PartiallySucceeded);
+        assert_eq!(observed.counters.failed, 1);
+        let persisted = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted, observed);
+    }
+
+    #[tokio::test]
+    async fn concurrent_feedback_updates_do_not_lose_publish_counters() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .put_publish_status(status_with_planned("publish-1", 2))
+            .await
+            .unwrap();
+        let processor = PushFeedbackProcessor::new(store.clone(), queue);
+        let first = rejected_result(
+            "publish-1",
+            "device-1",
+            "rejected-1",
+            ProviderFailureClass::CallerPayload,
+        );
+        let second = rejected_result(
+            "publish-1",
+            "device-2",
+            "rejected-2",
+            ProviderFailureClass::CallerPayload,
+        );
+
+        let (first_result, second_result) = tokio::join!(
+            processor.update_publish_status(&first),
+            processor.update_publish_status(&second)
+        );
+        first_result.unwrap();
+        second_result.unwrap();
+
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.counters.dispatched, 2);
+        assert_eq!(status.counters.failed, 2);
+        assert_eq!(status.state, PublishLifecycleState::Failed);
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -21,6 +22,9 @@ pub type DynPushQueue = Arc<dyn PushQueue + Send + Sync>;
 pub type PushQueueResult<T> = Result<T, PushQueueError>;
 pub type PushPipelineResult<T> = Result<T, PushPipelineError>;
 const DEFAULT_IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+const PUBLISH_STATUS_LOCK_SHARDS: usize = 256;
+
+static PUBLISH_STATUS_LOCKS: OnceLock<Box<[tokio::sync::Mutex<()>]>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -959,6 +963,49 @@ pub enum PushPipelineError {
     InvalidPayload(String),
 }
 
+/// Serialize publish-status read/modify/write sections within a process without an unbounded
+/// per-publish lock map. This closes local worker races; storage-level CAS remains the authority
+/// needed to prevent conflicting writes from separate nodes.
+pub(crate) async fn lock_publish_status(
+    app_id: &str,
+    publish_id: &str,
+) -> tokio::sync::MutexGuard<'static, ()> {
+    let locks = PUBLISH_STATUS_LOCKS.get_or_init(|| {
+        (0..PUBLISH_STATUS_LOCK_SHARDS)
+            .map(|_| tokio::sync::Mutex::new(()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    });
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    app_id.hash(&mut hasher);
+    publish_id.hash(&mut hasher);
+    let index = (hasher.finish() as usize) % locks.len();
+    locks[index].lock().await
+}
+
+pub(crate) fn guard_publish_status_transition(
+    metrics: &PushMetrics,
+    component: &'static str,
+    status: &PublishStatus,
+    next: PublishLifecycleState,
+) -> bool {
+    if status.state.can_transition_to(next) {
+        return true;
+    }
+
+    metrics.status_transition_invariant_violation();
+    tracing::warn!(
+        invariant = "status_transition",
+        component,
+        app_id = %status.app_id,
+        publish_id = %status.publish_id,
+        from = ?status.state,
+        to = ?next,
+        "ignored non-monotonic push publish status transition"
+    );
+    false
+}
+
 impl PushPipeline {
     pub fn new(store: DynPushStore, queue: DynPushQueue, config: FanoutConfig) -> Self {
         Self {
@@ -1202,6 +1249,7 @@ impl PushPipeline {
                     "duplicate publish is missing persisted status".to_owned(),
                 )
             })?;
+        self.metrics.duplicate_suppressed();
         Ok(PushAcceptOutcome {
             publish_id: publish_id.to_owned(),
             publish_event: PublishLogEvent {
@@ -1561,6 +1609,28 @@ mod tests {
                 .ready_depth,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_accept_increments_duplicate_suppressed_metric() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let metrics = PushMetrics::default();
+        let pipeline =
+            PushPipeline::new(store, queue, FanoutConfig::default()).with_metrics(metrics.clone());
+        let request = PushAcceptRequest {
+            intent: sample_intent(vec![PublishTarget::Recipient {
+                recipient: recipient(PushProviderKind::Fcm),
+            }]),
+            expected_recipients: 1,
+        };
+
+        let accepted = pipeline.accept_publish(request.clone(), 10).await.unwrap();
+        let duplicate = pipeline.accept_publish(request, 11).await.unwrap();
+
+        assert!(!accepted.duplicate);
+        assert!(duplicate.duplicate);
+        assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 1);
     }
 
     #[tokio::test]

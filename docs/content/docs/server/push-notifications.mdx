@@ -120,6 +120,10 @@ and dead-letter queue lag through the health/backpressure surfaces, and metrics 
 `sockudo_push_retry_dead_lettered_total`, `sockudo_push_retry_malformed_total`, and
 `sockudo_push_provider_failures_total{failure_class=...}`.
 
+Lifecycle safety checks expose `sockudo_push_invariant_violations_total{invariant=...}`. The bounded
+`status_transition` label means a stale, non-monotonic status write was ignored. The metric does
+not include payloads, device tokens, or provider credentials.
+
 Upgrade note: provider workers now enqueue internal `deliveryFeedback` payloads on
 `push.results.v1` so feedback workers can schedule retries with replayable job context. Older
 `deliveryResult` payloads are still accepted, but retryable legacy results without job context are
