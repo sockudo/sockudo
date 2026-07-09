@@ -1020,10 +1020,17 @@ fn page_from_rows<T: Clone>(
     start_after: Option<String>,
 ) -> Page<T> {
     let limit = limit.max(1);
-    let filtered = rows
+    // Cursor pagination compares `position` strings (`position > start_after`), so the page must be
+    // emitted in ascending `position` order. Callers build `rows` in backing-map order, which does
+    // not always match position-string order — e.g. subscription rows are keyed by the
+    // `(channel, device_id)` tuple, but the position string `"{channel}:{device_id}"` orders
+    // differently whenever one channel name is a prefix of another (`:` outranks digits). Sort here
+    // so the helper owns the invariant its cursor contract depends on.
+    let mut filtered = rows
         .into_iter()
         .filter(|(position, _)| start_after.as_ref().is_none_or(|start| position > start))
         .collect::<Vec<_>>();
+    filtered.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     let mut items = Vec::with_capacity(limit.min(filtered.len()));
     let mut last_position = None;

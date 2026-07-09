@@ -88,6 +88,40 @@ impl PushStoreConformance {
                 .await
                 .is_err()
         );
+
+        // Regression: `list_subscriptions` paginates by the `"{channel}:{device_id}"` cursor
+        // string. When one channel name is a prefix of another, tuple order (`chan-1` < `chan-11`)
+        // and cursor-string order (`"chan-1:.." > "chan-11:.."`, since `:` outranks digits)
+        // disagree. A store that emits rows in tuple order but resumes by string comparison silently
+        // drops the second subscription once `limit` forces a page break. Walk every page at
+        // `limit = 1` and require the full set back.
+        let probe = sample_device("prefix-probe", 90_000_000);
+        store.upsert_device(probe.clone()).await?;
+        for channel in ["chan-1", "chan-11"] {
+            store
+                .upsert_subscription(ChannelSubscription::from_device(channel, &probe))
+                .await?;
+        }
+        let mut probe_channels = std::collections::BTreeSet::new();
+        let mut cursor = None;
+        loop {
+            let page = store.list_subscriptions("app-1", 1, cursor).await?;
+            assert!(page.items.len() <= 1, "page exceeded the requested limit");
+            for subscription in page.items {
+                if subscription.device_id == "prefix-probe" {
+                    probe_channels.insert(subscription.channel);
+                }
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(
+            probe_channels,
+            std::collections::BTreeSet::from(["chan-1".to_owned(), "chan-11".to_owned()]),
+            "paginated list_subscriptions dropped a prefix-colliding channel"
+        );
         Ok(())
     }
 
