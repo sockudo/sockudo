@@ -197,6 +197,16 @@ simulator: ## Run deterministic indestructibility simulator (override SIM_SEED/S
 	@echo "$(BLUE)Running Sockudo deterministic simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
 	@cargo run -p sockudo-simulator --bin sockudo-sim -- --seed $(SIM_SEED) --ticks $(SIM_TICKS) $(SIM_ARGS)
 
+.PHONY: simulator-upgrade
+simulator-upgrade: ## Run deterministic rolling-upgrade risk simulator (manual local replay)
+	@echo "$(BLUE)Running Sockudo upgrade-risk simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
+	@cargo run -p sockudo-simulator --bin sockudo-sim -- \
+		--seed $(SIM_SEED) \
+		--ticks $(SIM_TICKS) \
+		--upgrade-risk-profile \
+		--upgrade-require-coverage \
+		$(SIM_ARGS)
+
 .PHONY: simulator-disaster
 simulator-disaster: ## Run disaster-heavy deterministic simulator profile with JSON output
 	@echo "$(BLUE)Running Sockudo disaster simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"

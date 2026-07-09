@@ -60,6 +60,7 @@ The simulator covers these high-value durability surfaces:
 | Presence history | First-join/last-leave edge decisions, retained events, cursor paging, stream inspection, and reconstructed snapshots match the shadow model under deterministic reconnect churn. |
 | Push workflow | Device registration, channel subscription, scheduled-job storage, publish acceptance, initial status, publish logs, and publish-id idempotency go through real `sockudo-push` memory store/pipeline APIs. The simulator then faults modeled worker queues, status transitions, and provider outcomes and checks they converge. |
 | Crash/restart recovery | Restarted nodes immediately re-read durable history, versions, presence history, and push status/log/idempotency state through the same safety oracles. |
+| Rolling upgrades | Opt-in upgrade runs restart nodes one by one with mixed legacy/target feature gates, schema activation, V1/V2 wire checks, before/during/after durable data counters, and push status oracles. |
 
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
 deterministic inner loop for the durable primitives those tests rely on.
@@ -158,7 +159,7 @@ To inspect scheduler and timer decisions for a seed:
 cargo run -p sockudo-simulator --bin sockudo-sim -- \
   --seed 42 \
   --ticks 10000 \
-  --json | jq -r '.io_trace[]'
+  --json | sed '1d' | jq -r '.io_trace[]'
 ```
 
 To replay a saved failure capsule and print the same trace window:
@@ -229,6 +230,74 @@ When shrinking a `--swarm` run directly from seed flags, the artifact also inclu
 `seedDerivedProfile`. That preserves the original seed-generated topology, workload, and fault
 profile before any shrink simplifications, while replay continues to use the explicit shrunk
 `config` from the capsule. Do not pass `--swarm` when replaying a failure capsule.
+
+## Rolling Upgrade Replay
+
+The simulator has an opt-in upgrade risk profile for production-style rolling changes. It keeps the
+run deterministic while modeling:
+
+| Upgrade surface | Model |
+| --- | --- |
+| Rolling restarts | Nodes are restarted one at a time into the target generation, with at least one live node left serving traffic. Durable recovery oracles run after each upgraded node comes back. |
+| Mixed config/features | Legacy nodes reject feature-gated versioned-message writes while target nodes accept them after the schema gate opens. Ordinary history, recovery, and push traffic continue through the mixed fleet. |
+| V1/V2 compatibility | Mixed V1/V2 simulated clients keep receiving live and recovered deliveries. V1 projections must strip V2-only fields, and V2 projections must preserve continuity and upgrade metadata. |
+| Durable before/after data | History, versioned messages, and push publishes are counted by `before_feature_change`, `during_rolling_change`, and `after_feature_change` phases in the final JSON. |
+| Schema/version gates | Versioned writes are rejected before schema activation. The upgrade oracle fails if any version record appears in the pre-activation phase. |
+| Push status semantics | Push publish status/log/idempotency oracles continue to run across all upgrade phases, and target nodes must use the target push-status semantics. |
+
+Run the manual local wrapper:
+
+```bash
+make simulator-upgrade SIM_SEED=48879 SIM_TICKS=1200
+```
+
+Or replay the same profile directly and inspect upgrade coverage:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 48879 \
+  --ticks 1200 \
+  --upgrade-risk-profile \
+  --upgrade-require-coverage \
+  --json | sed '1d' | jq '.upgrade, .protocol_oracles, .push'
+```
+
+Use a compressed schedule when reducing a failure or forcing the rollout to happen early in a short
+manual run:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 43981 \
+  --ticks 320 \
+  --nodes 4 \
+  --upgrade-risk-profile \
+  --upgrade-require-coverage \
+  --upgrade-schema-prepare-tick 8 \
+  --upgrade-start-tick 12 \
+  --upgrade-schema-activate-tick 18 \
+  --upgrade-restart-duration-ticks 2 \
+  --upgrade-interval-ticks 8 \
+  --json
+```
+
+To preserve a failing upgrade run for exact replay:
+
+```bash
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 48879 \
+  --ticks 1200 \
+  --upgrade-risk-profile \
+  --upgrade-require-coverage \
+  --failure-artifact /tmp/sockudo-upgrade-failure.json
+
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --corpus-file /tmp/sockudo-upgrade-failure.json \
+  --json
+```
+
+The replay command printed on invariant failure includes the upgrade timing flags. The full failure
+artifact remains the canonical replay input when workload weights, fault probabilities, topology, or
+retention settings were changed in addition to the upgrade flags.
 
 ## Fault Model
 
@@ -406,8 +475,9 @@ change.
 The final JSON includes top-level core counters, a `protocol_oracles` object with V1/V2 delivery,
 cursor, identity, monotonicity, rewind, and presence-edge check counts, storage fault counters,
 restart recovery check counts, a nested `push` object with durable status/log counts, status
-transition counts, provider results, queue losses, repair counts, recent push trace entries, and
-top-level `io_trace` entries for recent deterministic operation/fault decisions. Keep sample
+transition counts, provider results, queue losses, repair counts, phase counts for upgrade runs, a
+nested `upgrade` object with rolling restart/schema gate/oracle coverage counters, recent push trace
+entries, and top-level `io_trace` entries for recent deterministic operation/fault decisions. Keep sample
 outputs with the exact seed and tick count that produced them so they remain replayable. A compact
 example generated with `--seed 12648430 --ticks 16 --json` lives at
 `crates/sockudo-simulator/examples/disaster-report.example.json`.

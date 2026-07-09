@@ -8,6 +8,7 @@ use crate::push_lab::PushLabConfig;
 use crate::workload::{ActionWeights, WorkloadConfig};
 
 const SWARM_SEED_DOMAIN: u64 = 0x51a9_5a6d_b33f_500d;
+pub(crate) const UPGRADE_SCHEMA_V2: u16 = 2;
 
 /// Deterministic simulator configuration.
 ///
@@ -38,6 +39,8 @@ pub struct SimulatorConfig {
     pub fault: FaultConfig,
     #[serde(default)]
     pub push: PushLabConfig,
+    #[serde(default)]
+    pub upgrade: UpgradeConfig,
 }
 
 impl Default for SimulatorConfig {
@@ -60,6 +63,7 @@ impl Default for SimulatorConfig {
             workload: WorkloadConfig::default(),
             fault: FaultConfig::default(),
             push: PushLabConfig::default(),
+            upgrade: UpgradeConfig::default(),
         }
     }
 }
@@ -194,11 +198,131 @@ impl SimulatorConfig {
         self.liveness.validate()?;
         self.workload.validate()?;
         self.fault.validate()?;
-        self.push.validate()
+        self.push.validate()?;
+        self.upgrade.validate(self.ticks, self.nodes)
     }
 
     pub(crate) fn retention_window(&self) -> Duration {
         Duration::from_secs(10 * 365 * 24 * 60 * 60)
+    }
+}
+
+/// Opt-in upgrade risk model for rolling binary/config/schema changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpgradeConfig {
+    pub enabled: bool,
+    pub schema_prepare_tick: u64,
+    pub schema_activate_tick: u64,
+    pub start_tick: u64,
+    pub restart_duration_ticks: u64,
+    pub interval_ticks: u64,
+    pub legacy_allows_v2_delivery: bool,
+    pub legacy_versioned_messages: bool,
+    pub target_versioned_messages: bool,
+    pub legacy_push_status_v2: bool,
+    pub target_push_status_v2: bool,
+    pub require_oracle_coverage: bool,
+}
+
+impl Default for UpgradeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schema_prepare_tick: 50,
+            schema_activate_tick: 140,
+            start_tick: 100,
+            restart_duration_ticks: 4,
+            interval_ticks: 20,
+            legacy_allows_v2_delivery: true,
+            legacy_versioned_messages: false,
+            target_versioned_messages: true,
+            legacy_push_status_v2: false,
+            target_push_status_v2: true,
+            require_oracle_coverage: false,
+        }
+    }
+}
+
+impl UpgradeConfig {
+    fn validate(&self, ticks: u64, nodes: usize) -> SimulatorResult<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if nodes < 2 {
+            return Err(SimulatorError::Config(
+                "upgrade risk profile requires at least 2 nodes".into(),
+            ));
+        }
+        if self.restart_duration_ticks == 0 {
+            return Err(SimulatorError::Config(
+                "upgrade restart_duration_ticks must be greater than 0".into(),
+            ));
+        }
+        if self.interval_ticks == 0 {
+            return Err(SimulatorError::Config(
+                "upgrade interval_ticks must be greater than 0".into(),
+            ));
+        }
+        if self.schema_prepare_tick > self.schema_activate_tick {
+            return Err(SimulatorError::Config(
+                "upgrade schema_prepare_tick must be <= schema_activate_tick".into(),
+            ));
+        }
+        for (name, tick) in [
+            ("upgrade.schema_prepare_tick", self.schema_prepare_tick),
+            ("upgrade.schema_activate_tick", self.schema_activate_tick),
+            ("upgrade.start_tick", self.start_tick),
+        ] {
+            if tick >= ticks {
+                return Err(SimulatorError::Config(format!(
+                    "{name} must be less than ticks"
+                )));
+            }
+        }
+        if !self.legacy_allows_v2_delivery && self.legacy_versioned_messages {
+            return Err(SimulatorError::Config(
+                "upgrade legacy_versioned_messages requires legacy_allows_v2_delivery".into(),
+            ));
+        }
+        if !self.target_versioned_messages {
+            return Err(SimulatorError::Config(
+                "upgrade target_versioned_messages must remain enabled for this profile".into(),
+            ));
+        }
+        if !self.target_push_status_v2 {
+            return Err(SimulatorError::Config(
+                "upgrade target_push_status_v2 must remain enabled for this profile".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Durable data phase relative to an upgrade feature/schema change.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradeDataPhase {
+    #[default]
+    Steady,
+    BeforeFeatureChange,
+    DuringRollingChange,
+    AfterFeatureChange,
+}
+
+impl UpgradeDataPhase {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Steady => "steady",
+            Self::BeforeFeatureChange => "before_feature_change",
+            Self::DuringRollingChange => "during_rolling_change",
+            Self::AfterFeatureChange => "after_feature_change",
+        }
+    }
+
+    #[must_use]
+    pub fn is_upgrade(self) -> bool {
+        self != Self::Steady
     }
 }
 

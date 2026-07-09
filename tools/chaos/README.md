@@ -39,6 +39,26 @@ Do not add this runner to CI, scheduled jobs, or GitHub Actions. It is for local
 operator and developer experiments where the generated artifact is attached to a
 bug report or follow-up deterministic simulator seed.
 
+For deterministic production-upgrade risk replay, use the simulator upgrade profile instead of this
+outside-in binary harness:
+
+```bash
+make simulator-upgrade SIM_SEED=48879 SIM_TICKS=1200
+
+cargo run -p sockudo-simulator --bin sockudo-sim -- \
+  --seed 43981 \
+  --ticks 320 \
+  --nodes 4 \
+  --upgrade-risk-profile \
+  --upgrade-require-coverage \
+  --upgrade-schema-prepare-tick 8 \
+  --upgrade-start-tick 12 \
+  --upgrade-schema-activate-tick 18 \
+  --upgrade-restart-duration-ticks 2 \
+  --upgrade-interval-ticks 8 \
+  --json
+```
+
 Run chaos against the AI Transport compose cluster:
 
 ```bash

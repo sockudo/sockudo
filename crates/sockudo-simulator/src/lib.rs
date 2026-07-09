@@ -14,7 +14,10 @@ mod shrink;
 mod simulator;
 mod workload;
 
-pub use config::{FaultConfig, LivenessConfig, SimulatorConfig, SimulatorMode, StorageFaultConfig};
+pub use config::{
+    FaultConfig, LivenessConfig, SimulatorConfig, SimulatorMode, StorageFaultConfig, UpgradeConfig,
+    UpgradeDataPhase,
+};
 pub use error::{SimulatorError, SimulatorResult};
 pub use push_lab::{PushLabConfig, PushSimulationReport};
 pub use shrink::{
@@ -24,5 +27,6 @@ pub use shrink::{
 };
 pub use simulator::{
     DeterministicSimulator, FailureObservation, ProtocolOracleReport, SimulationReport,
+    UpgradeSimulationReport,
 };
 pub use workload::{ActionWeights, WorkloadAction, WorkloadActionCounts, WorkloadConfig};

@@ -26,9 +26,10 @@ use sockudo_protocol::versioned_messages::{
 };
 use sockudo_protocol::wire::{deserialize_message, serialize_message};
 use sockudo_protocol::{ProtocolVersion, WireFormat};
+use sonic_rs::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use crate::config::{SimulatorConfig, SimulatorMode};
+use crate::config::{SimulatorConfig, SimulatorMode, UPGRADE_SCHEMA_V2, UpgradeDataPhase};
 use crate::error::{SimulatorError, SimulatorResult};
 use crate::io::{
     DeterministicClock, DeterministicFaultScheduler, DeterministicNetwork, DeterministicStorage,
@@ -75,6 +76,7 @@ pub struct SimulationReport {
     pub storage_stale_reads: u64,
     pub storage_corrupted_reads: u64,
     pub storage_recovery_checks: u64,
+    pub upgrade: UpgradeSimulationReport,
     pub quiesce_ticks: u64,
     pub liveness_max_quiesce_ticks: u64,
     pub live_nodes: usize,
@@ -88,6 +90,39 @@ pub struct SimulationReport {
     pub io_trace: Vec<String>,
     pub workload_weights: ActionWeights,
     pub workload_actions: WorkloadActionCounts,
+}
+
+/// Upgrade-specific report embedded in the simulator JSON output.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct UpgradeSimulationReport {
+    pub enabled: bool,
+    pub schema_prepared: bool,
+    pub schema_active: bool,
+    pub schema_prepared_tick: Option<u64>,
+    pub schema_activated_tick: Option<u64>,
+    pub rollout_started_tick: Option<u64>,
+    pub rollout_completed_tick: Option<u64>,
+    pub rolling_restart_started: u64,
+    pub rolling_restart_completed: u64,
+    pub mixed_config_ticks: u64,
+    pub feature_gate_rejections: u64,
+    pub oracle_checks: u64,
+    pub schema_gate_checks: u64,
+    pub recovery_checks_after_upgrade_restart: u64,
+    pub wire_checks_during_upgrade: u64,
+    pub recovery_continuity_checks: u64,
+    pub durable_phase_checks: u64,
+    pub live_legacy_nodes: usize,
+    pub live_target_nodes: usize,
+    pub history_before_feature_change: u64,
+    pub history_during_rolling_change: u64,
+    pub history_after_feature_change: u64,
+    pub version_before_feature_change: u64,
+    pub version_during_rolling_change: u64,
+    pub version_after_feature_change: u64,
+    pub push_before_feature_change: u64,
+    pub push_during_rolling_change: u64,
+    pub push_after_feature_change: u64,
 }
 
 /// Compact state captured after an intentionally failing simulator replay.
@@ -110,6 +145,9 @@ pub struct ProtocolOracleReport {
     pub v1_deliveries_checked: u64,
     pub v1_suppressed_deliveries: u64,
     pub v2_deliveries_checked: u64,
+    pub v2_suppressed_by_legacy_feature: u64,
+    pub upgrade_v1_deliveries_checked: u64,
+    pub upgrade_v2_deliveries_checked: u64,
     pub v2_recovery_cursors_checked: u64,
     pub duplicate_identity_checks: u64,
     pub serial_monotonicity_checks: u64,
@@ -124,6 +162,7 @@ pub struct DeterministicSimulator {
     scheduler: DeterministicFaultScheduler,
     real: RealSubsystemHarness,
     nodes: Vec<NodeState>,
+    upgrade: UpgradeRuntime,
     clients: Vec<ClientState>,
     channels: Vec<String>,
     network: DeterministicNetwork<NetworkEvent>,
@@ -157,7 +196,12 @@ impl DeterministicSimulator {
                 ClientState::new(idx, protocol, &channels)
             })
             .collect();
-        let nodes = (0..config.nodes).map(NodeState::new).collect();
+        let upgrade = UpgradeRuntime::new(&config);
+        let initial_features = upgrade.initial_node_features(&config);
+        let initial_generation = upgrade.initial_generation();
+        let nodes = (0..config.nodes)
+            .map(|idx| NodeState::new(idx, initial_generation, initial_features))
+            .collect();
         let push = PushLab::new(&channels, config.clients, config.push.clone())?;
         let real = RealSubsystemHarness::new(&config);
 
@@ -173,6 +217,7 @@ impl DeterministicSimulator {
             config,
             real,
             nodes,
+            upgrade,
             clients,
             channels,
             network: DeterministicNetwork::default(),
@@ -193,6 +238,8 @@ impl DeterministicSimulator {
         for tick in 0..self.config.ticks {
             self.clock.set_tick(tick);
             self.storage_visibility.flush(tick);
+            self.drive_upgrade_state().await?;
+            self.push.set_upgrade_phase(self.upgrade_data_phase());
             for task in self.tick_task_order(tick) {
                 match task {
                     TickTask::DeliverFanout => self.deliver_due_fanout()?,
@@ -272,6 +319,7 @@ impl DeterministicSimulator {
             storage_stale_reads: self.stats.storage_stale_reads,
             storage_corrupted_reads: self.stats.storage_corrupted_reads,
             storage_recovery_checks: self.stats.storage_recovery_checks,
+            upgrade: self.upgrade_report(),
             quiesce_ticks: self.quiesce_ticks(),
             liveness_max_quiesce_ticks: self.config.liveness.max_quiesce_ticks,
             live_nodes: self.nodes.iter().filter(|node| node.alive).count(),
@@ -286,6 +334,73 @@ impl DeterministicSimulator {
             workload_weights: self.workload.weights(),
             workload_actions: self.workload.selected().clone(),
         }
+    }
+
+    fn upgrade_report(&self) -> UpgradeSimulationReport {
+        let push = self.push.report();
+        let mut report = UpgradeSimulationReport {
+            enabled: self.upgrade.enabled,
+            schema_prepared: self.upgrade.schema_prepared,
+            schema_active: self.upgrade.schema_active,
+            schema_prepared_tick: self.upgrade.schema_prepared_tick,
+            schema_activated_tick: self.upgrade.schema_activated_tick,
+            rollout_started_tick: self.upgrade.rollout_started_tick,
+            rollout_completed_tick: self.upgrade.rollout_completed_tick,
+            rolling_restart_started: self.stats.upgrade_rolling_restart_started,
+            rolling_restart_completed: self.stats.upgrade_rolling_restart_completed,
+            mixed_config_ticks: self.stats.upgrade_mixed_config_ticks,
+            feature_gate_rejections: self.stats.upgrade_feature_gate_rejections,
+            oracle_checks: self.stats.upgrade_oracle_checks,
+            schema_gate_checks: self.stats.upgrade_schema_gate_checks,
+            recovery_checks_after_upgrade_restart: self.stats.upgrade_recovery_checks_after_restart,
+            wire_checks_during_upgrade: self.stats.upgrade_wire_checks_during_upgrade,
+            recovery_continuity_checks: self.stats.upgrade_recovery_continuity_checks,
+            durable_phase_checks: self.stats.upgrade_durable_phase_checks,
+            live_legacy_nodes: self.live_legacy_nodes(),
+            live_target_nodes: self.live_target_nodes(),
+            push_before_feature_change: push.accepted_before_feature_change,
+            push_during_rolling_change: push.accepted_during_rolling_change,
+            push_after_feature_change: push.accepted_after_feature_change,
+            ..UpgradeSimulationReport::default()
+        };
+
+        for channel in self.shadow.channels.values() {
+            for message in &channel.history {
+                match message.upgrade_phase {
+                    UpgradeDataPhase::Steady => {}
+                    UpgradeDataPhase::BeforeFeatureChange => {
+                        report.history_before_feature_change =
+                            report.history_before_feature_change.saturating_add(1);
+                    }
+                    UpgradeDataPhase::DuringRollingChange => {
+                        report.history_during_rolling_change =
+                            report.history_during_rolling_change.saturating_add(1);
+                    }
+                    UpgradeDataPhase::AfterFeatureChange => {
+                        report.history_after_feature_change =
+                            report.history_after_feature_change.saturating_add(1);
+                    }
+                }
+            }
+            for record in channel.version_replay.values() {
+                match version_record_phase(record) {
+                    UpgradeDataPhase::Steady => {}
+                    UpgradeDataPhase::BeforeFeatureChange => {
+                        report.version_before_feature_change =
+                            report.version_before_feature_change.saturating_add(1);
+                    }
+                    UpgradeDataPhase::DuringRollingChange => {
+                        report.version_during_rolling_change =
+                            report.version_during_rolling_change.saturating_add(1);
+                    }
+                    UpgradeDataPhase::AfterFeatureChange => {
+                        report.version_after_feature_change =
+                            report.version_after_feature_change.saturating_add(1);
+                    }
+                }
+            }
+        }
+        report
     }
 
     fn tick_task_order(&mut self, tick: u64) -> Vec<TickTask> {
@@ -308,17 +423,17 @@ impl DeterministicSimulator {
         let action = self.workload.next_action();
         self.scheduler
             .record(self.tick(), format!("operation {}", action.as_str()));
-        if self.route_rejects() {
+        let Some(node_idx) = self.route_for_action(action) else {
             self.stats.rejected_operations = self.stats.rejected_operations.saturating_add(1);
             self.scheduler
                 .record(self.tick(), "operation route_rejected");
             return Ok(());
-        }
+        };
 
         match action {
-            WorkloadAction::PublishMessage => self.publish_message().await,
-            WorkloadAction::CreateVersionedMessage => self.create_versioned_message().await,
-            WorkloadAction::MutateVersionedMessage => self.mutate_versioned_message().await,
+            WorkloadAction::PublishMessage => self.publish_message(node_idx).await,
+            WorkloadAction::CreateVersionedMessage => self.create_versioned_message(node_idx).await,
+            WorkloadAction::MutateVersionedMessage => self.mutate_versioned_message(node_idx).await,
             WorkloadAction::PresenceTransition => self.record_presence_transition().await,
             WorkloadAction::RecoveryProbe => self.recovery_probe().await,
             WorkloadAction::PurgeHistory => self.purge_history_prefix().await,
@@ -371,19 +486,40 @@ impl DeterministicSimulator {
             .is_none_or(|max_operations| self.stats.operations < max_operations)
     }
 
-    fn route_rejects(&mut self) -> bool {
+    fn route_for_action(&mut self, action: WorkloadAction) -> Option<usize> {
         let tick = self.tick();
         if !self.nodes.iter().any(|node| node.can_accept_traffic(tick)) {
-            return true;
+            return None;
         }
         let node_idx = self.scheduler.usize_below(self.nodes.len());
         if !self.nodes[node_idx].can_accept_traffic(tick) {
-            return true;
+            return None;
+        }
+        if !self.node_accepts_action(node_idx, action) {
+            self.stats.upgrade_feature_gate_rejections =
+                self.stats.upgrade_feature_gate_rejections.saturating_add(1);
+            self.trace(format!(
+                "node {node_idx} rejected {} due to upgrade feature/schema gate",
+                action.as_str()
+            ));
+            return None;
         }
         if let Some(node) = self.nodes.get_mut(node_idx) {
             node.accepted_operations = node.accepted_operations.saturating_add(1);
         }
-        false
+        Some(node_idx)
+    }
+
+    fn node_accepts_action(&self, node_idx: usize, action: WorkloadAction) -> bool {
+        let Some(node) = self.nodes.get(node_idx) else {
+            return false;
+        };
+        match action {
+            WorkloadAction::CreateVersionedMessage | WorkloadAction::MutateVersionedMessage => {
+                node.features.versioned_messages && self.upgrade.schema_allows_versioned_writes()
+            }
+            _ => true,
+        }
     }
 
     async fn inject_faults(&mut self) -> SimulatorResult<()> {
@@ -420,6 +556,154 @@ impl DeterministicSimulator {
             self.reset_random_stream().await?;
         }
         Ok(())
+    }
+
+    async fn drive_upgrade_state(&mut self) -> SimulatorResult<()> {
+        if !self.upgrade.enabled {
+            return Ok(());
+        }
+
+        let tick = self.tick();
+        if !self.upgrade.schema_prepared && tick >= self.config.upgrade.schema_prepare_tick {
+            self.upgrade.schema_prepared = true;
+            self.upgrade.schema_prepared_tick = Some(tick);
+            self.trace(format!("upgrade schema prepared at version {}", 1));
+        }
+        if !self.upgrade.schema_active && tick >= self.config.upgrade.schema_activate_tick {
+            self.upgrade.schema_active = true;
+            self.upgrade.schema_activated_tick = Some(tick);
+            self.trace(format!(
+                "upgrade schema activated at version {UPGRADE_SCHEMA_V2}"
+            ));
+        }
+
+        if let Some(pending) = self.upgrade.pending_restart.clone()
+            && tick >= pending.complete_at
+        {
+            self.complete_upgrade_restart(pending.node_idx).await?;
+            self.upgrade.pending_restart = None;
+            self.upgrade.next_restart_tick =
+                tick.saturating_add(self.config.upgrade.interval_ticks);
+        }
+
+        if self.upgrade.pending_restart.is_none()
+            && self.upgrade.next_node_idx < self.nodes.len()
+            && tick >= self.upgrade.next_restart_tick
+        {
+            self.begin_upgrade_restart();
+        }
+
+        self.record_mixed_config_tick();
+        Ok(())
+    }
+
+    fn begin_upgrade_restart(&mut self) {
+        if self.live_node_count() <= 1 {
+            self.upgrade.next_restart_tick = self.tick().saturating_add(1);
+            return;
+        }
+        while self.upgrade.next_node_idx < self.nodes.len()
+            && self.nodes[self.upgrade.next_node_idx].generation == UpgradeGeneration::Target
+        {
+            self.upgrade.next_node_idx = self.upgrade.next_node_idx.saturating_add(1);
+        }
+        if self.upgrade.next_node_idx >= self.nodes.len() {
+            self.mark_upgrade_complete();
+            return;
+        }
+
+        let node_idx = self.upgrade.next_node_idx;
+        if self.upgrade.rollout_started_tick.is_none() {
+            self.upgrade.rollout_started_tick = Some(self.tick());
+        }
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            node.alive = false;
+            node.paused = false;
+            node.partitioned = false;
+        }
+        let complete_at = self
+            .tick()
+            .saturating_add(self.config.upgrade.restart_duration_ticks);
+        self.upgrade.pending_restart = Some(PendingUpgradeRestart {
+            node_idx,
+            complete_at,
+        });
+        self.stats.upgrade_rolling_restart_started =
+            self.stats.upgrade_rolling_restart_started.saturating_add(1);
+        self.trace(format!(
+            "upgrade rolling restart began node {node_idx} complete_at={complete_at}"
+        ));
+    }
+
+    async fn complete_upgrade_restart(&mut self, node_idx: usize) -> SimulatorResult<()> {
+        let features = self.upgrade.target_node_features(&self.config);
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            node.alive = true;
+            node.paused = false;
+            node.partitioned = false;
+            node.generation = UpgradeGeneration::Target;
+            node.features = features;
+        }
+        self.upgrade.next_node_idx = self.upgrade.next_node_idx.saturating_add(1);
+        self.stats.node_restarts = self.stats.node_restarts.saturating_add(1);
+        self.stats.upgrade_rolling_restart_completed = self
+            .stats
+            .upgrade_rolling_restart_completed
+            .saturating_add(1);
+        self.stats.upgrade_recovery_checks_after_restart = self
+            .stats
+            .upgrade_recovery_checks_after_restart
+            .saturating_add(1);
+        self.trace(format!("upgrade rolling restart completed node {node_idx}"));
+        self.check_durable_recovery_after_restart().await?;
+        if self.upgrade.next_node_idx >= self.nodes.len() {
+            self.mark_upgrade_complete();
+        }
+        Ok(())
+    }
+
+    fn mark_upgrade_complete(&mut self) {
+        if self.upgrade.rollout_completed_tick.is_none()
+            && self
+                .nodes
+                .iter()
+                .all(|node| node.generation == UpgradeGeneration::Target)
+        {
+            self.upgrade.rollout_completed_tick = Some(self.tick());
+            self.trace("upgrade rollout completed".to_string());
+        }
+    }
+
+    fn record_mixed_config_tick(&mut self) {
+        let live_legacy = self.live_legacy_nodes();
+        let live_target = self.live_target_nodes();
+        if live_legacy > 0 && live_target > 0 {
+            self.stats.upgrade_mixed_config_ticks =
+                self.stats.upgrade_mixed_config_ticks.saturating_add(1);
+        }
+    }
+
+    fn live_node_count(&self) -> usize {
+        self.nodes.iter().filter(|node| node.alive).count()
+    }
+
+    fn live_legacy_nodes(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| node.alive && node.generation == UpgradeGeneration::Legacy)
+            .count()
+    }
+
+    fn live_target_nodes(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| node.alive && node.generation == UpgradeGeneration::Target)
+            .count()
+    }
+
+    fn upgrade_data_phase(&self) -> UpgradeDataPhase {
+        self.upgrade
+            .data_phase(&self.config, self.live_legacy_nodes())
     }
 
     fn crash_random_node(&mut self) {
@@ -629,12 +913,12 @@ impl DeterministicSimulator {
         Ok(())
     }
 
-    async fn publish_message(&mut self) -> SimulatorResult<()> {
+    async fn publish_message(&mut self, source_node: usize) -> SimulatorResult<()> {
         let channel = self.random_channel();
         let tick = self.tick();
         let payload = Bytes::from(format!("payload:{}:{}", tick, self.stats.history_commits));
         let Some(message) = self
-            .append_history(&channel, "client-event", "publish", payload)
+            .append_history(&channel, "client-event", "publish", payload, source_node)
             .await?
         else {
             return Ok(());
@@ -647,7 +931,7 @@ impl DeterministicSimulator {
         Ok(())
     }
 
-    async fn create_versioned_message(&mut self) -> SimulatorResult<()> {
+    async fn create_versioned_message(&mut self, source_node: usize) -> SimulatorResult<()> {
         let channel = self.random_channel();
         let tick = self.tick();
         let Some(mut history) = self
@@ -656,6 +940,7 @@ impl DeterministicSimulator {
                 "sockudo:message.create",
                 MessageAction::Create.as_str(),
                 Bytes::from(format!("version-create:{tick}")),
+                source_node,
             )
             .await?
         else {
@@ -676,7 +961,7 @@ impl DeterministicSimulator {
             .await?;
         let message_serial = MessageSerial::new(format!("msg-{:020}", self.next_message_serial))?;
         self.next_message_serial = self.next_message_serial.saturating_add(1);
-        let version = self.next_version_metadata()?;
+        let version = self.next_version_metadata(source_node)?;
         let message = VersionedMessage::new_create(
             message_serial,
             version,
@@ -711,7 +996,7 @@ impl DeterministicSimulator {
         Ok(())
     }
 
-    async fn mutate_versioned_message(&mut self) -> SimulatorResult<()> {
+    async fn mutate_versioned_message(&mut self, source_node: usize) -> SimulatorResult<()> {
         let channel = self.random_channel();
         let tick = self.tick();
         let Some(current) = self
@@ -719,7 +1004,7 @@ impl DeterministicSimulator {
             .channel(&channel)
             .random_live_version(&mut self.scheduler, tick)
         else {
-            return self.create_versioned_message().await;
+            return self.create_versioned_message(source_node).await;
         };
 
         let action_roll = self.scheduler.u32_below(100);
@@ -736,6 +1021,7 @@ impl DeterministicSimulator {
                 action.as_str(),
                 action.as_str(),
                 Bytes::from(format!("{payload}:{tick}")),
+                source_node,
             )
             .await?
         else {
@@ -758,7 +1044,7 @@ impl DeterministicSimulator {
                 current.message.replay_position.delivery_serial,
             )
             .await?;
-        let version = self.next_version_metadata()?;
+        let version = self.next_version_metadata(source_node)?;
         let next = match action {
             MessageAction::Update => current.message.apply_mutation(
                 action,
@@ -967,6 +1253,7 @@ impl DeterministicSimulator {
         event_name: &str,
         operation_kind: &str,
         payload: Bytes,
+        source_node: usize,
     ) -> SimulatorResult<Option<ShadowHistoryMessage>> {
         if self.storage_write_dropped(operation_kind) {
             return Ok(None);
@@ -999,6 +1286,10 @@ impl DeterministicSimulator {
             event_name: record.event_name,
             operation_kind: record.operation_kind,
             payload,
+            upgrade_phase: self.upgrade_data_phase(),
+            source_generation: self.nodes[source_node].generation,
+            source_schema_version: self.upgrade.schema_version(),
+            source_node,
         };
         self.shadow
             .channel_mut(channel)
@@ -1336,7 +1627,12 @@ impl DeterministicSimulator {
             )));
         }
         for item in recovered.items {
-            let message = ShadowHistoryMessage::from_history_item(item);
+            let message = self
+                .shadow
+                .channel(channel)
+                .history_by_serial(item.serial)
+                .cloned()
+                .unwrap_or_else(|| ShadowHistoryMessage::from_history_item(item));
             let event = NetworkEvent {
                 deliver_at: self.tick(),
                 client_idx,
@@ -1367,11 +1663,13 @@ impl DeterministicSimulator {
             self.check_attach_rewind_gaplessness_oracle(channel).await?;
             self.check_client_recovery_oracle(channel)?;
             self.check_v2_recovery_cursor_oracle(channel)?;
+            self.check_upgrade_oracle(channel)?;
         }
         self.push
             .check_oracles(false, self.config.page_limit)
             .await
             .map_err(|message| self.fail(message))?;
+        self.check_upgrade_coverage_oracle()?;
         Ok(())
     }
 
@@ -1387,15 +1685,23 @@ impl DeterministicSimulator {
             self.check_attach_rewind_gaplessness_oracle(channel).await?;
             self.check_client_recovery_oracle(channel)?;
             self.check_v2_recovery_cursor_oracle(channel)?;
+            self.check_upgrade_oracle(channel)?;
         }
         self.push
             .check_oracles(false, self.config.page_limit)
             .await
             .map_err(|message| self.fail(message))?;
+        self.check_upgrade_coverage_oracle()?;
         Ok(())
     }
 
     fn check_delivery_protocol_oracles(&mut self, event: &NetworkEvent) -> SimulatorResult<()> {
+        if self.upgrade.enabled && event.message.upgrade_phase.is_upgrade() {
+            self.stats.upgrade_wire_checks_during_upgrade = self
+                .stats
+                .upgrade_wire_checks_during_upgrade
+                .saturating_add(1);
+        }
         self.check_protocol_v1_delivery(event)?;
         self.check_protocol_v2_delivery(event)
     }
@@ -1464,10 +1770,25 @@ impl DeterministicSimulator {
         }
         self.stats.protocol.v1_deliveries_checked =
             self.stats.protocol.v1_deliveries_checked.saturating_add(1);
+        if event.message.upgrade_phase.is_upgrade() {
+            self.stats.protocol.upgrade_v1_deliveries_checked = self
+                .stats
+                .protocol
+                .upgrade_v1_deliveries_checked
+                .saturating_add(1);
+        }
         Ok(())
     }
 
     fn check_protocol_v2_delivery(&mut self, event: &NetworkEvent) -> SimulatorResult<()> {
+        if !self.nodes[event.source_node].features.protocol_v2_delivery {
+            self.stats.protocol.v2_suppressed_by_legacy_feature = self
+                .stats
+                .protocol
+                .v2_suppressed_by_legacy_feature
+                .saturating_add(1);
+            return Ok(());
+        }
         let mut message = self.delivery_message(event);
         clear_runtime_append_fragment(&mut message);
         message.rewrite_prefix(ProtocolVersion::V2);
@@ -1500,6 +1821,24 @@ impl DeterministicSimulator {
                 event.channel, event.serial
             )));
         }
+        if event.message.upgrade_phase.is_upgrade() {
+            let upgrade_header = rendered
+                .extras
+                .as_ref()
+                .and_then(|extras| extras.headers.as_ref())
+                .and_then(|headers| headers.get("upgrade_phase"));
+            if upgrade_header.is_none() {
+                return Err(self.fail(format!(
+                    "V2 upgrade delivery dropped upgrade_phase header on {} serial={}",
+                    event.channel, event.serial
+                )));
+            }
+            self.stats.protocol.upgrade_v2_deliveries_checked = self
+                .stats
+                .protocol
+                .upgrade_v2_deliveries_checked
+                .saturating_add(1);
+        }
         self.stats.protocol.v2_deliveries_checked =
             self.stats.protocol.v2_deliveries_checked.saturating_add(1);
         Ok(())
@@ -1510,6 +1849,20 @@ impl DeterministicSimulator {
             "simulator".to_string(),
             ExtrasValue::String("protocol-oracle".to_string()),
         )]);
+        if event.message.upgrade_phase.is_upgrade() {
+            headers.insert(
+                "upgrade_phase".to_string(),
+                ExtrasValue::String(event.message.upgrade_phase.as_str().to_string()),
+            );
+            headers.insert(
+                "source_generation".to_string(),
+                ExtrasValue::String(event.message.source_generation.as_str().to_string()),
+            );
+            headers.insert(
+                "source_schema_version".to_string(),
+                ExtrasValue::Number(f64::from(event.message.source_schema_version)),
+            );
+        }
         let mut message = PusherMessage {
             event: event.message.event_name.clone(),
             channel: Some(event.channel.clone()),
@@ -2121,6 +2474,125 @@ impl DeterministicSimulator {
         Ok(())
     }
 
+    fn check_upgrade_oracle(&mut self, channel: &str) -> SimulatorResult<()> {
+        if !self.upgrade.enabled {
+            return Ok(());
+        }
+        self.stats.upgrade_oracle_checks = self.stats.upgrade_oracle_checks.saturating_add(1);
+        let shadow = self.shadow.channel(channel);
+        let history = shadow.history.iter().collect::<Vec<_>>();
+        for message in &history {
+            if message.upgrade_phase == UpgradeDataPhase::AfterFeatureChange
+                && message.source_generation != UpgradeGeneration::Target
+            {
+                return Err(self.fail(format!(
+                    "upgrade post-feature history on {channel} serial={} came from {:?} node {}",
+                    message.serial, message.source_generation, message.source_node
+                )));
+            }
+            if message.upgrade_phase.is_upgrade() && message.source_schema_version == 0 {
+                return Err(self.fail(format!(
+                    "upgrade history on {channel} serial={} recorded invalid schema version",
+                    message.serial
+                )));
+            }
+            self.stats.upgrade_durable_phase_checks =
+                self.stats.upgrade_durable_phase_checks.saturating_add(1);
+        }
+
+        for pair in history.windows(2) {
+            if pair[0].upgrade_phase != pair[1].upgrade_phase {
+                if pair[0].stream_id != pair[1].stream_id {
+                    return Err(self.fail(format!(
+                        "upgrade phase boundary changed history stream on {channel}: serial {} stream {} then serial {} stream {}",
+                        pair[0].serial, pair[0].stream_id, pair[1].serial, pair[1].stream_id
+                    )));
+                }
+                if pair[0].serial.saturating_add(1) != pair[1].serial {
+                    return Err(self.fail(format!(
+                        "upgrade phase boundary has history gap on {channel}: {} then {}",
+                        pair[0].serial, pair[1].serial
+                    )));
+                }
+                self.stats.upgrade_recovery_continuity_checks = self
+                    .stats
+                    .upgrade_recovery_continuity_checks
+                    .saturating_add(1);
+            }
+        }
+
+        for record in shadow.version_replay.values() {
+            let phase = version_record_phase(record);
+            if phase == UpgradeDataPhase::BeforeFeatureChange {
+                return Err(self.fail(format!(
+                    "versioned message on {channel} delivery_serial={} was written before upgrade schema activation",
+                    record.delivery_serial()
+                )));
+            }
+            if phase.is_upgrade() && record.message.version.metadata.is_none() {
+                return Err(self.fail(format!(
+                    "versioned message on {channel} delivery_serial={} lost upgrade metadata",
+                    record.delivery_serial()
+                )));
+            }
+            self.stats.upgrade_schema_gate_checks =
+                self.stats.upgrade_schema_gate_checks.saturating_add(1);
+        }
+
+        for node in &self.nodes {
+            if node.generation == UpgradeGeneration::Target && !node.features.push_status_v2 {
+                return Err(self.fail(format!(
+                    "upgraded node {} has legacy push status semantics enabled",
+                    node.id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_upgrade_coverage_oracle(&self) -> SimulatorResult<()> {
+        if !self.upgrade.enabled
+            || !self.config.upgrade.require_oracle_coverage
+            || self.upgrade.rollout_completed_tick.is_none()
+            || self.quiesce_started_at.is_none()
+        {
+            return Ok(());
+        }
+        let report = self.upgrade_report();
+        if report.mixed_config_ticks == 0 {
+            return Err(
+                self.fail("upgrade coverage expected at least one mixed-config tick".to_string())
+            );
+        }
+        if report.history_before_feature_change == 0 || report.history_after_feature_change == 0 {
+            return Err(self.fail(format!(
+                "upgrade coverage expected durable history before and after feature change, got before={} after={}",
+                report.history_before_feature_change, report.history_after_feature_change
+            )));
+        }
+        if report.version_after_feature_change == 0 {
+            return Err(self.fail(
+                "upgrade coverage expected versioned data after feature/schema activation"
+                    .to_string(),
+            ));
+        }
+        if report.push_before_feature_change == 0 || report.push_after_feature_change == 0 {
+            return Err(self.fail(format!(
+                "upgrade coverage expected push publishes before and after feature change, got before={} after={}",
+                report.push_before_feature_change, report.push_after_feature_change
+            )));
+        }
+        if self.stats.protocol.upgrade_v1_deliveries_checked == 0
+            || self.stats.protocol.upgrade_v2_deliveries_checked == 0
+        {
+            return Err(self.fail(
+                "upgrade coverage expected both V1 and V2 wire deliveries during upgrade phases"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn check_committed_identity_oracle(&mut self, channel: &str) -> SimulatorResult<()> {
         let shadow = self.shadow.channel(channel);
         let mut history_ids: BTreeMap<String, u64> = BTreeMap::new();
@@ -2548,9 +3020,11 @@ impl DeterministicSimulator {
         }
     }
 
-    fn next_version_metadata(&mut self) -> SimulatorResult<VersionMetadata> {
+    fn next_version_metadata(&mut self, source_node: usize) -> SimulatorResult<VersionMetadata> {
         let serial = VersionSerial::new(format!("ver-{:020}", self.next_version_serial))?;
         self.next_version_serial = self.next_version_serial.saturating_add(1);
+        let phase = self.upgrade_data_phase();
+        let generation = self.nodes[source_node].generation;
         Ok(VersionMetadata {
             serial,
             client_id: Some(format!(
@@ -2558,8 +3032,13 @@ impl DeterministicSimulator {
                 self.scheduler.usize_below(self.config.clients)
             )),
             timestamp_ms: self.timestamp_ms(),
-            description: None,
-            metadata: None,
+            description: Some(format!("upgrade_phase={}", phase.as_str())),
+            metadata: Some(json!({
+                "upgrade_phase": phase.as_str(),
+                "source_generation": generation.as_str(),
+                "source_node": source_node,
+                "schema_version": self.upgrade.schema_version(),
+            })),
         })
     }
 
@@ -2626,7 +3105,7 @@ impl DeterministicSimulator {
     }
 
     fn replay_command(&self) -> String {
-        format!(
+        let mut command = format!(
             "cargo run -p sockudo-simulator --bin sockudo-sim -- --seed {} --ticks {} --mode {}",
             self.config.seed,
             self.config.ticks,
@@ -2634,7 +3113,21 @@ impl DeterministicSimulator {
                 SimulatorMode::Safety => "safety",
                 SimulatorMode::Liveness => "liveness",
             }
-        )
+        );
+        if self.config.upgrade.enabled {
+            command.push_str(&format!(
+                " --upgrade-enabled --upgrade-schema-prepare-tick {} --upgrade-schema-activate-tick {} --upgrade-start-tick {} --upgrade-restart-duration-ticks {} --upgrade-interval-ticks {}",
+                self.config.upgrade.schema_prepare_tick,
+                self.config.upgrade.schema_activate_tick,
+                self.config.upgrade.start_tick,
+                self.config.upgrade.restart_duration_ticks,
+                self.config.upgrade.interval_ticks,
+            ));
+            if self.config.upgrade.require_oracle_coverage {
+                command.push_str(" --upgrade-require-coverage");
+            }
+        }
+        command
     }
 
     fn trace(&mut self, event: String) {
@@ -2768,6 +3261,8 @@ impl VisibilityWindow {
 #[derive(Debug, Clone)]
 struct NodeState {
     id: usize,
+    generation: UpgradeGeneration,
+    features: NodeFeatureSet,
     alive: bool,
     paused: bool,
     partitioned: bool,
@@ -2778,9 +3273,11 @@ struct NodeState {
 }
 
 impl NodeState {
-    fn new(id: usize) -> Self {
+    fn new(id: usize, generation: UpgradeGeneration, features: NodeFeatureSet) -> Self {
         Self {
             id,
+            generation,
+            features,
             alive: true,
             paused: false,
             partitioned: false,
@@ -2805,6 +3302,151 @@ impl NodeState {
 
     fn is_stale(&self, tick: u64) -> bool {
         self.stale_until > tick
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpgradeGeneration {
+    Current,
+    Legacy,
+    Target,
+}
+
+impl UpgradeGeneration {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Legacy => "legacy",
+            Self::Target => "target",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NodeFeatureSet {
+    protocol_v2_delivery: bool,
+    versioned_messages: bool,
+    push_status_v2: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PendingUpgradeRestart {
+    node_idx: usize,
+    complete_at: u64,
+}
+
+#[derive(Debug, Clone)]
+struct UpgradeRuntime {
+    enabled: bool,
+    schema_prepared: bool,
+    schema_active: bool,
+    schema_prepared_tick: Option<u64>,
+    schema_activated_tick: Option<u64>,
+    rollout_started_tick: Option<u64>,
+    rollout_completed_tick: Option<u64>,
+    next_node_idx: usize,
+    next_restart_tick: u64,
+    pending_restart: Option<PendingUpgradeRestart>,
+}
+
+impl UpgradeRuntime {
+    fn new(config: &SimulatorConfig) -> Self {
+        let enabled = config.upgrade.enabled;
+        Self {
+            enabled,
+            schema_prepared: !enabled,
+            schema_active: !enabled,
+            schema_prepared_tick: None,
+            schema_activated_tick: None,
+            rollout_started_tick: None,
+            rollout_completed_tick: None,
+            next_node_idx: 0,
+            next_restart_tick: config.upgrade.start_tick,
+            pending_restart: None,
+        }
+    }
+
+    fn initial_generation(&self) -> UpgradeGeneration {
+        if self.enabled {
+            UpgradeGeneration::Legacy
+        } else {
+            UpgradeGeneration::Current
+        }
+    }
+
+    fn initial_node_features(&self, config: &SimulatorConfig) -> NodeFeatureSet {
+        if self.enabled {
+            legacy_node_features(config)
+        } else {
+            current_node_features()
+        }
+    }
+
+    fn target_node_features(&self, config: &SimulatorConfig) -> NodeFeatureSet {
+        if self.enabled {
+            target_node_features(config)
+        } else {
+            current_node_features()
+        }
+    }
+
+    fn schema_version(&self) -> u16 {
+        if self.schema_active {
+            UPGRADE_SCHEMA_V2
+        } else {
+            1
+        }
+    }
+
+    fn schema_allows_versioned_writes(&self) -> bool {
+        self.schema_active
+    }
+
+    fn data_phase(&self, config: &SimulatorConfig, live_legacy: usize) -> UpgradeDataPhase {
+        if !self.enabled {
+            return UpgradeDataPhase::Steady;
+        }
+        if !self.schema_active {
+            return UpgradeDataPhase::BeforeFeatureChange;
+        }
+        if live_legacy > 0
+            || self.pending_restart.is_some()
+            || self.rollout_completed_tick.is_none()
+        {
+            return UpgradeDataPhase::DuringRollingChange;
+        }
+        if self
+            .rollout_completed_tick
+            .is_some_and(|completed_at| completed_at <= config.ticks)
+        {
+            UpgradeDataPhase::AfterFeatureChange
+        } else {
+            UpgradeDataPhase::DuringRollingChange
+        }
+    }
+}
+
+fn current_node_features() -> NodeFeatureSet {
+    NodeFeatureSet {
+        protocol_v2_delivery: true,
+        versioned_messages: true,
+        push_status_v2: true,
+    }
+}
+
+fn legacy_node_features(config: &SimulatorConfig) -> NodeFeatureSet {
+    NodeFeatureSet {
+        protocol_v2_delivery: config.upgrade.legacy_allows_v2_delivery,
+        versioned_messages: config.upgrade.legacy_versioned_messages,
+        push_status_v2: config.upgrade.legacy_push_status_v2,
+    }
+}
+
+fn target_node_features(config: &SimulatorConfig) -> NodeFeatureSet {
+    NodeFeatureSet {
+        protocol_v2_delivery: true,
+        versioned_messages: config.upgrade.target_versioned_messages,
+        push_status_v2: config.upgrade.target_push_status_v2,
     }
 }
 
@@ -3083,6 +3725,10 @@ impl ShadowChannel {
             .and_then(|delivery_serial| self.version_replay.get(delivery_serial))
     }
 
+    fn history_by_serial(&self, serial: u64) -> Option<&ShadowHistoryMessage> {
+        self.history.iter().find(|message| message.serial == serial)
+    }
+
     fn presence_connections(&self, user_id: &str) -> Vec<String> {
         self.presence_active_connections
             .get(user_id)
@@ -3180,6 +3826,10 @@ struct ShadowHistoryMessage {
     event_name: Option<String>,
     operation_kind: String,
     payload: Bytes,
+    upgrade_phase: UpgradeDataPhase,
+    source_generation: UpgradeGeneration,
+    source_schema_version: u16,
+    source_node: usize,
 }
 
 impl ShadowHistoryMessage {
@@ -3194,6 +3844,10 @@ impl ShadowHistoryMessage {
             event_name: item.event_name,
             operation_kind: item.operation_kind,
             payload: item.payload_bytes,
+            upgrade_phase: UpgradeDataPhase::Steady,
+            source_generation: UpgradeGeneration::Current,
+            source_schema_version: UPGRADE_SCHEMA_V2,
+            source_node: 0,
         }
     }
 }
@@ -3233,6 +3887,15 @@ fn version_serial_ordinal(serial: &str) -> u64 {
         .rsplit_once('-')
         .and_then(|(_, suffix)| suffix.parse::<u64>().ok())
         .unwrap_or(0)
+}
+
+fn version_record_phase(record: &StoredVersionRecord) -> UpgradeDataPhase {
+    match record.message.version.description.as_deref() {
+        Some("upgrade_phase=before_feature_change") => UpgradeDataPhase::BeforeFeatureChange,
+        Some("upgrade_phase=during_rolling_change") => UpgradeDataPhase::DuringRollingChange,
+        Some("upgrade_phase=after_feature_change") => UpgradeDataPhase::AfterFeatureChange,
+        _ => UpgradeDataPhase::Steady,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3286,6 +3949,16 @@ struct Stats {
     storage_stale_reads: u64,
     storage_corrupted_reads: u64,
     storage_recovery_checks: u64,
+    upgrade_rolling_restart_started: u64,
+    upgrade_rolling_restart_completed: u64,
+    upgrade_mixed_config_ticks: u64,
+    upgrade_feature_gate_rejections: u64,
+    upgrade_oracle_checks: u64,
+    upgrade_schema_gate_checks: u64,
+    upgrade_recovery_checks_after_restart: u64,
+    upgrade_wire_checks_during_upgrade: u64,
+    upgrade_recovery_continuity_checks: u64,
+    upgrade_durable_phase_checks: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -3293,6 +3966,9 @@ struct ProtocolOracleStats {
     v1_deliveries_checked: u64,
     v1_suppressed_deliveries: u64,
     v2_deliveries_checked: u64,
+    v2_suppressed_by_legacy_feature: u64,
+    upgrade_v1_deliveries_checked: u64,
+    upgrade_v2_deliveries_checked: u64,
     v2_recovery_cursors_checked: u64,
     duplicate_identity_checks: u64,
     serial_monotonicity_checks: u64,
@@ -3306,6 +3982,9 @@ impl ProtocolOracleStats {
             v1_deliveries_checked: self.v1_deliveries_checked,
             v1_suppressed_deliveries: self.v1_suppressed_deliveries,
             v2_deliveries_checked: self.v2_deliveries_checked,
+            v2_suppressed_by_legacy_feature: self.v2_suppressed_by_legacy_feature,
+            upgrade_v1_deliveries_checked: self.upgrade_v1_deliveries_checked,
+            upgrade_v2_deliveries_checked: self.upgrade_v2_deliveries_checked,
             v2_recovery_cursors_checked: self.v2_recovery_cursors_checked,
             duplicate_identity_checks: self.duplicate_identity_checks,
             serial_monotonicity_checks: self.serial_monotonicity_checks,
@@ -3352,6 +4031,7 @@ mod tests {
                 storage: crate::StorageFaultConfig::default(),
             },
             push: crate::PushLabConfig::default(),
+            upgrade: crate::UpgradeConfig::default(),
         }
     }
 
@@ -3644,6 +4324,96 @@ mod tests {
         assert!(report.history_commits > 0);
         assert!(report.version_commits > 0);
         assert!(report.presence_events > 0);
+        assert_eq!(report.queued_fanout, 0);
+        assert_eq!(report.push.outstanding_deliveries, 0);
+    }
+
+    #[tokio::test]
+    async fn upgrade_risk_profile_preserves_cross_phase_oracles() {
+        let mut config = test_config(0x00ab_6ade);
+        config.ticks = 140;
+        config.oracle_every = 7;
+        config.fault.fanout_drop_probability = 0.0;
+        config.fault.fanout_duplicate_probability = 0.0;
+        config.fault.max_fanout_delay_ticks = 2;
+        config.fault.node_crash_probability = 0.0;
+        config.fault.node_restart_probability = 0.0;
+        config.fault.node_pause_probability = 0.0;
+        config.fault.node_resume_probability = 0.0;
+        config.fault.node_partition_probability = 0.0;
+        config.fault.node_heal_probability = 0.0;
+        config.fault.node_slow_probability = 0.0;
+        config.fault.node_stale_probability = 0.0;
+        config.fault.stream_reset_probability = 0.0;
+        config.fault.storage = crate::StorageFaultConfig {
+            dropped_write_probability: 0.0,
+            torn_write_probability: 0.0,
+            stale_read_probability: 0.0,
+            corrupt_read_probability: 0.0,
+            delayed_commit_probability: 0.0,
+            max_commit_delay_ticks: 0,
+        };
+        config.push.queue_produce_lost_probability = 0.0;
+        config.push.queue_duplicate_probability = 0.0;
+        config.push.queue_ack_lost_probability = 0.0;
+        config.push.queue_lease_timeout_probability = 0.0;
+        config.push.backend_outage_probability = 0.0;
+        config.push.backend_recovery_probability = 0.0;
+        config.push.write_fail_before_commit_probability = 0.0;
+        config.push.write_fail_after_commit_probability = 0.0;
+        config.push.response_lost_probability = 0.0;
+        config.push.read_stale_probability = 0.0;
+        config.push.provider_retryable_probability = 0.0;
+        config.push.provider_permanent_rejection_probability = 0.0;
+        config.push.provider_invalid_token_probability = 0.0;
+        config.push.provider_lost_response_probability = 0.0;
+        config.push.provider_delayed_result_probability = 0.0;
+        config.push.provider_duplicate_result_probability = 0.0;
+        config.workload.weights = ActionWeights {
+            publish_message: 18,
+            create_versioned_message: 24,
+            mutate_versioned_message: 12,
+            presence_transition: 0,
+            recovery_probe: 8,
+            purge_history: 0,
+            push_register_device: 0,
+            push_delete_device: 0,
+            push_subscribe: 0,
+            push_unsubscribe: 0,
+            push_publish: 20,
+            push_scheduled_publish: 0,
+            push_provider_feedback: 0,
+            push_repair: 0,
+            oracle_check: 2,
+        };
+        config.upgrade = crate::UpgradeConfig {
+            enabled: true,
+            schema_prepare_tick: 8,
+            schema_activate_tick: 18,
+            start_tick: 12,
+            restart_duration_ticks: 2,
+            interval_ticks: 8,
+            require_oracle_coverage: true,
+            ..crate::UpgradeConfig::default()
+        };
+
+        let report = DeterministicSimulator::new(config)
+            .unwrap()
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(report.upgrade.rolling_restart_completed, 4);
+        assert!(report.upgrade.mixed_config_ticks > 0);
+        assert!(report.upgrade.feature_gate_rejections > 0);
+        assert!(report.upgrade.history_before_feature_change > 0);
+        assert!(report.upgrade.history_after_feature_change > 0);
+        assert_eq!(report.upgrade.version_before_feature_change, 0);
+        assert!(report.upgrade.version_after_feature_change > 0);
+        assert!(report.upgrade.push_before_feature_change > 0);
+        assert!(report.upgrade.push_after_feature_change > 0);
+        assert!(report.protocol_oracles.upgrade_v1_deliveries_checked > 0);
+        assert!(report.protocol_oracles.upgrade_v2_deliveries_checked > 0);
         assert_eq!(report.queued_fanout, 0);
         assert_eq!(report.push.outstanding_deliveries, 0);
     }
