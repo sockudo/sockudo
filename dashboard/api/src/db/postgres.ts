@@ -13,6 +13,24 @@ import {
   rowToApp,
 } from "./types.ts";
 
+function parseJsonbValue<T>(value: unknown): T | null {
+  let current = value;
+
+  for (let depth = 0; depth < 2; depth += 1) {
+    if (current == null) return null;
+    if (typeof current === "object") return current as T;
+    if (typeof current !== "string") return null;
+
+    try {
+      current = JSON.parse(current);
+    } catch {
+      return null;
+    }
+  }
+
+  return current != null && typeof current === "object" ? (current as T) : null;
+}
+
 export class PostgresAppsRepository implements AppsRepository {
   private sql: ReturnType<typeof postgres>;
   private table: string;
@@ -46,9 +64,9 @@ export class PostgresAppsRepository implements AppsRepository {
         key: row.key as string,
         secret: row.secret as string,
         enabled: row.enabled as boolean,
-        policy: (row.policy as AppPolicy | null) ?? null,
-        webhooks: (row.webhooks as AppPolicy["webhooks"]) ?? null,
-        allowed_origins: (row.allowed_origins as string[] | null) ?? null,
+        policy: parseJsonbValue<AppPolicy>(row.policy),
+        webhooks: parseJsonbValue<AppPolicy["webhooks"]>(row.webhooks),
+        allowed_origins: parseJsonbValue<string[]>(row.allowed_origins),
         max_connections: row.max_connections as number,
         enable_client_messages: row.enable_client_messages as boolean,
         max_client_events_per_second: row.max_client_events_per_second as number,
@@ -83,9 +101,9 @@ export class PostgresAppsRepository implements AppsRepository {
       key: row.key as string,
       secret: row.secret as string,
       enabled: row.enabled as boolean,
-      policy: (row.policy as AppPolicy | null) ?? null,
-      webhooks: (row.webhooks as AppPolicy["webhooks"]) ?? null,
-      allowed_origins: (row.allowed_origins as string[] | null) ?? null,
+      policy: parseJsonbValue<AppPolicy>(row.policy),
+      webhooks: parseJsonbValue<AppPolicy["webhooks"]>(row.webhooks),
+      allowed_origins: parseJsonbValue<string[]>(row.allowed_origins),
       max_connections: row.max_connections as number,
       enable_client_messages: row.enable_client_messages as boolean,
       max_client_events_per_second: row.max_client_events_per_second as number,
@@ -117,7 +135,7 @@ export class PostgresAppsRepository implements AppsRepository {
         policy, webhooks, allowed_origins
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18, $19::jsonb, $20::jsonb, $21::jsonb
+        $17, $18, $19::text::jsonb, $20::text::jsonb, $21::text::jsonb
       )
     `,
       [
@@ -177,8 +195,9 @@ export class PostgresAppsRepository implements AppsRepository {
         max_channel_name_length = $11, max_event_channels_at_once = $12,
         max_event_name_length = $13, max_event_payload_in_kb = $14,
         max_event_batch_size = $15, enable_user_authentication = $16,
-        enable_watchlist_events = $17, policy = $18::jsonb, webhooks = $19::jsonb,
-        allowed_origins = $20::jsonb, updated_at = CURRENT_TIMESTAMP
+        enable_watchlist_events = $17, policy = $18::text::jsonb,
+        webhooks = $19::text::jsonb, allowed_origins = $20::text::jsonb,
+        updated_at = CURRENT_TIMESTAMP
       WHERE id = $21
     `,
       [
