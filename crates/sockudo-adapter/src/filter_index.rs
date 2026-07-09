@@ -339,16 +339,13 @@ impl FilterIndex {
                     let mut common_key: Option<String> = None;
 
                     for child in filter.nodes() {
-                        if let Some(indexable) = Self::extract_indexable_filter(child) {
-                            match &common_key {
-                                None => common_key = Some(indexable.key.clone()),
-                                Some(k) if k != &indexable.key => return None, // Different keys
-                                _ => {}
-                            }
-                            all_values.extend(indexable.values);
-                        } else {
-                            return None; // Child is not indexable
+                        let indexable = Self::extract_indexable_filter(child)?;
+                        match &common_key {
+                            None => common_key = Some(indexable.key.clone()),
+                            Some(k) if k != &indexable.key => return None, // Different keys
+                            _ => {}
                         }
+                        all_values.extend(indexable.values);
                     }
 
                     common_key.map(|key| IndexableFilter {
