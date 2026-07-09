@@ -324,7 +324,7 @@ pub(super) async fn process_single_event_parallel(
                 match build_cache_payload(&event_name_for_task, &message_data, &target_channel_str) {
                     Ok(cache_payload_str) => {
                         let cache_key_str =
-                            format!("app:{}:channel:{}:cache_miss", &app.id, target_channel_str);
+                            format!("app:{}:channel:{}:cache_miss", app.id, target_channel_str);
 
                         match handler_clone
                             .cache_manager()
