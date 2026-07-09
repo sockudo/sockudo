@@ -2,7 +2,7 @@ use clap::{Parser, ValueEnum};
 use sockudo_simulator::{
     ActionWeights, DeterministicSimulator, FailureArtifact, FaultConfig, PushLabConfig,
     SeedDerivedProfile, SimulationReport, SimulatorConfig, SimulatorMode, StorageFaultConfig,
-    WorkloadConfig,
+    UpgradeConfig, WorkloadConfig,
 };
 use std::path::PathBuf;
 
@@ -169,6 +169,23 @@ struct Cli {
     provider_invalid_token_prob: f64,
     #[arg(long, default_value_t = 0.020)]
     provider_lost_response_prob: f64,
+    /// Enable the rolling upgrade/schema-gate risk profile.
+    #[arg(long)]
+    upgrade_risk_profile: bool,
+    #[arg(long)]
+    upgrade_enabled: bool,
+    #[arg(long, default_value_t = 50)]
+    upgrade_schema_prepare_tick: u64,
+    #[arg(long, default_value_t = 140)]
+    upgrade_schema_activate_tick: u64,
+    #[arg(long, default_value_t = 100)]
+    upgrade_start_tick: u64,
+    #[arg(long, default_value_t = 4)]
+    upgrade_restart_duration_ticks: u64,
+    #[arg(long, default_value_t = 20)]
+    upgrade_interval_ticks: u64,
+    #[arg(long)]
+    upgrade_require_coverage: bool,
 }
 
 impl Cli {
@@ -256,6 +273,16 @@ impl Cli {
                 provider_lost_response_probability: self.provider_lost_response_prob,
                 provider_delayed_result_probability: self.duplicate_prob.max(0.01),
                 provider_duplicate_result_probability: self.duplicate_prob,
+            },
+            upgrade: UpgradeConfig {
+                enabled: self.upgrade_risk_profile || self.upgrade_enabled,
+                schema_prepare_tick: self.upgrade_schema_prepare_tick,
+                schema_activate_tick: self.upgrade_schema_activate_tick,
+                start_tick: self.upgrade_start_tick,
+                restart_duration_ticks: self.upgrade_restart_duration_ticks,
+                interval_ticks: self.upgrade_interval_ticks,
+                require_oracle_coverage: self.upgrade_require_coverage,
+                ..UpgradeConfig::default()
             },
         };
         let mut seed_derived_profile = None;
@@ -378,7 +405,7 @@ async fn run_one(
                 }
             } else {
                 println!(
-                    "sockudo-sim: OK seed={} ticks={} mode={:?} quiesce_ticks={} operations={} oracles={} history_commits={} version_commits={} presence_events={} push_publishes={} push_results={} push_repairs={} recovered={} dropped={} duplicated={} resets={} storage_dropped={} storage_torn={} storage_delayed={} storage_stale_reads={} storage_corrupt_reads={} storage_restarts_checked={}",
+                    "sockudo-sim: OK seed={} ticks={} mode={:?} quiesce_ticks={} operations={} oracles={} history_commits={} version_commits={} presence_events={} push_publishes={} push_results={} push_repairs={} recovered={} dropped={} duplicated={} resets={} storage_dropped={} storage_torn={} storage_delayed={} storage_stale_reads={} storage_corrupt_reads={} storage_restarts_checked={} upgrade_restarts={} upgrade_mixed_ticks={} upgrade_feature_gate_rejections={}",
                     report.seed,
                     report.ticks,
                     report.mode,
@@ -401,6 +428,9 @@ async fn run_one(
                     report.storage_stale_reads,
                     report.storage_corrupted_reads,
                     report.storage_recovery_checks,
+                    report.upgrade.rolling_restart_completed,
+                    report.upgrade.mixed_config_ticks,
+                    report.upgrade.feature_gate_rejections,
                 );
             }
         }

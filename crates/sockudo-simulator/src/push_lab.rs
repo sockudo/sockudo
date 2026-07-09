@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use sockudo_push::{PublishLifecycleState, PushProviderKind};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crate::config::UpgradeDataPhase;
 use crate::error::{SimulatorError, SimulatorResult};
 use crate::io::{DeterministicFaultScheduler, DeterministicQueue, DeterministicStorage};
 use crate::real_subsystems::RealPushHarness;
@@ -183,6 +184,9 @@ pub struct PushSimulationReport {
     pub write_fail_after_commit: u64,
     pub response_lost_after_commit: u64,
     pub stale_reads: u64,
+    pub accepted_before_feature_change: u64,
+    pub accepted_during_rolling_change: u64,
+    pub accepted_after_feature_change: u64,
     pub queued_items: usize,
     pub pending_schedules: usize,
     pub outstanding_deliveries: usize,
@@ -204,6 +208,7 @@ pub struct PushLab {
     storage: DeterministicStorage,
     backend_outage: bool,
     quiescing: bool,
+    upgrade_phase: UpgradeDataPhase,
     next_device_id: u64,
     next_publish_id: u64,
     next_queue_id: u64,
@@ -231,12 +236,17 @@ impl PushLab {
             storage: DeterministicStorage,
             backend_outage: false,
             quiescing: false,
+            upgrade_phase: UpgradeDataPhase::Steady,
             next_device_id: 1,
             next_publish_id: 1,
             next_queue_id: 1,
             stats: PushStats::default(),
             trace: VecDeque::new(),
         })
+    }
+
+    pub(crate) fn set_upgrade_phase(&mut self, phase: UpgradeDataPhase) {
+        self.upgrade_phase = phase;
     }
 
     pub(crate) async fn on_tick(
@@ -775,6 +785,12 @@ impl PushLab {
             queued_items: self.queue.len(),
             pending_schedules: self.schedules.len(),
             outstanding_deliveries: self.outstanding_deliveries(),
+            accepted_before_feature_change: self
+                .accepted_in_phase(UpgradeDataPhase::BeforeFeatureChange),
+            accepted_during_rolling_change: self
+                .accepted_in_phase(UpgradeDataPhase::DuringRollingChange),
+            accepted_after_feature_change: self
+                .accepted_in_phase(UpgradeDataPhase::AfterFeatureChange),
             recent_trace: self.trace.iter().cloned().collect(),
         }
     }
@@ -858,6 +874,7 @@ impl PushLab {
                 id: publish_id.clone(),
                 channel: channel.clone(),
                 idempotency_key: idempotency_key.clone(),
+                upgrade_phase: self.upgrade_phase,
                 durable_status: true,
                 durable_log: true,
                 state: PublishState::Queued,
@@ -1676,6 +1693,13 @@ impl PushLab {
             .sum()
     }
 
+    fn accepted_in_phase(&self, phase: UpgradeDataPhase) -> u64 {
+        self.publishes
+            .values()
+            .filter(|publish| publish.upgrade_phase == phase)
+            .count() as u64
+    }
+
     fn roll(
         &self,
         tick: u64,
@@ -1770,6 +1794,7 @@ struct PushPublish {
     id: String,
     channel: String,
     idempotency_key: String,
+    upgrade_phase: UpgradeDataPhase,
     durable_status: bool,
     durable_log: bool,
     state: PublishState,
