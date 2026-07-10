@@ -10,6 +10,12 @@ is not broad Ably platform parity; the goal is to let Ably AI Transport clients
 exercise run lifecycle, mutable streaming, history, and recovery against
 Sockudo-backed durable primitives.
 
+The facade lives in the optional `sockudo-ably-compat` workspace crate. The
+server constructs one `AblyCompatRuntime` per server instance and merges its
+routes, so compatibility session and token state is isolated between server
+instances. Ably realtime is WebSocket-only: Comet, XHR polling or streaming,
+SSE, long polling, and other fallback transports are intentionally unsupported.
+
 Use this wording in public material:
 
 - **Ably AI Transport compatible**

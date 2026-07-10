@@ -1,0 +1,38 @@
+[package]
+name = "sockudo-ably-compat"
+description = "Opt-in Ably REST and WebSocket compatibility facade for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = []
+local = ["sockudo-adapter/local"]
+ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "sockudo-adapter/ai-transport"]
+delta = ["sockudo-adapter/delta"]
+recovery = ["sockudo-adapter/recovery"]
+tag-filtering = ["sockudo-adapter/tag-filtering"]
+push = []
+
+[dependencies]
+sockudo-core = { workspace = true }
+sockudo-protocol = { workspace = true }
+sockudo-adapter = { workspace = true, default-features = false }
+
+ahash = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+dashmap = { workspace = true }
+http = { workspace = true }
+rmp-serde = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sockudo-ws = { workspace = true }
+sonic-rs = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

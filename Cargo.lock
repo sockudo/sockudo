@@ -7797,13 +7797,13 @@ dependencies = [
  "jsonwebtoken",
  "num_cpus",
  "redis",
- "rmp-serde",
  "rustls",
  "scylla",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "sha2 0.11.0",
+ "sockudo-ably-compat",
  "sockudo-adapter",
  "sockudo-app",
  "sockudo-cache",
@@ -7832,6 +7832,30 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "urlencoding",
+ "uuid",
+]
+
+[[package]]
+name = "sockudo-ably-compat"
+version = "4.7.0"
+dependencies = [
+ "ahash 0.8.12",
+ "async-trait",
+ "axum",
+ "base64",
+ "dashmap",
+ "http 1.4.2",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sockudo-adapter",
+ "sockudo-core",
+ "sockudo-protocol",
+ "sockudo-ws",
+ "sonic-rs",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

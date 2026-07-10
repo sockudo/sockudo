@@ -8,8 +8,6 @@ use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
 use crate::history::create_history_store;
 #[cfg(feature = "versioned-messages")]
 use crate::history::create_version_store;
-#[cfg(feature = "ably-compat")]
-use crate::http_handler::global_ably_hub;
 use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::factory::AdapterFactory;
@@ -735,6 +733,11 @@ impl SockudoServer {
             push_worker_handles,
         };
 
+        #[cfg(feature = "ably-compat")]
+        let ably_compat = Arc::new(sockudo_ably_compat::AblyCompatRuntime::new(
+            sockudo_ably_compat::AblyCompatDependencies,
+        ));
+
         let mut builder = ConnectionHandler::builder(
             state.app_manager.clone(),
             state.connection_manager.clone(),
@@ -878,7 +881,7 @@ impl SockudoServer {
         }
         #[cfg(feature = "ably-compat")]
         {
-            builder = builder.realtime_egress_tap(global_ably_hub());
+            builder = builder.realtime_egress_tap(ably_compat.egress_tap());
         }
 
         #[cfg(feature = "delta")]
@@ -973,6 +976,8 @@ impl SockudoServer {
             config,
             state,
             handler,
+            #[cfg(feature = "ably-compat")]
+            ably_compat,
         })
     }
 

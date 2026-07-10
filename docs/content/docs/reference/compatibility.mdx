@@ -71,6 +71,10 @@ Sockudo does not claim full Ably platform compatibility. The Ably-compatible sur
 gated behind `ably-compat` and scoped to AI Transport tests and demos: run lifecycle, mutable
 streaming, history projection, and recovery through Sockudo-backed durable primitives.
 
+The implementation is isolated in `crates/sockudo-ably-compat` and constructed
+per server instance. Its realtime surface is WebSocket-only; Ably fallback
+transports are intentionally unsupported.
+
 ## Release gates
 
 Protocol-visible server PRs must pass the Protocol Change checklist and relevant fixtures for the

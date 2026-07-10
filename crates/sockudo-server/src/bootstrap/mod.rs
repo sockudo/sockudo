@@ -82,4 +82,6 @@ pub(crate) struct SockudoServer {
     config: ServerOptions,
     state: ServerState,
     handler: Arc<ConnectionHandler>,
+    #[cfg(feature = "ably-compat")]
+    ably_compat: Arc<sockudo_ably_compat::AblyCompatRuntime>,
 }

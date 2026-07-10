@@ -1,5 +1,8 @@
 use futures_util::future::join_all;
-use sockudo_adapter::ConnectionHandler;
+use sockudo_adapter::{
+    ConnectionHandler,
+    services::{MessageService, PublishContext},
+};
 use sockudo_core::app::App;
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
@@ -245,12 +248,17 @@ pub(super) async fn process_single_event_parallel(
             let timestamp_ms = start_time_ms;
 
             let force_full = matches!(delta_flag_for_task, Some(false));
-            let publish_ack = handler_clone
-                .publish_to_channel_with_timing(
+            let publish_ack = MessageService::new(Arc::clone(&handler_clone))
+                .publish_message_with_timing(
                     app,
                     &target_channel_str,
                     _message_to_send,
-                    socket_id_for_task.as_ref(),
+                    PublishContext {
+                        publisher_socket_id: socket_id_for_task,
+                        exclude_socket: socket_id_for_task,
+                        idempotency_key: (*idempotency_key_for_task).clone(),
+                        ..PublishContext::default()
+                    },
                     timestamp_ms,
                     force_full,
                 )
