@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -14,13 +14,17 @@ use crate::domain::{
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
-use crate::storage::{DynPushStore, IdempotencyRecord, Page, PushStorageError};
+use crate::storage::{
+    DynPushStore, IdempotencyRecord, Page, PublishStatusCasOutcome, PushPublishStatusStore,
+    PushStorageError,
+};
 use crate::transform::{render_all_provider_payloads, resolve_template_payload};
 
 pub type DynPushQueue = Arc<dyn PushQueue + Send + Sync>;
 pub type PushQueueResult<T> = Result<T, PushQueueError>;
 pub type PushPipelineResult<T> = Result<T, PushPipelineError>;
 const DEFAULT_IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+const MAX_PUBLISH_STATUS_CAS_ATTEMPTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -957,6 +961,120 @@ pub enum PushPipelineError {
     Backpressure(String),
     #[error("push pipeline invalid payload: {0}")]
     InvalidPayload(String),
+    #[error("push publish status CAS retries exhausted for {component} ({app_id}/{publish_id})")]
+    PublishStatusCasExhausted {
+        component: &'static str,
+        app_id: String,
+        publish_id: String,
+    },
+    #[error("unexpected push publish status CAS outcome during {operation}: {outcome:?}")]
+    UnexpectedPublishStatusCasOutcome {
+        operation: &'static str,
+        outcome: PublishStatusCasOutcome,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PublishStatusMutationOutcome {
+    Missing,
+    Unchanged(PublishStatus),
+    Updated(PublishStatus),
+}
+
+/// Apply a pure publish-status mutation with bounded optimistic-concurrency retries.
+///
+/// The mutation can be evaluated more than once, so callers must emit metrics, logs, queue work,
+/// and other side effects only after this function returns `Updated`.
+pub(crate) async fn mutate_publish_status_with_cas<S, F>(
+    store: &S,
+    metrics: &PushMetrics,
+    component: &'static str,
+    app_id: &str,
+    publish_id: &str,
+    mut mutate: F,
+) -> PushPipelineResult<PublishStatusMutationOutcome>
+where
+    S: PushPublishStatusStore + ?Sized,
+    F: FnMut(&PublishStatus) -> PushPipelineResult<Option<PublishStatus>>,
+{
+    for attempt in 0..MAX_PUBLISH_STATUS_CAS_ATTEMPTS {
+        let Some(expected) = store
+            .get_versioned_publish_status(app_id, publish_id)
+            .await?
+        else {
+            return Ok(PublishStatusMutationOutcome::Missing);
+        };
+        let Some(next) = mutate(&expected.status)? else {
+            return Ok(PublishStatusMutationOutcome::Unchanged(expected.status));
+        };
+        if next.app_id != app_id || next.publish_id != publish_id {
+            return Err(PushPipelineError::InvalidPayload(
+                "publish status CAS mutation changed its storage identity".to_owned(),
+            ));
+        }
+
+        match store
+            .compare_and_swap_publish_status(&expected, next.clone())
+            .await?
+        {
+            PublishStatusCasOutcome::Updated { .. } => {
+                return Ok(PublishStatusMutationOutcome::Updated(next));
+            }
+            PublishStatusCasOutcome::Conflict => {
+                metrics.publish_status_cas_conflict(component);
+                if attempt + 1 < MAX_PUBLISH_STATUS_CAS_ATTEMPTS {
+                    let delay_ms = 1_u64 << attempt.min(5);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+            PublishStatusCasOutcome::Missing => {
+                return Ok(PublishStatusMutationOutcome::Missing);
+            }
+            outcome @ PublishStatusCasOutcome::Inserted { .. } => {
+                return Err(PushPipelineError::UnexpectedPublishStatusCasOutcome {
+                    operation: "compare-and-swap",
+                    outcome,
+                });
+            }
+        }
+    }
+
+    metrics.publish_status_cas_exhausted(component);
+    tracing::warn!(
+        component,
+        app_id,
+        publish_id,
+        attempts = MAX_PUBLISH_STATUS_CAS_ATTEMPTS,
+        "push publish status CAS retries exhausted"
+    );
+    Err(PushPipelineError::PublishStatusCasExhausted {
+        component,
+        app_id: app_id.to_owned(),
+        publish_id: publish_id.to_owned(),
+    })
+}
+
+pub(crate) fn guard_publish_status_transition(
+    metrics: &PushMetrics,
+    component: &'static str,
+    status: &PublishStatus,
+    next: PublishLifecycleState,
+) -> bool {
+    if status.state.can_transition_to(next) {
+        return true;
+    }
+
+    metrics.status_transition_invariant_violation();
+    tracing::warn!(
+        invariant = "status_transition",
+        component,
+        app_id = %status.app_id,
+        publish_id = %status.publish_id,
+        from = ?status.state,
+        to = ?next,
+        "ignored non-monotonic push publish status transition"
+    );
+    false
 }
 
 impl PushPipeline {
@@ -1069,7 +1187,35 @@ impl PushPipeline {
             retry_after_ms: None,
             error_reason: None,
         };
-        self.store.put_publish_status(status.clone()).await?;
+        match self
+            .store
+            .create_publish_status_if_absent(status.clone())
+            .await?
+        {
+            PublishStatusCasOutcome::Inserted { .. } => {}
+            PublishStatusCasOutcome::Conflict => {
+                let existing = self
+                    .store
+                    .get_publish_status(&status.app_id, &status.publish_id)
+                    .await?
+                    .ok_or_else(|| {
+                        PushPipelineError::Backpressure(
+                            "conflicting publish status disappeared".to_owned(),
+                        )
+                    })?;
+                if existing != status {
+                    return self
+                        .duplicate_accept(&status.app_id, &status.publish_id)
+                        .await;
+                }
+            }
+            outcome => {
+                return Err(PushPipelineError::UnexpectedPublishStatusCasOutcome {
+                    operation: "create",
+                    outcome,
+                });
+            }
+        }
 
         let publish_id_record = IdempotencyRecord {
             app_id: request.intent.app_id.clone(),
@@ -1202,6 +1348,7 @@ impl PushPipeline {
                     "duplicate publish is missing persisted status".to_owned(),
                 )
             })?;
+        self.metrics.duplicate_suppressed();
         Ok(PushAcceptOutcome {
             publish_id: publish_id.to_owned(),
             publish_event: PublishLogEvent {
@@ -1283,8 +1430,12 @@ pub(crate) fn dedupe_key(seed: impl AsRef<str>, existing: &mut BTreeSet<String>)
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
+    use async_trait::async_trait;
     use sonic_rs::json;
 
     use crate::dispatch::{AcceptAllDispatcher, ProviderDispatchWorker, RetryAfterDispatcher};
@@ -1299,11 +1450,48 @@ mod tests {
     use crate::planner::{PushPlanner, PushShardWorker};
     use crate::retry::{PushRetryScheduler, RetryPolicy};
     use crate::storage::{
-        PushDeviceStore, PushFanoutShardStore, PushPublishStatusStore, PushSubscriptionStore,
-        PushTemplateStore,
+        PushDeviceStore, PushFanoutShardStore, PushPublishStatusStore, PushStorageResult,
+        PushSubscriptionStore, PushTemplateStore, VersionedPublishStatus,
     };
 
     use super::*;
+
+    struct AlwaysConflictStatusStore {
+        current: VersionedPublishStatus,
+        conflicts: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl PushPublishStatusStore for AlwaysConflictStatusStore {
+        async fn create_publish_status_if_absent(
+            &self,
+            _status: PublishStatus,
+        ) -> PushStorageResult<PublishStatusCasOutcome> {
+            Ok(PublishStatusCasOutcome::Conflict)
+        }
+
+        async fn get_versioned_publish_status(
+            &self,
+            app_id: &str,
+            publish_id: &str,
+        ) -> PushStorageResult<Option<VersionedPublishStatus>> {
+            if self.current.status.app_id == app_id && self.current.status.publish_id == publish_id
+            {
+                Ok(Some(self.current.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+
+        async fn compare_and_swap_publish_status(
+            &self,
+            _expected: &VersionedPublishStatus,
+            _next: PublishStatus,
+        ) -> PushStorageResult<PublishStatusCasOutcome> {
+            self.conflicts.fetch_add(1, Ordering::Relaxed);
+            Ok(PublishStatusCasOutcome::Conflict)
+        }
+    }
 
     #[test]
     fn push_queue_startup_checks_are_feature_aware() {
@@ -1561,6 +1749,169 @@ mod tests {
                 .ready_depth,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn accept_recovers_status_created_before_idempotency_election() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let status = PublishStatus {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            state: PublishLifecycleState::Queued,
+            counters: PublishCounters {
+                planned: 1,
+                ..PublishCounters::default()
+            },
+            fanout_regime: Some(FanoutRegime::FastPath),
+            retry_after_ms: None,
+            error_reason: None,
+        };
+        store.put_publish_status(status).await.unwrap();
+        let pipeline = PushPipeline::new(store, queue.clone(), FanoutConfig::default());
+
+        let outcome = pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent: sample_intent(vec![PublishTarget::Recipient {
+                        recipient: recipient(PushProviderKind::Fcm),
+                    }]),
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+
+        assert!(!outcome.duplicate);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_does_not_attach_new_work_to_a_conflicting_status() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let status = PublishStatus {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            state: PublishLifecycleState::Queued,
+            counters: PublishCounters {
+                planned: 99,
+                ..PublishCounters::default()
+            },
+            fanout_regime: Some(FanoutRegime::ShardPath),
+            retry_after_ms: None,
+            error_reason: None,
+        };
+        store.put_publish_status(status.clone()).await.unwrap();
+        let pipeline = PushPipeline::new(store, queue.clone(), FanoutConfig::default());
+
+        let outcome = pipeline
+            .accept_publish(
+                PushAcceptRequest {
+                    intent: sample_intent(vec![PublishTarget::Recipient {
+                        recipient: recipient(PushProviderKind::Fcm),
+                    }]),
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+
+        assert!(outcome.duplicate);
+        assert_eq!(outcome.status, status);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_status_cas_conflict_retries_are_bounded() {
+        let status = PublishStatus {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            state: PublishLifecycleState::Dispatching,
+            counters: PublishCounters::default(),
+            fanout_regime: None,
+            retry_after_ms: None,
+            error_reason: None,
+        };
+        let store = AlwaysConflictStatusStore {
+            current: VersionedPublishStatus {
+                status,
+                revision: 7,
+                updated_at_ms: 10,
+            },
+            conflicts: AtomicUsize::new(0),
+        };
+        let metrics = PushMetrics::default();
+
+        let error = mutate_publish_status_with_cas(
+            &store,
+            &metrics,
+            "feedback",
+            "app-1",
+            "publish-1",
+            |current| {
+                let mut next = current.clone();
+                next.counters.succeeded = next.counters.succeeded.saturating_add(1);
+                Ok(Some(next))
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            PushPipelineError::PublishStatusCasExhausted {
+                component: "feedback",
+                ..
+            }
+        ));
+        assert_eq!(
+            store.conflicts.load(Ordering::Relaxed),
+            MAX_PUBLISH_STATUS_CAS_ATTEMPTS
+        );
+        assert_eq!(
+            metrics.get("sockudo_push_status_cas_conflicts_total"),
+            MAX_PUBLISH_STATUS_CAS_ATTEMPTS as u64
+        );
+        assert_eq!(metrics.get("sockudo_push_status_cas_exhausted_total"), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_accept_increments_duplicate_suppressed_metric() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let metrics = PushMetrics::default();
+        let pipeline =
+            PushPipeline::new(store, queue, FanoutConfig::default()).with_metrics(metrics.clone());
+        let request = PushAcceptRequest {
+            intent: sample_intent(vec![PublishTarget::Recipient {
+                recipient: recipient(PushProviderKind::Fcm),
+            }]),
+            expected_recipients: 1,
+        };
+
+        let accepted = pipeline.accept_publish(request.clone(), 10).await.unwrap();
+        let duplicate = pipeline.accept_publish(request, 11).await.unwrap();
+
+        assert!(!accepted.duplicate);
+        assert!(duplicate.duplicate);
+        assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 1);
     }
 
     #[tokio::test]

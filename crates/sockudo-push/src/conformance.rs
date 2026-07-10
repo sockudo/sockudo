@@ -10,10 +10,11 @@ use crate::domain::{
     PublishStatus, PushCursor, PushProviderKind, PushRecipient, SecretString, TemplateContent,
 };
 use crate::storage::{
-    DeviceRegistrationChange, IdempotencyRecord, PushCredentialStore, PushDeliveryEventStore,
-    PushDeviceStore, PushIdempotencyStore, PushPublishLogStore, PushPublishStatusStore,
-    PushScheduleStore, PushStorageBackendKind, PushStorageError, PushStorageResult,
-    PushSubscriptionStore, PushTemplateStore, ScheduledPushJob,
+    DeviceRegistrationChange, IdempotencyRecord, PublishStatusCasOutcome, PushCredentialStore,
+    PushDeliveryEventStore, PushDeviceStore, PushIdempotencyStore, PushPublishLogStore,
+    PushPublishStatusStore, PushScheduleStore, PushStorageBackendKind, PushStorageError,
+    PushStorageResult, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob,
+    VersionedPublishStatus,
 };
 
 pub struct PushStoreConformance;
@@ -88,6 +89,40 @@ impl PushStoreConformance {
                 .await
                 .is_err()
         );
+
+        // Regression: `list_subscriptions` paginates by the `"{channel}:{device_id}"` cursor
+        // string. When one channel name is a prefix of another, tuple order (`chan-1` < `chan-11`)
+        // and cursor-string order (`"chan-1:.." > "chan-11:.."`, since `:` outranks digits)
+        // disagree. A store that emits rows in tuple order but resumes by string comparison silently
+        // drops the second subscription once `limit` forces a page break. Walk every page at
+        // `limit = 1` and require the full set back.
+        let probe = sample_device("prefix-probe", 90_000_000);
+        store.upsert_device(probe.clone()).await?;
+        for channel in ["chan-1", "chan-11"] {
+            store
+                .upsert_subscription(ChannelSubscription::from_device(channel, &probe))
+                .await?;
+        }
+        let mut probe_channels = std::collections::BTreeSet::new();
+        let mut cursor = None;
+        loop {
+            let page = store.list_subscriptions("app-1", 1, cursor).await?;
+            assert!(page.items.len() <= 1, "page exceeded the requested limit");
+            for subscription in page.items {
+                if subscription.device_id == "prefix-probe" {
+                    probe_channels.insert(subscription.channel);
+                }
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(
+            probe_channels,
+            std::collections::BTreeSet::from(["chan-1".to_owned(), "chan-11".to_owned()]),
+            "paginated list_subscriptions dropped a prefix-colliding channel"
+        );
         Ok(())
     }
 
@@ -151,10 +186,59 @@ impl PushStoreConformance {
             retry_after_ms: None,
             error_reason: None,
         };
-        store.put_publish_status(status.clone()).await?;
+        assert_eq!(
+            store
+                .create_publish_status_if_absent(status.clone())
+                .await?,
+            PublishStatusCasOutcome::Inserted { revision: 1 }
+        );
+        let mut conflicting_create = status.clone();
+        conflicting_create.state = PublishLifecycleState::Failed;
+        assert_eq!(
+            store
+                .create_publish_status_if_absent(conflicting_create)
+                .await?,
+            PublishStatusCasOutcome::Conflict
+        );
+        let initial = store
+            .get_versioned_publish_status("app-1", "publish-1")
+            .await?
+            .expect("inserted status must be readable");
+        assert_eq!(initial.revision, 1);
+        assert_eq!(initial.status, status);
+
+        let mut planning = status.clone();
+        planning.state = PublishLifecycleState::Planning;
+        assert_eq!(
+            store
+                .compare_and_swap_publish_status(&initial, planning.clone())
+                .await?,
+            PublishStatusCasOutcome::Updated { revision: 2 }
+        );
+        assert_eq!(
+            store
+                .compare_and_swap_publish_status(&initial, status.clone())
+                .await?,
+            PublishStatusCasOutcome::Conflict
+        );
         assert_eq!(
             store.get_publish_status("app-1", "publish-1").await?,
-            Some(status)
+            Some(planning)
+        );
+
+        let missing = VersionedPublishStatus {
+            status: PublishStatus {
+                publish_id: "missing".to_owned(),
+                ..status.clone()
+            },
+            revision: 1,
+            updated_at_ms: 0,
+        };
+        assert_eq!(
+            store
+                .compare_and_swap_publish_status(&missing, missing.status.clone())
+                .await?,
+            PublishStatusCasOutcome::Missing
         );
 
         let event = crate::domain::PublishLogEvent {

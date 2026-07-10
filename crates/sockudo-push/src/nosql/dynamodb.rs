@@ -86,6 +86,31 @@ impl DynamoDbDocumentBackend {
     fn key(family: &'static str, app_id: &str, pk: &str, sk: &str) -> (String, String) {
         (family_app(family, app_id), document_key(pk, sk))
     }
+
+    async fn get_document(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        consistent: bool,
+    ) -> PushStorageResult<Option<String>> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+        let (family_app, doc_key) = Self::key(family, app_id, pk, sk);
+        Ok(self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("family_app", AttributeValue::S(family_app))
+            .key("doc_key", AttributeValue::S(doc_key))
+            .consistent_read(consistent)
+            .send()
+            .await
+            .map_err(dynamodb_error)?
+            .item
+            .and_then(|mut item| item.remove("data"))
+            .and_then(|value| value.as_s().ok().cloned()))
+    }
 }
 
 #[cfg(feature = "dynamodb")]
@@ -159,20 +184,90 @@ impl DocumentBackend for DynamoDbDocumentBackend {
         pk: &str,
         sk: &str,
     ) -> PushStorageResult<Option<String>> {
+        self.get_document(family, app_id, pk, sk, false).await
+    }
+
+    async fn get_consistent(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+    ) -> PushStorageResult<Option<String>> {
+        self.get_document(family, app_id, pk, sk, true).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+        data: String,
+    ) -> PushStorageResult<bool> {
         use aws_sdk_dynamodb::types::AttributeValue;
         let (family_app, doc_key) = Self::key(family, app_id, pk, sk);
-        Ok(self
+        let result = self
             .client
-            .get_item()
+            .put_item()
+            .table_name(&self.table)
+            .condition_expression("#data = :expected_data")
+            .expression_attribute_names("#data", "data")
+            .expression_attribute_values(":expected_data", AttributeValue::S(expected.to_owned()))
+            .item("family_app", AttributeValue::S(family_app))
+            .item("doc_key", AttributeValue::S(doc_key))
+            .item("app_id", AttributeValue::S(app_id.to_owned()))
+            .item("pk", AttributeValue::S(pk.to_owned()))
+            .item("sk", AttributeValue::S(sk.to_owned()))
+            .item("data", AttributeValue::S(data))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(dynamodb_error(error)),
+        }
+    }
+
+    async fn compare_and_delete(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+    ) -> PushStorageResult<bool> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+        let (family_app, doc_key) = Self::key(family, app_id, pk, sk);
+        let result = self
+            .client
+            .delete_item()
             .table_name(&self.table)
             .key("family_app", AttributeValue::S(family_app))
             .key("doc_key", AttributeValue::S(doc_key))
+            .condition_expression("#data = :expected_data")
+            .expression_attribute_names("#data", "data")
+            .expression_attribute_values(":expected_data", AttributeValue::S(expected.to_owned()))
             .send()
-            .await
-            .map_err(dynamodb_error)?
-            .item
-            .and_then(|mut item| item.remove("data"))
-            .and_then(|value| value.as_s().ok().cloned()))
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(dynamodb_error(error)),
+        }
     }
 
     async fn delete(

@@ -957,6 +957,54 @@ pub enum PublishLifecycleState {
     PartiallySucceeded,
 }
 
+impl PublishLifecycleState {
+    /// Returns whether this state is an absorbing publish outcome.
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled
+                | Self::Expired
+                | Self::Failed
+                | Self::DeadLettered
+                | Self::Succeeded
+                | Self::PartiallySucceeded
+                | Self::QuotaExceeded
+        )
+    }
+
+    /// Returns whether moving from this state to `next` preserves lifecycle monotonicity.
+    ///
+    /// Repeating a state is idempotent, terminal states are absorbing, and active states may
+    /// advance but never return to an earlier planning phase.
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+        if self.is_terminal() {
+            return false;
+        }
+
+        match next {
+            Self::Queued => false,
+            Self::Planning => matches!(self, Self::Queued),
+            Self::Throttled | Self::Dispatching => {
+                matches!(
+                    self,
+                    Self::Queued | Self::Planning | Self::Throttled | Self::Dispatching
+                )
+            }
+            state if state.is_terminal() => true,
+            Self::Cancelled
+            | Self::Expired
+            | Self::Failed
+            | Self::DeadLettered
+            | Self::Succeeded
+            | Self::PartiallySucceeded
+            | Self::QuotaExceeded => true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FanoutRegime {
@@ -1032,6 +1080,37 @@ pub struct PublishCounters {
     pub retry_attempted: u64,
     #[serde(default)]
     pub dead_lettered: u64,
+}
+
+impl PublishCounters {
+    /// Count delivery outcomes that permanently consume a planned recipient slot.
+    pub fn terminal_outcomes(&self) -> u128 {
+        u128::from(self.succeeded)
+            + u128::from(self.failed)
+            + u128::from(self.expired)
+            + u128::from(self.dead_lettered)
+    }
+
+    /// Derive the lifecycle state implied by terminal delivery counters.
+    pub fn resolve_lifecycle_state(&self, current: PublishLifecycleState) -> PublishLifecycleState {
+        // `planned` is an acceptance-time audience estimate for mutable channel/client targets.
+        // Zero therefore means "not yet known", not necessarily an empty publish.
+        if self.planned == 0 || self.terminal_outcomes() < u128::from(self.planned) {
+            return current;
+        }
+
+        if self.failed == 0 && self.expired == 0 && self.dead_lettered == 0 {
+            PublishLifecycleState::Succeeded
+        } else if self.succeeded > 0 {
+            PublishLifecycleState::PartiallySucceeded
+        } else if self.expired > 0 {
+            PublishLifecycleState::Expired
+        } else if self.dead_lettered > 0 {
+            PublishLifecycleState::DeadLettered
+        } else {
+            PublishLifecycleState::Failed
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1873,6 +1952,57 @@ mod tests {
 
     fn secret(value: &str) -> SecretString {
         SecretString::new(value).unwrap()
+    }
+
+    #[test]
+    fn publish_lifecycle_transitions_are_monotonic_and_terminal_states_are_absorbing() {
+        assert!(PublishLifecycleState::Queued.can_transition_to(PublishLifecycleState::Planning));
+        assert!(
+            PublishLifecycleState::Planning.can_transition_to(PublishLifecycleState::Dispatching)
+        );
+        assert!(
+            PublishLifecycleState::Dispatching.can_transition_to(PublishLifecycleState::Succeeded)
+        );
+        assert!(
+            !PublishLifecycleState::Dispatching.can_transition_to(PublishLifecycleState::Planning)
+        );
+
+        for terminal in [
+            PublishLifecycleState::Cancelled,
+            PublishLifecycleState::Expired,
+            PublishLifecycleState::Failed,
+            PublishLifecycleState::DeadLettered,
+            PublishLifecycleState::Succeeded,
+            PublishLifecycleState::PartiallySucceeded,
+            PublishLifecycleState::QuotaExceeded,
+        ] {
+            assert!(terminal.is_terminal());
+            assert!(terminal.can_transition_to(terminal));
+            assert!(!terminal.can_transition_to(PublishLifecycleState::Dispatching));
+        }
+    }
+
+    #[test]
+    fn zero_planned_publish_keeps_its_current_state() {
+        let counters = PublishCounters::default();
+        assert_eq!(
+            counters.resolve_lifecycle_state(PublishLifecycleState::Dispatching),
+            PublishLifecycleState::Dispatching
+        );
+    }
+
+    #[test]
+    fn terminal_outcome_count_does_not_overflow_u64() {
+        let counters = PublishCounters {
+            planned: u64::MAX,
+            succeeded: u64::MAX,
+            failed: u64::MAX,
+            expired: u64::MAX,
+            dead_lettered: u64::MAX,
+            ..PublishCounters::default()
+        };
+
+        assert_eq!(counters.terminal_outcomes(), u128::from(u64::MAX) * 4);
     }
 
     fn encrypted(value: &str) -> EncryptedSecret {

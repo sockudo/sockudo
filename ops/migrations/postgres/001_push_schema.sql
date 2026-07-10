@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS push_publish_status (
     error_reason TEXT NULL,
     created_at_ms BIGINT NOT NULL,
     updated_at_ms BIGINT NOT NULL,
+    revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
     PRIMARY KEY (app_id, publish_id)
 ) PARTITION BY HASH (app_id);
 
@@ -233,4 +234,15 @@ CREATE TABLE IF NOT EXISTS push_schema_version (
 
 INSERT INTO push_schema_version (version, applied_at_ms)
 VALUES (1, 0)
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO push_schema_version (version, applied_at_ms)
+SELECT 2, 0
+WHERE EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'push_publish_status'
+      AND column_name = 'revision'
+)
 ON CONFLICT (version) DO NOTHING;

@@ -38,8 +38,20 @@ struct SurrealDocumentRow {
 
 #[cfg(feature = "surrealdb")]
 impl SurrealDbDocumentBackend {
+    fn ensure_response_ok(mut response: surrealdb::IndexedResults) -> PushStorageResult<()> {
+        if let Some((statement, error)) =
+            response.take_errors().into_iter().min_by_key(|item| item.0)
+        {
+            return Err(surreal_error(format!(
+                "statement {statement} failed: {error}"
+            )));
+        }
+        Ok(())
+    }
+
     async fn ensure_schema(&self) -> PushStorageResult<()> {
-        self.db
+        let response = self
+            .db
             .query(format!(
                 "DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;\
                  DEFINE INDEX IF NOT EXISTS {}_key ON TABLE {} FIELDS family_app, pk, sk UNIQUE;\
@@ -48,7 +60,7 @@ impl SurrealDbDocumentBackend {
             ))
             .await
             .map_err(surreal_error)?;
-        Ok(())
+        Self::ensure_response_ok(response)
     }
 
     fn record_id(family: &'static str, app_id: &str, pk: &str, sk: &str) -> String {
@@ -69,7 +81,8 @@ impl DocumentBackend for SurrealDbDocumentBackend {
         sk: &str,
         data: String,
     ) -> PushStorageResult<()> {
-        self.db
+        let response = self
+            .db
             .query("UPSERT type::record($table, $id) SET family_app = $family_app, app_id = $app_id, pk = $pk, sk = $sk, data = $data")
             .bind(("table", self.table.clone()))
             .bind(("id", Self::record_id(family, app_id, pk, sk)))
@@ -80,7 +93,7 @@ impl DocumentBackend for SurrealDbDocumentBackend {
             .bind(("data", data))
             .await
             .map_err(surreal_error)?;
-        Ok(())
+        Self::ensure_response_ok(response)
     }
 
     async fn put_if_absent(
@@ -104,16 +117,14 @@ impl DocumentBackend for SurrealDbDocumentBackend {
             .await;
         let mut response = match result {
             Ok(response) => response,
-            Err(error)
-                if error.to_string().to_ascii_lowercase().contains("already")
-                    || error.to_string().to_ascii_lowercase().contains("duplicate")
-                    || error.to_string().to_ascii_lowercase().contains("unique") =>
-            {
-                return Ok(false);
-            }
+            Err(error) if surreal_conflict_error(&error) => return Ok(false),
             Err(error) => return Err(surreal_error(error)),
         };
-        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        let rows: Vec<SurrealDocumentRow> = match response.take(0usize) {
+            Ok(rows) => rows,
+            Err(error) if surreal_conflict_error(&error) => return Ok(false),
+            Err(error) => return Err(surreal_error(error)),
+        };
         Ok(!rows.is_empty())
     }
 
@@ -137,6 +148,64 @@ impl DocumentBackend for SurrealDbDocumentBackend {
             .map_err(surreal_error)?;
         let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
         Ok(rows.into_iter().next().map(|row| row.data))
+    }
+
+    async fn get_consistent(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+    ) -> PushStorageResult<Option<String>> {
+        // Every SurrealDB statement runs in its own transaction. A point read therefore observes
+        // a committed value suitable for the conditional statement that follows it.
+        self.get(family, app_id, pk, sk).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+        data: String,
+    ) -> PushStorageResult<bool> {
+        let mut response = self
+            .db
+            .query("UPDATE type::record($table, $id) SET family_app = $family_app, app_id = $app_id, pk = $pk, sk = $sk, data = $data WHERE data = $expected RETURN AFTER")
+            .bind(("table", self.table.clone()))
+            .bind(("id", Self::record_id(family, app_id, pk, sk)))
+            .bind(("family_app", family_app(family, app_id)))
+            .bind(("app_id", app_id.to_owned()))
+            .bind(("pk", pk.to_owned()))
+            .bind(("sk", sk.to_owned()))
+            .bind(("expected", expected.to_owned()))
+            .bind(("data", data))
+            .await
+            .map_err(surreal_error)?;
+        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        Ok(!rows.is_empty())
+    }
+
+    async fn compare_and_delete(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+    ) -> PushStorageResult<bool> {
+        let mut response = self
+            .db
+            .query("DELETE type::record($table, $id) WHERE data = $expected RETURN BEFORE")
+            .bind(("table", self.table.clone()))
+            .bind(("id", Self::record_id(family, app_id, pk, sk)))
+            .bind(("expected", expected.to_owned()))
+            .await
+            .map_err(surreal_error)?;
+        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        Ok(!rows.is_empty())
     }
 
     async fn delete(

@@ -13,6 +13,46 @@ use sockudo_core::presence_history::{
 };
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
+async fn seed_valid_snapshot_history(
+    store: &Arc<MemoryPresenceHistoryStore>,
+    count: usize,
+    base_ts: i64,
+) {
+    let transitions = [
+        (PresenceHistoryEventKind::MemberAdded, "user-1"),
+        (PresenceHistoryEventKind::MemberAdded, "user-2"),
+        (PresenceHistoryEventKind::MemberRemoved, "user-1"),
+        (PresenceHistoryEventKind::MemberRemoved, "user-2"),
+    ];
+
+    for (index, (event_kind, user_id)) in transitions.into_iter().take(count).enumerate() {
+        store
+            .record_transition(PresenceHistoryTransitionRecord {
+                app_id: "app-1".to_string(),
+                channel: "presence-room".to_string(),
+                event_kind,
+                cause: if event_kind == PresenceHistoryEventKind::MemberAdded {
+                    PresenceHistoryEventCause::Join
+                } else {
+                    PresenceHistoryEventCause::Disconnect
+                },
+                user_id: user_id.to_string(),
+                connection_id: Some(format!("socket-{}", index + 1)),
+                user_info: Some(sonic_rs::json!({ "n": index + 1 })),
+                dead_node_id: None,
+                dedupe_key: format!("snapshot-transition-{}", index + 1),
+                published_at_ms: base_ts + index as i64 + 1,
+                retention: PresenceHistoryRetentionPolicy {
+                    retention_window_seconds: 3600,
+                    max_events_per_channel: None,
+                    max_bytes_per_channel: None,
+                },
+            })
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn channel_presence_history_state_endpoint_returns_authoritative_stream_state() {
     let inner = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
@@ -560,7 +600,7 @@ async fn channel_presence_history_snapshot_reconstructs_membership() {
     let base_ts = sockudo_core::history::now_ms();
 
     // Seed: u1 joins, u2 joins, u1 leaves
-    seed_presence_history(&store, "app-1", "presence-room", 3, base_ts).await;
+    seed_valid_snapshot_history(&store, 3, base_ts).await;
 
     let response = channel_presence_history_snapshot(
         Path(("app-1".to_string(), "presence-room".to_string())),
@@ -589,8 +629,8 @@ async fn channel_presence_history_snapshot_at_serial_bound() {
     let app = test_app();
     let base_ts = sockudo_core::history::now_ms();
 
-    // Seed: alternating joins/leaves for u1, u2
-    seed_presence_history(&store, "app-1", "presence-room", 4, base_ts).await;
+    // Seed: u1 joins, u2 joins, then both leave.
+    seed_valid_snapshot_history(&store, 4, base_ts).await;
 
     // Snapshot at serial 2 only replays events with serial <= 2
     let response = channel_presence_history_snapshot(
