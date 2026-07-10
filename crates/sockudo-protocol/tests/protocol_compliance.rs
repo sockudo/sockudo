@@ -1234,6 +1234,7 @@ fn test_extras_round_trip_serialize_deserialize() {
         push: None,
         echo: Some(false),
         ai: None,
+        opaque: Default::default(),
     };
 
     let json_str = sonic_rs::to_string(&extras).expect("serialize");

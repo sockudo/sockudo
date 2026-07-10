@@ -139,6 +139,7 @@ fn stored_create(
         app_id: APP_ID.to_string(),
         channel: CHANNEL.to_string(),
         original_client_id: Some("agent-1".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             MessageSerial::new(message_serial).unwrap(),
             version(delivery_serial),

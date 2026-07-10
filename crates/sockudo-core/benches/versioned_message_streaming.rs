@@ -101,6 +101,7 @@ fn record_with_data(data: String) -> StoredVersionRecord {
         app_id: "app".to_string(),
         channel: "ai-room".to_string(),
         original_client_id: Some("agent-1".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             MessageSerial::new("msg:1").unwrap(),
             version(1),

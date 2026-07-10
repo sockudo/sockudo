@@ -10,6 +10,9 @@ use compact_str::format_compact;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryAppendRecord, now_ms};
+use sockudo_core::message_envelope::{
+    MessageEnvelope, StoredMessagePayload, VersionOperationMetadata, VersionProjection,
+};
 use sockudo_core::utils;
 use sockudo_core::version_store::StoredVersionRecord;
 use sockudo_core::versioned_messages::{
@@ -57,7 +60,8 @@ fn sanitize_v2_feature_flags(
             && extras.ephemeral.is_none()
             && extras.idempotency_key.is_none()
             && extras.echo.is_none()
-            && extras.ai.is_none();
+            && extras.ai.is_none()
+            && extras.opaque.is_empty();
         if extras_empty {
             message.extras = None;
         }
@@ -135,11 +139,18 @@ impl ConnectionHandler {
             channel: Some(record.channel.clone()),
             data: record.message.data.clone(),
             name: record.message.name.clone(),
-            user_id: None,
+            user_id: record
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.publisher_client_id.clone())
+                .or_else(|| record.message.version.client_id.clone()),
             tags: None,
             sequence: None,
             conflation_key: None,
-            message_id: Some(generate_message_id()),
+            message_id: record
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.message_id.clone()),
             stream_id,
             serial: Some(record.delivery_serial()),
             idempotency_key: None,
@@ -224,6 +235,7 @@ impl ConnectionHandler {
             exclude_socket,
             start_time_ms,
             false, // allow delta compression
+            None,
         )
         .await
         .map(|_| ())
@@ -238,6 +250,29 @@ impl ConnectionHandler {
         start_time_ms: Option<f64>,
         force_full_message: bool,
     ) -> Result<Option<PublishAck>> {
+        self.publish_to_channel_with_timing_and_envelope(
+            app_config,
+            channel,
+            message,
+            exclude_socket,
+            start_time_ms,
+            force_full_message,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn publish_to_channel_with_timing_and_envelope(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<f64>,
+        force_full_message: bool,
+        envelope: Option<MessageEnvelope>,
+    ) -> Result<Option<PublishAck>> {
         self.broadcast_to_channel_internal(
             app_config,
             channel,
@@ -245,6 +280,7 @@ impl ConnectionHandler {
             exclude_socket,
             start_time_ms,
             force_full_message,
+            envelope,
         )
         .await
     }
@@ -269,6 +305,29 @@ impl ConnectionHandler {
             exclude_socket,
             start_time_ms,
             true, // force full messages, skip delta compression
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn broadcast_to_channel_force_full_with_envelope(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<f64>,
+        envelope: MessageEnvelope,
+    ) -> Result<()> {
+        self.broadcast_to_channel_internal(
+            app_config,
+            channel,
+            message,
+            exclude_socket,
+            start_time_ms,
+            true,
+            Some(envelope),
         )
         .await
         .map(|_| ())
@@ -276,6 +335,7 @@ impl ConnectionHandler {
 
     /// Internal broadcast implementation with delta compression control
     #[allow(unused_variables, unused_mut)]
+    #[allow(clippy::too_many_arguments)]
     async fn broadcast_to_channel_internal(
         &self,
         app_config: &App,
@@ -284,13 +344,21 @@ impl ConnectionHandler {
         exclude_socket: Option<&SocketId>,
         start_time_ms: Option<f64>,
         force_full_message: bool,
+        mut envelope: Option<MessageEnvelope>,
     ) -> Result<Option<PublishAck>> {
         message = sanitize_v2_feature_flags(self.server_options(), message);
+        let mut envelope = envelope
+            .map(Ok)
+            .unwrap_or_else(|| MessageEnvelope::from_message(&message, None, None, now_ms()))
+            .map_err(Error::InvalidMessageFormat)?;
 
         // Extras-level message idempotency (V2 feature).
         // Check extras.idempotency_key before broadcasting. If the key was already
         // seen within the TTL window, silently drop the message.
-        if let Some(extras_key) = message.extras_idempotency_key() {
+        if let Some(extras_key) = message
+            .extras_idempotency_key()
+            .or(message.idempotency_key.as_deref())
+        {
             let config = app_config.resolved_idempotency(&self.server_options().idempotency);
             if config.enabled {
                 let cache_key =
@@ -353,6 +421,9 @@ impl ConnectionHandler {
             if history_enabled || recovery_enabled {
                 if message.message_id.is_none() {
                     message.message_id = Some(generate_message_id());
+                }
+                if envelope.message_id.is_none() {
+                    envelope.message_id = message.message_id.clone();
                 }
 
                 if versioned_enabled
@@ -422,6 +493,14 @@ impl ConnectionHandler {
                     }
                 }
 
+                envelope.name = message.name.clone().or_else(|| message.event.clone());
+                envelope.publisher_client_id = message.user_id.clone();
+                envelope.set_commit_positions(
+                    message.stream_id.clone(),
+                    history_serial_position,
+                    versioned_delivery_serial.or(message.serial),
+                );
+
                 let mut stored_v2_message = message.clone();
                 stored_v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
                 stored_v2_message.idempotency_key = None;
@@ -446,6 +525,19 @@ impl ConnectionHandler {
                         metadata: None,
                     };
 
+                    envelope.action = Some(CoreMessageAction::Create);
+                    envelope.message_serial =
+                        Some(MessageSerial::new(message_serial_value.clone())?);
+                    envelope.acknowledgement_id = Some(message_serial_value.clone());
+                    envelope.version = Some(VersionOperationMetadata {
+                        serial: VersionSerial::new(version_serial_value.clone())?,
+                        timestamp_ms: version_metadata.timestamp_ms,
+                        client_id: version_metadata.client_id.clone(),
+                        description: version_metadata.description.clone(),
+                        metadata: version_metadata.metadata.clone(),
+                        projection: VersionProjection::Aggregate,
+                    });
+
                     apply_runtime_metadata(
                         &mut stored_v2_message,
                         ProtocolMessageAction::Create,
@@ -460,6 +552,7 @@ impl ConnectionHandler {
                         app_id: app_config.id.clone(),
                         channel: channel.to_string(),
                         original_client_id: actor_client_id.clone(),
+                        envelope: Some(envelope.clone()),
                         message: VersionedMessage::new_create(
                             MessageSerial::new(message_serial_value.clone())?,
                             VersionMetadata {
@@ -530,11 +623,14 @@ impl ConnectionHandler {
                     );
                 }
 
-                let serialized = sonic_rs::to_vec(&stored_v2_message)
-                    .map(Bytes::from)
-                    .map_err(|e| {
-                        Error::Serialization(format!("Failed to serialize history payload: {e}"))
-                    })?;
+                let serialized = sonic_rs::to_vec(&StoredMessagePayload::new(
+                    stored_v2_message.clone(),
+                    envelope.clone(),
+                ))
+                .map(Bytes::from)
+                .map_err(|e| {
+                    Error::Serialization(format!("Failed to serialize history payload: {e}"))
+                })?;
 
                 #[cfg(feature = "recovery")]
                 if recovery_enabled && let Some(ref replay_buffer) = self.replay_buffer {
@@ -562,7 +658,7 @@ impl ConnectionHandler {
                                     "History store did not return a channel serial".to_string(),
                                 )
                             })?,
-                            published_at_ms: now_ms(),
+                            published_at_ms: envelope.published_at_ms.unwrap_or_else(now_ms),
                             message_id: message.message_id.clone(),
                             event_name: message.event.clone(),
                             operation_kind: "append".to_string(),
@@ -613,6 +709,7 @@ impl ConnectionHandler {
                     exclude_socket,
                     start_time_ms,
                     force_full_message,
+                    Some(envelope.clone()),
                 )
                 .await;
 
@@ -648,6 +745,7 @@ impl ConnectionHandler {
         result.map(|_| publish_ack)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_rollup_aware(
         &self,
         app_config: &App,
@@ -656,16 +754,17 @@ impl ConnectionHandler {
         exclude_socket: Option<&SocketId>,
         start_time_ms: Option<f64>,
         force_full_message: bool,
+        envelope: Option<MessageEnvelope>,
     ) -> Result<()> {
         #[cfg(feature = "ai-transport")]
         if app_config
             .resolved_history(channel, &self.server_options().history)
             .enabled
             && self.server_options().ai_transport.matches_channel(channel)
+            && extract_runtime_action(&message) == Some(ProtocolMessageAction::Append)
             && let Some(engine) = self.ai_rollup_engine.as_ref()
         {
-            let is_append = extract_runtime_action(&message) == Some(ProtocolMessageAction::Append);
-            if is_append && let Some(metrics) = self.metrics() {
+            if let Some(metrics) = self.metrics() {
                 metrics.mark_ai_rollup_append_received(&app_config.id);
             }
             let now_ms = u64::try_from(now_ms()).unwrap_or_default();
@@ -690,10 +789,19 @@ impl ConnectionHandler {
                 self.send_one_egress_message(
                     app_config,
                     &delivery.channel,
-                    delivery.message,
+                    delivery.message.clone(),
                     exclude_socket,
                     start_time_ms,
                     force_full_message,
+                    envelope.clone().or_else(|| {
+                        MessageEnvelope::from_message(
+                            &delivery.message,
+                            None,
+                            None,
+                            sockudo_core::history::now_ms(),
+                        )
+                        .ok()
+                    }),
                 )
                 .await?;
             }
@@ -707,10 +815,12 @@ impl ConnectionHandler {
             exclude_socket,
             start_time_ms,
             force_full_message,
+            envelope,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_one_egress_message(
         &self,
         app_config: &App,
@@ -719,8 +829,26 @@ impl ConnectionHandler {
         exclude_socket: Option<&SocketId>,
         start_time_ms: Option<f64>,
         force_full_message: bool,
+        envelope: Option<MessageEnvelope>,
     ) -> Result<()> {
         let message_for_tap = self.realtime_egress_tap.as_ref().map(|_| message.clone());
+
+        // Compatibility delivery is an independent boundary and must not wait
+        // for native connection-manager delivery to succeed.
+        if let Some(tap) = self.realtime_egress_tap.as_ref()
+            && let Some(message) = message_for_tap.as_ref()
+            && let Some(envelope) = envelope.as_ref()
+            && let Err(error) = tap
+                .deliver(&app_config.id, channel, message, envelope)
+                .await
+        {
+            warn!(
+                app_id = %app_config.id,
+                channel = %channel,
+                error = %error,
+                "realtime egress tap failed"
+            );
+        }
 
         #[cfg(feature = "delta")]
         let result = {
@@ -770,19 +898,6 @@ impl ConnectionHandler {
                 )
                 .await
         };
-
-        if result.is_ok()
-            && let Some(tap) = self.realtime_egress_tap.as_ref()
-            && let Some(message) = message_for_tap.as_ref()
-            && let Err(error) = tap.deliver(&app_config.id, channel, message).await
-        {
-            warn!(
-                app_id = %app_config.id,
-                channel = %channel,
-                error = %error,
-                "realtime egress tap failed"
-            );
-        }
 
         result
     }

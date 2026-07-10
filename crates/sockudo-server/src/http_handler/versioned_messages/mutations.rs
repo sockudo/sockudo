@@ -256,6 +256,7 @@ pub(crate) async fn apply_update_message(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: current.envelope.clone(),
         message: updated_message,
     };
     handler
@@ -435,6 +436,7 @@ pub(crate) async fn apply_delete_message(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: current.envelope.clone(),
         message: deleted_message,
     };
     handler
@@ -621,6 +623,7 @@ pub(crate) async fn apply_append_message(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: current.envelope.clone(),
         message: appended_message,
     };
     if let Err(error) = handler

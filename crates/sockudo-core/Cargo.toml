@@ -67,6 +67,7 @@ rand = { workspace = true }
 redis = { workspace = true, optional = true }
 regex = { workspace = true }
 serde = { workspace = true }
+serde_json = "1"
 serde-aux = { workspace = true }
 sha2 = { workspace = true }
 sockudo-ws = { workspace = true }

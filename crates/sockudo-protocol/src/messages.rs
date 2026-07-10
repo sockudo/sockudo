@@ -142,6 +142,12 @@ pub struct MessageExtras {
     /// AI Transport metadata convention over the existing V2 extras envelope.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai: Option<AiExtras>,
+
+    /// Supported compatibility extensions which are not native Sockudo
+    /// semantics. Reserved native fields remain typed above and cannot be
+    /// shadowed through this map.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub opaque: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -364,6 +370,45 @@ impl<'a> AiTransportHeaders<'a> {
 }
 
 impl MessageExtras {
+    const RESERVED_EXTENSION_KEYS: [&'static str; 6] = [
+        "headers",
+        "ephemeral",
+        "idempotencyKey",
+        "push",
+        "echo",
+        "ai",
+    ];
+
+    /// Add an explicitly supported opaque extension such as Ably's `ref`.
+    pub fn insert_opaque(
+        &mut self,
+        key: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Result<(), String> {
+        let key = key.into();
+        if key != "ref" {
+            return Err(format!("unsupported message extras extension '{key}'"));
+        }
+        if Self::RESERVED_EXTENSION_KEYS.contains(&key.as_str()) {
+            return Err(format!("message extras extension '{key}' is reserved"));
+        }
+        self.opaque.insert(key, value);
+        Ok(())
+    }
+
+    pub fn opaque_value(&self, key: &str) -> Option<&serde_json::Value> {
+        self.opaque.get(key)
+    }
+
+    pub fn validate_opaque(&self) -> Result<(), String> {
+        for key in self.opaque.keys() {
+            if key != "ref" || Self::RESERVED_EXTENSION_KEYS.contains(&key.as_str()) {
+                return Err(format!("unsupported message extras extension '{key}'"));
+            }
+        }
+        Ok(())
+    }
+
     /// Validate that headers (if present) contain only flat scalar values.
     /// This is structurally guaranteed by `ExtrasValue` having no Object/Array
     /// variants, but this method provides an explicit check with a clear error

@@ -208,6 +208,7 @@ fn versioned_record() -> StoredVersionRecord {
         app_id: APP_ID.to_string(),
         channel: CHANNEL.to_string(),
         original_client_id: Some("author".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             message_serial(),
             VersionMetadata {

@@ -33,6 +33,11 @@ against Sockudo and the scorecard records that evidence.
 | Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
 | Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
 | Mutable output streaming | Supported for AI Transport only | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
+
+Compatibility projections read a shared commit-time message envelope. This
+keeps IDs, publisher identity, timestamps, encoding chains, supported extras,
+history/recovery positions, and version operation metadata consistent across
+live delivery and REST reads while leaving Protocol V1's projection unchanged.
 | History and recovery | Supported for AI Transport only | The harness covers history projection and recovery of missed append fragments. Broader Ably pagination/link behavior remains limited. |
 | Presence enter/update/leave | Supported for AI Transport only | Realtime presence frames are ACKed and fanned out for the reduced path. Full Ably presence-history parity is not claimed. |
 | Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes, but Ably mode capability enforcement is not complete. Sockudo app auth remains authoritative. |

@@ -262,6 +262,7 @@ impl ConnectionHandler {
             app_id: current.app_id.clone(),
             channel: current.channel.clone(),
             original_client_id: current.original_client_id.clone(),
+            envelope: current.envelope.clone(),
             message: cancelled,
         };
 
@@ -506,6 +507,7 @@ mod tests {
             app_id: APP_ID.to_string(),
             channel: CHANNEL.to_string(),
             original_client_id: Some("client".to_string()),
+            envelope: None,
             message: VersionedMessage {
                 action: CoreMessageAction::Create,
                 identity: MessageIdentity {

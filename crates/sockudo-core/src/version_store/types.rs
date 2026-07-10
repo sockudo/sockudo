@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::message_envelope::MessageEnvelope;
 use crate::versioned_messages::{MessageSerial, VersionSerial, VersionedMessage};
 use serde::{Deserialize, Serialize};
 
@@ -115,6 +116,10 @@ pub struct StoredVersionRecord {
     pub app_id: String,
     pub channel: String,
     pub original_client_id: Option<String>,
+    /// Commit-time facts. `None` is a backward-compatible read of records
+    /// written before the envelope migration.
+    #[serde(default)]
+    pub envelope: Option<MessageEnvelope>,
     pub message: VersionedMessage,
 }
 

@@ -5,6 +5,7 @@ use sockudo_core::{
     app::App,
     error::Result,
     history::{HistoryPage, HistoryReadRequest},
+    message_envelope::MessageEnvelope,
     version_store::{StoredVersionRecord, VersionStorePage, VersionStoreReadRequest},
     versioned_messages::MessageSerial,
     websocket::SocketId,
@@ -16,13 +17,16 @@ use std::sync::Arc;
 ///
 /// Actor identity is deliberately distinct from `exclude_socket`; the latter
 /// controls fanout only and must never be used for authorization.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PublishContext {
     pub actor_client_id: Option<String>,
     pub publisher_socket_id: Option<SocketId>,
     pub publisher_connection_id: Option<String>,
     pub exclude_socket: Option<SocketId>,
     pub idempotency_key: Option<String>,
+    /// Optional commit-time envelope supplied by a protocol edge that has
+    /// facts not represented by `PusherMessage`, such as an Ably encoding chain.
+    pub envelope: Option<MessageEnvelope>,
 }
 
 /// Native publish/read service façade used by protocol projections.
@@ -65,13 +69,14 @@ impl MessageService {
             message.idempotency_key = context.idempotency_key;
         }
         self.handler
-            .publish_to_channel_with_timing(
+            .publish_to_channel_with_timing_and_envelope(
                 app,
                 channel,
                 message,
                 context.exclude_socket.as_ref(),
                 timestamp_ms,
                 force_full,
+                context.envelope,
             )
             .await
     }

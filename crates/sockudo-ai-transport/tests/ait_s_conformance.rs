@@ -256,6 +256,7 @@ async fn ait_s011_012_memory_version_store_projects_latest_visible_state() {
                 app_id: "app".to_string(),
                 channel: "ai:room".to_string(),
                 original_client_id: Some("client-1".to_string()),
+                envelope: None,
                 message,
             })
             .await

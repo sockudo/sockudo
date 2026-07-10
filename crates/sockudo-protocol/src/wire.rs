@@ -672,6 +672,7 @@ impl From<ProtoMessageExtras> for MessageExtras {
             push: None,
             echo: value.echo,
             ai: value.ai.map(Into::into),
+            opaque: Default::default(),
         }
     }
 }
@@ -687,6 +688,7 @@ impl From<MsgpackMessageExtras> for MessageExtras {
             push: None,
             echo: value.echo,
             ai: value.ai.map(Into::into),
+            opaque: Default::default(),
         }
     }
 }
@@ -860,6 +862,7 @@ mod tests {
                 push: None,
                 echo: Some(false),
                 ai: None,
+                opaque: Default::default(),
             }),
             delta_sequence: Some(11),
             delta_conflation_key: Some("btc".to_string()),

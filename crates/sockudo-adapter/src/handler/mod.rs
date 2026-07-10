@@ -32,6 +32,7 @@ use sockudo_core::app::AppManager;
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryStore, NoopHistoryStore};
+use sockudo_core::message_envelope::MessageEnvelope;
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::presence_history::{NoopPresenceHistoryStore, PresenceHistoryStore};
@@ -58,7 +59,13 @@ type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
 
 #[async_trait::async_trait]
 pub trait RealtimeEgressTap: Send + Sync {
-    async fn deliver(&self, app_id: &str, channel: &str, message: &PusherMessage) -> Result<()>;
+    async fn deliver(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message: &PusherMessage,
+        envelope: &MessageEnvelope,
+    ) -> Result<()>;
 }
 
 #[derive(Clone, Copy)]
@@ -388,15 +395,20 @@ fn start_ai_rollup_worker(
                         error = %error,
                         "failed to flush AI append rollup delivery"
                     );
-                } else if let Some(tap) = realtime_egress_tap.as_ref()
-                    && let Err(error) = tap.deliver(&app_id, &channel, &message_for_tap).await
-                {
-                    warn!(
-                        app_id = %app_id,
-                        channel = %channel,
-                        error = %error,
-                        "realtime egress tap failed during AI rollup flush"
-                    );
+                } else if let Some(tap) = realtime_egress_tap.as_ref() {
+                    match MessageEnvelope::from_message(&message_for_tap, None, None, sockudo_core::history::now_ms()) {
+                        Ok(envelope) => {
+                            if let Err(error) = tap.deliver(&app_id, &channel, &message_for_tap, &envelope).await {
+                                warn!(
+                                    app_id = %app_id,
+                                    channel = %channel,
+                                    error = %error,
+                                    "realtime egress tap failed during AI rollup flush"
+                                );
+                            }
+                        }
+                        Err(error) => warn!(app_id = %app_id, channel = %channel, error = %error, "failed to build AI rollup envelope"),
+                    }
                 }
             }
         }

@@ -2,7 +2,13 @@
 
 use crate::AblyCompatError;
 use sockudo_adapter::ConnectionHandler;
-use sockudo_core::{app::App, versioned_messages::MessageSerial};
+use sockudo_core::{
+    app::App,
+    message_envelope::{
+        MessageContent, MessageEnvelope, VersionOperationMetadata, VersionProjection,
+    },
+    versioned_messages::MessageSerial,
+};
 use sockudo_protocol::versioned_messages::{
     AppendMessageRequest, DeleteMessageRequest, MutationResponse, UpdateMessageRequest,
 };
@@ -13,6 +19,70 @@ pub struct VersionMutationPath {
     pub app_id: String,
     pub channel_name: String,
     pub message_serial: String,
+}
+
+fn envelope_for_version(
+    current: &sockudo_core::version_store::StoredVersionRecord,
+    message: &sockudo_core::versioned_messages::VersionedMessage,
+) -> Option<MessageEnvelope> {
+    Some(MessageEnvelope {
+        message_id: current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.message_id.clone()),
+        acknowledgement_id: Some(message.identity.message_serial.as_str().to_string()),
+        name: message.name.clone(),
+        data: message
+            .data
+            .as_ref()
+            .and_then(|data| MessageContent::from_message_data(data).ok()),
+        encoding: current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.encoding.clone()),
+        publisher_client_id: message.version.client_id.clone().or_else(|| {
+            current
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.publisher_client_id.clone())
+        }),
+        publisher_socket_id: current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.publisher_socket_id.clone()),
+        publisher_connection_id: current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.publisher_connection_id.clone()),
+        published_at_ms: current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.published_at_ms),
+        extras: message.extras.clone(),
+        stream_id: current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.stream_id.clone()),
+        history_serial: Some(message.identity.history_serial),
+        delivery_serial: Some(message.replay_position.delivery_serial),
+        action: Some(message.action),
+        message_serial: Some(message.identity.message_serial.clone()),
+        version: Some(VersionOperationMetadata {
+            serial: message.version.serial.clone(),
+            timestamp_ms: message.version.timestamp_ms,
+            client_id: message.version.client_id.clone(),
+            description: message.version.description.clone(),
+            metadata: message.version.metadata.clone(),
+            projection: if matches!(
+                message.action,
+                sockudo_core::versioned_messages::MessageAction::Append
+            ) {
+                VersionProjection::AppendFragment
+            } else {
+                VersionProjection::Aggregate
+            },
+        }),
+    })
 }
 
 pub fn parse_message_serial(raw: &str) -> Result<MessageSerial, AblyCompatError> {
@@ -87,6 +157,7 @@ pub async fn apply_update_message(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: envelope_for_version(&current, &updated_message),
         message: updated_message,
     };
     handler
@@ -98,7 +169,14 @@ pub async fn apply_update_message(
         .await?;
     let runtime = handler.build_runtime_message_from_record(&updated, Some(reservation.stream_id));
     handler
-        .broadcast_to_channel_force_full(&app, &path.channel_name, runtime, None, None)
+        .broadcast_to_channel_force_full_with_envelope(
+            &app,
+            &path.channel_name,
+            runtime,
+            None,
+            None,
+            updated.envelope.clone().unwrap_or_default(),
+        )
         .await?;
     Ok(MutationResponse {
         channel: path.channel_name,
@@ -177,6 +255,7 @@ pub async fn apply_delete_message(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: envelope_for_version(&current, &deleted_message),
         message: deleted_message,
     };
     handler
@@ -188,7 +267,14 @@ pub async fn apply_delete_message(
         .await?;
     let runtime = handler.build_runtime_message_from_record(&deleted, Some(reservation.stream_id));
     handler
-        .broadcast_to_channel_force_full(&app, &path.channel_name, runtime, None, None)
+        .broadcast_to_channel_force_full_with_envelope(
+            &app,
+            &path.channel_name,
+            runtime,
+            None,
+            None,
+            deleted.envelope.clone().unwrap_or_default(),
+        )
         .await?;
     Ok(MutationResponse {
         channel: path.channel_name,
@@ -249,6 +335,7 @@ pub async fn apply_append_message(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: envelope_for_version(&current, &appended_message),
         message: appended_message,
     };
     handler
@@ -262,7 +349,14 @@ pub async fn apply_append_message(
         handler.build_runtime_message_from_record(&appended, Some(reservation.stream_id));
     sockudo_protocol::versioned_messages::set_runtime_append_fragment(&mut runtime, request.data);
     handler
-        .broadcast_to_channel_force_full(&app, &path.channel_name, runtime, None, None)
+        .broadcast_to_channel_force_full_with_envelope(
+            &app,
+            &path.channel_name,
+            runtime,
+            None,
+            None,
+            appended.envelope.clone().unwrap_or_default(),
+        )
         .await?;
     Ok(MutationResponse {
         channel: path.channel_name,

@@ -12,8 +12,9 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use base64::Engine as _;
 use dashmap::DashMap;
-use serde::Serialize;
+use serde::{Serialize, de::Visitor};
 use sockudo_adapter::{
     ConnectionHandler, RealtimeEgressTap,
     services::{MessageService, PublishContext},
@@ -22,6 +23,9 @@ use sockudo_core::{
     app::App,
     error::{Error as SockudoError, Result as SockudoResult},
     history::{HistoryCursor, HistoryDirection, HistoryQueryBounds, HistoryReadRequest, now_ms},
+    message_envelope::{
+        MessageContent, MessageEnvelope, VersionProjection, decode_stored_message_payload,
+    },
     origin_validation::OriginValidator,
     utils::validate_channel_name,
     websocket::ConnectionCapabilities,
@@ -121,6 +125,7 @@ struct AblyChannelState {
     subscribers: HashMap<String, mpsc::Sender<AblyProtocolMessage>>,
     replay: VecDeque<AblyReplayEntry>,
     current_stream_id: Option<String>,
+    attach_position: Option<AblyChannelPosition>,
     last_touched_ms: i64,
 }
 
@@ -204,7 +209,7 @@ impl AblyCompatRuntime {
             )
             .route(
                 "/channels/{channelName}/messages/{messageSerial}",
-                get(ably_channel_message),
+                get(ably_channel_message).patch(ably_channel_message_mutation),
             )
             .route(
                 "/channels/{channelName}/messages/{messageSerial}/versions",
@@ -229,8 +234,9 @@ impl RealtimeEgressTap for AblyCompatRuntime {
         app_id: &str,
         channel: &str,
         message: &PusherMessage,
+        envelope: &MessageEnvelope,
     ) -> SockudoResult<()> {
-        self.hub.deliver(app_id, channel, message).await
+        self.hub.deliver(app_id, channel, message, envelope).await
     }
 }
 
@@ -241,23 +247,25 @@ impl RealtimeEgressTap for AblyCompatHub {
         app_id: &str,
         channel: &str,
         message: &PusherMessage,
+        envelope: &MessageEnvelope,
     ) -> SockudoResult<()> {
-        let ably_message = match pusher_to_ably_message(message, AblyMessageProjection::Mutation) {
-            Ok(message) => message,
-            Err(error) => {
-                warn!(
-                    app_id = %app_id,
-                    channel = %channel,
-                    error = %error,
-                    "failed to translate Sockudo message for Ably compatibility"
-                );
-                return Ok(());
-            }
-        };
-        let channel_serial = message
+        let ably_message =
+            match envelope_to_ably_message(envelope, message, AblyMessageProjection::Mutation) {
+                Ok(message) => message,
+                Err(error) => {
+                    warn!(
+                        app_id = %app_id,
+                        channel = %channel,
+                        error = %error,
+                        "failed to translate Sockudo message for Ably compatibility"
+                    );
+                    return Ok(());
+                }
+            };
+        let channel_serial = envelope
             .stream_id
             .as_deref()
-            .zip(message.serial)
+            .zip(envelope.delivery_serial)
             .map(|(stream_id, serial)| encode_ably_channel_serial(stream_id, serial));
         self.broadcast(
             app_id,
@@ -266,11 +274,28 @@ impl RealtimeEgressTap for AblyCompatHub {
                 action: ACTION_MESSAGE,
                 timestamp: Some(now_ms()),
                 channel: Some(channel.to_string()),
-                channel_serial,
+                channel_serial: channel_serial.clone(),
                 messages: Some(vec![ably_message]),
                 ..empty_protocol_message(ACTION_MESSAGE)
             },
         );
+        if envelope.action == Some(sockudo_core::versioned_messages::MessageAction::Append)
+            && let Ok(aggregate) =
+                envelope_to_ably_message(envelope, message, AblyMessageProjection::Aggregate)
+        {
+            self.broadcast(
+                app_id,
+                channel,
+                AblyProtocolMessage {
+                    action: ACTION_MESSAGE,
+                    timestamp: Some(now_ms()),
+                    channel: Some(channel.to_string()),
+                    channel_serial,
+                    messages: Some(vec![aggregate]),
+                    ..empty_protocol_message(ACTION_MESSAGE)
+                },
+            );
+        }
         Ok(())
     }
 }
@@ -294,18 +319,41 @@ impl AblyCompatHub {
         let now = now_ms();
         let state = self.channel_state(app_id, channel);
         let mut state = lock_channel_state(&state);
+        let replay_on_reattach = state.subscribers.is_empty() && !state.replay.is_empty();
         prune_ably_replay(&mut state, now);
         if let Some(position) = channel_serial
             .as_deref()
             .and_then(|serial| parse_ably_channel_serial(serial).ok())
         {
-            state.current_stream_id = Some(position.stream_id);
+            state.current_stream_id = Some(position.stream_id.clone());
+            state.attach_position = Some(position);
             state.last_touched_ms = now;
         }
         state
             .subscribers
             .insert(session_id.to_string(), sender.clone());
         send_ably_attached(&sender, channel, channel_serial, None, None, Vec::new());
+        if replay_on_reattach
+            && let Some(message) = state.replay.back().map(|entry| entry.message.clone())
+        {
+            send_protocol(&sender, message);
+        }
+    }
+
+    fn rewind_latest(
+        &self,
+        app_id: &str,
+        channel: &str,
+        sender: &mpsc::Sender<AblyProtocolMessage>,
+    ) {
+        let state = self.channel_state(app_id, channel);
+        let latest = lock_channel_state(&state)
+            .replay
+            .back()
+            .map(|entry| entry.message.clone());
+        if let Some(message) = latest {
+            send_protocol(sender, message);
+        }
     }
 
     fn unsubscribe(&self, app_id: &str, channel: &str, session_id: &str) {
@@ -319,6 +367,11 @@ impl AblyCompatHub {
             drop(state);
             self.channels.remove(&key);
         }
+    }
+
+    fn until_attach_position(&self, app_id: &str, channel: &str) -> Option<AblyChannelPosition> {
+        let state = self.channel_state(app_id, channel);
+        lock_channel_state(&state).attach_position.clone()
     }
 
     fn broadcast(&self, app_id: &str, channel: &str, message: AblyProtocolMessage) {
@@ -604,6 +657,13 @@ impl AblyCompatHub {
                     .saturating_add(i64::try_from(DEFAULT_CONNECTION_STATE_TTL_MS).unwrap_or(0)),
             },
         );
+    }
+
+    fn resolve_connection_id(&self, connection_key: &str) -> Option<String> {
+        self.sessions
+            .get(connection_key)
+            .filter(|record| record.expires_at_ms > now_ms())
+            .map(|record| record.connection_id.clone())
     }
 
     fn issue_token(
@@ -929,6 +989,7 @@ async fn handle_ably_protocol_message(
                 sender,
                 &channel,
                 inbound.channel_serial,
+                inbound.params,
             )
             .await;
         }
@@ -992,6 +1053,7 @@ async fn handle_ably_protocol_message(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_ably_attach(
     handler: &Arc<ConnectionHandler>,
     hub: &Arc<AblyCompatHub>,
@@ -1000,10 +1062,17 @@ async fn handle_ably_attach(
     sender: &mpsc::Sender<AblyProtocolMessage>,
     channel: &str,
     channel_serial: Option<String>,
+    params: Option<HashMap<String, String>>,
 ) {
+    let rewind_requested = params
+        .as_ref()
+        .is_some_and(|params| params.contains_key("rewind") || params.contains_key("rewindCount"));
     let Some(channel_serial) = channel_serial else {
         let attach_serial = current_ably_channel_serial(handler, app, channel);
         hub.attach_clean(&app.id, channel, session_id, sender.clone(), attach_serial);
+        if rewind_requested {
+            hub.rewind_latest(&app.id, channel, sender);
+        }
         return;
     };
 
@@ -1023,7 +1092,12 @@ async fn handle_ably_attach(
     };
 
     match hub.attach_hot_recovery(&app.id, channel, session_id, sender.clone(), &position) {
-        AblyHotRecovery::Sent => return,
+        AblyHotRecovery::Sent => {
+            if rewind_requested {
+                hub.rewind_latest(&app.id, channel, sender);
+            }
+            return;
+        }
         AblyHotRecovery::Failed(failure) => {
             hub.attach_failed(
                 &app.id,
@@ -1039,14 +1113,19 @@ async fn handle_ably_attach(
     }
 
     match collect_ably_cold_recovery(handler, app, channel, &position).await {
-        Ok(replay) => hub.attach_cold_recovery(
-            &app.id,
-            channel,
-            session_id,
-            sender.clone(),
-            &position,
-            replay,
-        ),
+        Ok(replay) => {
+            hub.attach_cold_recovery(
+                &app.id,
+                channel,
+                session_id,
+                sender.clone(),
+                &position,
+                replay,
+            );
+            if rewind_requested {
+                hub.rewind_latest(&app.id, channel, sender);
+            }
+        }
         Err(failure) => hub.attach_failed(
             &app.id,
             channel,
@@ -1279,19 +1358,29 @@ async fn collect_ably_history_recovery(
         }
 
         for item in page.items {
-            let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
-                .map_err(|error| {
+            let stored =
+                decode_stored_message_payload(item.payload_bytes.as_ref()).map_err(|error| {
                     AblyRecoveryFailure::channel(
                         90000,
                         format!("unable to recover channel '{channel}': {error}"),
                     )
                 })?;
-            replay.push(ably_protocol_message_from_pusher(
-                channel,
-                &raw_message,
-                AblyMessageProjection::Mutation,
-                Some(encode_ably_channel_serial(&item.stream_id, item.serial)),
-            )?);
+            let raw_message = stored.message;
+            replay.push(match stored.envelope.as_ref() {
+                Some(envelope) => ably_protocol_message_from_envelope(
+                    channel,
+                    &raw_message,
+                    envelope,
+                    AblyMessageProjection::Mutation,
+                    Some(encode_ably_channel_serial(&item.stream_id, item.serial)),
+                )?,
+                None => ably_protocol_message_from_pusher(
+                    channel,
+                    &raw_message,
+                    AblyMessageProjection::Mutation,
+                    Some(encode_ably_channel_serial(&item.stream_id, item.serial)),
+                )?,
+            });
         }
 
         if !page.has_more {
@@ -1396,19 +1485,21 @@ async fn publish_ably_create(
     client_id: Option<&str>,
     message: AblyMessage,
 ) -> Result<String, AppError> {
-    let event_name = message
-        .name
-        .clone()
-        .ok_or_else(|| AppError::InvalidInput("Ably message.name is required".to_string()))?;
+    let event_name = message.name.clone();
     let encoding = message.encoding.clone();
+    let raw_data = message.data.clone();
     let data = message
         .data
         .map(|value| ably_message_data_to_message_data(value, encoding.as_deref()));
     let mut extras = ably_extras_to_message_extras(message.extras)?;
     if let Some(client_id) = client_id
-        && is_ai_event(&event_name)
+        && event_name.as_deref().is_some_and(is_ai_event)
     {
-        stamp_ai_identity(&mut extras, &event_name, client_id)?;
+        stamp_ai_identity(
+            &mut extras,
+            event_name.as_deref().unwrap_or_default(),
+            client_id,
+        )?;
     }
     if let Some(extras) = extras.as_ref() {
         extras
@@ -1416,7 +1507,7 @@ async fn publish_ably_create(
             .map_err(|error| AppError::InvalidInput(error.message))?;
     }
     let pusher_message = PusherMessage {
-        event: Some(event_name),
+        event: event_name.clone(),
         channel: Some(channel.to_string()),
         data,
         name: None,
@@ -1424,14 +1515,30 @@ async fn publish_ably_create(
         tags: None,
         sequence: None,
         conflation_key: None,
-        message_id: message.id,
+        message_id: message.id.clone(),
         stream_id: None,
         serial: None,
-        idempotency_key: None,
+        idempotency_key: message.id.clone(),
         extras,
         delta_sequence: None,
         delta_conflation_key: None,
     };
+    let mut envelope = MessageEnvelope::from_message(
+        &pusher_message,
+        None,
+        Some(connection_id.to_string()),
+        now_ms(),
+    )
+    .map_err(AppError::InvalidInput)?;
+    envelope.name = message.name;
+    envelope.encoding = encoding.map(sockudo_core::message_envelope::EncodingChain);
+    envelope.message_id = pusher_message.message_id.clone();
+    if let Some(raw_data) = raw_data
+        && envelope.encoding.is_some()
+        && let Some(raw) = raw_data.as_str()
+    {
+        envelope.data = Some(MessageContent::Text(raw.to_string()));
+    }
     let ack = MessageService::new(Arc::clone(handler))
         .publish_message(
             app,
@@ -1440,6 +1547,7 @@ async fn publish_ably_create(
             PublishContext {
                 actor_client_id: client_id.map(str::to_string),
                 publisher_connection_id: Some(connection_id.to_string()),
+                envelope: Some(envelope),
                 ..Default::default()
             },
         )
@@ -1470,10 +1578,20 @@ async fn publish_ably_append(
     let request = AppendMessageRequest {
         data,
         extras: ably_extras_to_message_extras(message.extras)?,
-        client_id: client_id.map(str::to_string),
+        client_id: message
+            .version
+            .as_ref()
+            .and_then(|version| version.client_id.clone())
+            .or_else(|| client_id.map(str::to_string)),
         socket_id: None,
-        description: None,
-        metadata: None,
+        description: message
+            .version
+            .as_ref()
+            .and_then(|version| version.description.clone()),
+        metadata: message
+            .version
+            .as_ref()
+            .and_then(|version| version.metadata.clone()),
         op_id: message.id,
     };
     let payload = apply_append_message(
@@ -1507,10 +1625,20 @@ async fn publish_ably_update(
             .map(|value| ably_message_data_to_message_data(value, message.encoding.as_deref())),
         extras: ably_extras_to_message_extras(message.extras)?,
         clear_fields: Vec::new(),
-        client_id: client_id.map(str::to_string),
+        client_id: message
+            .version
+            .as_ref()
+            .and_then(|version| version.client_id.clone())
+            .or_else(|| client_id.map(str::to_string)),
         socket_id: None,
-        description: None,
-        metadata: None,
+        description: message
+            .version
+            .as_ref()
+            .and_then(|version| version.description.clone()),
+        metadata: message
+            .version
+            .as_ref()
+            .and_then(|version| version.metadata.clone()),
         op_id: message.id,
     };
     let payload = apply_update_message(
@@ -1543,10 +1671,20 @@ async fn publish_ably_delete(
             .map(|value| ably_message_data_to_message_data(value, message.encoding.as_deref())),
         extras: ably_extras_to_message_extras(message.extras)?,
         clear_fields: Vec::new(),
-        client_id: client_id.map(str::to_string),
+        client_id: message
+            .version
+            .as_ref()
+            .and_then(|version| version.client_id.clone())
+            .or_else(|| client_id.map(str::to_string)),
         socket_id: None,
-        description: None,
-        metadata: None,
+        description: message
+            .version
+            .as_ref()
+            .and_then(|version| version.description.clone()),
+        metadata: message
+            .version
+            .as_ref()
+            .and_then(|version| version.metadata.clone()),
         op_id: message.id,
     };
     let payload = apply_delete_message(
@@ -1687,11 +1825,16 @@ async fn ably_channel_publish_inner(
         ));
     }
 
-    let connection_id = format!("rest-{}", Uuid::new_v4().simple());
+    let rest_connection_id = format!("rest-{}", Uuid::new_v4().simple());
     let mut serials = Vec::with_capacity(messages.len());
     for (index, message) in messages.into_iter().enumerate() {
         let effective_client_id =
             effective_ably_client_id(resolved.client_id.as_deref(), &message)?;
+        let connection_id = message
+            .connection_id
+            .as_deref()
+            .and_then(|key| hub.resolve_connection_id(key))
+            .unwrap_or_else(|| rest_connection_id.clone());
         let serial = publish_ably_message(
             &handler,
             &resolved.app,
@@ -1758,13 +1901,23 @@ async fn ably_channel_history_inner(
         Some(cursor) => Some(HistoryCursor::decode(cursor)?),
         None => None,
     };
+    let attach_position = query
+        .from_serial
+        .as_deref()
+        .and_then(|serial| parse_ably_channel_serial(serial).ok())
+        .or_else(|| {
+            query
+                .until_attach
+                .unwrap_or(false)
+                .then(|| hub.until_attach_position(&resolved.app.id, &channel_name))
+                .flatten()
+        });
     let bounds = HistoryQueryBounds {
         start_serial: None,
-        end_serial: None,
+        end_serial: attach_position.as_ref().map(|position| position.serial),
         start_time_ms: query.start,
         end_time_ms: query.end,
     };
-    let _until_attach = query.until_attach.unwrap_or(false);
     let page = handler
         .history_store()
         .read_page(HistoryReadRequest {
@@ -1779,8 +1932,10 @@ async fn ably_channel_history_inner(
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
-        let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
-            .map_err(|error| AppError::InternalError(error.to_string()))?;
+        let stored = decode_stored_message_payload(item.payload_bytes.as_ref())
+            .map_err(AppError::InternalError)?;
+        let raw_message = stored.message;
+        let mut envelope = stored.envelope;
         let message = if handler.server_options().versioned_messages.enabled {
             if let Some(message_serial) = extract_runtime_message_serial(&raw_message) {
                 match handler
@@ -1792,8 +1947,13 @@ async fn ably_channel_history_inner(
                     )
                     .await?
                 {
-                    Some(latest) => handler
-                        .build_runtime_message_from_record(&latest, Some(item.stream_id.clone())),
+                    Some(latest) => {
+                        envelope = latest.envelope.clone().or(envelope);
+                        handler.build_runtime_message_from_record(
+                            &latest,
+                            Some(item.stream_id.clone()),
+                        )
+                    }
                     None => raw_message,
                 }
             } else {
@@ -1802,10 +1962,14 @@ async fn ably_channel_history_inner(
         } else {
             raw_message
         };
-        items.push(
-            pusher_to_ably_message(&message, AblyMessageProjection::Aggregate)
+        items.push(match envelope.as_ref() {
+            Some(envelope) => {
+                envelope_to_ably_message(envelope, &message, AblyMessageProjection::Aggregate)
+                    .map_err(AppError::InvalidInput)?
+            }
+            None => pusher_to_ably_message(&message, AblyMessageProjection::Aggregate)
                 .map_err(AppError::InvalidInput)?,
-        );
+        });
     }
     encode_ably_rest_response(StatusCode::OK, response_format, &items)
 }
@@ -1896,8 +2060,10 @@ pub async fn ably_channel_message(
     ) {
         return ably_error_response(error.status, error.code, error.message);
     }
+    let response_format = ably_rest_response_format(&headers, AblyFormat::Json);
     match ably_channel_message_inner(handler, resolved.app, channel_name, message_serial).await {
-        Ok(message) => (StatusCode::OK, Json(message)).into_response(),
+        Ok(message) => encode_ably_rest_response(StatusCode::OK, response_format, &message)
+            .unwrap_or_else(ably_app_error_response),
         Err(error) => ably_app_error_response(error),
     }
 }
@@ -1920,8 +2086,14 @@ async fn ably_channel_message_inner(
             ))
         })?;
     let runtime_message = handler.build_runtime_message_from_record(&item, None);
-    pusher_to_ably_message(&runtime_message, AblyMessageProjection::Aggregate)
-        .map_err(AppError::InvalidInput)
+    match item.envelope.as_ref() {
+        Some(envelope) => {
+            envelope_to_ably_message(envelope, &runtime_message, AblyMessageProjection::Aggregate)
+                .map_err(AppError::InvalidInput)
+        }
+        None => pusher_to_ably_message(&runtime_message, AblyMessageProjection::Aggregate)
+            .map_err(AppError::InvalidInput),
+    }
 }
 
 pub async fn ably_channel_message_versions(
@@ -1954,10 +2126,72 @@ pub async fn ably_channel_message_versions(
     ) {
         return ably_error_response(error.status, error.code, error.message);
     }
+    let response_format = ably_rest_response_format(&headers, AblyFormat::Json);
     match ably_channel_message_versions_inner(handler, resolved.app, channel_name, message_serial)
         .await
     {
-        Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
+        Ok(messages) => encode_ably_rest_response(StatusCode::OK, response_format, &messages)
+            .unwrap_or_else(ably_app_error_response),
+        Err(error) => ably_app_error_response(error),
+    }
+}
+
+pub async fn ably_channel_message_mutation(
+    Path((channel_name, _message_serial)): Path<(String, String)>,
+    Query(query): Query<AblyRestQuery>,
+    headers: HeaderMap,
+    Extension(runtime): Extension<Arc<AblyCompatRuntime>>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    body: Bytes,
+) -> Response {
+    let request_format = ably_rest_request_format(&headers);
+    let response_format = ably_rest_response_format(&headers, request_format);
+    let resolved = match resolve_ably_auth(
+        &runtime.hub,
+        &handler,
+        &headers,
+        query.key.as_deref(),
+        query.access_token.as_deref(),
+        query.client_id.as_deref(),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => return ably_error_response(error.status, error.code, error.message),
+    };
+    let mut messages = match decode_ably_publish_payload(body.as_ref(), request_format) {
+        Ok(messages) => messages,
+        Err(error) => return ably_app_error_response(error),
+    };
+    let Some(message) = messages.pop() else {
+        return ably_error_response(
+            StatusCode::BAD_REQUEST,
+            40000,
+            "mutation message is required",
+        );
+    };
+    let effective_client_id =
+        match effective_ably_client_id(resolved.client_id.as_deref(), &message) {
+            Ok(client_id) => client_id,
+            Err(error) => return ably_app_error_response(error),
+        };
+    let connection_id = format!("rest-{}", Uuid::new_v4().simple());
+    match publish_ably_message(
+        &handler,
+        &resolved.app,
+        &channel_name,
+        &connection_id,
+        effective_client_id.as_deref(),
+        message,
+    )
+    .await
+    {
+        Ok(version_serial) => encode_ably_rest_response(
+            StatusCode::OK,
+            response_format,
+            &json!({"versionSerial": version_serial}),
+        )
+        .unwrap_or_else(ably_app_error_response),
         Err(error) => ably_app_error_response(error),
     }
 }
@@ -1989,8 +2223,16 @@ async fn ably_channel_message_versions_inner(
         .iter()
         .map(|record| {
             let runtime_message = handler.build_runtime_message_from_record(record, None);
-            pusher_to_ably_message(&runtime_message, AblyMessageProjection::Mutation)
-                .map_err(AppError::InvalidInput)
+            match record.envelope.as_ref() {
+                Some(envelope) => envelope_to_ably_message(
+                    envelope,
+                    &runtime_message,
+                    AblyMessageProjection::Mutation,
+                )
+                .map_err(AppError::InvalidInput),
+                None => pusher_to_ably_message(&runtime_message, AblyMessageProjection::Mutation)
+                    .map_err(AppError::InvalidInput),
+            }
         })
         .collect()
 }
@@ -2138,7 +2380,31 @@ fn ably_protocol_message_from_pusher(
     })?;
     Ok(AblyProtocolMessage {
         action: ACTION_MESSAGE,
-        timestamp: Some(now_ms()),
+        timestamp: None,
+        channel: Some(channel.to_string()),
+        channel_serial,
+        messages: Some(vec![ably_message]),
+        ..empty_protocol_message(ACTION_MESSAGE)
+    })
+}
+
+fn ably_protocol_message_from_envelope(
+    channel: &str,
+    message: &PusherMessage,
+    envelope: &MessageEnvelope,
+    projection: AblyMessageProjection,
+    channel_serial: Option<String>,
+) -> Result<AblyProtocolMessage, AblyRecoveryFailure> {
+    let ably_message =
+        envelope_to_ably_message(envelope, message, projection).map_err(|error| {
+            AblyRecoveryFailure::channel(
+                90000,
+                format!("unable to recover channel '{channel}': {error}"),
+            )
+        })?;
+    Ok(AblyProtocolMessage {
+        action: ACTION_MESSAGE,
+        timestamp: envelope.published_at_ms,
         channel: Some(channel.to_string()),
         channel_serial,
         messages: Some(vec![ably_message]),
@@ -2154,7 +2420,7 @@ fn connected_message(
 ) -> AblyProtocolMessage {
     AblyProtocolMessage {
         action: ACTION_CONNECTED,
-        timestamp: Some(now_ms()),
+        timestamp: None,
         error,
         connection_id: Some(connection_id.to_string()),
         connection_details: Some(AblyConnectionDetails {
@@ -2458,6 +2724,17 @@ async fn resolve_ably_auth(
     access_token: Option<&str>,
     query_client_id: Option<&str>,
 ) -> Result<ResolvedAblyAuth, AblyAuthError> {
+    let header_client_id = headers
+        .get("x-ably-clientid")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .or_else(|| Some(value.to_string()))
+        });
+    let requested_client_id = query_client_id.or(header_client_id.as_deref());
     let access_token = access_token
         .map(str::to_string)
         .or_else(|| bearer_token(headers));
@@ -2466,7 +2743,7 @@ async fn resolve_ably_auth(
             .resolve_token(&access_token)
             .ok_or_else(|| AblyAuthError::unauthorized("Invalid or expired Ably token"))?;
         let app = find_enabled_app_by_key(handler, &record.app_key).await?;
-        let client_id = resolve_ably_token_client_id(record.client_id, query_client_id)?;
+        let client_id = resolve_ably_token_client_id(record.client_id, requested_client_id)?;
         return Ok(ResolvedAblyAuth {
             app,
             client_id,
@@ -2487,7 +2764,7 @@ async fn resolve_ably_auth(
     }
     Ok(ResolvedAblyAuth {
         app,
-        client_id: query_client_id.map(str::to_string),
+        client_id: requested_client_id.map(str::to_string),
         capabilities: None,
     })
 }
@@ -2569,12 +2846,132 @@ fn decode_ably_protocol_message(
     format: AblyFormat,
 ) -> Result<AblyProtocolMessage, String> {
     match format {
-        AblyFormat::Json => sonic_rs::from_slice(body).map_err(|error| error.to_string()),
-        AblyFormat::MsgPack => {
-            let value = rmp_serde::from_slice::<serde_json::Value>(body)
+        AblyFormat::Json => {
+            let value = serde_json::from_slice::<serde_json::Value>(body)
                 .map_err(|error| error.to_string())?;
             ably_protocol_message_from_json_value(value).map_err(|error| error.to_string())
         }
+        AblyFormat::MsgPack => {
+            let value = decode_msgpack_json_value(body)?;
+            ably_protocol_message_from_json_value(value).map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn decode_msgpack_json_value(body: &[u8]) -> Result<serde_json::Value, String> {
+    let mut deserializer = rmp_serde::Deserializer::new(std::io::Cursor::new(body));
+    serde::de::Deserializer::deserialize_any(&mut deserializer, MsgpackJsonVisitor)
+        .map_err(|error| error.to_string())
+}
+
+struct MsgpackJsonVisitor;
+
+impl<'de> Visitor<'de> for MsgpackJsonVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a MessagePack value representable as JSON")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(serde_json::Value::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_u128(value as u128)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| E::custom("MessagePack integer exceeds JSON range"))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| E::custom("non-finite MessagePack number"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(value))
+    }
+
+    fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E> {
+        Ok(serde_json::json!({
+            "__sockudo_msgpack_binary": base64::engine::general_purpose::STANDARD.encode(value)
+        }))
+    }
+
+    fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_bytes(&value)
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = access.next_element_seed(MsgpackJsonSeed)? {
+            values.push(value);
+        }
+        Ok(serde_json::Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut values = serde_json::Map::new();
+        while let Some(key) = access.next_key::<String>()? {
+            let value = access.next_value_seed(MsgpackJsonSeed)?;
+            values.insert(key, value);
+        }
+        Ok(serde_json::Value::Object(values))
+    }
+}
+
+struct MsgpackJsonSeed;
+
+impl<'de> serde::de::DeserializeSeed<'de> for MsgpackJsonSeed {
+    type Value = serde_json::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(MsgpackJsonVisitor)
     }
 }
 
@@ -2597,7 +2994,8 @@ fn ably_protocol_message_from_json_value(
         timestamp: json_i64_field(&object, "timestamp"),
         count: json_u64_field(&object, "count"),
         error: None,
-        connection_id: json_string_field(&object, "connectionId"),
+        connection_id: json_string_field(&object, "connectionId")
+            .or_else(|| json_string_field(&object, "connectionKey")),
         channel: json_string_field(&object, "channel"),
         channel_serial: json_string_field(&object, "channelSerial"),
         msg_serial: json_u64_field(&object, "msgSerial"),
@@ -2711,11 +3109,9 @@ fn decode_ably_publish_payload(
     let value = match format {
         AblyFormat::Json => serde_json::from_slice::<serde_json::Value>(body)
             .map_err(|error| AppError::InvalidInput(format!("Invalid Ably JSON body: {error}")))?,
-        AblyFormat::MsgPack => {
-            rmp_serde::from_slice::<serde_json::Value>(body).map_err(|error| {
-                AppError::InvalidInput(format!("Invalid Ably MsgPack body: {error}"))
-            })?
-        }
+        AblyFormat::MsgPack => decode_msgpack_json_value(body).map_err(|error| {
+            AppError::InvalidInput(format!("Invalid Ably MsgPack body: {error}"))
+        })?,
     };
     ably_publish_value_to_messages(value)
 }
@@ -2746,11 +3142,17 @@ fn ably_message_from_json_value(value: serde_json::Value) -> Result<AblyMessage,
         data: object
             .get("data")
             .cloned()
-            .map(json_value_to_sonic_value)
+            .map(|value| json_data_to_sonic_value(value).map(|(data, _)| data))
             .transpose()?,
-        encoding: json_string_field(&object, "encoding"),
+        encoding: json_string_field(&object, "encoding").or_else(|| {
+            object
+                .get("data")
+                .and_then(msgpack_binary_value)
+                .map(|_| "base64".to_string())
+        }),
         client_id: json_string_field(&object, "clientId"),
-        connection_id: json_string_field(&object, "connectionId"),
+        connection_id: json_string_field(&object, "connectionId")
+            .or_else(|| json_string_field(&object, "connectionKey")),
         timestamp: json_i64_field(&object, "timestamp"),
         extras: object
             .get("extras")
@@ -2761,14 +3163,32 @@ fn ably_message_from_json_value(value: serde_json::Value) -> Result<AblyMessage,
         action: json_action_field(&object),
         version: object
             .get("version")
-            .map(ably_message_version_from_json_value)
+            .or_else(|| object.get("operation"))
+            .map(|version| {
+                ably_message_version_from_json_value(version, json_string_field(&object, "serial"))
+            })
             .transpose()?
             .flatten(),
     })
 }
 
+fn msgpack_binary_value(value: &serde_json::Value) -> Option<&str> {
+    value.as_object()?.get("__sockudo_msgpack_binary")?.as_str()
+}
+
+fn json_data_to_sonic_value(value: serde_json::Value) -> Result<(Value, bool), AppError> {
+    if let Some(encoded) = msgpack_binary_value(&value) {
+        return Ok((
+            json_value_to_sonic_value(serde_json::Value::String(encoded.to_string()))?,
+            true,
+        ));
+    }
+    Ok((json_value_to_sonic_value(value)?, false))
+}
+
 fn ably_message_version_from_json_value(
     value: &serde_json::Value,
+    message_serial: Option<String>,
 ) -> Result<Option<AblyMessageVersion>, AppError> {
     if value.is_null() {
         return Ok(None);
@@ -2778,7 +3198,7 @@ fn ably_message_version_from_json_value(
             "Ably message.version must be an object".to_string(),
         ));
     };
-    let Some(serial) = json_string_field(object, "serial") else {
+    let Some(serial) = json_string_field(object, "serial").or(message_serial) else {
         return Ok(None);
     };
     Ok(Some(AblyMessageVersion {
@@ -2919,7 +3339,7 @@ fn pusher_to_ably_message(
         encoding: None,
         client_id: message.user_id.clone().or_else(|| ai_client_id(message)),
         connection_id: None,
-        timestamp: Some(now_ms()),
+        timestamp: None,
         extras: message
             .extras
             .as_ref()
@@ -2928,6 +3348,127 @@ fn pusher_to_ably_message(
         action: exposed_action.map(protocol_action_to_ably),
         version: message_version_from_runtime_headers(message),
     })
+}
+
+/// Deterministic compatibility projection of commit-time facts.  It does not
+/// consult the clock, generate identifiers, or recover operation metadata from
+/// runtime headers.
+fn envelope_to_ably_message(
+    envelope: &MessageEnvelope,
+    fallback: &PusherMessage,
+    projection: AblyMessageProjection,
+) -> Result<AblyMessage, String> {
+    let action = envelope
+        .action
+        .map(core_action_to_protocol)
+        .or_else(|| extract_runtime_action(fallback));
+    let data = match (
+        projection,
+        envelope.version.as_ref().map(|version| version.projection),
+    ) {
+        (AblyMessageProjection::Mutation, Some(VersionProjection::AppendFragment)) => {
+            extract_runtime_append_fragment(fallback)
+                .map(|fragment| json!(fragment))
+                .or_else(|| {
+                    envelope
+                        .data
+                        .as_ref()
+                        .map(message_content_to_ably_value)
+                        .transpose()
+                        .ok()
+                        .flatten()
+                })
+        }
+        _ => envelope_data_to_ably_value(envelope, projection)?,
+    };
+    let exposed_action = match (projection, action) {
+        (AblyMessageProjection::Aggregate, Some(ProtocolMessageAction::Append)) => {
+            Some(ProtocolMessageAction::Update)
+        }
+        _ => action,
+    };
+    Ok(AblyMessage {
+        id: envelope.message_id.clone(),
+        name: envelope.name.clone(),
+        data,
+        encoding: envelope
+            .encoding
+            .as_ref()
+            .and_then(|encoding| ably_projected_encoding(encoding.as_str(), projection)),
+        client_id: envelope.publisher_client_id.clone(),
+        connection_id: envelope.publisher_connection_id.clone(),
+        timestamp: envelope.published_at_ms,
+        extras: envelope
+            .extras
+            .as_ref()
+            .and_then(ably_extras_from_message_extras),
+        serial: envelope
+            .message_serial
+            .as_ref()
+            .map(|serial| serial.as_str().to_string())
+            .or_else(|| fallback.serial.map(|serial| serial.to_string())),
+        action: exposed_action.map(protocol_action_to_ably),
+        version: envelope.version.as_ref().map(|version| AblyMessageVersion {
+            serial: version.serial.as_str().to_string(),
+            timestamp: Some(version.timestamp_ms),
+            client_id: version.client_id.clone(),
+            description: version.description.clone(),
+            metadata: version.metadata.clone(),
+        }),
+    })
+}
+
+fn message_content_to_ably_value(content: &MessageContent) -> Result<Value, String> {
+    match content {
+        MessageContent::Text(value) => Ok(json!(value)),
+        MessageContent::Structured(value) => Ok(value.clone()),
+        MessageContent::Binary(value) => {
+            sonic_rs::to_value(value).map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn envelope_data_to_ably_value(
+    envelope: &MessageEnvelope,
+    projection: AblyMessageProjection,
+) -> Result<Option<Value>, String> {
+    let Some(content) = envelope.data.as_ref() else {
+        return Ok(None);
+    };
+    if let MessageContent::Text(raw) = content
+        && let Some(encoding) = envelope.encoding.as_ref()
+        && projection == AblyMessageProjection::Mutation
+        && encoding
+            .as_str()
+            .split('/')
+            .any(|part| part.eq_ignore_ascii_case("json"))
+        && let Ok(value) = sonic_rs::from_str::<Value>(raw)
+    {
+        return Ok(Some(value));
+    }
+    message_content_to_ably_value(content).map(Some)
+}
+
+fn ably_projected_encoding(encoding: &str, projection: AblyMessageProjection) -> Option<String> {
+    if projection == AblyMessageProjection::Aggregate {
+        return Some(encoding.to_string());
+    }
+    match encoding {
+        "json" | "utf-8/base64" => None,
+        other => Some(other.to_string()),
+    }
+}
+
+fn core_action_to_protocol(
+    action: sockudo_core::versioned_messages::MessageAction,
+) -> ProtocolMessageAction {
+    match action {
+        sockudo_core::versioned_messages::MessageAction::Create => ProtocolMessageAction::Create,
+        sockudo_core::versioned_messages::MessageAction::Update => ProtocolMessageAction::Update,
+        sockudo_core::versioned_messages::MessageAction::Delete => ProtocolMessageAction::Delete,
+        sockudo_core::versioned_messages::MessageAction::Append => ProtocolMessageAction::Append,
+        sockudo_core::versioned_messages::MessageAction::Summary => ProtocolMessageAction::Summary,
+    }
 }
 
 fn protocol_action_to_ably(action: ProtocolMessageAction) -> u8 {
@@ -2963,12 +3504,18 @@ fn message_version_from_runtime_headers(message: &PusherMessage) -> Option<AblyM
 }
 
 fn ably_extras_from_message_extras(extras: &MessageExtras) -> Option<Value> {
-    let ai = extras.ai.clone()?;
-    sonic_rs::to_value(&MessageExtras {
-        ai: Some(ai),
-        ..Default::default()
-    })
-    .ok()
+    let mut visible = extras.clone();
+    visible.ephemeral = None;
+    visible.idempotency_key = None;
+    visible.echo = None;
+    if visible.headers.is_none()
+        && visible.push.is_none()
+        && visible.ai.is_none()
+        && visible.opaque.is_empty()
+    {
+        return None;
+    }
+    sonic_rs::to_value(&visible).ok()
 }
 
 fn ably_extras_to_message_extras(extras: Option<Value>) -> Result<Option<MessageExtras>, AppError> {
@@ -2979,6 +3526,7 @@ fn ably_extras_to_message_extras(extras: Option<Value>) -> Result<Option<Message
         .map_err(|error| AppError::InvalidInput(format!("Invalid extras: {error}")))?;
     let decoded: MessageExtras = sonic_rs::from_str(&encoded)
         .map_err(|error| AppError::InvalidInput(format!("Invalid extras: {error}")))?;
+    decoded.validate_opaque().map_err(AppError::InvalidInput)?;
     Ok(Some(decoded))
 }
 
@@ -3135,7 +3683,7 @@ fn send_protocol(sender: &mpsc::Sender<AblyProtocolMessage>, message: AblyProtoc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{Engine as _, engine::general_purpose};
+    use base64::engine::general_purpose;
     use sockudo_protocol::messages::{AiExtras, MessageExtras};
     use sockudo_protocol::versioned_messages::apply_runtime_metadata;
 
@@ -3555,5 +4103,54 @@ mod tests {
 
         assert!(!Arc::ptr_eq(&first.hub, &second.hub));
         assert!(!Arc::ptr_eq(&first_state, &second_state));
+    }
+
+    #[test]
+    fn mutation_operation_without_serial_uses_message_serial() {
+        let message = ably_message_from_json_value(serde_json::json!({
+            "serial": "stream:1",
+            "action": "message.update",
+            "version": {
+                "clientId": "updater",
+                "description": "changed",
+                "metadata": {"reason": "test"}
+            }
+        }))
+        .unwrap();
+
+        let version = message.version.unwrap();
+        assert_eq!(version.serial, "stream:1");
+        assert_eq!(version.client_id.as_deref(), Some("updater"));
+        assert_eq!(version.description.as_deref(), Some("changed"));
+    }
+
+    #[test]
+    fn msgpack_binary_payload_is_projected_to_base64_without_rejection() {
+        #[derive(Serialize)]
+        struct BinaryMessage {
+            name: &'static str,
+            data: Vec<u8>,
+        }
+        #[derive(Serialize)]
+        struct Protocol {
+            action: u8,
+            messages: Vec<BinaryMessage>,
+        }
+        let wire = Protocol {
+            action: ACTION_MESSAGE,
+            messages: vec![BinaryMessage {
+                name: "binary",
+                data: vec![0xde, 0xad, 0xbe, 0xef],
+            }],
+        };
+        let mut body = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut body)
+            .with_struct_map()
+            .with_bytes(rmp_serde::config::BytesMode::ForceAll);
+        wire.serialize(&mut serializer).unwrap();
+        let decoded = decode_ably_protocol_message(&body, AblyFormat::MsgPack).unwrap();
+        let message = decoded.messages.unwrap().pop().unwrap();
+        assert_eq!(message.encoding.as_deref(), Some("base64"));
+        assert_eq!(message.data.unwrap().as_str(), Some("3q2+7w=="));
     }
 }

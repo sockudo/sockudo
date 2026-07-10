@@ -20,6 +20,12 @@ preserving an ordered version log for history and recovery.
 Wire constants live in `sockudo-protocol/src/versioned_messages.rs`; store semantics live in
 `sockudo-core/src/versioned_messages.rs` and `sockudo-core/src/version_store.rs`.
 
+At commit time Sockudo also records a protocol-neutral message envelope in the
+version record and new history payloads. It preserves the client message ID,
+publisher identity and timestamp, typed stream/history/delivery positions,
+complete encoding chain, user-visible extras, and operation metadata. Older
+stored payloads remain readable through the envelope migration fallback.
+
 ## Aggregation
 
 Sockudo stores each operation as a version. Latest reads and history substitution return the latest

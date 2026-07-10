@@ -5,6 +5,7 @@ use sockudo_core::history::{
     HistoryCursor, HistoryDirection, HistoryItem, HistoryQueryBounds, HistoryReadRequest,
     HistoryRetentionStats,
 };
+use sockudo_core::message_envelope::decode_stored_message_payload;
 use sockudo_core::versioned_messages::MessageSerial;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::ProtocolVersion;
@@ -191,7 +192,8 @@ impl ConnectionHandler {
         channel: &str,
         item: &HistoryItem,
     ) -> Result<PusherMessage> {
-        let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+        let raw_message = decode_stored_message_payload(item.payload_bytes.as_ref())
+            .map(|payload| payload.message)
             .map_err(|e| {
                 Error::InvalidMessageFormat(format!("Invalid stored history payload: {e}"))
             })?;
@@ -271,7 +273,8 @@ impl ConnectionHandler {
         channel: &str,
         item: &HistoryItem,
     ) -> Result<Value> {
-        let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+        let raw_message = decode_stored_message_payload(item.payload_bytes.as_ref())
+            .map(|payload| payload.message)
             .map_err(|e| {
                 Error::InvalidMessageFormat(format!("Invalid stored history payload: {e}"))
             })?;

@@ -28,6 +28,7 @@ fn base_record(
         app_id: "app".to_string(),
         channel: "chat".to_string(),
         original_client_id: Some("user-1".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             MessageSerial::new(message_serial).unwrap(),
             version("ver:1", 1),
@@ -42,6 +43,7 @@ fn base_record(
                 push: None,
                 echo: None,
                 ai: None,
+                opaque: Default::default(),
             }),
         ),
     }

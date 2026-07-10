@@ -567,6 +567,7 @@ async fn mutate_ai_message(
         app_id: current.app_id,
         channel: current.channel,
         original_client_id: current.original_client_id,
+        envelope: current.envelope,
         message,
     };
     harness

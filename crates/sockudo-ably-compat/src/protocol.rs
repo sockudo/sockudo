@@ -78,6 +78,8 @@ pub(crate) struct AblyHistoryQuery {
     pub(crate) start: Option<i64>,
     pub(crate) end: Option<i64>,
     pub(crate) until_attach: Option<bool>,
+    #[serde(rename = "from_serial")]
+    pub(crate) from_serial: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

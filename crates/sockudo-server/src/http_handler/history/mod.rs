@@ -14,8 +14,8 @@ use sockudo_core::history::{
     HistoryCursor, HistoryDirection, HistoryPurgeMode, HistoryPurgeRequest, HistoryQueryBounds,
     HistoryReadRequest,
 };
+use sockudo_core::message_envelope::decode_stored_message_payload;
 use sockudo_core::utils::validate_channel_name;
-use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::extract_runtime_message_serial;
 use sonic_rs::{Value, json};
 use std::sync::Arc;
@@ -212,7 +212,8 @@ pub async fn channel_history(
         let mut operation_kind = item.operation_kind.clone();
         let mut payload_size_bytes = item.payload_size_bytes;
         let message: Value = if handler.server_options().versioned_messages.enabled {
-            let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+            let raw_message = decode_stored_message_payload(item.payload_bytes.as_ref())
+                .map(|payload| payload.message)
                 .map_err(|e| {
                     AppError::InternalError(format!("Failed to decode history payload: {e}"))
                 })?;
@@ -258,9 +259,13 @@ pub async fn channel_history(
                 sonic_rs::to_value(&raw_message)?
             }
         } else {
-            sonic_rs::from_slice(item.payload_bytes.as_ref()).map_err(|e| {
-                AppError::InternalError(format!("Failed to decode history payload: {e}"))
-            })?
+            sonic_rs::to_value(
+                &decode_stored_message_payload(item.payload_bytes.as_ref())
+                    .map(|payload| payload.message)
+                    .map_err(|e| {
+                        AppError::InternalError(format!("Failed to decode history payload: {e}"))
+                    })?,
+            )?
         };
         items.push(json!({
             "stream_id": item.stream_id,
