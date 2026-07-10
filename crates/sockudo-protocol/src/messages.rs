@@ -238,6 +238,17 @@ impl<'a> AiTransportHeaders<'a> {
             .or_else(|| self.get(AI_HEADER_LEGACY_TURN_CLIENT_ID))
     }
 
+    /// Returns the run owner for derived identity use.
+    ///
+    /// The native `run-client-id` header may be present as an empty wire
+    /// sentinel when the triggering input has no identified publisher. That
+    /// sentinel remains available through [`Self::run_client_id`] but must not
+    /// become an identity in metrics, webhooks, or projections.
+    #[inline]
+    pub fn run_client_identity(&self) -> Option<&'a str> {
+        self.run_client_id().filter(|value| !value.is_empty())
+    }
+
     #[inline]
     pub fn turn_client_id(&self) -> Option<&'a str> {
         self.run_client_id()
@@ -551,7 +562,6 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
     match key {
         AI_HEADER_RUN_ID
         | AI_HEADER_LEGACY_TURN_ID
-        | AI_HEADER_RUN_CLIENT_ID
         | AI_HEADER_LEGACY_TURN_CLIENT_ID
         | AI_HEADER_INPUT_CLIENT_ID
         | AI_HEADER_INPUT_CODEC_MESSAGE_ID
@@ -573,6 +583,7 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
                 )));
             }
         }
+        AI_HEADER_RUN_CLIENT_ID => {}
         AI_HEADER_RUN_REASON => {
             if !matches!(value, "complete" | "cancelled" | "error") {
                 return Err(AiHeaderValidationError::invalid_transport(

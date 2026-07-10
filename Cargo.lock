@@ -7843,6 +7843,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "bytes",
  "dashmap",
  "http 1.4.2",
  "rmp-serde",

@@ -831,16 +831,12 @@ impl ConnectionHandler {
         force_full_message: bool,
         envelope: Option<MessageEnvelope>,
     ) -> Result<()> {
-        let message_for_tap = self.realtime_egress_tap.as_ref().map(|_| message.clone());
-
         // Compatibility delivery is an independent boundary and must not wait
         // for native connection-manager delivery to succeed.
         if let Some(tap) = self.realtime_egress_tap.as_ref()
-            && let Some(message) = message_for_tap.as_ref()
+            && tap.has_subscribers(&app_config.id, channel)
             && let Some(envelope) = envelope.as_ref()
-            && let Err(error) = tap
-                .deliver(&app_config.id, channel, message, envelope)
-                .await
+            && let Err(error) = tap.deliver(&app_config.id, channel, &message, envelope)
         {
             warn!(
                 app_id = %app_config.id,

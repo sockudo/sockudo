@@ -7,9 +7,11 @@
 mod auth;
 mod codec;
 mod error;
+mod outbound;
 mod protocol;
 mod runtime;
 mod services;
 
 pub use error::AblyCompatError;
+pub use outbound::OutboundMetricsSnapshot;
 pub use runtime::{AblyCompatDependencies, AblyCompatRuntime};

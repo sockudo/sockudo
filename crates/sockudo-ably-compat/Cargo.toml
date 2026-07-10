@@ -23,6 +23,7 @@ sockudo-adapter = { workspace = true, default-features = false }
 
 ahash = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 dashmap = { workspace = true }

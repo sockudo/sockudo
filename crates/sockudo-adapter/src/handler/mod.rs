@@ -57,9 +57,10 @@ use tracing::{debug, error, warn};
 type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
 type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
 
-#[async_trait::async_trait]
 pub trait RealtimeEgressTap: Send + Sync {
-    async fn deliver(
+    fn has_subscribers(&self, app_id: &str, channel: &str) -> bool;
+
+    fn deliver(
         &self,
         app_id: &str,
         channel: &str,
@@ -378,7 +379,10 @@ fn start_ai_rollup_worker(
                 }
                 let app_id = delivery.app_id.clone();
                 let channel = delivery.channel.clone();
-                let message_for_tap = delivery.message.clone();
+                let message_for_tap = realtime_egress_tap
+                    .as_ref()
+                    .filter(|tap| tap.has_subscribers(&app_id, &channel))
+                    .map(|_| delivery.message.clone());
                 if let Err(error) = connection_manager
                     .send(
                         &delivery.channel,
@@ -395,10 +399,12 @@ fn start_ai_rollup_worker(
                         error = %error,
                         "failed to flush AI append rollup delivery"
                     );
-                } else if let Some(tap) = realtime_egress_tap.as_ref() {
+                } else if let Some(tap) = realtime_egress_tap.as_ref()
+                    && let Some(message_for_tap) = message_for_tap.as_ref()
+                {
                     match MessageEnvelope::from_message(&message_for_tap, None, None, sockudo_core::history::now_ms()) {
                         Ok(envelope) => {
-                            if let Err(error) = tap.deliver(&app_id, &channel, &message_for_tap, &envelope).await {
+                            if let Err(error) = tap.deliver(&app_id, &channel, message_for_tap, &envelope) {
                                 warn!(
                                     app_id = %app_id,
                                     channel = %channel,

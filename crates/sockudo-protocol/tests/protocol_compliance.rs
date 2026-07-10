@@ -3,8 +3,8 @@ use sockudo_protocol::messages::{
     AI_ERROR_INVALID_TRANSPORT_HEADER, AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_EVENT_LEGACY_TURN_END,
     AI_EVENT_LEGACY_TURN_START, AI_EVENT_OUTPUT, AI_EVENT_RUN_END, AI_EVENT_RUN_RESUME,
     AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, AI_HEADER_LEGACY_TURN_ID, AI_HEADER_MSG_REGENERATE,
-    AI_HEADER_RUN_ID, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue, MessageData,
-    MessageExtras, PusherMessage, is_ai_event,
+    AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_ID, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue,
+    MessageData, MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
@@ -334,6 +334,60 @@ fn test_ai_transport_model_key_rejects_empty() {
         extras.validate_ai_headers().unwrap_err().code,
         AI_ERROR_INVALID_TRANSPORT_HEADER
     );
+}
+
+#[test]
+fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owner() {
+    let identity_keys = [
+        (AI_HEADER_RUN_ID, false),
+        (AI_HEADER_RUN_CLIENT_ID, true),
+        ("turn-client-id", false),
+        ("input-client-id", false),
+        ("input-codec-message-id", false),
+        ("codec-message-id", false),
+        ("parent", false),
+        ("fork-of", false),
+        ("stream-id", false),
+        ("invocation-id", false),
+        ("event-id", false),
+        ("step-id", false),
+        ("step-client-id", false),
+        ("start-serial", false),
+        ("msg-regenerate", false),
+        ("model", false),
+    ];
+
+    for (key, allowed) in identity_keys {
+        let extras = MessageExtras {
+            ai: Some(AiExtras {
+                transport: Some(HashMap::from([(key.to_string(), String::new())])),
+                codec: None,
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(extras.validate_ai_headers().is_ok(), allowed, "key={key}");
+    }
+}
+
+#[test]
+fn test_ai_transport_unknown_owner_sentinel_is_wire_preserved_but_not_identity() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([
+                (AI_HEADER_RUN_ID.to_string(), "run-1".to_string()),
+                (AI_HEADER_RUN_CLIENT_ID.to_string(), String::new()),
+            ])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+
+    let headers = extras.ai_transport_headers().expect("transport headers");
+    assert_eq!(headers.run_client_id(), Some(""));
+    assert_eq!(headers.run_client_identity(), None);
+    let wire = sonic_rs::to_value(&extras).expect("serialize extras");
+    assert_eq!(wire["ai"]["transport"][AI_HEADER_RUN_CLIENT_ID], "");
 }
 
 #[test]

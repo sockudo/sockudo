@@ -238,7 +238,7 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
                 run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
                     .as_ref()
-                    .and_then(|h| h.run_client_id())
+                    .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
@@ -248,7 +248,7 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
                 run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
                     .as_ref()
-                    .and_then(|h| h.run_client_id())
+                    .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
@@ -258,7 +258,7 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
                 run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
                     .as_ref()
-                    .and_then(|h| h.run_client_id())
+                    .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
@@ -271,7 +271,7 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
                         run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
                         client_id: headers
                             .as_ref()
-                            .and_then(|h| h.run_client_id())
+                            .and_then(|h| h.run_client_identity())
                             .map(str::to_owned),
                     }),
                     ..AiObservabilityUpdate::default()
@@ -295,7 +295,7 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
                 run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
                     .as_ref()
-                    .and_then(|h| h.run_client_id())
+                    .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
@@ -404,6 +404,26 @@ mod tests {
             cancel.cancel_requested.unwrap().run_id.as_deref(),
             Some("run-1")
         );
+    }
+
+    #[test]
+    fn treats_empty_run_client_id_as_absent_for_derived_observability() {
+        let tracker = AiObservabilityTracker::new(1);
+        let update = tracker.observe(
+            "app",
+            "ai-chat",
+            &ai_message(
+                AI_EVENT_RUN_START,
+                &[("run-id", "run-unknown"), ("run-client-id", "")],
+                "{}",
+            ),
+            1,
+        );
+
+        let started = update.run_started.expect("run-start observation");
+        assert_eq!(started.run_id.as_deref(), Some("run-unknown"));
+        assert_eq!(started.client_id, None);
+        assert!(!update.unparseable);
     }
 
     #[test]

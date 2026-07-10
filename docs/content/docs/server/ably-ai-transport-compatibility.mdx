@@ -38,6 +38,24 @@ Compatibility projections read a shared commit-time message envelope. This
 keeps IDs, publisher identity, timestamps, encoding chains, supported extras,
 history/recovery positions, and version operation metadata consistent across
 live delivery and REST reads while leaving Protocol V1's projection unchanged.
+
+### Realtime delivery bounds
+
+Compatibility delivery is injected at the native local delivery boundary. It
+is interest-gated, synchronous, and non-blocking when no Ably session is
+attached to a channel. Active sessions use separate bounded control and data
+queues, each limited by both frame count and bytes. ACK, ERROR, heartbeat, and
+close-control frames are prioritized over data frames. A data overflow marks
+continuity lost, sends a recoverable `90003` error when possible, and removes
+the stalled subscriber; the next attach/recovery reads canonical Sockudo hot
+replay or durable history.
+
+Messages are encoded once for each active JSON/MessagePack group and shared as
+immutable bytes across that group's subscribers. Session, token, channel, and
+queue state has hard bounds and periodic expiry. No compatibility lock is held
+while encoding or fanning out, and the compatibility projection does not alter
+Protocol V1 delivery.
+
 | History and recovery | Supported for AI Transport only | The harness covers history projection and recovery of missed append fragments. Broader Ably pagination/link behavior remains limited. |
 | Presence enter/update/leave | Supported for AI Transport only | Realtime presence frames are ACKed and fanned out for the reduced path. Full Ably presence-history parity is not claimed. |
 | Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes, but Ably mode capability enforcement is not complete. Sockudo app auth remains authoritative. |

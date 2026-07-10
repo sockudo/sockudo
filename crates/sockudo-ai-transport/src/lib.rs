@@ -219,12 +219,14 @@ impl RollupEngine {
         if matches!(action, MessageAction::Update | MessageAction::Delete) {
             if let Some(mut pending) = streams.remove(&key) {
                 self.decrement_channel(&channel_key);
-                deliveries.push(pending.flush(
-                    RollupDeliveryReason::TerminalFlush,
-                    app_id,
-                    channel,
-                ));
-                self.mark_delivered(1);
+                if pending.appended_count > 0 {
+                    deliveries.push(pending.flush(
+                        RollupDeliveryReason::TerminalFlush,
+                        app_id,
+                        channel,
+                    ));
+                    self.mark_delivered(1);
+                }
             }
             deliveries.push(delivery(
                 app_id,
@@ -245,12 +247,14 @@ impl RollupEngine {
         if is_terminal_append(&message) {
             if let Some(mut pending) = streams.remove(&key) {
                 self.decrement_channel(&channel_key);
-                deliveries.push(pending.flush(
-                    RollupDeliveryReason::TerminalFlush,
-                    app_id,
-                    channel,
-                ));
-                self.mark_delivered(1);
+                if pending.appended_count > 0 {
+                    deliveries.push(pending.flush(
+                        RollupDeliveryReason::TerminalFlush,
+                        app_id,
+                        channel,
+                    ));
+                    self.mark_delivered(1);
+                }
             }
             deliveries.push(delivery(
                 app_id,
@@ -683,6 +687,20 @@ mod tests {
     }
 
     #[test]
+    fn terminal_append_does_not_redeliver_the_immediate_first_append() {
+        let engine = RollupEngine::new(RollupConfig::default());
+        let first = engine.ingest("app", "ai:room", append("m1", "a", 1), 0);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].reason, RollupDeliveryReason::Immediate);
+
+        let terminal = engine.ingest("app", "ai:room", terminal_append("m1", "a"), 1);
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].reason, RollupDeliveryReason::Terminal);
+        assert_eq!(string_data(&terminal[0].message), "a");
+        assert_eq!(engine.active_streams(), 0);
+    }
+
+    #[test]
     fn update_flushes_pending_before_terminal() {
         let engine = RollupEngine::new(RollupConfig::default());
         assert_eq!(
@@ -777,8 +795,8 @@ mod tests {
         assert_eq!(engine.active_streams(), 1);
 
         let terminal = engine.ingest("app", "ai:room", terminal_append("m1", "a"), 2);
-        assert_eq!(terminal[0].reason, RollupDeliveryReason::TerminalFlush);
-        assert_eq!(terminal[1].reason, RollupDeliveryReason::Terminal);
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].reason, RollupDeliveryReason::Terminal);
         assert_eq!(engine.active_streams(), 0);
 
         let third = engine.ingest("app", "ai:room", append("m2", "bc", 3), 3);

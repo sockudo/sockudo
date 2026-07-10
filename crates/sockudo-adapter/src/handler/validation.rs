@@ -900,4 +900,76 @@ mod tests {
 
         validate_ai_client_id_headers(&message, None, AiPublishTrust::TrustedApp).unwrap();
     }
+
+    #[test]
+    fn ai_client_id_headers_reject_empty_unknown_owner_from_untrusted_clients() {
+        for key in ["run-client-id", "input-client-id", "step-client-id"] {
+            let message = PusherMessage {
+                event: Some("ai-input".to_string()),
+                channel: Some("private-ai".to_string()),
+                data: None,
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: Some(MessageExtras {
+                    ai: Some(AiExtras {
+                        transport: Some(HashMap::from([(key.to_string(), String::new())])),
+                        codec: None,
+                    }),
+                    ..Default::default()
+                }),
+                delta_sequence: None,
+                delta_conflation_key: None,
+            };
+
+            let error = validate_ai_client_id_headers(
+                &message,
+                Some("authenticated-client"),
+                AiPublishTrust::Client,
+            )
+            .expect_err(key);
+            assert_eq!(
+                error.code,
+                sockudo_protocol::messages::AI_ERROR_CLIENT_ID_SPOOF
+            );
+        }
+    }
+
+    #[test]
+    fn ai_client_id_headers_allow_empty_native_unknown_owner_for_trusted_app() {
+        let message = PusherMessage {
+            event: Some("ai-run-start".to_string()),
+            channel: Some("private-ai".to_string()),
+            data: None,
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: Some(MessageExtras {
+                ai: Some(AiExtras {
+                    transport: Some(HashMap::from([(
+                        "run-client-id".to_string(),
+                        String::new(),
+                    )])),
+                    codec: None,
+                }),
+                ..Default::default()
+            }),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        validate_ai_client_id_headers(&message, None, AiPublishTrust::TrustedApp).unwrap();
+    }
 }
