@@ -176,6 +176,12 @@ pub(super) fn surreal_error<E: std::fmt::Display>(error: E) -> PushStorageError 
     PushStorageError::Backend(format!("push SurrealDB backend error: {error}"))
 }
 
+#[cfg(feature = "surrealdb")]
+pub(super) fn surreal_conflict_error<E: std::fmt::Display>(error: &E) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("already") || message.contains("duplicate") || message.contains("unique")
+}
+
 #[cfg(feature = "scylladb")]
 pub(super) fn scylla_error<E: std::fmt::Display>(error: E) -> PushStorageError {
     PushStorageError::Backend(format!("push ScyllaDB backend error: {error}"))

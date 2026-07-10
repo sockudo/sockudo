@@ -10,7 +10,7 @@ use crate::domain::{
 use crate::metrics::PushMetrics;
 use crate::pipeline::{
     PushPipelineError, PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage,
-    dedupe_key, guard_publish_status_transition, lock_publish_status,
+    dedupe_key, guard_publish_status_transition, mutate_publish_status_with_cas,
 };
 use crate::storage::{DynPushStore, SchedulerLock};
 use crate::transform::render_all_provider_payloads;
@@ -173,44 +173,52 @@ impl PushPlanner {
         event: &PublishLogEvent,
         state: PublishLifecycleState,
     ) -> PushPipelineResult<()> {
-        let _status_guard = lock_publish_status(&event.app_id, &event.publish_id).await;
-        if let Some(mut status) = self
-            .store
-            .get_publish_status(&event.app_id, &event.publish_id)
-            .await?
-        {
-            let next = state;
-            if !guard_publish_status_transition(&self.metrics, "planner", &status, next) {
-                return Ok(());
-            }
-            status.state = next;
-            if next == PublishLifecycleState::Dispatching {
-                status.retry_after_ms = event
-                    .intent
-                    .not_before_ms
-                    .filter(|not_before_ms| *not_before_ms > crate::pipeline::now_ms());
-            }
-            self.store.put_publish_status(status).await?;
-        }
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "planner",
+            &event.app_id,
+            &event.publish_id,
+            |current| {
+                let next = state;
+                if !guard_publish_status_transition(&self.metrics, "planner", current, next) {
+                    return Ok(None);
+                }
+                let mut status = current.clone();
+                status.state = next;
+                if next == PublishLifecycleState::Dispatching {
+                    status.retry_after_ms = event
+                        .intent
+                        .not_before_ms
+                        .filter(|not_before_ms| *not_before_ms > crate::pipeline::now_ms());
+                }
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 
     async fn mark_failed(&self, event: &PublishLogEvent, reason: String) -> PushPipelineResult<()> {
-        let _status_guard = lock_publish_status(&event.app_id, &event.publish_id).await;
-        if let Some(mut status) = self
-            .store
-            .get_publish_status(&event.app_id, &event.publish_id)
-            .await?
-        {
-            let next = PublishLifecycleState::Failed;
-            if !guard_publish_status_transition(&self.metrics, "planner", &status, next) {
-                return Ok(());
-            }
-            status.state = next;
-            status.error_reason = Some(reason);
-            status.retry_after_ms = None;
-            self.store.put_publish_status(status).await?;
-        }
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "planner",
+            &event.app_id,
+            &event.publish_id,
+            |current| {
+                let next = PublishLifecycleState::Failed;
+                if !guard_publish_status_transition(&self.metrics, "planner", current, next) {
+                    return Ok(None);
+                }
+                let mut status = current.clone();
+                status.state = next;
+                status.error_reason = Some(reason.clone());
+                status.retry_after_ms = None;
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 

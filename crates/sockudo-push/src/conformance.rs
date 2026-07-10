@@ -10,10 +10,11 @@ use crate::domain::{
     PublishStatus, PushCursor, PushProviderKind, PushRecipient, SecretString, TemplateContent,
 };
 use crate::storage::{
-    DeviceRegistrationChange, IdempotencyRecord, PushCredentialStore, PushDeliveryEventStore,
-    PushDeviceStore, PushIdempotencyStore, PushPublishLogStore, PushPublishStatusStore,
-    PushScheduleStore, PushStorageBackendKind, PushStorageError, PushStorageResult,
-    PushSubscriptionStore, PushTemplateStore, ScheduledPushJob,
+    DeviceRegistrationChange, IdempotencyRecord, PublishStatusCasOutcome, PushCredentialStore,
+    PushDeliveryEventStore, PushDeviceStore, PushIdempotencyStore, PushPublishLogStore,
+    PushPublishStatusStore, PushScheduleStore, PushStorageBackendKind, PushStorageError,
+    PushStorageResult, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob,
+    VersionedPublishStatus,
 };
 
 pub struct PushStoreConformance;
@@ -185,10 +186,59 @@ impl PushStoreConformance {
             retry_after_ms: None,
             error_reason: None,
         };
-        store.put_publish_status(status.clone()).await?;
+        assert_eq!(
+            store
+                .create_publish_status_if_absent(status.clone())
+                .await?,
+            PublishStatusCasOutcome::Inserted { revision: 1 }
+        );
+        let mut conflicting_create = status.clone();
+        conflicting_create.state = PublishLifecycleState::Failed;
+        assert_eq!(
+            store
+                .create_publish_status_if_absent(conflicting_create)
+                .await?,
+            PublishStatusCasOutcome::Conflict
+        );
+        let initial = store
+            .get_versioned_publish_status("app-1", "publish-1")
+            .await?
+            .expect("inserted status must be readable");
+        assert_eq!(initial.revision, 1);
+        assert_eq!(initial.status, status);
+
+        let mut planning = status.clone();
+        planning.state = PublishLifecycleState::Planning;
+        assert_eq!(
+            store
+                .compare_and_swap_publish_status(&initial, planning.clone())
+                .await?,
+            PublishStatusCasOutcome::Updated { revision: 2 }
+        );
+        assert_eq!(
+            store
+                .compare_and_swap_publish_status(&initial, status.clone())
+                .await?,
+            PublishStatusCasOutcome::Conflict
+        );
         assert_eq!(
             store.get_publish_status("app-1", "publish-1").await?,
-            Some(status)
+            Some(planning)
+        );
+
+        let missing = VersionedPublishStatus {
+            status: PublishStatus {
+                publish_id: "missing".to_owned(),
+                ..status.clone()
+            },
+            revision: 1,
+            updated_at_ms: 0,
+        };
+        assert_eq!(
+            store
+                .compare_and_swap_publish_status(&missing, missing.status.clone())
+                .await?,
+            PublishStatusCasOutcome::Missing
         );
 
         let event = crate::domain::PublishLogEvent {

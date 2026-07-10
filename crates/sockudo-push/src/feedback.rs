@@ -7,7 +7,8 @@ use crate::domain::{
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::{PushMetrics, provider_label};
 use crate::pipeline::{
-    PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, lock_publish_status, now_ms,
+    PublishStatusMutationOutcome, PushPipelineResult, PushQueuePayload, PushQueueStage,
+    QueueMessage, mutate_publish_status_with_cas, now_ms,
 };
 use crate::retry::RetryPolicy;
 use crate::storage::{DynPushStore, IdempotencyRecord};
@@ -252,38 +253,49 @@ impl PushFeedbackProcessor {
         &self,
         result: &DeliveryResult,
     ) -> PushPipelineResult<Option<PublishStatus>> {
-        let _status_guard = lock_publish_status(&result.app_id, &result.publish_id).await;
-        let Some(current) = self
-            .store
-            .get_publish_status(&result.app_id, &result.publish_id)
-            .await?
-        else {
-            return Ok(None);
+        let outcome = mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "feedback",
+            &result.app_id,
+            &result.publish_id,
+            |current| {
+                let mut status = current.clone();
+                match result.outcome {
+                    DeliveryOutcome::Accepted => {
+                        status.counters.dispatched = status.counters.dispatched.saturating_add(1);
+                        status.counters.succeeded = status.counters.succeeded.saturating_add(1);
+                    }
+                    DeliveryOutcome::Rejected => {
+                        status.counters.dispatched = status.counters.dispatched.saturating_add(1);
+                        status.counters.failed = status.counters.failed.saturating_add(1);
+                    }
+                    DeliveryOutcome::Expired => {
+                        status.counters.dispatched = status.counters.dispatched.saturating_add(1);
+                        status.counters.expired = status.counters.expired.saturating_add(1);
+                    }
+                    DeliveryOutcome::Retryable | DeliveryOutcome::Cancelled => {}
+                }
+                if let Some(retry_after_ms) =
+                    result.error.as_ref().and_then(|error| error.retry_after_ms)
+                {
+                    status.retry_after_ms = Some(retry_after_ms);
+                }
+                let next = status.counters.resolve_lifecycle_state(current.state);
+                // Audience counts for channel/client targets are estimates until fanout. A late
+                // valid outcome may refine one terminal delivery summary into another, but never
+                // reactivates it.
+                status.state = next;
+                Ok(Some(status))
+            },
+        )
+        .await?;
+        let status = match outcome {
+            PublishStatusMutationOutcome::Missing => return Ok(None),
+            PublishStatusMutationOutcome::Unchanged(status) => return Ok(Some(status)),
+            PublishStatusMutationOutcome::Updated(status) => status,
         };
-        let mut status = current.clone();
 
-        match result.outcome {
-            DeliveryOutcome::Accepted => {
-                status.counters.dispatched = status.counters.dispatched.saturating_add(1);
-                status.counters.succeeded = status.counters.succeeded.saturating_add(1);
-            }
-            DeliveryOutcome::Rejected => {
-                status.counters.dispatched = status.counters.dispatched.saturating_add(1);
-                status.counters.failed = status.counters.failed.saturating_add(1);
-            }
-            DeliveryOutcome::Expired => {
-                status.counters.dispatched = status.counters.dispatched.saturating_add(1);
-                status.counters.expired = status.counters.expired.saturating_add(1);
-            }
-            DeliveryOutcome::Retryable | DeliveryOutcome::Cancelled => {}
-        }
-        if let Some(retry_after_ms) = result.error.as_ref().and_then(|error| error.retry_after_ms) {
-            status.retry_after_ms = Some(retry_after_ms);
-        }
-        let next = status.counters.resolve_lifecycle_state(current.state);
-        // Audience counts for channel/client targets are estimates until fanout. A late valid
-        // outcome may refine one terminal delivery summary into another, but never reactivates it.
-        status.state = next;
         self.metrics
             .delivery_status(&result.app_id, outcome_label(result.outcome));
         if matches!(
@@ -306,7 +318,6 @@ impl PushFeedbackProcessor {
                 "push publish completed"
             );
         }
-        self.store.put_publish_status(status.clone()).await?;
         Ok(Some(status))
     }
 
@@ -422,33 +433,40 @@ impl PushFeedbackProcessor {
         result: &DeliveryResult,
         next_attempt_at_ms: u64,
     ) -> PushPipelineResult<()> {
-        let _status_guard = lock_publish_status(&result.app_id, &result.publish_id).await;
-        if let Some(mut status) = self
-            .store
-            .get_publish_status(&result.app_id, &result.publish_id)
-            .await?
-        {
-            status.counters.retry_scheduled = status.counters.retry_scheduled.saturating_add(1);
-            status.retry_after_ms = Some(next_attempt_at_ms);
-            self.store.put_publish_status(status).await?;
-        }
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "feedback",
+            &result.app_id,
+            &result.publish_id,
+            |current| {
+                let mut status = current.clone();
+                status.counters.retry_scheduled = status.counters.retry_scheduled.saturating_add(1);
+                status.retry_after_ms = Some(next_attempt_at_ms);
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 
     async fn mark_retry_context_missing(&self, result: &DeliveryResult) -> PushPipelineResult<()> {
-        let _status_guard = lock_publish_status(&result.app_id, &result.publish_id).await;
-        if let Some(current) = self
-            .store
-            .get_publish_status(&result.app_id, &result.publish_id)
-            .await?
-        {
-            let mut status = current.clone();
-            status.counters.dead_lettered = status.counters.dead_lettered.saturating_add(1);
-            status.error_reason = Some("retryable result missing retry context".to_owned());
-            let next = status.counters.resolve_lifecycle_state(current.state);
-            status.state = next;
-            self.store.put_publish_status(status).await?;
-        }
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "feedback",
+            &result.app_id,
+            &result.publish_id,
+            |current| {
+                let mut status = current.clone();
+                status.counters.dead_lettered = status.counters.dead_lettered.saturating_add(1);
+                status.error_reason = Some("retryable result missing retry context".to_owned());
+                let next = status.counters.resolve_lifecycle_state(current.state);
+                status.state = next;
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 }

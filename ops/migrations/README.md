@@ -13,6 +13,10 @@ How to use it:
   [postgres/001_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgres/001_push_schema.sql)
 - Push MySQL schema: use
   [mysql/003_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/003_push_schema.sql)
+- Existing push PostgreSQL schema version 1: apply
+  [postgres/002_push_status_revision.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgres/002_push_status_revision.sql)
+- Existing push MySQL/MariaDB schema version 1: apply
+  [mysql/004_push_status_revision.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/004_push_status_revision.sql)
 - Test-only MySQL grants/user setup: use
   [mysql/002_test_access.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/002_test_access.sql)
 
@@ -28,6 +32,26 @@ Backend notes:
   additive and side by side with immutable history. Fresh schemas now include
   version-store and annotation tables for SQL backends, and runtime-provisioned
   backends are expected to create equivalent collections automatically.
+
+Push publish-status CAS upgrade:
+
+- The current push schema version is 2. Fresh push schemas already include the
+  `push_publish_status.revision` column and both schema-version records.
+- Re-running a fresh-schema script against version 1 does not mark version 2
+  unless the revision column already exists; existing installations must still
+  use the additive upgrade script.
+- For an existing schema version 1 deployment, pause push admission, drain and
+  stop every old push worker, apply the backend-specific upgrade, deploy the
+  new binary to every node, and only then resume push work.
+- Do not run schema-version-1 and schema-version-2 push workers together. Older
+  workers use blind status writes and can overwrite a CAS-protected update.
+- PostgreSQL applies the column and version record transactionally. MySQL and
+  MariaDB commit DDL implicitly, so the version record is deliberately written
+  only after the column addition succeeds. If the process stops between those
+  statements, verify the column and then apply the version insert manually.
+- Rollback requires stopping all schema-version-2 workers before removing the
+  version-2 record and revision column. Do not drop the column while a new
+  worker can still issue conditional status writes.
 
 Presence history:
 

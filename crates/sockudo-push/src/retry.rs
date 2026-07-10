@@ -9,7 +9,7 @@ use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
 use crate::pipeline::{
     PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage,
-    guard_publish_status_transition, lock_publish_status, now_ms,
+    guard_publish_status_transition, mutate_publish_status_with_cas, now_ms,
 };
 use crate::storage::{DynPushStore, IdempotencyRecord, SchedulerLock};
 
@@ -339,8 +339,7 @@ impl PushRetryScheduler {
             batch_id: retry_job.batch_id.clone(),
             jobs: vec![retry_job],
         };
-        let _status_guard = lock_publish_status(&entry.app_id, &entry.publish_id).await;
-        let mut status = self
+        let status = self
             .store
             .get_publish_status(&entry.app_id, &entry.publish_id)
             .await?;
@@ -358,7 +357,6 @@ impl PushRetryScheduler {
                     PublishLifecycleState::Dispatching,
                 )
             {
-                drop(_status_guard);
                 self.put_retry_idempotency(&entry).await?;
                 self.queue.ack(message.ack).await?;
                 return Ok(());
@@ -371,16 +369,43 @@ impl PushRetryScheduler {
                 PushQueuePayload::DeliveryBatch(Box::new(batch)),
             )
             .await?;
-        if let Some(status) = status.as_mut() {
-            status.counters.retry_attempted = status.counters.retry_attempted.saturating_add(1);
-            if !status.state.is_terminal() {
-                status.state = PublishLifecycleState::Dispatching;
-            }
-            status.retry_after_ms = None;
-            self.store.put_publish_status(status.clone()).await?;
-        }
-        drop(_status_guard);
+        // The successor job is already visible. Record its deterministic retry key before status
+        // accounting so a status-store failure cannot make source-message redelivery enqueue the
+        // same provider attempt again.
         self.put_retry_idempotency(&entry).await?;
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "retry",
+            &entry.app_id,
+            &entry.publish_id,
+            |current| {
+                let scheduled_retry_is_pending = current.state.is_terminal()
+                    && current.counters.retry_attempted < current.counters.retry_scheduled;
+                if current.state.is_terminal() && !scheduled_retry_is_pending {
+                    return Ok(None);
+                }
+                if !current.state.is_terminal()
+                    && !guard_publish_status_transition(
+                        &self.metrics,
+                        "retry",
+                        current,
+                        PublishLifecycleState::Dispatching,
+                    )
+                {
+                    return Ok(None);
+                }
+
+                let mut status = current.clone();
+                status.counters.retry_attempted = status.counters.retry_attempted.saturating_add(1);
+                if !status.state.is_terminal() {
+                    status.state = PublishLifecycleState::Dispatching;
+                }
+                status.retry_after_ms = None;
+                Ok(Some(status))
+            },
+        )
+        .await?;
         self.metrics.retry_attempted(provider, &entry.app_id);
         emit_push_meta_event(PushMetaEvent::scheduler_event(
             &entry.app_id,
@@ -450,29 +475,33 @@ impl PushRetryScheduler {
         kind: RetryTerminalKind,
         reason: &str,
     ) -> PushPipelineResult<()> {
-        let _status_guard = lock_publish_status(&entry.app_id, &entry.publish_id).await;
-        let Some(mut status) = self
-            .store
-            .get_publish_status(&entry.app_id, &entry.publish_id)
-            .await?
-        else {
-            return Ok(());
-        };
-
-        match kind {
-            RetryTerminalKind::Expired => {
-                status.counters.expired = status.counters.expired.saturating_add(1);
-            }
-            RetryTerminalKind::DeadLettered => {
-                status.counters.dead_lettered = status.counters.dead_lettered.saturating_add(1);
-            }
-        }
-        status.error_reason = Some(redact_retry_reason(reason, entry.last_error.as_ref()));
-        let next = status.counters.resolve_lifecycle_state(status.state);
-        // Like feedback, a terminal retry outcome may refine a summary after a mutable audience
-        // exceeded its acceptance-time estimate. It never moves the publish back to an active state.
-        status.state = next;
-        self.store.put_publish_status(status).await?;
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "retry",
+            &entry.app_id,
+            &entry.publish_id,
+            |current| {
+                let mut status = current.clone();
+                match kind {
+                    RetryTerminalKind::Expired => {
+                        status.counters.expired = status.counters.expired.saturating_add(1);
+                    }
+                    RetryTerminalKind::DeadLettered => {
+                        status.counters.dead_lettered =
+                            status.counters.dead_lettered.saturating_add(1);
+                    }
+                }
+                status.error_reason = Some(redact_retry_reason(reason, entry.last_error.as_ref()));
+                let next = status.counters.resolve_lifecycle_state(status.state);
+                // Like feedback, a terminal retry outcome may refine a summary after a mutable
+                // audience exceeded its acceptance-time estimate. It never moves the publish back
+                // to an active state.
+                status.state = next;
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 

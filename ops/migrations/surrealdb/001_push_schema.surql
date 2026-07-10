@@ -93,6 +93,8 @@ DEFINE FIELD publish_id ON push_publish_status TYPE string;
 DEFINE FIELD state ON push_publish_status TYPE string;
 DEFINE FIELD counters_json ON push_publish_status TYPE object;
 DEFINE FIELD error_reason ON push_publish_status TYPE option<string>;
+DEFINE FIELD revision ON push_publish_status TYPE int ASSERT $value > 0;
+DEFINE FIELD updated_at_ms ON push_publish_status TYPE int;
 DEFINE INDEX publish_status ON push_publish_status FIELDS app_id, publish_id UNIQUE;
 
 DEFINE TABLE push_delivery_events SCHEMAFULL;

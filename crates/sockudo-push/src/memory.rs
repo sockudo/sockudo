@@ -13,10 +13,12 @@ use crate::domain::{
 };
 use crate::storage::{
     DeviceRegistrationChange, DeviceRegistrationOutcome, IdempotencyRecord,
-    OperatorInvalidationEvent, Page, PushCleanupStore, PushCredentialStore, PushDeliveryEventStore,
-    PushDeviceStore, PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore,
-    PushPublishLogStore, PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore,
-    PushStorageResult, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob, SchedulerLock,
+    OperatorInvalidationEvent, Page, PublishStatusCasOutcome, PushCleanupStore,
+    PushCredentialStore, PushDeliveryEventStore, PushDeviceStore, PushFanoutShardStore,
+    PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore, PushPublishStatusStore,
+    PushScheduleStore, PushSchedulerLockStore, PushStorageError, PushStorageResult,
+    PushSubscriptionStore, PushTemplateStore, ScheduledPushJob, SchedulerLock,
+    VersionedPublishStatus,
 };
 
 const MEMORY_DELIVERY_EVENT_CAP: usize = 100_000;
@@ -32,8 +34,7 @@ struct MemoryPushState {
     subscriptions: BTreeMap<(String, String, String), ChannelSubscription>,
     credentials: BTreeMap<(String, String), ProviderCredential>,
     templates: BTreeMap<(String, String), NotificationTemplate>,
-    publish_status: BTreeMap<(String, String), PublishStatus>,
-    publish_status_updated_at: BTreeMap<(String, String), u64>,
+    publish_status: BTreeMap<(String, String), VersionedPublishStatus>,
     publish_log: BTreeMap<(String, u64, String), PublishLogEvent>,
     fanout_shards: BTreeMap<(String, String, String), ShardJob>,
     scheduled_by_id: BTreeMap<(String, String), ScheduledPushJob>,
@@ -55,11 +56,15 @@ impl MemoryPushStore {
         publish_id: &str,
         updated_at_ms: u64,
     ) {
-        self.inner
+        if let Some(status) = self
+            .inner
             .write()
             .await
-            .publish_status_updated_at
-            .insert((app_id.to_owned(), publish_id.to_owned()), updated_at_ms);
+            .publish_status
+            .get_mut(&(app_id.to_owned(), publish_id.to_owned()))
+        {
+            status.updated_at_ms = updated_at_ms;
+        }
     }
 }
 
@@ -512,21 +517,31 @@ impl PushTemplateStore for MemoryPushStore {
 
 #[async_trait]
 impl PushPublishStatusStore for MemoryPushStore {
-    async fn put_publish_status(&self, status: PublishStatus) -> PushStorageResult<()> {
+    async fn create_publish_status_if_absent(
+        &self,
+        status: PublishStatus,
+    ) -> PushStorageResult<PublishStatusCasOutcome> {
         let key = (status.app_id.clone(), status.publish_id.clone());
         let mut inner = self.inner.write().await;
-        inner
-            .publish_status_updated_at
-            .insert(key.clone(), crate::pipeline::now_ms());
-        inner.publish_status.insert(key, status);
-        Ok(())
+        if inner.publish_status.contains_key(&key) {
+            return Ok(PublishStatusCasOutcome::Conflict);
+        }
+        inner.publish_status.insert(
+            key,
+            VersionedPublishStatus {
+                status,
+                revision: 1,
+                updated_at_ms: crate::pipeline::now_ms(),
+            },
+        );
+        Ok(PublishStatusCasOutcome::Inserted { revision: 1 })
     }
 
-    async fn get_publish_status(
+    async fn get_versioned_publish_status(
         &self,
         app_id: &str,
         publish_id: &str,
-    ) -> PushStorageResult<Option<PublishStatus>> {
+    ) -> PushStorageResult<Option<VersionedPublishStatus>> {
         Ok(self
             .inner
             .read()
@@ -534,6 +549,42 @@ impl PushPublishStatusStore for MemoryPushStore {
             .publish_status
             .get(&(app_id.to_owned(), publish_id.to_owned()))
             .cloned())
+    }
+
+    async fn compare_and_swap_publish_status(
+        &self,
+        expected: &VersionedPublishStatus,
+        next: PublishStatus,
+    ) -> PushStorageResult<PublishStatusCasOutcome> {
+        if expected.status.app_id != next.app_id
+            || expected.status.publish_id != next.publish_id
+            || expected.revision == 0
+        {
+            return Err(PushStorageError::Backend(
+                "invalid publish status compare-and-swap identity or revision".to_owned(),
+            ));
+        }
+        let next_revision = expected.revision.checked_add(1).ok_or_else(|| {
+            PushStorageError::Backend("publish status revision overflow".to_owned())
+        })?;
+        let key = (next.app_id.clone(), next.publish_id.clone());
+        let mut inner = self.inner.write().await;
+        let Some(current) = inner.publish_status.get_mut(&key) else {
+            return Ok(PublishStatusCasOutcome::Missing);
+        };
+        if current.revision != expected.revision || current.updated_at_ms != expected.updated_at_ms
+        {
+            return Ok(PublishStatusCasOutcome::Conflict);
+        }
+        let updated_at_ms = crate::pipeline::now_ms().max(current.updated_at_ms.saturating_add(1));
+        *current = VersionedPublishStatus {
+            status: next,
+            revision: next_revision,
+            updated_at_ms,
+        };
+        Ok(PublishStatusCasOutcome::Updated {
+            revision: next_revision,
+        })
     }
 }
 
@@ -917,7 +968,6 @@ impl PushCleanupStore for MemoryPushStore {
             let (counters, keys) = cleanup_status_keys(&inner, cutoff_ms, limit);
             for key in keys {
                 inner.publish_status.remove(&key);
-                inner.publish_status_updated_at.remove(&key);
             }
             remaining = remaining.saturating_sub(counters.deleted as usize);
             report.publish_statuses = counters;
@@ -1066,12 +1116,8 @@ fn cleanup_status_keys(
         inner.publish_status.iter(),
         limit,
         |item| {
-            let (key, status) = *item;
-            terminal_publish_state(status.state)
-                && inner
-                    .publish_status_updated_at
-                    .get(key)
-                    .is_some_and(|updated_at_ms| *updated_at_ms < cutoff_ms)
+            let (_, status) = *item;
+            terminal_publish_state(status.status.state) && status.updated_at_ms < cutoff_ms
         },
         |item| item.0.clone(),
     )
@@ -1206,6 +1252,109 @@ mod tests {
         PushStoreConformance::assert_concurrent_registration_update(MemoryPushStore::new())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_status_cas_allows_exactly_one_writer_per_revision() {
+        let store = MemoryPushStore::new();
+        let status = PublishStatus {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            state: crate::domain::PublishLifecycleState::Queued,
+            counters: crate::domain::PublishCounters::default(),
+            fanout_regime: None,
+            retry_after_ms: None,
+            error_reason: None,
+        };
+        assert_eq!(
+            store
+                .create_publish_status_if_absent(status.clone())
+                .await
+                .unwrap(),
+            PublishStatusCasOutcome::Inserted { revision: 1 }
+        );
+        let expected = store
+            .get_versioned_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut planning = status.clone();
+        planning.state = crate::domain::PublishLifecycleState::Planning;
+        let mut failed = status;
+        failed.state = crate::domain::PublishLifecycleState::Failed;
+
+        let (left, right) = tokio::join!(
+            store.compare_and_swap_publish_status(&expected, planning),
+            store.compare_and_swap_publish_status(&expected, failed),
+        );
+        let outcomes = [left.unwrap(), right.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, PublishStatusCasOutcome::Updated { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, PublishStatusCasOutcome::Conflict))
+                .count(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_versioned_publish_status("app-1", "publish-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_status_cas_rejects_stale_snapshot_after_recreation() {
+        let store = MemoryPushStore::new();
+        let status = PublishStatus {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            state: crate::domain::PublishLifecycleState::Queued,
+            counters: crate::domain::PublishCounters::default(),
+            fanout_regime: None,
+            retry_after_ms: None,
+            error_reason: None,
+        };
+        store
+            .create_publish_status_if_absent(status.clone())
+            .await
+            .unwrap();
+        store
+            .set_publish_status_updated_at_for_test("app-1", "publish-1", 1)
+            .await;
+        let stale = store
+            .get_versioned_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .inner
+            .write()
+            .await
+            .publish_status
+            .remove(&("app-1".to_owned(), "publish-1".to_owned()));
+        store
+            .create_publish_status_if_absent(status.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .compare_and_swap_publish_status(&stale, status)
+                .await
+                .unwrap(),
+            PublishStatusCasOutcome::Conflict
+        );
     }
 
     #[test]

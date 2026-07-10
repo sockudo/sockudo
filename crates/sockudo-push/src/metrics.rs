@@ -56,6 +56,8 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
     ),
     PushMetricSpec::counter("sockudo_push_duplicate_suppressed_total", &[]),
     PushMetricSpec::counter("sockudo_push_invariant_violations_total", &["invariant"]),
+    PushMetricSpec::counter("sockudo_push_status_cas_conflicts_total", &["component"]),
+    PushMetricSpec::counter("sockudo_push_status_cas_exhausted_total", &["component"]),
     PushMetricSpec::gauge("sockudo_push_devices_total", &["app", "state"]),
     PushMetricSpec::counter(
         "sockudo_push_device_state_transitions_total",
@@ -411,6 +413,22 @@ impl PushMetrics {
         self.counter(
             "sockudo_push_invariant_violations_total",
             &[("invariant", "status_transition")],
+            1,
+        );
+    }
+
+    pub fn publish_status_cas_conflict(&self, component: &'static str) {
+        self.counter(
+            "sockudo_push_status_cas_conflicts_total",
+            &[("component", component)],
+            1,
+        );
+    }
+
+    pub fn publish_status_cas_exhausted(&self, component: &'static str) {
+        self.counter(
+            "sockudo_push_status_cas_exhausted_total",
+            &[("component", component)],
             1,
         );
     }
@@ -819,6 +837,8 @@ mod tests {
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
         assert!(names.contains("sockudo_push_invariant_violations_total"));
+        assert!(names.contains("sockudo_push_status_cas_conflicts_total"));
+        assert!(names.contains("sockudo_push_status_cas_exhausted_total"));
         let required = [
             "sockudo_push_dispatched_total",
             "sockudo_push_dispatch_duration_seconds",
@@ -891,11 +911,15 @@ mod tests {
         );
         metrics.duplicate_suppressed();
         metrics.status_transition_invariant_violation();
+        metrics.publish_status_cas_conflict("feedback");
+        metrics.publish_status_cas_exhausted("feedback");
 
         assert_eq!(metrics.get("sockudo_push_publish_accepted_total"), 1);
         assert_eq!(metrics.get("sockudo_push_dispatched_total"), 1);
         assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 1);
         assert_eq!(metrics.get("sockudo_push_invariant_violations_total"), 1);
+        assert_eq!(metrics.get("sockudo_push_status_cas_conflicts_total"), 1);
+        assert_eq!(metrics.get("sockudo_push_status_cas_exhausted_total"), 1);
         let invariant_labels = metrics
             .snapshot()
             .into_iter()
