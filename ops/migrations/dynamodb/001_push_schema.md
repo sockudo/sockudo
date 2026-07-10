@@ -34,6 +34,12 @@ partitions.
 | `push_dead_letters` | `push_dead_letters` | `APP#<app_id>#PUBLISH#<publish_id>` | `DLQ#<occurred_at_ms>#<dead_letter_id>` |
 | `push_idempotency` | `push_idempotency` | `APP#<app_id>#IDEMPOTENCY#<idempotency_key>` | `META` |
 
+`publish_status` data is a versioned envelope containing the public status, a
+strictly positive `revision`, and authoritative `updated_at_ms`. Creation uses a
+conditional put and every replacement conditions on the complete prior
+envelope. The update-time index is advisory; cleanup conditionally deletes only
+the envelope revision and timestamp it inspected.
+
 Hot channels must derive `bucket` from stable hashing of `device_id`. Bucket
 counts are part of app-level capacity configuration and may increase only
 through dual-write/backfill.

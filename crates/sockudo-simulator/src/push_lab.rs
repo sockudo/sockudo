@@ -338,7 +338,9 @@ impl PushLab {
         tick: u64,
         scheduler: &mut DeterministicFaultScheduler,
     ) -> SimulatorResult<()> {
-        let device_id = self.ensure_active_device(tick, scheduler).await?;
+        let Some(device_id) = self.ensure_active_device(tick, scheduler).await? else {
+            return Ok(());
+        };
         let channel = self.random_channel(scheduler);
         if self.backend_outage || self.write_fails_before_commit(tick, scheduler, "subscribe") {
             return Ok(());
@@ -1575,7 +1577,9 @@ impl PushLab {
         }) {
             return Ok(());
         }
-        let device_id = self.ensure_active_device(tick, scheduler).await?;
+        let Some(device_id) = self.ensure_active_device(tick, scheduler).await? else {
+            return Ok(());
+        };
         if let Some(device) = self.devices.get_mut(&device_id) {
             self.real.upsert_subscription(channel, &device_id).await?;
             device.subscriptions.insert(channel.to_string());
@@ -1583,25 +1587,30 @@ impl PushLab {
         Ok(())
     }
 
+    /// Return the id of a device that is active in the model, registering a new one if none exist.
+    ///
+    /// Returns `None` when no active device can be guaranteed — for example when a fresh
+    /// registration is dropped by an injected pre-commit write fault. Callers must not record model
+    /// state (subscriptions, reactivation) against a `None`/absent device, because the real
+    /// subsystem never persisted it and the shadow model would then diverge from it.
     async fn ensure_active_device(
         &mut self,
         tick: u64,
         scheduler: &mut DeterministicFaultScheduler,
-    ) -> SimulatorResult<String> {
+    ) -> SimulatorResult<Option<String>> {
         if let Some(device) = self
             .devices
             .values()
             .find(|device| device.state == DeviceState::Active)
         {
-            return Ok(device.id.clone());
+            return Ok(Some(device.id.clone()));
         }
         self.register_or_update_device(tick, scheduler).await?;
         Ok(self
             .devices
             .values()
             .find(|device| device.state == DeviceState::Active)
-            .map(|device| device.id.clone())
-            .unwrap_or_else(|| "device-00000000000000000001".to_string()))
+            .map(|device| device.id.clone()))
     }
 
     fn random_device_id(&self, scheduler: &mut DeterministicFaultScheduler) -> Option<String> {

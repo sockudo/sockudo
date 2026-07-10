@@ -163,9 +163,118 @@ pub struct BufferedRewindMessage {
     pub message: PusherMessage,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RewindGateLimit {
+    Messages,
+    Bytes,
+}
+
+impl RewindGateLimit {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Messages => "messages",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RewindGateOverflow {
+    pub(super) limit_kind: RewindGateLimit,
+    pub(super) limit: usize,
+    pub(super) buffered_messages: usize,
+    pub(super) buffered_bytes: usize,
+    pub(super) incoming_message_bytes: usize,
+}
+
+#[derive(Debug)]
 pub struct RewindGate {
-    pub buffered: Vec<BufferedRewindMessage>,
+    buffered: Vec<BufferedRewindMessage>,
+    buffered_bytes: usize,
+    max_messages: usize,
+    max_bytes: Option<usize>,
+    overflowed: bool,
+}
+
+impl Default for RewindGate {
+    fn default() -> Self {
+        Self::new(WebSocketBufferConfig::default())
+    }
+}
+
+impl RewindGate {
+    pub(super) fn new(config: WebSocketBufferConfig) -> Self {
+        Self {
+            buffered: Vec::new(),
+            buffered_bytes: 0,
+            max_messages: config.channel_capacity(),
+            max_bytes: config.limit.byte_limit(),
+            overflowed: false,
+        }
+    }
+
+    pub(super) fn try_buffer(
+        &mut self,
+        message: BufferedRewindMessage,
+        message_bytes: usize,
+    ) -> Result<(), RewindGateOverflow> {
+        debug_assert!(!self.overflowed, "invalid rewind gate accepted new work");
+
+        if self.buffered.len() >= self.max_messages {
+            return Err(self.invalidate(RewindGateOverflow {
+                limit_kind: RewindGateLimit::Messages,
+                limit: self.max_messages,
+                buffered_messages: self.buffered.len(),
+                buffered_bytes: self.buffered_bytes,
+                incoming_message_bytes: message_bytes,
+            }));
+        }
+
+        let Some(next_buffered_bytes) = self.buffered_bytes.checked_add(message_bytes) else {
+            return Err(self.invalidate(RewindGateOverflow {
+                limit_kind: RewindGateLimit::Bytes,
+                limit: self.max_bytes.unwrap_or(usize::MAX),
+                buffered_messages: self.buffered.len(),
+                buffered_bytes: self.buffered_bytes,
+                incoming_message_bytes: message_bytes,
+            }));
+        };
+        if let Some(max_bytes) = self.max_bytes
+            && next_buffered_bytes > max_bytes
+        {
+            return Err(self.invalidate(RewindGateOverflow {
+                limit_kind: RewindGateLimit::Bytes,
+                limit: max_bytes,
+                buffered_messages: self.buffered.len(),
+                buffered_bytes: self.buffered_bytes,
+                incoming_message_bytes: message_bytes,
+            }));
+        }
+
+        self.buffered.push(message);
+        self.buffered_bytes = next_buffered_bytes;
+        Ok(())
+    }
+
+    pub(super) fn drain(&mut self) -> Vec<BufferedRewindMessage> {
+        self.buffered_bytes = 0;
+        std::mem::take(&mut self.buffered)
+    }
+
+    pub(super) fn is_overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    pub(super) fn fail_closed(&mut self) {
+        self.buffered.clear();
+        self.buffered_bytes = 0;
+        self.overflowed = true;
+    }
+
+    fn invalidate(&mut self, overflow: RewindGateOverflow) -> RewindGateOverflow {
+        self.fail_closed();
+        overflow
+    }
 }
 
 pub(super) type MessageChannelFlavor = mpsc::Array<Message>;

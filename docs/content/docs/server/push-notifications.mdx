@@ -120,6 +120,23 @@ and dead-letter queue lag through the health/backpressure surfaces, and metrics 
 `sockudo_push_retry_dead_lettered_total`, `sockudo_push_retry_malformed_total`, and
 `sockudo_push_provider_failures_total{failure_class=...}`.
 
+Lifecycle safety checks expose `sockudo_push_invariant_violations_total{invariant=...}`. The bounded
+`status_transition` label means a stale, non-monotonic status write was ignored. The metric does
+not include payloads, device tokens, or provider credentials.
+
+Publish-status mutations use storage-level compare-and-swap in every backend. Short-lived write
+contention increments `sockudo_push_status_cas_conflicts_total{component=...}` and is retried with
+a fixed bound. `sockudo_push_status_cas_exhausted_total{component=...}` means that bound was
+exhausted; the worker returns a structured error instead of silently accepting a lost update.
+Component labels come from a fixed internal set and neither metric includes payloads, tokens,
+credentials, app IDs, or publish IDs.
+
+All installations must stop old push admission and worker processes before starting
+revision-aware workers; do not run old blind status writers alongside them. PostgreSQL and MySQL
+must apply the push schema-version-2 migration while workers are stopped. DynamoDB, SurrealDB, and
+ScyllaDB store the revision in the status document envelope and need no table migration, but still
+require the same drain-and-replace deployment boundary.
+
 Upgrade note: provider workers now enqueue internal `deliveryFeedback` payloads on
 `push.results.v1` so feedback workers can schedule retries with replayable job context. Older
 `deliveryResult` payloads are still accepted, but retryable legacy results without job context are

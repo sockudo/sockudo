@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS sockudo_push.publish_status (
     state text,
     counters_json text,
     error_reason text,
+    revision bigint,
     created_at_ms bigint,
     updated_at_ms bigint,
     PRIMARY KEY ((app_id, publish_id))

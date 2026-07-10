@@ -12,7 +12,8 @@ use crate::domain::{
 
 pub type PushStorageResult<T> = Result<T, PushStorageError>;
 pub type DynPushStore = Arc<dyn PushStore + Send + Sync>;
-pub const EXPECTED_PUSH_SCHEMA_VERSION: u32 = 1;
+pub const EXPECTED_PUSH_SCHEMA_VERSION: u32 = 2;
+const MAX_UNCONDITIONAL_STATUS_WRITE_ATTEMPTS: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum PushStorageError {
@@ -27,6 +28,32 @@ pub enum PushStorageError {
     BackendDeferred { backend: &'static str },
     #[error("push storage backend error: {0}")]
     Backend(String),
+}
+
+/// A publish status together with the storage metadata used for optimistic concurrency.
+///
+/// The revision and update timestamp are storage-only fields. They are intentionally absent from
+/// the public publish-status wire representation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionedPublishStatus {
+    pub status: PublishStatus,
+    pub revision: u64,
+    pub updated_at_ms: u64,
+}
+
+/// Result of an atomic publish-status create or compare-and-swap operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishStatusCasOutcome {
+    Inserted { revision: u64 },
+    Updated { revision: u64 },
+    Conflict,
+    Missing,
+}
+
+impl PublishStatusCasOutcome {
+    pub const fn applied(self) -> bool {
+        matches!(self, Self::Inserted { .. } | Self::Updated { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -281,13 +308,64 @@ pub trait PushTemplateStore: Send + Sync {
 
 #[async_trait]
 pub trait PushPublishStatusStore: Send + Sync {
-    async fn put_publish_status(&self, status: PublishStatus) -> PushStorageResult<()>;
+    /// Create the initial status without replacing an existing publish.
+    async fn create_publish_status_if_absent(
+        &self,
+        status: PublishStatus,
+    ) -> PushStorageResult<PublishStatusCasOutcome>;
+
+    /// Load the status and the storage revision required for a later compare-and-swap.
+    async fn get_versioned_publish_status(
+        &self,
+        app_id: &str,
+        publish_id: &str,
+    ) -> PushStorageResult<Option<VersionedPublishStatus>>;
+
+    /// Replace `expected` only if its storage revision is still current.
+    async fn compare_and_swap_publish_status(
+        &self,
+        expected: &VersionedPublishStatus,
+        next: PublishStatus,
+    ) -> PushStorageResult<PublishStatusCasOutcome>;
+
+    /// Unconditionally seed or replace a status using bounded conditional writes.
+    ///
+    /// Production read/modify/write paths should call `compare_and_swap_publish_status` directly.
+    /// This compatibility helper remains useful for fixtures and administrative repairs without
+    /// reintroducing a blind write in any backend.
+    async fn put_publish_status(&self, status: PublishStatus) -> PushStorageResult<()> {
+        for _ in 0..MAX_UNCONDITIONAL_STATUS_WRITE_ATTEMPTS {
+            let outcome = match self
+                .get_versioned_publish_status(&status.app_id, &status.publish_id)
+                .await?
+            {
+                Some(expected) => {
+                    self.compare_and_swap_publish_status(&expected, status.clone())
+                        .await?
+                }
+                None => self.create_publish_status_if_absent(status.clone()).await?,
+            };
+            if outcome.applied() {
+                return Ok(());
+            }
+            tokio::task::yield_now().await;
+        }
+
+        Err(PushStorageError::Backend(
+            "publish status conditional write retries exhausted".to_owned(),
+        ))
+    }
 
     async fn get_publish_status(
         &self,
         app_id: &str,
         publish_id: &str,
-    ) -> PushStorageResult<Option<PublishStatus>>;
+    ) -> PushStorageResult<Option<PublishStatus>> {
+        Ok(self
+            .get_versioned_publish_status(app_id, publish_id)
+            .await?
+            .map(|versioned| versioned.status))
+    }
 }
 
 #[async_trait]
@@ -474,6 +552,8 @@ mod migration_smoke_tests {
             "push_idempotency",
             "push_schema_version",
             "VALUES (1, 0)",
+            "SELECT 2, 0",
+            "revision BIGINT NOT NULL DEFAULT 1",
             "Online rollout",
             "Credential security",
             "Rollback",
@@ -496,6 +576,8 @@ mod migration_smoke_tests {
             "push_idempotency",
             "push_schema_version",
             "VALUES (1, 0)",
+            "SELECT 2, 0",
+            "revision BIGINT UNSIGNED NOT NULL DEFAULT 1",
             "Online rollout",
             "Credential security",
             "Rollback",
@@ -591,5 +673,12 @@ mod migration_smoke_tests {
                 "surrealdb: {required}"
             );
         }
+    }
+
+    #[test]
+    fn hyperscale_status_contracts_include_cas_revisions() {
+        assert!(DYNAMODB_PUSH_SCHEMA.contains("strictly positive `revision`"));
+        assert!(SURREALDB_PUSH_SCHEMA.contains("revision ON push_publish_status"));
+        assert!(SCYLLADB_PUSH_SCHEMA.contains("revision bigint"));
     }
 }

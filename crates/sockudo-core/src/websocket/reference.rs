@@ -352,7 +352,7 @@ impl WebSocketRef {
         self.channel_state
             .entry(Arc::<str>::from(channel))
             .or_default()
-            .rewind_gate = Some(Arc::new(Mutex::new(RewindGate::default())));
+            .rewind_gate = Some(Arc::new(Mutex::new(RewindGate::new(self.buffer_config))));
     }
 
     pub async fn buffer_rewind_message(&self, channel: &str, message: &PusherMessage) -> bool {
@@ -365,11 +365,47 @@ impl WebSocketRef {
         };
 
         let mut gate = gate.lock().await;
-        gate.buffered.push(BufferedRewindMessage {
+        if gate.is_overflowed() {
+            return true;
+        }
+
+        let message_bytes = match sockudo_protocol::wire::serialize_message(
+            message,
+            self.wire_format,
+        ) {
+            Ok(payload) => payload.len(),
+            Err(_) => {
+                warn!(
+                    socket_id = %self.socket_id,
+                    channel,
+                    reason = "serialization_failed",
+                    "Rewind gate rejected a live message; shutting down connection to preserve continuity"
+                );
+                gate.fail_closed();
+                drop(gate);
+                self.shutdown();
+                return true;
+            }
+        };
+        let buffered = BufferedRewindMessage {
             serial: message.serial,
             message_id: message.message_id.clone(),
             message: message.clone(),
-        });
+        };
+        if let Err(overflow) = gate.try_buffer(buffered, message_bytes) {
+            warn!(
+                socket_id = %self.socket_id,
+                channel,
+                limit_kind = overflow.limit_kind.as_str(),
+                limit = overflow.limit,
+                buffered_messages = overflow.buffered_messages,
+                buffered_bytes = overflow.buffered_bytes,
+                incoming_message_bytes = overflow.incoming_message_bytes,
+                "Rewind gate overflow; shutting down connection to preserve continuity"
+            );
+            drop(gate);
+            self.shutdown();
+        }
         true
     }
 
@@ -382,7 +418,7 @@ impl WebSocketRef {
             return Vec::new();
         };
         let mut gate = gate.lock().await;
-        std::mem::take(&mut gate.buffered)
+        gate.drain()
     }
 
     fn upsert_channel_state(

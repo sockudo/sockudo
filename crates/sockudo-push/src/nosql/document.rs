@@ -40,6 +40,36 @@ pub trait DocumentBackend: Clone + Send + Sync + 'static {
         sk: &str,
     ) -> PushStorageResult<Option<String>>;
 
+    /// Read the latest committed value suitable for a following conditional write.
+    async fn get_consistent(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+    ) -> PushStorageResult<Option<String>>;
+
+    /// Replace a document only when its complete serialized value still matches `expected`.
+    async fn compare_and_swap(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+        data: String,
+    ) -> PushStorageResult<bool>;
+
+    /// Delete a document only when its complete serialized value still matches `expected`.
+    async fn compare_and_delete(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+    ) -> PushStorageResult<bool>;
+
     async fn delete(
         &self,
         family: &'static str,

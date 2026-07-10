@@ -41,6 +41,8 @@ client.bind("sockudo:resume_success", (payload) => {
 
 If a channel emits `sockudo:resume_failed` with `code: "position_expired"`, the hot replay buffer and durable recovery window could not prove continuity. Resubscribe, then backfill with V2 channel history using `until_attach: true` so the history page is bounded at the subscription's attach serial.
 
+`code: "continuity_unverifiable"` means Sockudo rejected an ahead, non-contiguous, duplicate, or non-progressing recovery position. Treat it the same way: resubscribe and backfill instead of advancing the client cursor.
+
 Recovery is two-tier:
 
 1. Hot replay uses the bounded per-channel replay buffer.
