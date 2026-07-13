@@ -877,7 +877,7 @@ impl ConnectionHandler {
             .await
     }
 
-    async fn send_error_frame(ws_tx: &mut WebSocketWriter, error: &Error) {
+    pub(super) async fn send_error_frame(ws_tx: &mut WebSocketWriter, error: &Error) {
         let error_message =
             PusherMessage::error(u32::from(error.close_code()), error.to_string(), None);
 

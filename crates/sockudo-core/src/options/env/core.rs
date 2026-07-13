@@ -25,6 +25,7 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     );
     options.websocket_max_payload_kb =
         parse_env::<u32>("WEBSOCKET_MAX_PAYLOAD_KB", options.websocket_max_payload_kb);
+    options.max_connections = parse_env::<u32>("SOCKUDO_MAX_CONNECTIONS", options.max_connections);
     if let Ok(id) = std::env::var("INSTANCE_PROCESS_ID") {
         options.instance.process_id = id;
     }
