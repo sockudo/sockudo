@@ -902,6 +902,9 @@ impl ConnectionHandler {
                     Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
                 })
             }
+            MessageData::Binary(_) => Err(Error::InvalidMessageFormat(
+                "Binary data is invalid in an unsubscribe message".into(),
+            )),
         }
     }
 

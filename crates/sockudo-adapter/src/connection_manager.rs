@@ -4,6 +4,7 @@ use crossfire::mpsc;
 use sockudo_core::app::AppManager;
 use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::Result;
+use sockudo_core::message_envelope::MessageEnvelope;
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
@@ -103,6 +104,26 @@ pub trait ConnectionManager: Send + Sync {
         app_id: &str,
         start_time_ms: Option<f64>,
     ) -> Result<()>;
+
+    /// Send a message while retaining protocol-neutral commit facts for
+    /// compatibility projections on remote nodes.
+    async fn send_with_envelope(
+        &self,
+        channel: &str,
+        message: PusherMessage,
+        except: Option<&SocketId>,
+        app_id: &str,
+        start_time_ms: Option<f64>,
+        envelope: Option<MessageEnvelope>,
+    ) -> Result<()> {
+        let _ = envelope;
+        self.send(channel, message, except, app_id, start_time_ms)
+            .await
+    }
+
+    /// Install the optional compatibility delivery observer. Horizontal
+    /// adapters retain it for remote broadcast delivery; local adapters ignore it.
+    fn set_realtime_egress_tap(&self, _tap: Arc<dyn crate::handler::RealtimeEgressTap>) {}
 
     #[cfg(feature = "delta")]
     async fn send_with_compression(

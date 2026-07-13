@@ -701,6 +701,9 @@ pub struct PresenceData {
 #[serde(untagged)]
 pub enum MessageData {
     String(String),
+    /// Opaque binary application data. JSON projects this as a byte array;
+    /// binary wire formats retain their native byte representation.
+    Binary(#[serde(with = "serde_bytes")] Vec<u8>),
     Structured {
         #[serde(skip_serializing_if = "Option::is_none")]
         channel_data: Option<String>,

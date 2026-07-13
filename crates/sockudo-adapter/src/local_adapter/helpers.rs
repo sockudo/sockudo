@@ -1,6 +1,5 @@
 use compact_str::{CompactString, format_compact};
 use sockudo_core::channel::PresenceMemberInfo;
-use sockudo_core::websocket::WebSocketRef;
 use sockudo_protocol::messages::{
     ANNOTATION_EVENT_NAME, MESSAGE_SUMMARY_EVENT_NAME, PusherMessage,
 };
@@ -19,18 +18,6 @@ pub(super) struct PendingPresenceMember {
     pub(super) member: PresenceMemberInfo,
     pub(super) socket_id: String,
     pub(super) generation: u64,
-}
-
-pub(super) fn filter_annotation_subscribers_in_place(
-    channel: &str,
-    message: &PusherMessage,
-    socket_refs: &mut Vec<WebSocketRef>,
-) {
-    if message.event.as_deref() != Some(ANNOTATION_EVENT_NAME) {
-        return;
-    }
-
-    socket_refs.retain(|socket_ref| socket_ref.allows_annotation_events_sync(channel));
 }
 
 pub(super) fn is_v2_annotation_protocol_event(message: &PusherMessage) -> bool {

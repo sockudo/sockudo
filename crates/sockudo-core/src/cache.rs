@@ -68,6 +68,34 @@ pub trait CacheManager: Send + Sync {
         Ok(true)
     }
 
+    /// Atomically replace `expected` with `value` while retaining a bounded TTL.
+    ///
+    /// Distributed implementations must override this default with a server-side
+    /// compare-and-swap operation. The fallback is intended only for simple test
+    /// doubles which do not coordinate multiple processes.
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool> {
+        if self.get(key).await?.as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        self.set(key, value, ttl_seconds).await?;
+        Ok(true)
+    }
+
+    /// Atomically remove `key` only when its current value equals `expected`.
+    async fn compare_and_remove(&self, key: &str, expected: &str) -> Result<bool> {
+        if self.get(key).await?.as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        self.remove(key).await?;
+        Ok(true)
+    }
+
     async fn increment_by(&self, key: &str, delta: i64, ttl_seconds: u64) -> Result<i64> {
         let current = self
             .get(key)

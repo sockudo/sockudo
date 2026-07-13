@@ -1,3 +1,4 @@
+mod ably_compat;
 mod adapter;
 mod ai_transport;
 mod app_manager;
@@ -15,6 +16,7 @@ mod server;
 mod v2_features;
 mod webhooks;
 
+pub use ably_compat::*;
 pub use adapter::*;
 pub use ai_transport::*;
 pub use app_manager::*;

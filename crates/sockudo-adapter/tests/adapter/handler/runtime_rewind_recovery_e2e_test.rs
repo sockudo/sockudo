@@ -431,6 +431,8 @@ async fn subscribe_v2(
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind,
@@ -787,7 +789,20 @@ async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
         .expect("expected versioned create metadata")
         .to_string();
 
-    append_ai_message(
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            channel,
+            live_message(channel, "ordinary.interleaved", "ordinary-between-versions"),
+            None,
+        )
+        .await
+        .unwrap();
+    let ordinary = recv_message(&mut source_reader).await;
+    assert_eq!(ordinary.event.as_deref(), Some("ordinary.interleaved"));
+
+    let reserved_append = append_ai_message(
         &harness,
         channel,
         &message_serial,
@@ -796,7 +811,14 @@ async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
         sonic_rs::json!({"x-sockudo-token-index": 1}),
     )
     .await;
-    update_ai_message_status(
+    let live_append = recv_message(&mut source_reader).await;
+    assert_eq!(
+        (live_append.stream_id.as_ref(), live_append.serial),
+        (reserved_append.stream_id.as_ref(), reserved_append.serial),
+        "live append must preserve its already-reserved recovery position"
+    );
+
+    let reserved_update = update_ai_message_status(
         &harness,
         channel,
         &message_serial,
@@ -805,6 +827,12 @@ async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
         sonic_rs::json!({"x-sockudo-finish-reason": "complete"}),
     )
     .await;
+    let live_update = recv_message(&mut source_reader).await;
+    assert_eq!(
+        (live_update.stream_id.as_ref(), live_update.serial),
+        (reserved_update.stream_id.as_ref(), reserved_update.serial),
+        "live update must preserve its already-reserved recovery position"
+    );
 
     let (resume_socket, mut resume_reader) = connect_v2_socket(&harness).await;
     harness
@@ -861,6 +889,103 @@ async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
         header_string(replayed_ai_messages[1], "x-sockudo-status"),
         Some("finished")
     );
+}
+
+#[tokio::test]
+async fn reserved_mutation_delivery_position_is_preserved_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.connection_recovery.enabled = true;
+    options.versioned_messages.enabled = true;
+    let harness = build_harness(options).await;
+    let channel = "reserved-mutation-position";
+
+    let (socket, mut reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(&harness, &socket, &mut reader, channel, None).await;
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            channel,
+            ai_text_message(
+                channel,
+                "ai.response",
+                "Token",
+                "reserved-position-message",
+                &[("x-sockudo-client-id", "agent-1")],
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let created = recv_message(&mut reader).await;
+    let message_serial = extract_runtime_message_serial(&created)
+        .expect("expected versioned create metadata")
+        .to_string();
+
+    let _concurrent_reservation = harness
+        .version_store
+        .reserve_delivery_position(&harness.app.id, channel)
+        .await
+        .unwrap();
+    let reserved = append_ai_message(
+        &harness,
+        channel,
+        &message_serial,
+        " preserved",
+        "agent-1",
+        sonic_rs::json!({}),
+    )
+    .await;
+    let delivered = recv_message(&mut reader).await;
+
+    assert_eq!(
+        (delivered.stream_id.as_ref(), delivered.serial),
+        (reserved.stream_id.as_ref(), reserved.serial),
+        "native replay must adopt the mutation's reserved delivery position"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_publishes_are_delivered_in_reserved_serial_order_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.connection_recovery.enabled = true;
+    options.versioned_messages.enabled = true;
+    let harness = build_harness(options).await;
+    let channel = "concurrent-publish-order";
+    let (socket, mut reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(&harness, &socket, &mut reader, channel, None).await;
+
+    let mut publishes = tokio::task::JoinSet::new();
+    for index in 0..64 {
+        let handler = harness.handler.clone();
+        let app = harness.app.clone();
+        publishes.spawn(async move {
+            handler
+                .broadcast_to_channel(
+                    &app,
+                    channel,
+                    live_message(channel, "concurrent.event", &format!("message-{index}")),
+                    None,
+                )
+                .await
+        });
+    }
+    while let Some(result) = publishes.join_next().await {
+        result.unwrap().unwrap();
+    }
+
+    let mut serials = Vec::with_capacity(64);
+    for _ in 0..64 {
+        serials.push(
+            recv_message(&mut reader)
+                .await
+                .serial
+                .expect("ordered publish must carry a delivery serial"),
+        );
+    }
+    assert_eq!(serials, (1..=64).collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -1086,6 +1211,8 @@ async fn rewind_handoff_has_no_gap_and_suppresses_duplicates_e2e() {
         channel_data: None,
         #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
         #[cfg(feature = "delta")]
         delta: None,
         rewind: Some(SubscriptionRewind::Count(2)),
@@ -1170,6 +1297,8 @@ async fn hot_recovery_replays_real_deliveries_e2e() {
         channel_data: None,
         #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
         #[cfg(feature = "delta")]
         delta: None,
         rewind: None,
@@ -1271,6 +1400,8 @@ async fn hot_recovery_resumes_idle_subscription_e2e() {
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,
@@ -1399,6 +1530,8 @@ async fn cold_recovery_replays_real_deliveries_e2e() {
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,
@@ -1700,6 +1833,8 @@ async fn writer_queue_full_fault_rejects_publish_without_live_delivery() {
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,

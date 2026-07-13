@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 use super::*;
 
+mod ably_compat;
 mod adapters;
 mod apps;
 mod core;
@@ -49,6 +50,7 @@ fn override_db_pool_settings(db_conn: &mut DatabaseConnection, prefix: &str) {
 impl ServerOptions {
     pub async fn override_from_env(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         core::apply(self)?;
+        ably_compat::apply(self)?;
         drivers::apply(self)?;
         databases::apply(self)?;
         runtime::apply(self)?;

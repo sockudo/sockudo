@@ -11,29 +11,50 @@ license-file.workspace = true
 default = []
 local = ["sockudo-adapter/local"]
 ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "sockudo-adapter/ai-transport"]
-delta = ["sockudo-adapter/delta"]
+delta = ["sockudo-adapter/delta", "dep:sockudo-delta"]
 recovery = ["sockudo-adapter/recovery"]
 tag-filtering = ["sockudo-adapter/tag-filtering"]
-push = []
+push = ["dep:sockudo-push"]
 
 [dependencies]
 sockudo-core = { workspace = true }
 sockudo-protocol = { workspace = true }
 sockudo-adapter = { workspace = true, default-features = false }
+sockudo-delta = { workspace = true, optional = true }
+sockudo-push = { workspace = true, optional = true }
 
 ahash = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 dashmap = { workspace = true }
 http = { workspace = true }
+hmac = { workspace = true }
+jsonwebtoken = { workspace = true }
+sockudo-filter = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 sockudo-ws = { workspace = true }
 sonic-rs = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+urlencoding = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+sockudo-cache = { workspace = true }
+
+[[bench]]
+name = "wire_codec"
+harness = false
+
+[[bench]]
+name = "fanout_grouping"
+harness = false

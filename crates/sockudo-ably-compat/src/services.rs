@@ -82,6 +82,10 @@ fn envelope_for_version(
                 VersionProjection::Aggregate
             },
         }),
+        idempotency: current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.idempotency.clone()),
     })
 }
 

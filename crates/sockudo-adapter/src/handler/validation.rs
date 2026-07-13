@@ -11,7 +11,7 @@ use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::*;
 use sockudo_protocol::messages::{
     AI_ERROR_EVENT_NOT_PERMITTED, AI_ERROR_INVALID_TRANSPORT_HEADER, AiHeaderValidationError,
-    AiPublishTrust, PusherMessage, is_ai_client_publish_event,
+    AiPublishTrust, MessageData, PusherMessage, is_ai_client_publish_event,
 };
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
@@ -434,7 +434,10 @@ impl ConnectionHandler {
 
         // Validate payload size
         if let Some(max_payload_kb) = app_config.event_payload_limit_kb() {
-            let payload_size = utils::data_to_bytes_flexible(vec![request.data.clone()]);
+            let payload_size = match &request.data {
+                MessageData::Binary(bytes) => bytes.len(),
+                data => sonic_rs::to_vec(data).map_or(0, |bytes| bytes.len()),
+            };
             if payload_size > (max_payload_kb as usize * 1024) {
                 return Err(Error::ClientEvent(format!(
                     "Event payload size ({payload_size} bytes) exceeds limit ({max_payload_kb}KB)"

@@ -114,6 +114,11 @@ fn parse_presence_update(message: &PusherMessage) -> Result<(String, Value)> {
             .map_err(|_| ai_presence_error("presence_update data must be a JSON object"))?,
         Some(MessageData::Structured { extra, .. }) => sonic_rs::to_value(extra)
             .map_err(|e| Error::Serialization(format!("failed to decode structured data: {e}")))?,
+        Some(MessageData::Binary(_)) => {
+            return Err(ai_presence_error(
+                "presence_update data must be a JSON object",
+            ));
+        }
         None => return Err(ai_presence_error("presence_update data is required")),
     };
 

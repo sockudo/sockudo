@@ -45,7 +45,7 @@ async fn ai_http_publish_returns_serial_ack_and_message_id_dedupes() {
         Some("sdk-msg-1"),
         None,
         "streaming",
-        "hello again",
+        "hello",
     )
     .await;
     assert_eq!(
@@ -87,7 +87,7 @@ async fn ai_http_publish_idempotency_key_header_returns_cached_serial_ack() {
         None,
         Some("run-start-request-1"),
         "streaming",
-        "{\"run\":\"1-retry\"}",
+        "{\"run\":\"1\"}",
     )
     .await;
 

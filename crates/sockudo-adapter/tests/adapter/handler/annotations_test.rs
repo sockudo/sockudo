@@ -361,6 +361,8 @@ fn subscribe_request(annotation_subscribe: bool) -> SubscriptionRequest {
         channel_data: None,
         #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
         #[cfg(feature = "delta")]
         delta: None,
         rewind: None,

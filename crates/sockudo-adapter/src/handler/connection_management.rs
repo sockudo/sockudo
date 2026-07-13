@@ -6,7 +6,6 @@ use super::ConnectionHandler;
 use crate::connection_manager::CompressionParams;
 use crate::connection_manager::ConnectionManager;
 use bytes::Bytes;
-use compact_str::format_compact;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryAppendRecord, now_ms};
@@ -233,6 +232,7 @@ impl ConnectionHandler {
             channel,
             message,
             exclude_socket,
+            exclude_socket,
             start_time_ms,
             false, // allow delta compression
             None,
@@ -278,6 +278,32 @@ impl ConnectionHandler {
             channel,
             message,
             exclude_socket,
+            exclude_socket,
+            start_time_ms,
+            force_full_message,
+            envelope,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn publish_to_channel_with_context(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        publisher_socket: Option<&SocketId>,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<f64>,
+        force_full_message: bool,
+        envelope: Option<MessageEnvelope>,
+    ) -> Result<Option<PublishAck>> {
+        self.broadcast_to_channel_internal(
+            app_config,
+            channel,
+            message,
+            publisher_socket,
+            exclude_socket,
             start_time_ms,
             force_full_message,
             envelope,
@@ -303,6 +329,7 @@ impl ConnectionHandler {
             channel,
             message,
             exclude_socket,
+            exclude_socket,
             start_time_ms,
             true, // force full messages, skip delta compression
             None,
@@ -325,6 +352,7 @@ impl ConnectionHandler {
             channel,
             message,
             exclude_socket,
+            exclude_socket,
             start_time_ms,
             true,
             Some(envelope),
@@ -341,49 +369,27 @@ impl ConnectionHandler {
         app_config: &App,
         channel: &str,
         mut message: PusherMessage,
+        publisher_socket: Option<&SocketId>,
         exclude_socket: Option<&SocketId>,
         start_time_ms: Option<f64>,
         force_full_message: bool,
         mut envelope: Option<MessageEnvelope>,
     ) -> Result<Option<PublishAck>> {
+        let _publish_order_permit = self
+            .acquire_channel_publish_permit(&app_config.id, channel)
+            .await?;
         message = sanitize_v2_feature_flags(self.server_options(), message);
         let mut envelope = envelope
             .map(Ok)
-            .unwrap_or_else(|| MessageEnvelope::from_message(&message, None, None, now_ms()))
+            .unwrap_or_else(|| {
+                MessageEnvelope::from_message(
+                    &message,
+                    publisher_socket.map(ToString::to_string),
+                    None,
+                    now_ms(),
+                )
+            })
             .map_err(Error::InvalidMessageFormat)?;
-
-        // Extras-level message idempotency (V2 feature).
-        // Check extras.idempotency_key before broadcasting. If the key was already
-        // seen within the TTL window, silently drop the message.
-        if let Some(extras_key) = message
-            .extras_idempotency_key()
-            .or(message.idempotency_key.as_deref())
-        {
-            let config = app_config.resolved_idempotency(&self.server_options().idempotency);
-            if config.enabled {
-                let cache_key =
-                    format_compact!("idempotency:{}:{}:{}", app_config.id, channel, extras_key);
-                if let Some(ref metrics) = self.metrics {
-                    metrics.mark_idempotency_publish(&app_config.id);
-                }
-                let is_new = self
-                    .cache_manager
-                    .set_if_not_exists(cache_key.as_str(), "1", config.ttl_seconds)
-                    .await?;
-                if !is_new {
-                    if let Some(ref metrics) = self.metrics {
-                        metrics.mark_idempotency_duplicate(&app_config.id);
-                    }
-                    tracing::debug!(
-                        app_id = %app_config.id,
-                        channel = %channel,
-                        key = %extras_key,
-                        "Extras idempotency: duplicate message dropped"
-                    );
-                    return Ok(None);
-                }
-            }
-        }
 
         // Track ephemeral message metric (V2 feature)
         if message.is_ephemeral()
@@ -407,8 +413,9 @@ impl ConnectionHandler {
         let mut versioned_delivery_serial: Option<u64> = None;
         let mut publish_ack: Option<PublishAck> = None;
         let actor_client_id = self
-            .resolve_actor_client_id(&app_config.id, exclude_socket)
-            .await;
+            .resolve_actor_client_id(&app_config.id, publisher_socket)
+            .await
+            .or_else(|| envelope.publisher_client_id.clone());
 
         if !message.is_ephemeral() {
             #[cfg(feature = "recovery")]
@@ -487,7 +494,35 @@ impl ConnectionHandler {
                 } else {
                     #[cfg(feature = "recovery")]
                     if let Some(ref replay_buffer) = self.replay_buffer {
-                        let position = replay_buffer.next_position(&app_config.id, channel);
+                        let position = match (message.stream_id.as_deref(), message.serial) {
+                            (Some(stream_id), Some(serial)) => replay_buffer
+                                .try_ensure_position(
+                                    &app_config.id,
+                                    channel,
+                                    stream_id,
+                                    serial,
+                                )
+                                .map_err(|conflict| {
+                                    Error::InvalidMessageFormat(format!(
+                                        "reserved delivery position conflicts with replay continuity for {}:{}: requested {}:{}, current {:?}:{:?}",
+                                        app_config.id,
+                                        channel,
+                                        conflict.requested_stream_id,
+                                        conflict.requested_serial,
+                                        conflict.current_stream_id,
+                                        conflict.newest_serial,
+                                    ))
+                                })?,
+                            (None, None) => {
+                                replay_buffer.next_position(&app_config.id, channel)
+                            }
+                            _ => {
+                                return Err(Error::InvalidMessageFormat(
+                                    "delivery position must include both stream_id and serial"
+                                        .to_string(),
+                                ));
+                            }
+                        };
                         message.stream_id = Some(position.stream_id);
                         message.serial = Some(position.serial);
                     }
@@ -634,12 +669,22 @@ impl ConnectionHandler {
 
                 #[cfg(feature = "recovery")]
                 if recovery_enabled && let Some(ref replay_buffer) = self.replay_buffer {
+                    // The hot replay buffer is an egress authority: its bytes are
+                    // written directly to a reconnecting V2 WebSocket. Durable
+                    // history stores the envelope wrapper below, but replay must
+                    // retain the actual wire message rather than that wrapper.
+                    let replay_bytes =
+                        sonic_rs::to_vec(&message).map(Bytes::from).map_err(|e| {
+                            Error::Serialization(format!(
+                                "Failed to serialize recovery payload: {e}"
+                            ))
+                        })?;
                     replay_buffer.store(
                         &app_config.id,
                         channel,
                         message.stream_id.as_deref(),
                         message.serial.unwrap_or(0),
-                        serialized.clone(),
+                        replay_bytes,
                     );
                 }
 
@@ -856,12 +901,13 @@ impl ConnectionHandler {
 
             if force_full_message {
                 self.connection_manager
-                    .send(
+                    .send_with_envelope(
                         channel,
                         message,
                         exclude_socket,
                         &app_config.id,
                         start_time_ms,
+                        envelope.clone(),
                     )
                     .await
             } else {
@@ -885,12 +931,13 @@ impl ConnectionHandler {
         let result = {
             let _ = force_full_message;
             self.connection_manager
-                .send(
+                .send_with_envelope(
                     channel,
                     message,
                     exclude_socket,
                     &app_config.id,
                     start_time_ms,
+                    envelope.clone(),
                 )
                 .await
         };
@@ -1322,6 +1369,7 @@ mod tests {
             app_id: "app-1".to_string(),
             channel: "cursors".to_string(),
             message: "{}".to_string(),
+            envelope: None,
             except_socket_id: None,
             timestamp_ms: None,
             compression_metadata: None,
@@ -1344,6 +1392,7 @@ mod tests {
             app_id: "app-1".to_string(),
             channel: "orders".to_string(),
             message: "{}".to_string(),
+            envelope: None,
             except_socket_id: None,
             timestamp_ms: None,
             compression_metadata: None,
@@ -1354,6 +1403,34 @@ mod tests {
         // Verify serialization omits ephemeral when false (skip_serializing_if)
         let json = sonic_rs::to_string(&broadcast).unwrap();
         assert!(!json.contains("ephemeral"));
+    }
+
+    #[test]
+    fn horizontal_broadcast_round_trip_preserves_commit_envelope() {
+        use crate::horizontal_adapter::BroadcastMessage;
+
+        let broadcast = BroadcastMessage {
+            node_id: "node-1".to_string(),
+            app_id: "app-1".to_string(),
+            channel: "orders".to_string(),
+            message: "{}".to_string(),
+            envelope: Some(MessageEnvelope {
+                message_id: Some("message-1".to_string()),
+                publisher_client_id: Some("publisher".to_string()),
+                publisher_connection_id: Some("connection-1".to_string()),
+                published_at_ms: Some(123),
+                ..MessageEnvelope::default()
+            }),
+            except_socket_id: None,
+            timestamp_ms: None,
+            compression_metadata: None,
+            idempotency_key: None,
+            ephemeral: false,
+        };
+
+        let encoded = sonic_rs::to_string(&broadcast).unwrap();
+        let decoded: BroadcastMessage = sonic_rs::from_str(&encoded).unwrap();
+        assert_eq!(decoded.envelope, broadcast.envelope);
     }
 
     #[test]

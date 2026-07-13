@@ -6,7 +6,7 @@ use crate::versioned_messages::{
     MessageSerial, validate_replay_continuity, validate_version_chain,
 };
 use async_trait::async_trait;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -156,6 +156,43 @@ impl VersionStore for MemoryVersionStore {
             .ok_or_else(|| Error::InvalidMessageFormat("version chain must not be empty".into()))?;
 
         Ok(Some(latest))
+    }
+
+    async fn get_latest_batch(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serials: &[MessageSerial],
+    ) -> Result<BTreeMap<MessageSerial, StoredVersionRecord>> {
+        if message_serials.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let key = Self::channel_key(app_id, channel);
+        let channels = self.channels.read().await;
+        let Some(channel_state) = channels.get(&key) else {
+            return Ok(BTreeMap::new());
+        };
+        let requested = message_serials.iter().collect::<BTreeSet<_>>();
+        requested
+            .into_iter()
+            .filter_map(|message_serial| {
+                channel_state
+                    .messages
+                    .get(message_serial.as_str())
+                    .map(|chain| (message_serial, chain))
+            })
+            .map(|(message_serial, chain)| {
+                chain
+                    .iter()
+                    .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
+                    .cloned()
+                    .map(|record| (message_serial.clone(), record))
+                    .ok_or_else(|| {
+                        Error::InvalidMessageFormat("version chain must not be empty".into())
+                    })
+            })
+            .collect()
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {

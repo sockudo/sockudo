@@ -24,6 +24,48 @@ For deployment overrides and secrets, use the complete [environment variable ref
 | `[app_manager.array]` | Static in-config app definitions. |
 | `[[app_manager.array.apps]]` | App ID, key, secret, enabled flag, limits, and policy. |
 
+## Ably compatibility keys
+
+`App.key` and `App.secret` are always the implicit primary credential. When the
+server is built with `ably-compat`, `[ably_compat]` can opt an app into additional
+Ably key names without creating sibling apps:
+
+```toml
+[ably_compat]
+enabled = true
+max_token_ttl_ms = 86400000
+token_request_timestamp_skew_ms = 900000
+nonce_ttl_seconds = 900
+
+[[ably_compat.keys]]
+app_id = "app-id"
+key_name = "app-key-readonly"
+secret = "replace-with-a-secret"
+capability = '{"chat:*":["subscribe","history"]}'
+revocable_tokens = true
+enabled = true
+rotation_id = "2026-07"
+```
+
+Each entry supports optional `created_at_ms`, `expires_at_ms`, and
+`revoked_at_ms` rotation boundaries. Disabled, expired, or revoked keys reject
+new key authentication. Tokens from a key with `revocable_tokens = true` are
+also rejected after that key is disabled, revoked, expired, or replaced with a
+different `rotation_id`. Secrets and bearer tokens are never written to logs.
+
+TokenRequest timestamps are accepted only within the configured skew. Nonces
+are claimed atomically in the configured cache for `nonce_ttl_seconds`, and
+issued token records use the same cache, allowing issuance on one node and use
+on another. Use a shared cache driver such as Redis in multi-node deployments.
+
+The server's `ably-compat` Cargo feature explicitly enables native AI Transport,
+recovery, delta, and push support. Runtime `[ably_compat].enabled` and the key
+registry remain the opt-in boundary; Protocol V1 routes and frames are unchanged.
+Compatibility statistics are bounded in process memory. Compatibility device
+registrations and channel subscriptions use `[push].storage_driver`, so clustered
+or restart-safe deployments should select the same durable push store used by
+native push APIs.
+
 ## Runtime backends
 
 | Section | Purpose |
@@ -90,7 +132,7 @@ client_key_path = "/etc/sockudo/tls/client.key"
 | `[presence_history]` | Historical presence transitions and snapshots. |
 | `[annotations]` | V2 annotation publish/delete/summary surfaces. |
 | `[delta]` | Delta algorithms, cache size, and conflation behavior. |
-| `[tag_filtering]` | V2 filter parsing and match controls. |
+| `[tag_filtering]` | V2 event/tag/JMESPath subscription predicates and tag projection controls. Predicate source, AST, tree, and projected-message memory are hard-bounded. |
 | `[webhooks]` | Webhook delivery, batching, and retry. |
 | `[ai_transport]` | AI Transport validation and session-channel matching. |
 | `[ai_transport.rollup]` | Append rollup egress coalescing and orphan tracking. |

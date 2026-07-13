@@ -2,7 +2,11 @@ use bytes::Bytes;
 use crossfire::mpsc;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+const DEFAULT_REWIND_GATE_MAX_MESSAGES: usize = 1_000;
+const DEFAULT_REWIND_GATE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Buffer limit strategy for WebSocket connections
 /// Supports message count, byte size, or both (whichever triggers first)
@@ -114,6 +118,18 @@ impl WebSocketBufferConfig {
     pub fn tracks_bytes(&self) -> bool {
         self.limit.tracks_bytes()
     }
+
+    #[inline]
+    pub(crate) fn rewind_gate_limits(&self) -> (usize, usize) {
+        (
+            self.limit
+                .message_limit()
+                .unwrap_or(DEFAULT_REWIND_GATE_MAX_MESSAGES),
+            self.limit
+                .byte_limit()
+                .unwrap_or(DEFAULT_REWIND_GATE_MAX_BYTES),
+        )
+    }
 }
 
 /// Atomic byte counter for tracking buffer memory usage
@@ -144,6 +160,19 @@ impl ByteCounter {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    /// Atomically reserve `size` bytes without exceeding `limit`.
+    ///
+    /// Callers must release the reservation with [`Self::sub`] if the
+    /// corresponding message is not enqueued.
+    #[inline]
+    pub fn try_reserve(&self, size: usize, limit: usize) -> bool {
+        self.bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(size).filter(|next| *next <= limit)
+            })
+            .is_ok()
+    }
+
     #[inline]
     pub fn would_exceed(&self, size: usize, limit: usize) -> bool {
         self.get().saturating_add(size) > limit
@@ -160,12 +189,111 @@ pub struct SizedMessage {
 pub struct BufferedRewindMessage {
     pub serial: Option<u64>,
     pub message_id: Option<String>,
-    pub message: PusherMessage,
+    pub message: Arc<PusherMessage>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RewindGateOverflow {
+    pub messages: usize,
+    pub bytes: usize,
+    pub max_messages: usize,
+    pub max_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RewindGateState {
+    Open,
+    Closed,
+    Overflowed(RewindGateOverflow),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RewindGateAdmission {
+    Buffered,
+    Closed,
+    Overflowed(RewindGateOverflow),
+}
+
+#[derive(Debug)]
+pub(crate) enum RewindGateDrain {
+    Buffered(Vec<BufferedRewindMessage>),
+    Overflowed(RewindGateOverflow),
+}
+
+#[derive(Debug)]
 pub struct RewindGate {
-    pub buffered: Vec<BufferedRewindMessage>,
+    buffered: Vec<BufferedRewindMessage>,
+    buffered_bytes: usize,
+    max_messages: usize,
+    max_bytes: usize,
+    state: RewindGateState,
+}
+
+impl Default for RewindGate {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_REWIND_GATE_MAX_MESSAGES,
+            DEFAULT_REWIND_GATE_MAX_BYTES,
+        )
+    }
+}
+
+impl RewindGate {
+    pub(crate) fn new(max_messages: usize, max_bytes: usize) -> Self {
+        Self {
+            buffered: Vec::with_capacity(max_messages.min(64)),
+            buffered_bytes: 0,
+            max_messages,
+            max_bytes,
+            state: RewindGateState::Open,
+        }
+    }
+
+    pub(crate) fn try_buffer(
+        &mut self,
+        message: BufferedRewindMessage,
+        message_size: usize,
+    ) -> RewindGateAdmission {
+        match self.state {
+            RewindGateState::Closed => return RewindGateAdmission::Closed,
+            RewindGateState::Overflowed(overflow) => {
+                return RewindGateAdmission::Overflowed(overflow);
+            }
+            RewindGateState::Open => {}
+        }
+
+        let messages = self.buffered.len().saturating_add(1);
+        let bytes = self.buffered_bytes.saturating_add(message_size);
+        if messages > self.max_messages || bytes > self.max_bytes {
+            let overflow = RewindGateOverflow {
+                messages,
+                bytes,
+                max_messages: self.max_messages,
+                max_bytes: self.max_bytes,
+            };
+            self.buffered.clear();
+            self.buffered_bytes = 0;
+            self.state = RewindGateState::Overflowed(overflow);
+            return RewindGateAdmission::Overflowed(overflow);
+        }
+
+        self.buffered.push(message);
+        self.buffered_bytes = bytes;
+        RewindGateAdmission::Buffered
+    }
+
+    pub(crate) fn finish(&mut self) -> RewindGateDrain {
+        let state = std::mem::replace(&mut self.state, RewindGateState::Closed);
+        self.buffered_bytes = 0;
+        match state {
+            RewindGateState::Open => RewindGateDrain::Buffered(std::mem::take(&mut self.buffered)),
+            RewindGateState::Closed => RewindGateDrain::Buffered(Vec::new()),
+            RewindGateState::Overflowed(overflow) => {
+                self.buffered.clear();
+                RewindGateDrain::Overflowed(overflow)
+            }
+        }
+    }
 }
 
 pub(super) type MessageChannelFlavor = mpsc::Array<Message>;

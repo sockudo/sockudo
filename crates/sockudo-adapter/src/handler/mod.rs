@@ -50,12 +50,54 @@ use sockudo_ws::Message;
 use sockudo_ws::axum_integration::{WebSocket, WebSocketReader, WebSocketWriter};
 use sonic_rs::Value;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
-use tokio::sync::Semaphore;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, warn};
 
 type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
 type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
+const MAX_CHANNEL_PUBLISH_WAITERS: usize = 4_096;
+
+struct ChannelPublishGate {
+    semaphore: Arc<Semaphore>,
+    waiters: AtomicUsize,
+}
+
+impl ChannelPublishGate {
+    fn new() -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(1)),
+            waiters: AtomicUsize::new(0),
+        }
+    }
+}
+
+struct ChannelPublishPermit {
+    key: String,
+    gate: Arc<ChannelPublishGate>,
+    gates: Arc<FastDashMap<String, Arc<ChannelPublishGate>>>,
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+struct ChannelPublishWaiter(Arc<ChannelPublishGate>);
+
+impl Drop for ChannelPublishWaiter {
+    fn drop(&mut self) {
+        self.0.waiters.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Drop for ChannelPublishPermit {
+    fn drop(&mut self) {
+        self.permit.take();
+        self.gates.remove_if(&self.key, |_, current| {
+            Arc::ptr_eq(current, &self.gate)
+                && Arc::strong_count(current) == 2
+                && current.waiters.load(Ordering::Acquire) == 0
+                && current.semaphore.available_permits() == 1
+        });
+    }
+}
 
 pub trait RealtimeEgressTap: Send + Sync {
     fn has_subscribers(&self, app_id: &str, channel: &str) -> bool;
@@ -102,6 +144,7 @@ pub struct ConnectionHandler {
     message_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
     presence_update_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
     history_request_limits: Arc<FastDashMap<SocketId, Arc<Semaphore>>>,
+    publish_order_gates: Arc<FastDashMap<String, Arc<ChannelPublishGate>>>,
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -278,6 +321,11 @@ impl ConnectionHandlerBuilder {
             );
         }
 
+        if let Some(tap) = self.realtime_egress_tap.as_ref() {
+            self.connection_manager
+                .set_realtime_egress_tap(Arc::clone(tap));
+        }
+
         let handler = ConnectionHandler {
             app_manager: self.app_manager,
             connection_manager: self.connection_manager,
@@ -310,6 +358,7 @@ impl ConnectionHandlerBuilder {
             message_limiters: Arc::new(fast_dashmap()),
             presence_update_limiters: Arc::new(fast_dashmap()),
             history_request_limits: Arc::new(fast_dashmap()),
+            publish_order_gates: Arc::new(fast_dashmap()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
             server_options: Arc::new(self.server_options),
             cleanup_queue: self.cleanup_queue,
@@ -402,7 +451,7 @@ fn start_ai_rollup_worker(
                 } else if let Some(tap) = realtime_egress_tap.as_ref()
                     && let Some(message_for_tap) = message_for_tap.as_ref()
                 {
-                    match MessageEnvelope::from_message(&message_for_tap, None, None, sockudo_core::history::now_ms()) {
+                    match MessageEnvelope::from_message(message_for_tap, None, None, sockudo_core::history::now_ms()) {
                         Ok(envelope) => {
                             if let Err(error) = tap.deliver(&app_id, &channel, message_for_tap, &envelope) {
                                 warn!(
@@ -439,6 +488,36 @@ fn start_ai_stream_orphan_worker(handler: ConnectionHandler, wheel_tick_ms: u64)
 }
 
 impl ConnectionHandler {
+    async fn acquire_channel_publish_permit(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<ChannelPublishPermit> {
+        let key = format!("{app_id}\0{channel}");
+        let gate = self
+            .publish_order_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(ChannelPublishGate::new()))
+            .clone();
+        let previous = gate.waiters.fetch_add(1, Ordering::AcqRel);
+        if previous >= MAX_CHANNEL_PUBLISH_WAITERS {
+            gate.waiters.fetch_sub(1, Ordering::AcqRel);
+            return Err(Error::OverCapacity);
+        }
+        let waiter = ChannelPublishWaiter(Arc::clone(&gate));
+        let permit = Arc::clone(&gate.semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|_| Error::ConnectionClosed("publish order gate closed".to_string()))?;
+        drop(waiter);
+        Ok(ChannelPublishPermit {
+            key,
+            gate,
+            gates: Arc::clone(&self.publish_order_gates),
+            permit: Some(permit),
+        })
+    }
+
     /// Create a new `ConnectionHandlerBuilder`.
     pub fn builder(
         app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -1027,22 +1106,10 @@ impl ConnectionHandler {
             .ok_or_else(|| Error::ClientEvent("Channel required for client event".into()))?
             .clone();
 
-        let data = match &message.data {
-            Some(MessageData::Json(data)) => data.clone(),
-            Some(MessageData::String(s)) => {
-                sonic_rs::from_str(s).unwrap_or_else(|_| Value::from(s.as_str()))
-            }
-            Some(MessageData::Structured { extra, .. }) => {
-                // For client events, the data is in the extra fields
-                // Always convert the extra HashMap to a JSON object to preserve structure
-                if !extra.is_empty() {
-                    sonic_rs::to_value(extra).unwrap_or_else(|_| Value::new_object())
-                } else {
-                    Value::new_null()
-                }
-            }
-            None => Value::new_null(),
-        };
+        let data = message
+            .data
+            .clone()
+            .unwrap_or_else(|| MessageData::Json(Value::new_null()));
 
         Ok(ClientEventRequest {
             event,

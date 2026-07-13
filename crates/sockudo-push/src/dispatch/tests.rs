@@ -308,6 +308,9 @@ fn classifies_provider_error_classes_and_retry_after() {
             PushProviderKind::WebPush => classify_webpush_response(&response(status, json!({}))).1,
             PushProviderKind::Hms => classify_hms_response(&response(status, json!({}))).1,
             PushProviderKind::Wns => classify_wns_response(&response(status, json!({}))).1,
+            PushProviderKind::Realtime => {
+                unreachable!("realtime delivery does not use an HTTP provider response")
+            }
         }
         .unwrap();
         assert_eq!(error.class, class);
@@ -946,6 +949,9 @@ fn recipient(provider: PushProviderKind) -> PushRecipient {
         },
         PushProviderKind::Wns => PushRecipient::Wns {
             channel_uri: SecretString::new("https://wns.example/channel").unwrap(),
+        },
+        PushProviderKind::Realtime => PushRecipient::Realtime {
+            channel: "push:device-1".to_owned(),
         },
     }
 }

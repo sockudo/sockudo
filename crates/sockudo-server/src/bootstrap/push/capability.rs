@@ -334,6 +334,7 @@ async fn provider_status(
         PushProviderKind::WebPush => webpush_status(),
         PushProviderKind::Hms => hms_status(),
         PushProviderKind::Wns => wns_status(),
+        PushProviderKind::Realtime => PushProviderStatus::Active,
     }
 }
 
@@ -344,6 +345,7 @@ fn provider_enabled(config: &ServerOptions, provider: PushProviderKind) -> bool 
         PushProviderKind::WebPush => config.push.webpush_enabled,
         PushProviderKind::Hms => config.push.hms_enabled,
         PushProviderKind::Wns => config.push.wns_enabled,
+        PushProviderKind::Realtime => config.ably_compat.enabled,
     }
 }
 
@@ -704,6 +706,7 @@ fn provider_label(provider: PushProviderKind) -> &'static str {
         PushProviderKind::WebPush => "Web Push",
         PushProviderKind::Hms => "HMS",
         PushProviderKind::Wns => "WNS",
+        PushProviderKind::Realtime => "Realtime",
     }
 }
 

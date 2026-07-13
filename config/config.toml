@@ -282,6 +282,27 @@ max_conflation_keys = 100
 enabled = false
 ttl = 300
 
+# Optional additional Ably-compatible keys. App.key/App.secret above remains
+# the implicit primary credential. Extra keys resolve by app_id, so they share
+# channel, history, presence, and fanout state with the primary key.
+[ably_compat]
+enabled = false
+max_token_ttl_ms = 86400000
+token_request_timestamp_skew_ms = 900000
+nonce_ttl_seconds = 900
+
+# [[ably_compat.keys]]
+# app_id = "app-id"
+# key_name = "app-key-rotated"
+# secret = "replace-with-a-secret"
+# capability = '{"chat:*":["publish","subscribe","history"]}'
+# revocable_tokens = true
+# enabled = true
+# rotation_id = "2026-07"
+# created_at_ms = 1783728000000
+# expires_at_ms = 1786406400000
+# revoked_at_ms = 1786406400000
+
 [cache]
 driver = "memory"
 

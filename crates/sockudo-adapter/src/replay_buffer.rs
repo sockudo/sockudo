@@ -12,6 +12,14 @@ pub struct ReplayPosition {
     pub serial: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayPositionConflict {
+    pub requested_stream_id: String,
+    pub requested_serial: u64,
+    pub current_stream_id: Option<String>,
+    pub newest_serial: Option<u64>,
+}
+
 type BufferMap = DashMap<CompactString, ChannelBuffer, ahash::RandomState>;
 
 struct BufferedMessage {
@@ -165,6 +173,55 @@ impl ReplayBuffer {
         }
     }
 
+    /// Adopt an externally reserved delivery position without minting another
+    /// replay serial. A populated buffer may only advance within its existing
+    /// stream generation and in delivery order.
+    pub fn try_ensure_position(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: &str,
+        serial: u64,
+    ) -> Result<ReplayPosition, ReplayPositionConflict> {
+        let key = Self::buffer_key(app_id, channel);
+        let now = Instant::now();
+        let next_serial = serial.saturating_add(1);
+        let entry = self.buffers.entry(key).or_insert_with(|| {
+            Self::new_channel_buffer(
+                self.max_buffer_size,
+                Some(stream_id.to_string()),
+                next_serial,
+                now,
+            )
+        });
+
+        {
+            let mut state = entry.state.lock();
+            let newest_serial = state.messages.back().map(|message| message.serial);
+            let populated_stream_mismatch =
+                !state.messages.is_empty() && state.current_stream_id.as_deref() != Some(stream_id);
+            let out_of_order = newest_serial.is_some_and(|newest| serial <= newest);
+            if populated_stream_mismatch || out_of_order {
+                return Err(ReplayPositionConflict {
+                    requested_stream_id: stream_id.to_string(),
+                    requested_serial: serial,
+                    current_stream_id: state.current_stream_id.clone(),
+                    newest_serial,
+                });
+            }
+            if state.messages.is_empty() || state.current_stream_id.is_none() {
+                state.current_stream_id = Some(stream_id.to_string());
+            }
+            state.last_touched = now;
+        }
+        Self::raise_next_serial(entry.value(), next_serial);
+
+        Ok(ReplayPosition {
+            stream_id: stream_id.to_string(),
+            serial,
+        })
+    }
+
     pub fn next_position(&self, app_id: &str, channel: &str) -> ReplayPosition {
         let key = Self::buffer_key(app_id, channel);
         let now = Instant::now();
@@ -298,6 +355,13 @@ impl ReplayBuffer {
 
         let contiguous = state.messages.make_contiguous();
         let start_idx = contiguous.partition_point(|message| message.serial <= last_serial);
+        let mut expected_serial = last_serial.saturating_add(1);
+        for message in &contiguous[start_idx..] {
+            if message.serial != expected_serial {
+                return ReplayLookup::Expired;
+            }
+            expected_serial = expected_serial.saturating_add(1);
+        }
         let mut result = Vec::with_capacity(contiguous.len().saturating_sub(start_idx));
         for message in &contiguous[start_idx..] {
             let _ = &message.stream_id;

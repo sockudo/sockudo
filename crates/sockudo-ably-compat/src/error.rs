@@ -25,6 +25,12 @@ pub enum AblyCompatError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("{message}")]
+    Protocol {
+        status: StatusCode,
+        code: u32,
+        message: String,
+    },
+    #[error("{message}")]
     AiTransport {
         status: StatusCode,
         code: u32,
@@ -50,6 +56,14 @@ impl From<sockudo_core::error::Error> for AblyCompatError {
             | sockudo_core::error::Error::InvalidMessageFormat(message) => {
                 Self::InvalidInput(message)
             }
+            sockudo_core::error::Error::IdempotencyConflict => Self::InvalidInput(
+                "message.id was already used with a different payload".to_string(),
+            ),
+            sockudo_core::error::Error::IdempotencyInProgress => Self::Protocol {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: 50003,
+                message: "idempotent publish is still in progress".to_string(),
+            },
             sockudo_core::error::Error::Auth(message) => Self::ApiAuthFailed(message),
             sockudo_core::error::Error::AiTransport {
                 code,
@@ -95,6 +109,11 @@ impl IntoResponse for AblyCompatError {
             Self::InvalidInput(message) | Self::FeatureDisabled(message) => {
                 (StatusCode::BAD_REQUEST, 40000, message)
             }
+            Self::Protocol {
+                status,
+                code,
+                message,
+            } => (status, code, message),
             Self::AiTransport {
                 status,
                 code,

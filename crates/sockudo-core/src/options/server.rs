@@ -5,6 +5,7 @@ use tracing::warn;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerOptions {
+    pub ably_compat: AblyCompatConfig,
     pub adapter: AdapterConfig,
     pub app_manager: AppManagerConfig,
     pub cache: CacheConfig,
@@ -57,6 +58,7 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
+            ably_compat: AblyCompatConfig::default(),
             adapter: AdapterConfig::default(),
             app_manager: AppManagerConfig::default(),
             cache: CacheConfig::default(),
@@ -119,6 +121,7 @@ impl ServerOptions {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.ably_compat.validate()?;
         if self.unix_socket.enabled {
             if self.unix_socket.path.is_empty() {
                 return Err(

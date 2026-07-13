@@ -219,6 +219,47 @@ mod replay_buffer_regression {
         assert_eq!(next.serial, 8);
     }
 
+    #[test]
+    fn reserved_position_is_preserved_without_minting_a_second_serial() {
+        let buf = ReplayBuffer::new(100, Duration::from_secs(60));
+        let first = buf.next_position("app1", "reserved");
+        buf.store(
+            "app1",
+            "reserved",
+            Some(first.stream_id.as_str()),
+            first.serial,
+            Bytes::from_static(b"first"),
+        );
+
+        let reserved = buf
+            .try_ensure_position("app1", "reserved", &first.stream_id, 4)
+            .expect("same-generation reservation should be adopted");
+        assert_eq!(reserved.serial, 4);
+        let next = buf.next_position("app1", "reserved");
+        assert_eq!(next.serial, 5);
+    }
+
+    #[test]
+    fn recovery_fails_closed_when_reserved_positions_leave_a_gap() {
+        let buf = ReplayBuffer::new(100, Duration::from_secs(60));
+        for serial in [1, 3] {
+            buf.try_ensure_position("app1", "gap", "stream-1", serial)
+                .expect("ordered same-stream position should be accepted");
+            buf.store(
+                "app1",
+                "gap",
+                Some("stream-1"),
+                serial,
+                Bytes::from(serial.to_string()),
+            );
+        }
+
+        assert!(matches!(
+            buf.get_messages_after_position("app1", "gap", Some("stream-1"), 0),
+            ReplayLookup::Expired
+        ));
+    }
+
     fn variant_name(lookup: &ReplayLookup) -> &'static str {
         match lookup {
             ReplayLookup::Recovered(_) => "Recovered",

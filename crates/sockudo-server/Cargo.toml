@@ -13,6 +13,7 @@ versioned-messages = []
 ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "sockudo-adapter/ai-transport", "versioned-messages"]
 ably-compat = [
   "ai-transport",
+  "push",
   "dep:sockudo-ably-compat",
   "sockudo-ably-compat/ai-transport",
   "sockudo-ably-compat/recovery",

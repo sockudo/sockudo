@@ -307,6 +307,7 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
 fn message_payload_bytes(message: &PusherMessage) -> Option<usize> {
     match message.data.as_ref()? {
         MessageData::String(value) => Some(value.len()),
+        MessageData::Binary(value) => Some(value.len()),
         MessageData::Json(value) => sonic_rs::to_vec(value).ok().map(|bytes| bytes.len()),
         MessageData::Structured { .. } => sonic_rs::to_vec(message.data.as_ref()?)
             .ok()

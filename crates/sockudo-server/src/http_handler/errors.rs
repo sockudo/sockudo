@@ -186,6 +186,13 @@ impl From<sockudo_core::error::Error> for AppError {
             }
             sockudo_core::error::Error::Channel(s) => AppError::InvalidInput(s),
             sockudo_core::error::Error::InvalidMessageFormat(s) => AppError::InvalidInput(s),
+            sockudo_core::error::Error::IdempotencyConflict => AppError::InvalidInput(
+                "idempotency key was already used with a different payload".to_string(),
+            ),
+            sockudo_core::error::Error::IdempotencyInProgress => AppError::Backpressure {
+                message: "idempotent publish is still in progress".to_string(),
+                retry_after_seconds: 1,
+            },
             sockudo_core::error::Error::Auth(s) => AppError::ApiAuthFailed(s),
             sockudo_core::error::Error::AiTransport {
                 code,

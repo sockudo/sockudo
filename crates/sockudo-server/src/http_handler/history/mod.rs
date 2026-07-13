@@ -18,7 +18,7 @@ use sockudo_core::message_envelope::decode_stored_message_payload;
 use sockudo_core::utils::validate_channel_name;
 use sockudo_protocol::versioned_messages::extract_runtime_message_serial;
 use sonic_rs::{Value, json};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tracing::{instrument, warn};
 
 use super::AppError;
@@ -206,32 +206,50 @@ pub async fn channel_history(
         })
         .await?;
 
-    let mut items = Vec::with_capacity(page.items.len());
-    for item in page.items {
-        let mut event_name = item.event_name.clone();
-        let mut operation_kind = item.operation_kind.clone();
-        let mut payload_size_bytes = item.payload_size_bytes;
-        let message: Value = if handler.server_options().versioned_messages.enabled {
+    let versioned_messages_enabled = handler.server_options().versioned_messages.enabled;
+    let decoded_items = page
+        .items
+        .into_iter()
+        .map(|item| {
             let raw_message = decode_stored_message_payload(item.payload_bytes.as_ref())
                 .map(|payload| payload.message)
                 .map_err(|e| {
                     AppError::InternalError(format!("Failed to decode history payload: {e}"))
                 })?;
-            if let Some(message_serial) = extract_runtime_message_serial(&raw_message) {
-                match handler
-                    .version_store()
-                    .get_latest(
-                        &app_id,
-                        &channel_name,
-                        &parse_message_serial(message_serial)?,
-                    )
-                    .await?
-                {
+            let message_serial = versioned_messages_enabled
+                .then(|| extract_runtime_message_serial(&raw_message))
+                .flatten()
+                .map(parse_message_serial)
+                .transpose()?;
+            Ok((item, raw_message, message_serial))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let message_serials = decoded_items
+        .iter()
+        .filter_map(|(_, _, serial)| serial.clone())
+        .collect::<Vec<_>>();
+    let latest_by_serial = if versioned_messages_enabled {
+        handler
+            .version_store()
+            .get_latest_batch(&app_id, &channel_name, &message_serials)
+            .await?
+    } else {
+        BTreeMap::new()
+    };
+
+    let mut items = Vec::with_capacity(decoded_items.len());
+    for (item, raw_message, message_serial) in decoded_items {
+        let mut event_name = item.event_name.clone();
+        let mut operation_kind = item.operation_kind.clone();
+        let mut payload_size_bytes = item.payload_size_bytes;
+        let message: Value = if versioned_messages_enabled {
+            if let Some(message_serial) = message_serial {
+                match latest_by_serial.get(&message_serial) {
                     Some(latest) => {
                         if let Some(metrics) = handler.metrics() {
                             metrics.mark_versioned_history_substitution(&app_id, "applied");
                         }
-                        let latest_message = build_versioned_realtime_message(&latest);
+                        let latest_message = build_versioned_realtime_message(latest);
                         let latest_bytes = sonic_rs::to_vec(&latest_message)?;
                         event_name = latest_message.message.event.clone();
                         operation_kind = latest_message.action.as_str().to_string();
@@ -246,7 +264,7 @@ pub async fn channel_history(
                             app_id = %app_id,
                             channel = %channel_name,
                             history_serial = item.serial,
-                            message_serial = %message_serial,
+                            message_serial = %message_serial.as_str(),
                             "History row referenced a versioned message without a latest winner; returning stored payload"
                         );
                         sonic_rs::to_value(&raw_message)?
@@ -259,13 +277,7 @@ pub async fn channel_history(
                 sonic_rs::to_value(&raw_message)?
             }
         } else {
-            sonic_rs::to_value(
-                &decode_stored_message_payload(item.payload_bytes.as_ref())
-                    .map(|payload| payload.message)
-                    .map_err(|e| {
-                        AppError::InternalError(format!("Failed to decode history payload: {e}"))
-                    })?,
-            )?
+            sonic_rs::to_value(&raw_message)?
         };
         items.push(json!({
             "stream_id": item.stream_id,

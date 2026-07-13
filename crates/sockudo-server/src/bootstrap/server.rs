@@ -735,7 +735,11 @@ impl SockudoServer {
 
         #[cfg(feature = "ably-compat")]
         let ably_compat = Arc::new(sockudo_ably_compat::AblyCompatRuntime::new(
-            sockudo_ably_compat::AblyCompatDependencies,
+            sockudo_ably_compat::AblyCompatDependencies {
+                config: config.ably_compat.clone(),
+                cache: Some(state.cache_manager.clone()),
+                push_store: Some(state.push_store.clone()),
+            },
         ));
 
         let mut builder = ConnectionHandler::builder(

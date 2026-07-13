@@ -4,11 +4,13 @@ use sockudo_core::options::EventNameFilteringConfig;
 #[cfg(feature = "delta")]
 use sockudo_delta::DeltaAlgorithm;
 #[cfg(feature = "tag-filtering")]
-use sockudo_filter::FilterNode;
+use sockudo_filter::{FilterNode, MessagePredicate, SubscriptionView};
 use sockudo_protocol::messages::{ANNOTATION_SUBSCRIBE_MODE, MessageData, PusherMessage};
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
 use std::option::Option;
+#[cfg(feature = "tag-filtering")]
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscriptionRewind {
@@ -142,6 +144,9 @@ pub struct SubscriptionRequest {
     pub channel_data: Option<String>,
     #[cfg(feature = "tag-filtering")]
     pub tags_filter: Option<FilterNode>,
+    #[cfg(feature = "tag-filtering")]
+    /// One immutable V2 delivery predicate. Event, tag, and expression parts use AND semantics.
+    pub predicate: Option<Arc<MessagePredicate>>,
     #[cfg(feature = "delta")]
     /// Per-subscription delta compression settings
     /// Allows clients to negotiate delta compression per-channel
@@ -156,11 +161,31 @@ pub struct SubscriptionRequest {
     pub annotation_subscribe: bool,
 }
 
+type ExtractedSubscriptionFilter = (Option<Vec<String>>, Option<Value>, Option<String>);
+
 #[derive(Debug, Clone)]
 pub struct ClientEventRequest {
     pub event: String,
     pub channel: String,
-    pub data: Value,
+    pub data: MessageData,
+}
+
+impl ClientEventRequest {
+    /// Project native data into the JSON-shaped webhook contract. Realtime
+    /// fanout retains `MessageData::Binary`; only the webhook edge uses a byte
+    /// array because webhook payloads are JSON.
+    pub(crate) fn webhook_data(&self) -> Value {
+        match &self.data {
+            MessageData::String(value) => Value::from(value.as_str()),
+            MessageData::Binary(value) => {
+                sonic_rs::to_value(value).unwrap_or_else(|_| Value::new_array())
+            }
+            MessageData::Structured { .. } => {
+                sonic_rs::to_value(&self.data).unwrap_or_else(|_| Value::new_object())
+            }
+            MessageData::Json(value) => value.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -315,12 +340,15 @@ impl SubscriptionRequest {
         // The filter field can be either:
         //   - An object with "events" and/or "tags" sub-fields (V2 compound filter)
         //   - A FilterNode directly (legacy tag filter format)
-        let (event_name_filter, _effective_tags_filter_raw) = if event_name_filtering.enabled {
-            Self::extract_event_name_filter(tags_filter_raw)
-        } else {
-            let (_, tags_only) = Self::extract_event_name_filter(tags_filter_raw);
-            (None, tags_only)
-        };
+        let (event_name_filter, _effective_tags_filter_raw, expression) =
+            if event_name_filtering.enabled {
+                Self::extract_event_name_filter(tags_filter_raw)?
+            } else {
+                let (_, tags_only, expression) = Self::extract_event_name_filter(tags_filter_raw)?;
+                (None, tags_only, expression)
+            };
+        #[cfg(not(feature = "tag-filtering"))]
+        let _ = &expression;
 
         // Validate event name filter
         if let Some(ref events) = event_name_filter {
@@ -343,13 +371,21 @@ impl SubscriptionRequest {
 
         #[cfg(feature = "tag-filtering")]
         let tags_filter = _effective_tags_filter_raw
-            .and_then(|v| sonic_rs::to_vec(&v).ok())
-            .and_then(|bytes| sonic_rs::from_slice::<FilterNode>(&bytes).ok())
-            .map(|mut filter| {
-                // PERFORMANCE: Pre-build HashSet caches for large IN/NIN operators
+            .map(|value| {
+                let bytes = sonic_rs::to_vec(&value).map_err(|error| {
+                    sockudo_core::error::Error::InvalidMessageFormat(format!(
+                        "Invalid tags filter encoding: {error}"
+                    ))
+                })?;
+                let mut filter = sonic_rs::from_slice::<FilterNode>(&bytes).map_err(|error| {
+                    sockudo_core::error::Error::InvalidMessageFormat(format!(
+                        "Invalid tags filter shape: {error}"
+                    ))
+                })?;
                 filter.optimize();
-                filter
-            });
+                Ok::<FilterNode, sockudo_core::error::Error>(filter)
+            })
+            .transpose()?;
 
         #[cfg(feature = "tag-filtering")]
         if let Some(ref filter) = tags_filter
@@ -360,6 +396,25 @@ impl SubscriptionRequest {
                 err
             )));
         }
+
+        #[cfg(feature = "tag-filtering")]
+        let predicate =
+            if event_name_filter.is_some() || tags_filter.is_some() || expression.is_some() {
+                Some(Arc::new(
+                    MessagePredicate::compile(SubscriptionView {
+                        events: event_name_filter.clone().unwrap_or_default(),
+                        tags: tags_filter.clone(),
+                        expression,
+                    })
+                    .map_err(|error| {
+                        sockudo_core::error::Error::InvalidMessageFormat(format!(
+                            "Invalid subscription filter: {error}"
+                        ))
+                    })?,
+                ))
+            } else {
+                None
+            };
 
         #[cfg(feature = "delta")]
         let delta = delta_raw.and_then(|v| SubscriptionDeltaSettings::from_value(&v));
@@ -380,6 +435,8 @@ impl SubscriptionRequest {
             channel_data,
             #[cfg(feature = "tag-filtering")]
             tags_filter,
+            #[cfg(feature = "tag-filtering")]
+            predicate,
             #[cfg(feature = "delta")]
             delta,
             rewind,
@@ -413,30 +470,77 @@ impl SubscriptionRequest {
     /// Otherwise, passes the whole value through as tags filter.
     fn extract_event_name_filter(
         filter_raw: Option<Value>,
-    ) -> (Option<Vec<String>>, Option<Value>) {
+    ) -> sockudo_core::error::Result<ExtractedSubscriptionFilter> {
         let Some(filter) = filter_raw else {
-            return (None, None);
+            return Ok((None, None, None));
         };
 
-        // Check if filter is a compound object with "events" key
-        if let Some(events_val) = filter.get("events") {
-            let event_names = events_val
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect::<Vec<_>>()
-                })
-                .filter(|v| !v.is_empty());
-
-            // Extract tags sub-value if present
-            let tags_val = filter.get("tags").cloned();
-
-            return (event_names, tags_val);
+        let is_compound = filter.get("events").is_some()
+            || filter.get("tags").is_some()
+            || filter.get("expression").is_some();
+        if is_compound {
+            let event_names = match filter.get("events") {
+                Some(events_val) => {
+                    let events = events_val.as_array().ok_or_else(|| {
+                        sockudo_core::error::Error::InvalidMessageFormat(
+                            "filter.events must be an array of non-empty strings".into(),
+                        )
+                    })?;
+                    let mut names = Vec::with_capacity(events.len());
+                    for event in events {
+                        let event = event
+                            .as_str()
+                            .filter(|event| !event.is_empty())
+                            .ok_or_else(|| {
+                                sockudo_core::error::Error::InvalidMessageFormat(
+                                    "filter.events must contain only non-empty strings".into(),
+                                )
+                            })?;
+                        names.push(event.to_string());
+                    }
+                    (!names.is_empty()).then_some(names)
+                }
+                None => None,
+            };
+            let expression = filter
+                .get("expression")
+                .map(Self::parse_expression_filter)
+                .transpose()?;
+            return Ok((event_names, filter.get("tags").cloned(), expression));
         }
 
         // Not a compound filter — treat entire value as tags filter (legacy)
-        (None, Some(filter))
+        Ok((None, Some(filter), None))
+    }
+
+    fn parse_expression_filter(value: &Value) -> sockudo_core::error::Result<String> {
+        if let Some(source) = value.as_str().filter(|source| !source.is_empty()) {
+            return Ok(source.to_string());
+        }
+        let object = value.as_object().ok_or_else(|| {
+            sockudo_core::error::Error::InvalidMessageFormat(
+                "filter.expression must be a JMESPath string or object".into(),
+            )
+        })?;
+        let language = object
+            .get(&"language")
+            .and_then(Value::as_str)
+            .unwrap_or("jmespath");
+        if language != "jmespath" {
+            return Err(sockudo_core::error::Error::InvalidMessageFormat(format!(
+                "Unsupported filter expression language '{language}'"
+            )));
+        }
+        object
+            .get(&"source")
+            .and_then(Value::as_str)
+            .filter(|source| !source.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                sockudo_core::error::Error::InvalidMessageFormat(
+                    "filter.expression.source must be a non-empty string".into(),
+                )
+            })
     }
 }
 
@@ -529,9 +633,11 @@ mod tests {
 
     #[test]
     fn test_extract_event_name_filter_none_when_no_filter() {
-        let (events, tags) = SubscriptionRequest::extract_event_name_filter(None);
+        let (events, tags, expression) =
+            SubscriptionRequest::extract_event_name_filter(None).unwrap();
         assert!(events.is_none());
         assert!(tags.is_none());
+        assert!(expression.is_none());
     }
 
     #[test]
@@ -544,12 +650,14 @@ mod tests {
                 "val": "BTC"
             }
         });
-        let (events, tags) = SubscriptionRequest::extract_event_name_filter(Some(filter));
+        let (events, tags, expression) =
+            SubscriptionRequest::extract_event_name_filter(Some(filter)).unwrap();
         assert_eq!(events.unwrap(), vec!["price-update", "trade-executed"]);
         let tags = tags.unwrap();
         assert_eq!(tags["cmp"].as_str(), Some("eq"));
         assert_eq!(tags["key"].as_str(), Some("headers.asset"));
         assert_eq!(tags["val"].as_str(), Some("BTC"));
+        assert!(expression.is_none());
     }
 
     #[test]
@@ -557,9 +665,11 @@ mod tests {
         let filter = json!({
             "events": ["my-event"]
         });
-        let (events, tags) = SubscriptionRequest::extract_event_name_filter(Some(filter));
+        let (events, tags, expression) =
+            SubscriptionRequest::extract_event_name_filter(Some(filter)).unwrap();
         assert_eq!(events.unwrap(), vec!["my-event"]);
         assert!(tags.is_none());
+        assert!(expression.is_none());
     }
 
     #[test]
@@ -567,10 +677,12 @@ mod tests {
         let filter = json!({
             "events": []
         });
-        let (events, tags) = SubscriptionRequest::extract_event_name_filter(Some(filter));
+        let (events, tags, expression) =
+            SubscriptionRequest::extract_event_name_filter(Some(filter)).unwrap();
         // Empty array means no filter (receive all)
         assert!(events.is_none());
         assert!(tags.is_none());
+        assert!(expression.is_none());
     }
 
     #[test]
@@ -581,9 +693,11 @@ mod tests {
             "op": "==",
             "value": "us-east"
         });
-        let (events, tags) = SubscriptionRequest::extract_event_name_filter(Some(filter.clone()));
+        let (events, tags, expression) =
+            SubscriptionRequest::extract_event_name_filter(Some(filter.clone())).unwrap();
         assert!(events.is_none());
         assert_eq!(tags.unwrap(), filter);
+        assert!(expression.is_none());
     }
 
     #[test]
@@ -617,6 +731,100 @@ mod tests {
             assert_eq!(tags_filter.key.as_deref(), Some("symbol"));
             assert_eq!(tags_filter.val.as_deref(), Some("BTC"));
         }
+    }
+
+    #[test]
+    fn malformed_tag_filter_fails_closed() {
+        let filter = json!({
+            "tags": {
+                "cmp": ["eq"],
+                "key": "symbol",
+                "val": "BTC"
+            }
+        });
+
+        let result = SubscriptionRequest::build(
+            "ticker".to_string(),
+            None,
+            None,
+            Some(filter),
+            None,
+            None,
+            None,
+            &event_name_filtering_config(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn compound_expression_compiles_once_at_subscription_boundary() {
+        let filter = json!({
+            "events": ["order.updated"],
+            "expression": {
+                "language": "jmespath",
+                "source": "headers.priority == `\"high\"` && data.total > `100`"
+            }
+        });
+        let request = SubscriptionRequest::build(
+            "orders".to_string(),
+            None,
+            None,
+            Some(filter),
+            None,
+            None,
+            None,
+            &event_name_filtering_config(),
+        )
+        .expect("bounded expression should compile");
+
+        assert_eq!(
+            request.event_name_filter.as_deref(),
+            Some([String::from("order.updated")].as_slice())
+        );
+        assert!(
+            request
+                .predicate
+                .as_ref()
+                .is_some_and(|predicate| predicate.requires_document())
+        );
+    }
+
+    #[test]
+    fn realtime_subscribe_message_builds_compound_predicate() {
+        let data = json!({
+            "channel": "orders",
+            "filter": {
+                "events": ["order.updated"],
+                "expression": "data.total >= `100`"
+            }
+        });
+        let mut message = PusherMessage::channel_event("sockudo:subscribe", "orders", data.clone());
+        message.data = Some(MessageData::Json(data));
+
+        let request = SubscriptionRequest::from_message(&message, &event_name_filtering_config())
+            .expect("valid compound subscription");
+        assert_eq!(
+            request.event_name_filter.as_deref(),
+            Some([String::from("order.updated")].as_slice())
+        );
+        #[cfg(feature = "tag-filtering")]
+        assert!(request.predicate.is_some());
+    }
+
+    #[test]
+    fn non_string_event_filter_entry_fails_closed() {
+        let filter = json!({ "events": ["valid", 42] });
+        let result = SubscriptionRequest::build(
+            "ticker".to_string(),
+            None,
+            None,
+            Some(filter),
+            None,
+            None,
+            None,
+            &event_name_filtering_config(),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

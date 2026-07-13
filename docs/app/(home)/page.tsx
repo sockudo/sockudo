@@ -28,7 +28,6 @@ import {
   Terminal,
   Zap,
 } from 'lucide-react';
-import { TypeUIPanel } from '@/components/typeui-panel';
 
 const paths = [
   {
@@ -217,7 +216,7 @@ export default function HomePage() {
                   <RadioTower className="size-5" />
                 </span>
                 <div>
-                  <p>sockudo-control</p>
+                  <strong>sockudo-control</strong>
                   <span>localhost:6001</span>
                 </div>
               </div>
@@ -333,7 +332,7 @@ export default function HomePage() {
                   <path.icon className="size-5" />
                 </span>
                 <span className="home-card-meta">{path.meta}</span>
-                <h4>{path.title}</h4>
+                <h3>{path.title}</h3>
                 <p>{path.description}</p>
                 <span className="home-card-action">
                   Open guide
@@ -395,7 +394,7 @@ export default function HomePage() {
                 <span className="home-card-icon">
                   <feature.icon className="size-5" />
                 </span>
-                <h4>{feature.title}</h4>
+                <h3>{feature.title}</h3>
                 <p>{feature.description}</p>
               </article>
             ))}
@@ -421,7 +420,7 @@ export default function HomePage() {
             {sdkCards.map(([name, packageName, href]) => (
               <Link className="home-sdk-card" href={href} key={name}>
                 <span>{packageName}</span>
-                <h4>{name}</h4>
+                <h3>{name}</h3>
                 <p>
                   Open guide
                   <ArrowRight className="size-4" />
@@ -466,7 +465,7 @@ export default function HomePage() {
             {blogPosts.map((post) => (
               <Link className="home-card home-blog-card" href={post.href} key={post.href}>
                 <span className="home-card-meta">{post.meta}</span>
-                <h4>{post.title}</h4>
+                <h3>{post.title}</h3>
                 <p>{post.description}</p>
               </Link>
             ))}
@@ -474,7 +473,6 @@ export default function HomePage() {
         </div>
       </section>
 
-      <TypeUIPanel defaultMinimized />
     </div>
   );
 }

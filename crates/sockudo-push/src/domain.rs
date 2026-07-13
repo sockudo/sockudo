@@ -31,6 +31,7 @@ pub const MAX_FCM_PAYLOAD_BYTES: usize = 4096;
 pub const MAX_WEB_PUSH_PAYLOAD_BYTES: usize = 4096;
 pub const MAX_HMS_PAYLOAD_BYTES: usize = 4096;
 pub const MAX_WNS_PAYLOAD_BYTES: usize = 5000;
+pub const MAX_REALTIME_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const DEVICE_IDENTITY_TOKEN_BYTES: usize = 32;
 pub const DEVICE_SECRET_PBKDF2_ITERATIONS: u32 = 120_000;
 pub const DEFAULT_PUSH_FANOUT_FAST_THRESHOLD: u64 = 10_000;
@@ -234,6 +235,7 @@ pub enum PushProviderKind {
     WebPush,
     Hms,
     Wns,
+    Realtime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -273,6 +275,8 @@ pub enum PushRecipient {
         #[serde(rename = "channelUri")]
         channel_uri: SecretString,
     },
+    #[serde(rename = "realtime")]
+    Realtime { channel: String },
 }
 
 impl PushRecipient {
@@ -283,6 +287,7 @@ impl PushRecipient {
             Self::Web { .. } => PushProviderKind::WebPush,
             Self::Hms { .. } => PushProviderKind::Hms,
             Self::Wns { .. } => PushProviderKind::Wns,
+            Self::Realtime { .. } => PushProviderKind::Realtime,
         }
     }
 
@@ -294,6 +299,7 @@ impl PushRecipient {
             Self::Apns { device_token } => device_token.stable_hash(),
             Self::Web { endpoint, .. } => endpoint.stable_hash(),
             Self::Wns { channel_uri } => channel_uri.stable_hash(),
+            Self::Realtime { channel } => stable_hash(channel.as_bytes()),
         }
     }
 
@@ -317,6 +323,7 @@ impl PushRecipient {
                 require_secret("channelUri", channel_uri)?;
                 validate_web_push_endpoint(channel_uri.expose_secret())
             }
+            Self::Realtime { channel } => require_non_empty("channel", channel),
         }
     }
 }
@@ -1857,6 +1864,7 @@ pub(crate) fn provider_key(provider: PushProviderKind) -> &'static str {
         PushProviderKind::WebPush => "webpush",
         PushProviderKind::Hms => "hms",
         PushProviderKind::Wns => "wns",
+        PushProviderKind::Realtime => "realtime",
     }
 }
 
@@ -2253,6 +2261,24 @@ mod tests {
         assert_eq!(subscription.provider, PushProviderKind::Fcm);
         assert_eq!(subscription.token_hash, device.push.recipient.token_hash());
         assert!(subscription.validate().is_ok());
+    }
+
+    #[test]
+    fn realtime_recipient_is_a_native_validated_push_target() {
+        let recipient = PushRecipient::Realtime {
+            channel: "private:device-inbox".to_owned(),
+        };
+
+        assert_eq!(recipient.provider(), PushProviderKind::Realtime);
+        assert_eq!(recipient.token_hash(), stable_hash(b"private:device-inbox"));
+        assert!(recipient.validate().is_ok());
+        assert!(
+            PushRecipient::Realtime {
+                channel: String::new(),
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

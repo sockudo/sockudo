@@ -66,7 +66,9 @@ try {
   assert.equal(message.name, 'smoke-event');
   assert.deepEqual(message.data, { ok: true, text: 'hello' });
 
-  await withTimeout(channel.history({ limit: 1, untilAttach: true }), 'history');
+  const history = await withTimeout(channel.history({ limit: 1 }), 'history');
+  assert.ok(history.items.length >= 1, 'expected the published message in history');
+  assert.equal(history.items[0].name, 'smoke-event');
   await withTimeout(channel.detach(), 'detach');
 
   console.log(

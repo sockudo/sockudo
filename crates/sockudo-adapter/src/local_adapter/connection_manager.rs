@@ -288,12 +288,6 @@ impl ConnectionManager for LocalAdapter {
             except,
             &namespace,
         );
-        filter_annotation_subscribers_in_place(channel, &message, &mut filtered_socket_refs);
-        crate::v2_broadcast::apply_event_name_filter_in_place(
-            channel,
-            &message,
-            &mut filtered_socket_refs,
-        );
         self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
             .await;
 
@@ -357,12 +351,6 @@ impl ConnectionManager for LocalAdapter {
             &mut filtered_socket_refs,
             except,
             &namespace,
-        );
-        filter_annotation_subscribers_in_place(channel, &message, &mut filtered_socket_refs);
-        crate::v2_broadcast::apply_event_name_filter_in_place(
-            channel,
-            &message,
-            &mut filtered_socket_refs,
         );
         self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
             .await;

@@ -30,6 +30,18 @@ struct ResumeFailure {
     newest_available_serial: Option<u64>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct ResumeDeliveryPosition {
+    stream_id: Option<String>,
+    serial: u64,
+    last_message_id: Option<String>,
+}
+
+struct ResumeDelivery {
+    delivered: usize,
+    position: Option<ResumeDeliveryPosition>,
+}
+
 #[derive(Debug, Clone)]
 enum ResumeOutcome {
     Recovered {
@@ -132,34 +144,44 @@ impl ConnectionHandler {
                     count,
                     messages,
                 } => {
-                    if let Err(failure) = self
-                        .send_replayed_bytes(socket_id, &app_config.id, messages)
-                        .await
-                    {
-                        self.send_resume_failed(socket_id, app_config, &channel, &failure)
-                            .await
-                            .ok();
-                        failed.push(json!({
-                            "channel": channel,
-                            "code": failure.code,
-                            "reason": failure.reason,
-                            "expected_stream_id": failure.expected_stream_id,
-                            "current_stream_id": failure.current_stream_id,
-                            "oldest_available_serial": failure.oldest_available_serial,
-                            "newest_available_serial": failure.newest_available_serial,
-                        }));
-                        if let Some(metrics) = self.metrics.as_ref() {
-                            metrics.mark_history_recovery_failure(&app_config.id, failure.code);
+                    let delivery = self
+                        .send_replayed_messages(
+                            socket_id,
+                            &app_config.id,
+                            &channel,
+                            messages,
+                            count,
+                        )
+                        .await;
+                    let delivery = match delivery {
+                        Ok(delivery) => delivery,
+                        Err(failure) => {
+                            self.send_resume_failed(socket_id, app_config, &channel, &failure)
+                                .await
+                                .ok();
+                            failed.push(json!({
+                                "channel": channel,
+                                "code": failure.code,
+                                "reason": failure.reason,
+                                "expected_stream_id": failure.expected_stream_id,
+                                "current_stream_id": failure.current_stream_id,
+                                "oldest_available_serial": failure.oldest_available_serial,
+                                "newest_available_serial": failure.newest_available_serial,
+                            }));
+                            if let Some(metrics) = self.metrics.as_ref() {
+                                metrics.mark_history_recovery_failure(&app_config.id, failure.code);
+                            }
+                            continue;
                         }
-                        continue;
-                    }
+                    };
                     if let Some(metrics) = self.metrics.as_ref() {
                         metrics.mark_history_recovery_success(&app_config.id, source);
                     }
                     recovered.push(json!({
                         "channel": channel,
                         "source": source,
-                        "replayed": count,
+                        "replayed": delivery.delivered,
+                        "position": delivery.position,
                     }));
                 }
                 ResumeOutcome::Failed(failure) => {
@@ -475,7 +497,19 @@ impl ConnectionHandler {
             }
 
             let count_this_page = page.items.len();
-            for item in page.items {
+            let page_items = page.items;
+            let projected_messages = self
+                .history_items_to_realtime_messages(app_config, channel, &page_items)
+                .await
+                .map_err(|_| ResumeFailure {
+                    code: "persistence_unavailable",
+                    reason: "durable_history_payload_projection_failed",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: page.retained.stream_id.clone(),
+                    oldest_available_serial: page.retained.oldest_serial,
+                    newest_available_serial: page.retained.newest_serial,
+                })?;
+            for (item, message) in page_items.into_iter().zip(projected_messages) {
                 if position
                     .last_message_id
                     .as_ref()
@@ -483,7 +517,21 @@ impl ConnectionHandler {
                 {
                     continue;
                 }
-                recovered_messages.push(item.payload_bytes);
+                // Durable history owns its storage envelope. Recovery owns a
+                // V2 egress boundary, so project each retained item back into
+                // the typed realtime message before serializing wire bytes.
+                let bytes =
+                    sonic_rs::to_vec(&message)
+                        .map(Bytes::from)
+                        .map_err(|_| ResumeFailure {
+                            code: "persistence_unavailable",
+                            reason: "durable_history_payload_serialization_failed",
+                            expected_stream_id: position.stream_id.clone(),
+                            current_stream_id: page.retained.stream_id.clone(),
+                            oldest_available_serial: page.retained.oldest_serial,
+                            newest_available_serial: page.retained.newest_serial,
+                        })?;
+                recovered_messages.push(bytes);
             }
 
             if !page.has_more {
@@ -569,6 +617,79 @@ impl ConnectionHandler {
         messages: Vec<Bytes>,
     ) -> std::result::Result<(), ResumeFailure> {
         send_replayed_bytes_impl(self, socket_id, app_id, messages).await
+    }
+
+    async fn send_replayed_messages(
+        &self,
+        socket_id: &SocketId,
+        app_id: &str,
+        channel: &str,
+        messages: Vec<Bytes>,
+        canonical_count: usize,
+    ) -> std::result::Result<ResumeDelivery, ResumeFailure> {
+        let Some(connection) = self
+            .connection_manager
+            .get_connection(socket_id, app_id)
+            .await
+        else {
+            return Err(replay_delivery_failure());
+        };
+
+        if !crate::v2_broadcast::has_matching_subscription(&connection, channel) {
+            let position = messages
+                .last()
+                .and_then(|bytes| sonic_rs::from_slice::<PusherMessage>(bytes).ok())
+                .and_then(|message| recovery_position(&message));
+            self.send_replayed_bytes(socket_id, app_id, messages)
+                .await?;
+            return Ok(ResumeDelivery {
+                delivered: canonical_count,
+                position,
+            });
+        }
+
+        let mut delivered = 0;
+        let mut position = None;
+        for bytes in messages {
+            let message: PusherMessage = sonic_rs::from_slice(&bytes).map_err(|error| {
+                warn!(channel, error = %error, "failed to decode recovery payload");
+                replay_delivery_failure()
+            })?;
+            position = recovery_position(&message).or(position);
+            if !crate::v2_broadcast::socket_allows_message(&connection, channel, &message, true) {
+                continue;
+            }
+            self.send_message_to_socket(app_id, socket_id, message)
+                .await
+                .map_err(|error| {
+                    warn!(channel, error = %error, "failed to deliver recovery payload");
+                    replay_delivery_failure()
+                })?;
+            delivered += 1;
+        }
+        Ok(ResumeDelivery {
+            delivered,
+            position,
+        })
+    }
+}
+
+fn recovery_position(message: &PusherMessage) -> Option<ResumeDeliveryPosition> {
+    Some(ResumeDeliveryPosition {
+        stream_id: message.stream_id.clone(),
+        serial: message.serial?,
+        last_message_id: message.message_id.clone(),
+    })
+}
+
+fn replay_delivery_failure() -> ResumeFailure {
+    ResumeFailure {
+        code: "persistence_unavailable",
+        reason: "failed_to_deliver_recovery_payload",
+        expected_stream_id: None,
+        current_stream_id: None,
+        oldest_available_serial: None,
+        newest_available_serial: None,
     }
 }
 
@@ -689,6 +810,19 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::sync::RwLock;
+
+    #[test]
+    fn terminal_recovery_position_advances_over_suppressed_messages() {
+        let mut message = PusherMessage::channel_event("ignored", "chat", json!({}));
+        message.stream_id = Some("stream-1".into());
+        message.serial = Some(42);
+        message.message_id = Some("message-42".into());
+
+        let position = recovery_position(&message).expect("serial creates a position");
+        assert_eq!(position.stream_id.as_deref(), Some("stream-1"));
+        assert_eq!(position.serial, 42);
+        assert_eq!(position.last_message_id.as_deref(), Some("message-42"));
+    }
 
     struct TestCache;
 

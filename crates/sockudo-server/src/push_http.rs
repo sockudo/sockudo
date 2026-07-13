@@ -1431,6 +1431,7 @@ fn recipient_response(recipient: &PushRecipient) -> DeviceRecipientResponse {
         PushRecipient::Web { .. } => "web",
         PushRecipient::Hms { .. } => "hms",
         PushRecipient::Wns { .. } => "wns",
+        PushRecipient::Realtime { .. } => "realtime",
     };
     DeviceRecipientResponse {
         transport_type,
@@ -1730,6 +1731,7 @@ fn provider_env_key(provider: PushProviderKind) -> &'static str {
         PushProviderKind::WebPush => "WEBPUSH",
         PushProviderKind::Hms => "HMS",
         PushProviderKind::Wns => "WNS",
+        PushProviderKind::Realtime => "REALTIME",
     }
 }
 

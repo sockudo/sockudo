@@ -79,6 +79,16 @@ This page lists every runtime environment variable referenced by the server, cor
 | `SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS` | Comma-separated origin allowlist for the default app. |
 | `SOCKUDO_DEFAULT_APP_ANNOTATIONS_ENABLED` | Enables annotations for the default app channel policy. |
 
+## Ably compatibility credentials
+
+| Variable | Purpose |
+| --- | --- |
+| `SOCKUDO_ABLY_COMPAT_ENABLED` | Enables the optional additional-key registry. The primary `App.key`/`App.secret` remains available independently. |
+| `SOCKUDO_ABLY_COMPAT_KEYS_JSON` | JSON array of additional keys with `app_id`, `key_name`, `secret`, optional `capability`, `revocable_tokens`, `enabled`, and rotation metadata. Treat this value as a secret. |
+| `SOCKUDO_ABLY_COMPAT_MAX_TOKEN_TTL_MS` | Maximum accepted TokenRequest TTL in milliseconds. Defaults to 24 hours. |
+| `SOCKUDO_ABLY_COMPAT_TOKEN_REQUEST_TIMESTAMP_SKEW_MS` | Maximum absolute TokenRequest timestamp skew. Defaults to 15 minutes. |
+| `SOCKUDO_ABLY_COMPAT_NONCE_TTL_SECONDS` | Shared replay-protection TTL for TokenRequest nonces. Defaults to 15 minutes. |
+
 ## Redis
 
 | Variable | Purpose |

@@ -15,7 +15,7 @@ mod manager;
 mod messages;
 mod state;
 
-pub use compression::CompressionResult;
+pub use compression::{CompressionResult, compute_vcdiff};
 pub use manager::{DeltaCompressionManager, DeltaCompressionStats};
 pub use messages::{
     CachedMessage, DeltaMessage, create_cache_sync_message, create_delta_message,

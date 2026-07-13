@@ -135,6 +135,7 @@ where
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             message: message_json,
+            envelope: None,
             except_socket_id: except.map(|id| id.to_string()),
             timestamp_ms: start_time_ms.or_else(|| {
                 Some(
@@ -156,6 +157,54 @@ where
         }
 
         Ok(())
+    }
+
+    async fn send_with_envelope(
+        &self,
+        channel: &str,
+        message: PusherMessage,
+        except: Option<&SocketId>,
+        app_id: &str,
+        start_time_ms: Option<f64>,
+        envelope: Option<sockudo_core::message_envelope::MessageEnvelope>,
+    ) -> Result<()> {
+        let node_id = self.horizontal.node_id.clone();
+        let local_result = self
+            .local_adapter
+            .send(channel, message.clone(), except, app_id, start_time_ms)
+            .await;
+        if let Err(error) = local_result {
+            warn!(channel, %error, "Local send failed");
+        }
+
+        let broadcast = BroadcastMessage {
+            node_id,
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            message: sonic_rs::to_string(&message)?,
+            envelope,
+            except_socket_id: except.map(ToString::to_string),
+            timestamp_ms: start_time_ms.or_else(|| {
+                Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as f64
+                        / 1_000_000.0,
+                )
+            }),
+            compression_metadata: None,
+            idempotency_key: message.idempotency_key.clone(),
+            ephemeral: message.is_ephemeral(),
+        };
+        if !self.should_skip_horizontal_communication().await {
+            self.transport.publish_broadcast(&broadcast).await?;
+        }
+        Ok(())
+    }
+
+    fn set_realtime_egress_tap(&self, tap: Arc<dyn crate::handler::RealtimeEgressTap>) {
+        let _ = self.realtime_egress_tap.set(tap);
     }
 
     #[cfg(feature = "delta")]
@@ -251,6 +300,7 @@ where
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             message: message_json,
+            envelope: None,
             except_socket_id: except.map(|id| id.to_string()),
             timestamp_ms: start_time_ms.or_else(|| {
                 Some(

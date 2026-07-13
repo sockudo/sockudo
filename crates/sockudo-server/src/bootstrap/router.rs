@@ -23,6 +23,8 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::http::Method;
 use axum::http::header::HeaderName;
+#[cfg(feature = "ably-compat")]
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Router, middleware as axum_middleware};
 use sockudo_core::metrics::MetricsInterface;
@@ -554,7 +556,54 @@ impl SockudoServer {
 
         if self.config.http_api.usage_enabled {
             router = router.route("/usage", get(usage));
-            router = router.route("/stats", get(stats));
+        }
+        #[cfg(feature = "ably-compat")]
+        let stats_enabled = self.config.http_api.usage_enabled || self.config.ably_compat.enabled;
+        #[cfg(not(feature = "ably-compat"))]
+        let stats_enabled = self.config.http_api.usage_enabled;
+
+        if stats_enabled {
+            #[cfg(feature = "ably-compat")]
+            if self.config.ably_compat.enabled {
+                let runtime = Arc::clone(&self.ably_compat);
+                router = router.route(
+                    "/stats",
+                    get(
+                        move |query: axum::extract::Query<sockudo_ably_compat::AblyStatsQuery>,
+                              headers: axum::http::HeaderMap,
+                              axum::extract::State(handler): axum::extract::State<
+                            Arc<sockudo_adapter::ConnectionHandler>,
+                        >| {
+                            let runtime = Arc::clone(&runtime);
+                            async move {
+                                let is_ably_request = query.key.is_some()
+                                    || query.access_token.is_some()
+                                    || headers.contains_key(axum::http::header::AUTHORIZATION);
+                                if is_ably_request {
+                                    sockudo_ably_compat::ably_stats(
+                                        query,
+                                        headers,
+                                        axum::Extension(runtime),
+                                        axum::extract::State(handler),
+                                    )
+                                    .await
+                                } else {
+                                    match stats(axum::extract::State(handler)).await {
+                                        Ok(response) => response.into_response(),
+                                        Err(error) => error.into_response(),
+                                    }
+                                }
+                            }
+                        },
+                    ),
+                );
+            } else {
+                router = router.route("/stats", get(stats));
+            }
+            #[cfg(not(feature = "ably-compat"))]
+            {
+                router = router.route("/stats", get(stats));
+            }
         }
 
         router = router

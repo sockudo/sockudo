@@ -98,7 +98,23 @@ Protocol V2 heartbeat behavior:
 - browser-style runtimes that do not expose native ping APIs may still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages for client-side activity checks
 - fallback heartbeat messages are not part of V2 broadcast continuity and do not carry `message_id`, `serial`, or `stream_id`
 
+Protocol V2 also supports `wireFormat: "messagepack"` and
+`wireFormat: "protobuf"`. Both preserve `Uint8Array` message data as native
+binary values. The MessagePack representation is the additive tagged variant
+`["binary", <bin>]`; existing wire variants remain unchanged.
+
 ## Features
+
+Protocol V2 subscriptions can combine event names, tag filters, and a bounded
+JMESPath expression. All supplied components must match:
+
+```ts
+client.subscribe("orders.*", {
+  events: ["order.updated"],
+  filter: Filter.eq("region", "eu"),
+  expression: 'data.total >= `100` && headers.priority == `"high"`',
+});
+```
 
 - Pusher-protocol-compatible client surface
 - Protocol V1 compatibility by default

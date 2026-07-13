@@ -19,6 +19,7 @@ export interface ResumeRecoveredChannel {
   channel: string;
   source: string;
   replayed: number;
+  position?: RecoveryPosition;
 }
 
 export interface ResumeFailedChannel {

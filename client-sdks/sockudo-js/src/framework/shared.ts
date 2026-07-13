@@ -12,6 +12,7 @@ export interface ChannelHookOptions {
   filter?: FilterNode;
   delta?: ChannelDeltaSettings;
   events?: string[];
+  expression?: string | { language: "jmespath"; source: string };
   onEvent?: (eventName: string, data: any) => void;
   onSubscriptionSucceeded?: (data: any) => void;
   onSubscriptionError?: (error: any) => void;
@@ -106,11 +107,12 @@ export function subscribeToChannel<TChannel extends Channel = Channel>(
   options: ChannelHookOptions = {},
 ): TChannel {
   const subscribeOptions =
-    options.filter || options.delta || options.events
+    options.filter || options.delta || options.events || options.expression
       ? {
           filter: options.filter,
           delta: options.delta,
           events: options.events,
+          expression: options.expression,
         }
       : undefined;
 

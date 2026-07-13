@@ -42,6 +42,11 @@ When `ai_transport` and versioned messages are enabled for the target channel,
 AI events and publishes with `message_id` return serial acknowledgements under
 the channel entry. Retries with the same `message_id` or `X-Idempotency-Key`
 return the original serials without publishing a duplicate event.
+If the publishing node exits after durable persistence but before recording the
+idempotency acknowledgement, a retry reconstructs and atomically repairs the
+receipt from native history/version storage. Raw idempotency keys are not stored
+in message envelopes; recovery uses an app/channel-scoped hash plus the canonical
+payload fingerprint.
 
 ```json
 {
@@ -112,6 +117,12 @@ GET /apps/{app_id}/channels/{channel_name}/history?limit=50&direction=newest_fir
 ```
 
 History responses use opaque cursors. Store and replay cursors as strings; do not parse them.
+Use `direction=oldest_first`/`forwards` or `direction=newest_first`/`backwards`
+with `start`, `end`, and the policy-capped `limit` to bound a stable page. A
+cursor is opaque and must be replayed with the same query shape that produced
+it. The Ably-compatible `/channels/{channel}/messages` projection additionally
+returns credential-free `first` and optional `next` Link relations that preserve
+that query shape.
 
 ## Versioned messages
 
@@ -175,6 +186,16 @@ Use annotations for reactions, read receipts, moderation signals, and summary pr
 ## Push notifications
 
 Push APIs are first-class HTTP APIs, not separate infrastructure. They cover device registration, channel subscriptions, credential management, publish admission, status inspection, scheduling, cancellation, and provider callbacks.
+
+When the server is built with `ably-compat`, the root Ably REST projection also
+provides `/stats`, `/push/publish`, `/push/deviceRegistrations`,
+`/push/channelSubscriptions`, and `/push/channels`. These routes authenticate
+with Ably-compatible credentials but call a bounded typed compatibility stats
+store plus the native push-store and message services; they do not call Sockudo
+HTTP handlers internally. Stats pages use opaque cursors and stable Link query
+propagation. Realtime push recipients are delivered as ordinary native
+publishes, while external provider delivery continues through the configured
+push workers.
 
 ### Register a device
 

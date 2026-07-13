@@ -167,7 +167,10 @@ try {
   assert.equal(messageAction(latest), 'message.update');
   assert.equal(latest.extras?.ai?.codec?.status, 'complete');
 
-  const history = await withTimeout(channel.history({ limit: 1, untilAttach: true }), 'history');
+  // These mutations were published after this channel attached, so ordinary
+  // history is the correct query. `untilAttach` intentionally stops at the
+  // attachment high-water mark and is covered by protocol-discovery.mjs.
+  const history = await withTimeout(channel.history({ limit: 1 }), 'history');
   assert.equal(history.items[0].serial, serial);
   assert.equal(history.items[0].data, 'Hello world');
   assert.equal(messageAction(history.items[0]), 'message.update');

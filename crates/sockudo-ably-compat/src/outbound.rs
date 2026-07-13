@@ -16,9 +16,9 @@ use crate::codec::encode_protocol_bytes;
 use crate::protocol::{ACTION_ERROR, AblyFormat, AblyProtocolMessage, empty_protocol_message};
 
 const DEFAULT_CONTROL_MESSAGES: usize = 32;
-const DEFAULT_DATA_MESSAGES: usize = 256;
+const DEFAULT_DATA_MESSAGES: usize = 4_096;
 const DEFAULT_CONTROL_BYTES: usize = 64 * 1024;
-const DEFAULT_DATA_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_DATA_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutboundLimits {
@@ -49,6 +49,11 @@ pub(crate) struct OutboundMetrics {
     pub(crate) fanout: AtomicUsize,
     pub(crate) replay_source: AtomicUsize,
     pub(crate) expiry: AtomicUsize,
+    pub(crate) filter_cache_hits: AtomicUsize,
+    pub(crate) filter_cache_misses: AtomicUsize,
+    pub(crate) filter_cache_evictions: AtomicUsize,
+    pub(crate) filter_cache_entries: AtomicUsize,
+    pub(crate) filter_cache_bytes: AtomicUsize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +66,11 @@ pub struct OutboundMetricsSnapshot {
     pub fanout: usize,
     pub replay_source: usize,
     pub expiry: usize,
+    pub filter_cache_hits: usize,
+    pub filter_cache_misses: usize,
+    pub filter_cache_evictions: usize,
+    pub filter_cache_entries: usize,
+    pub filter_cache_bytes: usize,
 }
 
 impl OutboundMetrics {
@@ -74,6 +84,11 @@ impl OutboundMetrics {
             fanout: self.fanout.load(Ordering::Acquire),
             replay_source: self.replay_source.load(Ordering::Acquire),
             expiry: self.expiry.load(Ordering::Acquire),
+            filter_cache_hits: self.filter_cache_hits.load(Ordering::Acquire),
+            filter_cache_misses: self.filter_cache_misses.load(Ordering::Acquire),
+            filter_cache_evictions: self.filter_cache_evictions.load(Ordering::Acquire),
+            filter_cache_entries: self.filter_cache_entries.load(Ordering::Acquire),
+            filter_cache_bytes: self.filter_cache_bytes.load(Ordering::Acquire),
         }
     }
 }

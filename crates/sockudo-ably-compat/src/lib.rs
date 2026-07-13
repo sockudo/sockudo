@@ -5,8 +5,10 @@
 //! runtimes cannot share state accidentally.
 
 mod auth;
+mod channel_name;
 mod codec;
 mod error;
+mod filter;
 mod outbound;
 mod protocol;
 mod runtime;
@@ -14,4 +16,5 @@ mod services;
 
 pub use error::AblyCompatError;
 pub use outbound::OutboundMetricsSnapshot;
-pub use runtime::{AblyCompatDependencies, AblyCompatRuntime};
+pub use protocol::{AblyRestQuery, AblyStatsQuery};
+pub use runtime::{AblyCompatDependencies, AblyCompatRuntime, ably_stats};

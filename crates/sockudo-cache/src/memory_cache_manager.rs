@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use moka::future::Cache;
+use moka::{
+    future::Cache,
+    ops::compute::{CompResult, Op},
+};
 use sockudo_core::cache::{CacheManager, CacheScanPage};
 use sockudo_core::error::Result;
 use sockudo_core::options::MemoryCacheOptions;
@@ -162,15 +165,61 @@ impl CacheManager for MemoryCacheManager {
 
     async fn set_if_not_exists(&self, key: &str, value: &str, _ttl_seconds: u64) -> Result<bool> {
         let prefixed_key = self.prefixed_key(key);
-        // Moka's `contains_key` + `insert` isn't truly atomic, but for in-memory
-        // single-process use this is sufficient since Tokio tasks on the same
-        // runtime don't preempt each other within a single .await-free block.
-        if self.cache.contains_key(&prefixed_key) {
-            Ok(false)
-        } else {
-            self.cache.insert(prefixed_key, value.to_string()).await;
-            Ok(true)
-        }
+        let value = value.to_string();
+        let result = self
+            .cache
+            .entry(prefixed_key)
+            .and_compute_with(|entry| {
+                let operation = if entry.is_none() {
+                    Op::Put(value)
+                } else {
+                    Op::Nop
+                };
+                std::future::ready(operation)
+            })
+            .await;
+        Ok(matches!(result, CompResult::Inserted(_)))
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: &str,
+        value: &str,
+        _ttl_seconds: u64,
+    ) -> Result<bool> {
+        let prefixed_key = self.prefixed_key(key);
+        let expected = expected.to_string();
+        let value = value.to_string();
+        let result = self
+            .cache
+            .entry(prefixed_key)
+            .and_compute_with(|entry| {
+                let operation = match entry {
+                    Some(entry) if entry.value() == &expected => Op::Put(value),
+                    _ => Op::Nop,
+                };
+                std::future::ready(operation)
+            })
+            .await;
+        Ok(matches!(result, CompResult::ReplacedWith(_)))
+    }
+
+    async fn compare_and_remove(&self, key: &str, expected: &str) -> Result<bool> {
+        let prefixed_key = self.prefixed_key(key);
+        let expected = expected.to_string();
+        let result = self
+            .cache
+            .entry(prefixed_key)
+            .and_compute_with(|entry| {
+                let operation = match entry {
+                    Some(entry) if entry.value() == &expected => Op::Remove,
+                    _ => Op::Nop,
+                };
+                std::future::ready(operation)
+            })
+            .await;
+        Ok(matches!(result, CompResult::Removed(_)))
     }
 
     async fn increment_by(&self, key: &str, delta: i64, _ttl_seconds: u64) -> Result<i64> {
@@ -252,6 +301,17 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    fn test_cache() -> MemoryCacheManager {
+        MemoryCacheManager::new(
+            "compare".to_string(),
+            MemoryCacheOptions {
+                ttl: 60,
+                cleanup_interval: 60,
+                max_capacity: 1_000,
+            },
+        )
+    }
+
     #[tokio::test]
     async fn increment_by_serializes_concurrent_updates() {
         let cache = Arc::new(MemoryCacheManager::new(
@@ -275,5 +335,161 @@ mod tests {
         }
 
         assert_eq!(cache.get("counter").await.unwrap().as_deref(), Some("128"));
+    }
+
+    #[tokio::test]
+    async fn set_if_not_exists_has_one_winner_under_concurrency() {
+        let cache = Arc::new(MemoryCacheManager::new(
+            "set-once".to_string(),
+            MemoryCacheOptions {
+                ttl: 60,
+                cleanup_interval: 60,
+                max_capacity: 1_000,
+            },
+        ));
+
+        let handles = (0..128)
+            .map(|index| {
+                let cache = Arc::clone(&cache);
+                tokio::spawn(async move {
+                    cache
+                        .set_if_not_exists("same-key", &index.to_string(), 60)
+                        .await
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut winners = 0;
+        for handle in handles {
+            winners += usize::from(handle.await.unwrap().unwrap());
+        }
+
+        assert_eq!(winners, 1);
+        assert!(cache.get("same-key").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn set_if_not_exists_has_one_winner_in_repeated_synchronized_races() {
+        const ROUNDS: usize = 64;
+        const CONTENDERS: usize = 16;
+
+        let cache = Arc::new(MemoryCacheManager::new(
+            "set-once-synchronized".to_string(),
+            MemoryCacheOptions {
+                ttl: 60,
+                cleanup_interval: 60,
+                max_capacity: 10_000,
+            },
+        ));
+
+        for round in 0..ROUNDS {
+            let barrier = Arc::new(tokio::sync::Barrier::new(CONTENDERS));
+            let handles = (0..CONTENDERS)
+                .map(|contender| {
+                    let cache = Arc::clone(&cache);
+                    let barrier = Arc::clone(&barrier);
+                    tokio::spawn(async move {
+                        barrier.wait().await;
+                        cache
+                            .set_if_not_exists(&format!("race-{round}"), &contender.to_string(), 60)
+                            .await
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let mut winners = 0;
+            for handle in handles {
+                winners += usize::from(handle.await.unwrap().unwrap());
+            }
+            assert_eq!(winners, 1, "round {round} must have exactly one winner");
+        }
+    }
+
+    #[tokio::test]
+    async fn compare_and_swap_requires_the_expected_value() {
+        let cache = test_cache();
+        cache.set("receipt", "pending-owner-a", 60).await.unwrap();
+
+        assert!(
+            !cache
+                .compare_and_swap("receipt", "pending-owner-b", "committed-b", 60)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            cache.get("receipt").await.unwrap().as_deref(),
+            Some("pending-owner-a")
+        );
+
+        assert!(
+            cache
+                .compare_and_swap("receipt", "pending-owner-a", "committed-a", 60)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            cache.get("receipt").await.unwrap().as_deref(),
+            Some("committed-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn compare_and_remove_cannot_release_another_owner_claim() {
+        let cache = test_cache();
+        cache.set("claim", "owner-b", 60).await.unwrap();
+
+        assert!(!cache.compare_and_remove("claim", "owner-a").await.unwrap());
+        assert_eq!(
+            cache.get("claim").await.unwrap().as_deref(),
+            Some("owner-b")
+        );
+
+        assert!(cache.compare_and_remove("claim", "owner-b").await.unwrap());
+        assert_eq!(cache.get("claim").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn concurrent_idempotent_retries_observe_one_committed_receipt() {
+        use sockudo_core::idempotency::{
+            IdempotencyReceipt, IdempotencyStart, begin_publish, commit_publish,
+        };
+
+        let cache = Arc::new(test_cache());
+        let receipt = IdempotencyReceipt {
+            acknowledgement_id: "serial-1".to_string(),
+            message_serial: Some("serial-1".to_string()),
+            history_serial: Some(1),
+            delivery_serial: Some(1),
+            version_serial: Some("serial-1".to_string()),
+        };
+        let handles = (0..64)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let receipt = receipt.clone();
+                tokio::spawn(async move {
+                    match begin_publish(
+                        cache.as_ref(),
+                        "publish-key".to_string(),
+                        "same-fingerprint".to_string(),
+                        60,
+                    )
+                    .await
+                    .unwrap()
+                    {
+                        IdempotencyStart::Acquired(claim) => {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            commit_publish(cache.as_ref(), &claim, &receipt)
+                                .await
+                                .unwrap();
+                            receipt
+                        }
+                        IdempotencyStart::Replay(replayed) => replayed,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            assert_eq!(handle.await.unwrap(), receipt);
+        }
     }
 }

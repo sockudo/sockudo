@@ -10,12 +10,15 @@ use sockudo_adapter::handler::{
 };
 use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
+use sockudo_adapter::services::{MessageService, PublishContext};
 use sockudo_app::memory_app_manager::MemoryAppManager;
+use sockudo_cache::redis_cache_manager::{RedisCacheConfig, RedisCacheManager};
 use sockudo_core::app::{App, AppManager};
+use sockudo_core::cache::CacheManager;
 use sockudo_core::history::{
-    HistoryAppendRecord, HistoryDurableState, HistoryPage, HistoryReadRequest,
-    HistoryRuntimeStatus, HistoryStore, HistoryStreamRuntimeState, HistoryWriteReservation,
-    MemoryHistoryStore, MemoryHistoryStoreConfig,
+    HistoryAppendRecord, HistoryDirection, HistoryDurableState, HistoryPage, HistoryQueryBounds,
+    HistoryReadRequest, HistoryRuntimeStatus, HistoryStore, HistoryStreamRuntimeState,
+    HistoryWriteReservation, MemoryHistoryStore, MemoryHistoryStoreConfig,
 };
 use sockudo_core::options::{ClusterHealthConfig, ServerOptions};
 use sockudo_core::version_store::{MemoryVersionStore, StoredVersionRecord, VersionStore};
@@ -209,6 +212,25 @@ async fn build_redis_node_with_version_store(
     version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
     options: ServerOptions,
 ) -> ClusterNode {
+    build_redis_node_with_version_store_and_cache(
+        prefix,
+        app,
+        history_store,
+        version_store,
+        Arc::new(MockCacheManager::new()),
+        options,
+    )
+    .await
+}
+
+async fn build_redis_node_with_version_store_and_cache(
+    prefix: &str,
+    app: &App,
+    history_store: Arc<dyn HistoryStore + Send + Sync>,
+    version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
+    cache: Arc<dyn CacheManager + Send + Sync>,
+    options: ServerOptions,
+) -> ClusterNode {
     let app_manager = Arc::new(MemoryAppManager::new());
     app_manager.create_app(app.clone()).await.unwrap();
 
@@ -237,7 +259,7 @@ async fn build_redis_node_with_version_store(
     let builder = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
         adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
-        Arc::new(MockCacheManager::new()),
+        cache,
         options,
     )
     .local_adapter(adapter.local_adapter.clone())
@@ -253,6 +275,87 @@ async fn build_redis_node_with_version_store(
         handler,
         adapter,
         app_manager,
+    }
+}
+
+async fn redis_cache(prefix: &str) -> Arc<dyn CacheManager + Send + Sync> {
+    Arc::new(
+        RedisCacheManager::new(RedisCacheConfig {
+            url: redis_url(),
+            prefix: prefix.to_string(),
+            response_timeout: Some(Duration::from_secs(1)),
+            use_resp3: false,
+        })
+        .await
+        .unwrap(),
+    )
+}
+
+struct CrashAfterDurablePublishCache {
+    inner: Arc<dyn CacheManager + Send + Sync>,
+}
+
+#[async_trait]
+impl CacheManager for CrashAfterDurablePublishCache {
+    async fn has(&self, key: &str) -> sockudo_core::error::Result<bool> {
+        self.inner.has(key).await
+    }
+
+    async fn get(&self, key: &str) -> sockudo_core::error::Result<Option<String>> {
+        self.inner.get(key).await
+    }
+
+    async fn set(
+        &self,
+        key: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> sockudo_core::error::Result<()> {
+        self.inner.set(key, value, ttl_seconds).await
+    }
+
+    async fn remove(&self, key: &str) -> sockudo_core::error::Result<()> {
+        self.inner.remove(key).await
+    }
+
+    async fn disconnect(&self) -> sockudo_core::error::Result<()> {
+        self.inner.disconnect().await
+    }
+
+    async fn ttl(&self, key: &str) -> sockudo_core::error::Result<Option<Duration>> {
+        self.inner.ttl(key).await
+    }
+
+    async fn set_if_not_exists(
+        &self,
+        key: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> sockudo_core::error::Result<bool> {
+        self.inner.set_if_not_exists(key, value, ttl_seconds).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> sockudo_core::error::Result<bool> {
+        if key.starts_with("idempotency:publish:v1:") {
+            panic!("simulated process exit after durable publish and before receipt CAS");
+        }
+        self.inner
+            .compare_and_swap(key, expected, value, ttl_seconds)
+            .await
+    }
+
+    async fn compare_and_remove(
+        &self,
+        key: &str,
+        expected: &str,
+    ) -> sockudo_core::error::Result<bool> {
+        self.inner.compare_and_remove(key, expected).await
     }
 }
 
@@ -478,6 +581,8 @@ async fn publish_on_node_a_reaches_subscriber_on_node_b_via_redis() {
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,
@@ -505,6 +610,345 @@ async fn publish_on_node_a_reaches_subscriber_on_node_b_via_redis() {
     assert_eq!(delivered.message_id.as_deref(), Some("live-1"));
     assert!(delivered.stream_id.is_some());
     assert!(delivered.serial.is_some());
+}
+
+#[tokio::test]
+async fn concurrent_same_id_publish_commits_once_across_redis_nodes() {
+    if !is_redis_available().await {
+        eprintln!("Skipping test: Redis not available");
+        return;
+    }
+
+    let app = test_app();
+    let history_store = Arc::new(ClusterHistoryStore::new(Arc::new(MemoryHistoryStore::new(
+        MemoryHistoryStoreConfig::default(),
+    ))));
+    let prefix = format!("idempotency_cluster_{}", Uuid::new_v4().simple());
+    let cache_prefix = format!("{prefix}_cache");
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+
+    let node_a = build_redis_node_with_version_store_and_cache(
+        &prefix,
+        &app,
+        history_store.clone(),
+        None,
+        redis_cache(&cache_prefix).await,
+        options.clone(),
+    )
+    .await;
+    let node_b = build_redis_node_with_version_store_and_cache(
+        &prefix,
+        &app,
+        history_store.clone(),
+        None,
+        redis_cache(&cache_prefix).await,
+        options,
+    )
+    .await;
+    wait_for_cluster_ready(&[&node_a.adapter, &node_b.adapter], 2).await;
+
+    let (socket_id, mut reader) = connect_v2_socket(&node_b, &app).await;
+    node_b
+        .handler
+        .handle_subscribe_request(
+            &socket_id,
+            &app,
+            SubscriptionRequest {
+                channel: "idempotent".to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+                annotation_subscribe: false,
+            },
+        )
+        .await
+        .unwrap();
+    let _ = recv_message(&mut reader).await;
+
+    let service_a = MessageService::new(Arc::new(node_a.handler.clone()));
+    let service_b = MessageService::new(Arc::new(node_b.handler.clone()));
+    let publish_a = service_a.publish_message(
+        &app,
+        "idempotent",
+        live_message("idempotent", "once", "stable-id"),
+        PublishContext::default(),
+    );
+    let publish_b = service_b.publish_message(
+        &app,
+        "idempotent",
+        live_message("idempotent", "once", "stable-id"),
+        PublishContext::default(),
+    );
+    let (result_a, result_b) = tokio::join!(publish_a, publish_b);
+    let result_a = result_a.unwrap();
+    let result_b = result_b.unwrap();
+
+    assert_eq!(result_a.receipt, result_b.receipt);
+    assert_ne!(result_a.duplicate, result_b.duplicate);
+    let delivered = recv_message(&mut reader).await;
+    assert_eq!(delivered.message_id.as_deref(), Some("stable-id"));
+    assert!(
+        timeout(Duration::from_millis(150), reader.next())
+            .await
+            .is_err()
+    );
+
+    let history = history_store
+        .read_page(HistoryReadRequest {
+            app_id: app.id.clone(),
+            channel: "idempotent".to_string(),
+            direction: HistoryDirection::OldestFirst,
+            limit: 10,
+            cursor: None,
+            bounds: HistoryQueryBounds::default(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].message_id.as_deref(), Some("stable-id"));
+}
+
+#[tokio::test]
+async fn retry_recovers_receipt_after_process_exit_between_history_and_redis_cas() {
+    if !is_redis_available().await {
+        eprintln!("Skipping test: Redis not available");
+        return;
+    }
+
+    let app = test_app();
+    let history_store = Arc::new(ClusterHistoryStore::new(Arc::new(MemoryHistoryStore::new(
+        MemoryHistoryStoreConfig::default(),
+    ))));
+    let prefix = format!("idempotency_crash_{}", Uuid::new_v4().simple());
+    let cache_prefix = format!("{prefix}_cache");
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+
+    let shared_cache = redis_cache(&cache_prefix).await;
+    let crashing_cache = Arc::new(CrashAfterDurablePublishCache {
+        inner: shared_cache.clone(),
+    });
+    let node_a = build_redis_node_with_version_store_and_cache(
+        &prefix,
+        &app,
+        history_store.clone(),
+        None,
+        crashing_cache,
+        options.clone(),
+    )
+    .await;
+    let node_b = build_redis_node_with_version_store_and_cache(
+        &prefix,
+        &app,
+        history_store.clone(),
+        None,
+        shared_cache,
+        options,
+    )
+    .await;
+    wait_for_cluster_ready(&[&node_a.adapter, &node_b.adapter], 2).await;
+
+    let (socket_id, mut reader) = connect_v2_socket(&node_b, &app).await;
+    node_b
+        .handler
+        .handle_subscribe_request(
+            &socket_id,
+            &app,
+            SubscriptionRequest {
+                channel: "crash-recovery".to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+                annotation_subscribe: false,
+            },
+        )
+        .await
+        .unwrap();
+    let _ = recv_message(&mut reader).await;
+
+    let service_a = MessageService::new(Arc::new(node_a.handler.clone()));
+    let app_for_crash = app.clone();
+    let crashed = tokio::spawn(async move {
+        service_a
+            .publish_message(
+                &app_for_crash,
+                "crash-recovery",
+                live_message("crash-recovery", "once", "crash-stable-id"),
+                PublishContext::default(),
+            )
+            .await
+    })
+    .await;
+    assert!(crashed.is_err_and(|error| error.is_panic()));
+
+    let first_delivery = recv_message(&mut reader).await;
+    assert_eq!(
+        first_delivery.message_id.as_deref(),
+        Some("crash-stable-id")
+    );
+
+    let recovered = MessageService::new(Arc::new(node_b.handler.clone()))
+        .publish_message(
+            &app,
+            "crash-recovery",
+            live_message("crash-recovery", "once", "crash-stable-id"),
+            PublishContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(recovered.duplicate);
+    assert_eq!(recovered.receipt.acknowledgement_id, "crash-stable-id");
+    assert_eq!(recovered.receipt.message_serial, None);
+    assert_eq!(recovered.receipt.history_serial, None);
+    assert!(
+        timeout(Duration::from_millis(150), reader.next())
+            .await
+            .is_err()
+    );
+
+    let history = history_store
+        .read_page(HistoryReadRequest {
+            app_id: app.id.clone(),
+            channel: "crash-recovery".to_string(),
+            direction: HistoryDirection::OldestFirst,
+            limit: 10,
+            cursor: None,
+            bounds: HistoryQueryBounds::default(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(history.items.len(), 1);
+}
+
+#[tokio::test]
+async fn versioned_retry_recovers_exact_serial_receipt_after_process_exit() {
+    if !is_redis_available().await {
+        eprintln!("Skipping test: Redis not available");
+        return;
+    }
+
+    let app = test_app();
+    let history_store = Arc::new(ClusterHistoryStore::new(Arc::new(MemoryHistoryStore::new(
+        MemoryHistoryStoreConfig::default(),
+    ))));
+    let version_store = Arc::new(MemoryVersionStore::new());
+    let prefix = format!("idempotency_versioned_crash_{}", Uuid::new_v4().simple());
+    let cache_prefix = format!("{prefix}_cache");
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.versioned_messages.enabled = true;
+
+    let shared_cache = redis_cache(&cache_prefix).await;
+    let node_a = build_redis_node_with_version_store_and_cache(
+        &prefix,
+        &app,
+        history_store.clone(),
+        Some(version_store.clone() as Arc<dyn VersionStore + Send + Sync>),
+        Arc::new(CrashAfterDurablePublishCache {
+            inner: shared_cache.clone(),
+        }),
+        options.clone(),
+    )
+    .await;
+    let node_b = build_redis_node_with_version_store_and_cache(
+        &prefix,
+        &app,
+        history_store.clone(),
+        Some(version_store.clone() as Arc<dyn VersionStore + Send + Sync>),
+        shared_cache,
+        options,
+    )
+    .await;
+    wait_for_cluster_ready(&[&node_a.adapter, &node_b.adapter], 2).await;
+
+    let service_a = MessageService::new(Arc::new(node_a.handler.clone()));
+    let app_for_crash = app.clone();
+    let crashed = tokio::spawn(async move {
+        service_a
+            .publish_message(
+                &app_for_crash,
+                "versioned-crash",
+                live_message("versioned-crash", "chat.message", "versioned-crash-id"),
+                PublishContext::default(),
+            )
+            .await
+    })
+    .await;
+    assert!(crashed.is_err_and(|error| error.is_panic()));
+
+    let committed = version_store
+        .latest_by_history(&app.id, "versioned-crash")
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("versioned publish must be durable before the simulated exit");
+    let recovered = MessageService::new(Arc::new(node_b.handler.clone()))
+        .publish_message(
+            &app,
+            "versioned-crash",
+            live_message("versioned-crash", "chat.message", "versioned-crash-id"),
+            PublishContext::default(),
+        )
+        .await
+        .unwrap();
+
+    assert!(recovered.duplicate);
+    assert_eq!(
+        recovered.receipt.message_serial.as_deref(),
+        Some(committed.message_serial().as_str())
+    );
+    assert_eq!(
+        recovered.receipt.history_serial,
+        Some(committed.history_serial())
+    );
+    assert_eq!(
+        recovered.receipt.delivery_serial,
+        Some(committed.delivery_serial())
+    );
+    assert_eq!(
+        recovered.receipt.version_serial.as_deref(),
+        Some(committed.version_serial().as_str())
+    );
+    assert_eq!(
+        version_store
+            .latest_by_history(&app.id, "versioned-crash")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        history_store
+            .read_page(HistoryReadRequest {
+                app_id: app.id.clone(),
+                channel: "versioned-crash".to_string(),
+                direction: HistoryDirection::OldestFirst,
+                limit: 10,
+                cursor: None,
+                bounds: HistoryQueryBounds::default(),
+            })
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -541,6 +985,8 @@ async fn fresh_node_with_empty_replay_buffer_uses_cold_recovery_after_cross_node
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,
@@ -686,6 +1132,7 @@ async fn versioned_winner_selection_converges_under_reordered_arrival_via_redis(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: current.envelope.clone(),
         message: current
             .message
             .apply_mutation(
@@ -712,6 +1159,7 @@ async fn versioned_winner_selection_converges_under_reordered_arrival_via_redis(
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: current.envelope.clone(),
         message: current
             .message
             .apply_mutation(
@@ -814,6 +1262,8 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,
@@ -853,6 +1303,7 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
         app_id: current.app_id.clone(),
         channel: current.channel.clone(),
         original_client_id: current.original_client_id.clone(),
+        envelope: current.envelope.clone(),
         message: current
             .message
             .apply_mutation(
@@ -904,6 +1355,7 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
         app_id: latest.app_id.clone(),
         channel: latest.channel.clone(),
         original_client_id: latest.original_client_id.clone(),
+        envelope: latest.envelope.clone(),
         message: latest
             .message
             .apply_append(
@@ -1047,6 +1499,8 @@ async fn degraded_durable_state_causes_explicit_cross_node_recovery_failure_via_
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,
@@ -1204,6 +1658,8 @@ async fn rewind_live_handoff_across_nodes_has_no_gap_and_no_duplicates_via_redis
         channel_data: None,
         #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
         #[cfg(feature = "delta")]
         delta: None,
         rewind: Some(SubscriptionRewind::Count(2)),

@@ -53,6 +53,8 @@ struct CountingBlockVersionStore {
     inner: MemoryVersionStore,
     single_calls: AtomicU64,
     block_calls: AtomicU64,
+    latest_row_calls: AtomicU64,
+    latest_history_calls: AtomicU64,
 }
 
 impl CountingBlockVersionStore {
@@ -61,6 +63,8 @@ impl CountingBlockVersionStore {
             inner: MemoryVersionStore::new(),
             single_calls: AtomicU64::new(0),
             block_calls: AtomicU64::new(0),
+            latest_row_calls: AtomicU64::new(0),
+            latest_history_calls: AtomicU64::new(0),
         }
     }
 }
@@ -98,6 +102,7 @@ impl VersionStore for CountingBlockVersionStore {
         channel: &str,
         message_serial: &MessageSerial,
     ) -> Result<Option<StoredVersionRecord>> {
+        self.latest_row_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.get_latest(app_id, channel, message_serial).await
     }
 
@@ -117,12 +122,74 @@ impl VersionStore for CountingBlockVersionStore {
         app_id: &str,
         channel: &str,
     ) -> Result<Vec<StoredVersionRecord>> {
+        self.latest_history_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.latest_by_history(app_id, channel).await
     }
 
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {
         self.inner.stream_state(app_id, channel).await
     }
+}
+
+#[tokio::test]
+async fn default_batch_projection_uses_one_history_read_and_zero_row_reads() {
+    let store = CountingBlockVersionStore::new();
+    store
+        .append_version(base_record("msg:1", 10, 1))
+        .await
+        .unwrap();
+    store
+        .append_version(base_record("msg:2", 20, 2))
+        .await
+        .unwrap();
+
+    let requested = vec![
+        MessageSerial::new("msg:2").unwrap(),
+        MessageSerial::new("missing").unwrap(),
+        MessageSerial::new("msg:1").unwrap(),
+    ];
+    let projected = store
+        .get_latest_batch("app", "chat", &requested)
+        .await
+        .unwrap();
+
+    assert_eq!(projected.len(), 2);
+    assert_eq!(projected[&requested[0]].history_serial(), 20);
+    assert_eq!(projected[&requested[2]].history_serial(), 10);
+    assert_eq!(store.latest_history_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(store.latest_row_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn memory_batch_projection_returns_latest_records_for_requested_serials() {
+    let store = MemoryVersionStore::new();
+    let create = base_record("msg:1", 10, 1);
+    store.append_version(create.clone()).await.unwrap();
+    store
+        .append_version(StoredVersionRecord {
+            message: create
+                .message
+                .apply_mutation(
+                    MessageAction::Update,
+                    version("ver:2", 2),
+                    2,
+                    MessageFieldDelta::default(),
+                )
+                .unwrap(),
+            ..create
+        })
+        .await
+        .unwrap();
+
+    let serial = MessageSerial::new("msg:1").unwrap();
+    let missing = MessageSerial::new("msg:missing").unwrap();
+    let projected = store
+        .get_latest_batch("app", "chat", &[serial.clone(), missing.clone()])
+        .await
+        .unwrap();
+
+    assert_eq!(projected[&serial].version_serial().as_str(), "ver:2");
+    assert!(!projected.contains_key(&missing));
 }
 
 #[tokio::test]

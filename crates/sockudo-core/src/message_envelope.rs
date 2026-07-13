@@ -40,6 +40,7 @@ impl MessageContent {
     pub fn from_message_data(data: &MessageData) -> Result<Self, String> {
         match data {
             MessageData::String(value) => Ok(Self::Text(value.clone())),
+            MessageData::Binary(value) => Ok(Self::Binary(value.clone())),
             MessageData::Structured { .. } => sonic_rs::to_value(data)
                 .map(Self::Structured)
                 .map_err(|error| format!("failed to encode structured message data: {error}")),
@@ -70,6 +71,16 @@ pub struct VersionOperationMetadata {
     pub projection: VersionProjection,
 }
 
+/// Hashed identity used to repair an acknowledgement after a process exits
+/// between durable persistence and the idempotency receipt CAS.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublishIdempotencyMetadata {
+    /// App/channel/key-scoped SHA-256 cache identity; never the raw client key.
+    pub cache_key: String,
+    /// SHA-256 of the canonical client-controlled publish payload.
+    pub payload_fingerprint: String,
+}
+
 /// Canonical publish/delivery facts shared by native and compatibility paths.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
@@ -90,6 +101,7 @@ pub struct MessageEnvelope {
     pub action: Option<MessageAction>,
     pub message_serial: Option<MessageSerial>,
     pub version: Option<VersionOperationMetadata>,
+    pub idempotency: Option<PublishIdempotencyMetadata>,
 }
 
 impl MessageEnvelope {
@@ -121,6 +133,7 @@ impl MessageEnvelope {
             action: None,
             message_serial: None,
             version: None,
+            idempotency: None,
         })
     }
 

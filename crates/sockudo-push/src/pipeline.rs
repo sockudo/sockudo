@@ -2240,6 +2240,9 @@ mod tests {
             PushProviderKind::Wns => PushRecipient::Wns {
                 channel_uri: SecretString::new("https://wns.example/channel").unwrap(),
             },
+            PushProviderKind::Realtime => PushRecipient::Realtime {
+                channel: "push:device-1".to_owned(),
+            },
         }
     }
 

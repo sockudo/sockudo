@@ -20,7 +20,7 @@ use super::system::record_api_metrics;
 
 mod processor;
 
-use processor::{MessageIdIdempotencyContext, process_single_event_parallel};
+use processor::process_single_event_parallel;
 
 /// Resolve the idempotency key from the request body field or the `X-Idempotency-Key` header.
 /// Body field takes precedence. Returns `None` when idempotency is disabled or no key was
@@ -272,10 +272,6 @@ pub async fn events(
         need_channel_info,
         Some(start_time_ms),
         idempotency_key.clone(),
-        MessageIdIdempotencyContext {
-            enabled: idempotency_config.enabled,
-            ttl_seconds: idempotency_config.ttl_seconds,
-        },
     )
     .await?;
 
@@ -531,10 +527,6 @@ pub async fn batch_events(
             should_collect_info_for_this_event,
             Some(start_time_ms),
             single_event_message.idempotency_key.clone(),
-            MessageIdIdempotencyContext {
-                enabled: idempotency_config.enabled,
-                ttl_seconds: idempotency_config.ttl_seconds,
-            },
         )
         .await?;
 

@@ -106,6 +106,12 @@ pub enum Error {
     #[error("Invalid event name: {0}")]
     InvalidEventName(String),
 
+    #[error("idempotency key was already used with a different payload")]
+    IdempotencyConflict,
+
+    #[error("idempotent publish is still in progress")]
+    IdempotencyInProgress,
+
     #[error("{message}")]
     AiTransport {
         code: u32,

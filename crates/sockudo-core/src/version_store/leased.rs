@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::versioned_messages::MessageSerial;
 use ahash::AHashMap;
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -253,6 +254,17 @@ impl VersionStore for LeasedVersionStore {
         message_serial: &MessageSerial,
     ) -> Result<Option<StoredVersionRecord>> {
         self.inner.get_latest(app_id, channel, message_serial).await
+    }
+
+    async fn get_latest_batch(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serials: &[MessageSerial],
+    ) -> Result<BTreeMap<MessageSerial, StoredVersionRecord>> {
+        self.inner
+            .get_latest_batch(app_id, channel, message_serials)
+            .await
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {

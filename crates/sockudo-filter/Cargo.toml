@@ -11,13 +11,17 @@ license-file.workspace = true
 ahash = { workspace = true }
 dashmap = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sonic-rs = { workspace = true }
 memchr = { workspace = true }
+jmespath = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
 sonic-rs = { workspace = true }
 serde = { workspace = true }
+proptest = { workspace = true }
 
 [[bench]]
 name = "filter_bench"
