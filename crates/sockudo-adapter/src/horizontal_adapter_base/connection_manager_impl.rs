@@ -135,6 +135,7 @@ where
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             message: message_json,
+            presence_replication: None,
             envelope: None,
             except_socket_id: except.map(|id| id.to_string()),
             timestamp_ms: start_time_ms.or_else(|| {
@@ -182,6 +183,7 @@ where
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             message: sonic_rs::to_string(&message)?,
+            presence_replication: None,
             envelope,
             except_socket_id: except.map(ToString::to_string),
             timestamp_ms: start_time_ms.or_else(|| {
@@ -201,6 +203,61 @@ where
             self.transport.publish_broadcast(&broadcast).await?;
         }
         Ok(())
+    }
+
+    async fn send_presence_replication(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: sockudo_core::presence_registry::PresenceReplication,
+    ) -> Result<()> {
+        if self.should_skip_horizontal_communication().await {
+            return Ok(());
+        }
+        self.transport
+            .publish_broadcast(&BroadcastMessage {
+                node_id: self.horizontal.node_id.clone(),
+                app_id: app_id.to_string(),
+                channel: channel.to_string(),
+                message: String::new(),
+                presence_replication: Some(replication),
+                envelope: None,
+                except_socket_id: None,
+                timestamp_ms: None,
+                compression_metadata: None,
+                idempotency_key: None,
+                ephemeral: true,
+            })
+            .await
+    }
+
+    async fn replicated_presence_records(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<Vec<sockudo_core::presence_registry::PresenceRecord>> {
+        let registry = self.horizontal.cluster_presence_registry.read().await;
+        let mut records = Vec::new();
+        for node in registry.values() {
+            let Some(entries) = node.get(channel) else {
+                continue;
+            };
+            for entry in entries.values() {
+                if entry.app_id != app_id {
+                    continue;
+                }
+                let Some(user_info) = entry.user_info.as_deref() else {
+                    continue;
+                };
+                if let Ok(record) = sonic_rs::from_value::<
+                    sockudo_core::presence_registry::PresenceRecord,
+                >(user_info)
+                {
+                    records.push(record);
+                }
+            }
+        }
+        Ok(records)
     }
 
     fn set_realtime_egress_tap(&self, tap: Arc<dyn crate::handler::RealtimeEgressTap>) {
@@ -300,6 +357,7 @@ where
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             message: message_json,
+            presence_replication: None,
             envelope: None,
             except_socket_id: except.map(|id| id.to_string()),
             timestamp_ms: start_time_ms.or_else(|| {

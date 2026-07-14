@@ -164,6 +164,30 @@ pub struct PresenceHistoryReadRequest {
     pub bounds: PresenceHistoryQueryBounds,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PresenceHistoryFilter {
+    pub user_id: Option<String>,
+    pub connection_id: Option<String>,
+}
+
+impl PresenceHistoryFilter {
+    #[must_use]
+    pub fn matches(&self, item: &PresenceHistoryItem) -> bool {
+        self.user_id
+            .as_deref()
+            .is_none_or(|user_id| item.user_id == user_id)
+            && self
+                .connection_id
+                .as_deref()
+                .is_none_or(|connection_id| item.connection_id.as_deref() == Some(connection_id))
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.user_id.is_none() && self.connection_id.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct PresenceHistoryRetentionStats {
     pub stream_id: Option<String>,

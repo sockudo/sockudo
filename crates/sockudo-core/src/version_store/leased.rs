@@ -247,6 +247,21 @@ impl VersionStore for LeasedVersionStore {
         self.inner.append_version(record).await
     }
 
+    async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        // Atomic commits own their delivery position in the durable store and
+        // therefore deliberately bypass process-local reservation leases.
+        self.inner.commit_create(request).await
+    }
+
+    async fn compare_and_apply(
+        &self,
+        request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        // Mutations deliberately bypass delivery leases: the underlying store
+        // owns predecessor validation and delivery allocation in one commit.
+        self.inner.compare_and_apply(request).await
+    }
+
     async fn get_latest(
         &self,
         app_id: &str,

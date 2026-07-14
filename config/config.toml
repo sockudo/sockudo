@@ -287,9 +287,19 @@ ttl = 300
 # channel, history, presence, and fanout state with the primary key.
 [ably_compat]
 enabled = false
+# accept | placement_constraint. The latter sends Ably 50320 over WebSocket so
+# clients retry configured fallback hosts; it does not enable fallback transports.
+realtime_admission = "accept"
+attach_timeout_ms = 10000
 max_token_ttl_ms = 86400000
 token_request_timestamp_skew_ms = 900000
 nonce_ttl_seconds = 900
+stats_fixture_ingest_enabled = false
+stats_queue_capacity = 4096
+stats_flush_interval_ms = 10
+stats_retention_seconds = 34560000
+stats_max_scan_entries = 100000
+stats_cas_retries = 8
 
 # [[ably_compat.keys]]
 # app_id = "app-id"

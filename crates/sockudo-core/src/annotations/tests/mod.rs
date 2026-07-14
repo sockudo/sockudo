@@ -680,6 +680,7 @@ async fn memory_store_replays_raw_channel_events_by_annotation_serial() {
         .replay_raw(RawAnnotationReplayRequest {
             app_id: "app".to_string(),
             channel_id: "chat".to_string(),
+            message_serial: None,
             after_annotation_serial: Some(AnnotationSerial::new("ann:1").unwrap()),
             limit: 10,
         })
@@ -693,6 +694,44 @@ async fn memory_store_replays_raw_channel_events_by_annotation_serial() {
             .collect::<Vec<_>>(),
         vec!["ann:2", "ann:3"]
     );
+}
+
+#[tokio::test]
+async fn memory_store_filters_message_before_applying_replay_limit() {
+    let store = MemoryAnnotationStore::new();
+    let target_serial = MessageSerial::new("msg:target").unwrap();
+
+    for index in 1..=4 {
+        let mut record = stored_event(
+            &format!("ann:{index}"),
+            "reaction:total.v1",
+            AnnotationAction::Create,
+            None,
+            None,
+            None,
+            index,
+        );
+        record.annotation.message_serial = if index == 4 {
+            target_serial.clone()
+        } else {
+            MessageSerial::new(format!("msg:noise-{index}")).unwrap()
+        };
+        store.append_event(record).await.unwrap();
+    }
+
+    let replay = store
+        .replay_raw(RawAnnotationReplayRequest {
+            app_id: "app".to_string(),
+            channel_id: "chat".to_string(),
+            message_serial: Some(target_serial),
+            after_annotation_serial: None,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].annotation_serial().as_str(), "ann:4");
 }
 
 #[tokio::test]
@@ -946,6 +985,7 @@ async fn memory_store_purge_removes_events_and_stale_projection() {
             .replay_raw(RawAnnotationReplayRequest {
                 app_id: "app".to_string(),
                 channel_id: "chat".to_string(),
+                message_serial: None,
                 after_annotation_serial: None,
                 limit: 10,
             })

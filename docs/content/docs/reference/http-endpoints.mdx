@@ -147,9 +147,27 @@ Annotation request fields:
 
 Annotations require versioned messages, global `annotations.enabled`, and channel-level annotation permission.
 
+When built with `ably-compat`, the root compatibility router additionally
+exposes `GET` and `POST`
+`/channels/{channelName}/messages/{messageSerial}/annotations`. POST accepts an
+Ably annotation array for create or delete. GET negotiates JSON or MsgPack and
+returns relative `first`/`next` Link relations with an opaque cursor scoped to
+the app, channel, and message. Compatibility capabilities
+`annotation-publish`, `annotation-subscribe`, `annotation-delete-own`, and
+`annotation-delete-any` remain independent from message mutation capabilities.
+
 ## Push notifications
 
 Push notifications are a core Sockudo API surface. Push endpoints are available when the binary is built with the `push` feature. They use signed app authentication plus capability headers.
+
+With `ably-compat`, the root router also exposes `/push/publish`,
+`/push/deviceRegistrations`, `/push/channelSubscriptions`, and `/push/channels`.
+These are DTO/auth projections over the same durable store, queue, planner,
+provider, feedback, retry, status, scheduler, and cleanup services listed below.
+The Ably realtime transport is a real `MessageService` provider delivery, not a
+synthetic provider success. Run the native monolith workers in an in-process
+deployment, or provide the corresponding external workers for the configured
+queue stages.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
@@ -214,9 +232,18 @@ Push list endpoints use cursor pagination with `limit` and opaque `cursor`.
 | `GET` | `/up` | None | Global health probe. |
 | `GET` | `/up/{appId}` | None | App-specific health probe. |
 | `GET` | `/usage` | None, when enabled | Memory usage snapshot. Enabled by `HTTP_API_USAGE_ENABLED`. |
-| `GET` | `/stats` | None, when enabled | Server occupancy, memory, and history-health summary. Enabled by `HTTP_API_USAGE_ENABLED`. |
+| `GET` | `/stats` | Dispatches by auth | Native operator summary without Ably credentials; Ably interval stats with an Ably key or bearer token. |
+| `GET` | `/operator/stats` | None, when enabled | Unambiguous alias for the native occupancy, memory, and history-health response. |
+| `GET` | `/operator/stats/aggregation` | None, with Ably compatibility | Stats-worker backlog, capacity, dropped observations, flush failures, batch count, observation count, and last flush lag. |
+| `POST` | `/stats` | Ably key or bearer token | Conformance fixture ingestion through the real stats store; available only when `stats_fixture_ingest_enabled = true`. |
 
-Disable `/usage` and `/stats` in exposed production environments unless they are behind trusted ingress controls.
+Ably `GET /stats` accepts interval IDs or epoch milliseconds for `start` and
+`end`, `unit`/`by` values `minute`, `hour`, `day`, or `month`, forward/backward
+direction, a bounded `limit`, and opaque cursors carried in `Link` headers.
+Pagination is anchored to interval IDs and a fixed query horizon.
+
+Disable `/usage`, `/operator/stats`, and operator aggregation stats in exposed
+production environments unless they are behind trusted ingress controls.
 
 ## Metrics endpoint
 

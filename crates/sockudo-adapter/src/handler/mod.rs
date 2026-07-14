@@ -36,6 +36,7 @@ use sockudo_core::message_envelope::MessageEnvelope;
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::presence_history::{NoopPresenceHistoryStore, PresenceHistoryStore};
+use sockudo_core::presence_registry::{PresenceRegistry, PresenceReplication};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_core::version_store::{NoopVersionStore, VersionStore};
 use sockudo_core::websocket::SocketId;
@@ -109,6 +110,24 @@ pub trait RealtimeEgressTap: Send + Sync {
         message: &PusherMessage,
         envelope: &MessageEnvelope,
     ) -> Result<()>;
+
+    fn deliver_presence(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _replication: &PresenceReplication,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn replicate_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: &PresenceReplication,
+    ) -> Result<()> {
+        self.deliver_presence(app_id, channel, replication)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +173,8 @@ pub struct ConnectionHandler {
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     /// Presence manager for race-safe presence channel operations
     pub(crate) presence_manager: Arc<PresenceManager>,
+    /// Protocol-neutral authority for virtual/current presence members.
+    presence_registry: Arc<PresenceRegistry>,
     #[cfg(feature = "recovery")]
     /// Replay buffer for connection recovery (enabled via config)
     pub(crate) replay_buffer: Option<Arc<crate::replay_buffer::ReplayBuffer>>,
@@ -173,6 +194,7 @@ pub struct ConnectionHandlerBuilder {
     annotation_store: Option<Arc<dyn AnnotationStore + Send + Sync>>,
     version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
     presence_history_store: Option<Arc<dyn PresenceHistoryStore + Send + Sync>>,
+    presence_registry: Option<Arc<PresenceRegistry>>,
     realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     server_options: ServerOptions,
@@ -199,6 +221,7 @@ impl ConnectionHandlerBuilder {
             annotation_store: None,
             version_store: None,
             presence_history_store: None,
+            presence_registry: None,
             realtime_egress_tap: None,
             webhook_integration: None,
             server_options,
@@ -242,6 +265,11 @@ impl ConnectionHandlerBuilder {
         presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     ) -> Self {
         self.presence_history_store = Some(presence_history_store);
+        self
+    }
+
+    pub fn presence_registry(mut self, presence_registry: Arc<PresenceRegistry>) -> Self {
+        self.presence_registry = Some(presence_registry);
         self
     }
 
@@ -367,6 +395,9 @@ impl ConnectionHandlerBuilder {
             #[cfg(feature = "delta")]
             delta_compression,
             presence_manager: Arc::new(PresenceManager::new()),
+            presence_registry: self
+                .presence_registry
+                .unwrap_or_else(|| Arc::new(PresenceRegistry::default())),
             #[cfg(feature = "recovery")]
             replay_buffer,
             running: self
@@ -542,6 +573,26 @@ impl ConnectionHandler {
     /// Get a reference to the presence manager
     pub fn presence_manager(&self) -> &Arc<PresenceManager> {
         &self.presence_manager
+    }
+
+    pub fn presence_registry(&self) -> &Arc<PresenceRegistry> {
+        &self.presence_registry
+    }
+
+    /// Deliver presence locally and replicate it horizontally through a
+    /// dedicated internal envelope that is never sent to Protocol V1 sockets.
+    pub async fn fanout_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: PresenceReplication,
+    ) -> Result<()> {
+        if let Some(tap) = self.realtime_egress_tap.as_ref() {
+            tap.deliver_presence(app_id, channel, &replication)?;
+        }
+        self.connection_manager
+            .send_presence_replication(app_id, channel, replication)
+            .await
     }
 
     pub fn app_manager(&self) -> &Arc<dyn AppManager + Send + Sync> {

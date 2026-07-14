@@ -11,9 +11,11 @@ use sockudo_core::history::{
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::{HistoryConfig, SurrealDbSettings};
 use sockudo_core::version_store::{
-    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
-    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
-    VersionWriteReservation, VersionWriteReservationBlock,
+    StoredVersionRecord, VersionCreateRejection, VersionCreateRequest, VersionCreateResult,
+    VersionMutationRejection, VersionMutationRequest, VersionMutationResult, VersionReplayRequest,
+    VersionStore, VersionStoreCursor, VersionStoreDirection, VersionStorePage,
+    VersionStoreReadRequest, VersionStreamState, VersionWriteReservation,
+    VersionWriteReservationBlock,
 };
 use sockudo_core::versioned_messages::MessageSerial;
 use sonic_rs::JsonValueTrait;

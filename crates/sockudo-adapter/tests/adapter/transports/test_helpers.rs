@@ -73,6 +73,7 @@ pub fn create_test_broadcast(event: &str) -> BroadcastMessage {
             "{{\"event\": \"{}\", \"data\": {{\"test\": \"data\"}}}}",
             event
         ),
+        presence_replication: None,
         envelope: None,
         except_socket_id: None,
         timestamp_ms: None,

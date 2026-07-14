@@ -70,6 +70,9 @@ pub enum Error {
     #[error("Channel does not exist")]
     ChannelNotFound,
 
+    #[error("Message not found: {0}")]
+    MessageNotFound(String),
+
     // Authentication errors
     #[error("Authentication error: {0}")]
     Auth(String),
@@ -226,7 +229,8 @@ impl Error {
             Error::Channel(_)
             | Error::InvalidChannelName(_)
             | Error::ChannelExists
-            | Error::ChannelNotFound => 4300,
+            | Error::ChannelNotFound
+            | Error::MessageNotFound(_) => 4300,
 
             Error::ClientEvent(_) => 4301,
 

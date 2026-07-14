@@ -1,8 +1,8 @@
 use crate::handler::ConnectionHandler;
 use sockudo_core::annotations::{
     Annotation, AnnotationAction, AnnotationEventLookupRequest, AnnotationEventsRequest,
-    AnnotationId, AnnotationProjectionOptions, AnnotationSerial, AnnotationSummary, AnnotationType,
-    StoredAnnotationEvent, StoredAnnotationProjection,
+    AnnotationId, AnnotationProjectionOptions, AnnotationProjectionRequest, AnnotationSerial,
+    AnnotationSummary, AnnotationType, StoredAnnotationEvent, StoredAnnotationProjection,
 };
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
@@ -21,6 +21,8 @@ pub struct PublishAnnotationRuntimeRequest {
     pub channel: String,
     pub message_serial: MessageSerial,
     pub annotation_type: AnnotationType,
+    /// Stable caller-supplied identity used for idempotent edge retries.
+    pub id: Option<AnnotationId>,
     pub name: Option<String>,
     pub client_id: Option<String>,
     pub count: Option<u64>,
@@ -64,9 +66,53 @@ impl ConnectionHandler {
             )));
         }
 
+        if let Some(id) = request.id.as_ref() {
+            let existing = self
+                .annotation_store()
+                .get_events(AnnotationEventsRequest {
+                    app_id: request.app.id.clone(),
+                    channel_id: request.channel.clone(),
+                    message_serial: request.message_serial.clone(),
+                    annotation_type: request.annotation_type.clone(),
+                })
+                .await?;
+            if let Some(original) = existing.iter().find(|record| {
+                record.annotation.action == AnnotationAction::Create && &record.annotation.id == id
+            }) {
+                if original.annotation.name != request.name
+                    || original.annotation.client_id != request.client_id
+                    || original.annotation.count != request.count
+                    || original.annotation.data != request.data
+                    || original.annotation.encoding != request.encoding
+                {
+                    return Err(Error::InvalidMessageFormat(format!(
+                        "Annotation id '{}' was already used with a different payload",
+                        id.as_str()
+                    )));
+                }
+                let projection = self
+                    .annotation_store()
+                    .rebuild_projection(AnnotationProjectionRequest {
+                        app_id: original.app_id.clone(),
+                        channel_id: original.channel_id.clone(),
+                        message_serial: original.annotation.message_serial.clone(),
+                        annotation_type: original.annotation.annotation_type.clone(),
+                    })
+                    .await?;
+                return Ok(PublishAnnotationRuntimeResult {
+                    annotation_serial: original.annotation.serial.clone(),
+                    projection,
+                });
+            }
+        }
+
         let serial = AnnotationSerial::new(self.next_version_serial())?;
+        let id = match request.id {
+            Some(id) => id,
+            None => AnnotationId::new(uuid::Uuid::new_v4().to_string())?,
+        };
         let annotation = Annotation {
-            id: AnnotationId::new(uuid::Uuid::new_v4().to_string())?,
+            id,
             action: AnnotationAction::Create,
             serial: serial.clone(),
             message_serial: request.message_serial.clone(),
@@ -80,20 +126,26 @@ impl ConnectionHandler {
         };
         annotation.validate()?;
 
-        let projection = self
+        let append = self
             .annotation_store()
-            .append_event(StoredAnnotationEvent {
+            .append_create_idempotent(StoredAnnotationEvent {
                 app_id: request.app.id.clone(),
                 channel_id: request.channel.clone(),
                 annotation: annotation.clone(),
                 stored_at_ms: now_ms(),
             })
             .await?;
+        if !append.inserted {
+            return Ok(PublishAnnotationRuntimeResult {
+                annotation_serial: append.canonical_serial,
+                projection: append.projection,
+            });
+        }
         if let Some(metrics) = self.metrics() {
             metrics.mark_annotation_published(&request.channel, request.annotation_type.as_str());
         }
         let projection = self
-            .projection_fitting_payload(&request.app, &request.channel, projection)
+            .projection_fitting_payload(&request.app, &request.channel, append.projection)
             .await?;
 
         self.deliver_annotation_change(

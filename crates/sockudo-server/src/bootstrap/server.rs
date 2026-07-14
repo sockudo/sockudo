@@ -734,11 +734,18 @@ impl SockudoServer {
         };
 
         #[cfg(feature = "ably-compat")]
+        let ably_presence_registry =
+            Arc::new(sockudo_core::presence_registry::PresenceRegistry::default());
+
+        #[cfg(feature = "ably-compat")]
         let ably_compat = Arc::new(sockudo_ably_compat::AblyCompatRuntime::new(
             sockudo_ably_compat::AblyCompatDependencies {
                 config: config.ably_compat.clone(),
                 cache: Some(state.cache_manager.clone()),
+                presence_registry: Arc::clone(&ably_presence_registry),
                 push_store: Some(state.push_store.clone()),
+                push_queue: Some(state.push_queue.clone()),
+                push_admission: Some(state.push_admission.clone()),
             },
         ));
 
@@ -873,6 +880,10 @@ impl SockudoServer {
             builder = builder.version_store(version_store);
         }
         builder = builder.presence_history_store(presence_history_store);
+        #[cfg(feature = "ably-compat")]
+        {
+            builder = builder.presence_registry(ably_presence_registry);
+        }
 
         if let Some(adapter) = state.local_adapter.clone() {
             builder = builder.local_adapter(adapter);
@@ -895,6 +906,9 @@ impl SockudoServer {
 
         builder = builder.running(Arc::clone(&state.running));
         let handler = Arc::new(builder.build());
+
+        #[cfg(feature = "ably-compat")]
+        ably_compat.bind_handler(&handler);
 
         // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
         if let Some(event_receiver) = dead_node_event_receiver {

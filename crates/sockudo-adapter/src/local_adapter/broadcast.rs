@@ -180,7 +180,10 @@ impl LocalAdapter {
         use futures::stream::{self, StreamExt};
 
         let socket_count = target_socket_refs.len();
+        #[cfg(feature = "tag-filtering")]
         let tag_filtering = self.tag_filtering_enabled.load(Ordering::Acquire);
+        #[cfg(not(feature = "tag-filtering"))]
+        let tag_filtering = false;
 
         // OPTIMIZATION: Pre-compute deltas at broadcast level to avoid recomputing for each socket
         // Strategy:

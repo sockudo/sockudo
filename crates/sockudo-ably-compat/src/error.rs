@@ -56,6 +56,7 @@ impl From<sockudo_core::error::Error> for AblyCompatError {
             | sockudo_core::error::Error::InvalidMessageFormat(message) => {
                 Self::InvalidInput(message)
             }
+            sockudo_core::error::Error::MessageNotFound(message) => Self::NotFound(message),
             sockudo_core::error::Error::IdempotencyConflict => Self::InvalidInput(
                 "message.id was already used with a different payload".to_string(),
             ),

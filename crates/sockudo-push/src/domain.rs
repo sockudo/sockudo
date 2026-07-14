@@ -413,6 +413,15 @@ impl DeviceDetails {
     pub fn validate(&self) -> Result<(), PushDomainError> {
         validate_app_id(&self.app_id)?;
         require_non_empty("id", &self.id)?;
+        if self
+            .id
+            .starts_with(ChannelSubscription::CLIENT_SCOPE_PREFIX)
+        {
+            return Err(PushDomainError::InvalidField {
+                field: "id",
+                reason: "uses a reserved client-subscription prefix",
+            });
+        }
         require_secret("deviceSecret", &self.device_secret)?;
         if !is_hashed_device_secret(&self.device_secret) {
             return Err(PushDomainError::InvalidField {
@@ -504,6 +513,8 @@ pub struct ChannelSubscription {
 }
 
 impl ChannelSubscription {
+    const CLIENT_SCOPE_PREFIX: &'static str = "__sockudo_client_scope__:";
+
     pub fn from_device(channel: impl Into<String>, device: &DeviceDetails) -> Self {
         Self {
             app_id: device.app_id.clone(),
@@ -514,6 +525,37 @@ impl ChannelSubscription {
             token_hash: device.push.recipient.token_hash(),
             credential_version: None,
         }
+    }
+
+    pub fn from_client(
+        app_id: impl Into<String>,
+        channel: impl Into<String>,
+        client_id: impl Into<String>,
+    ) -> Self {
+        let client_id = client_id.into();
+        Self {
+            app_id: app_id.into(),
+            channel: channel.into(),
+            device_id: format!(
+                "{}{}",
+                Self::CLIENT_SCOPE_PREFIX,
+                stable_hash(client_id.as_bytes())
+            ),
+            client_id: Some(client_id.clone()),
+            provider: PushProviderKind::Realtime,
+            token_hash: stable_hash(client_id.as_bytes()),
+            credential_version: None,
+        }
+    }
+
+    pub fn scoped_client_id(&self) -> Option<&str> {
+        let client_id = self.client_id.as_deref()?;
+        let expected = format!(
+            "{}{}",
+            Self::CLIENT_SCOPE_PREFIX,
+            stable_hash(client_id.as_bytes())
+        );
+        (self.device_id == expected).then_some(client_id)
     }
 
     pub fn validate(&self) -> Result<(), PushDomainError> {

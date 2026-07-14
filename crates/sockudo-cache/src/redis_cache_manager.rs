@@ -164,7 +164,9 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn disconnect(&self) -> Result<()> {
-        self.clear_prefix().await?;
+        // ConnectionManager clones share reconnecting client state and release
+        // their resources on drop. Never clear the prefix here: another node
+        // may still own TTL-managed recovery, token, stats, or rate-limit data.
         Ok(())
     }
 

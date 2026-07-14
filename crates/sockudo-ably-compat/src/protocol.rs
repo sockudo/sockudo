@@ -356,6 +356,10 @@ impl<'de> Deserialize<'de> for AblyMessage {
             && version.serial.is_empty()
             && let Some(serial) = raw.serial.as_ref()
         {
+            // Ably's decoded Message projection exposes the source serial on
+            // an operation that omitted its own serial. Mutation commit code
+            // distinguishes this fallback from an explicit next-version
+            // serial by comparing it with the target message serial.
             version.serial.clone_from(serial);
         }
         Ok(Self {

@@ -185,6 +185,7 @@ impl From<sockudo_core::error::Error> for AppError {
                 AppError::InvalidInput(format!("Invalid channel name: {s}"))
             }
             sockudo_core::error::Error::Channel(s) => AppError::InvalidInput(s),
+            sockudo_core::error::Error::MessageNotFound(s) => AppError::NotFound(s),
             sockudo_core::error::Error::InvalidMessageFormat(s) => AppError::InvalidInput(s),
             sockudo_core::error::Error::IdempotencyConflict => AppError::InvalidInput(
                 "idempotency key was already used with a different payload".to_string(),

@@ -134,7 +134,8 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     async fn disconnect(&self) -> Result<()> {
-        self.clear_prefix().await?;
+        // ClusterConnection resources are released on drop. Shared TTL-managed
+        // state must survive an individual node's graceful shutdown.
         Ok(())
     }
 

@@ -13,16 +13,17 @@ use sockudo_core::message_envelope::{
     MessageEnvelope, StoredMessagePayload, VersionOperationMetadata, VersionProjection,
 };
 use sockudo_core::utils;
-use sockudo_core::version_store::StoredVersionRecord;
+use sockudo_core::version_store::{
+    StoredVersionRecord, VersionCreateLimits, VersionCreateRejection, VersionCreateRequest,
+    VersionCreateResult,
+};
 use sockudo_core::versioned_messages::{
     MessageAction as CoreMessageAction, MessageSerial, VersionMetadata, VersionSerial,
     VersionedMessage,
 };
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::generate_message_id;
-use sockudo_protocol::messages::{
-    AI_ERROR_PAYLOAD_TOO_LARGE, MessageData, PusherMessage, is_ai_event,
-};
+use sockudo_protocol::messages::{AI_ERROR_PAYLOAD_TOO_LARGE, PusherMessage, is_ai_event};
 use sockudo_protocol::versioned_messages::{
     MessageAction as ProtocolMessageAction, MessageVersionMetadata, apply_runtime_metadata,
     extract_runtime_action, extract_runtime_message_serial, set_runtime_append_fragment,
@@ -75,25 +76,6 @@ fn ai_payload_too_large(message: impl Into<String>) -> Error {
         name: "payload_too_large",
         message: message.into(),
     }
-}
-
-fn message_data_bytes(data: Option<&MessageData>) -> Result<usize> {
-    match data {
-        None => Ok(0),
-        Some(MessageData::String(value)) => Ok(value.len()),
-        Some(other) => sonic_rs::to_vec(other)
-            .map(|bytes| bytes.len())
-            .map_err(Error::from),
-    }
-}
-
-fn has_ai_streaming_status(message: &PusherMessage) -> bool {
-    message
-        .extras
-        .as_ref()
-        .and_then(|extras| extras.ai_transport_headers())
-        .and_then(|headers| headers.status())
-        == Some("streaming")
 }
 
 impl ConnectionHandler {
@@ -433,53 +415,6 @@ impl ConnectionHandler {
                     envelope.message_id = message.message_id.clone();
                 }
 
-                if versioned_enabled
-                    && extract_runtime_message_serial(&message).is_none()
-                    && extract_runtime_action(&message).is_none()
-                {
-                    if self.server_options().ai_transport.matches_channel(channel)
-                        && (message.event.as_deref().is_some_and(is_ai_event)
-                            || message
-                                .extras
-                                .as_ref()
-                                .and_then(|extras| extras.ai.as_ref())
-                                .is_some())
-                    {
-                        let max_bytes = self
-                            .server_options()
-                            .ai_transport
-                            .max_accumulated_message_bytes;
-                        let bytes = message_data_bytes(message.data.as_ref())?;
-                        if bytes > max_bytes {
-                            return Err(ai_payload_too_large(format!(
-                                "accumulated message content exceeds {max_bytes} bytes"
-                            )));
-                        }
-
-                        if has_ai_streaming_status(&message) {
-                            let open_count =
-                                self.ai_active_stream_count(&app_config.id, channel).await?;
-                            let max_open = self
-                                .server_options()
-                                .ai_transport
-                                .max_open_streaming_messages_per_channel;
-                            if open_count >= max_open {
-                                return Err(ai_payload_too_large(format!(
-                                    "open streaming message count exceeds {max_open}"
-                                )));
-                            }
-                        }
-                    }
-
-                    let delivery = self
-                        .version_store()
-                        .reserve_delivery_position(&app_config.id, channel)
-                        .await?;
-                    versioned_delivery_serial = Some(delivery.delivery_serial);
-                    message.serial = Some(delivery.delivery_serial);
-                    message.stream_id = Some(delivery.stream_id.clone());
-                }
-
                 if history_enabled && !is_history_mutation {
                     let reservation = self
                         .history_store()
@@ -581,8 +516,6 @@ impl ConnectionHandler {
                         Some(history_serial),
                     );
 
-                    message = stored_v2_message.clone();
-
                     let record = StoredVersionRecord {
                         app_id: app_config.id.clone(),
                         channel: channel.to_string(),
@@ -598,14 +531,80 @@ impl ConnectionHandler {
                                 metadata: None,
                             },
                             history_serial,
-                            versioned_delivery_serial
-                                .unwrap_or_else(|| message.serial.unwrap_or(0)),
-                            message.event.clone(),
-                            message.data.clone(),
-                            message.extras.clone(),
+                            0,
+                            stored_v2_message.event.clone(),
+                            stored_v2_message.data.clone(),
+                            stored_v2_message.extras.clone(),
                         ),
                     };
-                    self.version_store().append_version(record.clone()).await?;
+                    let ai_limited = self.server_options().ai_transport.matches_channel(channel)
+                        && (stored_v2_message.event.as_deref().is_some_and(is_ai_event)
+                            || stored_v2_message
+                                .extras
+                                .as_ref()
+                                .and_then(|extras| extras.ai.as_ref())
+                                .is_some());
+                    let limits = if ai_limited {
+                        VersionCreateLimits {
+                            max_accumulated_message_bytes: Some(
+                                self.server_options()
+                                    .ai_transport
+                                    .max_accumulated_message_bytes,
+                            ),
+                            max_open_streaming_messages_per_channel: Some(
+                                self.server_options()
+                                    .ai_transport
+                                    .max_open_streaming_messages_per_channel,
+                            ),
+                        }
+                    } else {
+                        VersionCreateLimits::default()
+                    };
+                    let create_request = VersionCreateRequest { record, limits };
+                    let mut committed = None;
+                    for _ in 0..1024 {
+                        match self
+                            .version_store()
+                            .commit_create(create_request.clone())
+                            .await?
+                        {
+                            VersionCreateResult::Applied { record, stream_id } => {
+                                committed = Some((record, stream_id));
+                                break;
+                            }
+                            VersionCreateResult::Conflict {
+                                current: Some(current),
+                            } => {
+                                return Err(Error::InvalidMessageFormat(format!(
+                                    "message_serial {} already exists at version {}",
+                                    current.message_serial().as_str(),
+                                    current.version_serial().as_str()
+                                )));
+                            }
+                            VersionCreateResult::Conflict { current: None } => continue,
+                            VersionCreateResult::Rejected(
+                                VersionCreateRejection::AccumulatedMessageBytes { limit },
+                            ) => {
+                                return Err(ai_payload_too_large(format!(
+                                    "accumulated message content exceeds {limit} bytes"
+                                )));
+                            }
+                            VersionCreateResult::Rejected(
+                                VersionCreateRejection::OpenStreamingMessages { limit },
+                            ) => {
+                                return Err(ai_payload_too_large(format!(
+                                    "open streaming message count exceeds {limit}"
+                                )));
+                            }
+                        }
+                    }
+                    let (record, stream_id) = committed.ok_or(Error::OverCapacity)?;
+                    let delivery_serial = record.delivery_serial();
+                    versioned_delivery_serial = Some(delivery_serial);
+                    stored_v2_message.stream_id = Some(stream_id);
+                    stored_v2_message.serial = Some(delivery_serial);
+                    message = stored_v2_message.clone();
+                    envelope = record.envelope.clone().unwrap_or(envelope);
                     if let Some(webhook_integration) = self.webhook_integration().as_ref().cloned()
                     {
                         let app_for_webhook = app_config.clone();
@@ -1369,6 +1368,7 @@ mod tests {
             app_id: "app-1".to_string(),
             channel: "cursors".to_string(),
             message: "{}".to_string(),
+            presence_replication: None,
             envelope: None,
             except_socket_id: None,
             timestamp_ms: None,
@@ -1392,6 +1392,7 @@ mod tests {
             app_id: "app-1".to_string(),
             channel: "orders".to_string(),
             message: "{}".to_string(),
+            presence_replication: None,
             envelope: None,
             except_socket_id: None,
             timestamp_ms: None,
@@ -1414,6 +1415,7 @@ mod tests {
             app_id: "app-1".to_string(),
             channel: "orders".to_string(),
             message: "{}".to_string(),
+            presence_replication: None,
             envelope: Some(MessageEnvelope {
                 message_id: Some("message-1".to_string()),
                 publisher_client_id: Some("publisher".to_string()),

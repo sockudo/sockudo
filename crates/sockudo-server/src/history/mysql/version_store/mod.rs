@@ -6,9 +6,10 @@ use super::*;
 
 #[cfg(feature = "versioned-messages")]
 use sockudo_core::version_store::{
-    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
-    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
-    VersionWriteReservation, VersionWriteReservationBlock,
+    StoredVersionRecord, VersionCreateRejection, VersionCreateRequest, VersionCreateResult,
+    VersionMutationRequest, VersionMutationResult, VersionReplayRequest, VersionStore,
+    VersionStoreCursor, VersionStoreDirection, VersionStorePage, VersionStoreReadRequest,
+    VersionStreamState, VersionWriteReservation, VersionWriteReservationBlock,
 };
 
 #[cfg(feature = "versioned-messages")]
@@ -98,6 +99,7 @@ impl MysqlVersionStore {
                 latest_version_serial VARCHAR({}) NOT NULL,
                 latest_delivery_serial BIGINT NOT NULL,
                 latest_action VARCHAR(64) NOT NULL,
+                is_open_stream BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at_ms BIGINT NOT NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (app_id, channel, message_serial),
@@ -120,6 +122,8 @@ impl MysqlVersionStore {
                 client_id VARCHAR(255) NULL,
                 description TEXT NULL,
                 operation_metadata JSON NULL,
+                operation_key VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NULL,
+                operation_fingerprint VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NULL,
                 event_name VARCHAR(255) NULL,
                 payload_bytes LONGBLOB NOT NULL,
                 payload_size_bytes BIGINT NOT NULL,
@@ -127,11 +131,13 @@ impl MysqlVersionStore {
                 created_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (app_id, channel, message_serial, version_serial),
                 UNIQUE KEY {}_delivery_uidx (app_id, channel, delivery_serial),
+                UNIQUE KEY {}_operation_uidx (app_id, channel, operation_key),
                 INDEX {}_created_at_idx (created_at_ms)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"#,
             self.tables.version_entries,
             MAX_VERSIONED_SERIAL_LENGTH,
             MAX_VERSIONED_SERIAL_LENGTH,
+            self.tables.version_entries,
             self.tables.version_entries,
             self.tables.version_entries,
         );
@@ -156,6 +162,25 @@ impl MysqlVersionStore {
             .await?;
         self.ensure_index(&self.tables.version_messages, "updated_at_ms")
             .await?;
+        self.ensure_column(
+            &self.tables.version_messages,
+            "is_open_stream",
+            "BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .await?;
+        self.ensure_column(
+            &self.tables.version_entries,
+            "operation_key",
+            &format!("VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NULL"),
+        )
+        .await?;
+        self.ensure_column(
+            &self.tables.version_entries,
+            "operation_fingerprint",
+            &format!("VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NULL"),
+        )
+        .await?;
+        self.ensure_operation_index().await?;
 
         Ok(())
     }
@@ -184,6 +209,48 @@ impl MysqlVersionStore {
                         "Failed to create MySQL index {index_name} on {table}: {e}"
                     ))
                 })?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<()> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to probe MySQL column: {e}")))?;
+        if exists == 0 {
+            let sql = format!("ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}");
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&self.pool)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to add MySQL column: {e}")))?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_operation_index(&self) -> Result<()> {
+        let index_name = format!("{}_operation_uidx", self.tables.version_entries);
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?",
+        )
+        .bind(&self.tables.version_entries)
+        .bind(&index_name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to probe MySQL operation index: {e}")))?;
+        if exists == 0 {
+            let sql = format!(
+                "CREATE UNIQUE INDEX `{index_name}` ON `{}` (app_id, channel, operation_key)",
+                self.tables.version_entries
+            );
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&self.pool)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to add operation index: {e}")))?;
         }
         Ok(())
     }

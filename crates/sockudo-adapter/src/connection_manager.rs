@@ -6,6 +6,7 @@ use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::Result;
 use sockudo_core::message_envelope::MessageEnvelope;
 use sockudo_core::namespace::Namespace;
+use sockudo_core::presence_registry::PresenceReplication;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::{ProtocolVersion, WireFormat};
@@ -119,6 +120,27 @@ pub trait ConnectionManager: Send + Sync {
         let _ = envelope;
         self.send(channel, message, except, app_id, start_time_ms)
             .await
+    }
+
+    /// Replicate protocol-neutral presence transitions to remote nodes without
+    /// exposing an internal event to Protocol V1 subscribers.
+    async fn send_presence_replication(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _replication: PresenceReplication,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return protocol-neutral presence records retained by the horizontal
+    /// presence registry, including state synced to a newly joined node.
+    async fn replicated_presence_records(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+    ) -> Result<Vec<sockudo_core::presence_registry::PresenceRecord>> {
+        Ok(Vec::new())
     }
 
     /// Install the optional compatibility delivery observer. Horizontal

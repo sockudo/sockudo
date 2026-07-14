@@ -58,3 +58,16 @@ harness = false
 [[bench]]
 name = "fanout_grouping"
 harness = false
+
+[[bench]]
+name = "realtime_retry_id"
+harness = false
+
+[[bench]]
+name = "stats_recording"
+harness = false
+
+[[bench]]
+name = "ably_vcdiff"
+harness = false
+required-features = ["delta"]

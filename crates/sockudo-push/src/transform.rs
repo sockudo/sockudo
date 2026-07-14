@@ -37,12 +37,13 @@ pub struct EffectivePushPayload {
     pub provider_overrides: Vec<ProviderOverridePayload>,
 }
 
-pub const PUSH_PROVIDER_RENDER_ORDER: [PushProviderKind; 5] = [
+pub const PUSH_PROVIDER_RENDER_ORDER: [PushProviderKind; 6] = [
     PushProviderKind::Fcm,
     PushProviderKind::Apns,
     PushProviderKind::WebPush,
     PushProviderKind::Hms,
     PushProviderKind::Wns,
+    PushProviderKind::Realtime,
 ];
 
 pub fn render_all_provider_payloads(
@@ -614,6 +615,10 @@ mod tests {
             ProviderOverridePayload {
                 provider: PushProviderKind::Wns,
                 payload: json!({"type": "toast", "toast": {"visual": {}}}),
+            },
+            ProviderOverridePayload {
+                provider: PushProviderKind::Realtime,
+                payload: json!({"notification": {"title": "realtime"}}),
             },
         ];
 

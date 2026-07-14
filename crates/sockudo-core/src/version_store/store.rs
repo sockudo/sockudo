@@ -53,6 +53,25 @@ pub trait VersionStore: Send + Sync {
 
     async fn append_version(&self, record: StoredVersionRecord) -> Result<()>;
 
+    /// Atomically admit a new logical message, reserve its delivery position,
+    /// and commit the create record.
+    async fn commit_create(&self, _request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        Err(Error::Configuration(
+            "version store does not support atomic create commits".to_string(),
+        ))
+    }
+
+    /// Atomically validate a predecessor, reserve the delivery position, and
+    /// commit the next version (including its idempotency receipt and limits).
+    async fn compare_and_apply(
+        &self,
+        _request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        Err(Error::Configuration(
+            "version store does not support atomic compare-and-apply".to_string(),
+        ))
+    }
+
     async fn get_latest(
         &self,
         app_id: &str,

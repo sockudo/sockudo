@@ -192,6 +192,10 @@ test: ## Run basic connectivity tests
 	@echo "$(YELLOW)Testing dashboard UI...$(RESET)"
 	@curl -f http://localhost:5174/ || echo "$(RED)Dashboard UI test failed$(RESET)"
 
+.PHONY: presence-bench-guard
+presence-bench-guard: ## Require authoritative presence to beat legacy single/parallel cycles
+	@scripts/presence-bench-guard.sh
+
 .PHONY: simulator
 simulator: ## Run deterministic indestructibility simulator (override SIM_SEED/SIM_TICKS/SIM_ARGS)
 	@echo "$(BLUE)Running Sockudo deterministic simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"

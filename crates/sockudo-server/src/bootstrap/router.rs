@@ -563,9 +563,20 @@ impl SockudoServer {
         let stats_enabled = self.config.http_api.usage_enabled;
 
         if stats_enabled {
+            // Keep the native operator contract on an unambiguous alias even
+            // when authenticated Ably requests share the legacy `/stats` path.
+            router = router.route("/operator/stats", get(stats));
             #[cfg(feature = "ably-compat")]
             if self.config.ably_compat.enabled {
                 let runtime = Arc::clone(&self.ably_compat);
+                let aggregation_runtime = Arc::clone(&self.ably_compat);
+                router = router.route(
+                    "/operator/stats/aggregation",
+                    get(move || {
+                        let snapshot = aggregation_runtime.stats_metrics();
+                        async move { axum::Json(snapshot) }
+                    }),
+                );
                 router = router.route(
                     "/stats",
                     get(

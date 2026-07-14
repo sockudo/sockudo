@@ -3,9 +3,10 @@ mod store_impl;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{DatabaseConnection, DatabasePooling};
 use sockudo_core::version_store::{
-    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
-    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
-    VersionWriteReservation, VersionWriteReservationBlock,
+    StoredVersionRecord, VersionCreateRejection, VersionCreateRequest, VersionCreateResult,
+    VersionMutationRequest, VersionMutationResult, VersionReplayRequest, VersionStore,
+    VersionStoreCursor, VersionStoreDirection, VersionStorePage, VersionStoreReadRequest,
+    VersionStreamState, VersionWriteReservation, VersionWriteReservationBlock,
 };
 use std::time::Duration;
 
@@ -93,6 +94,7 @@ impl PostgresVersionStore {
                 latest_version_serial TEXT NOT NULL,
                 latest_delivery_serial BIGINT NOT NULL,
                 latest_action TEXT NOT NULL,
+                is_open_stream BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at_ms BIGINT NOT NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (app_id, channel, message_serial)
@@ -113,6 +115,8 @@ impl PostgresVersionStore {
                 client_id TEXT NULL,
                 description TEXT NULL,
                 operation_metadata JSONB NULL,
+                operation_key TEXT NULL,
+                operation_fingerprint TEXT NULL,
                 event_name TEXT NULL,
                 payload_bytes BYTEA NOT NULL,
                 payload_size_bytes BIGINT NOT NULL,
@@ -147,6 +151,22 @@ impl PostgresVersionStore {
             "CREATE INDEX IF NOT EXISTS {0}_created_at_idx ON {0} (created_at_ms)",
             self.tables.version_entries
         );
+        let alter_messages_open = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS is_open_stream BOOLEAN NOT NULL DEFAULT FALSE",
+            self.tables.version_messages
+        );
+        let alter_entries_operation_key = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS operation_key TEXT NULL",
+            self.tables.version_entries
+        );
+        let alter_entries_operation_fingerprint = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS operation_fingerprint TEXT NULL",
+            self.tables.version_entries
+        );
+        let idx_entries_operation = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS {0}_operation_uidx ON {0} (app_id, channel, operation_key) WHERE operation_key IS NOT NULL",
+            self.tables.version_entries
+        );
         let idx_messages_updated_at = format!(
             "CREATE INDEX IF NOT EXISTS {0}_updated_at_idx ON {0} (updated_at_ms)",
             self.tables.version_messages
@@ -163,6 +183,10 @@ impl PostgresVersionStore {
             idx_entries_history,
             idx_entries_created_at,
             idx_messages_updated_at,
+            alter_messages_open,
+            alter_entries_operation_key,
+            alter_entries_operation_fingerprint,
+            idx_entries_operation,
         ];
 
         let mut conn = self.pool.acquire().await.map_err(|e| {

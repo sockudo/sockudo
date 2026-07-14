@@ -230,7 +230,7 @@ Existing `idempotency_key` semantics are frozen. AI SDK-facing idempotency is ad
 - Existing body/header `idempotency_key` remains honored exactly as today.
 - If both `message_id` and `idempotency_key` are present, both are registered; a duplicate by either path returns the original create result where possible.
 
-Mutations add optional `op_id` to append/update/delete requests. Dedupe key: `(app_id, channel, message_serial, action, op_id)`. Duplicate mutation is a no-op returning the current latest version and the original mutation result if available. `op_id` values are scoped per action and logical message and are retained for at least the same TTL as publish idempotency.
+Mutations add optional `op_id` to append/update/delete requests. Dedupe key: `(app_id, channel, message_serial, action, op_id)`. The receipt and canonical payload fingerprint are committed atomically with the mutation. The same key and fingerprint returns the original mutation acknowledgement without delivery; the same key with a different fingerprint is an idempotency conflict. `op_id` values are scoped per action and logical message and are retained with the version chain.
 
 ### Publish And Mutation Acks
 
@@ -396,9 +396,9 @@ Do not introduce a second knob for an existing limit. AI-specific knobs only cov
 
 ### Versioned Message Aggregation Appendix
 
-Aggregation happens in the existing versioned-message subsystem. Each mutation writes a `StoredVersionRecord` through `VersionStore::append_version`; the latest aggregate is selected by `get_latest`, and channel projections use `latest_by_history`. The memory, PostgreSQL, and MySQL backends keep per-message version chains and return the highest `version_serial` as the visible aggregate. DynamoDB, ScyllaDB, and SurrealDB resolve latest pointers with backend-specific follow-up fetches; this is functionally equivalent but can be more read-amplified for large channel projections.
+Aggregation happens in the existing versioned-message subsystem. Every mutation is a `VersionMutationRequest` applied through `VersionStore::compare_and_apply`; native HTTP, Ably REST, and Ably realtime are projections over the same typed service. The store atomically validates the exact predecessor and channel position, assigns the next delivery serial, writes the individual version and latest aggregate, adjusts open-stream state, and records the optional operation receipt. Memory and every durable backend implement this contract. `get_latest` selects the visible aggregate and `latest_by_history` provides channel projections.
 
-Append aggregation currently folds string data at mutation application time (`VersionedMessage::apply_append`). The latest record therefore carries the full accumulated string, while individual append versions remain in the replay log. S2 caps now reject AI Transport appends before delivery serial reservation when the aggregate would exceed `[ai_transport].max_accumulated_message_bytes` or the append count would exceed `[ai_transport].max_appends_per_message`.
+Append aggregation folds string data at mutation application time. The latest record carries the full accumulated string, while the committed mutation projection retains the append fragment for live delivery and version reads. Conflicting appends retry from the latest aggregate. Accumulated bytes, append count, open-stream count, and append-after-terminal checks execute in the same store transaction as the version and delivery position; cache counters are not admission authority.
 
 Terminal stream status is persisted in the aggregate via `extras.ai.transport.status`. Append requests may carry `extras`; when present, those extras replace the previous aggregate extras so a terminal append with `status=complete|cancelled` remains visible through `get_latest`, HTTP message reads, and history substitution.
 
@@ -406,7 +406,7 @@ Deletion is a tombstone-style latest version. History reads that encounter the o
 
 ### Scale-Out Notes
 
-Versioned delivery positions are reserved by `VersionStore::reserve_delivery_position`; a channel has a stable stream ID and monotonic delivery serial sequence. Backends must preserve atomic reservation semantics across nodes. Durable history positions are reserved separately by `HistoryStore::reserve_publish_position`; regular publish history serials and versioned delivery serials are distinct continuity domains.
+Versioned create uses `VersionStore::commit_create` and mutations use `VersionStore::compare_and_apply`; each successful transaction owns exactly one channel delivery position. Aborted creates and mutations expose no reserved gap. A channel has a stable stream ID and monotonic delivery serial sequence, including across nodes. Durable history positions are reserved separately by `HistoryStore::reserve_publish_position`; regular publish history serials and versioned delivery serials are distinct continuity domains.
 
 Rollup happens at egress. It must not affect durable storage, version chains, history serial reservation, webhook payloads, push triggers, or recovery replay. A node-local rollup engine is acceptable because rollup is a delivery cadence optimization; correctness is the reduced mutable state.
 

@@ -756,6 +756,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "tag-filtering")]
     #[test]
     fn compound_expression_compiles_once_at_subscription_boundary() {
         let filter = json!({

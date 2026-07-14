@@ -454,6 +454,24 @@ where
                         return;
                     }
 
+                    if let Some(replication) = broadcast.presence_replication.as_ref() {
+                        if let Some(tap) = realtime_egress_tap.get()
+                            && let Err(error) = tap.replicate_presence(
+                                &broadcast.app_id,
+                                &broadcast.channel,
+                                replication,
+                            )
+                        {
+                            tracing::warn!(
+                                app_id = %broadcast.app_id,
+                                channel = %broadcast.channel,
+                                error = %error,
+                                "remote presence replication failed"
+                            );
+                        }
+                        return;
+                    }
+
                     // Register the idempotency key in local cache so duplicate
                     // publishes arriving at this node are caught.
                     if let Some(ref key) = broadcast.idempotency_key

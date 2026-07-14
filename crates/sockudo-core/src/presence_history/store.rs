@@ -1,10 +1,10 @@
 use super::types::{
-    PresenceHistoryDirection, PresenceHistoryDurableState, PresenceHistoryEventKind,
-    PresenceHistoryPage, PresenceHistoryQueryBounds, PresenceHistoryReadRequest,
-    PresenceHistoryResetResult, PresenceHistoryRetentionStats, PresenceHistoryRuntimeStatus,
-    PresenceHistoryStreamInspection, PresenceHistoryStreamRuntimeState,
-    PresenceHistoryTransitionRecord, PresenceSnapshot, PresenceSnapshotMember,
-    PresenceSnapshotRequest,
+    PresenceHistoryCursor, PresenceHistoryDirection, PresenceHistoryDurableState,
+    PresenceHistoryEventKind, PresenceHistoryFilter, PresenceHistoryPage,
+    PresenceHistoryQueryBounds, PresenceHistoryReadRequest, PresenceHistoryResetResult,
+    PresenceHistoryRetentionStats, PresenceHistoryRuntimeStatus, PresenceHistoryStreamInspection,
+    PresenceHistoryStreamRuntimeState, PresenceHistoryTransitionRecord, PresenceSnapshot,
+    PresenceSnapshotMember, PresenceSnapshotRequest,
 };
 use crate::error::{Error, Result};
 use async_trait::async_trait;
@@ -15,6 +15,113 @@ pub trait PresenceHistoryStore: Send + Sync {
     async fn record_transition(&self, record: PresenceHistoryTransitionRecord) -> Result<()>;
 
     async fn read_page(&self, request: PresenceHistoryReadRequest) -> Result<PresenceHistoryPage>;
+
+    /// Read a filtered page without allowing sparse filters to create an
+    /// unbounded scan. A continuation cursor is returned when the scan budget
+    /// is reached, even if that page contains fewer matches than requested.
+    async fn read_filtered_page(
+        &self,
+        request: PresenceHistoryReadRequest,
+        filter: PresenceHistoryFilter,
+    ) -> Result<PresenceHistoryPage> {
+        if filter.is_empty() {
+            return self.read_page(request).await;
+        }
+
+        const SCAN_CHUNK: usize = 256;
+        const MAX_SCAN_ITEMS: usize = 4_096;
+
+        request.validate()?;
+        let requested_limit = request.limit;
+        let scan_budget = requested_limit
+            .saturating_mul(32)
+            .clamp(SCAN_CHUNK, MAX_SCAN_ITEMS);
+        let mut cursor = request.cursor.clone();
+        let mut scanned = 0_usize;
+        let mut items = Vec::with_capacity(requested_limit);
+        let mut retained = None;
+        let mut complete = true;
+        let mut truncated_by_retention = false;
+        let mut degraded = false;
+
+        loop {
+            let remaining_scan = scan_budget.saturating_sub(scanned);
+            let mut scan_request = request.clone();
+            scan_request.cursor = cursor.clone();
+            scan_request.limit = remaining_scan.clamp(1, SCAN_CHUNK);
+            let page = self.read_page(scan_request).await?;
+            if retained.is_none() {
+                retained = Some(page.retained.clone());
+            }
+            complete &= page.complete;
+            truncated_by_retention |= page.truncated_by_retention;
+            degraded |= page.degraded;
+
+            let page_item_count = page.items.len();
+            if page_item_count == 0 && page.has_more {
+                return Err(Error::Internal(
+                    "Presence history page reported more items without advancing".to_string(),
+                ));
+            }
+            for (index, item) in page.items.into_iter().enumerate() {
+                scanned = scanned.saturating_add(1);
+                if !filter.matches(&item) {
+                    continue;
+                }
+                let next_cursor = PresenceHistoryCursor {
+                    version: 1,
+                    app_id: request.app_id.clone(),
+                    channel: request.channel.clone(),
+                    stream_id: item.stream_id.clone(),
+                    serial: item.serial,
+                    direction: request.direction,
+                    bounds: request.bounds.clone(),
+                };
+                items.push(item);
+                if items.len() == requested_limit {
+                    let has_more = index + 1 < page_item_count || page.has_more;
+                    return Ok(PresenceHistoryPage {
+                        items,
+                        next_cursor: has_more.then_some(next_cursor),
+                        retained: retained.unwrap_or_default(),
+                        has_more,
+                        complete,
+                        truncated_by_retention,
+                        degraded,
+                    });
+                }
+            }
+
+            if !page.has_more {
+                return Ok(PresenceHistoryPage {
+                    items,
+                    next_cursor: None,
+                    retained: retained.unwrap_or_default(),
+                    has_more: false,
+                    complete,
+                    truncated_by_retention,
+                    degraded,
+                });
+            }
+            let Some(next_cursor) = page.next_cursor else {
+                return Err(Error::Internal(
+                    "Presence history page reported more items without a cursor".to_string(),
+                ));
+            };
+            cursor = Some(next_cursor.clone());
+            if scanned >= scan_budget {
+                return Ok(PresenceHistoryPage {
+                    items,
+                    next_cursor: Some(next_cursor),
+                    retained: retained.unwrap_or_default(),
+                    has_more: true,
+                    complete,
+                    truncated_by_retention,
+                    degraded,
+                });
+            }
+        }
+    }
 
     async fn stream_runtime_state(
         &self,
@@ -257,5 +364,55 @@ mod tests {
 
         assert_eq!(snapshot_at_time.members.len(), 2);
         assert_eq!(snapshot_at_time.events_replayed, 2);
+    }
+
+    #[tokio::test]
+    async fn sparse_filtered_reads_are_bounded_and_continue_without_skipping() {
+        let store = MemoryPresenceHistoryStore::new(Default::default());
+        let base = now_ms();
+        for index in 0..300 {
+            store
+                .record_transition(transition(
+                    base + index,
+                    &format!("join-{index}"),
+                    PresenceHistoryEventKind::MemberAdded,
+                    &format!("user-{index}"),
+                ))
+                .await
+                .unwrap();
+        }
+        let request = PresenceHistoryReadRequest {
+            app_id: "app".to_string(),
+            channel: "presence-room".to_string(),
+            direction: PresenceHistoryDirection::OldestFirst,
+            limit: 1,
+            cursor: None,
+            bounds: PresenceHistoryQueryBounds::default(),
+        };
+        let filter = PresenceHistoryFilter {
+            user_id: Some("user-290".to_string()),
+            connection_id: None,
+        };
+
+        let first = store
+            .read_filtered_page(request.clone(), filter.clone())
+            .await
+            .unwrap();
+        assert!(first.items.is_empty());
+        assert!(first.has_more);
+        assert!(first.next_cursor.is_some());
+
+        let second = store
+            .read_filtered_page(
+                PresenceHistoryReadRequest {
+                    cursor: first.next_cursor,
+                    ..request
+                },
+                filter,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items.len(), 1);
+        assert_eq!(second.items[0].user_id, "user-290");
     }
 }

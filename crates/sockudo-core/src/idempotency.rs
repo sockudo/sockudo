@@ -63,6 +63,23 @@ pub fn publish_idempotency_cache_key(app_id: &str, channel: &str, message_id: &s
     format!("idempotency:publish:v1:{}", hex::encode(digest.finalize()))
 }
 
+/// Hash an operation ID in its complete mutable-message scope. The returned
+/// key is safe to persist and log; the caller-supplied ID is not retained.
+pub fn mutation_idempotency_key(
+    app_id: &str,
+    channel: &str,
+    message_serial: &str,
+    action: &str,
+    operation_id: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    for part in [app_id, channel, message_serial, action, operation_id] {
+        digest.update(part.as_bytes());
+        digest.update([0]);
+    }
+    format!("idempotency:mutation:v1:{}", hex::encode(digest.finalize()))
+}
+
 pub async fn begin_publish(
     cache: &dyn CacheManager,
     cache_key: String,

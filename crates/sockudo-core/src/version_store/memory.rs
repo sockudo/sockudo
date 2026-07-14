@@ -3,7 +3,7 @@ use super::types::*;
 use crate::error::{Error, Result};
 use crate::history::now_ms;
 use crate::versioned_messages::{
-    MessageSerial, validate_replay_continuity, validate_version_chain,
+    MessageAction, MessageSerial, validate_replay_continuity, validate_version_chain,
 };
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,6 +45,18 @@ impl MemoryVersionStore {
 
     fn channel_key(app_id: &str, channel: &str) -> String {
         format!("{app_id}\0{channel}")
+    }
+
+    fn is_terminal(record: &StoredVersionRecord) -> bool {
+        matches!(
+            record
+                .message
+                .extras
+                .as_ref()
+                .and_then(|extras| extras.ai_transport_headers())
+                .and_then(|headers| headers.status()),
+            Some("complete" | "cancelled")
+        )
     }
 }
 
@@ -132,6 +144,206 @@ impl VersionStore for MemoryVersionStore {
             .max(record.delivery_serial().saturating_add(1));
 
         Ok(())
+    }
+
+    async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        let key = Self::channel_key(&request.record.app_id, &request.record.channel);
+        let mut channels = self.channels.write().await;
+        let channel_state = channels.entry(key).or_default();
+
+        if let Some(current) = channel_state
+            .messages
+            .get(request.record.message_serial().as_str())
+            .and_then(|chain| {
+                chain
+                    .iter()
+                    .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
+            })
+        {
+            return Ok(VersionCreateResult::Conflict {
+                current: Some(current.clone()),
+            });
+        }
+        if let Some(limit) = request.limits.max_accumulated_message_bytes
+            && request.record.data_bytes()? > limit
+        {
+            return Ok(VersionCreateResult::Rejected(
+                VersionCreateRejection::AccumulatedMessageBytes { limit },
+            ));
+        }
+        if request.record.is_open_ai_stream()
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+        {
+            let open = channel_state
+                .messages
+                .values()
+                .filter_map(|chain| {
+                    chain
+                        .iter()
+                        .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
+                })
+                .filter(|record| record.is_open_ai_stream())
+                .count();
+            if open >= limit {
+                return Ok(VersionCreateResult::Rejected(
+                    VersionCreateRejection::OpenStreamingMessages { limit },
+                ));
+            }
+        }
+
+        let delivery_serial = channel_state.next_delivery_serial;
+        let record = request
+            .record
+            .with_delivery_position(&channel_state.stream_id, delivery_serial);
+        validate_version_chain(std::slice::from_ref(&record.message))?;
+        if channel_state.replay.contains_key(&delivery_serial) {
+            return Err(Error::InvalidMessageFormat(format!(
+                "duplicate delivery_serial {delivery_serial} in version replay log"
+            )));
+        }
+        channel_state.messages.insert(
+            record.message_serial().as_str().to_string(),
+            vec![record.clone()],
+        );
+        channel_state.created_at.insert(delivery_serial, now_ms());
+        channel_state.replay.insert(delivery_serial, record.clone());
+        channel_state.next_delivery_serial = delivery_serial.saturating_add(1);
+
+        Ok(VersionCreateResult::Applied {
+            record,
+            stream_id: channel_state.stream_id.clone(),
+        })
+    }
+
+    async fn compare_and_apply(
+        &self,
+        request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        let key = Self::channel_key(&request.app_id, &request.channel);
+        let mut channels = self.channels.write().await;
+        let Some(channel_state) = channels.get_mut(&key) else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+        let Some(chain) = channel_state.messages.get(request.message_serial.as_str()) else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+
+        if let Some(incoming) = request.idempotency.as_ref()
+            && let Some(existing) = chain.iter().find(|record| {
+                record
+                    .envelope
+                    .as_ref()
+                    .and_then(|envelope| envelope.idempotency.as_ref())
+                    .is_some_and(|operation| operation.cache_key == incoming.cache_key)
+            })
+        {
+            let existing_idempotency = existing
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.idempotency.as_ref())
+                .ok_or_else(|| {
+                    Error::Internal(
+                        "matched mutation idempotency record disappeared during lookup".to_string(),
+                    )
+                })?;
+            if existing_idempotency.payload_fingerprint != incoming.payload_fingerprint {
+                return Err(Error::IdempotencyConflict);
+            }
+            return Ok(VersionMutationResult::Duplicate {
+                record: existing.clone(),
+                stream_id: channel_state.stream_id.clone(),
+            });
+        }
+
+        let current = chain
+            .iter()
+            .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
+            .cloned()
+            .ok_or_else(|| {
+                Error::InvalidMessageFormat("version chain must not be empty".to_string())
+            })?;
+        if !request.expected.matches(&current) {
+            return Ok(VersionMutationResult::Conflict {
+                current: Some(current),
+            });
+        }
+
+        if matches!(request.mutation, VersionMutation::Append(_)) {
+            if request.limits.reject_append_after_terminal && Self::is_terminal(&current) {
+                return Ok(VersionMutationResult::Rejected(
+                    VersionMutationRejection::TerminalMessage,
+                ));
+            }
+            if let Some(limit) = request.limits.max_appends_per_message {
+                let append_count = chain
+                    .iter()
+                    .filter(|record| record.message.action == MessageAction::Append)
+                    .count();
+                if append_count >= limit {
+                    return Ok(VersionMutationResult::Rejected(
+                        VersionMutationRejection::AppendCount { limit },
+                    ));
+                }
+            }
+        }
+
+        let delivery_serial = channel_state
+            .next_delivery_serial
+            .max(current.delivery_serial().saturating_add(1));
+        let record = current.apply_mutation(&request, &channel_state.stream_id, delivery_serial)?;
+        if let Some(limit) = request.limits.max_accumulated_message_bytes
+            && record.data_bytes()? > limit
+        {
+            return Ok(VersionMutationResult::Rejected(
+                VersionMutationRejection::AccumulatedMessageBytes { limit },
+            ));
+        }
+        if !current.is_open_ai_stream()
+            && record.is_open_ai_stream()
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+        {
+            let open = channel_state
+                .messages
+                .values()
+                .filter_map(|entries| {
+                    entries
+                        .iter()
+                        .max_by(|left, right| left.version_serial().cmp(right.version_serial()))
+                })
+                .filter(|entry| entry.is_open_ai_stream())
+                .count();
+            if open >= limit {
+                return Ok(VersionMutationResult::Rejected(
+                    VersionMutationRejection::OpenStreamingMessages { limit },
+                ));
+            }
+        }
+
+        let mut validated_chain = chain.clone();
+        validated_chain.push(record.clone());
+        validate_version_chain(
+            &validated_chain
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        if channel_state.replay.contains_key(&delivery_serial) {
+            return Err(Error::InvalidMessageFormat(format!(
+                "duplicate delivery_serial {delivery_serial} in version replay log"
+            )));
+        }
+
+        channel_state
+            .messages
+            .insert(request.message_serial.as_str().to_string(), validated_chain);
+        channel_state.created_at.insert(delivery_serial, now_ms());
+        channel_state.replay.insert(delivery_serial, record.clone());
+        channel_state.next_delivery_serial = delivery_serial.saturating_add(1);
+
+        Ok(VersionMutationResult::Applied {
+            record,
+            stream_id: channel_state.stream_id.clone(),
+        })
     }
 
     async fn get_latest(

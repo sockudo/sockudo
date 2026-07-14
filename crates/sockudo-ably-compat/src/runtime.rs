@@ -6,13 +6,12 @@
 //! stores.
 
 use axum::{
-    body::Bytes,
+    body::{Bytes, HttpBody as _},
     extract::{Extension, Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use hmac::{Hmac, KeyInit, Mac};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
@@ -20,11 +19,19 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sockudo_adapter::{
     ConnectionHandler, RealtimeEgressTap,
-    handler::{annotations::PublishAnnotationRuntimeRequest, types::SubscriptionRewind},
-    services::{MessageService, PublishContext},
+    handler::{
+        annotations::{DeleteAnnotationRuntimeRequest, PublishAnnotationRuntimeRequest},
+        types::SubscriptionRewind,
+    },
+    services::{
+        MessageService, MutableMessageActor, PresenceOperation, PresenceService, PublishContext,
+    },
 };
 use sockudo_core::{
-    annotations::{AnnotationSerial, AnnotationType, RawAnnotationReplayRequest},
+    annotations::{
+        AnnotationAction, AnnotationEventLookupRequest, AnnotationEventsRequest, AnnotationId,
+        AnnotationSerial, AnnotationType, RawAnnotationReplayRequest, StoredAnnotationEvent,
+    },
     app::App,
     cache::CacheManager,
     error::Result as SockudoResult,
@@ -32,15 +39,18 @@ use sockudo_core::{
     message_envelope::{
         MessageContent, MessageEnvelope, VersionProjection, decode_stored_message_payload,
     },
-    options::{AblyCompatConfig, AblyCompatKeyConfig},
+    options::{AblyCompatConfig, AblyCompatKeyConfig, AblyRealtimeAdmission},
     origin_validation::OriginValidator,
     presence_history::{
-        PresenceHistoryDirection, PresenceHistoryEventCause, PresenceHistoryEventKind,
-        PresenceHistoryQueryBounds, PresenceHistoryReadRequest, PresenceHistoryRetentionPolicy,
-        PresenceHistoryTransitionRecord,
+        PresenceHistoryCursor, PresenceHistoryDirection, PresenceHistoryEventCause,
+        PresenceHistoryEventKind, PresenceHistoryFilter, PresenceHistoryQueryBounds,
+        PresenceHistoryReadRequest,
+    },
+    presence_registry::{
+        PresenceChange, PresenceChangeAction, PresenceRecord, PresenceRegistry, PresenceReplication,
     },
     token::secure_compare,
-    versioned_messages::MessageSerial,
+    versioned_messages::{MessageSerial, VersionSerial},
     websocket::ConnectionCapabilities,
 };
 use sockudo_protocol::{
@@ -57,18 +67,23 @@ use sockudo_protocol::{
 };
 #[cfg(feature = "push")]
 use sockudo_push::{
-    ChannelSubscription, DeviceDetails, DevicePushDetails, DevicePushState, DynPushStore,
-    FormFactor, Platform, PushProviderKind, PushRecipient, SecretString,
-    generate_device_identity_token, hash_device_identity_token, stable_hash,
+    ChannelSubscription, DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult,
+    DeviceDetails, DevicePushDetails, DevicePushState, DynPushQueue, DynPushStore, FanoutConfig,
+    FormFactor, HealthStatus, Platform, ProviderDispatchWorker, ProviderError,
+    ProviderFailureClass, PublishIntent, PublishTarget, PushAcceptOutcome, PushAcceptRequest,
+    PushDispatcher, PushPayload, PushPipeline, PushPipelineError, PushProviderKind, PushRecipient,
+    SecretString, generate_device_identity_token, hash_device_identity_token, stable_hash,
+    verify_device_identity_token,
 };
 use sockudo_ws::{Message, axum_integration::WebSocketUpgrade};
 use sonic_rs::JsonValueMutTrait;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value, json};
-#[cfg(feature = "push")]
-use std::collections::BTreeSet;
+#[cfg(feature = "delta")]
+use std::time::Instant;
 use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex, RwLock, atomic::Ordering},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
+    sync::{Arc, Mutex, OnceLock, RwLock, Weak, atomic::Ordering},
     time::Duration,
 };
 use tracing::{debug, warn};
@@ -87,6 +102,7 @@ use crate::services::{
     VersionMutationPath, apply_append_message, apply_delete_message, apply_update_message,
     parse_message_serial,
 };
+use crate::stats::{StatsAggregator, StatsError, StatsObservation, StatsQuery, StatsRuntimeConfig};
 use crate::{AblyCompatError, channel_name::AblyChannelName, filter::AblyMessageFilter};
 
 type AppError = AblyCompatError;
@@ -96,8 +112,13 @@ struct AblyErrorBody {
     error: AblyErrorInfo,
 }
 
+const ABLY_MAX_BATCH_SPECS: usize = 100;
 const ABLY_MAX_BATCH_CHANNELS: usize = 100;
-const ABLY_MAX_BATCH_MESSAGES: usize = 100;
+const ABLY_MAX_BATCH_MESSAGES: usize = 1_000;
+const ABLY_MAX_BATCH_RESULTS: usize = 1_000;
+const ABLY_MAX_BATCH_OPERATIONS: usize = 10_000;
+const ABLY_MAX_BATCH_BYTES: usize = 10 * 1024 * 1024;
+const ABLY_BATCH_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -107,6 +128,13 @@ enum AblyPublishPayload {
 }
 
 impl AblyPublishPayload {
+    fn len(&self) -> usize {
+        match self {
+            Self::Many(messages) => messages.len(),
+            Self::One(_) => 1,
+        }
+    }
+
     fn into_messages(self) -> Vec<AblyMessage> {
         match self {
             Self::Many(messages) => messages,
@@ -137,6 +165,66 @@ struct AblyBatchResult<T> {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AblyLegacyBatchResponse<T> {
+    error: AblyErrorInfo,
+    batch_response: Vec<T>,
+}
+
+async fn run_bounded_ordered<T, R, F, Fut>(
+    items: Vec<T>,
+    concurrency: usize,
+    mut work: F,
+) -> Result<Vec<R>, AppError>
+where
+    T: Send + 'static,
+    R: Send + 'static,
+    F: FnMut(T) -> Fut,
+    Fut: Future<Output = R> + Send + 'static,
+{
+    let item_count = items.len();
+    if item_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let concurrency = concurrency.max(1).min(item_count);
+    let mut pending = items.into_iter().enumerate();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut results = std::iter::repeat_with(|| None)
+        .take(item_count)
+        .collect::<Vec<_>>();
+
+    while tasks.len() < concurrency {
+        let Some((index, item)) = pending.next() else {
+            break;
+        };
+        let future = work(item);
+        tasks.spawn(async move { (index, future.await) });
+    }
+
+    while let Some(joined) = tasks.join_next().await {
+        let (index, result) = joined.map_err(|error| {
+            AppError::InternalError(format!("bounded Ably batch task failed: {error}"))
+        })?;
+        results[index] = Some(result);
+
+        if let Some((next_index, item)) = pending.next() {
+            let future = work(item);
+            tasks.spawn(async move { (next_index, future.await) });
+        }
+    }
+
+    results
+        .into_iter()
+        .map(|result| {
+            result.ok_or_else(|| {
+                AppError::InternalError("bounded Ably batch task returned no result".to_string())
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum AblyBatchPublishChannelResponse {
     Success {
@@ -162,6 +250,18 @@ enum AblyBatchPresenceChannelResponse {
         channel: String,
         error: AblyErrorInfo,
     },
+}
+
+enum AblyBatchPresenceWork {
+    Ready(AblyBatchPresenceChannelResponse),
+    Snapshot(AblyChannelName),
+}
+
+#[derive(Clone)]
+struct PreparedAblyBatchMessage {
+    message: AblyMessage,
+    connection_id: Option<String>,
+    client_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +312,43 @@ fn decode_stored_presence_data(value: &Value) -> Option<AblyStoredPresenceData> 
     })
 }
 
+fn presence_record_from_ably(member: &AblyPresenceMessage) -> Result<PresenceRecord, &'static str> {
+    let connection_id = member
+        .connection_id
+        .clone()
+        .ok_or("presence member requires connectionId")?;
+    let client_id = member
+        .client_id
+        .clone()
+        .ok_or("presence member requires clientId")?;
+    let id = member
+        .id
+        .clone()
+        .ok_or("presence member requires server id")?;
+    Ok(PresenceRecord {
+        connection_id,
+        client_id,
+        id,
+        data: member.data.clone(),
+        encoding: member.encoding.clone(),
+        extras: member.extras.clone(),
+        timestamp_ms: member.timestamp.unwrap_or_else(now_ms),
+    })
+}
+
+fn ably_presence_from_record(record: PresenceRecord, action: u8) -> AblyPresenceMessage {
+    AblyPresenceMessage {
+        id: Some(record.id),
+        action: Some(action),
+        client_id: Some(record.client_id),
+        connection_id: Some(record.connection_id),
+        data: record.data,
+        encoding: record.encoding,
+        timestamp: Some(record.timestamp_ms),
+        extras: record.extras,
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct AblyPresenceQuery {
@@ -222,6 +359,7 @@ struct AblyPresenceQuery {
     auth_client_id: Option<String>,
     client_id: Option<String>,
     connection_id: Option<String>,
+    cursor: Option<String>,
     limit: Option<usize>,
     direction: Option<String>,
     start: Option<i64>,
@@ -255,6 +393,8 @@ struct ResolvedAblyAuth {
     credential_id: String,
     revocable: bool,
     revocation_key: Option<String>,
+    #[cfg(feature = "push")]
+    push_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -362,15 +502,6 @@ struct AblyChannelKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct AblyPresenceKey {
-    app_id: String,
-    channel: String,
-    connection_id: String,
-    client_id: String,
-    member_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AblySubscriberKey {
     session_id: Arc<str>,
     requested_channel: Arc<str>,
@@ -394,6 +525,35 @@ struct AblyDeltaState {
     previous_id: Option<Arc<str>>,
     #[cfg(feature = "delta")]
     previous_payload: Option<Arc<[u8]>>,
+    #[cfg(feature = "delta")]
+    previous_at: Option<Instant>,
+}
+
+#[cfg(feature = "delta")]
+impl AblyDeltaState {
+    fn with_base(message_id: Arc<str>, payload: Arc<[u8]>, now: Instant) -> Self {
+        Self {
+            previous_id: Some(message_id),
+            previous_payload: Some(payload),
+            previous_at: Some(now),
+        }
+    }
+
+    fn fresh_base(&self, now: Instant) -> Option<(&Arc<str>, &Arc<[u8]>)> {
+        let stored_at = self.previous_at?;
+        if now.saturating_duration_since(stored_at) > ABLY_DELTA_BASE_MAX_AGE {
+            return None;
+        }
+        Some((self.previous_id.as_ref()?, self.previous_payload.as_ref()?))
+    }
+
+    fn expire(&mut self, now: Instant) {
+        if self.previous_at.is_some_and(|stored_at| {
+            now.saturating_duration_since(stored_at) > ABLY_DELTA_BASE_MAX_AGE
+        }) {
+            *self = Self::default();
+        }
+    }
 }
 
 #[cfg(feature = "delta")]
@@ -454,12 +614,15 @@ const ABLY_DEFAULT_MODE_FLAGS: u64 = ABLY_MODE_PRESENCE
     | ABLY_MODE_SUBSCRIBE
     | ABLY_MODE_PRESENCE_SUBSCRIBE
     | ABLY_MODE_ANNOTATION_PUBLISH;
-const ABLY_MAX_PRESENCE_MEMBERS: usize = 100_000;
 const ABLY_PRESENCE_SYNC_CHUNK_SIZE: usize = 100;
 const ABLY_FILTER_CACHE_MAX_ENTRIES: usize = 1_024;
 const ABLY_FILTER_CACHE_MAX_BYTES: usize = 1024 * 1024;
 const ABLY_ATTACH_GATE_MAX_MESSAGES: usize = ABLY_COMPAT_MAX_REPLAY_MESSAGES;
 const ABLY_ATTACH_GATE_MAX_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(feature = "delta")]
+const ABLY_DELTA_BASE_MAX_BYTES: usize = DEFAULT_MAX_MESSAGE_SIZE as usize;
+#[cfg(feature = "delta")]
+const ABLY_DELTA_BASE_MAX_AGE: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AblyAttachOptions {
@@ -472,10 +635,13 @@ impl AblyAttachOptions {
     fn from_wire(flags: Option<u64>, params: Option<HashMap<String, String>>) -> Self {
         let mut recognized = HashMap::new();
         for (key, value) in params.unwrap_or_default() {
-            if matches!(
-                key.as_str(),
-                "delta" | "echo" | "modes" | "rewind" | "rewindCount"
-            ) {
+            if key == "delta" {
+                if value.eq_ignore_ascii_case("vcdiff") {
+                    recognized.insert(key, "vcdiff".to_owned());
+                }
+                continue;
+            }
+            if matches!(key.as_str(), "echo" | "modes" | "rewind" | "rewindCount") {
                 recognized.insert(key, value);
             }
         }
@@ -669,16 +835,31 @@ pub struct AblyCompatHub {
     revocations: DashMap<String, AblyRevocationRecord>,
     live_sessions: DashMap<String, AblyLiveSession>,
     session_echo: DashMap<String, bool>,
-    presence: DashMap<AblyPresenceKey, AblyPresenceMessage>,
+    presence_registry: Arc<PresenceRegistry>,
+    handler: OnceLock<Weak<ConnectionHandler>>,
     nonces: DashMap<String, i64>,
     key_registry: HashMap<String, AblyCompatKeyConfig>,
     config: AblyCompatConfig,
     cache: Option<Arc<dyn CacheManager>>,
     metrics: Arc<OutboundMetrics>,
     filter_cache: Mutex<AblyFilterCache>,
-    stats: DashMap<String, Arc<RwLock<BTreeMap<String, Value>>>>,
+    stats: Arc<StatsAggregator>,
     #[cfg(feature = "push")]
     push_store: Option<sockudo_push::DynPushStore>,
+    #[cfg(feature = "push")]
+    push_queue: Option<sockudo_push::DynPushQueue>,
+    #[cfg(feature = "push")]
+    push_admission: Option<Arc<dyn AblyPushAdmissionGuard>>,
+}
+
+#[cfg(feature = "push")]
+pub trait AblyPushAdmissionGuard: Send + Sync {
+    fn rejection_for(
+        &self,
+        targets: &[PublishTarget],
+        required_providers: &BTreeSet<PushProviderKind>,
+        expected_recipients: u64,
+    ) -> Option<String>;
 }
 
 /// Dependencies used to construct an isolated compatibility runtime.
@@ -686,8 +867,13 @@ pub struct AblyCompatHub {
 pub struct AblyCompatDependencies {
     pub config: AblyCompatConfig,
     pub cache: Option<Arc<dyn CacheManager>>,
+    pub presence_registry: Arc<PresenceRegistry>,
     #[cfg(feature = "push")]
     pub push_store: Option<sockudo_push::DynPushStore>,
+    #[cfg(feature = "push")]
+    pub push_queue: Option<sockudo_push::DynPushQueue>,
+    #[cfg(feature = "push")]
+    pub push_admission: Option<Arc<dyn AblyPushAdmissionGuard>>,
 }
 
 /// Explicitly constructed Ably compatibility runtime.
@@ -698,6 +884,16 @@ pub struct AblyCompatRuntime {
 impl AblyCompatRuntime {
     #[must_use]
     pub fn new(dependencies: AblyCompatDependencies) -> Self {
+        let stats = StatsAggregator::new(
+            dependencies.cache.clone(),
+            StatsRuntimeConfig {
+                queue_capacity: dependencies.config.stats_queue_capacity,
+                flush_interval: Duration::from_millis(dependencies.config.stats_flush_interval_ms),
+                retention_seconds: dependencies.config.stats_retention_seconds,
+                max_scan_entries: dependencies.config.stats_max_scan_entries,
+                cas_retries: dependencies.config.stats_cas_retries,
+            },
+        );
         let key_registry = if dependencies.config.enabled {
             dependencies
                 .config
@@ -713,8 +909,14 @@ impl AblyCompatRuntime {
             key_registry,
             config: dependencies.config,
             cache: dependencies.cache,
+            stats,
+            presence_registry: dependencies.presence_registry,
             #[cfg(feature = "push")]
             push_store: dependencies.push_store,
+            #[cfg(feature = "push")]
+            push_queue: dependencies.push_queue,
+            #[cfg(feature = "push")]
+            push_admission: dependencies.push_admission,
             ..AblyCompatHub::default()
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -724,7 +926,7 @@ impl AblyCompatRuntime {
                     tokio::time::interval(Duration::from_millis(ABLY_COMPAT_EXPIRY_SWEEP_MS));
                 while let Some(hub) = weak_hub.upgrade() {
                     interval.tick().await;
-                    hub.expire(now_ms());
+                    hub.expire(now_ms()).await;
                 }
             });
         }
@@ -734,6 +936,42 @@ impl AblyCompatRuntime {
     /// Return a lock-free snapshot of compatibility delivery counters.
     pub fn metrics(&self) -> OutboundMetricsSnapshot {
         self.hub.metrics.snapshot()
+    }
+
+    /// Return a lock-free snapshot of the bounded stats aggregation worker.
+    pub fn stats_metrics(&self) -> crate::StatsRuntimeSnapshot {
+        self.hub.stats.snapshot()
+    }
+
+    pub fn presence_registry(&self) -> Arc<PresenceRegistry> {
+        Arc::clone(&self.hub.presence_registry)
+    }
+
+    /// Bind native services after the server finishes constructing its handler.
+    /// The weak reference prevents the compatibility runtime from extending the
+    /// handler lifetime or creating a reference cycle.
+    pub fn bind_handler(&self, handler: &Arc<ConnectionHandler>) {
+        if self.hub.handler.set(Arc::downgrade(handler)).is_ok() {
+            #[cfg(feature = "push")]
+            if let Some(queue) = self.hub.push_queue.clone()
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                let dispatcher = Arc::new(AblyRealtimePushDispatcher::new(Arc::downgrade(handler)));
+                runtime.spawn(async move {
+                    let mut worker = ProviderDispatchWorker::new(
+                        PushProviderKind::Realtime,
+                        queue,
+                        dispatcher.clone(),
+                    );
+                    while dispatcher.is_bound() {
+                        if let Err(error) = worker.run_once("sockudo-ably-realtime").await {
+                            warn!(error = %error, "Ably realtime push worker tick failed");
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                });
+            }
+        }
     }
 
     /// Build the compatibility router with this runtime installed as an
@@ -810,7 +1048,12 @@ impl AblyCompatRuntime {
                     .delete(ably_push_delete_subscriptions),
             )
             .route("/push/channels", get(ably_push_list_channels));
-        router.layer(Extension(Arc::clone(self)))
+        router
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(self),
+                ably_stats_api_middleware,
+            ))
+            .layer(Extension(Arc::clone(self)))
     }
 
     pub fn router(self: &Arc<Self>) -> axum::Router<Arc<ConnectionHandler>> {
@@ -820,6 +1063,134 @@ impl AblyCompatRuntime {
     pub fn egress_tap(self: &Arc<Self>) -> Arc<dyn RealtimeEgressTap> {
         Arc::clone(self) as Arc<dyn RealtimeEgressTap>
     }
+}
+
+async fn ably_stats_api_middleware(
+    State(runtime): State<Arc<AblyCompatRuntime>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let app_id = stats_request_app_id(&runtime.hub, request.headers(), request.uri()).await;
+    let request_bytes = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| request.body().size_hint().exact())
+        .unwrap_or_default();
+    let path = request.uri().path().to_string();
+    let response = next.run(request).await;
+    let succeeded = response.status().is_success();
+    let response_bytes = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| response.body().size_hint().exact())
+        .unwrap_or_default();
+
+    if let Some(app_id) = app_id {
+        let now = now_ms();
+        let mut observations = Vec::with_capacity(3);
+        if let Ok(observation) =
+            StatsObservation::api_request(&app_id, now, succeeded, request_bytes, response_bytes)
+        {
+            observations.push(observation);
+        }
+        if path.ends_with("/requestToken")
+            && let Ok(observation) = StatsObservation::token_request(&app_id, now, succeeded)
+        {
+            observations.push(observation);
+        }
+        #[cfg(feature = "push")]
+        if path == "/push/publish"
+            && !succeeded
+            && let Ok(observation) =
+                StatsObservation::push(&app_id, now, succeeded, 0, request_bytes)
+        {
+            observations.push(observation);
+        }
+        for observation in observations {
+            if let Err(error) = runtime.hub.stats.record(observation).await {
+                warn!(app_id = %app_id, error = %error, "failed to persist Ably API stats");
+            }
+        }
+    }
+    response
+}
+
+async fn stats_request_app_id(
+    hub: &AblyCompatHub,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Option<String> {
+    let credential = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if let Some(encoded) = credential.and_then(|value| value.strip_prefix("Basic "))
+        && let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded)
+        && let Ok(decoded) = std::str::from_utf8(&decoded)
+        && let Some((key_name, _)) = decoded.split_once(':')
+    {
+        return stats_key_app_id(hub, key_name).await;
+    }
+    if let Some(token) = credential.and_then(|value| value.strip_prefix("Bearer ")) {
+        if let Some(record) = hub.resolve_token(token).await {
+            return Some(record.app_id);
+        }
+        if let Ok(header) = decode_header(token)
+            && let Some(key_name) = header.kid
+        {
+            return stats_key_app_id(hub, &key_name).await;
+        }
+    }
+    let query_value = |target: &str| {
+        uri.query()?.split('&').find_map(|pair| {
+            let (name, value) = pair.split_once('=')?;
+            (name == target)
+                .then(|| {
+                    urlencoding::decode(value)
+                        .ok()
+                        .map(|value| value.into_owned())
+                })
+                .flatten()
+        })
+    };
+    if let Some(key_value) = query_value("key")
+        && let Some((key_name, _)) = key_value.split_once(':')
+    {
+        return stats_key_app_id(hub, key_name).await;
+    }
+    if let Some(token) = query_value("access_token") {
+        if let Some(record) = hub.resolve_token(&token).await {
+            return Some(record.app_id);
+        }
+        if let Ok(header) = decode_header(&token)
+            && let Some(key_name) = header.kid
+        {
+            return stats_key_app_id(hub, &key_name).await;
+        }
+    }
+    let key_name = uri
+        .path()
+        .strip_prefix("/keys/")
+        .and_then(|path| path.split('/').next())?;
+    stats_key_app_id(hub, key_name).await
+}
+
+async fn stats_key_app_id(hub: &AblyCompatHub, key_name: &str) -> Option<String> {
+    if let Some(key) = hub.key_registry.get(key_name) {
+        return Some(key.app_id.clone());
+    }
+    let handler = hub.handler.get()?.upgrade()?;
+    handler
+        .app_manager()
+        .find_by_key(key_name)
+        .await
+        .ok()
+        .flatten()
+        .filter(|app| app.enabled)
+        .map(|app| app.id)
 }
 
 impl RealtimeEgressTap for AblyCompatRuntime {
@@ -836,6 +1207,24 @@ impl RealtimeEgressTap for AblyCompatRuntime {
     ) -> SockudoResult<()> {
         self.hub.deliver(app_id, channel, message, envelope)
     }
+
+    fn deliver_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: &PresenceReplication,
+    ) -> SockudoResult<()> {
+        self.hub.deliver_presence(app_id, channel, replication)
+    }
+
+    fn replicate_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: &PresenceReplication,
+    ) -> SockudoResult<()> {
+        self.hub.replicate_presence(app_id, channel, replication)
+    }
 }
 
 impl RealtimeEgressTap for AblyCompatHub {
@@ -850,11 +1239,20 @@ impl RealtimeEgressTap for AblyCompatHub {
         message: &PusherMessage,
         envelope: &MessageEnvelope,
     ) -> SockudoResult<()> {
+        let channel_serial = envelope
+            .stream_id
+            .as_deref()
+            .zip(envelope.delivery_serial)
+            .map(|(stream_id, serial)| encode_ably_channel_serial(stream_id, serial));
         if message.event.as_deref() == Some(ANNOTATION_EVENT_NAME) {
-            let Some(MessageData::Json(value)) = message.data.as_ref() else {
-                return Ok(());
+            let event: AnnotationEventData = match decode_native_message_data(message.data.as_ref())
+            {
+                Ok(event) => event,
+                Err(error) => {
+                    warn!(app_id = %app_id, channel = %channel, error, "failed to decode native annotation delivery");
+                    return Ok(());
+                }
             };
-            let event: AnnotationEventData = sonic_rs::from_value(value)?;
             self.broadcast(
                 app_id,
                 channel,
@@ -862,6 +1260,7 @@ impl RealtimeEgressTap for AblyCompatHub {
                     action: ACTION_ANNOTATION,
                     timestamp: Some(event.timestamp),
                     channel: Some(channel.to_string()),
+                    channel_serial: channel_serial.clone(),
                     annotations: Some(vec![ably_annotation_from_native_event(event)]),
                     ..empty_protocol_message(ACTION_ANNOTATION)
                 },
@@ -871,13 +1270,17 @@ impl RealtimeEgressTap for AblyCompatHub {
             return Ok(());
         }
         if message.event.as_deref() == Some(MESSAGE_SUMMARY_EVENT_NAME) {
-            let Some(MessageData::Json(value)) = message.data.as_ref() else {
-                return Ok(());
+            let value: Value = match decode_native_message_data(message.data.as_ref()) {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(app_id = %app_id, channel = %channel, error, "failed to decode native annotation summary delivery");
+                    return Ok(());
+                }
             };
             let Some(serial) = value.get("serial").and_then(Value::as_str) else {
                 return Ok(());
             };
-            let annotations = value.get("annotations").cloned();
+            let annotations = ably_summary_annotations(&value);
             self.broadcast(
                 app_id,
                 channel,
@@ -885,6 +1288,7 @@ impl RealtimeEgressTap for AblyCompatHub {
                     action: ACTION_MESSAGE,
                     timestamp: Some(now_ms()),
                     channel: Some(channel.to_string()),
+                    channel_serial: channel_serial.clone(),
                     messages: Some(vec![AblyMessage {
                         serial: Some(serial.to_string()),
                         action: Some(MESSAGE_SUMMARY),
@@ -911,11 +1315,6 @@ impl RealtimeEgressTap for AblyCompatHub {
                     return Ok(());
                 }
             };
-        let channel_serial = envelope
-            .stream_id
-            .as_deref()
-            .zip(envelope.delivery_serial)
-            .map(|(stream_id, serial)| encode_ably_channel_serial(stream_id, serial));
         self.broadcast(
             app_id,
             channel,
@@ -951,6 +1350,102 @@ impl RealtimeEgressTap for AblyCompatHub {
         }
         Ok(())
     }
+
+    fn deliver_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: &PresenceReplication,
+    ) -> SockudoResult<()> {
+        let presence = replication
+            .changes
+            .iter()
+            .map(ably_presence_from_change)
+            .collect::<Vec<_>>();
+        if !presence.is_empty() {
+            self.broadcast(
+                app_id,
+                channel,
+                AblyProtocolMessage {
+                    action: ACTION_PRESENCE,
+                    channel: Some(channel.to_string()),
+                    presence: Some(presence),
+                    timestamp: Some(now_ms()),
+                    ..empty_protocol_message(ACTION_PRESENCE)
+                },
+                None,
+                None,
+            );
+        }
+        Ok(())
+    }
+
+    fn replicate_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: &PresenceReplication,
+    ) -> SockudoResult<()> {
+        let mut applied = Vec::with_capacity(replication.changes.len());
+        for change in &replication.changes {
+            let changed = match change.action {
+                PresenceChangeAction::Enter | PresenceChangeAction::Update => {
+                    self.presence_registry
+                        .register_connection(app_id, &change.member.connection_id);
+                    let transition = match change.action {
+                        PresenceChangeAction::Enter => {
+                            self.presence_registry
+                                .enter(app_id, channel, change.member.clone())?
+                        }
+                        PresenceChangeAction::Update => {
+                            self.presence_registry
+                                .update(app_id, channel, change.member.clone())?
+                        }
+                        PresenceChangeAction::Leave => unreachable!(),
+                    };
+                    transition
+                        .previous
+                        .as_ref()
+                        .is_none_or(|previous| previous != &change.member)
+                }
+                PresenceChangeAction::Leave => self
+                    .presence_registry
+                    .leave(
+                        app_id,
+                        channel,
+                        &change.member.connection_id,
+                        &change.member.client_id,
+                    )?
+                    .is_some(),
+            };
+            if changed {
+                applied.push(change.clone());
+            }
+        }
+        if let Some(connection_id) = replication.unregister_connection.as_deref() {
+            self.presence_registry
+                .unregister_connection(app_id, connection_id);
+        }
+        self.deliver_presence(
+            app_id,
+            channel,
+            &PresenceReplication {
+                changes: applied,
+                unregister_connection: None,
+            },
+        )
+    }
+}
+
+fn ably_presence_from_change(change: &PresenceChange) -> AblyPresenceMessage {
+    let action = match change.action {
+        PresenceChangeAction::Enter => 2,
+        PresenceChangeAction::Update => 4,
+        PresenceChangeAction::Leave => 3,
+    };
+    let mut message = ably_presence_from_record(change.member.clone(), action);
+    message.id.clone_from(&change.wire_id);
+    message
 }
 
 impl AblyCompatHub {
@@ -1033,7 +1528,7 @@ impl AblyCompatHub {
         Ok(Some(compiled))
     }
 
-    fn expire(&self, now: i64) {
+    async fn expire(&self, now: i64) {
         let expired_connections = self
             .sessions
             .iter()
@@ -1047,8 +1542,18 @@ impl AblyCompatHub {
         self.nonces.retain(|_, expires_ms| *expires_ms > now);
 
         let mut stale_channels = Vec::new();
+        #[cfg(feature = "delta")]
+        let delta_now = Instant::now();
         for entry in &self.channels {
             let state = lock_channel_state(entry.value());
+            #[cfg(feature = "delta")]
+            let mut state = state;
+            #[cfg(feature = "delta")]
+            for subscriber in state.subscribers.values_mut() {
+                if let Some(delta) = subscriber.delta.as_mut() {
+                    delta.expire(delta_now);
+                }
+            }
             if state.subscribers.is_empty()
                 && state.attach_position.is_none()
                 && now.saturating_sub(state.last_touched_ms)
@@ -1062,19 +1567,92 @@ impl AblyCompatHub {
             self.metrics.expiry.fetch_add(1, Ordering::Relaxed);
         }
         for (connection_id, app_id) in expired_connections {
-            for (channel, presence) in self.remove_connection_presence(&app_id, &connection_id) {
-                self.broadcast(
-                    &app_id,
-                    &channel,
-                    AblyProtocolMessage {
-                        action: ACTION_PRESENCE,
-                        channel: Some(channel.clone()),
-                        presence: Some(presence),
-                        timestamp: Some(now),
-                        ..empty_protocol_message(ACTION_PRESENCE)
-                    },
-                    None,
-                    None,
+            let handler = self.handler.get().and_then(Weak::upgrade);
+            let removals = if let Some(handler) = handler.as_ref() {
+                match handler.app_manager().find_by_id(&app_id).await {
+                    Ok(Some(app)) => PresenceService::new(Arc::clone(handler))
+                        .unregister_connection(
+                            &app,
+                            &connection_id,
+                            PresenceHistoryEventCause::Timeout,
+                        )
+                        .await
+                        .map(|removals| {
+                            let mut grouped = BTreeMap::<String, Vec<PresenceChange>>::new();
+                            for removal in removals {
+                                let wire_id = Some(removal.member.id.clone());
+                                grouped
+                                    .entry(removal.channel)
+                                    .or_default()
+                                    .push(PresenceChange {
+                                        action: PresenceChangeAction::Leave,
+                                        member: removal.member,
+                                        wire_id,
+                                    });
+                            }
+                            grouped
+                        }),
+                    Ok(None) => Ok(self.remove_connection_presence(&app_id, &connection_id)),
+                    Err(error) => Err(error),
+                }
+            } else {
+                Ok(self.remove_connection_presence(&app_id, &connection_id))
+            };
+            let removals = match removals {
+                Ok(removals) => removals,
+                Err(error) => {
+                    warn!(
+                        app_id = %app_id,
+                        connection_id = %connection_id,
+                        error = %error,
+                        "failed to persist expired Ably presence leaves"
+                    );
+                    self.remove_connection_presence(&app_id, &connection_id)
+                }
+            };
+            for (channel, changes) in removals {
+                let replication = PresenceReplication {
+                    changes,
+                    unregister_connection: None,
+                };
+                if let Some(handler) = handler.as_ref() {
+                    if let Err(error) = handler
+                        .fanout_presence(&app_id, &channel, replication)
+                        .await
+                    {
+                        warn!(
+                            app_id = %app_id,
+                            channel = %channel,
+                            error = %error,
+                            "failed to replicate expired presence leaves"
+                        );
+                    }
+                } else if let Err(error) = self.deliver_presence(&app_id, &channel, &replication) {
+                    warn!(
+                        app_id = %app_id,
+                        channel = %channel,
+                        error = %error,
+                        "failed to deliver expired presence leaves"
+                    );
+                }
+            }
+            if let Some(handler) = handler.as_ref()
+                && let Err(error) = handler
+                    .fanout_presence(
+                        &app_id,
+                        "",
+                        PresenceReplication {
+                            changes: Vec::new(),
+                            unregister_connection: Some(connection_id.clone()),
+                        },
+                    )
+                    .await
+            {
+                warn!(
+                    app_id = %app_id,
+                    connection_id = %connection_id,
+                    error = %error,
+                    "failed to replicate expired presence connection removal"
                 );
             }
         }
@@ -1276,166 +1854,83 @@ impl AblyCompatHub {
             .clone()
     }
 
+    #[cfg(test)]
     fn presence_snapshot(&self, app_id: &str, channel: &str) -> Vec<AblyPresenceMessage> {
-        self.presence
-            .iter()
-            .filter(|entry| entry.key().app_id == app_id && entry.key().channel == channel)
-            .map(|entry| {
-                let mut member = entry.value().clone();
-                member.action = Some(1);
-                member
-            })
+        self.presence_registry
+            .snapshot(app_id, channel)
+            .into_iter()
+            .map(|member| ably_presence_from_record(member, 1))
             .collect()
-    }
-
-    fn apply_presence(
-        &self,
-        app_id: &str,
-        channel: &str,
-        members: &[AblyPresenceMessage],
-    ) -> Result<(), &'static str> {
-        for member in members {
-            let Some(connection_id) = member.connection_id.as_deref() else {
-                return Err("presence member requires connectionId");
-            };
-            let Some(client_id) = member.client_id.as_deref() else {
-                return Err("presence member requires clientId");
-            };
-            let key = AblyPresenceKey {
-                app_id: app_id.to_string(),
-                channel: channel.to_string(),
-                connection_id: connection_id.to_string(),
-                client_id: client_id.to_string(),
-                member_id: member
-                    .id
-                    .clone()
-                    .unwrap_or_else(|| format!("{connection_id}:{client_id}")),
-            };
-            match member.action.unwrap_or(1) {
-                0 | 3 => {
-                    let matching = self
-                        .presence
-                        .iter()
-                        .filter(|entry| {
-                            entry.key().app_id == app_id
-                                && entry.key().channel == channel
-                                && entry.key().connection_id == connection_id
-                                && entry.key().client_id == client_id
-                        })
-                        .map(|entry| entry.key().clone())
-                        .collect::<Vec<_>>();
-                    for key in matching {
-                        self.presence.remove(&key);
-                    }
-                }
-                1 | 2 => {
-                    if self.presence.len() >= ABLY_MAX_PRESENCE_MEMBERS
-                        && !self.presence.contains_key(&key)
-                    {
-                        return Err("presence member capacity exceeded");
-                    }
-                    self.presence.insert(key, member.clone());
-                }
-                4 => {
-                    let matching = self
-                        .presence
-                        .iter()
-                        .filter(|entry| {
-                            entry.key().app_id == app_id
-                                && entry.key().channel == channel
-                                && entry.key().connection_id == connection_id
-                                && entry.key().client_id == client_id
-                        })
-                        .map(|entry| entry.key().clone())
-                        .collect::<Vec<_>>();
-                    if matching.is_empty() {
-                        self.presence.insert(key, member.clone());
-                    } else {
-                        for key in matching {
-                            self.presence.insert(key, member.clone());
-                        }
-                    }
-                }
-                _ => return Err("unsupported presence action"),
-            }
-        }
-        Ok(())
     }
 
     fn remove_connection_presence(
         &self,
         app_id: &str,
         connection_id: &str,
-    ) -> HashMap<String, Vec<AblyPresenceMessage>> {
-        let keys = self
-            .presence
-            .iter()
-            .filter(|entry| {
-                entry.key().app_id == app_id && entry.key().connection_id == connection_id
-            })
-            .map(|entry| entry.key().clone())
-            .collect::<Vec<_>>();
-        let mut leaves = HashMap::<String, Vec<AblyPresenceMessage>>::new();
-        for key in keys {
-            if let Some((_, mut member)) = self.presence.remove(&key) {
-                member.action = Some(3);
-                member.timestamp = Some(now_ms());
-                leaves.entry(key.channel).or_default().push(member);
-            }
+    ) -> BTreeMap<String, Vec<PresenceChange>> {
+        let mut leaves = BTreeMap::<String, Vec<PresenceChange>>::new();
+        for removal in self
+            .presence_registry
+            .unregister_connection(app_id, connection_id)
+        {
+            let mut member = removal.member;
+            member.timestamp_ms = now_ms();
+            let wire_id = Some(member.id.clone());
+            leaves
+                .entry(removal.channel)
+                .or_default()
+                .push(PresenceChange {
+                    action: PresenceChangeAction::Leave,
+                    member,
+                    wire_id,
+                });
         }
         leaves
     }
 
-    fn remove_superseded_presence(
-        &self,
-        app_id: &str,
-        channel: &str,
-        client_id: &str,
-        connection_id: &str,
-    ) -> Vec<AblyPresenceMessage> {
-        let keys = self
-            .presence
-            .iter()
-            .filter(|entry| {
-                entry.key().app_id == app_id
-                    && entry.key().channel == channel
-                    && entry.key().client_id == client_id
-                    && entry.key().connection_id != connection_id
-            })
-            .map(|entry| entry.key().clone())
-            .collect::<Vec<_>>();
-        let mut leaves = Vec::with_capacity(keys.len());
-        for key in keys {
-            if let Some((_, mut member)) = self.presence.remove(&key) {
-                member.action = Some(3);
-                member.id = None;
-                member.timestamp = Some(now_ms());
-                leaves.push(member);
-            }
-        }
-        leaves
-    }
-
-    fn begin_attach(
+    async fn begin_attach(
         &self,
         app_id: &str,
         channel: &AblyChannelName,
         attachment: &AblyAttachment<'_>,
-    ) {
+    ) -> Result<(), StatsError> {
         let state = self.channel_state(app_id, channel.base());
-        lock_channel_state(&state).subscribers.insert(
-            subscriber_key(attachment.session_id, channel.requested()),
-            AblySubscriber {
-                connection_id: Arc::from(attachment.connection_id),
-                sender: attachment.sender.clone(),
-                filter: attachment.filter.clone(),
-                mode_flags: attachment.mode_flags,
-                echo: attachment.echo,
-                #[cfg(feature = "delta")]
-                delta: ably_delta_state(&attachment.params),
-                attach_gate: Some(AblyAttachGate::default()),
-            },
-        );
+        let activated = {
+            let mut state = lock_channel_state(&state);
+            let activated = state.subscribers.is_empty();
+            state.subscribers.insert(
+                subscriber_key(attachment.session_id, channel.requested()),
+                AblySubscriber {
+                    connection_id: Arc::from(attachment.connection_id),
+                    sender: attachment.sender.clone(),
+                    filter: attachment.filter.clone(),
+                    mode_flags: attachment.mode_flags,
+                    echo: attachment.echo,
+                    #[cfg(feature = "delta")]
+                    delta: ably_delta_state(&attachment.params),
+                    attach_gate: Some(AblyAttachGate::default()),
+                },
+            );
+            activated
+        };
+        if activated {
+            let current = self.stats.channel_opened(app_id);
+            let observation = StatsObservation::channel_opened(app_id, now_ms(), current)?;
+            if let Err(error) = self.stats.record(observation).await {
+                self.stats.channel_closed(app_id);
+                let mut state = lock_channel_state(&state);
+                state
+                    .subscribers
+                    .remove(&subscriber_key(attachment.session_id, channel.requested()));
+                let empty = state.subscribers.is_empty();
+                drop(state);
+                if empty {
+                    self.channels.remove(&channel_key(app_id, channel.base()));
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     fn finish_attach_gate(
@@ -1582,20 +2077,35 @@ impl AblyCompatHub {
         let _ = delta;
     }
 
-    fn unsubscribe(&self, app_id: &str, channel: &AblyChannelName, session_id: &str) {
+    async fn unsubscribe(
+        &self,
+        app_id: &str,
+        channel: &AblyChannelName,
+        session_id: &str,
+    ) -> Result<(), StatsError> {
         let key = channel_key(app_id, channel.base());
         let Some(state) = self.channels.get(&key).map(|entry| entry.clone()) else {
-            return;
+            return Ok(());
         };
-        let mut state = lock_channel_state(&state);
-        state
-            .subscribers
-            .remove(&subscriber_key(session_id, channel.requested()));
-        if state.subscribers.is_empty() {
-            state.attach_position = None;
-            drop(state);
+        let should_close = {
+            let mut state = lock_channel_state(&state);
+            let removed = state
+                .subscribers
+                .remove(&subscriber_key(session_id, channel.requested()))
+                .is_some();
+            let should_close = removed && state.subscribers.is_empty();
+            if should_close {
+                state.attach_position = None;
+            }
+            should_close
+        };
+        if should_close {
             self.channels.remove(&key);
+            self.stats.channel_closed(app_id);
+            let observation = StatsObservation::channel_closed(app_id, now_ms())?;
+            self.stats.record(observation).await?;
         }
+        Ok(())
     }
 
     fn until_attach_position(
@@ -1616,6 +2126,8 @@ impl AblyCompatHub {
         echo_override: Option<bool>,
     ) {
         let now = now_ms();
+        let mut delivered_messages = 0u64;
+        let mut delivered_bytes = 0u64;
         let state = self.channel_state(app_id, channel);
         let subscribers = {
             let mut state = lock_channel_state(&state);
@@ -1624,6 +2136,18 @@ impl AblyCompatHub {
                 .as_deref()
                 .and_then(|serial| parse_ably_channel_serial(serial).ok())
             {
+                #[cfg(feature = "delta")]
+                if state
+                    .current_stream_id
+                    .as_deref()
+                    .is_some_and(|stream_id| stream_id != position.stream_id)
+                {
+                    for subscriber in state.subscribers.values_mut() {
+                        if subscriber.delta.is_some() {
+                            subscriber.delta = Some(AblyDeltaState::default());
+                        }
+                    }
+                }
                 state.current_stream_id = Some(position.stream_id);
                 state.last_touched_ms = now;
             }
@@ -1684,37 +2208,70 @@ impl AblyCompatHub {
         #[cfg(feature = "delta")]
         let mut stale = Vec::new();
         #[cfg(feature = "delta")]
-        for (subscriber_key, subscriber) in delta_subscribers {
-            let mut projected = if subscriber_key.requested_channel.as_ref() == channel
+        let mut delta_groups = HashMap::<
+            (AblyFormat, Arc<str>, Option<Arc<str>>),
+            Vec<(AblySubscriberKey, AblySubscriber)>,
+        >::new();
+        #[cfg(feature = "delta")]
+        let delta_now = Instant::now();
+        #[cfg(feature = "delta")]
+        for (key, subscriber) in delta_subscribers {
+            // A committed Ably message ID identifies immutable canonical data.
+            // Format, requested-channel projection, and fresh base ID therefore
+            // fully determine the encoded delta bytes shared by this group.
+            let base_id = subscriber.delta.as_ref().and_then(|delta| {
+                delta
+                    .fresh_base(delta_now)
+                    .map(|(message_id, _)| Arc::clone(message_id))
+            });
+            delta_groups
+                .entry((
+                    subscriber.sender.format(),
+                    key.requested_channel.clone(),
+                    base_id,
+                ))
+                .or_default()
+                .push((key, subscriber));
+        }
+        #[cfg(feature = "delta")]
+        for ((format, requested_channel, _), subscribers) in delta_groups {
+            let mut projected = if requested_channel.as_ref() == channel
                 && message.channel.as_deref() == Some(channel)
             {
                 message.clone()
             } else {
                 AblyProtocolMessage {
-                    channel: Some(subscriber_key.requested_channel.to_string()),
+                    channel: Some(requested_channel.to_string()),
                     ..message.clone()
                 }
             };
-            if !ably_filter_protocol_message(&mut projected, subscriber.filter.as_deref()) {
+            let Some((_, first_subscriber)) = subscribers.first() else {
+                continue;
+            };
+            if !ably_filter_protocol_message(&mut projected, first_subscriber.filter.as_deref()) {
                 continue;
             }
-            let Some((projected, next_state)) = project_ably_delta_message(
+            let (projected, next_state) = project_ably_delta_message(
                 projected,
-                subscriber
+                first_subscriber
                     .delta
                     .as_ref()
                     .expect("partitioned delta subscriber"),
-            ) else {
-                continue;
-            };
-            match encode_protocol_bytes(&projected, subscriber.sender.format()) {
+            );
+            match encode_protocol_bytes(&projected, format) {
                 Ok(bytes) => {
-                    if subscriber.sender.send_data(Arc::new(bytes)).is_ok() {
-                        self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
-                        self.metrics.fanout.fetch_add(1, Ordering::Relaxed);
-                        delta_updates.push((subscriber_key, next_state));
-                    } else {
-                        stale.push(subscriber_key);
+                    let encoded = Arc::new(bytes);
+                    let byte_count = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+                    self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
+                    for (subscriber_key, subscriber) in subscribers {
+                        if subscriber.sender.send_data(Arc::clone(&encoded)).is_ok() {
+                            self.metrics.fanout.fetch_add(1, Ordering::Relaxed);
+                            delivered_messages = delivered_messages.saturating_add(1);
+                            delivered_bytes = delivered_bytes.saturating_add(byte_count);
+                            delta_updates.push((subscriber_key, next_state.clone()));
+                        } else {
+                            stale.push(subscriber_key);
+                        }
                     }
                 }
                 Err(error) => {
@@ -1759,13 +2316,31 @@ impl AblyCompatHub {
                 }
             };
             self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
+            let encoded_bytes = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
             for (subscriber_key, subscriber) in subscribers {
                 if subscriber.sender.send_data(Arc::clone(&encoded)).is_err() {
                     stale.push(subscriber_key);
                 } else {
                     self.metrics.fanout.fetch_add(1, Ordering::Relaxed);
+                    delivered_messages = delivered_messages.saturating_add(1);
+                    delivered_bytes = delivered_bytes.saturating_add(encoded_bytes);
                 }
             }
+        }
+
+        if message.action == ACTION_MESSAGE
+            && delivered_messages > 0
+            && let Ok(observation) = StatsObservation::messages(
+                app_id,
+                now,
+                "outbound",
+                "realtime",
+                delivered_messages,
+                delivered_bytes,
+            )
+            && let Err(error) = self.stats.try_record(observation)
+        {
+            debug!(app_id = %app_id, error = %error, "stats outbound observation was not queued");
         }
 
         #[cfg(feature = "delta")]
@@ -2033,6 +2608,15 @@ impl AblyCompatHub {
         }
     }
 
+    async fn forget_connection(&self, connection_key: &str) {
+        self.sessions.remove(connection_key);
+        if let Some(cache) = &self.cache
+            && let Err(error) = cache.remove(&session_cache_key(connection_key)).await
+        {
+            warn!(error = %error, "Ably connection state cache removal failed");
+        }
+    }
+
     fn resolve_live_connection(
         &self,
         app_id: &str,
@@ -2148,29 +2732,46 @@ fn should_deliver_to_subscriber(
 fn project_ably_delta_message(
     mut protocol: AblyProtocolMessage,
     state: &AblyDeltaState,
-) -> Option<(AblyProtocolMessage, AblyDeltaState)> {
-    let message = protocol.messages.as_mut()?.first_mut()?;
-    let message_id = Arc::<str>::from(message.id.as_deref()?);
-    let target = match message.encoded_json.as_ref() {
-        Some(encoded) => Arc::clone(encoded),
-        // `None` is Ably's wire representation for a published null payload.
-        // It is still a valid delta baseline and must not suppress delivery.
-        None => Arc::<[u8]>::from(sonic_rs::to_vec(&message.data).ok()?),
+) -> (AblyProtocolMessage, AblyDeltaState) {
+    let Some(message) = protocol
+        .messages
+        .as_mut()
+        .and_then(|messages| messages.first_mut())
+    else {
+        return (protocol, AblyDeltaState::default());
     };
-    let next_state = AblyDeltaState {
-        previous_id: Some(Arc::clone(&message_id)),
-        previous_payload: Some(Arc::clone(&target)),
+    let Some(message_id) = message.id.as_deref().map(Arc::<str>::from) else {
+        return (protocol, AblyDeltaState::default());
+    };
+    // Encoded JSON keeps its exact publish-time bytes. A message whose wire
+    // encoding is still present (cipher, base64, or an unknown transform) is
+    // not safe to reinterpret here, so it breaks the delta chain and remains
+    // a canonical full delivery.
+    let target = match (message.encoded_json.as_ref(), message.encoding.as_ref()) {
+        (Some(encoded), _) => Arc::clone(encoded),
+        (None, None) => match sonic_rs::to_vec(&message.data) {
+            Ok(encoded) => Arc::<[u8]>::from(encoded),
+            Err(_) => return (protocol, AblyDeltaState::default()),
+        },
+        (None, Some(_)) => return (protocol, AblyDeltaState::default()),
+    };
+    if target.len() > ABLY_DELTA_BASE_MAX_BYTES {
+        return (protocol, AblyDeltaState::default());
+    }
+
+    let now = Instant::now();
+    let next_state = AblyDeltaState::with_base(Arc::clone(&message_id), Arc::clone(&target), now);
+    let full_payload = match std::str::from_utf8(&target) {
+        Ok(payload) => payload,
+        Err(_) => return (protocol, AblyDeltaState::default()),
     };
 
-    if let (Some(previous_id), Some(previous_payload)) =
-        (state.previous_id.as_ref(), state.previous_payload.as_ref())
+    if let Some((previous_id, previous_payload)) = state.fresh_base(now)
+        && message.extras.as_ref().is_none_or(Value::is_object)
         && let Ok(delta) = sockudo_delta::compute_vcdiff(previous_payload, &target)
         && delta.len() < target.len()
     {
         let mut extras = message.extras.take().unwrap_or_else(|| json!({}));
-        if !extras.is_object() {
-            extras = json!({ "value": extras });
-        }
         if let Some(object) = extras.as_object_mut() {
             object.insert(
                 "delta",
@@ -2183,10 +2784,10 @@ fn project_ably_delta_message(
         message.encoding = Some("json/vcdiff/base64".to_string());
         message.extras = Some(extras);
     } else {
-        message.data = Some(json!(String::from_utf8(target.to_vec()).ok()?));
+        message.data = Some(json!(full_payload));
         message.encoding = Some("json".to_string());
     }
-    Some((protocol, next_state))
+    (protocol, next_state)
 }
 
 pub async fn handle_ably_realtime_upgrade(
@@ -2274,6 +2875,23 @@ pub async fn handle_ably_realtime_upgrade(
         handler.server_options().websocket_max_payload_kb,
         handler.server_options().activity_timeout,
     );
+    if runtime.hub.config.realtime_admission == AblyRealtimeAdmission::PlacementConstraint {
+        return ws
+            .config(ws_cfg)
+            .on_upgrade(move |socket| {
+                send_ably_socket_failure(
+                    socket,
+                    format,
+                    ACTION_DISCONNECTED,
+                    error_info(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        50320,
+                        "Active Traffic Management: traffic for this endpoint is temporarily redirected to a fallback host",
+                    ),
+                )
+            })
+            .into_response();
+    }
     let hub = Arc::clone(&runtime.hub);
     let resume = params.resume.clone();
     let recover = params.recover.clone();
@@ -2284,6 +2902,16 @@ pub async fn handle_ably_realtime_upgrade(
             .filter(|expires_ms| *expires_ms <= now_ms())
             .map(|_| AblyAuthError::expired())
     });
+    let stats_transport = if handler.server_options().ssl.enabled
+        || headers
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("https"))
+    {
+        "tls"
+    } else {
+        "plain"
+    };
 
     ws.config(ws_cfg)
         .on_upgrade(move |socket| async move {
@@ -2299,6 +2927,7 @@ pub async fn handle_ably_realtime_upgrade(
                     format,
                     echo: params.echo,
                     replace_presence_on_reenter,
+                    stats_transport,
                 },
             )
             .await
@@ -2314,11 +2943,26 @@ async fn send_fatal_ably_socket_error(
     format: AblyFormat,
     error: AblyAuthError,
 ) {
+    send_ably_socket_failure(
+        socket,
+        format,
+        ACTION_ERROR,
+        error_info(error.status, error.code, error.message),
+    )
+    .await;
+}
+
+async fn send_ably_socket_failure(
+    socket: sockudo_ws::axum_integration::WebSocket,
+    format: AblyFormat,
+    action: u8,
+    error: AblyErrorInfo,
+) {
     let (_, mut writer) = socket.split();
     let message = AblyProtocolMessage {
-        action: ACTION_ERROR,
-        error: Some(error_info(error.status, error.code, error.message)),
-        ..empty_protocol_message(ACTION_ERROR)
+        action,
+        error: Some(error),
+        ..empty_protocol_message(action)
     };
     let Ok(bytes) = encode_protocol_bytes(&message, format) else {
         return;
@@ -2340,6 +2984,7 @@ struct AblyRealtimeSocketContext {
     format: AblyFormat,
     echo: bool,
     replace_presence_on_reenter: bool,
+    stats_transport: &'static str,
 }
 
 async fn run_ably_realtime_socket(
@@ -2356,6 +3001,7 @@ async fn run_ably_realtime_socket(
         format,
         echo,
         replace_presence_on_reenter,
+        stats_transport,
     } = context;
     let app = resolved.app.clone();
     let mut authorization = ConnectionAuthorization::from_resolved(&resolved);
@@ -2386,6 +3032,7 @@ async fn run_ably_realtime_socket(
         authorization.client_id.clone(),
     )
     .await;
+    let active_connection_key = Arc::new(RwLock::new(connection_key.clone()));
     // A recovered transport keeps the stable Ably connection ID, but it must
     // not share subscriber ownership with the socket it supersedes. Otherwise
     // cleanup from the old socket can remove the recovered socket's channels.
@@ -2428,12 +3075,57 @@ async fn run_ably_realtime_socket(
 
     if let Some(error) = initial_error {
         send_protocol_disconnected(&sender, error.code, error.message);
+        hub.forget_connection(&connection_key).await;
         drop(sender);
         heartbeat_task.abort();
         let _ = heartbeat_task.await;
         let _ = writer_task.await;
         return Ok(());
     }
+
+    let current_connections = hub.stats.connection_opened(&app.id);
+    let opened = StatsObservation::connection_opened(
+        &app.id,
+        now_ms(),
+        stats_transport,
+        current_connections,
+    )
+    .map_err(stats_sockudo_error)?;
+    if let Err(error) = hub.stats.record(opened).await {
+        hub.stats.connection_closed(&app.id);
+        drop(sender);
+        heartbeat_task.abort();
+        let _ = heartbeat_task.await;
+        let _ = writer_task.await;
+        return Err(stats_sockudo_error(error));
+    }
+
+    let presence_service = PresenceService::new(Arc::clone(&handler));
+    presence_service.register_connection(&app.id, &connection_id);
+
+    let lease_hub = Arc::clone(&hub);
+    let lease_key = Arc::clone(&active_connection_key);
+    let lease_app_id = app.id.clone();
+    let lease_connection_id = connection_id.clone();
+    let lease_client_id = authorization.client_id.clone();
+    let connection_lease_task = tokio::spawn(async move {
+        let refresh_interval = Duration::from_millis(DEFAULT_CONNECTION_STATE_TTL_MS / 2);
+        loop {
+            tokio::time::sleep(refresh_interval).await;
+            let connection_key = lease_key
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            lease_hub
+                .remember_connection(
+                    connection_key,
+                    &lease_app_id,
+                    &lease_connection_id,
+                    lease_client_id.clone(),
+                )
+                .await;
+        }
+    });
 
     send_protocol(
         &sender,
@@ -2547,9 +3239,6 @@ async fn run_ably_realtime_socket(
                 continue;
             }
         };
-        if inbound.action == ACTION_CLOSE {
-            graceful_close = true;
-        }
         if inbound.action == ACTION_AUTH {
             match handle_ably_auth_update(
                 &hub,
@@ -2564,11 +3253,14 @@ async fn run_ably_realtime_socket(
             )
             .await
             {
-                Ok(()) => {
+                Ok(connection_key) => {
                     renewal_hint_sent = false;
                     *shared_authorization
                         .write()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = authorization.clone();
+                    *active_connection_key
+                        .write()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = connection_key;
                 }
                 Err(error) => {
                     send_protocol_disconnected(&sender, error.code, error.message);
@@ -2577,7 +3269,7 @@ async fn run_ably_realtime_socket(
             }
             continue;
         }
-        if let Err(error) = handle_ably_protocol_message(
+        match handle_ably_protocol_message(
             &handler,
             &hub,
             &app,
@@ -2585,45 +3277,115 @@ async fn run_ably_realtime_socket(
             &authorization,
             &session_id,
             &sender,
+            &active_connection_key,
             &mut attached_channels,
             replace_presence_on_reenter,
             inbound,
         )
         .await
         {
-            debug!(error = %error, "Ably compatibility protocol handler stopped");
-            break;
+            Ok(AblyProtocolControl::Continue) => {}
+            Ok(AblyProtocolControl::Close) => {
+                graceful_close = true;
+                break;
+            }
+            Err(error) => {
+                debug!(error = %error, "Ably compatibility protocol handler stopped");
+                break;
+            }
         }
     }
 
     if graceful_close {
-        for (channel, presence) in hub.remove_connection_presence(&app.id, &connection_id) {
-            hub.broadcast(
+        let removals = presence_service
+            .unregister_connection(&app, &connection_id, PresenceHistoryEventCause::Disconnect)
+            .await?;
+        let mut leaves = BTreeMap::<String, Vec<PresenceChange>>::new();
+        for removal in removals {
+            leaves
+                .entry(removal.channel)
+                .or_default()
+                .push(PresenceChange {
+                    action: PresenceChangeAction::Leave,
+                    wire_id: Some(removal.member.id.clone()),
+                    member: removal.member,
+                });
+        }
+        for (channel, changes) in leaves {
+            if let Err(error) = handler
+                .fanout_presence(
+                    &app.id,
+                    &channel,
+                    PresenceReplication {
+                        changes,
+                        unregister_connection: None,
+                    },
+                )
+                .await
+            {
+                warn!(
+                    app_id = %app.id,
+                    channel = %channel,
+                    error = %error,
+                    "failed to replicate graceful presence leaves"
+                );
+            }
+        }
+        if let Err(error) = handler
+            .fanout_presence(
                 &app.id,
-                &channel,
-                AblyProtocolMessage {
-                    action: ACTION_PRESENCE,
-                    channel: Some(channel.clone()),
-                    presence: Some(presence),
-                    timestamp: Some(now_ms()),
-                    ..empty_protocol_message(ACTION_PRESENCE)
+                "",
+                PresenceReplication {
+                    changes: Vec::new(),
+                    unregister_connection: Some(connection_id.clone()),
                 },
-                None,
-                None,
+            )
+            .await
+        {
+            warn!(
+                app_id = %app.id,
+                connection_id = %connection_id,
+                error = %error,
+                "failed to replicate graceful presence connection removal"
             );
         }
     }
     for (requested, _) in attached_channels {
-        if let Ok(channel) = AblyChannelName::parse(requested) {
-            hub.unsubscribe(&app.id, &channel, &session_id);
+        if let Ok(channel) = AblyChannelName::parse(requested)
+            && let Err(error) = hub.unsubscribe(&app.id, &channel, &session_id).await
+        {
+            warn!(app_id = %app.id, error = %error, "failed to persist channel close stats");
         }
     }
     hub.unregister_live_session(&connection_id, &session_id);
     hub.session_echo.remove(&session_id);
+    connection_lease_task.abort();
+    let _ = connection_lease_task.await;
+    let final_connection_key = active_connection_key
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if graceful_close {
+        hub.forget_connection(&final_connection_key).await;
+    } else {
+        hub.remember_connection(
+            final_connection_key,
+            &app.id,
+            &connection_id,
+            authorization.client_id.clone(),
+        )
+        .await;
+    }
     heartbeat_task.abort();
     let _ = heartbeat_task.await;
     drop(sender);
     let _ = writer_task.await;
+    hub.stats.connection_closed(&app.id);
+    if let Ok(closed) = StatsObservation::connection_closed(&app.id, now_ms(), stats_transport)
+        && let Err(error) = hub.stats.record(closed).await
+    {
+        warn!(app_id = %app.id, error = %error, "failed to persist connection close stats");
+    }
     Ok(())
 }
 
@@ -2670,7 +3432,7 @@ async fn handle_ably_auth_update(
     attached_channels: &mut HashMap<String, AblyConnectionAttachment>,
     authorization: &mut ConnectionAuthorization,
     inbound: AblyProtocolMessage,
-) -> Result<(), AblyAuthError> {
+) -> Result<String, AblyAuthError> {
     let access_token = inbound
         .auth
         .as_ref()
@@ -2719,8 +3481,10 @@ async fn handle_ably_auth_update(
         .map(|(requested, _)| requested.clone())
         .collect::<Vec<_>>();
     for channel in downgraded {
-        if let Ok(parsed) = AblyChannelName::parse(channel.clone()) {
-            hub.unsubscribe(&app.id, &parsed, session_id);
+        if let Ok(parsed) = AblyChannelName::parse(channel.clone())
+            && let Err(error) = hub.unsubscribe(&app.id, &parsed, session_id).await
+        {
+            warn!(app_id = %app.id, error = %error, "failed to persist channel close stats during AUTH update");
         }
         attached_channels.remove(&channel);
         send_channel_error(
@@ -2750,7 +3514,21 @@ async fn handle_ably_auth_update(
             None,
         ),
     );
-    Ok(())
+    Ok(connection_key)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AblyProtocolControl {
+    Continue,
+    Close,
+}
+
+fn ably_protocol_control(action: u8) -> AblyProtocolControl {
+    if matches!(action, ACTION_DISCONNECT | ACTION_CLOSE) {
+        AblyProtocolControl::Close
+    } else {
+        AblyProtocolControl::Continue
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2762,10 +3540,12 @@ async fn handle_ably_protocol_message(
     authorization: &ConnectionAuthorization,
     session_id: &str,
     sender: &AblySender,
+    active_connection_key: &RwLock<String>,
     attached_channels: &mut HashMap<String, AblyConnectionAttachment>,
     replace_presence_on_reenter: bool,
     mut inbound: AblyProtocolMessage,
-) -> SockudoResult<()> {
+) -> SockudoResult<AblyProtocolControl> {
+    let control = ably_protocol_control(inbound.action);
     let client_id = authorization.client_id.as_deref();
     let connection_client_id = authorization.connection_client_id.as_deref();
     let capabilities = authorization.capabilities.as_ref();
@@ -2783,6 +3563,9 @@ async fn handle_ably_protocol_message(
                 client_id.map(str::to_string),
             )
             .await;
+            *active_connection_key
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = connection_key.clone();
             send_protocol(
                 sender,
                 connected_message(
@@ -2796,7 +3579,7 @@ async fn handle_ably_protocol_message(
         ACTION_ATTACH => {
             let Some(raw_channel) = inbound.channel else {
                 send_protocol_error(sender, 40000, "ATTACH requires channel");
-                return Ok(());
+                return Ok(AblyProtocolControl::Continue);
             };
             let channel = match AblyChannelName::parse(raw_channel) {
                 Ok(channel) => channel,
@@ -2808,7 +3591,7 @@ async fn handle_ably_protocol_message(
                         40010,
                         error.to_string(),
                     );
-                    return Ok(());
+                    return Ok(AblyProtocolControl::Continue);
                 }
             };
             let previous = attached_channels.get(channel.requested());
@@ -2838,7 +3621,7 @@ async fn handle_ably_protocol_message(
                     error.code,
                     error.message,
                 );
-                return Ok(());
+                return Ok(AblyProtocolControl::Continue);
             }
             let filter = match previous
                 .filter(|attachment| attachment.channel == channel)
@@ -2854,7 +3637,7 @@ async fn handle_ably_protocol_message(
                         40010,
                         message,
                     );
-                    return Ok(());
+                    return Ok(AblyProtocolControl::Continue);
                 }
             };
             let attach_options =
@@ -2864,7 +3647,7 @@ async fn handle_ably_protocol_message(
                 (ABLY_MODE_PRESENCE, AblyCapabilityCheck::Presence),
                 (
                     ABLY_MODE_ANNOTATION_PUBLISH,
-                    AblyCapabilityCheck::AnnotationPublish,
+                    AblyCapabilityCheck::AnnotationMutate,
                 ),
                 (
                     ABLY_MODE_ANNOTATION_SUBSCRIBE,
@@ -2883,9 +3666,14 @@ async fn handle_ably_protocol_message(
                         error.code,
                         error.message,
                     );
-                    return Ok(());
+                    return Ok(AblyProtocolControl::Continue);
                 }
             }
+            let has_presence = previous.is_some_and(|attachment| attachment.has_presence)
+                || !PresenceService::new(Arc::clone(handler))
+                    .snapshot(&app.id, channel.base())
+                    .await?
+                    .is_empty();
             let attachment_state = AblyConnectionAttachment {
                 channel: channel.clone(),
                 params: attach_options.params.clone(),
@@ -2893,8 +3681,7 @@ async fn handle_ably_protocol_message(
                 explicit_modes: attach_options.explicit_modes,
                 filter: filter.clone(),
                 attach_position: inbound.channel_serial.clone(),
-                has_presence: previous.is_some_and(|attachment| attachment.has_presence)
-                    || !hub.presence_snapshot(&app.id, channel.base()).is_empty(),
+                has_presence,
             };
             if authorization.revocable {
                 let target_channel =
@@ -2910,7 +3697,7 @@ async fn handle_ably_protocol_message(
                 }
             }
             attached_channels.insert(channel.requested().to_string(), attachment_state);
-            handle_ably_attach(
+            let attach = handle_ably_attach(
                 handler,
                 hub,
                 app,
@@ -2922,13 +3709,34 @@ async fn handle_ably_protocol_message(
                 inbound.channel_serial,
                 inbound.flags,
                 inbound.params,
-            )
-            .await;
+            );
+            if tokio::time::timeout(Duration::from_millis(hub.config.attach_timeout_ms), attach)
+                .await
+                .is_err()
+            {
+                if let Err(error) = hub.unsubscribe(&app.id, &channel, session_id).await {
+                    warn!(app_id = %app.id, channel = %channel.requested(), error = %error, "failed to clean up timed-out Ably attach");
+                }
+                attached_channels.remove(channel.requested());
+                send_protocol(
+                    sender,
+                    AblyProtocolMessage {
+                        action: ACTION_DETACHED,
+                        channel: Some(channel.requested().to_string()),
+                        error: Some(error_info(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            50003,
+                            "channel attach timed out",
+                        )),
+                        ..empty_protocol_message(ACTION_DETACHED)
+                    },
+                );
+            }
         }
         ACTION_DETACH => {
             let Some(raw_channel) = inbound.channel else {
                 send_protocol_error(sender, 40000, "DETACH requires channel");
-                return Ok(());
+                return Ok(AblyProtocolControl::Continue);
             };
             let channel = match AblyChannelName::parse(raw_channel) {
                 Ok(channel) => channel,
@@ -2940,10 +3748,34 @@ async fn handle_ably_protocol_message(
                         40010,
                         error.to_string(),
                     );
-                    return Ok(());
+                    return Ok(AblyProtocolControl::Continue);
                 }
             };
-            hub.unsubscribe(&app.id, &channel, session_id);
+            let removals = PresenceService::new(Arc::clone(handler))
+                .detach_connection(app, channel.base(), connection_id)
+                .await?;
+            if !removals.is_empty() {
+                handler
+                    .fanout_presence(
+                        &app.id,
+                        channel.base(),
+                        PresenceReplication {
+                            changes: removals
+                                .into_iter()
+                                .map(|removal| PresenceChange {
+                                    action: PresenceChangeAction::Leave,
+                                    wire_id: Some(removal.member.id.clone()),
+                                    member: removal.member,
+                                })
+                                .collect(),
+                            unregister_connection: None,
+                        },
+                    )
+                    .await?;
+            }
+            hub.unsubscribe(&app.id, &channel, session_id)
+                .await
+                .map_err(stats_sockudo_error)?;
             attached_channels.remove(channel.requested());
             send_protocol(
                 sender,
@@ -2966,7 +3798,7 @@ async fn handle_ably_protocol_message(
                     40160,
                     "Channel mode does not permit publish",
                 );
-                return Ok(());
+                return Ok(AblyProtocolControl::Continue);
             }
             handle_ably_publish(
                 AblyPublishContext {
@@ -2976,6 +3808,7 @@ async fn handle_ably_protocol_message(
                     connection_id,
                     client_id,
                     capabilities,
+                    privileged_server: authorization.credential_id.starts_with("key:"),
                     sender,
                 },
                 inbound,
@@ -2994,7 +3827,7 @@ async fn handle_ably_protocol_message(
                     40160,
                     "Channel mode does not permit presence",
                 );
-                return Ok(());
+                return Ok(AblyProtocolControl::Continue);
             }
             handle_ably_presence(
                 handler,
@@ -3021,14 +3854,14 @@ async fn handle_ably_protocol_message(
                     40160,
                     "Channel mode does not permit annotation publish",
                 );
-                return Ok(());
+                return Ok(AblyProtocolControl::Continue);
             }
             handle_ably_annotation(handler, app, client_id, capabilities, sender, inbound).await;
         }
         ACTION_SYNC => {
             let Some(raw_channel) = inbound.channel else {
                 send_protocol_error(sender, 40000, "SYNC requires channel");
-                return Ok(());
+                return Ok(AblyProtocolControl::Continue);
             };
             let channel = match AblyChannelName::parse(raw_channel) {
                 Ok(channel) => channel,
@@ -3040,13 +3873,18 @@ async fn handle_ably_protocol_message(
                         40010,
                         error.to_string(),
                     );
-                    return Ok(());
+                    return Ok(AblyProtocolControl::Continue);
                 }
             };
             send_presence_sync(
                 sender,
                 channel.requested(),
-                hub.presence_snapshot(&app.id, channel.base()),
+                PresenceService::new(Arc::clone(handler))
+                    .snapshot(&app.id, channel.base())
+                    .await?
+                    .into_iter()
+                    .map(|record| ably_presence_from_record(record, 1))
+                    .collect(),
             );
         }
         ACTION_DISCONNECT | ACTION_CLOSE => {
@@ -3066,7 +3904,7 @@ async fn handle_ably_protocol_message(
             );
         }
     }
-    Ok(())
+    Ok(control)
 }
 
 fn ably_annotation_from_native_event(event: AnnotationEventData) -> AblyAnnotation {
@@ -3088,6 +3926,335 @@ fn ably_annotation_from_native_event(event: AnnotationEventData) -> AblyAnnotati
     }
 }
 
+fn ably_summary_annotations(value: &Value) -> Option<Value> {
+    let mut annotations = value.get("annotations")?.clone();
+    let summary = annotations
+        .as_object_mut()?
+        .get_mut(&"summary")?
+        .as_object_mut()?;
+    for (annotation_type, names) in summary.iter_mut() {
+        let is_multiple = AnnotationType::new(annotation_type.to_string())
+            .and_then(|annotation_type| annotation_type.summarizer())
+            .is_ok_and(|summarizer| {
+                summarizer == sockudo_core::annotations::AnnotationSummarizer::Multiple
+            });
+        if !is_multiple {
+            continue;
+        }
+        let Some(names) = names.as_object_mut() else {
+            continue;
+        };
+        for (_, bucket) in names.iter_mut() {
+            let Some(bucket) = bucket.as_object_mut() else {
+                continue;
+            };
+            if let Some(client_counts) = bucket.remove(&"clientCounts") {
+                bucket.insert("clientIds", client_counts);
+            }
+        }
+    }
+    Some(annotations)
+}
+
+enum AblyAnnotationCommand {
+    Create {
+        message_serial: MessageSerial,
+        annotation_type: AnnotationType,
+        id: Option<AnnotationId>,
+        name: Option<String>,
+        client_id: Option<String>,
+        count: Option<u64>,
+        data: Option<Value>,
+        encoding: Option<String>,
+    },
+    Delete(AblyAnnotationDeleteSelector),
+}
+
+struct AblyAnnotationDeleteSelector {
+    message_serial: MessageSerial,
+    annotation_type: AnnotationType,
+    id: Option<AnnotationId>,
+    target_serial: Option<AnnotationSerial>,
+    name: Option<String>,
+    client_id: Option<String>,
+}
+
+fn parse_ably_annotation_command(
+    annotation: AblyAnnotation,
+    path_message_serial: Option<&MessageSerial>,
+    authenticated_client_id: Option<&str>,
+) -> Result<AblyAnnotationCommand, AppError> {
+    let message_serial = match (annotation.message_serial, path_message_serial) {
+        (Some(raw), Some(path)) => {
+            let body = MessageSerial::new(raw)?;
+            if &body != path {
+                return Err(AppError::InvalidInput(
+                    "annotation.messageSerial must match the request path".to_string(),
+                ));
+            }
+            body
+        }
+        (Some(raw), None) => MessageSerial::new(raw)?,
+        (None, Some(path)) => path.clone(),
+        (None, None) => {
+            return Err(AppError::InvalidInput(
+                "annotation.messageSerial is required".to_string(),
+            ));
+        }
+    };
+    let annotation_type = AnnotationType::new(
+        annotation
+            .annotation_type
+            .ok_or_else(|| AppError::InvalidInput("annotation.type is required".to_string()))?,
+    )?;
+    let id = annotation.id.map(AnnotationId::new).transpose()?;
+
+    match annotation.action.unwrap_or(0) {
+        0 => {
+            let client_id = match (authenticated_client_id, annotation.client_id) {
+                (Some(authenticated), Some(requested)) if authenticated != requested => {
+                    return Err(AppError::Forbidden(
+                        "annotation.clientId must match authenticated clientId".to_string(),
+                    ));
+                }
+                (Some(authenticated), _) => Some(authenticated.to_string()),
+                (None, requested) => requested,
+            };
+            Ok(AblyAnnotationCommand::Create {
+                message_serial,
+                annotation_type,
+                id,
+                name: annotation.name,
+                client_id,
+                count: annotation.count,
+                data: annotation.data,
+                encoding: annotation.encoding,
+            })
+        }
+        1 => Ok(AblyAnnotationCommand::Delete(
+            AblyAnnotationDeleteSelector {
+                message_serial,
+                annotation_type,
+                id,
+                target_serial: annotation.serial.map(AnnotationSerial::new).transpose()?,
+                name: annotation.name,
+                client_id: annotation
+                    .client_id
+                    .or_else(|| authenticated_client_id.map(str::to_string)),
+            },
+        )),
+        action => Err(AppError::InvalidInput(format!(
+            "unsupported annotation action {action}"
+        ))),
+    }
+}
+
+fn require_ably_annotations_enabled(
+    handler: &ConnectionHandler,
+    app: &App,
+    channel: &str,
+) -> Result<(), AppError> {
+    if !handler.server_options().annotations.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Annotations are disabled globally for channel '{channel}'"
+        )));
+    }
+    if !app.annotations_enabled_for_channel(channel) {
+        return Err(AppError::Forbidden(format!(
+            "Annotations are disabled by channel policy for channel '{channel}'"
+        )));
+    }
+    Ok(())
+}
+
+fn authorize_ably_annotation_delete(
+    capabilities: Option<&ConnectionCapabilities>,
+    channel: &AblyChannelName,
+    actor_client_id: Option<&str>,
+    target_client_id: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(capabilities) = capabilities else {
+        return Ok(());
+    };
+    let delete_any = ensure_ably_channel_capability(
+        Some(capabilities),
+        channel,
+        AblyCapabilityCheck::AnnotationDeleteAny,
+    )
+    .is_ok();
+    let delete_own = ensure_ably_channel_capability(
+        Some(capabilities),
+        channel,
+        AblyCapabilityCheck::AnnotationDeleteOwn,
+    )
+    .is_ok()
+        && actor_client_id.is_some()
+        && actor_client_id == target_client_id;
+
+    if delete_any && actor_client_id.is_none() {
+        return Err(AppError::Forbidden(
+            "annotation-delete-any requires an identified client".to_string(),
+        ));
+    }
+    if delete_any || delete_own {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(format!(
+            "annotation-delete-own or annotation-delete-any capability is required for channel '{}'",
+            channel.requested()
+        )))
+    }
+}
+
+async fn find_ably_annotation_delete_target(
+    handler: &ConnectionHandler,
+    app_id: &str,
+    channel: &str,
+    selector: &AblyAnnotationDeleteSelector,
+) -> Result<StoredAnnotationEvent, AppError> {
+    if let Some(target_serial) = selector.target_serial.as_ref() {
+        let target = handler
+            .annotation_store()
+            .get_event_by_serial(AnnotationEventLookupRequest {
+                app_id: app_id.to_string(),
+                channel_id: channel.to_string(),
+                annotation_serial: target_serial.clone(),
+            })
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Annotation '{}' was not found in channel '{channel}'",
+                    target_serial.as_str()
+                ))
+            })?;
+        if target.message_serial() != &selector.message_serial
+            || target.annotation_type() != &selector.annotation_type
+            || target.annotation.action != AnnotationAction::Create
+            || selector
+                .id
+                .as_ref()
+                .is_some_and(|id| id != &target.annotation.id)
+            || selector
+                .name
+                .as_deref()
+                .is_some_and(|name| target.annotation.name.as_deref() != Some(name))
+            || selector
+                .client_id
+                .as_deref()
+                .is_some_and(|client_id| target.annotation.client_id.as_deref() != Some(client_id))
+        {
+            return Err(AppError::NotFound(format!(
+                "Annotation '{}' does not match the requested message and type",
+                target_serial.as_str()
+            )));
+        }
+        return Ok(target);
+    }
+
+    let events = handler
+        .annotation_store()
+        .get_events(AnnotationEventsRequest {
+            app_id: app_id.to_string(),
+            channel_id: channel.to_string(),
+            message_serial: selector.message_serial.clone(),
+            annotation_type: selector.annotation_type.clone(),
+        })
+        .await?;
+    let deleted = events
+        .iter()
+        .filter(|event| event.annotation.action == AnnotationAction::Delete)
+        .map(|event| event.annotation.id.clone())
+        .collect::<BTreeSet<_>>();
+    events
+        .into_iter()
+        .rev()
+        .find(|event| {
+            event.annotation.action == AnnotationAction::Create
+                && !deleted.contains(&event.annotation.id)
+                && selector
+                    .id
+                    .as_ref()
+                    .is_none_or(|id| id == &event.annotation.id)
+                && selector
+                    .name
+                    .as_deref()
+                    .is_none_or(|name| event.annotation.name.as_deref() == Some(name))
+                && selector.client_id.as_deref().is_none_or(|client_id| {
+                    event.annotation.client_id.as_deref() == Some(client_id)
+                })
+        })
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "No active annotation matched message '{}' and type '{}'",
+                selector.message_serial.as_str(),
+                selector.annotation_type.as_str()
+            ))
+        })
+}
+
+async fn apply_ably_annotation_command(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &AblyChannelName,
+    capabilities: Option<&ConnectionCapabilities>,
+    actor_client_id: Option<&str>,
+    command: AblyAnnotationCommand,
+) -> Result<(), AppError> {
+    require_ably_annotations_enabled(handler, app, channel.base())?;
+    match command {
+        AblyAnnotationCommand::Create {
+            message_serial,
+            annotation_type,
+            id,
+            name,
+            client_id,
+            count,
+            data,
+            encoding,
+        } => {
+            ensure_ably_channel_capability_app_error(
+                capabilities,
+                channel,
+                AblyCapabilityCheck::AnnotationPublish,
+            )?;
+            handler
+                .publish_annotation_runtime(PublishAnnotationRuntimeRequest {
+                    app: app.clone(),
+                    channel: channel.base().to_string(),
+                    message_serial,
+                    annotation_type,
+                    id,
+                    name,
+                    client_id,
+                    count,
+                    data,
+                    encoding,
+                })
+                .await?;
+        }
+        AblyAnnotationCommand::Delete(selector) => {
+            let target =
+                find_ably_annotation_delete_target(handler, &app.id, channel.base(), &selector)
+                    .await?;
+            authorize_ably_annotation_delete(
+                capabilities,
+                channel,
+                actor_client_id,
+                target.annotation.client_id.as_deref(),
+            )?;
+            handler
+                .delete_annotation_runtime(DeleteAnnotationRuntimeRequest {
+                    app: app.clone(),
+                    channel: channel.base().to_string(),
+                    message_serial: selector.message_serial,
+                    target_serial: target.annotation.serial,
+                })
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn handle_ably_annotation(
     handler: &Arc<ConnectionHandler>,
     app: &App,
@@ -3107,73 +4274,26 @@ async fn handle_ably_annotation(
             return;
         }
     };
-    if let Err(error) = ensure_ably_channel_capability(
-        capabilities,
-        &channel,
-        AblyCapabilityCheck::AnnotationPublish,
-    ) {
-        send_publish_nack(sender, &inbound, error.code, error.message);
-        return;
-    }
     let annotations = inbound.annotations.clone().unwrap_or_default();
     if annotations.is_empty() {
         send_publish_nack(sender, &inbound, 40000, "ANNOTATION requires annotations");
         return;
     }
     for annotation in annotations {
-        if annotation.action.unwrap_or(0) != 0 {
-            send_publish_nack(
-                sender,
-                &inbound,
-                40000,
-                "annotation.delete is not valid without a target annotation serial",
-            );
-            return;
-        }
-        let Some(message_serial) = annotation.message_serial.as_deref() else {
-            send_publish_nack(
-                sender,
-                &inbound,
-                40000,
-                "annotation.messageSerial is required",
-            );
-            return;
-        };
-        let Some(annotation_type) = annotation.annotation_type.as_deref() else {
-            send_publish_nack(sender, &inbound, 40000, "annotation.type is required");
-            return;
-        };
-        let message_serial = match MessageSerial::new(message_serial.to_string()) {
-            Ok(serial) => serial,
+        let command = match parse_ably_annotation_command(annotation, None, client_id) {
+            Ok(command) => command,
             Err(error) => {
-                send_publish_nack(sender, &inbound, 40000, error.to_string());
+                let error = ably_error_info_from_app_error(error);
+                send_publish_nack(sender, &inbound, error.code, error.message);
                 return;
             }
         };
-        let annotation_type = match AnnotationType::new(annotation_type.to_string()) {
-            Ok(annotation_type) => annotation_type,
-            Err(error) => {
-                send_publish_nack(sender, &inbound, 40000, error.to_string());
-                return;
-            }
-        };
-        if let Err(error) = handler
-            .publish_annotation_runtime(PublishAnnotationRuntimeRequest {
-                app: app.clone(),
-                channel: channel.base().to_string(),
-                message_serial,
-                annotation_type,
-                name: annotation.name,
-                client_id: annotation
-                    .client_id
-                    .or_else(|| client_id.map(str::to_string)),
-                count: annotation.count,
-                data: annotation.data,
-                encoding: annotation.encoding,
-            })
-            .await
+        if let Err(error) =
+            apply_ably_annotation_command(handler, app, &channel, capabilities, client_id, command)
+                .await
         {
-            send_publish_nack(sender, &inbound, 40000, error.to_string());
+            let error = ably_error_info_from_app_error(error);
+            send_publish_nack(sender, &inbound, error.code, error.message);
             return;
         }
     }
@@ -3233,6 +4353,25 @@ async fn handle_ably_attach(
             .params
             .get("echo")
             .is_none_or(|value| !value.eq_ignore_ascii_case("false"));
+    let presence = match PresenceService::new(Arc::clone(handler))
+        .snapshot(&app.id, channel.base())
+        .await
+    {
+        Ok(presence) => presence
+            .into_iter()
+            .map(|record| ably_presence_from_record(record, 1))
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            send_channel_error(
+                sender,
+                channel.requested(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                50003,
+                format!("presence state is unavailable: {error}"),
+            );
+            return;
+        }
+    };
     let attachment = || AblyAttachment {
         connection_id,
         session_id,
@@ -3241,9 +4380,18 @@ async fn handle_ably_attach(
         params: options.params.clone(),
         mode_flags: options.mode_flags,
         echo,
-        presence: hub.presence_snapshot(&app.id, channel.base()),
+        presence: presence.clone(),
     };
-    hub.begin_attach(&app.id, channel, &attachment());
+    if let Err(error) = hub.begin_attach(&app.id, channel, &attachment()).await {
+        send_channel_error(
+            sender,
+            channel.requested(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            50000,
+            error.to_string(),
+        );
+        return;
+    }
     let Some(channel_serial) = channel_serial else {
         let attach_serial = current_ably_channel_serial(handler, app, channel.base()).await;
         let replay = if let Some(rewind) = rewind.as_ref() {
@@ -3771,6 +4919,7 @@ struct AblyPublishContext<'a> {
     connection_id: &'a str,
     client_id: Option<&'a str>,
     capabilities: Option<&'a ConnectionCapabilities>,
+    privileged_server: bool,
     sender: &'a AblySender,
 }
 
@@ -3785,6 +4934,7 @@ async fn handle_ably_publish(
         connection_id,
         client_id,
         capabilities,
+        privileged_server,
         sender,
     } = context;
     let raw_channel = match inbound.channel.clone() {
@@ -3809,6 +4959,10 @@ async fn handle_ably_publish(
     }
 
     let messages = inbound.messages.clone().unwrap_or_default();
+    let message_count = u64::try_from(messages.len()).unwrap_or(u64::MAX);
+    let message_bytes = sonic_rs::to_vec(&messages)
+        .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+        .unwrap_or_default();
     for message in &messages {
         if let Err(error) = validate_ably_publish_message(message, false)
             .and_then(|()| effective_ably_client_id(client_id, message).map(|_| ()))
@@ -3818,14 +4972,23 @@ async fn handle_ably_publish(
         }
     }
     let mut serials = Vec::with_capacity(messages.len());
-    for (index, message) in messages.into_iter().enumerate() {
+    for (index, mut message) in messages.into_iter().enumerate() {
+        if let Some(msg_serial) = inbound.msg_serial {
+            message
+                .id
+                .get_or_insert_with(|| ably_realtime_message_id(connection_id, msg_serial, index));
+        }
         let result = publish_ably_message(
-            handler,
-            hub,
-            app,
-            channel.base(),
-            Some(connection_id),
-            client_id,
+            AblyMessagePublishContext {
+                handler,
+                hub,
+                app,
+                channel: channel.base(),
+                connection_id: Some(connection_id),
+                client_id,
+                capabilities,
+                privileged_server,
+            },
             message,
         )
         .await;
@@ -3844,6 +5007,23 @@ async fn handle_ably_publish(
         }
     }
 
+    if message_count > 0 {
+        hub.stats
+            .record(
+                StatsObservation::messages(
+                    &app.id,
+                    now_ms(),
+                    "inbound",
+                    "realtime",
+                    message_count,
+                    message_bytes,
+                )
+                .map_err(stats_sockudo_error)?,
+            )
+            .await
+            .map_err(stats_sockudo_error)?;
+    }
+
     send_protocol(
         sender,
         AblyProtocolMessage {
@@ -3857,23 +5037,47 @@ async fn handle_ably_publish(
     Ok(())
 }
 
+fn stats_sockudo_error(error: StatsError) -> sockudo_core::error::Error {
+    sockudo_core::error::Error::Internal(error.to_string())
+}
+
 fn publish_ack_count(inbound: &AblyProtocolMessage) -> u64 {
     inbound.count.unwrap_or(1)
 }
 
+fn ably_realtime_message_id(connection_id: &str, msg_serial: u64, index: usize) -> String {
+    format!("{connection_id}:{msg_serial}:{index}")
+}
+
+struct AblyMessagePublishContext<'a> {
+    handler: &'a Arc<ConnectionHandler>,
+    hub: &'a AblyCompatHub,
+    app: &'a App,
+    channel: &'a str,
+    connection_id: Option<&'a str>,
+    client_id: Option<&'a str>,
+    capabilities: Option<&'a ConnectionCapabilities>,
+    privileged_server: bool,
+}
+
 async fn publish_ably_message(
-    handler: &Arc<ConnectionHandler>,
-    hub: &AblyCompatHub,
-    app: &App,
-    channel: &str,
-    connection_id: Option<&str>,
-    client_id: Option<&str>,
+    context: AblyMessagePublishContext<'_>,
     message: AblyMessage,
 ) -> Result<String, AppError> {
-    let effective_client_id = effective_ably_client_id(client_id, &message)?;
+    let AblyMessagePublishContext {
+        handler,
+        hub,
+        app,
+        channel,
+        connection_id,
+        client_id,
+        capabilities,
+        privileged_server,
+    } = context;
     let action = message.action.unwrap_or(MESSAGE_CREATE);
     match action {
         MESSAGE_CREATE => {
+            let effective_client_id = effective_ably_client_id(client_id, &message)?;
             publish_ably_create(
                 handler,
                 hub,
@@ -3890,7 +5094,12 @@ async fn publish_ably_message(
                 handler,
                 app,
                 channel,
-                effective_client_id.as_deref(),
+                client_id,
+                MutableMessageActor {
+                    client_id: client_id.map(str::to_string),
+                    capabilities: capabilities.cloned(),
+                    privileged_server,
+                },
                 message,
             )
             .await
@@ -3900,7 +5109,12 @@ async fn publish_ably_message(
                 handler,
                 app,
                 channel,
-                effective_client_id.as_deref(),
+                client_id,
+                MutableMessageActor {
+                    client_id: client_id.map(str::to_string),
+                    capabilities: capabilities.cloned(),
+                    privileged_server,
+                },
                 message,
             )
             .await
@@ -3910,7 +5124,12 @@ async fn publish_ably_message(
                 handler,
                 app,
                 channel,
-                effective_client_id.as_deref(),
+                client_id,
+                MutableMessageActor {
+                    client_id: client_id.map(str::to_string),
+                    capabilities: capabilities.cloned(),
+                    privileged_server,
+                },
                 message,
             )
             .await
@@ -3941,7 +5160,8 @@ async fn publish_ably_create(
         .extras
         .as_ref()
         .and_then(|extras| extras.get("push"))
-        .cloned();
+        .map(ably_push_payload_value)
+        .transpose()?;
     let encoding = message.encoding.clone();
     let raw_data = message.data.clone();
     let data = message
@@ -4009,8 +5229,30 @@ async fn publish_ably_create(
         )
         .await?;
     #[cfg(feature = "push")]
-    if let (Some(store), Some(push_payload)) = (hub.push_store.as_ref(), push_payload.as_ref()) {
-        deliver_ably_channel_push(handler, store, app, channel, push_payload).await?;
+    if !publish_result.duplicate
+        && let (Some(store), Some(queue), Some(push_payload)) = (
+            hub.push_store.as_ref(),
+            hub.push_queue.as_ref(),
+            push_payload,
+        )
+    {
+        let summary = summarize_ably_push_channel_recipients(store, &app.id, channel).await?;
+        accept_ably_push_intent(
+            store.clone(),
+            queue.clone(),
+            hub.push_admission.as_deref(),
+            AblyPushIntentRequest {
+                app_id: app.id.clone(),
+                publish_id: format!("message-push:{}", publish_result.receipt.acknowledgement_id),
+                targets: vec![PublishTarget::Channel {
+                    channel: channel.to_string(),
+                }],
+                required_providers: summary.providers,
+                payload: push_payload,
+                expected_recipients: summary.count,
+            },
+        )
+        .await?;
     }
     #[cfg(not(feature = "push"))]
     let _ = hub;
@@ -4022,8 +5264,21 @@ async fn publish_ably_append(
     app: &App,
     channel: &str,
     client_id: Option<&str>,
+    actor: MutableMessageActor,
     message: AblyMessage,
 ) -> Result<String, AppError> {
+    let version_serial = message
+        .version
+        .as_ref()
+        .filter(|version| {
+            !version.serial.is_empty() && message.serial.as_deref() != Some(version.serial.as_str())
+        })
+        .map(|version| VersionSerial::new(version.serial.clone()))
+        .transpose()?;
+    let version_timestamp_ms = message
+        .version
+        .as_ref()
+        .and_then(|version| version.timestamp);
     let serial = message.serial.clone().ok_or_else(|| {
         AppError::InvalidInput("appendMessage requires message.serial".to_string())
     })?;
@@ -4061,7 +5316,10 @@ async fn publish_ably_append(
         },
         app.clone(),
         Arc::clone(handler),
+        actor,
         request,
+        version_serial,
+        version_timestamp_ms,
     )
     .await?;
     Ok(payload.version_serial.unwrap_or(payload.message_serial))
@@ -4072,8 +5330,21 @@ async fn publish_ably_update(
     app: &App,
     channel: &str,
     client_id: Option<&str>,
+    actor: MutableMessageActor,
     message: AblyMessage,
 ) -> Result<String, AppError> {
+    let version_serial = message
+        .version
+        .as_ref()
+        .filter(|version| {
+            !version.serial.is_empty() && message.serial.as_deref() != Some(version.serial.as_str())
+        })
+        .map(|version| VersionSerial::new(version.serial.clone()))
+        .transpose()?;
+    let version_timestamp_ms = message
+        .version
+        .as_ref()
+        .and_then(|version| version.timestamp);
     let serial = message.serial.clone().ok_or_else(|| {
         AppError::InvalidInput("updateMessage requires message.serial".to_string())
     })?;
@@ -4108,7 +5379,10 @@ async fn publish_ably_update(
         },
         app.clone(),
         Arc::clone(handler),
+        actor,
         request,
+        version_serial,
+        version_timestamp_ms,
     )
     .await?;
     Ok(payload.version_serial.unwrap_or(payload.message_serial))
@@ -4119,8 +5393,21 @@ async fn publish_ably_delete(
     app: &App,
     channel: &str,
     client_id: Option<&str>,
+    actor: MutableMessageActor,
     message: AblyMessage,
 ) -> Result<String, AppError> {
+    let version_serial = message
+        .version
+        .as_ref()
+        .filter(|version| {
+            !version.serial.is_empty() && message.serial.as_deref() != Some(version.serial.as_str())
+        })
+        .map(|version| VersionSerial::new(version.serial.clone()))
+        .transpose()?;
+    let version_timestamp_ms = message
+        .version
+        .as_ref()
+        .and_then(|version| version.timestamp);
     let serial = message.serial.clone().ok_or_else(|| {
         AppError::InvalidInput("deleteMessage requires message.serial".to_string())
     })?;
@@ -4154,7 +5441,10 @@ async fn publish_ably_delete(
         },
         app.clone(),
         Arc::clone(handler),
+        actor,
         request,
+        version_serial,
+        version_timestamp_ms,
     )
     .await?;
     Ok(payload.version_serial.unwrap_or(payload.message_serial))
@@ -4192,113 +5482,129 @@ async fn handle_ably_presence(
     let mut presence = inbound.presence.take().unwrap_or_default();
     let msg_serial = inbound.msg_serial.unwrap_or(0);
     for (index, member) in presence.iter_mut().enumerate() {
-        member
-            .connection_id
-            .get_or_insert_with(|| connection_id.to_string());
-        if let Some(client_id) = client_id {
-            member
+        member.connection_id = Some(connection_id.to_string());
+        if let Some(authenticated_client_id) = client_id {
+            if member
                 .client_id
-                .get_or_insert_with(|| client_id.to_string());
+                .as_deref()
+                .is_some_and(|claimed| claimed != authenticated_client_id)
+            {
+                send_publish_nack(
+                    sender,
+                    &inbound,
+                    40012,
+                    "presence clientId must match authenticated clientId",
+                );
+                return;
+            }
+            member.client_id = Some(authenticated_client_id.to_string());
         }
         member.timestamp.get_or_insert_with(now_ms);
-        member.id.get_or_insert_with(|| {
-            format!(
-                "{connection_id}:{msg_serial}:{}",
-                u64::try_from(index).unwrap_or(u64::MAX)
-            )
-        });
+        member.id = Some(format!(
+            "{connection_id}:{msg_serial}:{}",
+            u64::try_from(index).unwrap_or(u64::MAX)
+        ));
     }
-    let mut superseded = Vec::new();
-    if replace_presence_on_reenter {
-        for member in &presence {
-            if matches!(member.action, Some(1 | 2))
-                && let (Some(client_id), Some(member_connection_id)) =
-                    (member.client_id.as_deref(), member.connection_id.as_deref())
-            {
-                superseded.extend(hub.remove_superseded_presence(
-                    &app.id,
+    let presence_count = u64::try_from(presence.len()).unwrap_or(u64::MAX);
+    let presence_bytes = sonic_rs::to_vec(&presence)
+        .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+        .unwrap_or_default();
+    let service = PresenceService::new(Arc::clone(handler));
+    let mut changes = Vec::with_capacity(presence.len());
+    for member in presence {
+        let action = match member.action.unwrap_or(1) {
+            0 | 3 => PresenceOperation::Leave,
+            1 | 2 => PresenceOperation::Enter,
+            4 => PresenceOperation::Update,
+            _ => {
+                send_publish_nack(sender, &inbound, 40000, "unsupported presence action");
+                return;
+            }
+        };
+        let record = match presence_record_from_ably(&member) {
+            Ok(record) => record,
+            Err(message) => {
+                send_publish_nack(sender, &inbound, 40000, message);
+                return;
+            }
+        };
+        if replace_presence_on_reenter && action == PresenceOperation::Enter {
+            match service
+                .remove_superseded_client(
+                    app,
                     channel.base(),
-                    client_id,
-                    member_connection_id,
-                ));
+                    &record.client_id,
+                    &record.connection_id,
+                )
+                .await
+            {
+                Ok(removals) => {
+                    changes.extend(removals.into_iter().map(|removal| PresenceChange {
+                        action: PresenceChangeAction::Leave,
+                        member: removal.member,
+                        wire_id: None,
+                    }))
+                }
+                Err(error) => {
+                    send_publish_nack(sender, &inbound, 50000, error.to_string());
+                    return;
+                }
+            }
+        }
+        let cause = if action == PresenceOperation::Leave {
+            PresenceHistoryEventCause::Disconnect
+        } else {
+            PresenceHistoryEventCause::Join
+        };
+        match service
+            .apply(app, channel.base(), action, cause, record.clone())
+            .await
+        {
+            Ok(Some(_)) => changes.push(PresenceChange {
+                action: match action {
+                    PresenceOperation::Enter => PresenceChangeAction::Enter,
+                    PresenceOperation::Update => PresenceChangeAction::Update,
+                    PresenceOperation::Leave => PresenceChangeAction::Leave,
+                },
+                member: record,
+                wire_id: member.id,
+            }),
+            Ok(None) => {}
+            Err(error) => {
+                send_publish_nack(sender, &inbound, 50000, error.to_string());
+                return;
             }
         }
     }
-    if let Err(message) = hub.apply_presence(&app.id, channel.base(), &presence) {
-        send_publish_nack(sender, &inbound, 40000, message);
+    if !changes.is_empty()
+        && let Err(error) = handler
+            .fanout_presence(
+                &app.id,
+                channel.base(),
+                PresenceReplication {
+                    changes,
+                    unregister_connection: None,
+                },
+            )
+            .await
+    {
+        send_publish_nack(sender, &inbound, 50000, error.to_string());
         return;
     }
-    let policy =
-        app.resolved_presence_history(channel.base(), &handler.server_options().presence_history);
-    if policy.enabled {
-        for member in &presence {
-            let event_kind = match member.action.unwrap_or(1) {
-                2 => PresenceHistoryEventKind::MemberAdded,
-                3 | 0 => PresenceHistoryEventKind::MemberRemoved,
-                4 | 1 => PresenceHistoryEventKind::MemberUpdated,
-                _ => continue,
+    if presence_count > 0 {
+        let observation =
+            match StatsObservation::presence(&app.id, now_ms(), presence_count, presence_bytes) {
+                Ok(observation) => observation,
+                Err(error) => {
+                    send_publish_nack(sender, &inbound, 50000, error.to_string());
+                    return;
+                }
             };
-            let _ = handler
-                .presence_history_store()
-                .record_transition(PresenceHistoryTransitionRecord {
-                    app_id: app.id.clone(),
-                    channel: channel.base().to_string(),
-                    event_kind,
-                    cause: if matches!(member.action, Some(0 | 3)) {
-                        PresenceHistoryEventCause::Disconnect
-                    } else {
-                        PresenceHistoryEventCause::Join
-                    },
-                    user_id: member.client_id.clone().unwrap_or_default(),
-                    connection_id: member.connection_id.clone(),
-                    user_info: sonic_rs::to_value(&AblyStoredPresenceData {
-                        marker: true,
-                        data: member.data.clone(),
-                        encoding: member.encoding.clone(),
-                        extras: member.extras.clone(),
-                        id: member.id.clone(),
-                    })
-                    .ok(),
-                    dead_node_id: None,
-                    dedupe_key: member.id.clone().unwrap_or_default(),
-                    published_at_ms: member.timestamp.unwrap_or_else(now_ms),
-                    retention: PresenceHistoryRetentionPolicy {
-                        retention_window_seconds: policy.retention_window_seconds,
-                        max_events_per_channel: policy.max_events_per_channel,
-                        max_bytes_per_channel: policy.max_bytes_per_channel,
-                    },
-                })
-                .await;
+        if let Err(error) = hub.stats.record(observation).await {
+            send_publish_nack(sender, &inbound, 50000, error.to_string());
+            return;
         }
     }
-    if !superseded.is_empty() {
-        hub.broadcast(
-            &app.id,
-            channel.base(),
-            AblyProtocolMessage {
-                action: ACTION_PRESENCE,
-                channel: Some(channel.base().to_string()),
-                presence: Some(superseded),
-                timestamp: Some(now_ms()),
-                ..empty_protocol_message(ACTION_PRESENCE)
-            },
-            None,
-            None,
-        );
-    }
-    hub.broadcast(
-        &app.id,
-        channel.base(),
-        AblyProtocolMessage {
-            action: ACTION_PRESENCE,
-            channel: Some(channel.base().to_string()),
-            presence: Some(presence),
-            timestamp: Some(now_ms()),
-            ..empty_protocol_message(ACTION_PRESENCE)
-        },
-        None,
-        None,
-    );
     send_protocol(
         sender,
         AblyProtocolMessage {
@@ -4380,13 +5686,310 @@ fn ably_push_store(hub: &AblyCompatHub) -> Result<DynPushStore, AppError> {
 }
 
 #[cfg(feature = "push")]
+fn ably_push_queue(hub: &AblyCompatHub) -> Result<DynPushQueue, AppError> {
+    hub.push_queue.clone().ok_or_else(|| {
+        AppError::InternalError("Ably push requires the native Sockudo push queue".to_string())
+    })
+}
+
+#[cfg(feature = "push")]
+fn ably_push_payload(
+    notification: Option<Value>,
+    data: Option<Value>,
+) -> Result<PushPayload, AppError> {
+    let string_field = |name: &'static str| -> Result<Option<String>, AppError> {
+        notification
+            .as_ref()
+            .and_then(|value| value.get(name))
+            .map(|value| {
+                value.as_str().map(str::to_string).ok_or_else(|| {
+                    AppError::InvalidInput(format!("push notification {name} must be a string"))
+                })
+            })
+            .transpose()
+    };
+    let payload = PushPayload {
+        template_id: None,
+        template_data: data.unwrap_or_else(Value::new_object),
+        title: string_field("title")?,
+        body: string_field("body")?,
+        icon: string_field("icon")?,
+        sound: string_field("sound")?,
+        collapse_key: notification
+            .as_ref()
+            .and_then(|value| value.get("collapseKey"))
+            .map(|value| {
+                value.as_str().map(str::to_string).ok_or_else(|| {
+                    AppError::InvalidInput(
+                        "push notification collapseKey must be a string".to_string(),
+                    )
+                })
+            })
+            .transpose()?,
+    };
+    payload
+        .validate()
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    Ok(payload)
+}
+
+#[cfg(feature = "push")]
+fn ably_push_payload_value(value: &Value) -> Result<PushPayload, AppError> {
+    if !value.is_object() {
+        return Err(AppError::InvalidInput(
+            "message extras.push must be an object".to_string(),
+        ));
+    }
+    ably_push_payload(
+        value.get("notification").cloned(),
+        value.get("data").cloned(),
+    )
+}
+
+#[cfg(feature = "push")]
+fn ably_push_pipeline_error(error: PushPipelineError) -> AppError {
+    match error {
+        PushPipelineError::Domain(error) => AppError::InvalidInput(error.to_string()),
+        PushPipelineError::InvalidPayload(message) => AppError::InvalidInput(message),
+        PushPipelineError::Backpressure(message) => AppError::Protocol {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: 50003,
+            message,
+        },
+        PushPipelineError::Storage(error) => ably_push_error(error),
+        PushPipelineError::Queue(error) => {
+            AppError::InternalError(format!("native push queue failed: {error}"))
+        }
+    }
+}
+
+#[cfg(feature = "push")]
+struct AblyPushIntentRequest {
+    app_id: String,
+    publish_id: String,
+    targets: Vec<PublishTarget>,
+    required_providers: BTreeSet<PushProviderKind>,
+    payload: PushPayload,
+    expected_recipients: u64,
+}
+
+#[cfg(feature = "push")]
+async fn accept_ably_push_intent(
+    store: DynPushStore,
+    queue: DynPushQueue,
+    admission: Option<&dyn AblyPushAdmissionGuard>,
+    request: AblyPushIntentRequest,
+) -> Result<PushAcceptOutcome, AppError> {
+    if let Some(message) = admission.and_then(|guard| {
+        guard.rejection_for(
+            &request.targets,
+            &request.required_providers,
+            request.expected_recipients,
+        )
+    }) {
+        return Err(AppError::Protocol {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: 50003,
+            message,
+        });
+    }
+    PushPipeline::new(store, queue, FanoutConfig::default())
+        .accept_publish(
+            PushAcceptRequest {
+                intent: PublishIntent {
+                    app_id: request.app_id,
+                    publish_id: request.publish_id,
+                    targets: request.targets,
+                    payload: request.payload,
+                    provider_overrides: Vec::new(),
+                    not_before_ms: None,
+                    expires_at_ms: None,
+                },
+                expected_recipients: request.expected_recipients,
+            },
+            u64::try_from(now_ms()).unwrap_or_default(),
+        )
+        .await
+        .map_err(ably_push_pipeline_error)
+}
+
+#[cfg(feature = "push")]
+#[derive(Clone)]
+struct AblyRealtimePushDispatcher {
+    handler: Weak<ConnectionHandler>,
+}
+
+#[cfg(feature = "push")]
+impl AblyRealtimePushDispatcher {
+    fn new(handler: Weak<ConnectionHandler>) -> Self {
+        Self { handler }
+    }
+
+    fn is_bound(&self) -> bool {
+        self.handler.strong_count() > 0
+    }
+
+    fn result(
+        job: sockudo_push::DeliveryJob,
+        outcome: DeliveryOutcome,
+        provider_message_id: Option<String>,
+        error: Option<ProviderError>,
+    ) -> DeliveryResult {
+        DeliveryResult {
+            app_id: job.app_id,
+            publish_id: job.publish_id,
+            provider: job.provider,
+            batch_id: job.batch_id,
+            device_id: job.device_id,
+            outcome,
+            provider_message_id,
+            error,
+            attempt: job.attempt,
+        }
+    }
+
+    fn unavailable(job: sockudo_push::DeliveryJob, reason: &'static str) -> DeliveryResult {
+        Self::result(
+            job,
+            DeliveryOutcome::Retryable,
+            None,
+            Some(ProviderError {
+                class: "unavailable".to_string(),
+                failure_class: ProviderFailureClass::ProviderTransient,
+                reason: Some(reason.to_string()),
+                retry_after_ms: None,
+            }),
+        )
+    }
+}
+
+#[cfg(feature = "push")]
+fn ably_realtime_delivery_id(job: &DeliveryJob) -> String {
+    stable_hash(
+        format!(
+            "{}:{}:{}",
+            job.app_id,
+            job.publish_id,
+            job.recipient.token_hash()
+        )
+        .as_bytes(),
+    )
+}
+
+#[cfg(feature = "push")]
+#[async_trait::async_trait]
+impl PushDispatcher for AblyRealtimePushDispatcher {
+    fn provider(&self) -> PushProviderKind {
+        PushProviderKind::Realtime
+    }
+
+    async fn dispatch(&self, batch: DeliveryBatch) -> Vec<DeliveryResult> {
+        let Some(handler) = self.handler.upgrade() else {
+            return batch
+                .jobs
+                .into_iter()
+                .map(|job| Self::unavailable(job, "realtime service is shutting down"))
+                .collect();
+        };
+        let app = match handler.app_manager().find_by_id(&batch.app_id).await {
+            Ok(Some(app)) => app,
+            Ok(None) => {
+                return batch
+                    .jobs
+                    .into_iter()
+                    .map(|job| {
+                        Self::result(
+                            job,
+                            DeliveryOutcome::Rejected,
+                            None,
+                            Some(ProviderError {
+                                class: "invalid_target".to_string(),
+                                failure_class: ProviderFailureClass::CallerPayload,
+                                reason: Some("application is unavailable".to_string()),
+                                retry_after_ms: None,
+                            }),
+                        )
+                    })
+                    .collect();
+            }
+            Err(_) => {
+                return batch
+                    .jobs
+                    .into_iter()
+                    .map(|job| Self::unavailable(job, "application lookup is unavailable"))
+                    .collect();
+            }
+        };
+
+        let mut results = Vec::with_capacity(batch.jobs.len());
+        for job in batch.jobs {
+            let PushRecipient::Realtime { channel } = &job.recipient else {
+                results.push(Self::result(
+                    job,
+                    DeliveryOutcome::Rejected,
+                    None,
+                    Some(ProviderError {
+                        class: "invalid_target".to_string(),
+                        failure_class: ProviderFailureClass::CallerPayload,
+                        reason: Some(
+                            "realtime worker received another provider target".to_string(),
+                        ),
+                        retry_after_ms: None,
+                    }),
+                ));
+                continue;
+            };
+            let Some(rendered) = job.rendered_payload.as_ref() else {
+                results.push(Self::result(
+                    job,
+                    DeliveryOutcome::Rejected,
+                    None,
+                    Some(ProviderError {
+                        class: "invalid_payload".to_string(),
+                        failure_class: ProviderFailureClass::CallerPayload,
+                        reason: Some("rendered realtime payload is missing".to_string()),
+                        retry_after_ms: None,
+                    }),
+                ));
+                continue;
+            };
+            let delivery_id = ably_realtime_delivery_id(&job);
+            match publish_ably_push_event(&handler, &app, channel, &rendered.payload, &delivery_id)
+                .await
+            {
+                Ok(provider_message_id) => results.push(Self::result(
+                    job,
+                    DeliveryOutcome::Accepted,
+                    Some(provider_message_id),
+                    None,
+                )),
+                Err(_) => results.push(Self::unavailable(job, "realtime fanout failed")),
+            }
+        }
+        results
+    }
+
+    async fn health_check(&self) -> HealthStatus {
+        HealthStatus {
+            provider: PushProviderKind::Realtime,
+            healthy: self.is_bound(),
+            details: if self.is_bound() {
+                "native realtime fanout is available".to_string()
+            } else {
+                "native realtime fanout is unavailable".to_string()
+            },
+        }
+    }
+}
+
+#[cfg(feature = "push")]
 async fn resolve_ably_push_auth(
     hub: &AblyCompatHub,
     handler: &Arc<ConnectionHandler>,
     headers: &HeaderMap,
     query: &AblyPushQuery,
 ) -> Result<ResolvedAblyAuth, AblyAuthError> {
-    resolve_ably_auth(
+    let ordinary = resolve_ably_auth(
         hub,
         handler,
         headers,
@@ -4394,7 +5997,182 @@ async fn resolve_ably_push_auth(
         query.access_token.as_deref(),
         query.client_id.as_deref(),
     )
-    .await
+    .await;
+    if ordinary.is_ok() {
+        return ordinary;
+    }
+
+    let token = bearer_token(headers).or_else(|| query.access_token.clone());
+    let Some(token) = token else {
+        return ordinary;
+    };
+    let Some((app_id, device_id)) = parse_ably_device_identity_token(&token) else {
+        return ordinary;
+    };
+    let store = hub
+        .push_store
+        .as_ref()
+        .ok_or_else(|| AblyAuthError::forbidden("Native push identity storage is unavailable"))?;
+    let Some(device) = store
+        .get_device(&app_id, &device_id)
+        .await
+        .map_err(|_| AblyAuthError::forbidden("Device identity could not be verified"))?
+    else {
+        return Err(AblyAuthError::invalid_credentials());
+    };
+    if !verify_device_identity_token(&token, &device.device_secret) {
+        return Err(AblyAuthError::invalid_credentials());
+    }
+    let app = handler
+        .app_manager()
+        .find_by_id(&app_id)
+        .await
+        .map_err(|_| AblyAuthError::forbidden("Device application could not be loaded"))?
+        .ok_or_else(AblyAuthError::invalid_credentials)?;
+    let mut capabilities = restricted_ably_capabilities();
+    capabilities.push_subscribe = Some(vec!["*".to_string()]);
+    Ok(ResolvedAblyAuth {
+        app,
+        client_id: device.client_id.clone(),
+        connection_client_id: device.client_id,
+        capabilities: Some(capabilities),
+        issued_ms: now_ms(),
+        expires_ms: None,
+        credential_id: format!("push-device:{}", stable_hash(token.as_bytes())),
+        revocable: false,
+        revocation_key: None,
+        #[cfg(feature = "push")]
+        push_device_id: Some(device_id),
+    })
+}
+
+#[cfg(feature = "push")]
+fn generate_ably_device_identity_token(app_id: &str, device_id: &str) -> SecretString {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let app_id = URL_SAFE_NO_PAD.encode(app_id.as_bytes());
+    let device_id = URL_SAFE_NO_PAD.encode(device_id.as_bytes());
+    let random = generate_device_identity_token();
+    SecretString::new(format!(
+        "v1.{app_id}.{device_id}.{}",
+        random.expose_secret()
+    ))
+    .expect("generated device identity components are non-empty")
+}
+
+#[cfg(feature = "push")]
+fn parse_ably_device_identity_token(token: &str) -> Option<(String, String)> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let mut parts = token.split('.');
+    if parts.next()? != "v1" {
+        return None;
+    }
+    let app_id = parts.next()?;
+    let device_id = parts.next()?;
+    let random = parts.next()?;
+    if random.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    let app_id = String::from_utf8(URL_SAFE_NO_PAD.decode(app_id).ok()?).ok()?;
+    let device_id = String::from_utf8(URL_SAFE_NO_PAD.decode(device_id).ok()?).ok()?;
+    Some((app_id, device_id))
+}
+
+#[cfg(feature = "push")]
+fn ably_push_admin_allowed(
+    capabilities: Option<&ConnectionCapabilities>,
+    resource: Option<&str>,
+) -> bool {
+    let Some(capabilities) = capabilities else {
+        return true;
+    };
+    resource.map_or_else(
+        || {
+            capabilities
+                .push_admin
+                .as_deref()
+                .is_some_and(|patterns| !patterns.is_empty())
+        },
+        |resource| capabilities.allows_push_admin(resource),
+    )
+}
+
+#[cfg(feature = "push")]
+fn ensure_ably_push_admin(
+    resolved: &ResolvedAblyAuth,
+    resource: Option<&str>,
+) -> Result<(), AppError> {
+    if ably_push_admin_allowed(resolved.capabilities.as_ref(), resource) {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "push-admin capability is required".to_string(),
+        ))
+    }
+}
+
+#[cfg(feature = "push")]
+fn ensure_ably_push_subscribe(
+    resolved: &ResolvedAblyAuth,
+    channel: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(capabilities) = resolved.capabilities.as_ref() else {
+        return Ok(());
+    };
+    let allowed = channel.map_or_else(
+        || {
+            capabilities
+                .push_subscribe
+                .as_deref()
+                .is_some_and(|patterns| !patterns.is_empty())
+        },
+        |channel| {
+            capabilities.allows_push_subscribe(channel) || capabilities.allows_push_admin(channel)
+        },
+    );
+    if allowed {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "push-subscribe capability is required".to_string(),
+        ))
+    }
+}
+
+#[cfg(feature = "push")]
+fn ably_device_identity_header(headers: &HeaderMap) -> Result<Option<&str>, AppError> {
+    headers
+        .get("x-ably-devicetoken")
+        .map(|value| {
+            value
+                .to_str()
+                .map_err(|_| AppError::Forbidden("Invalid device identity token".to_string()))
+        })
+        .transpose()
+}
+
+#[cfg(feature = "push")]
+fn ensure_ably_device_owner(
+    resolved: &ResolvedAblyAuth,
+    headers: &HeaderMap,
+    device: &DeviceDetails,
+) -> Result<(), AppError> {
+    if resolved.push_device_id.as_deref() == Some(device.id.as_str()) {
+        return Ok(());
+    }
+    let Some(token) = ably_device_identity_header(headers)? else {
+        return Err(AppError::Forbidden(
+            "A matching device identity token is required".to_string(),
+        ));
+    };
+    if verify_device_identity_token(token, &device.device_secret) {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "Invalid device identity token".to_string(),
+        ))
+    }
 }
 
 #[cfg(feature = "push")]
@@ -4623,16 +6401,30 @@ async fn save_ably_push_device(
     request: AblyPushDeviceRequest,
 ) -> Result<Value, AppError> {
     let store = ably_push_store(hub)?;
+    if let (Some(path_id), Some(body_id)) = (path_id.as_deref(), request.id.as_deref())
+        && path_id != body_id
+    {
+        return Err(AppError::InvalidInput(
+            "push device path id does not match body id".to_string(),
+        ));
+    }
     let id = path_id.or(request.id).ok_or_else(|| {
         AppError::InvalidInput("push device registration requires id".to_string())
     })?;
     const DEVICE_SECRET_KEY: &str = "sockudo_ably_device_secret";
-    let identity = generate_device_identity_token();
+    let existing = store
+        .get_device(app_id, &id)
+        .await
+        .map_err(ably_push_error)?;
+    let issued_identity = existing
+        .is_none()
+        .then(|| generate_ably_device_identity_token(app_id, &id));
     let recipient = ably_push_wire_value(request.push.recipient)?;
     let mut metadata = request
         .metadata
         .map(ably_push_wire_value)
         .transpose()?
+        .or_else(|| existing.as_ref().map(|device| device.metadata.clone()))
         .unwrap_or_else(|| json!({}));
     if !metadata.is_object() {
         metadata = json!({ "value": metadata });
@@ -4642,6 +6434,16 @@ async fn save_ably_push_device(
     {
         object.insert(DEVICE_SECRET_KEY, Value::from(device_secret));
     }
+    let identity_hash = existing
+        .as_ref()
+        .map(|device| device.device_secret.clone())
+        .unwrap_or_else(|| {
+            hash_device_identity_token(
+                issued_identity
+                    .as_ref()
+                    .expect("new registrations issue an identity token"),
+            )
+        });
     let device = DeviceDetails {
         app_id: app_id.to_string(),
         id,
@@ -4649,7 +6451,7 @@ async fn save_ably_push_device(
         form_factor: ably_push_form_factor(&request.form_factor)?,
         platform: ably_push_platform(&request.platform)?,
         metadata,
-        device_secret: hash_device_identity_token(&identity),
+        device_secret: identity_hash,
         timezone: "UTC".to_string(),
         locale: "en".to_string(),
         last_active_at_ms: u64::try_from(now_ms()).unwrap_or_default(),
@@ -4667,7 +6469,7 @@ async fn save_ably_push_device(
         .map_err(ably_push_error)?;
     Ok(ably_push_device_value(
         &device,
-        Some(identity.expose_secret()),
+        issued_identity.as_ref().map(SecretString::expose_secret),
     ))
 }
 
@@ -4705,18 +6507,49 @@ async fn ably_push_save_device_response(
 ) -> Response {
     let request_format = ably_rest_request_format(&headers);
     let format = ably_rest_response_format(&headers, query.format.as_deref(), request_format);
-    let resolved = match resolve_ably_push_auth(&runtime.hub, &handler, &headers, &query).await {
-        Ok(resolved) => resolved,
-        Err(error) => {
-            return ably_error_response_format(error.status, error.code, error.message, format);
-        }
-    };
     let request = match decode_value::<AblyPushDeviceRequest>(&body, request_format) {
         Ok(request) => request,
         Err(error) => {
             return ably_error_response_format(StatusCode::BAD_REQUEST, 40000, error, format);
         }
     };
+    let requested_id = path_id.as_deref().or(request.id.as_deref());
+    let resolved = match resolve_ably_push_auth(&runtime.hub, &handler, &headers, &query).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return ably_error_response_format(error.status, error.code, error.message, format);
+        }
+    };
+    if ensure_ably_push_admin(&resolved, None).is_err() {
+        if let Err(error) = ensure_ably_push_subscribe(&resolved, None) {
+            return ably_app_error_response_format(error, format);
+        }
+        let Some(device_id) = requested_id else {
+            return ably_error_response_format(
+                StatusCode::BAD_REQUEST,
+                40000,
+                "push device registration requires id",
+                format,
+            );
+        };
+        let store = match ably_push_store(&runtime.hub) {
+            Ok(store) => store,
+            Err(error) => return ably_app_error_response_format(error, format),
+        };
+        let device = match store.get_device(&resolved.app.id, device_id).await {
+            Ok(Some(device)) => device,
+            Ok(None) => {
+                return ably_app_error_response_format(
+                    AppError::Forbidden("push-admin capability is required".to_string()),
+                    format,
+                );
+            }
+            Err(error) => return ably_app_error_response_format(ably_push_error(error), format),
+        };
+        if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device) {
+            return ably_app_error_response_format(error, format);
+        }
+    }
     match save_ably_push_device(&runtime.hub, &resolved.app.id, path_id, request).await {
         Ok(device) => encode_ably_rest_response(StatusCode::CREATED, format, &device)
             .unwrap_or_else(ably_app_error_response),
@@ -4744,12 +6577,20 @@ async fn ably_push_get_device(
         Err(error) => return ably_app_error_response_format(error, format),
     };
     match store.get_device(&resolved.app.id, &device_id).await {
-        Ok(Some(device)) => encode_ably_rest_response(
-            StatusCode::OK,
-            format,
-            &ably_push_device_value(&device, None),
-        )
-        .unwrap_or_else(ably_app_error_response),
+        Ok(Some(device)) => {
+            if ensure_ably_push_admin(&resolved, None).is_err()
+                && let Err(error) = ensure_ably_push_subscribe(&resolved, None)
+                    .and_then(|()| ensure_ably_device_owner(&resolved, &headers, &device))
+            {
+                return ably_app_error_response_format(error, format);
+            }
+            encode_ably_rest_response(
+                StatusCode::OK,
+                format,
+                &ably_push_device_value(&device, None),
+            )
+            .unwrap_or_else(ably_app_error_response)
+        }
         Ok(None) => {
             ably_error_response_format(StatusCode::NOT_FOUND, 40400, "Device not found", format)
         }
@@ -4771,6 +6612,9 @@ async fn ably_push_list_devices(
             return ably_error_response_format(error.status, error.code, error.message, format);
         }
     };
+    if let Err(error) = ensure_ably_push_admin(&resolved, None) {
+        return ably_app_error_response_format(error, format);
+    }
     let store = match ably_push_store(&runtime.hub) {
         Ok(store) => store,
         Err(error) => return ably_app_error_response_format(error, format),
@@ -4837,11 +6681,36 @@ async fn ably_push_delete_devices_inner(
         Err(error) => return ably_app_error_response_format(error, format),
     };
     let result = if let Some(device_id) = path_id.or(query.device_id) {
+        if ensure_ably_push_admin(&resolved, None).is_err() {
+            if let Err(error) = ensure_ably_push_subscribe(&resolved, None) {
+                return ably_app_error_response_format(error, format);
+            }
+            let device = match store.get_device(&resolved.app.id, &device_id).await {
+                Ok(Some(device)) => device,
+                Ok(None) => {
+                    return ably_error_response_format(
+                        StatusCode::NOT_FOUND,
+                        40400,
+                        "Device not found",
+                        format,
+                    );
+                }
+                Err(error) => {
+                    return ably_app_error_response_format(ably_push_error(error), format);
+                }
+            };
+            if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device) {
+                return ably_app_error_response_format(error, format);
+            }
+        }
         store
             .delete_device(&resolved.app.id, &device_id)
             .await
             .map(|_| ())
     } else if let Some(client_id) = query.client_id {
+        if let Err(error) = ensure_ably_push_admin(&resolved, None) {
+            return ably_app_error_response_format(error, format);
+        }
         store
             .delete_devices_by_client(&resolved.app.id, &client_id)
             .await
@@ -4861,13 +6730,8 @@ async fn ably_push_delete_devices_inner(
 }
 
 #[cfg(feature = "push")]
-fn client_subscription_device_id(client_id: &str) -> String {
-    format!("client:{}", stable_hash(client_id.as_bytes()))
-}
-
-#[cfg(feature = "push")]
 fn ably_push_subscription_value(subscription: &ChannelSubscription) -> AblyPushSubscription {
-    let logical_client = subscription.device_id.starts_with("client:");
+    let logical_client = subscription.scoped_client_id().is_some();
     AblyPushSubscription {
         channel: subscription.channel.clone(),
         device_id: (!logical_client).then(|| subscription.device_id.clone()),
@@ -4885,16 +6749,16 @@ async fn ably_push_save_subscription(
 ) -> Response {
     let request_format = ably_rest_request_format(&headers);
     let format = ably_rest_response_format(&headers, query.format.as_deref(), request_format);
-    let resolved = match resolve_ably_push_auth(&runtime.hub, &handler, &headers, &query).await {
-        Ok(resolved) => resolved,
-        Err(error) => {
-            return ably_error_response_format(error.status, error.code, error.message, format);
-        }
-    };
     let request = match decode_value::<AblyPushSubscription>(&body, request_format) {
         Ok(request) => request,
         Err(error) => {
             return ably_error_response_format(StatusCode::BAD_REQUEST, 40000, error, format);
+        }
+    };
+    let resolved = match resolve_ably_push_auth(&runtime.hub, &handler, &headers, &query).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return ably_error_response_format(error.status, error.code, error.message, format);
         }
     };
     let store = match ably_push_store(&runtime.hub) {
@@ -4903,7 +6767,16 @@ async fn ably_push_save_subscription(
     };
     let subscription = if let Some(device_id) = request.device_id.as_deref() {
         match store.get_device(&resolved.app.id, device_id).await {
-            Ok(Some(device)) => ChannelSubscription::from_device(request.channel.clone(), &device),
+            Ok(Some(device)) => {
+                if ensure_ably_push_admin(&resolved, Some(&request.channel)).is_err()
+                    && let Err(error) =
+                        ensure_ably_push_subscribe(&resolved, Some(&request.channel))
+                            .and_then(|()| ensure_ably_device_owner(&resolved, &headers, &device))
+                {
+                    return ably_app_error_response_format(error, format);
+                }
+                ChannelSubscription::from_device(request.channel.clone(), &device)
+            }
             Ok(None) => {
                 return ably_error_response_format(
                     StatusCode::NOT_FOUND,
@@ -4915,15 +6788,24 @@ async fn ably_push_save_subscription(
             Err(error) => return ably_app_error_response_format(ably_push_error(error), format),
         }
     } else if let Some(client_id) = request.client_id.as_deref() {
-        ChannelSubscription {
-            app_id: resolved.app.id.clone(),
-            channel: request.channel.clone(),
-            device_id: client_subscription_device_id(client_id),
-            client_id: Some(client_id.to_string()),
-            provider: PushProviderKind::Realtime,
-            token_hash: stable_hash(client_id.as_bytes()),
-            credential_version: None,
+        if ensure_ably_push_admin(&resolved, Some(&request.channel)).is_err() {
+            if let Err(error) = ensure_ably_push_subscribe(&resolved, Some(&request.channel)) {
+                return ably_app_error_response_format(error, format);
+            }
+            if resolved.client_id.as_deref() != Some(client_id) {
+                return ably_app_error_response_format(
+                    AppError::Forbidden(
+                        "push-subscribe clientId must match authenticated clientId".to_string(),
+                    ),
+                    format,
+                );
+            }
         }
+        ChannelSubscription::from_client(
+            resolved.app.id.clone(),
+            request.channel.clone(),
+            client_id,
+        )
     } else {
         return ably_error_response_format(
             StatusCode::BAD_REQUEST,
@@ -4965,6 +6847,30 @@ async fn ably_push_list_subscriptions(
             return ably_error_response_format(error.status, error.code, error.message, format);
         }
     };
+    let is_admin = ensure_ably_push_admin(&resolved, None).is_ok();
+    if !is_admin {
+        let Some(channel) = query.channel.as_deref() else {
+            return ably_app_error_response_format(
+                AppError::Forbidden(
+                    "push-admin is required to list subscriptions across channels".to_string(),
+                ),
+                format,
+            );
+        };
+        if let Err(error) = ensure_ably_push_subscribe(&resolved, Some(channel)) {
+            return ably_app_error_response_format(error, format);
+        }
+        if query.device_id.is_none()
+            && query.client_id.is_none()
+            && resolved.push_device_id.is_none()
+            && resolved.client_id.is_none()
+        {
+            return ably_app_error_response_format(
+                AppError::Forbidden("push-subscribe can only list owned subscriptions".to_string()),
+                format,
+            );
+        }
+    }
     let store = match ably_push_store(&runtime.hub) {
         Ok(store) => store,
         Err(error) => return ably_app_error_response_format(error, format),
@@ -4990,6 +6896,16 @@ async fn ably_push_list_subscriptions(
                         .client_id
                         .as_ref()
                         .is_none_or(|client_id| subscription.client_id.as_ref() == Some(client_id))
+                })
+                .filter(|subscription| {
+                    is_admin
+                        || resolved
+                            .push_device_id
+                            .as_ref()
+                            .is_some_and(|device_id| &subscription.device_id == device_id)
+                        || resolved.client_id.as_ref().is_some_and(|client_id| {
+                            subscription.client_id.as_ref() == Some(client_id)
+                        })
                 })
                 .map(|subscription| ably_push_subscription_value(&subscription))
                 .collect::<Vec<_>>();
@@ -5018,34 +6934,91 @@ async fn ably_push_delete_subscriptions(
         Ok(store) => store,
         Err(error) => return ably_app_error_response_format(error, format),
     };
-    let subscriptions = match all_ably_push_subscriptions(&store, &resolved.app.id).await {
-        Ok(subscriptions) => subscriptions,
-        Err(error) => return ably_app_error_response_format(error, format),
-    };
-    for subscription in subscriptions {
-        if query
-            .channel
-            .as_ref()
-            .is_none_or(|channel| &subscription.channel == channel)
-            && query
-                .device_id
-                .as_ref()
-                .is_none_or(|device_id| &subscription.device_id == device_id)
-            && query
-                .client_id
-                .as_ref()
-                .is_none_or(|client_id| subscription.client_id.as_ref() == Some(client_id))
+    if ensure_ably_push_admin(&resolved, query.channel.as_deref()).is_err() {
+        let Some(channel) = query.channel.as_deref() else {
+            return ably_app_error_response_format(
+                AppError::Forbidden(
+                    "push-subscribe can only remove subscriptions from one channel".to_string(),
+                ),
+                format,
+            );
+        };
+        if let Err(error) = ensure_ably_push_subscribe(&resolved, Some(channel)) {
+            return ably_app_error_response_format(error, format);
+        }
+        if let Some(device_id) = query.device_id.as_deref() {
+            let device = match store.get_device(&resolved.app.id, device_id).await {
+                Ok(Some(device)) => device,
+                Ok(None) => {
+                    return ably_error_response_format(
+                        StatusCode::NOT_FOUND,
+                        40400,
+                        "Device not found",
+                        format,
+                    );
+                }
+                Err(error) => {
+                    return ably_app_error_response_format(ably_push_error(error), format);
+                }
+            };
+            if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device) {
+                return ably_app_error_response_format(error, format);
+            }
+        } else if let Some(client_id) = query.client_id.as_deref() {
+            if resolved.client_id.as_deref() != Some(client_id) {
+                return ably_app_error_response_format(
+                    AppError::Forbidden(
+                        "push-subscribe clientId must match authenticated clientId".to_string(),
+                    ),
+                    format,
+                );
+            }
+        } else {
+            return ably_app_error_response_format(
+                AppError::Forbidden(
+                    "push-subscribe can only remove owned subscriptions".to_string(),
+                ),
+                format,
+            );
+        }
+    }
+    let mut cursor = None;
+    loop {
+        let page = match store
+            .list_subscriptions(&resolved.app.id, 1_000, cursor)
+            .await
         {
-            if let Err(error) = store
-                .delete_subscription(
-                    &resolved.app.id,
-                    &subscription.channel,
-                    &subscription.device_id,
-                )
-                .await
+            Ok(page) => page,
+            Err(error) => return ably_app_error_response_format(ably_push_error(error), format),
+        };
+        let next_cursor = page.next_cursor;
+        for subscription in page.items {
+            if query
+                .channel
+                .as_ref()
+                .is_none_or(|channel| &subscription.channel == channel)
+                && query
+                    .device_id
+                    .as_ref()
+                    .is_none_or(|device_id| &subscription.device_id == device_id)
+                && query
+                    .client_id
+                    .as_ref()
+                    .is_none_or(|client_id| subscription.client_id.as_ref() == Some(client_id))
+                && let Err(error) = store
+                    .delete_subscription(
+                        &resolved.app.id,
+                        &subscription.channel,
+                        &subscription.device_id,
+                    )
+                    .await
             {
                 return ably_app_error_response_format(ably_push_error(error), format);
             }
+        }
+        cursor = next_cursor;
+        if cursor.is_none() {
+            break;
         }
     }
     StatusCode::NO_CONTENT.into_response()
@@ -5065,6 +7038,9 @@ async fn ably_push_list_channels(
             return ably_error_response_format(error.status, error.code, error.message, format);
         }
     };
+    if let Err(error) = ensure_ably_push_admin(&resolved, None) {
+        return ably_app_error_response_format(error, format);
+    }
     let store = match ably_push_store(&runtime.hub) {
         Ok(store) => store,
         Err(error) => return ably_app_error_response_format(error, format),
@@ -5089,11 +7065,12 @@ async fn publish_ably_push_event(
     app: &App,
     channel: &str,
     payload: &Value,
-) -> Result<(), AppError> {
+    delivery_id: &str,
+) -> Result<String, AppError> {
     let data = sonic_rs::to_string(payload).map_err(|error| {
         AppError::InternalError(format!("push payload serialization failed: {error}"))
     })?;
-    MessageService::new(Arc::clone(handler))
+    let result = MessageService::new(Arc::clone(handler))
         .publish_message(
             app,
             channel,
@@ -5106,10 +7083,10 @@ async fn publish_ably_push_event(
                 tags: None,
                 sequence: None,
                 conflation_key: None,
-                message_id: Some(Uuid::new_v4().to_string()),
+                message_id: Some(delivery_id.to_string()),
                 stream_id: None,
                 serial: None,
-                idempotency_key: None,
+                idempotency_key: Some(delivery_id.to_string()),
                 extras: None,
                 delta_sequence: None,
                 delta_conflation_key: None,
@@ -5117,63 +7094,89 @@ async fn publish_ably_push_event(
             PublishContext::default(),
         )
         .await?;
-    Ok(())
+    Ok(result.receipt.acknowledgement_id)
 }
 
 #[cfg(feature = "push")]
-async fn realtime_channels_for_client(
+#[derive(Default)]
+struct AblyPushRecipientSummary {
+    count: u64,
+    providers: BTreeSet<PushProviderKind>,
+}
+
+#[cfg(feature = "push")]
+async fn summarize_ably_push_devices_for_client(
     store: &DynPushStore,
     app_id: &str,
     client_id: &str,
-) -> Result<BTreeSet<String>, AppError> {
-    let devices = store
-        .list_devices(app_id, 1_000, None)
-        .await
-        .map_err(ably_push_error)?;
-    Ok(devices
-        .items
-        .into_iter()
-        .filter(|device| device.client_id.as_deref() == Some(client_id))
-        .filter_map(|device| match device.push.recipient {
-            PushRecipient::Realtime { channel } => Some(channel),
-            _ => None,
-        })
-        .collect())
+) -> Result<AblyPushRecipientSummary, AppError> {
+    let mut cursor = None;
+    let mut summary = AblyPushRecipientSummary::default();
+    loop {
+        let page = store
+            .list_devices(app_id, 1_000, cursor)
+            .await
+            .map_err(ably_push_error)?;
+        for device in page
+            .items
+            .iter()
+            .filter(|device| device.client_id.as_deref() == Some(client_id))
+        {
+            summary.count = summary.count.saturating_add(1);
+            summary.providers.insert(device.push.recipient.provider());
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return Ok(summary);
+        }
+    }
 }
 
 #[cfg(feature = "push")]
-async fn deliver_ably_channel_push(
-    handler: &Arc<ConnectionHandler>,
+async fn summarize_ably_push_channel_recipients(
     store: &DynPushStore,
-    app: &App,
-    source_channel: &str,
-    payload: &Value,
-) -> Result<(), AppError> {
-    let subscriptions = store
-        .list_channel_subscribers(&app.id, source_channel, 1_000, None)
-        .await
-        .map_err(ably_push_error)?;
-    let mut channels = BTreeSet::new();
-    for subscription in subscriptions.items {
-        if subscription.device_id.starts_with("client:") {
-            if let Some(client_id) = subscription.client_id.as_deref() {
-                channels.extend(realtime_channels_for_client(store, &app.id, client_id).await?);
-            }
-            continue;
-        }
-        if let Some(device) = store
-            .get_device(&app.id, &subscription.device_id)
+    app_id: &str,
+    channel: &str,
+) -> Result<AblyPushRecipientSummary, AppError> {
+    let mut cursor = None;
+    let mut summary = AblyPushRecipientSummary::default();
+    loop {
+        let page = store
+            .list_channel_subscribers(app_id, channel, 1_000, cursor)
             .await
-            .map_err(ably_push_error)?
-            && let PushRecipient::Realtime { channel } = device.push.recipient
-        {
-            channels.insert(channel);
+            .map_err(ably_push_error)?;
+        for subscription in page.items {
+            if let Some(client_id) = subscription.scoped_client_id() {
+                let client =
+                    summarize_ably_push_devices_for_client(store, app_id, client_id).await?;
+                summary.count = summary.count.saturating_add(client.count);
+                summary.providers.extend(client.providers);
+            } else if let Some(device) = store
+                .get_device(app_id, &subscription.device_id)
+                .await
+                .map_err(ably_push_error)?
+            {
+                summary.count = summary.count.saturating_add(1);
+                summary.providers.insert(device.push.recipient.provider());
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return Ok(summary);
         }
     }
-    for channel in channels {
-        publish_ably_push_event(handler, app, &channel, payload).await?;
-    }
-    Ok(())
+}
+
+#[cfg(feature = "push")]
+fn ably_push_publish_id(headers: &HeaderMap) -> String {
+    headers
+        .get("idempotency-key")
+        .or_else(|| headers.get("x-idempotency-key"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
 
 #[cfg(feature = "push")]
@@ -5184,6 +7187,7 @@ async fn ably_push_publish(
     State(handler): State<Arc<ConnectionHandler>>,
     body: Bytes,
 ) -> Response {
+    let request_bytes = u64::try_from(body.len()).unwrap_or(u64::MAX);
     let request_format = ably_rest_request_format(&headers);
     let format = ably_rest_response_format(&headers, query.format.as_deref(), request_format);
     let resolved = match resolve_ably_push_auth(&runtime.hub, &handler, &headers, &query).await {
@@ -5206,6 +7210,15 @@ async fn ably_push_publish(
         Ok(recipient) => recipient,
         Err(error) => return ably_app_error_response_format(error, format),
     };
+    let admin_resource = recipient
+        .get("transportType")
+        .and_then(Value::as_str)
+        .filter(|transport| *transport == "ablyChannel")
+        .and_then(|_| recipient.get("channel"))
+        .and_then(Value::as_str);
+    if let Err(error) = ensure_ably_push_admin(&resolved, admin_resource) {
+        return ably_app_error_response_format(error, format);
+    }
     let notification = match request.notification.map(ably_push_wire_value).transpose() {
         Ok(notification) => notification,
         Err(error) => return ably_app_error_response_format(error, format),
@@ -5214,26 +7227,37 @@ async fn ably_push_publish(
         Ok(data) => data,
         Err(error) => return ably_app_error_response_format(error, format),
     };
-    let mut payload = Value::new_object();
-    let payload_object = payload.as_object_mut().expect("fresh object");
-    if let Some(notification) = notification {
-        payload_object.insert("notification", notification);
-    }
-    if let Some(data) = data {
-        payload_object.insert("data", data);
-    }
-    let mut channels = BTreeSet::new();
-    if recipient.get("transportType").and_then(Value::as_str) == Some("ablyChannel") {
-        if let Some(channel) = recipient.get("channel").and_then(Value::as_str) {
-            channels.insert(channel.to_string());
+    let payload = match ably_push_payload(notification, data) {
+        Ok(payload) => payload,
+        Err(error) => return ably_app_error_response_format(error, format),
+    };
+    let (target, summary) = if recipient.get("transportType").and_then(Value::as_str)
+        == Some("ablyChannel")
+    {
+        match ably_push_recipient(&recipient) {
+            Ok(recipient) => {
+                let provider = recipient.provider();
+                (
+                    PublishTarget::Recipient { recipient },
+                    AblyPushRecipientSummary {
+                        count: 1,
+                        providers: BTreeSet::from([provider]),
+                    },
+                )
+            }
+            Err(error) => return ably_app_error_response_format(error, format),
         }
     } else if let Some(device_id) = recipient.get("deviceId").and_then(Value::as_str) {
         match store.get_device(&resolved.app.id, device_id).await {
-            Ok(Some(device)) => {
-                if let PushRecipient::Realtime { channel } = device.push.recipient {
-                    channels.insert(channel);
-                }
-            }
+            Ok(Some(device)) => (
+                PublishTarget::Device {
+                    device_id: device_id.to_string(),
+                },
+                AblyPushRecipientSummary {
+                    count: 1,
+                    providers: BTreeSet::from([device.push.recipient.provider()]),
+                },
+            ),
             Ok(None) => {
                 return ably_error_response_format(
                     StatusCode::NOT_FOUND,
@@ -5245,8 +7269,13 @@ async fn ably_push_publish(
             Err(error) => return ably_app_error_response_format(ably_push_error(error), format),
         }
     } else if let Some(client_id) = recipient.get("clientId").and_then(Value::as_str) {
-        match realtime_channels_for_client(&store, &resolved.app.id, client_id).await {
-            Ok(found) => channels = found,
+        match summarize_ably_push_devices_for_client(&store, &resolved.app.id, client_id).await {
+            Ok(summary) => (
+                PublishTarget::Client {
+                    client_id: client_id.to_string(),
+                },
+                summary,
+            ),
             Err(error) => return ably_app_error_response_format(error, format),
         }
     } else {
@@ -5256,31 +7285,43 @@ async fn ably_push_publish(
             "Unsupported push recipient",
             format,
         );
+    };
+    let queue = match ably_push_queue(&runtime.hub) {
+        Ok(queue) => queue,
+        Err(error) => return ably_app_error_response_format(error, format),
+    };
+    if let Err(error) = accept_ably_push_intent(
+        store,
+        queue,
+        runtime.hub.push_admission.as_deref(),
+        AblyPushIntentRequest {
+            app_id: resolved.app.id.clone(),
+            publish_id: ably_push_publish_id(&headers),
+            targets: vec![target],
+            required_providers: summary.providers,
+            payload,
+            expected_recipients: summary.count,
+        },
+    )
+    .await
+    {
+        return ably_app_error_response_format(error, format);
     }
-    for channel in channels {
-        if let Err(error) =
-            publish_ably_push_event(&handler, &resolved.app, &channel, &payload).await
-        {
-            return ably_app_error_response_format(error, format);
-        }
+    if let Ok(observation) = StatsObservation::push(
+        &resolved.app.id,
+        now_ms(),
+        true,
+        summary.count,
+        request_bytes,
+    ) && let Err(error) = runtime.hub.stats.record(observation).await
+    {
+        return ably_app_error_response_format(stats_app_error(error), format);
     }
     encode_ably_rest_response(StatusCode::CREATED, format, &json!({}))
         .unwrap_or_else(ably_app_error_response)
 }
 
-const ABLY_MAX_STATS_INTERVALS_PER_APP: usize = 100_000;
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AblyStatsInterval {
-    interval_id: String,
-    unit: String,
-    app_id: String,
-    schema: String,
-    entries: BTreeMap<String, u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_progress: Option<String>,
-}
+const ABLY_MAX_STATS_FIXTURE_INTERVALS: usize = 10_000;
 
 pub async fn ably_ingest_stats(
     Query(query): Query<AblyStatsQuery>,
@@ -5294,6 +7335,14 @@ pub async fn ably_ingest_stats(
         query.format.as_deref(),
         ably_rest_request_format(&headers),
     );
+    if !runtime.hub.config.stats_fixture_ingest_enabled {
+        return ably_error_response_format(
+            StatusCode::NOT_FOUND,
+            40400,
+            "Stats fixture ingestion is disabled",
+            format,
+        );
+    }
     let resolved = match resolve_ably_auth(
         &runtime.hub,
         &handler,
@@ -5309,7 +7358,7 @@ pub async fn ably_ingest_stats(
             return ably_error_response_format(error.status, error.code, error.message, format);
         }
     };
-    let fixtures = match sonic_rs::from_slice::<Vec<Value>>(&body) {
+    let fixtures = match serde_json::from_slice::<Vec<serde_json::Value>>(&body) {
         Ok(fixtures) => fixtures,
         Err(error) => {
             return ably_error_response_format(
@@ -5320,39 +7369,27 @@ pub async fn ably_ingest_stats(
             );
         }
     };
-    let store = runtime
+    if fixtures.len() > ABLY_MAX_STATS_FIXTURE_INTERVALS {
+        return ably_error_response_format(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            40009,
+            format!("Stats fixture exceeds the {ABLY_MAX_STATS_FIXTURE_INTERVALS}-interval limit"),
+            format,
+        );
+    }
+    if let Err(error) = runtime
         .hub
         .stats
-        .entry(resolved.app.id.clone())
-        .or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())))
-        .clone();
-    let mut store = store
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for fixture in fixtures {
-        let Some(interval_id) = fixture.get("intervalId").and_then(Value::as_str) else {
-            return ably_error_response_format(
-                StatusCode::BAD_REQUEST,
-                40000,
-                "Stats interval requires intervalId",
-                format,
-            );
-        };
-        if store.len() >= ABLY_MAX_STATS_INTERVALS_PER_APP
-            && !store.contains_key(interval_id)
-            && let Some(oldest) = store.keys().next().cloned()
-        {
-            store.remove(&oldest);
-        }
-        store.insert(interval_id.to_string(), fixture);
+        .ingest_fixtures(&resolved.app.id, fixtures)
+        .await
+    {
+        return ably_app_error_response_format(stats_app_error(error), format);
     }
-    drop(store);
     encode_ably_rest_response(StatusCode::CREATED, format, &json!({}))
         .unwrap_or_else(ably_app_error_response)
 }
 
-/// Return typed interval statistics from the compatibility runtime's bounded
-/// store, plus the current in-progress interval derived from live counters.
+/// Return typed interval statistics from the canonical stats store.
 pub async fn ably_stats(
     Query(query): Query<AblyStatsQuery>,
     headers: HeaderMap,
@@ -5379,13 +7416,34 @@ pub async fn ably_stats(
             return ably_error_response_format(error.status, error.code, error.message, format);
         }
     };
-    match ably_stats_page(&runtime.hub, &resolved.app.id, &query) {
-        Ok((items, links)) => {
-            let mut response = match encode_ably_rest_response(StatusCode::OK, format, &items) {
+    let stats_query = match StatsQuery::parse(
+        query
+            .by
+            .as_deref()
+            .or(query.unit.as_deref())
+            .unwrap_or("minute"),
+        query.direction.as_deref(),
+        query.start.as_deref(),
+        query.end.as_deref(),
+        query.limit,
+        query.cursor.clone(),
+    ) {
+        Ok(query) => query,
+        Err(error) => return ably_app_error_response_format(stats_app_error(error), format),
+    };
+    match runtime
+        .hub
+        .stats
+        .query(&resolved.app.id, &stats_query, now_ms())
+        .await
+    {
+        Ok(page) => {
+            let mut response = match encode_ably_rest_response(StatusCode::OK, format, &page.items)
+            {
                 Ok(response) => response,
                 Err(error) => return ably_app_error_response(error),
             };
-            match links.parse() {
+            match stats_link_header(&query, &stats_query, page.next_cursor.as_deref()).parse() {
                 Ok(value) => {
                     response.headers_mut().insert(header::LINK, value);
                     response
@@ -5395,238 +7453,27 @@ pub async fn ably_stats(
                 ))),
             }
         }
-        Err(error) => ably_app_error_response_format(error, format),
+        Err(error) => ably_app_error_response_format(stats_app_error(error), format),
     }
 }
 
-fn ably_stats_page(
-    hub: &AblyCompatHub,
-    app_id: &str,
-    query: &AblyStatsQuery,
-) -> Result<(Vec<AblyStatsInterval>, String), AppError> {
-    let unit = match query
-        .by
-        .as_deref()
-        .or(query.unit.as_deref())
-        .unwrap_or("minute")
-    {
-        "minute" => "minute",
-        "hour" => "hour",
-        other => {
-            return Err(AppError::InvalidInput(format!(
-                "Invalid stats unit '{other}'"
-            )));
+fn stats_app_error(error: StatsError) -> AppError {
+    match error {
+        StatsError::InvalidQuery(message) | StatsError::InvalidFixture(message) => {
+            AppError::InvalidInput(message)
         }
-    };
-    let direction = match query.direction.as_deref().unwrap_or("backwards") {
-        "backwards" => HistoryDirection::NewestFirst,
-        "forwards" => HistoryDirection::OldestFirst,
-        other => {
-            return Err(AppError::InvalidInput(format!(
-                "Invalid stats direction '{other}'"
-            )));
-        }
-    };
-    let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
-    let offset = decode_stats_cursor(query.cursor.as_deref())?;
-    let mut intervals = hub
-        .stats
-        .get(app_id)
-        .map(|store| {
-            store
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .values()
-                .filter_map(|fixture| stats_interval_from_fixture(app_id, fixture))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    intervals.push(current_stats_interval(app_id, hub.metrics.snapshot()));
-    intervals = aggregate_stats_intervals(intervals, unit);
-
-    let start = query
-        .start
-        .as_deref()
-        .map(|value| normalize_stats_bound(value, unit))
-        .transpose()?;
-    let end = query
-        .end
-        .as_deref()
-        .map(|value| normalize_stats_bound(value, unit))
-        .transpose()?;
-    intervals.retain(|interval| {
-        start
-            .as_ref()
-            .is_none_or(|start| interval.interval_id >= *start)
-            && end.as_ref().is_none_or(|end| interval.interval_id <= *end)
-    });
-    intervals.sort_by(|left, right| left.interval_id.cmp(&right.interval_id));
-    if direction == HistoryDirection::NewestFirst {
-        intervals.reverse();
-    }
-    let end_offset = offset.saturating_add(limit).min(intervals.len());
-    let items = intervals
-        .get(offset.min(intervals.len())..end_offset)
-        .unwrap_or_default()
-        .to_vec();
-    let next = (end_offset < intervals.len()).then_some(end_offset);
-    Ok((
-        items,
-        stats_link_header(query, direction, unit, limit, next),
-    ))
-}
-
-fn stats_interval_from_fixture(app_id: &str, fixture: &Value) -> Option<AblyStatsInterval> {
-    let interval_id = fixture.get("intervalId")?.as_str()?.to_string();
-    let mut entries = BTreeMap::new();
-    let object = fixture.as_object()?;
-    for direction in ["inbound", "outbound"] {
-        let Some(transports) = object.get(&direction).and_then(Value::as_object) else {
-            continue;
-        };
-        for (_, values) in transports {
-            collect_stats_numbers(&format!("messages.{direction}.all"), values, &mut entries);
-        }
-    }
-    for (name, value) in object {
-        if matches!(name, "intervalId" | "inbound" | "outbound") {
-            continue;
-        }
-        collect_stats_numbers(name, value, &mut entries);
-    }
-    Some(AblyStatsInterval {
-        interval_id,
-        unit: "minute".to_string(),
-        app_id: app_id.to_string(),
-        schema: "sockudo:ably-stats:v1".to_string(),
-        entries,
-        in_progress: None,
-    })
-}
-
-fn collect_stats_numbers(prefix: &str, value: &Value, entries: &mut BTreeMap<String, u64>) {
-    if let Some(number) = value.as_u64() {
-        let total = entries.entry(prefix.to_string()).or_default();
-        *total = total.saturating_add(number);
-        return;
-    }
-    if let Some(object) = value.as_object() {
-        for (name, value) in object {
-            collect_stats_numbers(&format!("{prefix}.{name}"), value, entries);
-        }
+        StatsError::Store(message) => AppError::InternalError(message),
+        StatsError::Closed => AppError::InternalError("stats aggregator is closed".to_string()),
+        StatsError::QueueFull => AppError::InternalError("stats queue is full".to_string()),
     }
 }
 
-fn current_stats_interval(app_id: &str, metrics: OutboundMetricsSnapshot) -> AblyStatsInterval {
-    let now = Utc::now();
-    let interval_id = now.format("%Y-%m-%d:%H:%M").to_string();
-    AblyStatsInterval {
-        interval_id: interval_id.clone(),
-        unit: "minute".to_string(),
-        app_id: app_id.to_string(),
-        schema: "sockudo:ably-stats:v1".to_string(),
-        entries: BTreeMap::from([
-            (
-                "messages.outbound.all.messages.count".to_string(),
-                u64::try_from(metrics.fanout).unwrap_or(u64::MAX),
-            ),
-            (
-                "messages.outbound.all.messages.data".to_string(),
-                u64::try_from(metrics.queued_bytes).unwrap_or(u64::MAX),
-            ),
-        ]),
-        in_progress: Some(interval_id),
-    }
-}
-
-fn aggregate_stats_intervals(
-    intervals: Vec<AblyStatsInterval>,
-    unit: &str,
-) -> Vec<AblyStatsInterval> {
-    let prefix_len = if unit == "hour" { 13 } else { 16 };
-    let mut aggregated = BTreeMap::<String, AblyStatsInterval>::new();
-    for interval in intervals {
-        let interval_id = interval
-            .interval_id
-            .get(..prefix_len.min(interval.interval_id.len()))
-            .unwrap_or(&interval.interval_id)
-            .to_string();
-        let entry = aggregated
-            .entry(interval_id.clone())
-            .or_insert_with(|| AblyStatsInterval {
-                interval_id,
-                unit: unit.to_string(),
-                app_id: interval.app_id.clone(),
-                schema: interval.schema.clone(),
-                entries: BTreeMap::new(),
-                in_progress: None,
-            });
-        for (name, value) in interval.entries {
-            let total = entry.entries.entry(name).or_default();
-            *total = total.saturating_add(value);
-        }
-        if interval.in_progress.is_some() {
-            entry.in_progress = Some(entry.interval_id.clone());
-        }
-    }
-    aggregated.into_values().collect()
-}
-
-fn normalize_stats_bound(value: &str, unit: &str) -> Result<String, AppError> {
-    let formatted = if let Ok(timestamp_ms) = value.parse::<i64>() {
-        DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
-            .ok_or_else(|| AppError::InvalidInput("Invalid stats timestamp".to_string()))?
-            .format(if unit == "hour" {
-                "%Y-%m-%d:%H"
-            } else {
-                "%Y-%m-%d:%H:%M"
-            })
-            .to_string()
-    } else {
-        let length = if unit == "hour" { 13 } else { 16 };
-        value
-            .get(..length.min(value.len()))
-            .unwrap_or(value)
-            .to_string()
-    };
-    Ok(formatted)
-}
-
-fn encode_stats_cursor(offset: usize) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("stats-v1:{offset}"))
-}
-
-fn decode_stats_cursor(cursor: Option<&str>) -> Result<usize, AppError> {
-    let Some(cursor) = cursor else { return Ok(0) };
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(cursor)
-        .map_err(|_| AppError::InvalidInput("Invalid stats cursor".to_string()))?;
-    let raw = std::str::from_utf8(&bytes)
-        .map_err(|_| AppError::InvalidInput("Invalid stats cursor".to_string()))?;
-    raw.strip_prefix("stats-v1:")
-        .and_then(|offset| offset.parse().ok())
-        .ok_or_else(|| AppError::InvalidInput("Invalid stats cursor".to_string()))
-}
-
-fn stats_link_header(
-    query: &AblyStatsQuery,
-    direction: HistoryDirection,
-    unit: &str,
-    limit: usize,
-    next: Option<usize>,
-) -> String {
-    let params = |cursor: Option<usize>| {
+fn stats_link_header(raw_query: &AblyStatsQuery, query: &StatsQuery, next: Option<&str>) -> String {
+    let params = |cursor: Option<&str>| {
         let mut params = vec![
-            format!("limit={limit}"),
-            format!(
-                "direction={}",
-                if direction == HistoryDirection::NewestFirst {
-                    "backwards"
-                } else {
-                    "forwards"
-                }
-            ),
-            format!("unit={unit}"),
+            format!("limit={}", query.limit),
+            format!("direction={}", query.direction.as_str()),
+            format!("unit={}", query.unit.as_str()),
         ];
         if let Some(start) = query.start.as_deref() {
             params.push(format!("start={}", urlencoding::encode(start)));
@@ -5634,11 +7481,11 @@ fn stats_link_header(
         if let Some(end) = query.end.as_deref() {
             params.push(format!("end={}", urlencoding::encode(end)));
         }
-        if let Some(format) = query.format.as_deref() {
+        if let Some(format) = raw_query.format.as_deref() {
             params.push(format!("format={}", urlencoding::encode(format)));
         }
         if let Some(cursor) = cursor {
-            params.push(format!("cursor={}", encode_stats_cursor(cursor)));
+            params.push(format!("cursor={}", urlencoding::encode(cursor)));
         }
         params.join("&")
     };
@@ -5715,10 +7562,20 @@ async fn ably_channel_presence(
         return ably_error_response_format(error.status, error.code, error.message, format);
     }
     let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
-    let members = runtime
-        .hub
-        .presence_snapshot(&resolved.app.id, channel.base())
+    let offset = match decode_presence_snapshot_cursor(query.cursor.as_deref()) {
+        Ok(offset) => offset,
+        Err(error) => return ably_app_error_response_format(error, format),
+    };
+    let snapshot = match PresenceService::new(Arc::clone(&handler))
+        .snapshot(&resolved.app.id, channel.base())
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => return ably_app_error_response_format(AppError::from(error), format),
+    };
+    let matching = snapshot
         .into_iter()
+        .map(|record| ably_presence_from_record(record, 1))
         .filter(|member| {
             query
                 .client_id
@@ -5728,10 +7585,37 @@ async fn ably_channel_presence(
                     member.connection_id.as_deref() == Some(connection_id)
                 })
         })
-        .take(limit)
         .collect::<Vec<_>>();
-    encode_ably_rest_response(StatusCode::OK, format, &members)
-        .unwrap_or_else(ably_app_error_response)
+    let members = matching
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    let next_offset = (offset + members.len() < matching.len()).then_some(offset + members.len());
+    let links = ably_presence_link_header(
+        &query,
+        "presence",
+        limit,
+        next_offset.map(|next| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(u64::try_from(next).unwrap_or(u64::MAX).to_be_bytes())
+        }),
+    );
+    let mut response = match encode_ably_rest_response(StatusCode::OK, format, &members) {
+        Ok(response) => response,
+        Err(error) => return ably_app_error_response(error),
+    };
+    match links
+        .parse()
+        .map_err(|error| AppError::InternalError(format!("invalid presence Link header: {error}")))
+    {
+        Ok(value) => {
+            response.headers_mut().insert(header::LINK, value);
+            response
+        }
+        Err(error) => ably_app_error_response_format(error, format),
+    }
 }
 
 async fn ably_channel_presence_history(
@@ -5794,25 +7678,67 @@ async fn ably_channel_presence_history_inner(
             )));
         }
     };
+    let stream_state = handler
+        .presence_history_store()
+        .stream_runtime_state(&resolved.app.id, channel.base())
+        .await?;
+    if !stream_state.continuity_proven {
+        return Err(AppError::Protocol {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: 50003,
+            message: format!(
+                "presence history continuity is unavailable: {}",
+                stream_state
+                    .reason
+                    .as_deref()
+                    .unwrap_or(stream_state.durable_state.as_str())
+            ),
+        });
+    }
+    let limit = query
+        .limit
+        .unwrap_or(policy.max_page_size)
+        .clamp(1, policy.max_page_size);
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(PresenceHistoryCursor::decode)
+        .transpose()?;
+    let bounds = PresenceHistoryQueryBounds {
+        start_serial: None,
+        end_serial: None,
+        start_time_ms: query.start,
+        end_time_ms: query.end,
+    };
     let page = handler
         .presence_history_store()
-        .read_page(PresenceHistoryReadRequest {
-            app_id: resolved.app.id,
-            channel: channel.base().to_string(),
-            direction,
-            limit: query
-                .limit
-                .unwrap_or(policy.max_page_size)
-                .clamp(1, policy.max_page_size),
-            cursor: None,
-            bounds: PresenceHistoryQueryBounds {
-                start_serial: None,
-                end_serial: None,
-                start_time_ms: query.start,
-                end_time_ms: query.end,
+        .read_filtered_page(
+            PresenceHistoryReadRequest {
+                app_id: resolved.app.id.clone(),
+                channel: channel.base().to_string(),
+                direction,
+                limit,
+                cursor,
+                bounds,
             },
-        })
+            PresenceHistoryFilter {
+                user_id: query.client_id.clone(),
+                connection_id: query.connection_id.clone(),
+            },
+        )
         .await?;
+    if page.degraded {
+        return Err(AppError::Protocol {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: 50003,
+            message: "presence history store is degraded".to_string(),
+        });
+    }
+    let next_cursor = page
+        .next_cursor
+        .as_ref()
+        .map(PresenceHistoryCursor::encode)
+        .transpose()?;
     let mut messages = Vec::with_capacity(page.items.len());
     for item in page.items {
         #[derive(Deserialize)]
@@ -5825,28 +7751,55 @@ async fn ably_channel_presence_history_inner(
             .user_info
             .as_ref()
             .and_then(decode_stored_presence_data);
-        messages.push(AblyPresenceMessage {
-            id: stored
+        let native = payload
+            .user_info
+            .as_ref()
+            .and_then(|value| sonic_rs::from_value::<PresenceRecord>(value).ok());
+        let message = AblyPresenceMessage {
+            id: native
                 .as_ref()
-                .and_then(|stored| stored.id.clone())
+                .map(|native| native.id.clone())
+                .or_else(|| stored.as_ref().and_then(|stored| stored.id.clone()))
                 .or_else(|| Some(format!("{}:{}:0", item.stream_id, item.serial))),
             action: Some(match item.event {
                 PresenceHistoryEventKind::MemberAdded => 2,
                 PresenceHistoryEventKind::MemberUpdated => 4,
                 PresenceHistoryEventKind::MemberRemoved => 3,
             }),
-            client_id: Some(item.user_id),
-            connection_id: item.connection_id,
-            data: match stored.as_ref() {
-                Some(stored) => stored.data.clone(),
-                None => payload.user_info.clone(),
+            client_id: Some(item.user_id.clone()),
+            connection_id: item.connection_id.clone(),
+            data: if let Some(native) = native.as_ref() {
+                native.data.clone()
+            } else if let Some(stored) = stored.as_ref() {
+                stored.data.clone()
+            } else {
+                payload.user_info.clone()
             },
-            encoding: stored.as_ref().and_then(|stored| stored.encoding.clone()),
-            timestamp: Some(item.published_at_ms),
-            extras: stored.and_then(|stored| stored.extras),
-        });
+            encoding: native
+                .as_ref()
+                .and_then(|native| native.encoding.clone())
+                .or_else(|| stored.as_ref().and_then(|stored| stored.encoding.clone())),
+            timestamp: Some(
+                native
+                    .as_ref()
+                    .map_or(item.published_at_ms, |native| native.timestamp_ms),
+            ),
+            extras: native
+                .as_ref()
+                .and_then(|native| native.extras.clone())
+                .or_else(|| stored.as_ref().and_then(|stored| stored.extras.clone())),
+        };
+        messages.push(message);
     }
-    encode_ably_rest_response(StatusCode::OK, format, &messages)
+    let links = ably_presence_link_header(&query, "presence/history", limit, next_cursor);
+    let mut response = encode_ably_rest_response(StatusCode::OK, format, &messages)?;
+    response.headers_mut().insert(
+        header::LINK,
+        links.parse().map_err(|error| {
+            AppError::InternalError(format!("invalid presence history Link header: {error}"))
+        })?,
+    );
+    Ok(response)
 }
 
 pub async fn ably_batch_publish(
@@ -5859,7 +7812,7 @@ pub async fn ably_batch_publish(
     let request_format = ably_rest_request_format(&headers);
     let response_format =
         ably_rest_response_format(&headers, query.format.as_deref(), request_format);
-    match ably_batch_publish_inner(&runtime.hub, query, headers, handler, body).await {
+    match ably_batch_publish_inner(Arc::clone(&runtime.hub), query, headers, handler, body).await {
         Ok(response) => response,
         Err(error) => ably_app_error_response_format(error, response_format),
     }
@@ -5888,22 +7841,24 @@ pub async fn ably_batch_presence(
         let requested = query
             .channels
             .split(',')
-            .filter(|channel| !channel.is_empty())
+            .map(str::to_string)
             .collect::<Vec<_>>();
         if requested.is_empty() || requested.len() > ABLY_MAX_BATCH_CHANNELS {
             return Err(AppError::InvalidInput(format!(
                 "Ably batch presence requires 1..={ABLY_MAX_BATCH_CHANNELS} channels"
             )));
         }
-        let mut responses = Vec::with_capacity(requested.len());
+        let mut work = Vec::with_capacity(requested.len());
         for requested_channel in requested {
-            let channel = match parse_ably_channel_name(requested_channel.to_string()) {
+            let channel = match parse_ably_channel_name(requested_channel.clone()) {
                 Ok(channel) => channel,
                 Err(error) => {
-                    responses.push(AblyBatchPresenceChannelResponse::Failure {
-                        channel: requested_channel.to_string(),
-                        error: error_info(StatusCode::BAD_REQUEST, 40010, error.to_string()),
-                    });
+                    work.push(AblyBatchPresenceWork::Ready(
+                        AblyBatchPresenceChannelResponse::Failure {
+                            channel: requested_channel,
+                            error: error_info(StatusCode::BAD_REQUEST, 40010, error.to_string()),
+                        },
+                    ));
                     continue;
                 }
             };
@@ -5912,19 +7867,43 @@ pub async fn ably_batch_presence(
                 &channel,
                 AblyCapabilityCheck::Presence,
             ) {
-                responses.push(AblyBatchPresenceChannelResponse::Failure {
-                    channel: channel.requested().to_string(),
-                    error: error_info(StatusCode::UNAUTHORIZED, error.code, error.message),
-                });
+                work.push(AblyBatchPresenceWork::Ready(
+                    AblyBatchPresenceChannelResponse::Failure {
+                        channel: channel.requested().to_string(),
+                        error: error_info(StatusCode::UNAUTHORIZED, error.code, error.message),
+                    },
+                ));
                 continue;
             }
-            responses.push(AblyBatchPresenceChannelResponse::Success {
-                channel: channel.requested().to_string(),
-                presence: runtime
-                    .hub
-                    .presence_snapshot(&resolved.app.id, channel.base()),
-            });
+            work.push(AblyBatchPresenceWork::Snapshot(channel));
         }
+        let app_id: Arc<str> = Arc::from(resolved.app.id.as_str());
+        let service = PresenceService::new(Arc::clone(&handler));
+        let responses = run_bounded_ordered(work, ABLY_BATCH_CONCURRENCY, move |work| {
+            let app_id = Arc::clone(&app_id);
+            let service = service.clone();
+            async move {
+                match work {
+                    AblyBatchPresenceWork::Ready(response) => response,
+                    AblyBatchPresenceWork::Snapshot(channel) => {
+                        match service.snapshot(&app_id, channel.base()).await {
+                            Ok(records) => AblyBatchPresenceChannelResponse::Success {
+                                channel: channel.requested().to_string(),
+                                presence: records
+                                    .into_iter()
+                                    .map(|record| ably_presence_from_record(record, 1))
+                                    .collect(),
+                            },
+                            Err(error) => AblyBatchPresenceChannelResponse::Failure {
+                                channel: channel.requested().to_string(),
+                                error: ably_error_info_from_app_error(AppError::from(error)),
+                            },
+                        }
+                    }
+                }
+            }
+        })
+        .await?;
         let success_count = responses
             .iter()
             .filter(|result| matches!(result, AblyBatchPresenceChannelResponse::Success { .. }))
@@ -5943,8 +7922,160 @@ pub async fn ably_batch_presence(
     result.unwrap_or_else(|error| ably_app_error_response_format(error, response_format))
 }
 
+fn validate_ably_batch_publish_requests(
+    handler: &ConnectionHandler,
+    requests: &[AblyBatchPublishRequest],
+) -> Result<(), AppError> {
+    if requests.is_empty() || requests.len() > ABLY_MAX_BATCH_SPECS {
+        return Err(AppError::InvalidInput(format!(
+            "Ably batch requires 1..={ABLY_MAX_BATCH_SPECS} specs"
+        )));
+    }
+
+    let native_channel_limit =
+        usize::try_from(handler.server_options().event_limits.max_channels_at_once)
+            .unwrap_or(usize::MAX);
+    let native_message_limit =
+        usize::try_from(handler.server_options().event_limits.max_batch_size).unwrap_or(usize::MAX);
+    let channel_limit = ABLY_MAX_BATCH_CHANNELS.min(native_channel_limit);
+    let message_limit = ABLY_MAX_BATCH_MESSAGES.min(native_message_limit);
+    let mut total_results = 0usize;
+    let mut total_operations = 0usize;
+
+    for request in requests {
+        if request.channels.is_empty() || request.channels.len() > channel_limit {
+            return Err(AppError::InvalidInput(format!(
+                "Ably batch requires 1..={channel_limit} channels per spec"
+            )));
+        }
+        let message_count = request.messages.len();
+        if message_count == 0 || message_count > message_limit {
+            return Err(AppError::InvalidInput(format!(
+                "Ably batch requires 1..={message_limit} messages per spec"
+            )));
+        }
+        total_results = total_results
+            .checked_add(request.channels.len())
+            .ok_or_else(|| {
+                AppError::InvalidInput("Ably batch result count overflow".to_string())
+            })?;
+        let operations = request
+            .channels
+            .len()
+            .checked_mul(message_count)
+            .ok_or_else(|| {
+                AppError::InvalidInput("Ably batch operation count overflow".to_string())
+            })?;
+        total_operations = total_operations.checked_add(operations).ok_or_else(|| {
+            AppError::InvalidInput("Ably batch operation count overflow".to_string())
+        })?;
+    }
+
+    if total_results > ABLY_MAX_BATCH_RESULTS {
+        return Err(AppError::InvalidInput(format!(
+            "Ably batch exceeds the {ABLY_MAX_BATCH_RESULTS}-result limit"
+        )));
+    }
+    if total_operations > ABLY_MAX_BATCH_OPERATIONS {
+        return Err(AppError::InvalidInput(format!(
+            "Ably batch exceeds the {ABLY_MAX_BATCH_OPERATIONS}-publish-operation limit"
+        )));
+    }
+    Ok(())
+}
+
+async fn publish_ably_batch_channel(
+    handler: Arc<ConnectionHandler>,
+    hub: Arc<AblyCompatHub>,
+    resolved: Arc<ResolvedAblyAuth>,
+    prepared_messages: Arc<[PreparedAblyBatchMessage]>,
+    message_id: Arc<str>,
+    requested_channel: String,
+) -> AblyBatchPublishChannelResponse {
+    let channel = match parse_ably_channel_name(requested_channel.clone()) {
+        Ok(channel) => channel,
+        Err(error) => {
+            return AblyBatchPublishChannelResponse::Failure {
+                channel: requested_channel,
+                error: error_info(StatusCode::BAD_REQUEST, 40010, error.to_string()),
+            };
+        }
+    };
+    if let Err(error) = ensure_ably_channel_capability(
+        resolved.capabilities.as_ref(),
+        &channel,
+        AblyCapabilityCheck::Publish,
+    ) {
+        return AblyBatchPublishChannelResponse::Failure {
+            channel: channel.requested().to_string(),
+            error: error_info(StatusCode::UNAUTHORIZED, error.code, error.message),
+        };
+    }
+
+    let mut serials = Vec::with_capacity(prepared_messages.len());
+    for prepared in prepared_messages.iter() {
+        match publish_ably_message(
+            AblyMessagePublishContext {
+                handler: &handler,
+                hub: &hub,
+                app: &resolved.app,
+                channel: channel.base(),
+                connection_id: prepared.connection_id.as_deref(),
+                client_id: prepared.client_id.as_deref(),
+                capabilities: resolved.capabilities.as_ref(),
+                privileged_server: resolved.capabilities.is_none(),
+            },
+            prepared.message.clone(),
+        )
+        .await
+        {
+            Ok(serial) => serials.push(serial),
+            Err(error) => {
+                return AblyBatchPublishChannelResponse::Failure {
+                    channel: channel.requested().to_string(),
+                    error: ably_error_info_from_app_error(error),
+                };
+            }
+        }
+    }
+
+    let message_count = u64::try_from(prepared_messages.len()).unwrap_or(u64::MAX);
+    let message_bytes = sonic_rs::to_vec(
+        &prepared_messages
+            .iter()
+            .map(|item| &item.message)
+            .collect::<Vec<_>>(),
+    )
+    .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+    .unwrap_or_default();
+    let stats_result = StatsObservation::messages(
+        &resolved.app.id,
+        now_ms(),
+        "inbound",
+        "rest",
+        message_count,
+        message_bytes,
+    )
+    .map_err(stats_app_error);
+    if let Err(error) = match stats_result {
+        Ok(observation) => hub.stats.record(observation).await.map_err(stats_app_error),
+        Err(error) => Err(error),
+    } {
+        return AblyBatchPublishChannelResponse::Failure {
+            channel: channel.requested().to_string(),
+            error: ably_error_info_from_app_error(error),
+        };
+    }
+
+    AblyBatchPublishChannelResponse::Success {
+        channel: channel.requested().to_string(),
+        message_id: message_id.to_string(),
+        serials,
+    }
+}
+
 async fn ably_batch_publish_inner(
-    hub: &AblyCompatHub,
+    hub: Arc<AblyCompatHub>,
     query: AblyRestQuery,
     headers: HeaderMap,
     handler: Arc<ConnectionHandler>,
@@ -5953,8 +8084,15 @@ async fn ably_batch_publish_inner(
     let request_format = ably_rest_request_format(&headers);
     let response_format =
         ably_rest_response_format(&headers, query.format.as_deref(), request_format);
+    if body.len() > ABLY_MAX_BATCH_BYTES {
+        return Err(AppError::Protocol {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            code: 40009,
+            message: format!("Ably batch body exceeds the {ABLY_MAX_BATCH_BYTES}-byte limit"),
+        });
+    }
     let resolved = resolve_ably_auth(
-        hub,
+        &hub,
         &handler,
         &headers,
         query.key.as_deref(),
@@ -5969,95 +8107,48 @@ async fn ably_batch_publish_inner(
         AblyBatchPublishBody::One(request) => (vec![request], true),
         AblyBatchPublishBody::Many(requests) => (requests, false),
     };
-    if requests.is_empty() || requests.len() > ABLY_MAX_BATCH_CHANNELS {
-        return Err(AppError::InvalidInput(
-            "Ably batch requires at least one spec".to_string(),
-        ));
-    }
+    validate_ably_batch_publish_requests(&handler, &requests)?;
+    let resolved = Arc::new(resolved);
     let mut batch_responses = Vec::with_capacity(requests.len());
     for request in requests {
-        if request.channels.is_empty() || request.channels.len() > ABLY_MAX_BATCH_CHANNELS {
-            return Err(AppError::InvalidInput(format!(
-                "Ably batch requires 1..={ABLY_MAX_BATCH_CHANNELS} channels"
-            )));
-        }
         let messages = request.messages.into_messages();
-        if messages.is_empty() || messages.len() > ABLY_MAX_BATCH_MESSAGES {
-            return Err(AppError::InvalidInput(format!(
-                "Ably batch requires 1..={ABLY_MAX_BATCH_MESSAGES} messages"
-            )));
-        }
-        let prepared_messages = messages
+        let prepared_messages: Arc<[PreparedAblyBatchMessage]> = messages
             .into_iter()
             .map(|message| {
                 validate_ably_publish_message(&message, true)?;
                 let (connection_id, effective_client_id) = rest_publish_identity(
-                    hub,
+                    &hub,
                     &resolved.app.id,
                     resolved.client_id.as_deref(),
                     &message,
                 )?;
-                Ok((message, connection_id, effective_client_id))
+                Ok(PreparedAblyBatchMessage {
+                    message,
+                    connection_id,
+                    client_id: effective_client_id,
+                })
             })
-            .collect::<Result<Vec<_>, AppError>>()?;
-        let mut responses = Vec::with_capacity(request.channels.len());
-        let batch_message_id = Uuid::new_v4().to_string();
-        for requested_channel in request.channels {
-            let channel = match parse_ably_channel_name(requested_channel.clone()) {
-                Ok(channel) => channel,
-                Err(error) => {
-                    responses.push(AblyBatchPublishChannelResponse::Failure {
-                        channel: requested_channel,
-                        error: error_info(StatusCode::BAD_REQUEST, 40010, error.to_string()),
-                    });
-                    continue;
-                }
-            };
-            if let Err(error) = ensure_ably_channel_capability(
-                resolved.capabilities.as_ref(),
-                &channel,
-                AblyCapabilityCheck::Publish,
-            ) {
-                responses.push(AblyBatchPublishChannelResponse::Failure {
-                    channel: channel.requested().to_string(),
-                    error: error_info(StatusCode::UNAUTHORIZED, error.code, error.message),
-                });
-                continue;
-            }
-            let mut serials = Vec::with_capacity(prepared_messages.len());
-            let mut publish_error = None;
-            for (message, connection_id, effective_client_id) in &prepared_messages {
-                match publish_ably_message(
-                    &handler,
-                    hub,
-                    &resolved.app,
-                    channel.base(),
-                    connection_id.as_deref(),
-                    effective_client_id.as_deref(),
-                    message.clone(),
+            .collect::<Result<Vec<_>, AppError>>()?
+            .into();
+        let message_id: Arc<str> = Arc::from(Uuid::new_v4().to_string());
+        let responses = run_bounded_ordered(request.channels, ABLY_BATCH_CONCURRENCY, {
+            let handler = Arc::clone(&handler);
+            let hub = Arc::clone(&hub);
+            let message_id = Arc::clone(&message_id);
+            let prepared_messages = Arc::clone(&prepared_messages);
+            let resolved = Arc::clone(&resolved);
+            move |requested_channel| {
+                publish_ably_batch_channel(
+                    Arc::clone(&handler),
+                    Arc::clone(&hub),
+                    Arc::clone(&resolved),
+                    Arc::clone(&prepared_messages),
+                    Arc::clone(&message_id),
+                    requested_channel,
                 )
-                .await
-                {
-                    Ok(serial) => serials.push(serial),
-                    Err(error) => {
-                        publish_error = Some(error);
-                        break;
-                    }
-                }
             }
-            if let Some(error) = publish_error {
-                responses.push(AblyBatchPublishChannelResponse::Failure {
-                    channel: channel.requested().to_string(),
-                    error: error_info(StatusCode::BAD_REQUEST, 40000, error.to_string()),
-                });
-            } else {
-                responses.push(AblyBatchPublishChannelResponse::Success {
-                    channel: channel.requested().to_string(),
-                    message_id: batch_message_id.clone(),
-                    serials,
-                });
-            }
-        }
+        })
+        .await?;
         let success_count = responses
             .iter()
             .filter(|result| matches!(result, AblyBatchPublishChannelResponse::Success { .. }))
@@ -6072,10 +8163,10 @@ async fn ably_batch_publish_inner(
     if single_request {
         let response = batch_responses
             .pop()
-            .expect("single batch request always produces one response");
-        encode_ably_rest_response(StatusCode::CREATED, response_format, &response.results)
+            .ok_or_else(|| AppError::InternalError("missing Ably batch response".to_string()))?;
+        encode_ably_legacy_batch_publish_response(response_format, response.results)
     } else {
-        encode_ably_rest_response(StatusCode::CREATED, response_format, &batch_responses)
+        encode_ably_rest_response(StatusCode::OK, response_format, &batch_responses)
     }
 }
 
@@ -6108,6 +8199,7 @@ async fn ably_channel_publish_inner(
     handler: Arc<ConnectionHandler>,
     body: Bytes,
 ) -> Result<Response, AppError> {
+    let request_bytes = u64::try_from(body.len()).unwrap_or(u64::MAX);
     let request_format = ably_rest_request_format(&headers);
     let response_format =
         ably_rest_response_format(&headers, query.format.as_deref(), request_format);
@@ -6134,6 +8226,7 @@ async fn ably_channel_publish_inner(
             "Ably REST publish requires at least one message".to_string(),
         ));
     }
+    let message_count = u64::try_from(messages.len()).unwrap_or(u64::MAX);
 
     let prepared_messages = messages
         .into_iter()
@@ -6154,12 +8247,16 @@ async fn ably_channel_publish_inner(
         prepared_messages.into_iter().enumerate()
     {
         let serial = publish_ably_message(
-            &handler,
-            hub,
-            &resolved.app,
-            channel_name.base(),
-            connection_id.as_deref(),
-            effective_client_id.as_deref(),
+            AblyMessagePublishContext {
+                handler: &handler,
+                hub,
+                app: &resolved.app,
+                channel: channel_name.base(),
+                connection_id: connection_id.as_deref(),
+                client_id: effective_client_id.as_deref(),
+                capabilities: resolved.capabilities.as_ref(),
+                privileged_server: resolved.capabilities.is_none(),
+            },
             message,
         )
         .await
@@ -6168,6 +8265,20 @@ async fn ably_channel_publish_inner(
         })?;
         serials.push(Some(serial));
     }
+
+    let observation = StatsObservation::messages(
+        &resolved.app.id,
+        now_ms(),
+        "inbound",
+        "rest",
+        message_count,
+        request_bytes,
+    )
+    .map_err(stats_app_error)?;
+    hub.stats
+        .record(observation)
+        .await
+        .map_err(stats_app_error)?;
 
     encode_ably_rest_response(
         StatusCode::CREATED,
@@ -6569,11 +8680,6 @@ pub async fn ably_publish_annotations(
         .await
         .map_err(ably_auth_app_error)?;
         let channel = parse_ably_channel_name(channel_name)?;
-        ensure_ably_channel_capability_app_error(
-            resolved.capabilities.as_ref(),
-            &channel,
-            AblyCapabilityCheck::AnnotationPublish,
-        )?;
         let message_serial = MessageSerial::new(message_serial)?;
         let annotations: Vec<AblyAnnotation> = decode_value(body.as_ref(), request_format)
             .map_err(|error| AppError::InvalidInput(format!("Invalid annotation body: {error}")))?;
@@ -6583,33 +8689,72 @@ pub async fn ably_publish_annotations(
             ));
         }
         for annotation in annotations {
-            if annotation.action.unwrap_or(0) != 0 {
-                return Err(AppError::InvalidInput(
-                    "annotation.delete requires a target annotation serial".to_string(),
-                ));
-            }
-            let annotation_type =
-                AnnotationType::new(annotation.annotation_type.ok_or_else(|| {
-                    AppError::InvalidInput("annotation.type is required".to_string())
-                })?)?;
-            handler
-                .publish_annotation_runtime(PublishAnnotationRuntimeRequest {
-                    app: resolved.app.clone(),
-                    channel: channel.base().to_string(),
-                    message_serial: message_serial.clone(),
-                    annotation_type,
-                    name: annotation.name,
-                    client_id: annotation.client_id.or_else(|| resolved.client_id.clone()),
-                    count: annotation.count,
-                    data: annotation.data,
-                    encoding: annotation.encoding,
-                })
-                .await?;
+            let command = parse_ably_annotation_command(
+                annotation,
+                Some(&message_serial),
+                resolved.client_id.as_deref(),
+            )?;
+            apply_ably_annotation_command(
+                &handler,
+                &resolved.app,
+                &channel,
+                resolved.capabilities.as_ref(),
+                resolved.client_id.as_deref(),
+                command,
+            )
+            .await?;
         }
         encode_ably_rest_response(StatusCode::CREATED, response_format, &json!({}))
     }
     .await;
     result.unwrap_or_else(|error| ably_app_error_response_format(error, response_format))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AblyAnnotationCursor {
+    version: u8,
+    app_id: String,
+    channel: String,
+    message_serial: String,
+    annotation_serial: String,
+}
+
+fn encode_ably_annotation_cursor(
+    app_id: &str,
+    channel: &str,
+    message_serial: &MessageSerial,
+    annotation_serial: &AnnotationSerial,
+) -> Result<String, AppError> {
+    let bytes = sonic_rs::to_vec(&AblyAnnotationCursor {
+        version: 1,
+        app_id: app_id.to_string(),
+        channel: channel.to_string(),
+        message_serial: message_serial.as_str().to_string(),
+        annotation_serial: annotation_serial.as_str().to_string(),
+    })?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn decode_ably_annotation_cursor(
+    raw: &str,
+    app_id: &str,
+    channel: &str,
+    message_serial: &MessageSerial,
+) -> Result<AnnotationSerial, AppError> {
+    let invalid = || AppError::InvalidInput("invalid annotation cursor".to_string());
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw)
+        .map_err(|_| invalid())?;
+    let cursor: AblyAnnotationCursor = sonic_rs::from_slice(&bytes).map_err(|_| invalid())?;
+    if cursor.version != 1
+        || cursor.app_id != app_id
+        || cursor.channel != channel
+        || cursor.message_serial != message_serial.as_str()
+    {
+        return Err(invalid());
+    }
+    AnnotationSerial::new(cursor.annotation_serial).map_err(|_| invalid())
 }
 
 pub async fn ably_channel_annotations(
@@ -6639,23 +8784,18 @@ pub async fn ably_channel_annotations(
             AblyCapabilityCheck::AnnotationSubscribe,
         )?;
         let message_serial = MessageSerial::new(message_serial)?;
+        require_ably_annotations_enabled(&handler, &resolved.app, channel.base())?;
         let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
         let after = query
             .cursor
             .as_deref()
             .map(|cursor| {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(cursor)
-                    .map_err(|_| AppError::InvalidInput("invalid annotation cursor".to_string()))
-                    .and_then(|bytes| {
-                        String::from_utf8(bytes)
-                            .map_err(|_| {
-                                AppError::InvalidInput("invalid annotation cursor".to_string())
-                            })
-                            .and_then(|serial| {
-                                AnnotationSerial::new(serial).map_err(AppError::from)
-                            })
-                    })
+                decode_ably_annotation_cursor(
+                    cursor,
+                    &resolved.app.id,
+                    channel.base(),
+                    &message_serial,
+                )
             })
             .transpose()?;
         let raw = handler
@@ -6663,23 +8803,31 @@ pub async fn ably_channel_annotations(
             .replay_raw(RawAnnotationReplayRequest {
                 app_id: resolved.app.id.clone(),
                 channel_id: channel.base().to_string(),
+                message_serial: Some(message_serial.clone()),
                 after_annotation_serial: after,
-                limit: ABLY_COMPAT_MAX_REPLAY_MESSAGES,
+                limit: limit.saturating_add(1),
             })
             .await?;
         let mut matching = raw
             .into_iter()
-            .filter(|event| event.annotation.message_serial == message_serial)
             .take(limit.saturating_add(1))
             .collect::<Vec<_>>();
         let has_next = matching.len() > limit;
         if has_next {
             matching.pop();
         }
-        let next_cursor = has_next.then(|| matching.last()).flatten().map(|event| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(event.annotation.serial.as_str())
-        });
+        let next_cursor = has_next
+            .then(|| matching.last())
+            .flatten()
+            .map(|event| {
+                encode_ably_annotation_cursor(
+                    &resolved.app.id,
+                    channel.base(),
+                    &message_serial,
+                    &event.annotation.serial,
+                )
+            })
+            .transpose()?;
         let items = matching
             .into_iter()
             .map(|event| AblyAnnotation {
@@ -6700,19 +8848,24 @@ pub async fn ably_channel_annotations(
             })
             .collect::<Vec<_>>();
         let mut response = encode_ably_rest_response(StatusCode::OK, response_format, &items)?;
-        let mut links = vec![format!("<./annotations?limit={limit}>; rel=\"first\"")];
+        let format_query = query
+            .format
+            .as_deref()
+            .map(|format| format!("&format={}", urlencoding::encode(format)))
+            .unwrap_or_default();
+        let mut links = vec![format!(
+            "<./annotations?limit={limit}{format_query}>; rel=\"first\""
+        )];
         if let Some(cursor) = next_cursor {
             links.push(format!(
-                "<./annotations?limit={limit}&cursor={}>; rel=\"next\"",
+                "<./annotations?limit={limit}&cursor={}{format_query}>; rel=\"next\"",
                 urlencoding::encode(&cursor)
             ));
         }
-        response.headers_mut().insert(
-            header::LINK,
-            links.join(", ").parse().map_err(|error| {
-                AppError::InternalError(format!("invalid annotations Link header: {error}"))
-            })?,
-        );
+        let link = HeaderValue::from_str(&links.join(", ")).map_err(|error| {
+            AppError::InternalError(format!("invalid annotations Link header: {error}"))
+        })?;
+        response.headers_mut().insert(header::LINK, link);
         Ok(response)
     }
     .await;
@@ -6720,7 +8873,7 @@ pub async fn ably_channel_annotations(
 }
 
 pub async fn ably_channel_message_mutation(
-    Path((channel_name, _message_serial)): Path<(String, String)>,
+    Path((channel_name, message_serial)): Path<(String, String)>,
     Query(query): Query<AblyRestQuery>,
     headers: HeaderMap,
     Extension(runtime): Extension<Arc<AblyCompatRuntime>>,
@@ -6777,7 +8930,7 @@ pub async fn ably_channel_message_mutation(
         Ok(messages) => messages,
         Err(error) => return ably_app_error_response_format(error, response_format),
     };
-    let Some(message) = messages.pop() else {
+    let Some(mut message) = messages.pop() else {
         return ably_error_response_format(
             StatusCode::BAD_REQUEST,
             40000,
@@ -6786,6 +8939,9 @@ pub async fn ably_channel_message_mutation(
         );
     };
     if let Err(error) = validate_ably_publish_message(&message, true) {
+        return ably_app_error_response_format(error, response_format);
+    }
+    if let Err(error) = reconcile_mutation_message_serial(&mut message, &message_serial) {
         return ably_app_error_response_format(error, response_format);
     }
     let (connection_id, effective_client_id) = match rest_publish_identity(
@@ -6798,12 +8954,16 @@ pub async fn ably_channel_message_mutation(
         Err(error) => return ably_app_error_response_format(error, response_format),
     };
     match publish_ably_message(
-        &handler,
-        &runtime.hub,
-        &resolved.app,
-        channel_name.base(),
-        connection_id.as_deref(),
-        effective_client_id.as_deref(),
+        AblyMessagePublishContext {
+            handler: &handler,
+            hub: &runtime.hub,
+            app: &resolved.app,
+            channel: channel_name.base(),
+            connection_id: connection_id.as_deref(),
+            client_id: effective_client_id.as_deref(),
+            capabilities: resolved.capabilities.as_ref(),
+            privileged_server: resolved.capabilities.is_none(),
+        },
         message,
     )
     .await
@@ -6815,6 +8975,23 @@ pub async fn ably_channel_message_mutation(
         )
         .unwrap_or_else(ably_app_error_response),
         Err(error) => ably_app_error_response_format(error, response_format),
+    }
+}
+
+fn reconcile_mutation_message_serial(
+    message: &mut AblyMessage,
+    path_serial: &str,
+) -> Result<(), AppError> {
+    let path_serial = parse_message_serial(path_serial)?;
+    match message.serial.as_deref() {
+        Some(body_serial) if body_serial != path_serial.as_str() => Err(AppError::InvalidInput(
+            "mutation body serial must match the request path".to_string(),
+        )),
+        Some(_) => Ok(()),
+        None => {
+            message.serial = Some(path_serial.as_str().to_string());
+            Ok(())
+        }
     }
 }
 
@@ -6939,6 +9116,14 @@ pub async fn ably_revoke_tokens(
             response_format,
         );
     }
+    if body.len() > ABLY_MAX_BATCH_BYTES {
+        return ably_error_response_format(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            40009,
+            format!("Token revocation body exceeds the {ABLY_MAX_BATCH_BYTES}-byte limit"),
+            response_format,
+        );
+    }
     let request: AblyRevocationRequest = match decode_value(body.as_ref(), request_format) {
         Ok(request) => request,
         Err(error) => {
@@ -6977,65 +9162,64 @@ pub async fn ably_revoke_tokens(
     } else {
         now
     };
-    let mut results = Vec::with_capacity(request.targets.len());
-    let mut success_count = 0;
-    for target in request.targets {
-        let parsed = target.split_once(':').filter(|(target_type, value)| {
-            matches!(*target_type, "clientId" | "revocationKey" | "channel")
-                && !value.is_empty()
-                && value.len() <= 256
-        });
-        let Some((target_type, target_value)) = parsed else {
-            results.push(AblyRevocationTargetResult {
-                target,
-                issued_before: None,
-                applies_at: None,
-                error: Some(error_info(
-                    StatusCode::BAD_REQUEST,
-                    40000,
-                    "Invalid token revocation target",
-                )),
-            });
-            continue;
-        };
-        let record = AblyRevocationRecord {
-            target_type: target_type.to_string(),
-            target_value: target_value.to_string(),
-            issued_before,
-            applies_at,
-        };
-        if let Err(error) = runtime
-            .hub
-            .store_revocation(&key.app.id, target_type, target_value, record)
-            .await
-        {
-            return ably_error_response_format(
-                error.status,
-                error.code,
-                error.message,
-                response_format,
-            );
+    let app_id: Arc<str> = Arc::from(key.app.id.as_str());
+    let results = match run_bounded_ordered(request.targets, ABLY_BATCH_CONCURRENCY, {
+        let app_id = Arc::clone(&app_id);
+        let hub = Arc::clone(&runtime.hub);
+        move |target| {
+            let app_id = Arc::clone(&app_id);
+            let hub = Arc::clone(&hub);
+            async move {
+                let parsed = target.split_once(':').filter(|(target_type, value)| {
+                    matches!(*target_type, "clientId" | "revocationKey" | "channel")
+                        && !value.is_empty()
+                        && value.len() <= 256
+                });
+                let Some((target_type, target_value)) = parsed else {
+                    return AblyRevocationTargetResult {
+                        target,
+                        issued_before: None,
+                        applies_at: None,
+                        error: Some(error_info(
+                            StatusCode::BAD_REQUEST,
+                            40000,
+                            "Invalid token revocation target",
+                        )),
+                    };
+                };
+                let record = AblyRevocationRecord {
+                    target_type: target_type.to_string(),
+                    target_value: target_value.to_string(),
+                    issued_before,
+                    applies_at,
+                };
+                let error = hub
+                    .store_revocation(&app_id, target_type, target_value, record)
+                    .await
+                    .err()
+                    .map(|error| error_info(error.status, error.code, error.message));
+                AblyRevocationTargetResult {
+                    target,
+                    issued_before: error.is_none().then_some(issued_before),
+                    applies_at: error.is_none().then_some(applies_at),
+                    error,
+                }
+            }
         }
-        success_count += 1;
-        results.push(AblyRevocationTargetResult {
-            target,
-            issued_before: Some(issued_before),
-            applies_at: Some(applies_at),
-            error: None,
-        });
-    }
+    })
+    .await
+    {
+        Ok(results) => results,
+        Err(error) => return ably_app_error_response_format(error, response_format),
+    };
+    let success_count = results
+        .iter()
+        .filter(|result| result.error.is_none())
+        .count();
     if success_count > 0 {
-        if request.allow_reauth_margin {
-            runtime.hub.notify_revocation_change(&key.app.id, true);
-            let hub = Arc::clone(&runtime.hub);
-            let app_id = key.app.id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(30_001)).await;
-                hub.notify_revocation_change(&app_id, false);
-            });
-        } else {
-            runtime.hub.notify_revocation_change(&key.app.id, false);
-        }
+        runtime
+            .hub
+            .notify_revocation_change(&key.app.id, request.allow_reauth_margin);
     }
     let result = AblyRevocationResult {
         success_count,
@@ -7308,14 +9492,11 @@ fn send_ably_attached(
 ) -> Option<AblyDeltaState> {
     #[cfg(feature = "delta")]
     let mut delta_state = params.as_ref().and_then(ably_delta_state);
-    let flags = flags.map(|flags| {
+    let flags = if presence.is_empty() {
         flags
-            | if presence.is_empty() {
-                0
-            } else {
-                FLAG_HAS_PRESENCE
-            }
-    });
+    } else {
+        Some(flags.unwrap_or_default() | FLAG_HAS_PRESENCE)
+    };
     send_protocol(
         sender,
         AblyProtocolMessage {
@@ -7341,8 +9522,8 @@ fn send_ably_attached(
         #[cfg(feature = "delta")]
         if let Some(current) = delta_state.as_ref()
             && message.action == ACTION_MESSAGE
-            && let Some((projected, next)) = project_ably_delta_message(message.clone(), current)
         {
+            let (projected, next) = project_ably_delta_message(message.clone(), current);
             message = projected;
             delta_state = Some(next);
         }
@@ -7435,6 +9616,52 @@ fn ably_protocol_message_from_envelope(
     projection: AblyMessageProjection,
     channel_serial: Option<String>,
 ) -> Result<AblyProtocolMessage, AblyRecoveryFailure> {
+    if message.event.as_deref() == Some(ANNOTATION_EVENT_NAME) {
+        let event: AnnotationEventData = decode_native_message_data(message.data.as_ref())
+            .map_err(|error| {
+                AblyRecoveryFailure::channel(
+                    90000,
+                    format!("unable to recover annotation on channel '{channel}': {error}"),
+                )
+            })?;
+        return Ok(AblyProtocolMessage {
+            action: ACTION_ANNOTATION,
+            timestamp: Some(event.timestamp),
+            channel: Some(channel.to_string()),
+            channel_serial,
+            annotations: Some(vec![ably_annotation_from_native_event(event)]),
+            ..empty_protocol_message(ACTION_ANNOTATION)
+        });
+    }
+    if message.event.as_deref() == Some(MESSAGE_SUMMARY_EVENT_NAME) {
+        let value: Value = decode_native_message_data(message.data.as_ref()).map_err(|error| {
+            AblyRecoveryFailure::channel(
+                90000,
+                format!("unable to recover annotation summary on channel '{channel}': {error}"),
+            )
+        })?;
+        let serial = value.get("serial").and_then(Value::as_str).ok_or_else(|| {
+            AblyRecoveryFailure::channel(
+                90000,
+                format!(
+                    "unable to recover annotation summary on channel '{channel}': missing serial"
+                ),
+            )
+        })?;
+        return Ok(AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            timestamp: envelope.published_at_ms,
+            channel: Some(channel.to_string()),
+            channel_serial,
+            messages: Some(vec![AblyMessage {
+                serial: Some(serial.to_string()),
+                action: Some(MESSAGE_SUMMARY),
+                annotations: ably_summary_annotations(&value),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        });
+    }
     let ably_message =
         envelope_to_ably_message(envelope, message, projection).map_err(|error| {
             AblyRecoveryFailure::channel(
@@ -7450,6 +9677,26 @@ fn ably_protocol_message_from_envelope(
         messages: Some(vec![ably_message]),
         ..empty_protocol_message(ACTION_MESSAGE)
     })
+}
+
+fn decode_native_message_data<T>(data: Option<&MessageData>) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match data {
+        Some(MessageData::Json(value)) => sonic_rs::to_vec(value)
+            .and_then(|bytes| sonic_rs::from_slice(&bytes))
+            .map_err(|error| format!("invalid structured payload: {error}")),
+        Some(MessageData::String(value)) => {
+            sonic_rs::from_str(value).map_err(|error| format!("invalid JSON payload: {error}"))
+        }
+        Some(MessageData::Binary(value)) => sonic_rs::from_slice(value)
+            .map_err(|error| format!("invalid binary JSON payload: {error}")),
+        Some(data @ MessageData::Structured { .. }) => sonic_rs::to_value(data)
+            .and_then(|value| sonic_rs::from_value(&value))
+            .map_err(|error| format!("invalid structured payload: {error}")),
+        None => Err("missing payload".to_string()),
+    }
 }
 
 fn connected_message(
@@ -7482,7 +9729,10 @@ enum AblyCapabilityCheck {
     History,
     Presence,
     AnnotationPublish,
+    AnnotationMutate,
     AnnotationSubscribe,
+    AnnotationDeleteOwn,
+    AnnotationDeleteAny,
     AnyChannelAccess,
 }
 
@@ -7494,7 +9744,10 @@ impl AblyCapabilityCheck {
             Self::History => "history",
             Self::Presence => "presence",
             Self::AnnotationPublish => "annotation publish",
+            Self::AnnotationMutate => "annotation mutation",
             Self::AnnotationSubscribe => "annotation subscribe",
+            Self::AnnotationDeleteOwn => "annotation delete own",
+            Self::AnnotationDeleteAny => "annotation delete any",
             Self::AnyChannelAccess => "channel access",
         }
     }
@@ -7518,8 +9771,19 @@ fn ensure_ably_capability(
             .as_deref()
             .is_some_and(|patterns| ConnectionCapabilities::matches_any(patterns, channel)),
         AblyCapabilityCheck::AnnotationPublish => capabilities.allows_annotation_publish(channel),
+        AblyCapabilityCheck::AnnotationMutate => {
+            capabilities.allows_annotation_publish(channel)
+                || capabilities.allows_annotation_delete_own(channel)
+                || capabilities.allows_annotation_delete_any(channel)
+        }
         AblyCapabilityCheck::AnnotationSubscribe => {
             capabilities.allows_annotation_subscribe(channel)
+        }
+        AblyCapabilityCheck::AnnotationDeleteOwn => {
+            capabilities.allows_annotation_delete_own(channel)
+        }
+        AblyCapabilityCheck::AnnotationDeleteAny => {
+            capabilities.allows_annotation_delete_any(channel)
         }
         AblyCapabilityCheck::AnyChannelAccess => {
             capabilities.allows_publish(channel)
@@ -7611,8 +9875,19 @@ fn ensure_ably_channel_capability_parts(
         AblyCapabilityCheck::AnnotationPublish => {
             matches(capabilities.annotation_publish.as_deref())
         }
+        AblyCapabilityCheck::AnnotationMutate => {
+            matches(capabilities.annotation_publish.as_deref())
+                || matches(capabilities.annotation_delete_own.as_deref())
+                || matches(capabilities.annotation_delete_any.as_deref())
+        }
         AblyCapabilityCheck::AnnotationSubscribe => {
             matches(capabilities.annotation_subscribe.as_deref())
+        }
+        AblyCapabilityCheck::AnnotationDeleteOwn => {
+            matches(capabilities.annotation_delete_own.as_deref())
+        }
+        AblyCapabilityCheck::AnnotationDeleteAny => {
+            matches(capabilities.annotation_delete_any.as_deref())
         }
         AblyCapabilityCheck::AnyChannelAccess => [
             capabilities.publish.as_deref(),
@@ -7903,6 +10178,8 @@ fn all_ably_operations() -> &'static [&'static str] {
         "presence",
         "annotation-subscribe",
         "annotation-publish",
+        "annotation-delete-own",
+        "annotation-delete-any",
         "message-update-own",
         "message-update-any",
         "message-delete-own",
@@ -8003,6 +10280,8 @@ fn restricted_ably_capabilities() -> ConnectionCapabilities {
         message_delete_any: Some(Vec::new()),
         message_append_own: Some(Vec::new()),
         message_append_any: Some(Vec::new()),
+        push_admin: Some(Vec::new()),
+        push_subscribe: Some(Vec::new()),
     }
 }
 
@@ -8040,6 +10319,14 @@ fn add_ably_capability_operation(
             add_capability_pattern(&mut capabilities.annotation_publish, resource);
             Ok(())
         }
+        "annotation-delete-own" => {
+            add_capability_pattern(&mut capabilities.annotation_delete_own, resource);
+            Ok(())
+        }
+        "annotation-delete-any" => {
+            add_capability_pattern(&mut capabilities.annotation_delete_any, resource);
+            Ok(())
+        }
         "message-update-own" => {
             add_capability_pattern(&mut capabilities.message_update_own, resource);
             Ok(())
@@ -8056,8 +10343,16 @@ fn add_ably_capability_operation(
             add_capability_pattern(&mut capabilities.message_delete_any, resource);
             Ok(())
         }
-        "object-subscribe" | "object-publish" | "stats" | "channel-metadata" | "push-subscribe"
-        | "push-admin" | "privileged-headers" => Ok(()),
+        "push-admin" => {
+            add_capability_pattern(&mut capabilities.push_admin, resource);
+            Ok(())
+        }
+        "push-subscribe" => {
+            add_capability_pattern(&mut capabilities.push_subscribe, resource);
+            Ok(())
+        }
+        "object-subscribe" | "object-publish" | "stats" | "channel-metadata"
+        | "privileged-headers" => Ok(()),
         other => Err(AppError::InvalidInput(format!(
             "Unsupported Ably token capability operation '{other}'"
         ))),
@@ -8079,6 +10374,8 @@ fn add_all_supported_ably_capabilities(capabilities: &mut ConnectionCapabilities
     add_capability_pattern(&mut capabilities.message_delete_any, resource);
     add_capability_pattern(&mut capabilities.message_append_own, resource);
     add_capability_pattern(&mut capabilities.message_append_any, resource);
+    add_capability_pattern(&mut capabilities.push_admin, resource);
+    add_capability_pattern(&mut capabilities.push_subscribe, resource);
 }
 
 fn add_capability_pattern(patterns: &mut Option<Vec<String>>, pattern: &str) {
@@ -8172,6 +10469,8 @@ async fn resolve_ably_auth_with_expiry(
                 credential_id: credential_id(&access_token),
                 revocable: record.revocable,
                 revocation_key: record.revocation_key,
+                #[cfg(feature = "push")]
+                push_device_id: None,
             });
         }
         return resolve_ably_jwt(
@@ -8206,6 +10505,8 @@ async fn resolve_ably_auth_with_expiry(
         credential_id: format!("key:{}", key.key_name),
         revocable: false,
         revocation_key: None,
+        #[cfg(feature = "push")]
+        push_device_id: None,
     })
 }
 
@@ -8307,6 +10608,8 @@ async fn resolve_ably_jwt(
         credential_id: credential_id(token),
         revocable: key.revocable_tokens,
         revocation_key: claims.revocation_key,
+        #[cfg(feature = "push")]
+        push_device_id: None,
     })
 }
 
@@ -8522,6 +10825,34 @@ fn encode_ably_rest_response<T: Serialize>(
                 .into_response())
         }
     }
+}
+
+fn encode_ably_legacy_batch_publish_response(
+    format: AblyFormat,
+    responses: Vec<AblyBatchPublishChannelResponse>,
+) -> Result<Response, AppError> {
+    if responses
+        .iter()
+        .all(|response| matches!(response, AblyBatchPublishChannelResponse::Success { .. }))
+    {
+        return encode_ably_rest_response(StatusCode::CREATED, format, &responses);
+    }
+
+    let error = error_info(
+        StatusCode::BAD_REQUEST,
+        40020,
+        "Batched response includes errors",
+    );
+    let mut response = encode_ably_rest_response(
+        StatusCode::BAD_REQUEST,
+        format,
+        &AblyLegacyBatchResponse {
+            error: error.clone(),
+            batch_response: responses,
+        },
+    )?;
+    insert_ably_error_headers(&mut response, &error);
+    Ok(response)
 }
 
 fn effective_ably_client_id(
@@ -9052,6 +11383,44 @@ fn error_info(status: StatusCode, code: u32, message: impl Into<String>) -> Ably
     }
 }
 
+fn ably_error_info_from_app_error(error: AppError) -> AblyErrorInfo {
+    let (status, code, message) = match error {
+        AppError::AppNotFound(message) | AppError::NotFound(message) => {
+            (StatusCode::NOT_FOUND, 40400, message)
+        }
+        AppError::InvalidInput(message) | AppError::FeatureDisabled(message) => {
+            (StatusCode::BAD_REQUEST, 40000, message)
+        }
+        AppError::Protocol {
+            status,
+            code,
+            message,
+        }
+        | AppError::AiTransport {
+            status,
+            code,
+            message,
+            ..
+        } => (status, code, message),
+        AppError::ApiAuthFailed(message) => (StatusCode::UNAUTHORIZED, 40140, message),
+        AppError::Forbidden(message) => (StatusCode::FORBIDDEN, 40160, message),
+        AppError::InternalError(message) => (StatusCode::INTERNAL_SERVER_ERROR, 50000, message),
+        AppError::SerializationError(error) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, 50000, error.to_string())
+        }
+    };
+    error_info(status, code, message)
+}
+
+fn insert_ably_error_headers(response: &mut Response, error: &AblyErrorInfo) {
+    if let Ok(value) = HeaderValue::from_str(&error.code.to_string()) {
+        response.headers_mut().insert("x-ably-errorcode", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&error.message) {
+        response.headers_mut().insert("x-ably-errormessage", value);
+    }
+}
+
 fn ably_error_response(status: StatusCode, code: u32, message: impl Into<String>) -> Response {
     ably_error_response_format(status, code, message, AblyFormat::Json)
 }
@@ -9062,15 +11431,21 @@ fn ably_error_response_format(
     message: impl Into<String>,
     format: AblyFormat,
 ) -> Response {
-    let message = message.into();
-    encode_ably_rest_response(
+    let error = error_info(status, code, message);
+    let encoded = encode_ably_rest_response(
         status,
         format,
         &AblyErrorBody {
-            error: error_info(status, code, message),
+            error: error.clone(),
         },
-    )
-    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    );
+    match encoded {
+        Ok(mut response) => {
+            insert_ably_error_headers(&mut response, &error);
+            response
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 fn ably_app_error_response(error: AppError) -> Response {
@@ -9078,31 +11453,13 @@ fn ably_app_error_response(error: AppError) -> Response {
 }
 
 fn ably_app_error_response_format(error: AppError, format: AblyFormat) -> Response {
-    match error {
-        AppError::NotFound(message) => {
-            ably_error_response_format(StatusCode::NOT_FOUND, 40400, message, format)
-        }
-        AppError::InvalidInput(message) | AppError::FeatureDisabled(message) => {
-            ably_error_response_format(StatusCode::BAD_REQUEST, 40000, message, format)
-        }
-        AppError::Protocol {
-            status,
-            code,
-            message,
-        } => ably_error_response_format(status, code, message, format),
-        AppError::ApiAuthFailed(message) => {
-            ably_error_response_format(StatusCode::UNAUTHORIZED, 40140, message, format)
-        }
-        AppError::Forbidden(message) => {
-            ably_error_response_format(StatusCode::FORBIDDEN, 40160, message, format)
-        }
-        other => ably_error_response_format(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            50000,
-            other.to_string(),
-            format,
-        ),
-    }
+    let error = ably_error_info_from_app_error(error);
+    ably_error_response_format(
+        StatusCode::from_u16(error.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        error.code,
+        error.message,
+        format,
+    )
 }
 
 fn parse_ably_history_direction(raw: Option<&str>) -> Result<HistoryDirection, AppError> {
@@ -9174,6 +11531,61 @@ fn ably_history_link_params(
         params.push(format!("format={}", urlencoding::encode(format)));
     }
     Ok(params)
+}
+
+fn decode_presence_snapshot_cursor(cursor: Option<&str>) -> Result<usize, AppError> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| AppError::InvalidInput("Invalid presence cursor".to_string()))?;
+    let bytes: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| AppError::InvalidInput("Invalid presence cursor".to_string()))?;
+    usize::try_from(u64::from_be_bytes(bytes))
+        .map_err(|_| AppError::InvalidInput("Invalid presence cursor".to_string()))
+}
+
+fn ably_presence_link_header(
+    query: &AblyPresenceQuery,
+    path: &str,
+    limit: usize,
+    next_cursor: Option<String>,
+) -> String {
+    let params = |cursor: Option<&str>| {
+        let mut params = vec![format!("limit={limit}")];
+        if let Some(cursor) = cursor {
+            params.push(format!("cursor={}", urlencoding::encode(cursor)));
+        }
+        if let Some(client_id) = query.client_id.as_deref() {
+            params.push(format!("clientId={}", urlencoding::encode(client_id)));
+        }
+        if let Some(connection_id) = query.connection_id.as_deref() {
+            params.push(format!(
+                "connectionId={}",
+                urlencoding::encode(connection_id)
+            ));
+        }
+        if let Some(direction) = query.direction.as_deref() {
+            params.push(format!("direction={}", urlencoding::encode(direction)));
+        }
+        if let Some(start) = query.start {
+            params.push(format!("start={start}"));
+        }
+        if let Some(end) = query.end {
+            params.push(format!("end={end}"));
+        }
+        if let Some(format) = query.format.as_deref() {
+            params.push(format!("format={}", urlencoding::encode(format)));
+        }
+        params.join("&")
+    };
+    let mut links = vec![format!("<./{path}?{}>; rel=\"first\"", params(None))];
+    if let Some(cursor) = next_cursor.as_deref() {
+        links.push(format!("<./{path}?{}>; rel=\"next\"", params(Some(cursor))));
+    }
+    links.join(", ")
 }
 
 fn parse_ably_channel_name(raw: String) -> Result<AblyChannelName, AppError> {
@@ -9578,6 +11990,300 @@ mod tests {
     }
 
     #[test]
+    fn annotation_delete_capabilities_are_independent_operations() {
+        let capabilities = ably_capability_value_to_sockudo(&serde_json::json!({
+            "mutable:*": ["annotation-delete-own"],
+            "moderated:*": ["annotation-delete-any"]
+        }))
+        .expect("annotation delete capabilities should parse");
+
+        assert!(capabilities.allows_annotation_delete_own("mutable:room"));
+        assert!(!capabilities.allows_annotation_delete_any("mutable:room"));
+        assert!(capabilities.allows_annotation_delete_any("moderated:room"));
+        assert!(
+            ensure_ably_channel_capability(
+                Some(&capabilities),
+                &AblyChannelName::parse("mutable:room".to_string()).unwrap(),
+                AblyCapabilityCheck::AnnotationMutate,
+            )
+            .is_ok()
+        );
+        assert!(!capabilities.allows_message_mutation_any(
+            sockudo_core::versioned_message_auth::MutationKind::Delete,
+            "moderated:room"
+        ));
+    }
+
+    #[test]
+    fn annotation_cursor_is_opaque_and_scoped_to_app_channel_and_message() {
+        let message_serial = MessageSerial::new("msg:1").unwrap();
+        let annotation_serial = AnnotationSerial::new("ann:2").unwrap();
+        let cursor = encode_ably_annotation_cursor(
+            "app",
+            "mutable:room",
+            &message_serial,
+            &annotation_serial,
+        )
+        .unwrap();
+
+        assert!(!cursor.contains("ann:2"));
+        assert_eq!(
+            decode_ably_annotation_cursor(&cursor, "app", "mutable:room", &message_serial,)
+                .unwrap(),
+            annotation_serial
+        );
+        assert!(
+            decode_ably_annotation_cursor(&cursor, "app", "mutable:other", &message_serial,)
+                .is_err()
+        );
+        assert!(
+            decode_ably_annotation_cursor(
+                &cursor,
+                "app",
+                "mutable:room",
+                &MessageSerial::new("msg:other").unwrap(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn multiple_summary_renames_native_client_counts_only_at_ably_edge() {
+        let native = json!({
+            "annotations": {
+                "summary": {
+                    "reaction:multiple.v1": {
+                        "vote": {
+                            "total": 3,
+                            "clientCounts": { "client-1": 2 },
+                            "totalUnidentified": 1,
+                            "clipped": false,
+                            "totalClientIds": 1
+                        }
+                    },
+                    "reaction:distinct.v1": {
+                        "like": { "total": 1, "clientIds": ["client-1"], "clipped": false }
+                    }
+                }
+            }
+        });
+
+        let projected = ably_summary_annotations(&native).unwrap();
+        let multiple = &projected["summary"]["reaction:multiple.v1"]["vote"];
+        assert_eq!(multiple["clientIds"]["client-1"].as_u64(), Some(2));
+        assert!(multiple.get("clientCounts").is_none());
+        assert_eq!(
+            projected["summary"]["reaction:distinct.v1"]["like"]["clientIds"][0].as_str(),
+            Some("client-1")
+        );
+        assert!(native["summary"].is_null());
+        assert_eq!(
+            native["annotations"]["summary"]["reaction:multiple.v1"]["vote"]
+                ["clientCounts"]["client-1"]
+                .as_u64(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn delete_own_and_delete_any_authorize_independently_of_message_mutation() {
+        let channel = AblyChannelName::parse("mutable:room".to_string()).unwrap();
+        let own = ably_capability_value_to_sockudo(&serde_json::json!({
+            "mutable:*": ["annotation-delete-own"]
+        }))
+        .unwrap();
+        assert!(
+            authorize_ably_annotation_delete(
+                Some(&own),
+                &channel,
+                Some("client-1"),
+                Some("client-1"),
+            )
+            .is_ok()
+        );
+        assert!(
+            authorize_ably_annotation_delete(
+                Some(&own),
+                &channel,
+                Some("client-2"),
+                Some("client-1"),
+            )
+            .is_err()
+        );
+
+        let any = ably_capability_value_to_sockudo(&serde_json::json!({
+            "mutable:*": ["annotation-delete-any"]
+        }))
+        .unwrap();
+        assert!(
+            authorize_ably_annotation_delete(
+                Some(&any),
+                &channel,
+                Some("moderator"),
+                Some("client-1"),
+            )
+            .is_ok()
+        );
+        assert!(
+            authorize_ably_annotation_delete(Some(&any), &channel, None, Some("client-1")).is_err()
+        );
+    }
+
+    #[test]
+    fn delete_annotation_dto_keeps_native_target_selector_fields() {
+        let command = parse_ably_annotation_command(
+            AblyAnnotation {
+                action: Some(1),
+                id: Some("annotation-id".to_string()),
+                serial: Some("ann:7".to_string()),
+                message_serial: Some("msg:1".to_string()),
+                annotation_type: Some("reaction:distinct.v1".to_string()),
+                name: Some("like".to_string()),
+                client_id: Some("client-1".to_string()),
+                ..AblyAnnotation::default()
+            },
+            None,
+            Some("moderator"),
+        )
+        .unwrap();
+
+        let AblyAnnotationCommand::Delete(selector) = command else {
+            panic!("expected delete command");
+        };
+        assert_eq!(selector.message_serial.as_str(), "msg:1");
+        assert_eq!(selector.annotation_type.as_str(), "reaction:distinct.v1");
+        assert_eq!(selector.id.unwrap().as_str(), "annotation-id");
+        assert_eq!(selector.target_serial.unwrap().as_str(), "ann:7");
+        assert_eq!(selector.name.as_deref(), Some("like"));
+        assert_eq!(selector.client_id.as_deref(), Some("client-1"));
+    }
+
+    #[test]
+    fn create_annotation_rejects_authenticated_client_id_spoofing() {
+        let result = parse_ably_annotation_command(
+            AblyAnnotation {
+                action: Some(0),
+                message_serial: Some("msg:1".to_string()),
+                annotation_type: Some("reaction:flag.v1".to_string()),
+                client_id: Some("other-client".to_string()),
+                ..AblyAnnotation::default()
+            },
+            None,
+            Some("authenticated-client"),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn recovery_projects_stored_annotation_as_action_21() {
+        let event = AnnotationEventData {
+            action: AnnotationEventAction::Create,
+            id: Some("annotation-id".to_string()),
+            serial: "ann:2".to_string(),
+            message_serial: "msg:1".to_string(),
+            annotation_type: "reaction:distinct.v1".to_string(),
+            name: Some("like".to_string()),
+            client_id: Some("client-1".to_string()),
+            count: None,
+            data: Some(json!({ "source": "recovery" })),
+            encoding: Some("json".to_string()),
+            timestamp: 123,
+        };
+        let message = PusherMessage {
+            event: Some(ANNOTATION_EVENT_NAME.to_string()),
+            channel: Some("mutable:room".to_string()),
+            data: Some(MessageData::Json(sonic_rs::to_value(&event).unwrap())),
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: Some("stream".to_string()),
+            serial: Some(7),
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        let projected = ably_protocol_message_from_envelope(
+            "mutable:room",
+            &message,
+            &MessageEnvelope::default(),
+            AblyMessageProjection::Mutation,
+            Some("stream:7".to_string()),
+        )
+        .expect("annotation recovery projection");
+
+        assert_eq!(projected.action, ACTION_ANNOTATION);
+        assert_eq!(projected.channel_serial.as_deref(), Some("stream:7"));
+        let annotation = &projected.annotations.unwrap()[0];
+        assert_eq!(annotation.serial.as_deref(), Some("ann:2"));
+        assert_eq!(annotation.message_serial.as_deref(), Some("msg:1"));
+        assert_eq!(annotation.data, Some(json!({ "source": "recovery" })));
+        assert_eq!(annotation.encoding.as_deref(), Some("json"));
+        assert_eq!(annotation.timestamp, Some(123));
+    }
+
+    #[test]
+    fn recovery_projects_annotation_summary_with_original_message_serial() {
+        let message = PusherMessage {
+            event: Some(MESSAGE_SUMMARY_EVENT_NAME.to_string()),
+            channel: Some("mutable:room".to_string()),
+            data: Some(MessageData::Json(json!({
+                "action": "message.summary",
+                "serial": "msg:original",
+                "annotations": {
+                    "summary": {
+                        "reaction:distinct.v1": {
+                            "like": { "total": 2, "clientIds": ["a", "b"], "clipped": false }
+                        }
+                    }
+                }
+            }))),
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: Some("stream".to_string()),
+            serial: Some(8),
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        let projected = ably_protocol_message_from_envelope(
+            "mutable:room",
+            &message,
+            &MessageEnvelope {
+                published_at_ms: Some(456),
+                ..MessageEnvelope::default()
+            },
+            AblyMessageProjection::Mutation,
+            Some("stream:8".to_string()),
+        )
+        .expect("annotation summary recovery projection");
+
+        assert_eq!(projected.action, ACTION_MESSAGE);
+        assert_eq!(projected.channel_serial.as_deref(), Some("stream:8"));
+        assert_eq!(projected.timestamp, Some(456));
+        let summary = &projected.messages.unwrap()[0];
+        assert_eq!(summary.action, Some(MESSAGE_SUMMARY));
+        assert_eq!(summary.serial.as_deref(), Some("msg:original"));
+        assert_eq!(
+            summary.annotations.as_ref().unwrap()["summary"]["reaction:distinct.v1"]["like"]
+                ["total"]
+                .as_u64(),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn attach_options_default_to_supported_channel_modes() {
         let options = AblyAttachOptions::from_wire(None, None);
 
@@ -9614,6 +12320,27 @@ mod tests {
 
         assert_eq!(options.mode_flags, ABLY_MODE_MASK);
         assert!(options.params.is_empty());
+    }
+
+    #[test]
+    fn attach_options_accept_only_vcdiff_delta_mode() {
+        let unsupported = AblyAttachOptions::from_wire(
+            None,
+            Some(HashMap::from([(
+                "delta".to_string(),
+                "unsupported".to_string(),
+            )])),
+        );
+        let accepted = AblyAttachOptions::from_wire(
+            None,
+            Some(HashMap::from([("delta".to_string(), "VCDIFF".to_string())])),
+        );
+
+        assert!(!unsupported.params.contains_key("delta"));
+        assert_eq!(
+            accepted.params.get("delta").map(String::as_str),
+            Some("vcdiff")
+        );
     }
 
     #[test]
@@ -9694,6 +12421,30 @@ mod tests {
         assert_eq!(response.id.as_deref(), Some("ping-1"));
     }
 
+    #[test]
+    fn realtime_message_ids_are_stable_across_unacked_retries() {
+        assert_eq!(
+            ably_realtime_message_id("connection-a", 7, 2),
+            "connection-a:7:2"
+        );
+    }
+
+    #[test]
+    fn close_and_disconnect_actions_are_terminal() {
+        assert_eq!(
+            ably_protocol_control(ACTION_CLOSE),
+            AblyProtocolControl::Close
+        );
+        assert_eq!(
+            ably_protocol_control(ACTION_DISCONNECT),
+            AblyProtocolControl::Close
+        );
+        assert_eq!(
+            ably_protocol_control(ACTION_HEARTBEAT),
+            AblyProtocolControl::Continue
+        );
+    }
+
     #[tokio::test]
     async fn invalid_recover_and_resume_keys_use_distinct_error_codes() {
         let hub = AblyCompatHub::default();
@@ -9748,6 +12499,42 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn active_connection_lease_refreshes_and_graceful_close_invalidates_it() {
+        let hub = AblyCompatHub::default();
+        hub.remember_connection(
+            "connection-key".to_string(),
+            "app",
+            "connection-a",
+            Some("client-a".to_string()),
+        )
+        .await;
+        hub.sessions
+            .get_mut("connection-key")
+            .expect("stored lease")
+            .expires_at_ms = 0;
+
+        hub.remember_connection(
+            "connection-key".to_string(),
+            "app",
+            "connection-a",
+            Some("client-a".to_string()),
+        )
+        .await;
+        assert!(matches!(
+            hub.begin_connection("app", Some("client-a"), None, Some("connection-key"))
+                .await,
+            AblyConnectionStart::Resumed { .. }
+        ));
+
+        hub.forget_connection("connection-key").await;
+        assert!(matches!(
+            hub.begin_connection("app", Some("client-a"), None, Some("connection-key"))
+                .await,
+            AblyConnectionStart::Failed { .. }
+        ));
+    }
+
     #[test]
     fn batch_publish_body_decodes_single_message_without_expansion() {
         let request: AblyBatchPublishRequest = decode_value(
@@ -9779,10 +12566,80 @@ mod tests {
         assert!(matches!(many, AblyBatchPublishBody::Many(requests) if requests.len() == 1));
     }
 
+    #[tokio::test]
+    async fn legacy_batch_publish_partial_failure_uses_40020_envelope() {
+        let responses = vec![
+            AblyBatchPublishChannelResponse::Success {
+                channel: "valid".to_string(),
+                message_id: "message-id".to_string(),
+                serials: vec!["serial-1".to_string()],
+            },
+            AblyBatchPublishChannelResponse::Failure {
+                channel: "[invalid".to_string(),
+                error: error_info(StatusCode::BAD_REQUEST, 40010, "invalid channel"),
+            },
+        ];
+
+        let response = encode_ably_legacy_batch_publish_response(AblyFormat::Json, responses)
+            .expect("partial response encodes");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-ably-errorcode")
+                .and_then(|value| value.to_str().ok()),
+            Some("40020")
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4 * 1024)
+            .await
+            .expect("response body");
+        let value: Value = decode_value(body.as_ref(), AblyFormat::Json).expect("JSON response");
+        assert_eq!(value["error"]["code"].as_u64(), Some(40020));
+        assert_eq!(value["error"]["statusCode"].as_u64(), Some(400));
+        assert_eq!(
+            value["batchResponse"].as_array().map(|items| items.len()),
+            Some(2)
+        );
+        assert_eq!(value["batchResponse"][0]["channel"].as_str(), Some("valid"));
+        assert_eq!(
+            value["batchResponse"][1]["error"]["code"].as_u64(),
+            Some(40010)
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_ordered_work_limits_inflight_and_preserves_input_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let results = run_bounded_ordered((0usize..12).collect(), 3, {
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            move |item| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                async move {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    item
+                }
+            }
+        })
+        .await
+        .expect("bounded work completes");
+
+        assert_eq!(results, (0usize..12).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::SeqCst) <= 3);
+    }
+
     #[test]
     fn presence_registry_projects_present_and_removes_leave_from_base_state() {
         let hub = AblyCompatHub::default();
-        let mut member = AblyPresenceMessage {
+        let member = AblyPresenceMessage {
             id: Some("connection:1:0".to_string()),
             action: Some(2),
             client_id: Some("client".to_string()),
@@ -9793,15 +12650,22 @@ mod tests {
             extras: Some(json!({ "headers": { "key": "value" } })),
         };
 
-        hub.apply_presence("app", "base", &[member.clone()])
+        hub.presence_registry
+            .register_connection("app", "connection");
+        hub.presence_registry
+            .enter(
+                "app",
+                "base",
+                presence_record_from_ably(&member).expect("valid member"),
+            )
             .expect("enter accepted");
         let snapshot = hub.presence_snapshot("app", "base");
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].action, Some(1));
         assert_eq!(snapshot[0].extras, member.extras);
 
-        member.action = Some(3);
-        hub.apply_presence("app", "base", &[member])
+        hub.presence_registry
+            .leave("app", "base", "connection", "client")
             .expect("leave accepted");
         assert!(hub.presence_snapshot("app", "base").is_empty());
     }
@@ -9825,7 +12689,9 @@ mod tests {
             echo: true,
             presence: Vec::new(),
         };
-        hub.begin_attach("app", &channel, &attachment);
+        hub.begin_attach("app", &channel, &attachment)
+            .await
+            .unwrap();
         for serial in [1, 2] {
             hub.broadcast(
                 "app",
@@ -9866,6 +12732,124 @@ mod tests {
                 .and_then(|message| message.id.as_deref()),
             Some("message-2")
         );
+    }
+
+    #[tokio::test]
+    async fn presence_sync_chunks_110_members_in_stable_order_with_continuation() {
+        let metrics = Arc::new(OutboundMetrics::default());
+        let (sender, mut receiver) =
+            AblyOutbound::channel(AblyFormat::Json, OutboundLimits::default(), metrics);
+        let members = (0..110)
+            .map(|index| AblyPresenceMessage {
+                id: Some(format!("connection:{index}:0")),
+                action: Some(1),
+                client_id: Some(format!("client-{index:03}")),
+                connection_id: Some("connection".to_string()),
+                timestamp: Some(index),
+                ..AblyPresenceMessage::default()
+            })
+            .collect::<Vec<_>>();
+
+        send_presence_sync(&sender, "room", members);
+
+        let first = receiver.recv().await.expect("first SYNC frame");
+        let first = decode_protocol_bytes(first.bytes.as_ref(), AblyFormat::Json).unwrap();
+        let second = receiver.recv().await.expect("final SYNC frame");
+        let second = decode_protocol_bytes(second.bytes.as_ref(), AblyFormat::Json).unwrap();
+        assert_eq!(first.action, ACTION_SYNC);
+        assert_eq!(first.channel_serial.as_deref(), Some("presence:1"));
+        assert_eq!(first.presence.as_ref().map(Vec::len), Some(100));
+        assert_eq!(second.channel_serial.as_deref(), Some("presence:"));
+        assert_eq!(second.presence.as_ref().map(Vec::len), Some(10));
+        assert_eq!(
+            second
+                .presence
+                .as_ref()
+                .and_then(|presence| presence.first())
+                .and_then(|member| member.client_id.as_deref()),
+            Some("client-100")
+        );
+    }
+
+    #[tokio::test]
+    async fn attached_sets_has_presence_even_when_no_other_flags_are_present() {
+        let metrics = Arc::new(OutboundMetrics::default());
+        let (sender, mut receiver) =
+            AblyOutbound::channel(AblyFormat::Json, OutboundLimits::default(), metrics);
+        let member = AblyPresenceMessage {
+            id: Some("connection:1:0".to_string()),
+            action: Some(1),
+            client_id: Some("client".to_string()),
+            connection_id: Some("connection".to_string()),
+            ..AblyPresenceMessage::default()
+        };
+
+        send_ably_attached(
+            &sender,
+            "room",
+            None,
+            None,
+            None,
+            vec![member],
+            None,
+            Vec::new(),
+            None,
+        );
+
+        let attached = receiver.recv().await.expect("ATTACHED frame");
+        let attached = decode_protocol_bytes(attached.bytes.as_ref(), AblyFormat::Json).unwrap();
+        assert_eq!(attached.flags, Some(FLAG_HAS_PRESENCE));
+        let sync = receiver.recv().await.expect("SYNC frame");
+        let sync = decode_protocol_bytes(sync.bytes.as_ref(), AblyFormat::Json).unwrap();
+        assert_eq!(sync.action, ACTION_SYNC);
+    }
+
+    #[test]
+    fn presence_replication_converges_two_isolated_node_registries() {
+        let node_a = AblyCompatHub::default();
+        let node_b = AblyCompatHub::default();
+        let record = |connection_id: &str| PresenceRecord {
+            connection_id: connection_id.to_string(),
+            client_id: "shared-client".to_string(),
+            id: format!("{connection_id}:1:0"),
+            data: Some(json!({ "node": connection_id })),
+            encoding: Some("json".to_string()),
+            extras: None,
+            timestamp_ms: 1,
+        };
+        let enter = |connection_id: &str| PresenceChange {
+            action: PresenceChangeAction::Enter,
+            member: record(connection_id),
+            wire_id: Some(format!("{connection_id}:1:0")),
+        };
+        let enters = PresenceReplication {
+            changes: vec![enter("connection-a"), enter("connection-b")],
+            unregister_connection: None,
+        };
+
+        node_a.replicate_presence("app", "room", &enters).unwrap();
+        node_b.replicate_presence("app", "room", &enters).unwrap();
+        assert_eq!(node_a.presence_registry.snapshot("app", "room").len(), 2);
+        assert_eq!(
+            node_a.presence_registry.snapshot("app", "room"),
+            node_b.presence_registry.snapshot("app", "room")
+        );
+
+        let leaves = PresenceReplication {
+            changes: ["connection-a", "connection-b"]
+                .into_iter()
+                .map(|connection_id| PresenceChange {
+                    action: PresenceChangeAction::Leave,
+                    member: record(connection_id),
+                    wire_id: Some(format!("{connection_id}:2:0")),
+                })
+                .collect(),
+            unregister_connection: None,
+        };
+        node_a.replicate_presence("app", "room", &leaves).unwrap();
+        node_b.replicate_presence("app", "room", &leaves).unwrap();
+        assert!(node_a.presence_registry.snapshot("app", "room").is_empty());
+        assert!(node_b.presence_registry.snapshot("app", "room").is_empty());
     }
 
     #[tokio::test]
@@ -10320,34 +13304,6 @@ mod tests {
         assert_eq!(decoded[0].name.as_deref(), Some("chat"));
     }
 
-    #[test]
-    fn stats_fixture_flattens_and_hour_aggregation_sums_entries() {
-        let first = stats_interval_from_fixture(
-            "app",
-            &json!({
-                "intervalId": "2026-02-03:15:03",
-                "inbound": { "realtime": { "messages": { "count": 50, "data": 5000 } } }
-            }),
-        )
-        .unwrap();
-        let second = stats_interval_from_fixture(
-            "app",
-            &json!({
-                "intervalId": "2026-02-03:15:04",
-                "inbound": { "realtime": { "messages": { "count": 60, "data": 6000 } } }
-            }),
-        )
-        .unwrap();
-
-        let aggregated = aggregate_stats_intervals(vec![first, second], "hour");
-        assert_eq!(aggregated.len(), 1);
-        assert_eq!(aggregated[0].interval_id, "2026-02-03:15");
-        assert_eq!(
-            aggregated[0].entries["messages.inbound.all.messages.count"],
-            110
-        );
-    }
-
     #[cfg(feature = "push")]
     #[test]
     fn push_msgpack_payload_uses_binary_safe_wire_values() {
@@ -10370,6 +13326,180 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "push")]
+    #[tokio::test]
+    async fn push_adapter_admits_to_native_pipeline_and_deduplicates() {
+        use sockudo_push::{
+            MemoryPushQueue, MemoryPushStore, PublishLifecycleState, PublishTarget, PushQueueStage,
+        };
+
+        let store: DynPushStore = Arc::new(MemoryPushStore::new());
+        let queue: sockudo_push::DynPushQueue = Arc::new(MemoryPushQueue::new());
+        let payload = ably_push_payload(
+            Some(json!({ "title": "hello", "body": "world" })),
+            Some(json!({ "message": "durable" })),
+        )
+        .unwrap();
+        let target = PublishTarget::Recipient {
+            recipient: PushRecipient::Realtime {
+                channel: "device-inbox".to_string(),
+            },
+        };
+        let providers = BTreeSet::from([PushProviderKind::Realtime]);
+
+        let first = accept_ably_push_intent(
+            store.clone(),
+            queue.clone(),
+            None,
+            AblyPushIntentRequest {
+                app_id: "app".to_string(),
+                publish_id: "ably-publish-1".to_string(),
+                targets: vec![target.clone()],
+                required_providers: providers.clone(),
+                payload: payload.clone(),
+                expected_recipients: 1,
+            },
+        )
+        .await
+        .unwrap();
+        let duplicate = accept_ably_push_intent(
+            store.clone(),
+            queue.clone(),
+            None,
+            AblyPushIntentRequest {
+                app_id: "app".to_string(),
+                publish_id: "ably-publish-1".to_string(),
+                targets: vec![target],
+                required_providers: providers,
+                payload,
+                expected_recipients: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first.status.state, PublishLifecycleState::Queued);
+        assert!(!first.duplicate);
+        assert!(duplicate.duplicate);
+        assert_eq!(first.publish_id, duplicate.publish_id);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            1
+        );
+        assert!(
+            store
+                .get_publish_status("app", &first.publish_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[cfg(feature = "push")]
+    #[test]
+    fn realtime_delivery_id_is_retry_stable_and_wire_bounded() {
+        let job = DeliveryJob {
+            app_id: "app".repeat(40),
+            publish_id: "publish".repeat(40),
+            provider: PushProviderKind::Realtime,
+            batch_id: "batch-1".to_string(),
+            device_id: Some("device-1".to_string()),
+            recipient: PushRecipient::Realtime {
+                channel: "recipient-channel".to_string(),
+            },
+            payload: Arc::new(PushPayload {
+                template_id: None,
+                template_data: json!({}),
+                title: Some("title".to_string()),
+                body: None,
+                icon: None,
+                sound: None,
+                collapse_key: None,
+            }),
+            rendered_payload: None,
+            attempt: 1,
+            first_attempt_at_ms: None,
+            not_before_ms: None,
+            expires_at_ms: None,
+        };
+        let first = ably_realtime_delivery_id(&job);
+        let mut retry = job;
+        retry.batch_id = "batch-1-retry-2".to_string();
+        retry.attempt = 2;
+
+        assert_eq!(first, ably_realtime_delivery_id(&retry));
+        assert!(first.len() <= 128);
+    }
+
+    #[cfg(feature = "push")]
+    #[test]
+    fn device_identity_token_is_scoped_and_secret_verified() {
+        let token = generate_ably_device_identity_token("app/one", "device/one");
+        assert_eq!(
+            parse_ably_device_identity_token(token.expose_secret()),
+            Some(("app/one".to_string(), "device/one".to_string()))
+        );
+        let hash = hash_device_identity_token(&token);
+        assert!(verify_device_identity_token(token.expose_secret(), &hash));
+        assert!(!verify_device_identity_token("wrong-token", &hash));
+        assert!(!format!("{hash:?}").contains(hash.expose_secret()));
+    }
+
+    #[cfg(feature = "push")]
+    #[tokio::test]
+    async fn updating_device_preserves_identity_and_does_not_rotate_token() {
+        use sockudo_push::MemoryPushStore;
+
+        let store: DynPushStore = Arc::new(MemoryPushStore::new());
+        let hub = AblyCompatHub {
+            push_store: Some(store.clone()),
+            ..Default::default()
+        };
+        let request = || {
+            serde_json::from_value::<AblyPushDeviceRequest>(serde_json::json!({
+                "id": "device-1",
+                "clientId": "client-1",
+                "deviceSecret": "ably-device-secret",
+                "platform": "android",
+                "formFactor": "phone",
+                "push": {
+                    "recipient": {
+                        "transportType": "ablyChannel",
+                        "channel": "device-inbox"
+                    }
+                }
+            }))
+            .unwrap()
+        };
+
+        let first = save_ably_push_device(&hub, "app-1", None, request())
+            .await
+            .unwrap();
+        let first_hash = store
+            .get_device("app-1", "device-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .device_secret;
+        let second = save_ably_push_device(&hub, "app-1", None, request())
+            .await
+            .unwrap();
+        let second_hash = store
+            .get_device("app-1", "device-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .device_secret;
+
+        assert!(first.get("deviceIdentityToken").is_some());
+        assert!(second.get("deviceIdentityToken").is_none());
+        assert_eq!(first_hash.expose_secret(), second_hash.expose_secret());
+    }
+
     #[cfg(feature = "delta")]
     #[test]
     fn delta_projection_preserves_exact_encoded_json_bytes() {
@@ -10385,8 +13515,7 @@ mod tests {
             ..empty_protocol_message(ACTION_MESSAGE)
         };
 
-        let (projected, next) =
-            project_ably_delta_message(protocol, &AblyDeltaState::default()).unwrap();
+        let (projected, next) = project_ably_delta_message(protocol, &AblyDeltaState::default());
         let projected = &projected.messages.unwrap()[0];
         assert_eq!(projected.data.as_ref(), Some(&json!(raw)));
         assert_eq!(projected.encoding.as_deref(), Some("json"));
@@ -10406,8 +13535,7 @@ mod tests {
             ..empty_protocol_message(ACTION_MESSAGE)
         };
 
-        let (projected, next) =
-            project_ably_delta_message(protocol, &AblyDeltaState::default()).unwrap();
+        let (projected, next) = project_ably_delta_message(protocol, &AblyDeltaState::default());
         let projected = &projected.messages.unwrap()[0];
         assert_eq!(projected.data.as_ref(), Some(&json!("null")));
         assert_eq!(projected.encoding.as_deref(), Some("json"));
@@ -10429,13 +13557,155 @@ mod tests {
         let state = AblyDeltaState {
             previous_id: Some(Arc::from("message-1")),
             previous_payload: Some(Arc::<[u8]>::from(b"null".as_slice())),
+            previous_at: Some(Instant::now()),
         };
 
-        let (projected, _) = project_ably_delta_message(protocol, &state).unwrap();
+        let (projected, _) = project_ably_delta_message(protocol, &state);
         let projected = &projected.messages.unwrap()[0];
         assert_eq!(projected.data.as_ref(), Some(&json!("null")));
         assert_eq!(projected.encoding.as_deref(), Some("json"));
         assert!(projected.extras.is_none());
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_projection_preserves_unsupported_encoding_and_resets_base() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"ciphertext");
+        let protocol = AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            messages: Some(vec![AblyMessage {
+                id: Some("message-cipher".to_string()),
+                data: Some(json!(encoded)),
+                encoding: Some("cipher+aes-256-cbc/base64".to_string()),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        };
+        let state = AblyDeltaState {
+            previous_id: Some(Arc::from("message-1")),
+            previous_payload: Some(Arc::<[u8]>::from(b"previous".as_slice())),
+            previous_at: Some(Instant::now()),
+        };
+
+        let (projected, next) = project_ably_delta_message(protocol, &state);
+        let projected = &projected.messages.unwrap()[0];
+        assert_eq!(projected.data.as_ref(), Some(&json!(encoded)));
+        assert_eq!(
+            projected.encoding.as_deref(),
+            Some("cipher+aes-256-cbc/base64")
+        );
+        assert!(projected.extras.is_none());
+        assert!(next.previous_id.is_none());
+        assert!(next.previous_payload.is_none());
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_projection_without_message_id_falls_back_to_full_delivery() {
+        let protocol = AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            messages: Some(vec![AblyMessage {
+                data: Some(json!({ "safe": true })),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        };
+
+        let (projected, next) = project_ably_delta_message(protocol, &AblyDeltaState::default());
+        let projected = &projected.messages.unwrap()[0];
+        assert_eq!(projected.data.as_ref(), Some(&json!({ "safe": true })));
+        assert!(projected.encoding.is_none());
+        assert!(next.previous_id.is_none());
+        assert!(next.previous_payload.is_none());
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_projection_does_not_retain_oversized_base() {
+        let raw = "x".repeat(64 * 1024 + 1);
+        let protocol = AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            messages: Some(vec![AblyMessage {
+                id: Some("message-large".to_string()),
+                data: Some(json!(raw)),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        };
+
+        let (projected, next) = project_ably_delta_message(protocol, &AblyDeltaState::default());
+        assert_eq!(projected.messages.unwrap()[0].data, Some(json!(raw)));
+        assert!(next.previous_id.is_none());
+        assert!(next.previous_payload.is_none());
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_projection_does_not_use_expired_base() {
+        let raw = r#"{"foo":"bar","count":2,"status":"active"}"#;
+        let protocol = AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            messages: Some(vec![AblyMessage {
+                id: Some("message-2".to_string()),
+                data: Some(json!({ "foo": "bar", "count": 2, "status": "active" })),
+                encoded_json: Some(Arc::<[u8]>::from(raw.as_bytes())),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        };
+        let state = AblyDeltaState {
+            previous_id: Some(Arc::from("message-1")),
+            previous_payload: Some(Arc::<[u8]>::from(raw.as_bytes())),
+            previous_at: Some(Instant::now() - ABLY_DELTA_BASE_MAX_AGE - Duration::from_secs(1)),
+        };
+
+        let (projected, next) = project_ably_delta_message(protocol, &state);
+        let projected = &projected.messages.unwrap()[0];
+        assert_eq!(projected.data.as_ref(), Some(&json!(raw)));
+        assert_eq!(projected.encoding.as_deref(), Some("json"));
+        assert!(projected.extras.is_none());
+        assert_eq!(next.previous_id.as_deref(), Some("message-2"));
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_projection_is_equivalent_on_json_and_msgpack_wire() {
+        let body = "a".repeat(1024);
+        let base = format!(r#"{{"body":"{body}","count":1}}"#);
+        let target = format!(r#"{{"body":"{body}","count":2}}"#);
+        let protocol = AblyProtocolMessage {
+            action: ACTION_MESSAGE,
+            channel: Some("room".to_string()),
+            messages: Some(vec![AblyMessage {
+                id: Some("message-2".to_string()),
+                data: Some(json!({ "body": body, "count": 2 })),
+                encoded_json: Some(Arc::<[u8]>::from(target.as_bytes())),
+                ..AblyMessage::default()
+            }]),
+            ..empty_protocol_message(ACTION_MESSAGE)
+        };
+        let state = AblyDeltaState {
+            previous_id: Some(Arc::from("message-1")),
+            previous_payload: Some(Arc::<[u8]>::from(base.as_bytes())),
+            previous_at: Some(Instant::now()),
+        };
+
+        let (projected, _) = project_ably_delta_message(protocol, &state);
+        for format in [AblyFormat::Json, AblyFormat::MsgPack] {
+            let encoded = encode_protocol_bytes(&projected, format).unwrap();
+            let decoded = decode_protocol_bytes(&encoded, format).unwrap();
+            let message = &decoded.messages.unwrap()[0];
+            assert_eq!(message.encoding.as_deref(), Some("json/vcdiff/base64"));
+            assert_eq!(
+                message.extras.as_ref().unwrap()["delta"]["from"],
+                "message-1"
+            );
+            assert_eq!(
+                message.extras.as_ref().unwrap()["delta"]["format"],
+                "vcdiff"
+            );
+            assert!(message.data.as_ref().is_some_and(Value::is_str));
+        }
     }
 
     #[test]
@@ -10631,6 +13901,8 @@ mod tests {
             credential_id: "first".to_string(),
             revocable: true,
             revocation_key: None,
+            #[cfg(feature = "push")]
+            push_device_id: None,
         };
         let second = ResolvedAblyAuth {
             app,
@@ -10642,6 +13914,8 @@ mod tests {
             credential_id: "second".to_string(),
             revocable: true,
             revocation_key: Some("group".to_string()),
+            #[cfg(feature = "push")]
+            push_device_id: None,
         };
         let mut authorization = ConnectionAuthorization::from_resolved(&first);
         let stale_generation = authorization.generation;
@@ -10855,8 +14129,8 @@ mod tests {
         assert!(!Arc::ptr_eq(&first_state, &second_state));
     }
 
-    #[test]
-    fn expiry_sweep_removes_expired_sessions_and_tokens() {
+    #[tokio::test]
+    async fn expiry_sweep_removes_expired_sessions_and_tokens() {
         let hub = AblyCompatHub::default();
         hub.sessions.insert(
             "expired-session".to_string(),
@@ -10882,7 +14156,7 @@ mod tests {
             },
         );
 
-        hub.expire(11);
+        hub.expire(11).await;
 
         assert!(hub.sessions.is_empty());
         assert!(hub.tokens.is_empty());
@@ -10907,6 +14181,25 @@ mod tests {
         assert_eq!(version.serial, "stream:1");
         assert_eq!(version.client_id.as_deref(), Some("updater"));
         assert_eq!(version.description.as_deref(), Some("changed"));
+    }
+
+    #[test]
+    fn mutation_path_is_authoritative_for_message_serial() {
+        let mut absent = AblyMessage::default();
+        reconcile_mutation_message_serial(&mut absent, "stream:1").unwrap();
+        assert_eq!(absent.serial.as_deref(), Some("stream:1"));
+
+        let mut matching = AblyMessage {
+            serial: Some("stream:1".to_string()),
+            ..AblyMessage::default()
+        };
+        reconcile_mutation_message_serial(&mut matching, "stream:1").unwrap();
+
+        let mut mismatched = AblyMessage {
+            serial: Some("stream:2".to_string()),
+            ..AblyMessage::default()
+        };
+        assert!(reconcile_mutation_message_serial(&mut mismatched, "stream:1").is_err());
     }
 
     #[test]

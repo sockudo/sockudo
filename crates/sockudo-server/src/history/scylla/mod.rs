@@ -28,6 +28,7 @@ struct HistoryTables {
     version_messages: String,
     version_entries_by_message: String,
     version_entries_by_delivery: String,
+    version_commits: String,
 }
 
 impl HistoryTables {
@@ -53,6 +54,10 @@ impl HistoryTables {
 
     fn version_entries_by_delivery_fq(&self) -> String {
         format!("{}.{}", self.keyspace, self.version_entries_by_delivery)
+    }
+
+    fn version_commits_fq(&self) -> String {
+        format!("{}.{}", self.keyspace, self.version_commits)
     }
 }
 
@@ -147,6 +152,7 @@ impl ScyllaHistoryStore {
                 "{}_version_entries_by_delivery",
                 config.scylladb.table_prefix
             ),
+            version_commits: format!("{}_version_commits", config.scylladb.table_prefix),
         };
 
         let store = Self {

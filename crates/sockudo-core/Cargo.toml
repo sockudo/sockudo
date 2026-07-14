@@ -63,6 +63,8 @@ hmac = { workspace = true }
 jsonwebtoken = { workspace = true }
 md5 = { workspace = true }
 memchr = { workspace = true }
+parking_lot = { workspace = true }
+papaya = { workspace = true }
 rand = { workspace = true }
 redis = { workspace = true, optional = true }
 regex = { workspace = true }
@@ -92,6 +94,16 @@ harness = false
 [[bench]]
 name = "namespace_bench"
 path = "benches/namespace_bench.rs"
+harness = false
+
+[[bench]]
+name = "presence_registry"
+path = "benches/presence_registry.rs"
+harness = false
+
+[[bench]]
+name = "annotation_replay"
+path = "benches/annotation_replay.rs"
 harness = false
 
 [[bench]]

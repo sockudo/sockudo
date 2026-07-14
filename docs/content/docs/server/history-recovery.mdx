@@ -123,6 +123,12 @@ history first, then live messages.
 
 Presence history records joins, leaves, causes, and continuity metadata. It is different from the current presence member list.
 
+Protocol projections must write transitions through the native presence
+service. Current membership remains available if the durable tier fails, but
+the tracking store marks that channel degraded. Continuity-sensitive history
+reads then fail closed until the durable stream is healthy or explicitly reset;
+they must not return a partial page as complete.
+
 ```ts
 const channel = client.subscribe("presence-lobby");
 const page = await channel.history({

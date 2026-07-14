@@ -363,6 +363,10 @@ impl AnnotationEventsRequest {
 pub struct RawAnnotationReplayRequest {
     pub app_id: String,
     pub channel_id: String,
+    /// Restrict replay to one message before applying `limit`.
+    ///
+    /// `None` retains channel-wide replay for reconnect consumers.
+    pub message_serial: Option<MessageSerial>,
     pub after_annotation_serial: Option<AnnotationSerial>,
     pub limit: usize,
 }
@@ -461,12 +465,37 @@ impl StoredAnnotationProjection {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AnnotationAppendOutcome {
+    pub projection: StoredAnnotationProjection,
+    pub canonical_serial: AnnotationSerial,
+    pub inserted: bool,
+}
+
 #[async_trait]
 pub trait AnnotationStore: Send + Sync {
     async fn append_event(
         &self,
         record: StoredAnnotationEvent,
     ) -> Result<StoredAnnotationProjection>;
+
+    /// Atomically suppress a repeated create carrying the same annotation ID.
+    ///
+    /// Stores with shared or transactional state should override this method.
+    /// The fallback preserves existing store compatibility but cannot close a
+    /// race between concurrent writers.
+    async fn append_create_idempotent(
+        &self,
+        record: StoredAnnotationEvent,
+    ) -> Result<AnnotationAppendOutcome> {
+        let canonical_serial = record.annotation.serial.clone();
+        let projection = self.append_event(record).await?;
+        Ok(AnnotationAppendOutcome {
+            projection,
+            canonical_serial,
+            inserted: true,
+        })
+    }
 
     async fn get_events(
         &self,

@@ -7,9 +7,11 @@ use super::*;
 
 #[cfg(feature = "versioned-messages")]
 use sockudo_core::version_store::{
-    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
-    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
-    VersionWriteReservation, VersionWriteReservationBlock,
+    StoredVersionRecord, VersionCreateRejection, VersionCreateRequest, VersionCreateResult,
+    VersionMutationRejection, VersionMutationRequest, VersionMutationResult, VersionReplayRequest,
+    VersionStore, VersionStoreCursor, VersionStoreDirection, VersionStorePage,
+    VersionStoreReadRequest, VersionStreamState, VersionWriteReservation,
+    VersionWriteReservationBlock,
 };
 
 // LWT result types for version_streams table.
@@ -66,6 +68,47 @@ fn version_lwt_applied(result: scylla::response::query_result::QueryResult) -> R
             "Unexpected ScyllaDB version LWT result shape with {n} columns"
         ))),
     }
+}
+
+#[cfg(feature = "versioned-messages")]
+fn version_batch_applied(result: scylla::response::query_result::QueryResult) -> Result<bool> {
+    use scylla::deserialize::row::ColumnIterator;
+
+    let rows = result.into_rows_result().map_err(|e| {
+        Error::Internal(format!(
+            "Failed to decode ScyllaDB version batch result: {e}"
+        ))
+    })?;
+    let mut columns = rows
+        .single_row::<ColumnIterator>()
+        .map_err(|e| Error::Internal(format!("Failed to deserialize version batch result: {e}")))?;
+    let applied = columns
+        .next()
+        .transpose()
+        .map_err(|e| Error::Internal(format!("Failed to read version batch result: {e}")))?
+        .and_then(|column| column.slice)
+        .is_some_and(|slice| slice.as_slice() == [1]);
+    Ok(applied)
+}
+
+#[cfg(feature = "versioned-messages")]
+fn message_commit_key(message_serial: &str) -> String {
+    format!("m:{message_serial}")
+}
+
+#[cfg(feature = "versioned-messages")]
+fn version_commit_key(message_serial: &str, version_serial: &str) -> String {
+    format!("v:{message_serial}:{version_serial}")
+}
+
+#[cfg(feature = "versioned-messages")]
+fn delivery_commit_key(delivery_serial: u64) -> String {
+    format!("d:{delivery_serial:020}")
+}
+
+#[cfg(feature = "versioned-messages")]
+fn operation_commit_key(operation_key: &str) -> String {
+    format!("o:{operation_key}")
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -133,6 +176,7 @@ impl ScyllaVersionStore {
             version_messages: format!("{}_version_messages", table_prefix),
             version_entries_by_message: format!("{}_version_entries_by_message", table_prefix),
             version_entries_by_delivery: format!("{}_version_entries_by_delivery", table_prefix),
+            version_commits: format!("{}_version_commits", table_prefix),
         };
         let store = Self {
             session,
@@ -217,6 +261,23 @@ impl ScyllaVersionStore {
                     PRIMARY KEY ((app_id, channel), delivery_serial)
                 ) WITH CLUSTERING ORDER BY (delivery_serial ASC)",
                 self.tables.version_entries_by_delivery_fq()
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (
+                    app_id text, channel text, commit_key text,
+                    payload_bytes blob,
+                    latest_version_serial text,
+                    latest_delivery_serial bigint,
+                    history_serial bigint,
+                    action text,
+                    append_count bigint,
+                    is_open_stream boolean,
+                    next_delivery_serial bigint,
+                    open_stream_count bigint,
+                    created_at_ms bigint,
+                    PRIMARY KEY ((app_id, channel), commit_key)
+                ) WITH CLUSTERING ORDER BY (commit_key ASC)",
+                self.tables.version_commits_fq()
             ),
         ];
 

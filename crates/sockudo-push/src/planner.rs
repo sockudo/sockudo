@@ -340,6 +340,36 @@ impl PushPlanner {
                         .await?;
                     let next_cursor = page.next_cursor.clone();
                     for subscription in page.items {
+                        if let Some(client_id) = subscription.scoped_client_id() {
+                            let mut device_cursor = None;
+                            loop {
+                                let devices = self
+                                    .store
+                                    .list_devices(
+                                        &batcher.app_id,
+                                        self.config.page_size,
+                                        device_cursor,
+                                    )
+                                    .await?;
+                                let next_device_cursor = devices.next_cursor.clone();
+                                for device in devices
+                                    .items
+                                    .into_iter()
+                                    .filter(|device| device.client_id.as_deref() == Some(client_id))
+                                {
+                                    batcher.push_device(device, &self.queue).await?;
+                                    emitted += 1;
+                                    if max_recipients.is_some_and(|max| emitted >= max) {
+                                        return Ok(next_cursor);
+                                    }
+                                }
+                                device_cursor = next_device_cursor;
+                                if device_cursor.is_none() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
                         if let Some(device) = self
                             .store
                             .get_device(&batcher.app_id, &subscription.device_id)
@@ -519,6 +549,32 @@ impl PushShardWorker {
                     .await?;
                 let next_cursor = page.next_cursor.clone();
                 for subscription in page.items {
+                    if let Some(client_id) = subscription.scoped_client_id() {
+                        let mut device_cursor = None;
+                        loop {
+                            let devices = self
+                                .store
+                                .list_devices(&shard.app_id, shard.page_size, device_cursor)
+                                .await?;
+                            let next_device_cursor = devices.next_cursor.clone();
+                            for device in devices
+                                .items
+                                .into_iter()
+                                .filter(|device| device.client_id.as_deref() == Some(client_id))
+                            {
+                                batcher.push_device(device, &self.queue).await?;
+                                emitted += 1;
+                            }
+                            device_cursor = next_device_cursor;
+                            if device_cursor.is_none() {
+                                break;
+                            }
+                        }
+                        if emitted >= shard.shard_size {
+                            return Ok(next_cursor);
+                        }
+                        continue;
+                    }
                     if let Some(device) = self
                         .store
                         .get_device(&shard.app_id, &subscription.device_id)

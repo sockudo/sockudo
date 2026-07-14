@@ -1,5 +1,36 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, str::FromStr};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AblyRealtimeAdmission {
+    #[default]
+    Accept,
+    PlacementConstraint,
+}
+
+impl FromStr for AblyRealtimeAdmission {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "accept" => Ok(Self::Accept),
+            "placement_constraint" | "placement-constraint" => Ok(Self::PlacementConstraint),
+            _ => Err(format!(
+                "unknown Ably realtime admission '{value}'; expected accept or placement_constraint"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for AblyRealtimeAdmission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Accept => "accept",
+            Self::PlacementConstraint => "placement_constraint",
+        })
+    }
+}
 
 /// Optional Ably compatibility credential registry.
 ///
@@ -10,20 +41,42 @@ use std::fmt;
 #[serde(default)]
 pub struct AblyCompatConfig {
     pub enabled: bool,
+    /// Realtime admission policy for this listener. A placement constraint
+    /// returns Ably error 50320 so WebSocket clients retry configured fallback
+    /// hosts without enabling another realtime transport.
+    pub realtime_admission: AblyRealtimeAdmission,
+    /// Maximum time spent resolving one ATTACH through native presence,
+    /// recovery, and history services before returning DETACHED/50003.
+    pub attach_timeout_ms: u64,
     pub keys: Vec<AblyCompatKeyConfig>,
     pub max_token_ttl_ms: i64,
     pub token_request_timestamp_skew_ms: i64,
     pub nonce_ttl_seconds: u64,
+    /// Permit the authenticated conformance-only `POST /stats` fixture ingester.
+    pub stats_fixture_ingest_enabled: bool,
+    pub stats_queue_capacity: usize,
+    pub stats_flush_interval_ms: u64,
+    pub stats_retention_seconds: u64,
+    pub stats_max_scan_entries: usize,
+    pub stats_cas_retries: usize,
 }
 
 impl Default for AblyCompatConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            realtime_admission: AblyRealtimeAdmission::Accept,
+            attach_timeout_ms: 10_000,
             keys: Vec::new(),
             max_token_ttl_ms: 24 * 60 * 60 * 1000,
             token_request_timestamp_skew_ms: 15 * 60 * 1000,
             nonce_ttl_seconds: 15 * 60,
+            stats_fixture_ingest_enabled: false,
+            stats_queue_capacity: 4_096,
+            stats_flush_interval_ms: 10,
+            stats_retention_seconds: 400 * 24 * 60 * 60,
+            stats_max_scan_entries: 100_000,
+            stats_cas_retries: 8,
         }
     }
 }
@@ -33,6 +86,9 @@ impl AblyCompatConfig {
         if self.max_token_ttl_ms <= 0 {
             return Err("ably_compat.max_token_ttl_ms must be greater than 0".to_string());
         }
+        if self.attach_timeout_ms == 0 {
+            return Err("ably_compat.attach_timeout_ms must be greater than 0".to_string());
+        }
         if self.token_request_timestamp_skew_ms <= 0 {
             return Err(
                 "ably_compat.token_request_timestamp_skew_ms must be greater than 0".to_string(),
@@ -40,6 +96,18 @@ impl AblyCompatConfig {
         }
         if self.nonce_ttl_seconds == 0 {
             return Err("ably_compat.nonce_ttl_seconds must be greater than 0".to_string());
+        }
+        if self.stats_queue_capacity == 0 {
+            return Err("ably_compat.stats_queue_capacity must be greater than 0".to_string());
+        }
+        if self.stats_retention_seconds == 0 {
+            return Err("ably_compat.stats_retention_seconds must be greater than 0".to_string());
+        }
+        if self.stats_max_scan_entries == 0 {
+            return Err("ably_compat.stats_max_scan_entries must be greater than 0".to_string());
+        }
+        if self.stats_cas_retries == 0 {
+            return Err("ably_compat.stats_cas_retries must be greater than 0".to_string());
         }
 
         let mut names = std::collections::HashSet::with_capacity(self.keys.len());
@@ -134,6 +202,8 @@ mod tests {
     fn registry_defaults_off_and_redacts_secrets() {
         let config = AblyCompatConfig::default();
         assert!(!config.enabled);
+        assert!(!config.stats_fixture_ingest_enabled);
+        assert_eq!(config.realtime_admission, AblyRealtimeAdmission::Accept);
         let key = AblyCompatKeyConfig {
             app_id: "app".to_string(),
             key_name: "key".to_string(),
@@ -169,5 +239,16 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid.validate().unwrap_err().contains("JSON object"));
+
+        let invalid_timeout = AblyCompatConfig {
+            attach_timeout_ms: 0,
+            ..AblyCompatConfig::default()
+        };
+        assert!(
+            invalid_timeout
+                .validate()
+                .unwrap_err()
+                .contains("attach_timeout_ms")
+        );
     }
 }

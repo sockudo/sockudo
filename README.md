@@ -51,6 +51,7 @@ TypeScript AI Transport SDK.
 ```text
 crates/              Rust server crates and libraries
 benches/ai/          Permanent Criterion benchmarks for AI hot paths
+benches/presence/    Presence performance budgets
 client-sdks/         Realtime client SDKs and AI Transport SDK
 server-sdks/         HTTP/server SDKs for backend publishers
 dashboard/           Operator API and Vue UI
@@ -412,6 +413,16 @@ cargo test -p sockudo-adapter
 cargo test -p sockudo-ai-transport
 cargo test -p sockudo-push
 ```
+
+Presence correctness and performance gate:
+
+```bash
+scripts/presence-bench-guard.sh
+```
+
+The gate compares authoritative enter/leave against the former facade-map
+cycle in the same Criterion run. It fails if either the single-worker or
+eight-worker disjoint-client confidence interval is slower.
 
 AI Transport checks:
 
