@@ -9,10 +9,11 @@ use crate::domain::{
     PublishStatus, PushCursor, PushCursorKind, ShardJob,
 };
 use crate::storage::{
-    IdempotencyRecord, OperatorInvalidationEvent, Page, PushCleanupStore, PushCredentialStore,
-    PushDeliveryEventStore, PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore,
-    PushPublishLogStore, PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore,
-    PushStorageResult, PushTemplateStore, ScheduledPushJob, SchedulerLock,
+    IdempotencyRecord, OperatorInvalidationEvent, Page, PublishStatusCasOutcome, PushCleanupStore,
+    PushCredentialStore, PushDeliveryEventStore, PushFanoutShardStore, PushIdempotencyStore,
+    PushOperatorEventStore, PushPublishLogStore, PushPublishStatusStore, PushScheduleStore,
+    PushSchedulerLockStore, PushStorageError, PushStorageResult, PushTemplateStore,
+    ScheduledPushJob, SchedulerLock, VersionedPublishStatus,
 };
 use async_trait::async_trait;
 use sqlx::Row;
@@ -149,35 +150,155 @@ macro_rules! impl_common_sql_traits {
 
         #[async_trait]
         impl PushPublishStatusStore for $store {
-            async fn put_publish_status(&self, status: PublishStatus) -> PushStorageResult<()> {
+            async fn create_publish_status_if_absent(
+                &self,
+                status: PublishStatus,
+            ) -> PushStorageResult<PublishStatusCasOutcome> {
+                let now_ms = now_ms_i64();
                 let q = sql_query(format!(
-                    "INSERT INTO push_publish_status (app_id, publish_id, state, counters_json, error_reason, created_at_ms, updated_at_ms) VALUES ({0}, {0}, {0}, {1}, {0}, {0}, {0}) {2}",
-                    $bind, $json_cast, upsert_status_clause($postgres)
+                    "INSERT INTO push_publish_status (app_id, publish_id, state, counters_json, error_reason, created_at_ms, updated_at_ms, revision) VALUES ({0}, {0}, {0}, {1}, {0}, {0}, {0}, {0})",
+                    $bind, $json_cast
                 ), $postgres);
-                sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                let result = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(&status.app_id)
                     .bind(&status.publish_id)
                     .bind(format!("{:?}", status.state).to_ascii_lowercase())
                     .bind(to_json_string(&status)?)
                     .bind(&status.error_reason)
-                    .bind(now_ms_i64())
-                    .bind(now_ms_i64())
+                    .bind(now_ms)
+                    .bind(now_ms)
+                    .bind(1_i64)
                     .execute(&self.$pool)
-                    .await
-                    .map_err(sql_error)?;
-                Ok(())
+                    .await;
+
+                match result {
+                    Ok(_) => Ok(PublishStatusCasOutcome::Inserted { revision: 1 }),
+                    Err(error) if is_unique_violation(&error) => {
+                        Ok(PublishStatusCasOutcome::Conflict)
+                    }
+                    Err(error) => Err(sql_error(error)),
+                }
             }
 
-            async fn get_publish_status(&self, app_id: &str, publish_id: &str) -> PushStorageResult<Option<PublishStatus>> {
-                let q = sql_query(format!("SELECT {1} AS counters_json FROM push_publish_status WHERE app_id = {0} AND publish_id = {0}", $bind, json_text_expr("counters_json", $json_text)), $postgres);
+            async fn get_versioned_publish_status(
+                &self,
+                app_id: &str,
+                publish_id: &str,
+            ) -> PushStorageResult<Option<VersionedPublishStatus>> {
+                let q = sql_query(format!(
+                    "SELECT {1} AS counters_json, {2} AS revision, {3} AS updated_at_ms FROM push_publish_status WHERE app_id = {0} AND publish_id = {0}",
+                    $bind,
+                    json_text_expr("counters_json", $json_text),
+                    signed_i64_expr("revision", $postgres),
+                    signed_i64_expr("updated_at_ms", $postgres)
+                ), $postgres);
                 sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(app_id)
                     .bind(publish_id)
                     .fetch_optional(&self.$pool)
                     .await
                     .map_err(sql_error)?
-                    .map(|row| from_json_str(&row.try_get::<String, _>("counters_json").map_err(sql_error)?))
+                    .map(|row| {
+                        let status: PublishStatus = from_json_str(
+                            &row.try_get::<String, _>("counters_json")
+                                .map_err(sql_error)?,
+                        )?;
+                        if status.app_id != app_id || status.publish_id != publish_id {
+                            return Err(PushStorageError::Backend(
+                                "publish status row identity does not match stored payload"
+                                    .to_owned(),
+                            ));
+                        }
+                        Ok(VersionedPublishStatus {
+                            status,
+                            revision: positive_sql_u64(
+                                row.try_get::<i64, _>("revision").map_err(sql_error)?,
+                                "publish status revision",
+                            )?,
+                            updated_at_ms: nonnegative_sql_u64(
+                                row.try_get::<i64, _>("updated_at_ms").map_err(sql_error)?,
+                                "publish status updated_at_ms",
+                            )?,
+                        })
+                    })
                     .transpose()
+            }
+
+            async fn compare_and_swap_publish_status(
+                &self,
+                expected: &VersionedPublishStatus,
+                next: PublishStatus,
+            ) -> PushStorageResult<PublishStatusCasOutcome> {
+                if expected.status.app_id != next.app_id
+                    || expected.status.publish_id != next.publish_id
+                {
+                    return Err(PushStorageError::Backend(
+                        "publish status compare-and-swap identity mismatch".to_owned(),
+                    ));
+                }
+
+                let expected_revision = sql_i64_revision(expected.revision)?;
+                let expected_updated_at_ms = sql_i64_timestamp(
+                    expected.updated_at_ms,
+                    "publish status expected updated_at_ms",
+                )?;
+                let next_revision_u64 = expected.revision.checked_add(1).ok_or_else(|| {
+                    PushStorageError::Backend(
+                        "publish status revision exhausted storage range".to_owned(),
+                    )
+                })?;
+                let next_revision = sql_i64_revision(next_revision_u64)?;
+                let updated_at_ms = next_status_updated_at_ms(expected.updated_at_ms);
+                let q = sql_query(format!(
+                    "UPDATE push_publish_status SET state = {0}, counters_json = {1}, error_reason = {0}, updated_at_ms = {0}, revision = {0} WHERE app_id = {0} AND publish_id = {0} AND revision = {0} AND updated_at_ms = {0}",
+                    $bind, $json_cast
+                ), $postgres);
+                let updated = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                    .bind(format!("{:?}", next.state).to_ascii_lowercase())
+                    .bind(to_json_string(&next)?)
+                    .bind(&next.error_reason)
+                    .bind(updated_at_ms)
+                    .bind(next_revision)
+                    .bind(&next.app_id)
+                    .bind(&next.publish_id)
+                    .bind(expected_revision)
+                    .bind(expected_updated_at_ms)
+                    .execute(&self.$pool)
+                    .await
+                    .map_err(sql_error)?
+                    .rows_affected();
+
+                if updated == 1 {
+                    return Ok(PublishStatusCasOutcome::Updated {
+                        revision: next_revision_u64,
+                    });
+                }
+                if updated > 1 {
+                    return Err(PushStorageError::Backend(
+                        "publish status compare-and-swap updated multiple rows".to_owned(),
+                    ));
+                }
+
+                let q = sql_query(
+                    format!(
+                        "SELECT {1} AS revision FROM push_publish_status WHERE app_id = {0} AND publish_id = {0}",
+                        $bind,
+                        signed_i64_expr("revision", $postgres)
+                    ),
+                    $postgres,
+                );
+                let current_revision = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(q.as_str()))
+                    .bind(&next.app_id)
+                    .bind(&next.publish_id)
+                    .fetch_optional(&self.$pool)
+                    .await
+                    .map_err(sql_error)?;
+
+                Ok(if current_revision.is_some() {
+                    PublishStatusCasOutcome::Conflict
+                } else {
+                    PublishStatusCasOutcome::Missing
+                })
             }
         }
 
@@ -550,27 +671,32 @@ macro_rules! impl_common_sql_traits {
                         let limit = request.limit_for(remaining) as i64;
                         let raw = if $postgres {
                             "WITH doomed AS (
-                                SELECT app_id, publish_id
+                                SELECT app_id, publish_id, revision
                                 FROM push_publish_status
                                 WHERE updated_at_ms < ?
                                   AND state IN ('succeeded', 'partiallysucceeded', 'failed', 'expired', 'cancelled', 'quotaexceeded', 'deadlettered')
                                 ORDER BY updated_at_ms, app_id, publish_id
                                 LIMIT ?
                              )
-                             DELETE FROM push_publish_status
-                             WHERE (app_id, publish_id) IN (SELECT app_id, publish_id FROM doomed)"
+                             DELETE FROM push_publish_status AS status
+                             USING doomed
+                             WHERE status.app_id = doomed.app_id
+                               AND status.publish_id = doomed.publish_id
+                               AND status.revision = doomed.revision"
                                 .to_owned()
                         } else {
                             "DELETE s
                              FROM push_publish_status s
                              JOIN (
-                                SELECT app_id, publish_id
+                                SELECT app_id, publish_id, revision
                                 FROM push_publish_status
                                 WHERE updated_at_ms < ?
                                   AND state IN ('succeeded', 'partiallysucceeded', 'failed', 'expired', 'cancelled', 'quotaexceeded', 'deadlettered')
                                 ORDER BY updated_at_ms, app_id, publish_id
                                 LIMIT ?
-                             ) doomed ON doomed.app_id = s.app_id AND doomed.publish_id = s.publish_id"
+                             ) doomed ON doomed.app_id = s.app_id
+                                AND doomed.publish_id = s.publish_id
+                                AND doomed.revision = s.revision"
                                 .to_owned()
                         };
                         let q = sql_query(raw, $postgres);

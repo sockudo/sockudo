@@ -5760,6 +5760,14 @@ fn ably_push_pipeline_error(error: PushPipelineError) -> AppError {
         PushPipelineError::Queue(error) => {
             AppError::InternalError(format!("native push queue failed: {error}"))
         }
+        PushPipelineError::PublishStatusCasExhausted { .. } => AppError::Protocol {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: 50003,
+            message: "native push status update contention exceeded its retry budget".to_string(),
+        },
+        PushPipelineError::UnexpectedPublishStatusCasOutcome { .. } => AppError::InternalError(
+            "native push status update returned an invalid outcome".to_string(),
+        ),
     }
 }
 

@@ -166,6 +166,13 @@ pub trait PresenceHistoryStore: Send + Sync {
         let mut snapshot_serial = None;
         let mut snapshot_time_ms = None;
         let mut cursor = None;
+        let mut stream_id: Option<String> = None;
+        let mut first_serial: Option<u64> = None;
+        let mut previous_serial: Option<u64> = None;
+        let mut transition_anomaly: Option<&'static str> = None;
+        // A time bound can legitimately select non-adjacent serials when writers' clocks are
+        // skewed. Serial and unbounded snapshots still require exact adjacency.
+        let require_serial_adjacency = request.at_time_ms.is_none();
         let bounds = PresenceHistoryQueryBounds {
             start_serial: None,
             end_serial: request.at_serial,
@@ -185,11 +192,33 @@ pub trait PresenceHistoryStore: Send + Sync {
                 .await?;
 
             for item in &page.items {
+                if stream_id
+                    .as_deref()
+                    .is_some_and(|expected| expected != item.stream_id)
+                {
+                    return Err(Error::InvalidMessageFormat(
+                        "presence history stream changed while reconstructing snapshot".to_string(),
+                    ));
+                }
+                stream_id.get_or_insert_with(|| item.stream_id.clone());
+                first_serial.get_or_insert(item.serial);
+                if previous_serial.is_some_and(|previous| {
+                    item.serial <= previous
+                        || (require_serial_adjacency && previous.saturating_add(1) != item.serial)
+                }) {
+                    return Err(Error::InvalidMessageFormat(
+                        "presence history serial continuity check failed".to_string(),
+                    ));
+                }
+                previous_serial = Some(item.serial);
                 events_replayed = events_replayed.saturating_add(1);
                 snapshot_serial = Some(item.serial);
                 snapshot_time_ms = Some(item.published_at_ms);
                 match item.event {
                     PresenceHistoryEventKind::MemberAdded => {
+                        if members.contains_key(&item.user_id) {
+                            transition_anomaly.get_or_insert("duplicate_member_added");
+                        }
                         members.insert(
                             item.user_id.clone(),
                             PresenceSnapshotMember {
@@ -205,10 +234,14 @@ pub trait PresenceHistoryStore: Send + Sync {
                             member.last_event = item.event;
                             member.last_event_serial = item.serial;
                             member.last_event_at_ms = item.published_at_ms;
+                        } else {
+                            transition_anomaly.get_or_insert("member_updated_without_join");
                         }
                     }
                     PresenceHistoryEventKind::MemberRemoved => {
-                        members.remove(&item.user_id);
+                        if members.remove(&item.user_id).is_none() {
+                            transition_anomaly.get_or_insert("member_removed_without_join");
+                        }
                     }
                 }
             }
@@ -216,8 +249,46 @@ pub trait PresenceHistoryStore: Send + Sync {
             if !page.has_more {
                 break (page.retained, page.complete, page.truncated_by_retention);
             }
-            cursor = page.next_cursor;
+            let next_cursor = page.next_cursor.ok_or_else(|| {
+                Error::InvalidMessageFormat(
+                    "presence history page has_more without a cursor".to_string(),
+                )
+            })?;
+            if page.items.is_empty()
+                || next_cursor.version != 1
+                || next_cursor.app_id != request.app_id
+                || next_cursor.channel != request.channel
+                || Some(next_cursor.serial) != previous_serial
+                || next_cursor.direction != PresenceHistoryDirection::OldestFirst
+                || next_cursor.bounds != bounds
+                || stream_id.as_deref() != Some(next_cursor.stream_id.as_str())
+            {
+                return Err(Error::InvalidMessageFormat(
+                    "presence history cursor did not advance".to_string(),
+                ));
+            }
+            cursor = Some(next_cursor);
         };
+
+        if complete
+            && !truncated_by_retention
+            && require_serial_adjacency
+            && first_serial.is_some_and(|serial| serial != 1)
+        {
+            return Err(Error::InvalidMessageFormat(
+                "presence history complete snapshot is missing its serial prefix".to_string(),
+            ));
+        }
+
+        if complete
+            && !truncated_by_retention
+            && request.at_time_ms.is_none()
+            && let Some(anomaly) = transition_anomaly
+        {
+            return Err(Error::InvalidMessageFormat(format!(
+                "presence history transition anomaly: {anomaly}"
+            )));
+        }
 
         Ok(PresenceSnapshot {
             channel: request.channel,
@@ -283,8 +354,49 @@ impl PresenceHistoryStore for NoopPresenceHistoryStore {
 mod tests {
     use super::*;
     use crate::history::now_ms;
-    use crate::presence_history::MemoryPresenceHistoryStore;
     use crate::presence_history::test_support::transition;
+    use crate::presence_history::{
+        MemoryPresenceHistoryStore, PresenceHistoryEventCause, PresenceHistoryItem,
+    };
+    use async_trait::async_trait;
+    use bytes::Bytes;
+
+    struct StaticPresenceHistoryStore {
+        page: PresenceHistoryPage,
+    }
+
+    #[async_trait]
+    impl PresenceHistoryStore for StaticPresenceHistoryStore {
+        async fn record_transition(&self, _record: PresenceHistoryTransitionRecord) -> Result<()> {
+            Ok(())
+        }
+
+        async fn read_page(
+            &self,
+            _request: PresenceHistoryReadRequest,
+        ) -> Result<PresenceHistoryPage> {
+            Ok(self.page.clone())
+        }
+    }
+
+    fn history_item(
+        serial: u64,
+        event: PresenceHistoryEventKind,
+        user_id: &str,
+    ) -> PresenceHistoryItem {
+        PresenceHistoryItem {
+            stream_id: "stream-1".to_string(),
+            serial,
+            published_at_ms: serial as i64,
+            event,
+            cause: PresenceHistoryEventCause::Join,
+            user_id: user_id.to_string(),
+            connection_id: None,
+            dead_node_id: None,
+            payload_size_bytes: 0,
+            payload_bytes: Bytes::new(),
+        }
+    }
 
     #[tokio::test]
     async fn snapshot_at_reconstructs_membership_from_events() {
@@ -414,5 +526,185 @@ mod tests {
             .unwrap();
         assert_eq!(second.items.len(), 1);
         assert_eq!(second.items[0].user_id, "user-290");
+    }
+
+    #[tokio::test]
+    async fn snapshot_rejects_impossible_complete_presence_transition_sequence() {
+        let store = StaticPresenceHistoryStore {
+            page: PresenceHistoryPage {
+                items: vec![
+                    history_item(1, PresenceHistoryEventKind::MemberAdded, "u1"),
+                    history_item(2, PresenceHistoryEventKind::MemberAdded, "u1"),
+                ],
+                next_cursor: None,
+                retained: PresenceHistoryRetentionStats {
+                    stream_id: Some("stream-1".to_string()),
+                    retained_events: 2,
+                    oldest_serial: Some(1),
+                    newest_serial: Some(2),
+                    ..Default::default()
+                },
+                has_more: false,
+                complete: true,
+                truncated_by_retention: false,
+                degraded: false,
+            },
+        };
+
+        let error = store
+            .snapshot_at(PresenceSnapshotRequest {
+                app_id: "app".to_string(),
+                channel: "presence-room".to_string(),
+                at_time_ms: None,
+                at_serial: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("duplicate_member_added"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_allows_missing_prefix_when_retention_truncated_history() {
+        let store = StaticPresenceHistoryStore {
+            page: PresenceHistoryPage {
+                items: vec![history_item(
+                    7,
+                    PresenceHistoryEventKind::MemberRemoved,
+                    "u1",
+                )],
+                next_cursor: None,
+                retained: PresenceHistoryRetentionStats {
+                    stream_id: Some("stream-1".to_string()),
+                    retained_events: 1,
+                    oldest_serial: Some(7),
+                    newest_serial: Some(7),
+                    ..Default::default()
+                },
+                has_more: false,
+                complete: false,
+                truncated_by_retention: true,
+                degraded: false,
+            },
+        };
+
+        let snapshot = store
+            .snapshot_at(PresenceSnapshotRequest {
+                app_id: "app".to_string(),
+                channel: "presence-room".to_string(),
+                at_time_ms: None,
+                at_serial: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(snapshot.members.is_empty());
+        assert!(snapshot.truncated_by_retention);
+    }
+
+    #[tokio::test]
+    async fn snapshot_rejects_internal_presence_serial_gap() {
+        let store = StaticPresenceHistoryStore {
+            page: PresenceHistoryPage {
+                items: vec![
+                    history_item(1, PresenceHistoryEventKind::MemberAdded, "u1"),
+                    history_item(3, PresenceHistoryEventKind::MemberRemoved, "u1"),
+                ],
+                next_cursor: None,
+                retained: PresenceHistoryRetentionStats {
+                    stream_id: Some("stream-1".to_string()),
+                    retained_events: 2,
+                    oldest_serial: Some(1),
+                    newest_serial: Some(3),
+                    ..Default::default()
+                },
+                has_more: false,
+                complete: true,
+                truncated_by_retention: false,
+                degraded: false,
+            },
+        };
+
+        let error = store
+            .snapshot_at(PresenceSnapshotRequest {
+                app_id: "app".to_string(),
+                channel: "presence-room".to_string(),
+                at_time_ms: None,
+                at_serial: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("serial continuity"));
+    }
+
+    #[tokio::test]
+    async fn complete_snapshot_rejects_a_missing_serial_prefix() {
+        let store = StaticPresenceHistoryStore {
+            page: PresenceHistoryPage {
+                items: vec![history_item(3, PresenceHistoryEventKind::MemberAdded, "u1")],
+                next_cursor: None,
+                retained: PresenceHistoryRetentionStats {
+                    stream_id: Some("stream-1".to_string()),
+                    retained_events: 1,
+                    oldest_serial: Some(3),
+                    newest_serial: Some(3),
+                    ..Default::default()
+                },
+                has_more: false,
+                complete: true,
+                truncated_by_retention: false,
+                degraded: false,
+            },
+        };
+
+        let error = store
+            .snapshot_at(PresenceSnapshotRequest {
+                app_id: "app".to_string(),
+                channel: "presence-room".to_string(),
+                at_time_ms: None,
+                at_serial: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("missing its serial prefix"));
+    }
+
+    #[tokio::test]
+    async fn time_bounded_snapshot_allows_clock_skew_serial_gaps_and_missing_prefixes() {
+        let store = StaticPresenceHistoryStore {
+            page: PresenceHistoryPage {
+                items: vec![
+                    history_item(1, PresenceHistoryEventKind::MemberAdded, "u2"),
+                    history_item(3, PresenceHistoryEventKind::MemberRemoved, "u1"),
+                ],
+                next_cursor: None,
+                retained: PresenceHistoryRetentionStats {
+                    stream_id: Some("stream-1".to_string()),
+                    retained_events: 3,
+                    oldest_serial: Some(1),
+                    newest_serial: Some(3),
+                    ..Default::default()
+                },
+                has_more: false,
+                complete: true,
+                truncated_by_retention: false,
+                degraded: false,
+            },
+        };
+
+        let snapshot = store
+            .snapshot_at(PresenceSnapshotRequest {
+                app_id: "app".to_string(),
+                channel: "presence-room".to_string(),
+                at_time_ms: Some(250),
+                at_serial: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.members.len(), 1);
+        assert_eq!(snapshot.members[0].user_id, "u2");
     }
 }

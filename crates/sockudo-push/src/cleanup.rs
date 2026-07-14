@@ -200,16 +200,7 @@ impl PushCleanupWorker {
 }
 
 pub fn terminal_publish_state(state: PublishLifecycleState) -> bool {
-    matches!(
-        state,
-        PublishLifecycleState::Succeeded
-            | PublishLifecycleState::PartiallySucceeded
-            | PublishLifecycleState::Failed
-            | PublishLifecycleState::Expired
-            | PublishLifecycleState::Cancelled
-            | PublishLifecycleState::QuotaExceeded
-            | PublishLifecycleState::DeadLettered
-    )
+    state.is_terminal()
 }
 
 pub fn days_to_ms(days: u64) -> u64 {

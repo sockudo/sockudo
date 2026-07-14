@@ -116,11 +116,11 @@ pub use sql::PostgresPushStore;
 pub use storage::{
     DeviceRegistrationChange, DeviceRegistrationOutcome, DynPushStore,
     EXPECTED_PUSH_SCHEMA_VERSION, IdempotencyRecord, OperatorInvalidationEvent, Page,
-    PushCleanupStore, PushCredentialStore, PushDeliveryEventStore, PushDeviceStore,
-    PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore,
-    PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore, PushStorageBackendKind,
-    PushStorageError, PushStorageResult, PushStore, PushSubscriptionStore, PushTemplateStore,
-    ScheduledPushJob, SchedulerLock,
+    PublishStatusCasOutcome, PushCleanupStore, PushCredentialStore, PushDeliveryEventStore,
+    PushDeviceStore, PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore,
+    PushPublishLogStore, PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore,
+    PushStorageBackendKind, PushStorageError, PushStorageResult, PushStore, PushSubscriptionStore,
+    PushTemplateStore, ScheduledPushJob, SchedulerLock, VersionedPublishStatus,
 };
 pub use transform::{
     EffectivePushPayload, PUSH_PROVIDER_RENDER_ORDER, PayloadTransformError,

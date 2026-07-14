@@ -1,7 +1,7 @@
 use super::ScyllaDbPushStore;
 use super::document::{DocumentBackend, StoredDocument};
 use super::helpers::*;
-use crate::storage::PushStorageResult;
+use crate::storage::{PushStorageError, PushStorageResult};
 use async_trait::async_trait;
 
 #[cfg(feature = "scylladb")]
@@ -69,6 +69,34 @@ impl ScyllaDbDocumentBackend {
             .map_err(scylla_error)?;
         Ok(())
     }
+
+    fn serial_lwt_statement(query: String) -> scylla::statement::unprepared::Statement {
+        use scylla::statement::SerialConsistency;
+
+        let mut statement = scylla::statement::unprepared::Statement::new(query);
+        statement.set_serial_consistency(Some(SerialConsistency::Serial));
+        statement
+    }
+
+    fn lwt_applied(result: scylla::response::query_result::QueryResult) -> PushStorageResult<bool> {
+        use scylla::value::{CqlValue, Row};
+
+        let rows = result.into_rows_result().map_err(scylla_error)?;
+        let row = rows
+            .maybe_first_row::<Row>()
+            .map_err(scylla_error)?
+            .ok_or_else(|| {
+                PushStorageError::Backend(
+                    "push ScyllaDB LWT response did not contain an applied row".to_owned(),
+                )
+            })?;
+        match row.columns.first().and_then(Option::as_ref) {
+            Some(CqlValue::Boolean(applied)) => Ok(*applied),
+            _ => Err(PushStorageError::Backend(
+                "push ScyllaDB LWT response did not contain an applied boolean".to_owned(),
+            )),
+        }
+    }
 }
 
 #[cfg(feature = "scylladb")]
@@ -103,24 +131,19 @@ impl DocumentBackend for ScyllaDbDocumentBackend {
         sk: &str,
         data: String,
     ) -> PushStorageResult<bool> {
+        let statement = Self::serial_lwt_statement(format!(
+            "INSERT INTO {} (family_app, pk, sk, app_id, data) VALUES (?, ?, ?, ?, ?) IF NOT EXISTS",
+            self.fq_table()
+        ));
         let result = self
             .session
             .query_unpaged(
-                format!(
-                    "INSERT INTO {} (family_app, pk, sk, app_id, data) VALUES (?, ?, ?, ?, ?) IF NOT EXISTS",
-                    self.fq_table()
-                ),
+                statement,
                 (family_app(family, app_id), pk, sk, app_id, data),
             )
             .await
             .map_err(scylla_error)?;
-        let rows = result.into_rows_result().map_err(scylla_error)?;
-        let applied = rows
-            .maybe_first_row::<(bool,)>()
-            .map_err(scylla_error)?
-            .map(|row| row.0)
-            .unwrap_or(false);
-        Ok(applied)
+        Self::lwt_applied(result)
     }
 
     async fn get(
@@ -147,6 +170,75 @@ impl DocumentBackend for ScyllaDbDocumentBackend {
             .map(|row| row.map(|row| row.0))
     }
 
+    async fn get_consistent(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+    ) -> PushStorageResult<Option<String>> {
+        use scylla::statement::Consistency;
+
+        let mut statement = scylla::statement::unprepared::Statement::new(format!(
+            "SELECT data FROM {} WHERE family_app = ? AND pk = ? AND sk = ?",
+            self.fq_table()
+        ));
+        statement.set_consistency(Consistency::Serial);
+        let result = self
+            .session
+            .query_unpaged(statement, (family_app(family, app_id), pk, sk))
+            .await
+            .map_err(scylla_error)?;
+        let rows = result.into_rows_result().map_err(scylla_error)?;
+        rows.maybe_first_row::<(String,)>()
+            .map_err(scylla_error)
+            .map(|row| row.map(|row| row.0))
+    }
+
+    async fn compare_and_swap(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+        data: String,
+    ) -> PushStorageResult<bool> {
+        let statement = Self::serial_lwt_statement(format!(
+            "UPDATE {} SET app_id = ?, data = ? WHERE family_app = ? AND pk = ? AND sk = ? IF data = ?",
+            self.fq_table()
+        ));
+        let result = self
+            .session
+            .query_unpaged(
+                statement,
+                (app_id, data, family_app(family, app_id), pk, sk, expected),
+            )
+            .await
+            .map_err(scylla_error)?;
+        Self::lwt_applied(result)
+    }
+
+    async fn compare_and_delete(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        sk: &str,
+        expected: &str,
+    ) -> PushStorageResult<bool> {
+        let statement = Self::serial_lwt_statement(format!(
+            "DELETE FROM {} WHERE family_app = ? AND pk = ? AND sk = ? IF data = ?",
+            self.fq_table()
+        ));
+        let result = self
+            .session
+            .query_unpaged(statement, (family_app(family, app_id), pk, sk, expected))
+            .await
+            .map_err(scylla_error)?;
+        Self::lwt_applied(result)
+    }
+
     async fn delete(
         &self,
         family: &'static str,
@@ -154,21 +246,16 @@ impl DocumentBackend for ScyllaDbDocumentBackend {
         pk: &str,
         sk: &str,
     ) -> PushStorageResult<bool> {
+        let statement = Self::serial_lwt_statement(format!(
+            "DELETE FROM {} WHERE family_app = ? AND pk = ? AND sk = ? IF EXISTS",
+            self.fq_table()
+        ));
         let result = self
             .session
-            .query_unpaged(
-                format!(
-                    "DELETE FROM {} WHERE family_app = ? AND pk = ? AND sk = ? IF EXISTS",
-                    self.fq_table()
-                ),
-                (family_app(family, app_id), pk, sk),
-            )
+            .query_unpaged(statement, (family_app(family, app_id), pk, sk))
             .await
             .map_err(scylla_error)?;
-        let rows = result.into_rows_result().map_err(scylla_error)?;
-        rows.maybe_first_row::<(bool,)>()
-            .map_err(scylla_error)
-            .map(|row| row.map(|row| row.0).unwrap_or(false))
+        Self::lwt_applied(result)
     }
 
     async fn scan_app(

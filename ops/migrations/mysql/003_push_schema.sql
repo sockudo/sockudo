@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS `push_publish_status` (
     error_reason TEXT NULL,
     created_at_ms BIGINT UNSIGNED NOT NULL,
     updated_at_ms BIGINT UNSIGNED NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
     PRIMARY KEY (app_id, publish_id),
     KEY push_publish_status_state_idx (app_id, state, updated_at_ms, publish_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -196,3 +197,10 @@ CREATE TABLE IF NOT EXISTS `push_schema_version` (
 
 INSERT IGNORE INTO `push_schema_version` (version, applied_at_ms)
 VALUES (1, 0);
+
+INSERT IGNORE INTO `push_schema_version` (version, applied_at_ms)
+SELECT 2, 0
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name = 'push_publish_status'
+  AND column_name = 'revision';

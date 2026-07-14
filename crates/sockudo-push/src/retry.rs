@@ -2,12 +2,15 @@ use crate::domain::{
     DEFAULT_PUSH_RETRY_INITIAL_BACKOFF_MS, DEFAULT_PUSH_RETRY_JITTER_RATIO_PERCENT,
     DEFAULT_PUSH_RETRY_MAX_AGE_MS, DEFAULT_PUSH_RETRY_MAX_ATTEMPTS,
     DEFAULT_PUSH_RETRY_MAX_BACKOFF_MS, DeliveryBatch, DeliveryFeedback, DeliveryJob,
-    DeliveryOutcome, ProviderError, PublishLifecycleState, PublishStatus, PushProviderKind,
-    RetryScheduleEntry, provider_key, stable_hash,
+    DeliveryOutcome, ProviderError, PublishLifecycleState, PushProviderKind, RetryScheduleEntry,
+    provider_key, stable_hash,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
-use crate::pipeline::{PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, now_ms};
+use crate::pipeline::{
+    PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage,
+    guard_publish_status_transition, mutate_publish_status_with_cas, now_ms,
+};
 use crate::storage::{DynPushStore, IdempotencyRecord, SchedulerLock};
 
 const MAX_RETRY_ATTEMPTS: u32 = 100;
@@ -336,6 +339,29 @@ impl PushRetryScheduler {
             batch_id: retry_job.batch_id.clone(),
             jobs: vec![retry_job],
         };
+        let status = self
+            .store
+            .get_publish_status(&entry.app_id, &entry.publish_id)
+            .await?;
+        if let Some(current) = status.as_ref() {
+            // A terminal summary can be based on a mutable audience estimate. An explicitly
+            // scheduled-but-unattempted retry is still real work; dispatch it without regressing
+            // the terminal lifecycle state. Otherwise a terminal retry entry is stale.
+            let scheduled_retry_is_pending = current.state.is_terminal()
+                && current.counters.retry_attempted < current.counters.retry_scheduled;
+            if !scheduled_retry_is_pending
+                && !guard_publish_status_transition(
+                    &self.metrics,
+                    "retry",
+                    current,
+                    PublishLifecycleState::Dispatching,
+                )
+            {
+                self.put_retry_idempotency(&entry).await?;
+                self.queue.ack(message.ack).await?;
+                return Ok(());
+            }
+        }
         self.queue
             .produce(
                 PushQueueStage::DeliveryJobs(provider),
@@ -343,8 +369,43 @@ impl PushRetryScheduler {
                 PushQueuePayload::DeliveryBatch(Box::new(batch)),
             )
             .await?;
-        self.mark_retry_attempted(&entry).await?;
+        // The successor job is already visible. Record its deterministic retry key before status
+        // accounting so a status-store failure cannot make source-message redelivery enqueue the
+        // same provider attempt again.
         self.put_retry_idempotency(&entry).await?;
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "retry",
+            &entry.app_id,
+            &entry.publish_id,
+            |current| {
+                let scheduled_retry_is_pending = current.state.is_terminal()
+                    && current.counters.retry_attempted < current.counters.retry_scheduled;
+                if current.state.is_terminal() && !scheduled_retry_is_pending {
+                    return Ok(None);
+                }
+                if !current.state.is_terminal()
+                    && !guard_publish_status_transition(
+                        &self.metrics,
+                        "retry",
+                        current,
+                        PublishLifecycleState::Dispatching,
+                    )
+                {
+                    return Ok(None);
+                }
+
+                let mut status = current.clone();
+                status.counters.retry_attempted = status.counters.retry_attempted.saturating_add(1);
+                if !status.state.is_terminal() {
+                    status.state = PublishLifecycleState::Dispatching;
+                }
+                status.retry_after_ms = None;
+                Ok(Some(status))
+            },
+        )
+        .await?;
         self.metrics.retry_attempted(provider, &entry.app_id);
         emit_push_meta_event(PushMetaEvent::scheduler_event(
             &entry.app_id,
@@ -408,45 +469,39 @@ impl PushRetryScheduler {
         Ok(())
     }
 
-    async fn mark_retry_attempted(&self, entry: &RetryScheduleEntry) -> PushPipelineResult<()> {
-        if let Some(mut status) = self
-            .store
-            .get_publish_status(&entry.app_id, &entry.publish_id)
-            .await?
-        {
-            status.counters.retry_attempted = status.counters.retry_attempted.saturating_add(1);
-            status.state = PublishLifecycleState::Dispatching;
-            status.retry_after_ms = None;
-            self.store.put_publish_status(status).await?;
-        }
-        Ok(())
-    }
-
     async fn mark_terminal_status(
         &self,
         entry: &RetryScheduleEntry,
         kind: RetryTerminalKind,
         reason: &str,
     ) -> PushPipelineResult<()> {
-        let Some(mut status) = self
-            .store
-            .get_publish_status(&entry.app_id, &entry.publish_id)
-            .await?
-        else {
-            return Ok(());
-        };
-
-        match kind {
-            RetryTerminalKind::Expired => {
-                status.counters.expired = status.counters.expired.saturating_add(1);
-            }
-            RetryTerminalKind::DeadLettered => {
-                status.counters.dead_lettered = status.counters.dead_lettered.saturating_add(1);
-            }
-        }
-        status.error_reason = Some(redact_retry_reason(reason, entry.last_error.as_ref()));
-        status.state = retry_terminal_state(&status);
-        self.store.put_publish_status(status).await?;
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "retry",
+            &entry.app_id,
+            &entry.publish_id,
+            |current| {
+                let mut status = current.clone();
+                match kind {
+                    RetryTerminalKind::Expired => {
+                        status.counters.expired = status.counters.expired.saturating_add(1);
+                    }
+                    RetryTerminalKind::DeadLettered => {
+                        status.counters.dead_lettered =
+                            status.counters.dead_lettered.saturating_add(1);
+                    }
+                }
+                status.error_reason = Some(redact_retry_reason(reason, entry.last_error.as_ref()));
+                let next = status.counters.resolve_lifecycle_state(status.state);
+                // Like feedback, a terminal retry outcome may refine a summary after a mutable
+                // audience exceeded its acceptance-time estimate. It never moves the publish back
+                // to an active state.
+                status.state = next;
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -478,32 +533,6 @@ impl PushRetryScheduler {
 enum RetryTerminalKind {
     Expired,
     DeadLettered,
-}
-
-fn retry_terminal_state(status: &PublishStatus) -> PublishLifecycleState {
-    let terminal = status
-        .counters
-        .succeeded
-        .saturating_add(status.counters.failed)
-        .saturating_add(status.counters.expired)
-        .saturating_add(status.counters.dead_lettered);
-    if status.counters.planned == 0 || terminal < status.counters.planned {
-        return status.state;
-    }
-    if status.counters.failed == 0
-        && status.counters.expired == 0
-        && status.counters.dead_lettered == 0
-    {
-        PublishLifecycleState::Succeeded
-    } else if status.counters.succeeded > 0 {
-        PublishLifecycleState::PartiallySucceeded
-    } else if status.counters.expired > 0 {
-        PublishLifecycleState::Expired
-    } else if status.counters.dead_lettered > 0 {
-        PublishLifecycleState::DeadLettered
-    } else {
-        PublishLifecycleState::Failed
-    }
 }
 
 fn normalize_retry_entry(entry: &mut RetryScheduleEntry) {
@@ -591,10 +620,11 @@ mod tests {
     use sonic_rs::json;
 
     use crate::domain::{
-        DeliveryOutcome, DeliveryResult, ProviderFailureClass, PushPayload, PushProviderKind,
-        PushRecipient, SecretString,
+        DeliveryOutcome, DeliveryResult, ProviderFailureClass, PublishStatus, PushPayload,
+        PushProviderKind, PushRecipient, SecretString,
     };
     use crate::memory::MemoryPushStore;
+    use crate::metrics::PushMetrics;
     use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueueError, QueueAckToken};
     use crate::storage::PushPublishStatusStore;
 
@@ -711,6 +741,119 @@ mod tests {
                 .ready_depth,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn retry_status_write_does_not_regress_a_terminal_publish() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let mut terminal = status();
+        terminal.state = PublishLifecycleState::Succeeded;
+        terminal.counters.succeeded = 1;
+        store.put_publish_status(terminal).await.unwrap();
+        let entry = retry_entry(2, now_ms());
+        queue
+            .produce(
+                PushQueueStage::RetrySchedule,
+                entry.key.clone(),
+                PushQueuePayload::RetrySchedule(Box::new(entry)),
+            )
+            .await
+            .unwrap();
+        let metrics = PushMetrics::default();
+        let scheduler = PushRetryScheduler::new(store.clone(), queue.clone(), "node-a")
+            .with_metrics(metrics.clone());
+
+        assert_eq!(scheduler.run_once("retry").await.unwrap(), 1);
+
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.state, PublishLifecycleState::Succeeded);
+        assert_eq!(status.counters.retry_attempted, 0);
+        assert_eq!(metrics.get("sockudo_push_invariant_violations_total"), 1);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::DeliveryJobs(PushProviderKind::Fcm))
+                .await
+                .unwrap()
+                .ready_depth,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_retry_after_estimated_terminal_state_dispatches_without_regression() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let mut terminal = status();
+        terminal.state = PublishLifecycleState::Succeeded;
+        terminal.counters.succeeded = 1;
+        terminal.counters.retry_scheduled = 1;
+        store.put_publish_status(terminal).await.unwrap();
+        let entry = retry_entry(2, now_ms());
+        queue
+            .produce(
+                PushQueueStage::RetrySchedule,
+                entry.key.clone(),
+                PushQueuePayload::RetrySchedule(Box::new(entry)),
+            )
+            .await
+            .unwrap();
+
+        let scheduler = PushRetryScheduler::new(store.clone(), queue.clone(), "node-a");
+        assert_eq!(scheduler.run_once("retry").await.unwrap(), 1);
+
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.state, PublishLifecycleState::Succeeded);
+        assert_eq!(status.counters.retry_attempted, 1);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::DeliveryJobs(PushProviderKind::Fcm))
+                .await
+                .unwrap()
+                .ready_depth,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_terminal_outcome_can_refine_an_estimated_terminal_summary() {
+        let store = Arc::new(MemoryPushStore::new());
+        let mut terminal = status();
+        terminal.state = PublishLifecycleState::Succeeded;
+        terminal.counters.succeeded = 1;
+        store.put_publish_status(terminal).await.unwrap();
+        let queue = Arc::new(MemoryPushQueue::new());
+        let mut entry = retry_entry(2, now_ms());
+        if let Some(job) = entry.job.as_mut() {
+            job.expires_at_ms = Some(now_ms().saturating_sub(1));
+        }
+        queue
+            .produce(
+                PushQueueStage::RetrySchedule,
+                entry.key.clone(),
+                PushQueuePayload::RetrySchedule(Box::new(entry)),
+            )
+            .await
+            .unwrap();
+
+        let scheduler = PushRetryScheduler::new(store.clone(), queue, "node-a");
+        assert_eq!(scheduler.run_once("retry").await.unwrap(), 1);
+
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.counters.expired, 1);
+        assert_eq!(status.state, PublishLifecycleState::PartiallySucceeded);
     }
 
     #[tokio::test]

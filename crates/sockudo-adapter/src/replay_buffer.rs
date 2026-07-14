@@ -43,7 +43,16 @@ struct ChannelBuffer {
 pub enum ReplayLookup {
     Recovered(Vec<Bytes>),
     Expired,
-    StreamReset { current_stream_id: Option<String> },
+    StreamReset {
+        current_stream_id: Option<String>,
+    },
+    Ahead {
+        newest_serial: u64,
+    },
+    ContinuityGap {
+        expected_serial: u64,
+        observed_serial: u64,
+    },
 }
 
 /// Per-channel replay buffer for connection recovery.
@@ -298,7 +307,10 @@ impl ReplayBuffer {
     ) -> Option<Vec<Bytes>> {
         match self.get_messages_after_position(app_id, channel, None, last_serial) {
             ReplayLookup::Recovered(messages) => Some(messages),
-            ReplayLookup::Expired | ReplayLookup::StreamReset { .. } => None,
+            ReplayLookup::Expired
+            | ReplayLookup::StreamReset { .. }
+            | ReplayLookup::Ahead { .. }
+            | ReplayLookup::ContinuityGap { .. } => None,
         }
     }
 
@@ -327,45 +339,60 @@ impl ReplayBuffer {
 
         Self::prune_expired_locked(&mut state.messages, self.buffer_ttl, now);
 
+        let newest_serial = entry.next_serial.load(Ordering::Relaxed).saturating_sub(1);
+        if last_serial > newest_serial {
+            return ReplayLookup::Ahead { newest_serial };
+        }
+        if last_serial == newest_serial {
+            return ReplayLookup::Recovered(Vec::new());
+        }
+
         if state.messages.is_empty() {
             if now.duration_since(state.last_touched) >= self.buffer_ttl {
                 return ReplayLookup::Expired;
             }
-            // No buffered messages — client is either up-to-date or buffer was evicted.
-            // If the requested serial matches or exceeds the next serial, they're caught up.
-            let next = entry.next_serial.load(Ordering::Relaxed);
-            return if last_serial >= next.saturating_sub(1) {
-                ReplayLookup::Recovered(Vec::new())
-            } else {
-                ReplayLookup::Expired
-            };
+            return ReplayLookup::Expired;
         }
 
-        let newest_serial = state.messages.back().map(|m| m.serial).unwrap_or(0);
-        if last_serial >= newest_serial {
-            return ReplayLookup::Recovered(Vec::new());
-        }
-
-        // Check if the buffer goes back far enough
-        let oldest_serial = state.messages.front().map(|m| m.serial).unwrap_or(0);
+        let oldest_serial = state
+            .messages
+            .iter()
+            .map(|message| message.serial)
+            .min()
+            .unwrap_or(newest_serial);
         if last_serial.saturating_add(1) < oldest_serial {
             // The client missed messages that were already evicted
             return ReplayLookup::Expired;
         }
 
-        let contiguous = state.messages.make_contiguous();
-        let start_idx = contiguous.partition_point(|message| message.serial <= last_serial);
+        // Concurrent publishers can reach this buffer out of reservation order. Sort the bounded
+        // replay window at read time, then fail closed on any duplicate or gap instead of claiming
+        // a contiguous recovery position.
+        let mut candidates = state
+            .messages
+            .iter()
+            .filter(|message| message.serial > last_serial)
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|message| message.serial);
+
         let mut expected_serial = last_serial.saturating_add(1);
-        for message in &contiguous[start_idx..] {
-            if message.serial != expected_serial {
-                return ReplayLookup::Expired;
+        let mut result = Vec::with_capacity(candidates.len());
+        for message in candidates {
+            if message.stream_id != state.current_stream_id || message.serial != expected_serial {
+                return ReplayLookup::ContinuityGap {
+                    expected_serial,
+                    observed_serial: message.serial,
+                };
             }
+            result.push(message.message_bytes.clone());
             expected_serial = expected_serial.saturating_add(1);
         }
-        let mut result = Vec::with_capacity(contiguous.len().saturating_sub(start_idx));
-        for message in &contiguous[start_idx..] {
-            let _ = &message.stream_id;
-            result.push(message.message_bytes.clone());
+
+        if expected_serial <= newest_serial {
+            return ReplayLookup::ContinuityGap {
+                expected_serial,
+                observed_serial: newest_serial,
+            };
         }
 
         ReplayLookup::Recovered(result)

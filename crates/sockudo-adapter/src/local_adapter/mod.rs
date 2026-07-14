@@ -171,6 +171,13 @@ impl LocalAdapter {
         self.app_manager.get()
     }
 
+    pub fn get_total_sockets_count(&self) -> usize {
+        self.namespaces
+            .iter()
+            .map(|entry| entry.value().sockets.len())
+            .sum()
+    }
+
     fn remove_pending_presence_index_entry(&self, app_id: &str, channel: &str, pending_key: &str) {
         let channel_key = pending_presence_channel_key(app_id, channel);
         let should_remove_channel = self

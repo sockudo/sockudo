@@ -822,10 +822,27 @@ impl ConnectionHandler {
     async fn initialize_socket_with_quota_check(
         &self,
         socket_id: SocketId,
-        socket_tx: WebSocketWriter,
+        mut socket_tx: WebSocketWriter,
         app_config: &App,
         wire_options: SocketWireOptions,
     ) -> Result<()> {
+        // Per-pod capacity check (across all apps on this node)
+        if self.server_options.max_connections > 0 {
+            let node_count = if let Some(ref la) = self.local_adapter {
+                la.get_total_sockets_count()
+            } else {
+                self.connection_manager
+                    .get_sockets_count(&app_config.id)
+                    .await
+                    .unwrap_or(0)
+            };
+
+            if node_count >= self.server_options.max_connections as usize {
+                Self::send_error_frame(&mut socket_tx, &Error::OverCapacity).await;
+                return Err(Error::OverCapacity);
+            }
+        }
+
         // True atomic operation: quota check and socket addition under single lock
         // This is the only way to prevent race conditions
         {

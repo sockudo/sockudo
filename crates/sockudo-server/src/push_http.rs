@@ -26,11 +26,12 @@ use sockudo_push::{
     EncryptedSecret, FanoutRegime, IdempotencyRecord, NotificationTemplate,
     OperatorInvalidationEvent, ProviderCredential, ProviderCredentialMaterial,
     ProviderOverridePayload, PublishCounters, PublishIntent, PublishLifecycleState,
-    PublishLogEvent, PublishStatus, PublishTarget, PushCursor, PushMetaEvent, PushMetrics,
-    PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage, PushRecipient,
-    PushRulePayloadMapping, RenderedProviderPayload, SecretString, emit_push_meta_event,
-    generate_device_identity_token, hash_device_identity_token, render_all_provider_payloads,
-    resolve_template_payload, verify_device_identity_token,
+    PublishLogEvent, PublishStatus, PublishStatusCasOutcome, PublishTarget, PushCursor,
+    PushMetaEvent, PushMetrics, PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage,
+    PushRecipient, PushRulePayloadMapping, RenderedProviderPayload, SecretString,
+    emit_push_meta_event, generate_device_identity_token, hash_device_identity_token,
+    publish_idempotency_key, render_all_provider_payloads, resolve_template_payload,
+    verify_device_identity_token,
 };
 use sonic_rs::{Value, json};
 use tracing::{info, warn};
@@ -1050,11 +1051,20 @@ async fn accept_publish_inner(
 
     let rendered_payloads = render_all_payloads(&intent.payload, &intent.provider_overrides)?;
     let idempotency_key = intent.idempotency_key();
-    let existing_idempotency = context
+    let publish_record_key = publish_idempotency_key(app_id, &publish_id);
+    let existing_idempotency = match context
         .store
-        .get_idempotency_record(app_id, &idempotency_key)
+        .get_idempotency_record(app_id, &publish_record_key)
         .await
-        .map_err(push_error)?;
+        .map_err(push_error)?
+    {
+        Some(existing) => Some(existing),
+        None => context
+            .store
+            .get_idempotency_record(app_id, &idempotency_key)
+            .await
+            .map_err(push_error)?,
+    };
     let existing_status = if let Some(existing) = existing_idempotency.as_ref() {
         context
             .store
@@ -1109,36 +1119,114 @@ async fn accept_publish_inner(
     } else {
         PublishLifecycleState::Queued
     };
-    context
+    let initial_status = PublishStatus {
+        app_id: app_id.to_owned(),
+        publish_id: publish_id.clone(),
+        state: status_state,
+        counters: PublishCounters {
+            planned: expected_recipients,
+            dispatched: 0,
+            succeeded: 0,
+            failed: 0,
+            expired: 0,
+            retry_scheduled: 0,
+            retry_attempted: 0,
+            dead_lettered: 0,
+        },
+        fanout_regime: Some(fanout_regime),
+        retry_after_ms: None,
+        error_reason: quota_failure.clone(),
+    };
+    let create_outcome = context
         .store
-        .put_publish_status(PublishStatus {
-            app_id: app_id.to_owned(),
-            publish_id: publish_id.clone(),
-            state: status_state,
-            counters: PublishCounters {
-                planned: expected_recipients,
-                dispatched: 0,
-                succeeded: 0,
-                failed: 0,
-                expired: 0,
-                retry_scheduled: 0,
-                retry_attempted: 0,
-                dead_lettered: 0,
-            },
-            fanout_regime: Some(fanout_regime),
-            retry_after_ms: None,
-            error_reason: quota_failure.clone(),
-        })
+        .create_publish_status_if_absent(initial_status.clone())
         .await
         .map_err(push_error)?;
+    match create_outcome {
+        PublishStatusCasOutcome::Inserted { .. } => {}
+        PublishStatusCasOutcome::Conflict => {
+            let existing = context
+                .store
+                .get_publish_status(app_id, &publish_id)
+                .await
+                .map_err(push_error)?
+                .ok_or_else(|| {
+                    AppError::InternalError("conflicting publish status disappeared".to_owned())
+                })?;
+            if existing != initial_status {
+                PUSH_HTTP_METRICS.duplicate_suppressed();
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(PublishAcceptedResponse {
+                        publish_id,
+                        status: publish_state_label(existing.state),
+                        expected_recipients: existing.counters.planned,
+                        fanout_regime: existing.fanout_regime.unwrap_or(fanout_regime),
+                        rendered_payloads,
+                    }),
+                    forced_async,
+                ));
+            }
+        }
+        outcome => {
+            return Err(AppError::InternalError(format!(
+                "unexpected push publish status create outcome: {outcome:?}"
+            )));
+        }
+    }
+
+    let idempotency_expires_at_ms = request
+        .expires_at_ms
+        .unwrap_or_else(|| now_ms().saturating_add(PUSH_HTTP_DEFAULT_IDEMPOTENCY_TTL_MS));
+    let publish_idempotency = IdempotencyRecord {
+        app_id: app_id.to_owned(),
+        key: publish_record_key.clone(),
+        publish_id: publish_id.clone(),
+        expires_at_ms: idempotency_expires_at_ms,
+    };
+    if !context
+        .store
+        .put_idempotency_record_if_absent(publish_idempotency)
+        .await
+        .map_err(push_error)?
+    {
+        let existing = context
+            .store
+            .get_idempotency_record(app_id, &publish_record_key)
+            .await
+            .map_err(push_error)?
+            .ok_or_else(|| {
+                AppError::InternalError("duplicate publish id record disappeared".to_owned())
+            })?;
+        if let Some(status) = context
+            .store
+            .get_publish_status(app_id, &existing.publish_id)
+            .await
+            .map_err(push_error)?
+        {
+            PUSH_HTTP_METRICS.duplicate_suppressed();
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(PublishAcceptedResponse {
+                    publish_id: existing.publish_id,
+                    status: publish_state_label(status.state),
+                    expected_recipients: status.counters.planned,
+                    fanout_regime: status.fanout_regime.unwrap_or(fanout_regime),
+                    rendered_payloads,
+                }),
+                forced_async,
+            ));
+        }
+        return Err(AppError::InternalError(
+            "duplicate publish is missing persisted status".to_owned(),
+        ));
+    }
 
     let idempotency = IdempotencyRecord {
         app_id: app_id.to_owned(),
-        key: idempotency_key,
+        key: idempotency_key.clone(),
         publish_id: publish_id.clone(),
-        expires_at_ms: request
-            .expires_at_ms
-            .unwrap_or_else(|| now_ms().saturating_add(PUSH_HTTP_DEFAULT_IDEMPOTENCY_TTL_MS)),
+        expires_at_ms: idempotency_expires_at_ms,
     };
     if !context
         .store
@@ -1148,7 +1236,7 @@ async fn accept_publish_inner(
     {
         let existing = context
             .store
-            .get_idempotency_record(app_id, &intent.idempotency_key())
+            .get_idempotency_record(app_id, &idempotency_key)
             .await
             .map_err(push_error)?
             .ok_or_else(|| {
@@ -2923,6 +3011,154 @@ mod tests {
                 .unwrap()
                 .ready_depth,
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_rejection_recovers_status_created_before_idempotency_election() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
+        let _quota = EnvVarGuard::set("PUSH_FANOUT_MAX", "0");
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.upsert_device(sample_device()).await.unwrap();
+        store
+            .put_publish_status(PublishStatus {
+                app_id: "app-1".to_owned(),
+                publish_id: "quota-publish-recovery".to_owned(),
+                state: PublishLifecycleState::QuotaExceeded,
+                counters: PublishCounters {
+                    planned: 1,
+                    ..PublishCounters::default()
+                },
+                fanout_regime: Some(FanoutRegime::FastPath),
+                retry_after_ms: None,
+                error_reason: Some("fanout_max exceeded for app app-1".to_owned()),
+            })
+            .await
+            .unwrap();
+        let dyn_store: DynPushStore = store.clone();
+        let dyn_queue: DynPushQueue = queue.clone();
+        let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
+
+        let (_, Json(body), _) = accept_publish_inner(
+            "app-1",
+            sample_publish_request("quota-publish-recovery"),
+            false,
+            &HeaderMap::new(),
+            test_publish_context(&dyn_store, &dyn_queue, &admission),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(body.status, "quota_exceeded");
+        let idempotency = idempotency_record_for_request(
+            "app-1",
+            "quota-publish-recovery",
+            &sample_publish_request("quota-publish-recovery"),
+        );
+        assert!(
+            store
+                .get_idempotency_record("app-1", &idempotency.key)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_conflict_does_not_attach_request_to_mismatched_status() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.upsert_device(sample_device()).await.unwrap();
+        store
+            .put_publish_status(PublishStatus {
+                app_id: "app-1".to_owned(),
+                publish_id: "publish-conflict".to_owned(),
+                state: PublishLifecycleState::Succeeded,
+                counters: PublishCounters {
+                    planned: 99,
+                    succeeded: 99,
+                    ..PublishCounters::default()
+                },
+                fanout_regime: Some(FanoutRegime::ShardPath),
+                retry_after_ms: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
+        let dyn_store: DynPushStore = store;
+        let dyn_queue: DynPushQueue = queue.clone();
+        let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
+
+        let (_, Json(body), _) = accept_publish_inner(
+            "app-1",
+            sample_publish_request("publish-conflict"),
+            false,
+            &HeaderMap::new(),
+            test_publish_context(&dyn_store, &dyn_queue, &admission),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(body.status, "succeeded");
+        assert_eq!(body.expected_recipients, 99);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_id_election_suppresses_a_different_intent_with_matching_status_shape() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store.upsert_device(sample_device()).await.unwrap();
+        let dyn_store: DynPushStore = store.clone();
+        let dyn_queue: DynPushQueue = queue.clone();
+        let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);
+        let first = sample_publish_request("shared-publish-id");
+        let mut second = sample_publish_request("shared-publish-id");
+        second.payload.body = Some("different body".to_owned());
+
+        accept_publish_inner(
+            "app-1",
+            first,
+            false,
+            &HeaderMap::new(),
+            test_publish_context(&dyn_store, &dyn_queue, &admission),
+        )
+        .await
+        .unwrap();
+        accept_publish_inner(
+            "app-1",
+            second,
+            false,
+            &HeaderMap::new(),
+            test_publish_context(&dyn_store, &dyn_queue, &admission),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            1
+        );
+        assert_eq!(
+            store
+                .list_publish_log_events("app-1", 10, None)
+                .await
+                .unwrap()
+                .items
+                .len(),
+            1
         );
     }
 

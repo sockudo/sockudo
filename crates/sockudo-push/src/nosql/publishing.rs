@@ -9,72 +9,345 @@ use crate::domain::{
 };
 use crate::storage::{
     DeviceRegistrationChange, DeviceRegistrationOutcome, IdempotencyRecord,
-    OperatorInvalidationEvent, Page, PushCredentialStore, PushDeliveryEventStore, PushDeviceStore,
-    PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore,
-    PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore, PushStorageResult,
-    PushSubscriptionStore, PushTemplateStore, ScheduledPushJob, SchedulerLock,
+    OperatorInvalidationEvent, Page, PublishStatusCasOutcome, PushCredentialStore,
+    PushDeliveryEventStore, PushDeviceStore, PushFanoutShardStore, PushIdempotencyStore,
+    PushOperatorEventStore, PushPublishLogStore, PushPublishStatusStore, PushScheduleStore,
+    PushSchedulerLockStore, PushStorageError, PushStorageResult, PushSubscriptionStore,
+    PushTemplateStore, ScheduledPushJob, SchedulerLock, VersionedPublishStatus,
 };
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+const INITIAL_PUBLISH_STATUS_REVISION: u64 = 1;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredPublishStatus {
+    revision: u64,
+    updated_at_ms: u64,
+    status: PublishStatus,
+}
+
+struct DecodedPublishStatus {
+    versioned: VersionedPublishStatus,
+    legacy: bool,
+}
+
+fn encode_publish_status(status: &VersionedPublishStatus) -> PushStorageResult<String> {
+    to_json_string(&StoredPublishStatus {
+        revision: status.revision,
+        updated_at_ms: status.updated_at_ms,
+        status: status.status.clone(),
+    })
+}
+
+fn decode_publish_status(data: &str) -> PushStorageResult<DecodedPublishStatus> {
+    if let Ok(stored) = from_json_str::<StoredPublishStatus>(data) {
+        if stored.revision == 0 {
+            return Err(PushStorageError::Backend(
+                "push publish status revision must be greater than zero".to_owned(),
+            ));
+        }
+        return Ok(DecodedPublishStatus {
+            versioned: VersionedPublishStatus {
+                status: stored.status,
+                revision: stored.revision,
+                updated_at_ms: stored.updated_at_ms,
+            },
+            legacy: false,
+        });
+    }
+
+    Ok(DecodedPublishStatus {
+        versioned: VersionedPublishStatus {
+            status: from_json_str::<PublishStatus>(data)?,
+            revision: INITIAL_PUBLISH_STATUS_REVISION,
+            updated_at_ms: 0,
+        },
+        legacy: true,
+    })
+}
+
+fn next_publish_status_updated_at(previous: u64) -> u64 {
+    crate::pipeline::now_ms().max(previous.saturating_add(1))
+}
+
+impl<B> DocumentPushStore<B>
+where
+    B: DocumentBackend,
+{
+    async fn read_versioned_publish_status(
+        &self,
+        app_id: &str,
+        publish_id: &str,
+    ) -> PushStorageResult<Option<(String, VersionedPublishStatus)>> {
+        let Some(data) = self
+            .backend
+            .get_consistent(FAMILY_STATUS, app_id, publish_id, DEFAULT_SK)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let mut decoded = decode_publish_status(&data)?;
+        if decoded.legacy {
+            decoded.versioned.updated_at_ms = self
+                .backend
+                .get_consistent(FAMILY_STATUS_UPDATED, app_id, publish_id, DEFAULT_SK)
+                .await?
+                .map(|updated_at| from_json_str::<u64>(&updated_at))
+                .transpose()?
+                .unwrap_or(0);
+        }
+        Ok(Some((data, decoded.versioned)))
+    }
+
+    async fn prepare_publish_status_index(
+        &self,
+        status: &VersionedPublishStatus,
+    ) -> PushStorageResult<String> {
+        let app_id = &status.status.app_id;
+        let publish_id = &status.status.publish_id;
+        self.remember_cleanup_app(app_id).await?;
+        let indexed_data = to_json_string(publish_id)?;
+        self.backend
+            .put(
+                FAMILY_STATUS_UPDATED_TIME,
+                app_id,
+                "time",
+                &status_updated_position(status.updated_at_ms, publish_id),
+                indexed_data.clone(),
+            )
+            .await?;
+        Ok(indexed_data)
+    }
+
+    async fn discard_publish_status_index_if_stale(
+        &self,
+        candidate: &VersionedPublishStatus,
+        indexed_data: &str,
+    ) {
+        let app_id = &candidate.status.app_id;
+        let publish_id = &candidate.status.publish_id;
+        let canonical_updated_at_ms = match self
+            .backend
+            .get_consistent(FAMILY_STATUS, app_id, publish_id, DEFAULT_SK)
+            .await
+        {
+            Ok(Some(data)) => match decode_publish_status(&data) {
+                Ok(decoded) => Some(decoded.versioned.updated_at_ms),
+                Err(error) => {
+                    tracing::warn!(
+                        app_id,
+                        publish_id,
+                        operation = "decode-after-status-conflict",
+                        error = %error,
+                        "push publish status advisory index cleanup failed"
+                    );
+                    return;
+                }
+            },
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    app_id,
+                    publish_id,
+                    operation = "read-after-status-conflict",
+                    error = %error,
+                    "push publish status advisory index cleanup failed"
+                );
+                return;
+            }
+        };
+        if canonical_updated_at_ms == Some(candidate.updated_at_ms) {
+            return;
+        }
+        if let Err(error) = self
+            .backend
+            .compare_and_delete(
+                FAMILY_STATUS_UPDATED_TIME,
+                app_id,
+                "time",
+                &status_updated_position(candidate.updated_at_ms, publish_id),
+                indexed_data,
+            )
+            .await
+        {
+            tracing::warn!(
+                app_id,
+                publish_id,
+                operation = "delete-conflicting-time-index",
+                error = %error,
+                "push publish status advisory index cleanup failed"
+            );
+        }
+    }
+
+    async fn refresh_publish_status_indexes(
+        &self,
+        status: &VersionedPublishStatus,
+        previous_updated_at_ms: Option<u64>,
+    ) {
+        let app_id = &status.status.app_id;
+        let publish_id = &status.status.publish_id;
+        let updated_at_ms = status.updated_at_ms;
+
+        // The discoverability index was durably staged before the canonical conditional write.
+        // These remaining records are advisory, so interruption can only delay pointer cleanup.
+        if let Err(error) = self
+            .put_json(
+                FAMILY_STATUS_UPDATED,
+                app_id,
+                publish_id,
+                DEFAULT_SK,
+                &updated_at_ms,
+            )
+            .await
+        {
+            tracing::warn!(
+                app_id,
+                publish_id,
+                operation = "write-updated-pointer",
+                error = %error,
+                "push publish status advisory index update failed"
+            );
+        }
+        if let Some(previous_updated_at_ms) = previous_updated_at_ms
+            && previous_updated_at_ms != updated_at_ms
+            && let Err(error) = self
+                .backend
+                .delete(
+                    FAMILY_STATUS_UPDATED_TIME,
+                    app_id,
+                    "time",
+                    &status_updated_position(previous_updated_at_ms, publish_id),
+                )
+                .await
+        {
+            tracing::warn!(
+                app_id,
+                publish_id,
+                operation = "delete-old-time-index",
+                error = %error,
+                "push publish status advisory index update failed"
+            );
+        }
+    }
+}
 
 #[async_trait]
 impl<B> PushPublishStatusStore for DocumentPushStore<B>
 where
     B: DocumentBackend,
 {
-    async fn put_publish_status(&self, status: PublishStatus) -> PushStorageResult<()> {
-        let now_ms = crate::pipeline::now_ms();
-        if let Some(previous_updated_at_ms) = self
-            .get_json::<u64>(
-                FAMILY_STATUS_UPDATED,
+    async fn create_publish_status_if_absent(
+        &self,
+        status: PublishStatus,
+    ) -> PushStorageResult<PublishStatusCasOutcome> {
+        if self
+            .backend
+            .get_consistent(
+                FAMILY_STATUS,
                 &status.app_id,
                 &status.publish_id,
                 DEFAULT_SK,
             )
             .await?
+            .is_some()
         {
-            self.backend
-                .delete(
-                    FAMILY_STATUS_UPDATED_TIME,
-                    &status.app_id,
-                    "time",
-                    &status_updated_position(previous_updated_at_ms, &status.publish_id),
-                )
-                .await?;
+            return Ok(PublishStatusCasOutcome::Conflict);
         }
-        self.remember_cleanup_app(&status.app_id).await?;
-        self.put_json(
-            FAMILY_STATUS_UPDATED,
-            &status.app_id,
-            &status.publish_id,
-            DEFAULT_SK,
-            &now_ms,
-        )
-        .await?;
-        self.put_json(
-            FAMILY_STATUS_UPDATED_TIME,
-            &status.app_id,
-            "time",
-            &status_updated_position(now_ms, &status.publish_id),
-            &status.publish_id,
-        )
-        .await?;
-        self.put_json(
-            FAMILY_STATUS,
-            &status.app_id,
-            &status.publish_id,
-            DEFAULT_SK,
-            &status,
-        )
-        .await
+        let versioned = VersionedPublishStatus {
+            status,
+            revision: INITIAL_PUBLISH_STATUS_REVISION,
+            updated_at_ms: next_publish_status_updated_at(0),
+        };
+        let indexed_data = self.prepare_publish_status_index(&versioned).await?;
+        if !self
+            .backend
+            .put_if_absent(
+                FAMILY_STATUS,
+                &versioned.status.app_id,
+                &versioned.status.publish_id,
+                DEFAULT_SK,
+                encode_publish_status(&versioned)?,
+            )
+            .await?
+        {
+            self.discard_publish_status_index_if_stale(&versioned, &indexed_data)
+                .await;
+            return Ok(PublishStatusCasOutcome::Conflict);
+        }
+
+        self.refresh_publish_status_indexes(&versioned, None).await;
+        Ok(PublishStatusCasOutcome::Inserted {
+            revision: versioned.revision,
+        })
     }
 
-    async fn get_publish_status(
+    async fn get_versioned_publish_status(
         &self,
         app_id: &str,
         publish_id: &str,
-    ) -> PushStorageResult<Option<PublishStatus>> {
-        self.get_json(FAMILY_STATUS, app_id, publish_id, DEFAULT_SK)
-            .await
+    ) -> PushStorageResult<Option<VersionedPublishStatus>> {
+        Ok(self
+            .read_versioned_publish_status(app_id, publish_id)
+            .await?
+            .map(|(_, status)| status))
+    }
+
+    async fn compare_and_swap_publish_status(
+        &self,
+        expected: &VersionedPublishStatus,
+        next: PublishStatus,
+    ) -> PushStorageResult<PublishStatusCasOutcome> {
+        if expected.revision == 0
+            || expected.status.app_id != next.app_id
+            || expected.status.publish_id != next.publish_id
+        {
+            return Err(PushStorageError::Backend(
+                "invalid push publish status CAS identity or revision".to_owned(),
+            ));
+        }
+
+        let Some((expected_data, current)) = self
+            .read_versioned_publish_status(&next.app_id, &next.publish_id)
+            .await?
+        else {
+            return Ok(PublishStatusCasOutcome::Missing);
+        };
+        if current != *expected {
+            return Ok(PublishStatusCasOutcome::Conflict);
+        }
+
+        let revision = current.revision.checked_add(1).ok_or_else(|| {
+            PushStorageError::Backend("push publish status revision exhausted".to_owned())
+        })?;
+        let updated = VersionedPublishStatus {
+            status: next,
+            revision,
+            updated_at_ms: next_publish_status_updated_at(current.updated_at_ms),
+        };
+        let indexed_data = self.prepare_publish_status_index(&updated).await?;
+        if !self
+            .backend
+            .compare_and_swap(
+                FAMILY_STATUS,
+                &updated.status.app_id,
+                &updated.status.publish_id,
+                DEFAULT_SK,
+                &expected_data,
+                encode_publish_status(&updated)?,
+            )
+            .await?
+        {
+            self.discard_publish_status_index_if_stale(&updated, &indexed_data)
+                .await;
+            return Ok(PublishStatusCasOutcome::Conflict);
+        }
+
+        self.refresh_publish_status_indexes(&updated, Some(current.updated_at_ms))
+            .await;
+        Ok(PublishStatusCasOutcome::Updated { revision })
     }
 }
 
@@ -358,7 +631,8 @@ where
     B: DocumentBackend,
 {
     let rows = store
-        .scan_pk_page_json::<String>(
+        .backend
+        .scan_pk_page(
             FAMILY_STATUS_UPDATED_TIME,
             app_id,
             "time",
@@ -367,41 +641,133 @@ where
         )
         .await?;
     let mut counters = crate::cleanup::PushCleanupCounters::default();
-    for (_, position, publish_id) in rows {
+    for document in rows {
         counters.scanned = counters.scanned.saturating_add(1);
-        let Some((updated_at_ms, _)) = parse_status_updated_position(&position) else {
+        let position = document.sk;
+        let indexed_data = document.data;
+        let publish_id = from_json_str::<String>(&indexed_data)?;
+        let Some((indexed_updated_at_ms, indexed_publish_id)) =
+            parse_status_updated_position(&position)
+        else {
             continue;
         };
-        if updated_at_ms >= cutoff_ms {
+        if indexed_updated_at_ms >= cutoff_ms {
             continue;
         }
-        let Some(status) = store
-            .get_json::<PublishStatus>(FAMILY_STATUS, app_id, &publish_id, DEFAULT_SK)
-            .await?
-        else {
+        if indexed_publish_id != publish_id {
             store
                 .backend
-                .delete(FAMILY_STATUS_UPDATED_TIME, app_id, "time", &position)
+                .compare_and_delete(
+                    FAMILY_STATUS_UPDATED_TIME,
+                    app_id,
+                    "time",
+                    &position,
+                    &indexed_data,
+                )
+                .await?;
+            continue;
+        }
+
+        let Some(status_data) = store
+            .backend
+            .get_consistent(FAMILY_STATUS, app_id, &publish_id, DEFAULT_SK)
+            .await?
+        else {
+            if let Some(updated_data) = store
+                .backend
+                .get_consistent(FAMILY_STATUS_UPDATED, app_id, &publish_id, DEFAULT_SK)
+                .await?
+                && from_json_str::<u64>(&updated_data)? == indexed_updated_at_ms
+            {
+                store
+                    .backend
+                    .compare_and_delete(
+                        FAMILY_STATUS_UPDATED,
+                        app_id,
+                        &publish_id,
+                        DEFAULT_SK,
+                        &updated_data,
+                    )
+                    .await?;
+            }
+            store
+                .backend
+                .compare_and_delete(
+                    FAMILY_STATUS_UPDATED_TIME,
+                    app_id,
+                    "time",
+                    &position,
+                    &indexed_data,
+                )
                 .await?;
             continue;
         };
-        if !terminal_publish_state(status.state) {
+
+        let mut decoded = decode_publish_status(&status_data)?;
+        if decoded.legacy {
+            let Some(legacy_updated_at_ms) = store
+                .backend
+                .get_consistent(FAMILY_STATUS_UPDATED, app_id, &publish_id, DEFAULT_SK)
+                .await?
+                .map(|data| from_json_str::<u64>(&data))
+                .transpose()?
+            else {
+                // The old format did not carry an authoritative timestamp. Without its matching
+                // pointer, fail closed and retain the status rather than guessing from an index.
+                continue;
+            };
+            decoded.versioned.updated_at_ms = legacy_updated_at_ms;
+        }
+
+        if decoded.versioned.updated_at_ms != indexed_updated_at_ms {
+            store
+                .backend
+                .compare_and_delete(
+                    FAMILY_STATUS_UPDATED_TIME,
+                    app_id,
+                    "time",
+                    &position,
+                    &indexed_data,
+                )
+                .await?;
+            continue;
+        }
+        if !terminal_publish_state(decoded.versioned.status.state) {
             continue;
         }
         if store
             .backend
-            .delete(FAMILY_STATUS, app_id, &publish_id, DEFAULT_SK)
+            .compare_and_delete(FAMILY_STATUS, app_id, &publish_id, DEFAULT_SK, &status_data)
             .await?
         {
             counters.deleted = counters.deleted.saturating_add(1);
+            if let Some(updated_data) = store
+                .backend
+                .get_consistent(FAMILY_STATUS_UPDATED, app_id, &publish_id, DEFAULT_SK)
+                .await?
+                && from_json_str::<u64>(&updated_data)? == indexed_updated_at_ms
+            {
+                store
+                    .backend
+                    .compare_and_delete(
+                        FAMILY_STATUS_UPDATED,
+                        app_id,
+                        &publish_id,
+                        DEFAULT_SK,
+                        &updated_data,
+                    )
+                    .await?;
+            }
         }
         store
             .backend
-            .delete(FAMILY_STATUS_UPDATED, app_id, &publish_id, DEFAULT_SK)
-            .await?;
-        store
-            .backend
-            .delete(FAMILY_STATUS_UPDATED_TIME, app_id, "time", &position)
+            .compare_and_delete(
+                FAMILY_STATUS_UPDATED_TIME,
+                app_id,
+                "time",
+                &position,
+                &indexed_data,
+            )
             .await?;
     }
     Ok(counters)

@@ -87,6 +87,23 @@ fn map_history_read_error(position: &ResumePosition, error: Error) -> ResumeFail
     }
 }
 
+fn continuity_failure(
+    position: &ResumePosition,
+    reason: &'static str,
+    current_stream_id: Option<String>,
+    oldest_available_serial: Option<u64>,
+    newest_available_serial: Option<u64>,
+) -> ResumeFailure {
+    ResumeFailure {
+        code: "continuity_unverifiable",
+        reason,
+        expected_stream_id: position.stream_id.clone(),
+        current_stream_id,
+        oldest_available_serial,
+        newest_available_serial,
+    }
+}
+
 impl ConnectionHandler {
     /// Handle a `pusher:resume` event from a reconnecting client.
     ///
@@ -265,6 +282,27 @@ impl ConnectionHandler {
                     newest_available_serial: None,
                 });
             }
+            ReplayLookup::Ahead { newest_serial } => {
+                warn!(
+                    app_id = %app_config.id,
+                    channel,
+                    requested_serial = position.serial,
+                    newest_serial,
+                    "resume position is ahead of the node-local replay buffer; consulting durable recovery"
+                );
+            }
+            ReplayLookup::ContinuityGap {
+                expected_serial,
+                observed_serial,
+            } => {
+                warn!(
+                    app_id = %app_config.id,
+                    channel,
+                    expected_serial,
+                    observed_serial,
+                    "hot replay continuity check failed; attempting durable recovery"
+                );
+            }
             ReplayLookup::Expired => {}
         }
 
@@ -309,6 +347,72 @@ impl ConnectionHandler {
                 });
             }
 
+            if stream_state
+                .newest_available_delivery_serial
+                .is_some_and(|newest| position.serial > newest)
+            {
+                return ResumeOutcome::Failed(ResumeFailure {
+                    code: "continuity_unverifiable",
+                    reason: "position_ahead_of_version_stream",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: stream_state.stream_id.clone(),
+                    oldest_available_serial: stream_state.oldest_available_delivery_serial,
+                    newest_available_serial: stream_state.newest_available_delivery_serial,
+                });
+            }
+
+            if stream_state.newest_available_delivery_serial.is_none()
+                && let Some(next_serial) = stream_state.next_delivery_serial
+            {
+                let requested_next = position.serial.saturating_add(1);
+                if requested_next < next_serial {
+                    return ResumeOutcome::Failed(ResumeFailure {
+                        code: "position_expired",
+                        reason: "version_replay_empty_after_prior_writes",
+                        expected_stream_id: position.stream_id.clone(),
+                        current_stream_id: stream_state.stream_id.clone(),
+                        oldest_available_serial: None,
+                        newest_available_serial: None,
+                    });
+                }
+                if requested_next > next_serial {
+                    return ResumeOutcome::Failed(ResumeFailure {
+                        code: "continuity_unverifiable",
+                        reason: "position_ahead_of_version_stream",
+                        expected_stream_id: position.stream_id.clone(),
+                        current_stream_id: stream_state.stream_id.clone(),
+                        oldest_available_serial: None,
+                        newest_available_serial: None,
+                    });
+                }
+            }
+            if stream_state.newest_available_delivery_serial.is_none()
+                && stream_state.next_delivery_serial.is_none()
+            {
+                return ResumeOutcome::Failed(ResumeFailure {
+                    code: "continuity_unverifiable",
+                    reason: "version_stream_head_unavailable",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: stream_state.stream_id.clone(),
+                    oldest_available_serial: None,
+                    newest_available_serial: None,
+                });
+            }
+
+            if stream_state
+                .oldest_available_delivery_serial
+                .is_some_and(|oldest| position.serial.saturating_add(1) < oldest)
+            {
+                return ResumeOutcome::Failed(ResumeFailure {
+                    code: "position_expired",
+                    reason: "version_replay_floor_is_ahead_of_requested_serial",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: stream_state.stream_id.clone(),
+                    oldest_available_serial: stream_state.oldest_available_delivery_serial,
+                    newest_available_serial: stream_state.newest_available_delivery_serial,
+                });
+            }
+
             let replay_limit = stream_state
                 .newest_available_delivery_serial
                 .map(|newest| newest.saturating_sub(position.serial) as usize)
@@ -337,6 +441,34 @@ impl ConnectionHandler {
                     });
                 }
             };
+
+            let mut expected_serial = position.serial.saturating_add(1);
+            for record in &records {
+                if record.delivery_serial() != expected_serial {
+                    return ResumeOutcome::Failed(ResumeFailure {
+                        code: "continuity_unverifiable",
+                        reason: "version_replay_is_not_contiguous",
+                        expected_stream_id: position.stream_id.clone(),
+                        current_stream_id: stream_state.stream_id.clone(),
+                        oldest_available_serial: stream_state.oldest_available_delivery_serial,
+                        newest_available_serial: stream_state.newest_available_delivery_serial,
+                    });
+                }
+                expected_serial = expected_serial.saturating_add(1);
+            }
+            if stream_state
+                .newest_available_delivery_serial
+                .is_some_and(|newest| expected_serial <= newest)
+            {
+                return ResumeOutcome::Failed(ResumeFailure {
+                    code: "continuity_unverifiable",
+                    reason: "version_replay_ended_before_stream_head",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: stream_state.stream_id.clone(),
+                    oldest_available_serial: stream_state.oldest_available_delivery_serial,
+                    newest_available_serial: stream_state.newest_available_delivery_serial,
+                });
+            }
 
             let mut messages = Vec::with_capacity(records.len());
             for record in records {
@@ -439,15 +571,104 @@ impl ConnectionHandler {
         position: &ResumePosition,
         max_page_size: usize,
     ) -> std::result::Result<Vec<Bytes>, ResumeFailure> {
+        // Freeze the durable head before pagination. History cursors embed their query bounds, so
+        // changing the end bound after page one would invalidate an otherwise healthy cursor.
+        let frozen_inspection = self
+            .history_store()
+            .stream_inspection(&app_config.id, channel)
+            .await
+            .map_err(|error| map_history_read_error(position, error))?;
+        let frozen_head = frozen_inspection.retained;
+        if frozen_head.stream_id.as_deref() != position.stream_id.as_deref() {
+            return Err(ResumeFailure {
+                code: "stream_reset",
+                reason: "durable_stream_id_mismatch",
+                expected_stream_id: position.stream_id.clone(),
+                current_stream_id: frozen_head.stream_id,
+                oldest_available_serial: frozen_head.oldest_serial,
+                newest_available_serial: frozen_head.newest_serial,
+            });
+        }
+        if frozen_head
+            .newest_serial
+            .is_some_and(|newest| position.serial > newest)
+        {
+            return Err(continuity_failure(
+                position,
+                "position_ahead_of_durable_stream",
+                frozen_head.stream_id,
+                frozen_head.oldest_serial,
+                frozen_head.newest_serial,
+            ));
+        }
+        if frozen_head.newest_serial.is_none()
+            && let Some(next_serial) = frozen_inspection.next_serial
+        {
+            let requested_next = position.serial.saturating_add(1);
+            if requested_next < next_serial {
+                return Err(ResumeFailure {
+                    code: "position_expired",
+                    reason: "durable_history_empty_after_prior_writes",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: frozen_head.stream_id,
+                    oldest_available_serial: None,
+                    newest_available_serial: None,
+                });
+            }
+            if requested_next > next_serial {
+                return Err(continuity_failure(
+                    position,
+                    "position_ahead_of_durable_stream",
+                    frozen_head.stream_id,
+                    None,
+                    None,
+                ));
+            }
+        }
+        if frozen_head.newest_serial.is_none() && frozen_inspection.next_serial.is_none() {
+            return Err(continuity_failure(
+                position,
+                "durable_stream_head_unavailable",
+                frozen_head.stream_id,
+                None,
+                None,
+            ));
+        }
+        if frozen_head
+            .oldest_serial
+            .is_some_and(|oldest| position.serial.saturating_add(1) < oldest)
+        {
+            return Err(ResumeFailure {
+                code: "position_expired",
+                reason: "retained_history_floor_is_ahead_of_requested_serial",
+                expected_stream_id: position.stream_id.clone(),
+                current_stream_id: frozen_head.stream_id,
+                oldest_available_serial: frozen_head.oldest_serial,
+                newest_available_serial: frozen_head.newest_serial,
+            });
+        }
+
+        let Some(target_newest_serial) = frozen_head.newest_serial else {
+            return Ok(Vec::new());
+        };
+        if target_newest_serial == position.serial {
+            return Ok(Vec::new());
+        }
+
         let mut cursor = None;
         let mut recovered_messages = Vec::new();
         let bounds = HistoryQueryBounds {
             start_serial: Some(position.serial.saturating_add(1)),
-            end_serial: None,
+            end_serial: Some(target_newest_serial),
             start_time_ms: None,
             end_time_ms: None,
         };
         let mut first_page = true;
+        let mut expected_serial = position.serial.saturating_add(1);
+        let mut previous_cursor_serial = None;
+
+        let gap = target_newest_serial.saturating_sub(position.serial) as usize;
+        recovered_messages.reserve(gap.min(max_page_size * 4));
 
         loop {
             let page = self
@@ -487,13 +708,15 @@ impl ConnectionHandler {
                         newest_available_serial: page.retained.newest_serial,
                     });
                 }
-
-                if let Some(newest_serial) = page.retained.newest_serial
-                    && newest_serial > position.serial
-                {
-                    let gap = newest_serial.saturating_sub(position.serial) as usize;
-                    recovered_messages.reserve(gap.min(max_page_size * 4));
-                }
+            } else if page.retained.stream_id.as_deref() != position.stream_id.as_deref() {
+                return Err(ResumeFailure {
+                    code: "stream_reset",
+                    reason: "durable_stream_changed_during_reconnect",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: page.retained.stream_id.clone(),
+                    oldest_available_serial: page.retained.oldest_serial,
+                    newest_available_serial: page.retained.newest_serial,
+                });
             }
 
             let count_this_page = page.items.len();
@@ -509,12 +732,39 @@ impl ConnectionHandler {
                     oldest_available_serial: page.retained.oldest_serial,
                     newest_available_serial: page.retained.newest_serial,
                 })?;
+            let mut last_item_serial = None;
             for (item, message) in page_items.into_iter().zip(projected_messages) {
+                if item.stream_id.as_str() != position.stream_id.as_deref().unwrap_or_default() {
+                    return Err(continuity_failure(
+                        position,
+                        "durable_history_item_stream_mismatch",
+                        Some(item.stream_id),
+                        page.retained.oldest_serial,
+                        Some(target_newest_serial),
+                    ));
+                }
+                if item.serial != expected_serial || item.serial > target_newest_serial {
+                    return Err(continuity_failure(
+                        position,
+                        "durable_history_is_not_contiguous",
+                        page.retained.stream_id.clone(),
+                        page.retained.oldest_serial,
+                        Some(target_newest_serial),
+                    ));
+                }
+                last_item_serial = Some(item.serial);
+                expected_serial = expected_serial.saturating_add(1);
                 if position
                     .last_message_id
                     .as_ref()
                     .is_some_and(|last_id| item.message_id.as_ref() == Some(last_id))
                 {
+                    warn!(
+                        app_id = %app_config.id,
+                        channel,
+                        serial = item.serial,
+                        "suppressed duplicate message identity during durable recovery"
+                    );
                     continue;
                 }
                 // Durable history owns its storage envelope. Recovery owns a
@@ -535,17 +785,48 @@ impl ConnectionHandler {
             }
 
             if !page.has_more {
-                if count_this_page == 0
-                    && page
-                        .retained
-                        .newest_serial
-                        .is_some_and(|newest| newest < position.serial)
-                {
-                    return Ok(Vec::new());
+                if !page.complete || expected_serial <= target_newest_serial {
+                    return Err(continuity_failure(
+                        position,
+                        "durable_history_ended_before_stream_head",
+                        page.retained.stream_id.clone(),
+                        page.retained.oldest_serial,
+                        Some(target_newest_serial),
+                    ));
                 }
                 break;
             }
-            cursor = page.next_cursor;
+
+            let next_cursor = page.next_cursor.ok_or_else(|| {
+                continuity_failure(
+                    position,
+                    "durable_history_cursor_missing",
+                    page.retained.stream_id.clone(),
+                    page.retained.oldest_serial,
+                    Some(target_newest_serial),
+                )
+            })?;
+            if count_this_page == 0
+                || next_cursor.version != 1
+                || next_cursor.app_id != app_config.id
+                || next_cursor.channel != channel
+                || Some(next_cursor.serial) != last_item_serial
+                || previous_cursor_serial.is_some_and(|previous| next_cursor.serial <= previous)
+                || next_cursor.stream_id.as_str()
+                    != position.stream_id.as_deref().unwrap_or_default()
+                || next_cursor.direction != HistoryDirection::OldestFirst
+                || next_cursor.bounds != bounds
+            {
+                return Err(continuity_failure(
+                    position,
+                    "durable_history_cursor_did_not_advance",
+                    page.retained.stream_id.clone(),
+                    page.retained.oldest_serial,
+                    Some(target_newest_serial),
+                ));
+            }
+            previous_cursor_serial = Some(next_cursor.serial);
+            cursor = Some(next_cursor);
         }
 
         Ok(recovered_messages)
@@ -798,8 +1079,9 @@ mod tests {
     use sockudo_core::app::AppManager;
     use sockudo_core::cache::CacheManager;
     use sockudo_core::history::{
-        HistoryAppendRecord, HistoryDurableState, HistoryPage, HistoryReadRequest,
-        HistoryRuntimeStatus, HistoryStore, HistoryStreamRuntimeState, HistoryWriteReservation,
+        HistoryAppendRecord, HistoryDurableState, HistoryPage, HistoryPurgeMode,
+        HistoryPurgeRequest, HistoryReadRequest, HistoryRuntimeStatus, HistoryStore,
+        HistoryStreamInspection, HistoryStreamRuntimeState, HistoryWriteReservation,
         MemoryHistoryStore, MemoryHistoryStoreConfig,
     };
     use sockudo_core::metrics::MetricsInterface;
@@ -987,6 +1269,14 @@ mod tests {
             self.inner.read_page(request).await
         }
 
+        async fn stream_inspection(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+            self.inner.stream_inspection(app_id, channel).await
+        }
+
         async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
             let states = self.states.read().await;
             let degraded_channels = states
@@ -1049,6 +1339,14 @@ mod tests {
             self.inner.read_page(request).await
         }
 
+        async fn stream_inspection(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+            self.inner.stream_inspection(app_id, channel).await
+        }
+
         async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
             self.inner.runtime_status().await
         }
@@ -1094,6 +1392,65 @@ mod tests {
                 return Err(Error::InvalidMessageFormat(self.expire_reason.to_string()));
             }
             self.inner.read_page(request).await
+        }
+
+        async fn stream_inspection(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+            self.inner.stream_inspection(app_id, channel).await
+        }
+
+        async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
+            self.inner.runtime_status().await
+        }
+
+        async fn stream_runtime_state(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamRuntimeState> {
+            self.inner.stream_runtime_state(app_id, channel).await
+        }
+    }
+
+    #[derive(Clone)]
+    struct MissingCursorHistoryStore {
+        inner: Arc<MemoryHistoryStore>,
+    }
+
+    #[async_trait]
+    impl HistoryStore for MissingCursorHistoryStore {
+        async fn reserve_publish_position(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryWriteReservation> {
+            self.inner.reserve_publish_position(app_id, channel).await
+        }
+
+        async fn append(&self, record: HistoryAppendRecord) -> sockudo_core::error::Result<()> {
+            self.inner.append(record).await
+        }
+
+        async fn read_page(
+            &self,
+            request: HistoryReadRequest,
+        ) -> sockudo_core::error::Result<HistoryPage> {
+            let mut page = self.inner.read_page(request).await?;
+            if page.has_more {
+                page.next_cursor = None;
+            }
+            Ok(page)
+        }
+
+        async fn stream_inspection(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+            self.inner.stream_inspection(app_id, channel).await
         }
 
         async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
@@ -1329,6 +1686,217 @@ mod tests {
                 assert_eq!(count, 2);
             }
             other => panic!("expected cold recovery, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_recovery_keeps_frozen_bounds_across_multiple_pages() {
+        let store = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let handler = build_handler_with_history_store_and_page_size(true, store, 1);
+        append_history(&handler, "app", "chat", &[2, 3, 4], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Recovered { source, count, .. } => {
+                assert_eq!(source, "cold");
+                assert_eq!(count, 3);
+            }
+            other => panic!("expected paginated cold recovery, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hot_position_ahead_falls_back_to_authoritative_durable_history() {
+        let handler = build_handler(true);
+        append_history(&handler, "app", "chat", &[1, 2, 3, 4], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        replay_buffer.store(
+            "app",
+            "chat",
+            Some("stream-1"),
+            1,
+            Bytes::from_static(b"hot-1"),
+        );
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 2,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Recovered { source, count, .. } => {
+                assert_eq!(source, "cold");
+                assert_eq!(count, 2);
+            }
+            other => panic!("expected durable fallback, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fully_evicted_durable_history_does_not_look_like_a_new_empty_stream() {
+        let store = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let handler = build_handler_with_history_store(true, store.clone());
+        append_history(&handler, "app", "chat", &[1, 2], "stream-1").await;
+        store
+            .purge_stream(
+                "app",
+                "chat",
+                HistoryPurgeRequest {
+                    mode: HistoryPurgeMode::All,
+                    before_serial: None,
+                    before_time_ms: None,
+                    reason: "test retention".to_owned(),
+                    requested_by: None,
+                },
+            )
+            .await
+            .unwrap();
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 0,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "position_expired");
+                assert_eq!(failure.reason, "durable_history_empty_after_prior_writes");
+            }
+            other => panic!("expected fully-evicted history failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_recovery_rejects_non_contiguous_history() {
+        let handler = build_handler(true);
+        append_history(&handler, "app", "chat", &[2, 4], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "continuity_unverifiable");
+                assert_eq!(failure.reason, "durable_history_is_not_contiguous");
+            }
+            other => panic!("expected continuity failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_position_ahead_of_durable_stream() {
+        let handler = build_handler(true);
+        append_history(&handler, "app", "chat", &[2, 3], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 4,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "continuity_unverifiable");
+                assert_eq!(failure.reason, "position_ahead_of_durable_stream");
+            }
+            other => panic!("expected ahead-of-stream failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_has_more_page_without_cursor() {
+        let inner = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let store = Arc::new(MissingCursorHistoryStore { inner });
+        let handler = build_handler_with_history_store_and_page_size(true, store, 1);
+        append_history(&handler, "app", "chat", &[2, 3], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "continuity_unverifiable");
+                assert_eq!(failure.reason, "durable_history_cursor_missing");
+            }
+            other => panic!("expected cursor failure, got {other:?}"),
         }
     }
 

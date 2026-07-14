@@ -365,14 +365,13 @@ impl WebSocketRef {
     }
 
     pub fn start_rewind_gate(&self, channel: String) {
-        let (max_messages, max_bytes) = self.buffer_config.rewind_gate_limits();
         let mut state = self
             .channel_state
             .entry(Arc::<str>::from(channel))
             .or_default();
         state
             .rewind_gate
-            .get_or_insert_with(|| Arc::new(Mutex::new(RewindGate::new(max_messages, max_bytes))));
+            .get_or_insert_with(|| Arc::new(Mutex::new(RewindGate::new(self.buffer_config))));
     }
 
     pub fn has_rewind_gate(&self, channel: &str) -> bool {
@@ -404,10 +403,29 @@ impl WebSocketRef {
         match gate.try_buffer(buffered, message_size) {
             RewindGateAdmission::Buffered => Ok(true),
             RewindGateAdmission::Closed => Ok(false),
-            RewindGateAdmission::Overflowed(overflow) => Err(Error::BufferFull(format!(
-                "attach gate exceeded bounded capacity (messages: {}/{}, bytes: {}/{})",
-                overflow.messages, overflow.max_messages, overflow.bytes, overflow.max_bytes
-            ))),
+            RewindGateAdmission::Overflowed(overflow) => {
+                warn!(
+                    socket_id = %self.socket_id,
+                    channel,
+                    limit_kind = overflow.limit_kind.as_str(),
+                    limit = overflow.limit,
+                    buffered_messages = overflow.buffered_messages,
+                    buffered_bytes = overflow.buffered_bytes,
+                    incoming_message_bytes = overflow.incoming_message_bytes,
+                    "Rewind gate overflow; shutting down connection to preserve continuity"
+                );
+                let error = Error::BufferFull(format!(
+                    "attach gate exceeded bounded {} capacity (limit: {}, buffered messages: {}, buffered bytes: {}, incoming bytes: {})",
+                    overflow.limit_kind.as_str(),
+                    overflow.limit,
+                    overflow.buffered_messages,
+                    overflow.buffered_bytes,
+                    overflow.incoming_message_bytes
+                ));
+                drop(gate);
+                self.shutdown();
+                Err(error)
+            }
         }
     }
 
@@ -423,8 +441,12 @@ impl WebSocketRef {
         match gate.finish() {
             RewindGateDrain::Buffered(buffered) => Ok(buffered),
             RewindGateDrain::Overflowed(overflow) => Err(Error::BufferFull(format!(
-                "attach gate overflowed before continuity could be established (messages: {}/{}, bytes: {}/{})",
-                overflow.messages, overflow.max_messages, overflow.bytes, overflow.max_bytes
+                "attach gate overflowed before continuity could be established ({} limit: {}, buffered messages: {}, buffered bytes: {}, incoming bytes: {})",
+                overflow.limit_kind.as_str(),
+                overflow.limit,
+                overflow.buffered_messages,
+                overflow.buffered_bytes,
+                overflow.incoming_message_bytes
             ))),
         }
     }

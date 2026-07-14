@@ -11,8 +11,8 @@ use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppManager};
 use sockudo_core::history::{
     HistoryAppendRecord, HistoryPage, HistoryReadRequest, HistoryRetentionPolicy,
-    HistoryRuntimeStatus, HistoryStore, HistoryStreamRuntimeState, HistoryWriteReservation,
-    MemoryHistoryStore, MemoryHistoryStoreConfig,
+    HistoryRuntimeStatus, HistoryStore, HistoryStreamInspection, HistoryStreamRuntimeState,
+    HistoryWriteReservation, MemoryHistoryStore, MemoryHistoryStoreConfig,
 };
 use sockudo_core::options::ServerOptions;
 use sockudo_core::version_store::{MemoryVersionStore, StoredVersionRecord, VersionStore};
@@ -101,6 +101,14 @@ impl HistoryStore for GateHistoryStore {
         self.inner.runtime_status().await
     }
 
+    async fn stream_inspection(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+        self.inner.stream_inspection(app_id, channel).await
+    }
+
     async fn stream_runtime_state(
         &self,
         app_id: &str,
@@ -141,6 +149,14 @@ impl HistoryStore for RejectingAppendHistoryStore {
 
     async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
         self.inner.runtime_status().await
+    }
+
+    async fn stream_inspection(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+        self.inner.stream_inspection(app_id, channel).await
     }
 
     async fn stream_runtime_state(

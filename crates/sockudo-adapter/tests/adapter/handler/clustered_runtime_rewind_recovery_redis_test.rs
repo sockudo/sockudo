@@ -17,8 +17,9 @@ use sockudo_core::app::{App, AppManager};
 use sockudo_core::cache::CacheManager;
 use sockudo_core::history::{
     HistoryAppendRecord, HistoryDirection, HistoryDurableState, HistoryPage, HistoryQueryBounds,
-    HistoryReadRequest, HistoryRuntimeStatus, HistoryStore, HistoryStreamRuntimeState,
-    HistoryWriteReservation, MemoryHistoryStore, MemoryHistoryStoreConfig,
+    HistoryReadRequest, HistoryRuntimeStatus, HistoryStore, HistoryStreamInspection,
+    HistoryStreamRuntimeState, HistoryWriteReservation, MemoryHistoryStore,
+    MemoryHistoryStoreConfig,
 };
 use sockudo_core::options::{ClusterHealthConfig, ServerOptions};
 use sockudo_core::version_store::{MemoryVersionStore, StoredVersionRecord, VersionStore};
@@ -142,6 +143,14 @@ impl HistoryStore for ClusterHistoryStore {
             reset_required_channels,
             queue_depth: 0,
         })
+    }
+
+    async fn stream_inspection(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+        self.inner.stream_inspection(app_id, channel).await
     }
 
     async fn stream_runtime_state(

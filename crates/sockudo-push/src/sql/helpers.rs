@@ -250,6 +250,47 @@ pub(super) fn sql_error(error: sqlx::Error) -> PushStorageError {
     PushStorageError::Backend(format!("push SQL backend error: {error}"))
 }
 
+pub(super) fn is_unique_violation(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(database) if database.is_unique_violation())
+}
+
+pub(super) fn positive_sql_u64(value: i64, field: &str) -> PushStorageResult<u64> {
+    if value <= 0 {
+        return Err(PushStorageError::Backend(format!(
+            "push SQL {field} must be positive"
+        )));
+    }
+    Ok(value as u64)
+}
+
+pub(super) fn nonnegative_sql_u64(value: i64, field: &str) -> PushStorageResult<u64> {
+    u64::try_from(value)
+        .map_err(|_| PushStorageError::Backend(format!("push SQL {field} must be nonnegative")))
+}
+
+pub(super) fn sql_i64_revision(revision: u64) -> PushStorageResult<i64> {
+    if revision == 0 {
+        return Err(PushStorageError::Backend(
+            "publish status revision must be positive".to_owned(),
+        ));
+    }
+    i64::try_from(revision).map_err(|_| {
+        PushStorageError::Backend("publish status revision exhausted storage range".to_owned())
+    })
+}
+
+pub(super) fn sql_i64_timestamp(timestamp_ms: u64, field: &'static str) -> PushStorageResult<i64> {
+    i64::try_from(timestamp_ms)
+        .map_err(|_| PushStorageError::Backend(format!("{field} exceeds SQL storage range")))
+}
+
+pub(super) fn next_status_updated_at_ms(previous: u64) -> i64 {
+    let next = crate::pipeline::now_ms()
+        .max(previous.saturating_add(1))
+        .min(i64::MAX as u64);
+    next as i64
+}
+
 pub(super) fn assert_expected_schema_version(version: u32) -> PushStorageResult<()> {
     if version == EXPECTED_PUSH_SCHEMA_VERSION {
         return Ok(());
@@ -278,6 +319,14 @@ pub(super) fn now_ms_i64() -> i64 {
 
 pub(super) fn json_text_expr(column: &str, template: &str) -> String {
     template.replace('?', column).replace("$1", column)
+}
+
+pub(super) fn signed_i64_expr(column: &str, postgres: bool) -> String {
+    if postgres {
+        column.to_owned()
+    } else {
+        format!("CAST({column} AS SIGNED)")
+    }
 }
 
 pub(super) fn sql_query(raw: String, postgres: bool) -> String {
@@ -312,14 +361,6 @@ pub(super) fn upsert_template_clause(postgres: bool) -> &'static str {
         "ON CONFLICT (app_id, template_id) DO UPDATE SET default_locale = EXCLUDED.default_locale, locales_json = EXCLUDED.locales_json, provider_overrides_json = EXCLUDED.provider_overrides_json, updated_at_ms = EXCLUDED.updated_at_ms"
     } else {
         "ON DUPLICATE KEY UPDATE default_locale = VALUES(default_locale), locales_json = VALUES(locales_json), provider_overrides_json = VALUES(provider_overrides_json), updated_at_ms = VALUES(updated_at_ms)"
-    }
-}
-
-pub(super) fn upsert_status_clause(postgres: bool) -> &'static str {
-    if postgres {
-        "ON CONFLICT (app_id, publish_id) DO UPDATE SET state = EXCLUDED.state, counters_json = EXCLUDED.counters_json, error_reason = EXCLUDED.error_reason, updated_at_ms = EXCLUDED.updated_at_ms"
-    } else {
-        "ON DUPLICATE KEY UPDATE state = VALUES(state), counters_json = VALUES(counters_json), error_reason = VALUES(error_reason), updated_at_ms = VALUES(updated_at_ms)"
     }
 }
 

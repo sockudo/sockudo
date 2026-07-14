@@ -10,7 +10,7 @@ use crate::domain::{
 use crate::metrics::PushMetrics;
 use crate::pipeline::{
     PushPipelineError, PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage,
-    dedupe_key,
+    dedupe_key, guard_publish_status_transition, mutate_publish_status_with_cas,
 };
 use crate::storage::{DynPushStore, SchedulerLock};
 use crate::transform::render_all_provider_payloads;
@@ -173,34 +173,52 @@ impl PushPlanner {
         event: &PublishLogEvent,
         state: PublishLifecycleState,
     ) -> PushPipelineResult<()> {
-        if let Some(mut status) = self
-            .store
-            .get_publish_status(&event.app_id, &event.publish_id)
-            .await?
-        {
-            status.state = state;
-            if state == PublishLifecycleState::Dispatching {
-                status.retry_after_ms = event
-                    .intent
-                    .not_before_ms
-                    .filter(|not_before_ms| *not_before_ms > crate::pipeline::now_ms());
-            }
-            self.store.put_publish_status(status).await?;
-        }
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "planner",
+            &event.app_id,
+            &event.publish_id,
+            |current| {
+                let next = state;
+                if !guard_publish_status_transition(&self.metrics, "planner", current, next) {
+                    return Ok(None);
+                }
+                let mut status = current.clone();
+                status.state = next;
+                if next == PublishLifecycleState::Dispatching {
+                    status.retry_after_ms = event
+                        .intent
+                        .not_before_ms
+                        .filter(|not_before_ms| *not_before_ms > crate::pipeline::now_ms());
+                }
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 
     async fn mark_failed(&self, event: &PublishLogEvent, reason: String) -> PushPipelineResult<()> {
-        if let Some(mut status) = self
-            .store
-            .get_publish_status(&event.app_id, &event.publish_id)
-            .await?
-        {
-            status.state = PublishLifecycleState::Failed;
-            status.error_reason = Some(reason);
-            status.retry_after_ms = None;
-            self.store.put_publish_status(status).await?;
-        }
+        mutate_publish_status_with_cas(
+            self.store.as_ref(),
+            &self.metrics,
+            "planner",
+            &event.app_id,
+            &event.publish_id,
+            |current| {
+                let next = PublishLifecycleState::Failed;
+                if !guard_publish_status_transition(&self.metrics, "planner", current, next) {
+                    return Ok(None);
+                }
+                let mut status = current.clone();
+                status.state = next;
+                status.error_reason = Some(reason.clone());
+                status.retry_after_ms = None;
+                Ok(Some(status))
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -812,6 +830,7 @@ mod tests {
         PushProviderKind, PushRecipient, SecretString,
     };
     use crate::memory::MemoryPushStore;
+    use crate::metrics::PushMetrics;
     use crate::pipeline::{
         MemoryPushQueue, PushAcceptRequest, PushPipeline, PushQueue, PushQueuePayload,
         PushQueueStage, QueueLagMetrics,
@@ -868,6 +887,44 @@ mod tests {
                 .state,
             PublishLifecycleState::Dispatching
         );
+    }
+
+    #[tokio::test]
+    async fn planner_does_not_regress_a_terminal_publish_to_dispatching() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        accept_direct_publish(store.clone(), queue.clone(), 1_000).await;
+        let event = store
+            .list_publish_log_events("app-1", 1, None)
+            .await
+            .unwrap()
+            .items
+            .pop()
+            .unwrap();
+        let mut status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        status.state = PublishLifecycleState::Succeeded;
+        status.counters.succeeded = 1;
+        store.put_publish_status(status).await.unwrap();
+
+        let metrics = PushMetrics::default();
+        let planner = PushPlanner::new(store.clone(), queue, FanoutConfig::default())
+            .with_metrics(metrics.clone());
+        planner
+            .mark_state(&event, PublishLifecycleState::Dispatching)
+            .await
+            .unwrap();
+
+        let status = store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.state, PublishLifecycleState::Succeeded);
+        assert_eq!(metrics.get("sockudo_push_invariant_violations_total"), 1);
     }
 
     async fn accept_direct_publish(
