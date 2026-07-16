@@ -1338,10 +1338,19 @@ mod tests {
             second.append_create_idempotent(distinct_right)
         );
         assert!(distinct_left.unwrap().inserted);
-        let distinct_right = distinct_right.unwrap();
-        assert!(distinct_right.inserted);
+        assert!(distinct_right.unwrap().inserted);
+        let projection = first
+            .get_projection(AnnotationProjectionRequest {
+                app_id: "app".to_string(),
+                channel_id: "channel".to_string(),
+                message_serial: MessageSerial::new("msg:1").unwrap(),
+                annotation_type: AnnotationType::new("reaction:total.v1").unwrap(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            distinct_right.projection.summary,
+            projection.summary,
             AnnotationSummary::Total(TotalAnnotationSummary { total: 3 })
         );
         assert_eq!(

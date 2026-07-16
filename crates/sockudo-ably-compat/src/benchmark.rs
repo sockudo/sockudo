@@ -5,6 +5,7 @@
 //! the codec, projection, subscriber registry, egress tap, and bounded outbound
 //! queues used by the server.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use serde::Serialize;
 use sockudo_adapter::handler::RealtimeEgressTap;
@@ -90,6 +91,19 @@ struct BinaryMessage<'a> {
     encoding: &'static str,
 }
 
+#[derive(Serialize)]
+struct JsonFrame<'a> {
+    action: u8,
+    messages: [JsonMessage<'a>; 1],
+}
+
+#[derive(Serialize)]
+struct JsonMessage<'a> {
+    name: &'static str,
+    data: &'a str,
+    encoding: &'static str,
+}
+
 /// Reusable JSON and binary MessagePack decode inputs.
 pub struct CodecFixture {
     json: Bytes,
@@ -97,12 +111,22 @@ pub struct CodecFixture {
 }
 
 impl CodecFixture {
-    /// Build equally sized encrypted-value inputs for both wire formats.
+    /// Build both wire-format inputs from the same-sized encrypted value.
     pub fn encrypted(payload_bytes: usize) -> Result<Self, String> {
         let payload = vec![0xa5; payload_bytes];
-        let projection = ProjectionFixture::encrypted(payload.clone());
-        let json = projection.project()?.encode(BenchFormat::Json)?;
-        let frame = BinaryFrame {
+        let encoded_payload = STANDARD.encode(&payload);
+        let json_frame = JsonFrame {
+            action: ACTION_MESSAGE,
+            messages: [JsonMessage {
+                name: "encrypted",
+                data: &encoded_payload,
+                encoding: "cipher+aes-256-cbc/base64",
+            }],
+        };
+        let json = sonic_rs::to_vec(&json_frame)
+            .map(Bytes::from)
+            .map_err(|error| error.to_string())?;
+        let msgpack_frame = BinaryFrame {
             action: ACTION_MESSAGE,
             messages: [BinaryMessage {
                 name: "encrypted",
@@ -114,7 +138,7 @@ impl CodecFixture {
         let mut serializer = rmp_serde::Serializer::new(&mut msgpack)
             .with_struct_map()
             .with_bytes(rmp_serde::config::BytesMode::ForceAll);
-        frame
+        msgpack_frame
             .serialize(&mut serializer)
             .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -445,6 +469,16 @@ fn pusher_message(data: MessageData, serial: u64) -> PusherMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_decode_payload_sizes_are_valid_in_both_formats() {
+        for payload_bytes in [64, 1_024, 64 * 1_024] {
+            let fixture = CodecFixture::encrypted(payload_bytes).unwrap();
+            for format in [BenchFormat::Json, BenchFormat::MsgPack] {
+                fixture.decode(format).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn fanout_encodes_once_per_active_format_and_shares_bytes() {
