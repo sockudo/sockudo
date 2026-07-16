@@ -91,6 +91,15 @@ pub(super) struct GaugeWithLabels {
 }
 
 impl GaugeWithLabels {
+    pub(super) fn add(&self, value: f64) {
+        let gauge = gauge!(self.name.clone(), &self.labels);
+        if value.is_sign_negative() {
+            gauge.decrement(value.abs());
+        } else {
+            gauge.increment(value);
+        }
+    }
+
     pub(super) fn inc(&self) {
         gauge!(self.name.clone(), &self.labels).increment(1.0);
     }

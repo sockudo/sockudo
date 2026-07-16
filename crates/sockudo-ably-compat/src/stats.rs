@@ -1169,7 +1169,7 @@ fn validate_cursor(
 mod tests {
     use super::*;
     use serde_json::json;
-    use sockudo_cache::memory_cache_manager::MemoryCacheManager;
+    use sockudo_cache::{RedisCacheManager, memory_cache_manager::MemoryCacheManager};
     use sockudo_core::options::MemoryCacheOptions;
 
     fn config() -> StatsRuntimeConfig {
@@ -1355,6 +1355,62 @@ mod tests {
 
         let recreated = StatsAggregator::new(Some(cache), config());
         let page = recreated
+            .query(
+                "app",
+                &StatsQuery::parse("minute", None, None, None, None, None).unwrap(),
+                timestamp,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items[0].entries["messages.inbound.all.messages.count"],
+            5
+        );
+        assert_eq!(
+            page.items[0].entries["messages.inbound.all.messages.data"],
+            50
+        );
+    }
+
+    #[tokio::test]
+    async fn redis_store_merges_independent_nodes_and_survives_rolling_restart() {
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:16379/".to_string());
+        let prefix = format!("ably-stats-test-{}", uuid::Uuid::new_v4().simple());
+        let first_cache = Arc::new(
+            RedisCacheManager::with_url(&redis_url, Some(&prefix))
+                .await
+                .expect("configured Redis test service must be available"),
+        ) as Arc<dyn CacheManager>;
+        let second_cache = Arc::new(
+            RedisCacheManager::with_url(&redis_url, Some(&prefix))
+                .await
+                .expect("configured Redis test service must be available"),
+        ) as Arc<dyn CacheManager>;
+        let first = StatsAggregator::new(Some(first_cache), config());
+        let second = StatsAggregator::new(Some(second_cache), config());
+        let timestamp = 1_770_134_580_000;
+
+        let (first_result, second_result) = tokio::join!(
+            first.record(
+                StatsObservation::messages("app", timestamp, "inbound", "realtime", 2, 20).unwrap()
+            ),
+            second.record(
+                StatsObservation::messages("app", timestamp, "inbound", "realtime", 3, 30).unwrap()
+            )
+        );
+        first_result.unwrap();
+        second_result.unwrap();
+        drop(first);
+        drop(second);
+
+        let restarted_cache = Arc::new(
+            RedisCacheManager::with_url(&redis_url, Some(&prefix))
+                .await
+                .expect("configured Redis test service must be available"),
+        ) as Arc<dyn CacheManager>;
+        let restarted = StatsAggregator::new(Some(restarted_cache), config());
+        let page = restarted
             .query(
                 "app",
                 &StatsQuery::parse("minute", None, None, None, None, None).unwrap(),

@@ -181,6 +181,7 @@ public sealed class SockudoClient : IAsyncDisposable
             channel.Filter = subscriptionOptions.Filter;
             channel.DeltaSettings = subscriptionOptions.Delta;
             channel.EventsFilter = subscriptionOptions.Events;
+            channel.ExpressionFilter = subscriptionOptions.Expression;
             channel.Rewind = subscriptionOptions.Rewind;
             channel.AnnotationSubscribe = subscriptionOptions.AnnotationSubscribe;
         }
@@ -679,6 +680,17 @@ public sealed class SockudoClient : IAsyncDisposable
 
             if (@event.Event == _prefix.Event("resume_success"))
             {
+                if (Options.ConnectionRecovery && @event.Data is Dictionary<string, object?> resumeData && resumeData.Get("recovered") is List<object?> recovered)
+                {
+                    foreach (var item in recovered.OfType<Dictionary<string, object?>>())
+                    {
+                        var channelName = item.Get("channel") as string;
+                        if (channelName is not null && TryDecodeRecoveryPosition(item.Get("position"), out var position))
+                        {
+                            _channelPositions[channelName] = position;
+                        }
+                    }
+                }
                 _dispatcher.Emit(@event.Event, @event.Data);
                 return;
             }
@@ -1717,6 +1729,32 @@ public sealed class SockudoClient : IAsyncDisposable
             }
         }
     }
+
+    private static bool TryDecodeRecoveryPosition(object? raw, out RecoveryPosition position)
+    {
+        position = new RecoveryPosition(0);
+        if (raw is not Dictionary<string, object?> payload)
+        {
+            return false;
+        }
+
+        var serial = payload.Get("serial");
+        if (serial is not (byte or short or int or long or ushort or uint or ulong or string))
+        {
+            return false;
+        }
+        if (serial is string text && string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        position = new RecoveryPosition(
+            serial,
+            payload.Get("stream_id") as string,
+            payload.Get("last_message_id") as string
+        );
+        return true;
+    }
 }
 
 public class SockudoChannel
@@ -1734,6 +1772,7 @@ public class SockudoChannel
     public FilterNode? Filter { get; internal set; }
     public ChannelDeltaSettings? DeltaSettings { get; internal set; }
     public IReadOnlyList<string>? EventsFilter { get; internal set; }
+    public SubscriptionExpression? ExpressionFilter { get; internal set; }
     public SubscriptionRewind? Rewind { get; internal set; }
     public bool AnnotationSubscribe { get; internal set; }
     public bool IsSubscribed { get; internal set; }
@@ -1792,17 +1831,30 @@ public class SockudoChannel
             {
                 payload["channel_data"] = auth.ChannelData;
             }
-            if (Filter is not null)
+            if (EventsFilter is not null || ExpressionFilter is not null)
+            {
+                var subscriptionFilter = new Dictionary<string, object?>(StringComparer.Ordinal);
+                if (EventsFilter is not null)
+                {
+                    subscriptionFilter["events"] = EventsFilter;
+                }
+                if (Filter is not null)
+                {
+                    subscriptionFilter["tags"] = Filter;
+                }
+                if (ExpressionFilter is not null)
+                {
+                    subscriptionFilter["expression"] = ExpressionFilter;
+                }
+                payload["filter"] = subscriptionFilter;
+            }
+            else if (Filter is not null)
             {
                 payload["tags_filter"] = Filter;
             }
             if (DeltaSettings is not null)
             {
                 payload["delta"] = DeltaSettings.SubscriptionValue();
-            }
-            if (EventsFilter is not null)
-            {
-                payload["events"] = EventsFilter;
             }
             if (Rewind is not null)
             {

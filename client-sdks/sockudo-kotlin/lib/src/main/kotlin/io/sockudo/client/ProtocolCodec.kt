@@ -152,6 +152,7 @@ internal object ProtocolCodec {
     private fun encodeMessagePackData(value: Any?): Any? =
         when (value) {
             null -> null
+            is ByteArray -> listOf("binary", value)
             is String -> listOf("string", value)
             else -> listOf("json", JsonSupport.encode(value))
         }
@@ -178,7 +179,7 @@ internal object ProtocolCodec {
             is List<*> ->
                 if (value.size == 2 && value.firstOrNull() is String) {
                     when (value.first() as String) {
-                        "string", "json", "number", "bool" -> value[1]
+                        "string", "json", "number", "bool", "binary" -> value[1]
                         "structured" -> decodeMessagePackValue(value[1])
                         else -> value.map { decodeMessagePackValue(it) }
                     }
@@ -215,7 +216,9 @@ internal object ProtocolCodec {
             writer.writeTag(3, WireFormat.WIRETYPE_LENGTH_DELIMITED)
             val nested = com.google.protobuf.ByteString.newOutput()
             val nestedWriter = CodedOutputStream.newInstance(nested)
-            if (data is String) {
+            if (data is ByteArray) {
+                nestedWriter.writeByteArray(4, data)
+            } else if (data is String) {
                 nestedWriter.writeString(1, data)
             } else {
                 nestedWriter.writeString(3, JsonSupport.encode(data))
@@ -306,6 +309,7 @@ internal object ProtocolCodec {
                         JsonSupport.fromJsonElement(JsonSupport.decode(raw))
                     }.getOrElse { raw }
                 }
+                34 -> return input.readByteArray()
                 else -> input.skipField(tag)
             }
         }
@@ -537,6 +541,10 @@ internal object ProtocolCodec {
             is Boolean -> packer.packBoolean(value)
             is Byte, is Short, is Int, is Long -> packer.packLong((value as Number).toLong())
             is Float, is Double -> packer.packDouble((value as Number).toDouble())
+            is ByteArray -> {
+                packer.packBinaryHeader(value.size)
+                packer.writePayload(value)
+            }
             is MessageExtras ->
                 packValue(packer, value.toWireMap())
             is Map<*, *> -> {

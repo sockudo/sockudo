@@ -58,6 +58,16 @@ impl CachedAppManager {
         format!("{}:{}", CACHE_PREFIX_KEY, app_key)
     }
 
+    fn cache_index_label(key: &str) -> &'static str {
+        if key.starts_with(CACHE_PREFIX_ID) {
+            "app_id"
+        } else if key.starts_with(CACHE_PREFIX_KEY) {
+            "app_key"
+        } else {
+            "unknown"
+        }
+    }
+
     fn serialize<T: serde::Serialize>(value: &T) -> Result<String> {
         sonic_rs::to_string(value)
             .map_err(|e| Error::Internal(format!("Serialization failed: {}", e)))
@@ -146,26 +156,37 @@ impl CachedAppManager {
     async fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
         match timeout(SHARED_CACHE_ACCESS_TIMEOUT, self.cache.get(key)).await {
             Err(_) => {
-                warn!("Cache get timeout for {}", key);
+                warn!(
+                    cache_index = Self::cache_index_label(key),
+                    "Cache get timeout"
+                );
                 None
             }
             Ok(result) => match result {
                 Ok(Some(json)) => match Self::deserialize(&json) {
                     Ok(value) => {
-                        debug!("Cache hit: {}", key);
+                        debug!(cache_index = Self::cache_index_label(key), "Cache hit");
                         Some(value)
                     }
                     Err(e) => {
-                        warn!("Cache deserialize error for {}: {}", key, e);
+                        warn!(
+                            cache_index = Self::cache_index_label(key),
+                            error = %e,
+                            "Cache deserialize error"
+                        );
                         None
                     }
                 },
                 Ok(None) => {
-                    debug!("Cache miss: {}", key);
+                    debug!(cache_index = Self::cache_index_label(key), "Cache miss");
                     None
                 }
                 Err(e) => {
-                    warn!("Cache get error for {}: {}", key, e);
+                    warn!(
+                        cache_index = Self::cache_index_label(key),
+                        error = %e,
+                        "Cache get error"
+                    );
                     None
                 }
             },
@@ -188,16 +209,30 @@ impl CachedAppManager {
         .await
         {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => warn!("Cache set error for {}: {}", key, e),
-            Err(_) => warn!("Cache set timeout for {}", key),
+            Ok(Err(e)) => warn!(
+                cache_index = Self::cache_index_label(key),
+                error = %e,
+                "Cache set error"
+            ),
+            Err(_) => warn!(
+                cache_index = Self::cache_index_label(key),
+                "Cache set timeout"
+            ),
         }
     }
 
     async fn remove(&self, key: &str) {
         match timeout(SHARED_CACHE_ACCESS_TIMEOUT, self.cache.remove(key)).await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => warn!("Cache remove error for {}: {}", key, e),
-            Err(_) => warn!("Cache remove timeout for {}", key),
+            Ok(Err(e)) => warn!(
+                cache_index = Self::cache_index_label(key),
+                error = %e,
+                "Cache remove error"
+            ),
+            Err(_) => warn!(
+                cache_index = Self::cache_index_label(key),
+                "Cache remove timeout"
+            ),
         }
     }
 
@@ -372,6 +407,16 @@ mod tests {
     use sockudo_core::options::MemoryCacheOptions;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::sleep;
+
+    #[test]
+    fn cache_log_labels_do_not_contain_app_identifiers_or_keys() {
+        let id_key = CachedAppManager::cache_key_for_id("sensitive-app-id");
+        let app_key = CachedAppManager::cache_key_for_key("sensitive-app-key");
+
+        assert_eq!(CachedAppManager::cache_index_label(&id_key), "app_id");
+        assert_eq!(CachedAppManager::cache_index_label(&app_key), "app_key");
+        assert!(!CachedAppManager::cache_index_label(&app_key).contains("sensitive"));
+    }
 
     struct SlowCacheManager {
         get_delay: Duration,

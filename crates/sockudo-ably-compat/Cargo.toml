@@ -9,6 +9,8 @@ license-file.workspace = true
 
 [features]
 default = []
+bench = []
+fuzzing = []
 local = ["sockudo-adapter/local"]
 ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "sockudo-adapter/ai-transport"]
 delta = ["sockudo-adapter/delta", "dep:sockudo-delta"]
@@ -24,6 +26,7 @@ sockudo-delta = { workspace = true, optional = true }
 sockudo-push = { workspace = true, optional = true }
 
 ahash = { workspace = true }
+aes-gcm = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -49,11 +52,16 @@ uuid = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 proptest = { workspace = true }
-sockudo-cache = { workspace = true }
+sockudo-cache = { workspace = true, features = ["redis"] }
 
 [[bench]]
 name = "wire_codec"
 harness = false
+
+[[bench]]
+name = "compatibility_hot_paths"
+harness = false
+required-features = ["bench"]
 
 [[bench]]
 name = "fanout_grouping"

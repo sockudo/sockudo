@@ -104,6 +104,7 @@ class SockudoClient(
             channel.filter = it.filter
             channel.deltaSettings = it.delta
             channel.eventsFilter = it.events
+            channel.expressionFilter = it.expression
             channel.rewind = it.rewind
             channel.annotationSubscribe = it.annotationSubscribe
         }
@@ -703,6 +704,11 @@ class SockudoClient(
 
                 eventName == p.event("resume_success") -> {
                     val data = decodeResumeSuccessData(event.data)
+                    data.recovered.forEach { recovered ->
+                        recovered.position?.let { position ->
+                            channelPositions[recovered.channel] = position
+                        }
+                    }
                     SockudoLogger.debug("Connection recovery succeeded", data)
                     dispatcher.emit(eventName, data)
                 }
@@ -841,6 +847,17 @@ class SockudoClient(
             channel = map["channel"] as? String ?: "",
             source = map["source"] as? String ?: "",
             replayed = (map["replayed"] as? Number)?.toInt() ?: 0,
+            position = decodeRecoveryPosition(map["position"]),
+        )
+    }
+
+    private fun decodeRecoveryPosition(raw: Any?): RecoveryPosition? {
+        val map = raw as? Map<*, *> ?: return null
+        val serial = parseSockudoLong(map["serial"]) ?: return null
+        return RecoveryPosition(
+            streamId = map["stream_id"] as? String,
+            serial = serial,
+            lastMessageId = map["last_message_id"] as? String,
         )
     }
 

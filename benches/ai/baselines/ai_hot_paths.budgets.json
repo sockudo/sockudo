@@ -30,8 +30,20 @@
       "max_mean_ns": 25000
     },
     {
-      "id_substring": "rollup_flush_2000_budget_mean_10ms",
-      "max_mean_ns": 10000000
+      "id_substring": "rollup_empty_tick_independent_streams_budget",
+      "max_mean_ns": 100000
+    },
+    {
+      "id_substring": "rollup_one_percent_due_independent_streams_budget",
+      "max_mean_ns": 20000000
+    },
+    {
+      "id_substring": "rollup_all_due_independent_streams_budget",
+      "max_mean_ns": 1000000000
+    },
+    {
+      "id_substring": "rollup_terminal_storm_independent_streams_budget",
+      "max_mean_ns": 1000000000
     },
     {
       "id_substring": "capability_publish_match_budget_mean_1us",

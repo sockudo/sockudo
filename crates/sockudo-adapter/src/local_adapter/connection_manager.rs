@@ -78,6 +78,7 @@ async fn send_v2_append_mode_groups_with_compression(
                     crate::connection_manager::CompressionParams {
                         delta_compression: Arc::clone(&delta_compression),
                         channel_settings,
+                        envelope: None,
                     },
                 )
                 .await,
@@ -244,6 +245,7 @@ impl ConnectionManager for LocalAdapter {
                                 crate::connection_manager::CompressionParams {
                                     delta_compression: Arc::clone(delta_compression),
                                     channel_settings: channel_settings.as_ref(),
+                                    envelope: None,
                                 },
                             )
                             .await;

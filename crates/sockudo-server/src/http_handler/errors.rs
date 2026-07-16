@@ -73,10 +73,10 @@ impl IntoResponse for AppError {
         };
         let (status, code, msg) = match &self {
             AppError::AppNotFound(msg) => (StatusCode::NOT_FOUND, "app_not_found", msg.clone()),
-            AppError::AppValidationFailed(msg) => (
+            AppError::AppValidationFailed(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "app_validation_failed",
-                msg.clone(),
+                "Application validation failed".to_string(),
             ),
             AppError::ApiAuthFailed(msg) => (StatusCode::UNAUTHORIZED, "auth_failed", msg.clone()),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg.clone()),
@@ -85,25 +85,25 @@ impl IntoResponse for AppError {
                 "missing_channel_info",
                 "Request must contain 'channels' (list) or 'channel' (string)".to_string(),
             ),
-            AppError::TerminationFailed(msg) => (
+            AppError::TerminationFailed(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "termination_failed",
-                msg.clone(),
+                "Connection termination failed".to_string(),
             ),
-            AppError::SerializationError(e) => (
+            AppError::SerializationError(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "serialization_error",
-                format!("Internal error during serialization: {e}"),
+                "Internal server error".to_string(),
             ),
-            AppError::HeaderBuildError(e) => (
+            AppError::HeaderBuildError(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "header_build_error",
-                format!("Internal error building response: {e}"),
+                "Internal server error".to_string(),
             ),
-            AppError::InternalError(msg) => (
+            AppError::InternalError(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
-                msg.clone(),
+                "Internal server error".to_string(),
             ),
             AppError::LimitExceeded(msg) => {
                 (StatusCode::BAD_REQUEST, "limit_exceeded", msg.clone())
@@ -145,7 +145,7 @@ impl IntoResponse for AppError {
             }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg.clone()),
         };
-        error!(error.message = %self, status_code = %status, "HTTP request failed");
+        error!(error.code = code, status_code = %status, "HTTP request failed");
         let error_message = if let Some(ai_code) = ai_registry_code {
             json!({ "error": msg, "code": code, "ai_code": ai_code, "status": status.as_u16() })
         } else {
@@ -173,7 +173,7 @@ impl IntoResponse for AppError {
 
 impl From<sockudo_core::error::Error> for AppError {
     fn from(err: sockudo_core::error::Error) -> Self {
-        warn!(original_error = ?err, "Converting internal error to AppError for HTTP response");
+        warn!("Converting internal error to AppError for HTTP response");
         match err {
             sockudo_core::error::Error::InvalidAppKey => {
                 AppError::AppNotFound(format!("Application key not found or invalid: {err}"))
@@ -260,5 +260,23 @@ mod tests {
             json["error"].as_str().is_some(),
             "error must include 'error' field"
         );
+    }
+
+    #[tokio::test]
+    async fn internal_error_response_does_not_expose_backend_details() {
+        let response = AppError::InternalError(
+            "pool failed for postgresql://user:sensitive-password@db/app".to_string(),
+        )
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+
+        assert_eq!(json["code"].as_str(), Some("internal_error"));
+        assert_eq!(json["error"].as_str(), Some("Internal server error"));
+        assert!(!String::from_utf8_lossy(&body).contains("sensitive-password"));
     }
 }

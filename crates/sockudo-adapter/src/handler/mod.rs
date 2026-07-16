@@ -2,6 +2,8 @@
 #[cfg(feature = "ai-transport")]
 pub mod ai_observability;
 pub mod ai_orphans;
+#[cfg(feature = "ai-transport")]
+mod ai_rollup;
 pub mod annotations;
 pub mod auth_tokens;
 pub mod authentication;
@@ -24,6 +26,8 @@ pub mod webhook_management;
 use crate::ConnectionManager;
 use crate::presence::PresenceManager;
 use crate::watchlist::WatchlistManager;
+#[cfg(feature = "ai-transport")]
+use ai_rollup::{AiWorkerLifecycle, start_rollup_worker};
 #[cfg(feature = "ai-transport")]
 use sockudo_ai_transport::{RollupConfig, RollupEngine, observability::AiObservabilityTracker};
 use sockudo_core::annotations::{AnnotationStore, MemoryAnnotationStore};
@@ -156,6 +160,8 @@ pub struct ConnectionHandler {
     pub(crate) ai_rollup_engine: Option<Arc<RollupEngine>>,
     #[cfg(feature = "ai-transport")]
     pub(crate) ai_observability_tracker: Option<Arc<AiObservabilityTracker>>,
+    #[cfg(feature = "ai-transport")]
+    ai_worker_lifecycle: Option<Arc<AiWorkerLifecycle>>,
     pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -339,15 +345,11 @@ impl ConnectionHandlerBuilder {
         };
 
         #[cfg(feature = "ai-transport")]
-        if let Some(engine) = ai_rollup_engine.as_ref() {
-            start_ai_rollup_worker(
-                Arc::clone(engine),
-                Arc::clone(&self.connection_manager),
-                self.realtime_egress_tap.clone(),
-                self.metrics.clone(),
-                self.server_options.ai_transport.rollup.wheel_tick_ms,
-            );
-        }
+        let ai_worker_lifecycle = self
+            .server_options
+            .ai_transport
+            .enabled
+            .then(|| Arc::new(AiWorkerLifecycle::new()));
 
         if let Some(tap) = self.realtime_egress_tap.as_ref() {
             self.connection_manager
@@ -377,6 +379,8 @@ impl ConnectionHandlerBuilder {
                 .ai_transport
                 .enabled
                 .then(|| Arc::new(AiObservabilityTracker::default())),
+            #[cfg(feature = "ai-transport")]
+            ai_worker_lifecycle,
             presence_history_store: self
                 .presence_history_store
                 .unwrap_or_else(|| Arc::new(NoopPresenceHistoryStore)),
@@ -407,8 +411,26 @@ impl ConnectionHandlerBuilder {
 
         #[cfg(feature = "ai-transport")]
         if handler.server_options.ai_transport.enabled {
+            let lifecycle = handler
+                .ai_worker_lifecycle
+                .as_ref()
+                .expect("enabled AI transport must have worker lifecycle")
+                .clone();
+            if let Some(engine) = handler.ai_rollup_engine.as_ref() {
+                let mut worker_handler = handler.clone();
+                worker_handler.ai_worker_lifecycle = None;
+                start_rollup_worker(
+                    worker_handler,
+                    Arc::clone(&lifecycle),
+                    Arc::clone(engine),
+                    handler.server_options.ai_transport.rollup.wheel_tick_ms,
+                );
+            }
+            let mut orphan_handler = handler.clone();
+            orphan_handler.ai_worker_lifecycle = None;
             start_ai_stream_orphan_worker(
-                handler.clone(),
+                orphan_handler,
+                lifecycle,
                 handler
                     .server_options
                     .ai_transport
@@ -423,94 +445,27 @@ impl ConnectionHandlerBuilder {
 }
 
 #[cfg(feature = "ai-transport")]
-fn start_ai_rollup_worker(
-    engine: Arc<RollupEngine>,
-    connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
-    realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
-    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+fn start_ai_stream_orphan_worker(
+    handler: ConnectionHandler,
+    lifecycle: Arc<AiWorkerLifecycle>,
     wheel_tick_ms: u64,
 ) {
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        return;
-    };
-    let tick_ms = wheel_tick_ms.max(1);
-    handle.spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(tick_ms));
-        loop {
-            interval.tick().await;
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-                .unwrap_or_default();
-            let mut deliveries = engine.flush_due(now_ms);
-            deliveries.extend(engine.sweep_orphans(now_ms));
-            for delivery in deliveries {
-                if let Some(metrics) = metrics.as_ref() {
-                    metrics.mark_ai_rollup_append_delivered(&delivery.app_id);
-                    metrics.observe_ai_rollup_ratio(&delivery.app_id, delivery.coalesced as f64);
-                    metrics.observe_ai_rollup_flush_latency(
-                        &delivery.app_id,
-                        delivery.latency_ms as f64,
-                    );
-                    metrics.update_ai_rollup_active_streams(
-                        &delivery.app_id,
-                        engine.active_streams() as u64,
-                    );
-                }
-                let app_id = delivery.app_id.clone();
-                let channel = delivery.channel.clone();
-                let message_for_tap = realtime_egress_tap
-                    .as_ref()
-                    .filter(|tap| tap.has_subscribers(&app_id, &channel))
-                    .map(|_| delivery.message.clone());
-                if let Err(error) = connection_manager
-                    .send(
-                        &delivery.channel,
-                        delivery.message,
-                        None,
-                        &delivery.app_id,
-                        None,
-                    )
-                    .await
-                {
-                    warn!(
-                        app_id = %delivery.app_id,
-                        channel = %delivery.channel,
-                        error = %error,
-                        "failed to flush AI append rollup delivery"
-                    );
-                } else if let Some(tap) = realtime_egress_tap.as_ref()
-                    && let Some(message_for_tap) = message_for_tap.as_ref()
-                {
-                    match MessageEnvelope::from_message(message_for_tap, None, None, sockudo_core::history::now_ms()) {
-                        Ok(envelope) => {
-                            if let Err(error) = tap.deliver(&app_id, &channel, message_for_tap, &envelope) {
-                                warn!(
-                                    app_id = %app_id,
-                                    channel = %channel,
-                                    error = %error,
-                                    "realtime egress tap failed during AI rollup flush"
-                                );
-                            }
-                        }
-                        Err(error) => warn!(app_id = %app_id, channel = %channel, error = %error, "failed to build AI rollup envelope"),
-                    }
-                }
-            }
-        }
-    });
-}
-
-#[cfg(feature = "ai-transport")]
-fn start_ai_stream_orphan_worker(handler: ConnectionHandler, wheel_tick_ms: u64) {
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        return;
-    };
-    handle.spawn(async move {
+    let cancellation = lifecycle.token();
+    lifecycle.spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(wheel_tick_ms));
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = cancellation.cancelled() => return,
+                _ = interval.tick() => {}
+            }
             let now_ms = sockudo_core::history::now_ms();
+            let max_idle_ms = handler
+                .server_options
+                .ai_transport
+                .rollup
+                .orphan_ttl_ms
+                .min(i64::MAX as u64) as i64;
+            handler.expire_ai_observability_streams(now_ms, max_idle_ms);
             if let Err(error) = handler.sweep_ai_stream_orphans_once(now_ms).await {
                 warn!(error = %error, "failed to sweep AI stream orphan registry");
             }
@@ -519,6 +474,14 @@ fn start_ai_stream_orphan_worker(handler: ConnectionHandler, wheel_tick_ms: u64)
 }
 
 impl ConnectionHandler {
+    /// Stop AI background workers and wait for the bounded rollup shutdown drain.
+    pub async fn shutdown_ai_workers(&self) {
+        #[cfg(feature = "ai-transport")]
+        if let Some(lifecycle) = self.ai_worker_lifecycle.as_ref() {
+            lifecycle.shutdown().await;
+        }
+    }
+
     async fn acquire_channel_publish_permit(
         &self,
         app_id: &str,

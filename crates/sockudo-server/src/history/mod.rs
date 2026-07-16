@@ -7,8 +7,6 @@ use sockudo_core::options::{DatabaseConfig, DatabasePooling, HistoryBackend, His
 use sockudo_core::options::{VersionStoreDriver, VersionedMessagesConfig};
 use std::sync::Arc;
 use std::time::Duration;
-#[cfg(all(feature = "postgres", feature = "versioned-messages"))]
-use tracing::info;
 
 #[cfg(feature = "dynamodb")]
 mod dynamodb;
@@ -24,7 +22,124 @@ mod surreal;
 #[cfg(feature = "postgres")]
 use postgres::PostgresHistoryStore;
 #[cfg(all(feature = "postgres", feature = "versioned-messages"))]
-use postgres::PostgresVersionStore;
+use postgres::{PostgresAnnotationStore, PostgresVersionStore};
+
+#[cfg(feature = "versioned-messages")]
+pub async fn create_annotation_store(
+    versioned_config: &VersionedMessagesConfig,
+    history_config: &HistoryConfig,
+    db_config: &DatabaseConfig,
+    pooling: &DatabasePooling,
+) -> Result<Arc<dyn sockudo_core::annotations::AnnotationStore + Send + Sync>> {
+    use sockudo_core::annotations::MemoryAnnotationStore;
+
+    match versioned_config.driver {
+        VersionStoreDriver::Memory => Ok(Arc::new(MemoryAnnotationStore::new())),
+        VersionStoreDriver::Postgres => {
+            #[cfg(feature = "postgres")]
+            {
+                let store = PostgresAnnotationStore::new(
+                    &db_config.postgres,
+                    pooling,
+                    &history_config.postgres.table_prefix,
+                )
+                .await?;
+                tracing::info!("AnnotationStore initialized with driver: postgres");
+                Ok(Arc::new(store))
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(sockudo_core::error::Error::Configuration(
+                    "Annotation store driver 'postgres' requires the 'postgres' feature"
+                        .to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::Mysql => {
+            #[cfg(feature = "mysql")]
+            {
+                let store = mysql::MysqlAnnotationStore::new(
+                    &db_config.mysql,
+                    pooling,
+                    &history_config.mysql.table_prefix,
+                )
+                .await?;
+                tracing::info!("AnnotationStore initialized with driver: mysql");
+                Ok(Arc::new(store))
+            }
+            #[cfg(not(feature = "mysql"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(sockudo_core::error::Error::Configuration(
+                    "Annotation store driver 'mysql' requires the 'mysql' feature".to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::DynamoDb => {
+            #[cfg(feature = "dynamodb")]
+            {
+                let store = dynamodb::create_dynamodb_annotation_store(
+                    &db_config.dynamodb,
+                    &history_config.dynamodb.table_prefix,
+                    versioned_config.retention_window_seconds,
+                )
+                .await?;
+                tracing::info!("AnnotationStore initialized with driver: dynamodb");
+                Ok(store)
+            }
+            #[cfg(not(feature = "dynamodb"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(sockudo_core::error::Error::Configuration(
+                    "Annotation store driver 'dynamodb' requires the 'dynamodb' feature"
+                        .to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::ScyllaDb => {
+            #[cfg(feature = "scylladb")]
+            {
+                let store = scylla::create_scylla_annotation_store(
+                    &db_config.scylladb,
+                    &history_config.scylladb.table_prefix,
+                    versioned_config.retention_window_seconds,
+                )
+                .await?;
+                tracing::info!("AnnotationStore initialized with driver: scylladb");
+                Ok(store)
+            }
+            #[cfg(not(feature = "scylladb"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(sockudo_core::error::Error::Configuration(
+                    "Annotation store driver 'scylladb' requires the 'scylladb' feature"
+                        .to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::SurrealDb => {
+            #[cfg(feature = "surrealdb")]
+            {
+                let store = surreal::create_surreal_annotation_store(
+                    &db_config.surrealdb,
+                    &history_config.surrealdb.table_prefix,
+                )
+                .await?;
+                tracing::info!("AnnotationStore initialized with driver: surrealdb");
+                Ok(store)
+            }
+            #[cfg(not(feature = "surrealdb"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(sockudo_core::error::Error::Configuration(
+                    "Annotation store driver 'surrealdb' requires the 'surrealdb' feature"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+}
 
 pub async fn create_history_store(
     history_config: &HistoryConfig,
@@ -166,7 +281,7 @@ pub async fn create_version_store(
                     &history_config.postgres.table_prefix,
                 )
                 .await?;
-                info!("VersionStore initialized with driver: postgres");
+                tracing::info!("VersionStore initialized with driver: postgres");
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "postgres"))]

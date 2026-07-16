@@ -36,6 +36,15 @@ use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "ably-compat")]
+fn expose_ably_error_headers(cors: CorsLayer) -> CorsLayer {
+    cors.expose_headers([
+        HeaderName::from_static("x-ably-errorcode"),
+        HeaderName::from_static("x-ably-errormessage"),
+        HeaderName::from_static("link"),
+    ])
+}
+
 impl SockudoServer {
     fn build_rate_limit_layer(
         limiter: Arc<dyn RateLimiter + Send + Sync>,
@@ -125,6 +134,8 @@ impl SockudoServer {
             }
         }
 
+        #[cfg(feature = "ably-compat")]
+        let cors_builder = expose_ably_error_headers(cors_builder);
         let cors = cors_builder;
 
         let api_rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
@@ -570,10 +581,18 @@ impl SockudoServer {
             if self.config.ably_compat.enabled {
                 let runtime = Arc::clone(&self.ably_compat);
                 let aggregation_runtime = Arc::clone(&self.ably_compat);
+                let delivery_runtime = Arc::clone(&self.ably_compat);
                 router = router.route(
                     "/operator/stats/aggregation",
                     get(move || {
                         let snapshot = aggregation_runtime.stats_metrics();
+                        async move { axum::Json(snapshot) }
+                    }),
+                );
+                router = router.route(
+                    "/operator/stats/ably-runtime",
+                    get(move || {
+                        let snapshot = delivery_runtime.metrics();
                         async move { axum::Json(snapshot) }
                     }),
                 );
@@ -645,6 +664,21 @@ mod tests {
 
     async fn ok_handler() -> StatusCode {
         StatusCode::OK
+    }
+
+    #[cfg(feature = "ably-compat")]
+    async fn ably_error_handler() -> impl IntoResponse {
+        (
+            StatusCode::BAD_REQUEST,
+            [
+                (HeaderName::from_static("x-ably-errorcode"), "40000"),
+                (
+                    HeaderName::from_static("x-ably-errormessage"),
+                    "invalid request",
+                ),
+                (HeaderName::from_static("link"), "<./next>; rel=\"next\""),
+            ],
+        )
     }
 
     fn scoped_test_router() -> Router {
@@ -738,5 +772,37 @@ mod tests {
             .unwrap();
         let second_api_response = app.oneshot(second_api_request).await.unwrap();
         assert_eq!(second_api_response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[cfg(feature = "ably-compat")]
+    #[tokio::test]
+    async fn cors_exposes_ably_error_headers_to_browser_clients() {
+        let app = Router::new()
+            .route("/error", get(ably_error_handler))
+            .layer(expose_ably_error_headers(CorsLayer::new().allow_origin(
+                AllowOrigin::exact(HeaderValue::from_static("https://client.example")),
+            )));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/error")
+                    .header("origin", "https://client.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let exposed = response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok())
+            .expect("Ably error headers must be browser-visible")
+            .to_ascii_lowercase();
+        assert!(exposed.contains("x-ably-errorcode"));
+        assert!(exposed.contains("x-ably-errormessage"));
+        assert!(exposed.contains("link"));
     }
 }

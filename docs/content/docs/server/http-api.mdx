@@ -48,6 +48,12 @@ receipt from native history/version storage. Raw idempotency keys are not stored
 in message envelopes; recovery uses an app/channel-scoped hash plus the canonical
 payload fingerprint.
 
+Idempotent publishes fail closed when their shared coordination backend is
+unavailable: Sockudo returns `503 service_unavailable` instead of publishing
+without a proven claim. Concurrent retries whose first request is still active also
+return `503 backpressure` with `Retry-After: 1`. Retry either response with the same
+idempotency key; a load balancer may route the retry to a healthy node.
+
 ```json
 {
   "channels": {

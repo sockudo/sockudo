@@ -119,7 +119,9 @@ The response uses the same history payload shape as app-key HTTP history: `items
 
 `until_attach` is the late-join gaplessness rule: the history page stops at the serial captured when
 the subscription succeeded, and live fanout continues above that serial. Clients should reduce
-history first, then live messages.
+history first, then live messages. In a cluster, route this request to the node that owns the live
+attachment. If Sockudo cannot find that authoritative attachment position, it rejects the read
+instead of silently removing the upper bound and returning a page that could overlap live delivery.
 
 ## Presence history
 

@@ -1,0 +1,1 @@
+{"event":"sockudo:message.append","channel":"ai-room","data":" token","serial":2,"action":"append","message_serial":"message-1","history_serial":2,"delivery_serial":2,"version":{"serial":"version-2","client_id":"agent-1","timestamp_ms":2,"description":"stream delta"}}

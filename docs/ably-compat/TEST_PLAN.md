@@ -23,7 +23,34 @@ make ably-ai-transport-test
 make ably-ai-demo
 ```
 
-The `make` targets use `tests/ably-compat`, stock `ably@2.23.0`, and
+Release evidence uses the pinned harness directly and keeps each lane separate:
+
+```bash
+cd sockudo-compatibility
+make conformance
+make strict-completeness
+make browser-conformance
+make browser-matrix
+make browser-strict
+make ait-conformance
+
+cd ..
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test -p sockudo-ably-compat --all-features
+```
+
+Browser reports fail on assertion failures, runner errors, page errors, console errors, leaked
+contexts, and unexpected external requests. Failure screenshots and Playwright traces are retained
+under `sockudo-compatibility/reports/browser-artifacts/`; engine diagnostics are not filtered to
+make a lane green.
+
+The strict lane enables all 27 in-scope Mocha results represented by the 11 recorded upstream
+pending declarations. The pinned source expands to 27 results rather than the 25 estimated in the
+original work request; `scope/pending-audit.json` records every stable title. The lane does not
+rewrite bodies or expectations. Pinned upstream defects remain reported as release blockers.
+
+The legacy smoke targets use `tests/ably-compat`, stock `ably@2.21.0`, and
 `@ably/ai-transport@0.4.0`. The Ably facade is expected at the Sockudo root WebSocket/REST endpoint;
 existing Sockudo/Pusher clients continue to use `/app/{appKey}` and `/apps/{appId}`.
 `make ably-protocol-discovery` also installs Playwright Chromium and runs one stock browser bundle
@@ -44,6 +71,13 @@ Pub/Sub/history lane from an allowed localhost origin.
 
 Do not claim full Ably support from these tests. The passing claim is:
 
-> Sockudo is Ably AI Transport compatible through an opt-in reduced Ably Pub/Sub subset.
+> Sockudo implements an opt-in Ably REST and WebSocket compatibility surface, excluding Live
+> Objects; publish a compatibility claim only for lanes with attached passing evidence.
 
-Broader compatibility claims require upstream Ably SDK test evidence and updated scorecard entries.
+The pinned Node, strict-completeness, browser, and AIT lanes are independent gates. Broader or
+unqualified claims require every selected lane to pass and updated scorecard evidence.
+
+Security, fuzz, chaos, and performance evidence are also independent gates. The release load guard
+requires three independent runs across both topologies and every scenario in
+`tests/load/ably-compat/profiles/release.json`; a correctness-clean run that exceeds a latency or
+memory budget is not a performance pass.

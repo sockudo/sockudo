@@ -147,6 +147,12 @@ class SockudoProtocolCodec {
     if (value is String) {
       return <Object>['string', value];
     }
+    if (value is Uint8List) {
+      return <Object>['binary', value];
+    }
+    if (value is List<int>) {
+      return <Object>['binary', Uint8List.fromList(value)];
+    }
     return <Object>['json', jsonEncode(value)];
   }
 
@@ -237,6 +243,11 @@ class SockudoProtocolCodec {
     if (data != null) {
       if (data is String) {
         message.data = ProtoMessageData()..stringValue = data;
+      } else if (data is Uint8List) {
+        message.data = ProtoMessageData()..binaryValue = data;
+      } else if (data is List<int>) {
+        message.data = ProtoMessageData()
+          ..binaryValue = Uint8List.fromList(data);
       } else {
         message.data = ProtoMessageData()..jsonValue = jsonEncode(data);
       }
@@ -281,6 +292,8 @@ class SockudoProtocolCodec {
           } catch (_) {
             envelope['data'] = raw;
           }
+        case ProtoMessageData_Kind.binaryValue:
+          envelope['data'] = Uint8List.fromList(message.data.binaryValue);
         case ProtoMessageData_Kind.structured:
           envelope['data'] = <String, Object?>{
             if (message.data.structured.hasChannelData())
@@ -496,6 +509,8 @@ class SockudoProtocolCodec {
           case 'json':
           case 'bool':
             return payload;
+          case 'binary':
+            return _asBytes(payload);
           case 'number':
             return normalizeWireSerial(payload) ?? payload;
           case 'structured':

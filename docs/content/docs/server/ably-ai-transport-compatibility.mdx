@@ -1,46 +1,82 @@
 ---
-title: Ably AI Transport compatibility
-description: Sockudo's reduced Ably Pub/Sub subset for Ably AI Transport clients, tests, and demos.
+title: Ably REST, WebSocket, and AI Transport compatibility
+description: Sockudo's evidence-backed Ably REST and WebSocket compatibility surface, excluding Live Objects.
 icon: BadgeCheck
 ---
 
-Sockudo can expose a reduced Ably-compatible Pub/Sub surface for AI Transport
-workloads when the server is built with Cargo feature `ably-compat`. The goal
-is not broad Ably platform parity; the goal is to let Ably AI Transport clients
-exercise run lifecycle, mutable streaming, history, and recovery against
-Sockudo-backed durable primitives.
+Sockudo can expose an Ably-compatible REST and WebSocket surface when the server
+is built with Cargo feature `ably-compat`. The evidence-backed scope is **Ably
+REST and WebSocket compatibility, excluding Live Objects**. It also supports
+Ably AI Transport clients through Sockudo's native mutable-message, history,
+recovery, presence, annotation, stats, and push services.
 
 The facade lives in the optional `sockudo-ably-compat` workspace crate. The
 server constructs one `AblyCompatRuntime` per server instance and merges its
-routes, so compatibility session and token state is isolated between server
-instances. Ably realtime is WebSocket-only: Comet, XHR polling or streaming,
-SSE, long polling, and other fallback transports are intentionally unsupported.
+routes. Socket writers and attachment state remain local to that process;
+authorization, session ownership, recovery, and durable channel state use the
+shared authorities described below. Ably realtime is WebSocket-only: Comet,
+XHR polling or streaming, SSE, long polling, and other fallback transports are
+intentionally unsupported.
 
-Use this wording in public material:
+Use **Ably REST and WebSocket compatibility, excluding Live Objects** in public
+material. Do not describe this as full Ably compatibility.
 
-- **Ably AI Transport compatible**
-- **Ably Pub/Sub subset for AI Transport**
+The pinned manifest classifies 41 target files. Exactly the two Live Objects
+files and the multiple/non-WebSocket transport file are excluded, and there are
+no per-test exclusions. Node defaults, browser execution, strict execution of
+upstream-pending bodies, and AI Transport have separate reports and pass/fail
+states. A result from one lane is never used to claim another lane passed.
 
-The pinned compatibility manifest currently passes every in-scope REST and
-WebSocket file. That evidence still does not imply full-platform parity: the two
-Live Objects files and the multiple/non-WebSocket transport file remain the only
-file-level exclusions.
+Current release evidence is not fully green. The fresh Node default lane is
+575 passed with no failures, and the AIT lane is 50/50. The strict lane has four
+pinned-fixture failures before its wire assertion; Chromium, Firefox, and WebKit
+remain red on fatal browser diagnostics and/or assertions. See the dated
+`sockudo-compatibility/findings/2026-07-15-final-verification.md` report before
+publishing an unqualified compatibility claim.
 
 ## Compatibility Matrix
 
 | Surface | Status | Scope |
 | --- | --- | --- |
-| Ably Realtime WebSocket JSON/MsgPack protocol | Supported for tested Pub/Sub subset | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows covered by stock `ably@2.23.0` discovery lanes in JSON and MsgPack modes. Full Ably Realtime parity is not claimed. |
-| Ably REST time/token/history/message reads and publish | Supported for tested Pub/Sub subset | `/time`, `/keys/{keyName}/requestToken`, `/keys/{keyName}/revokeTokens`, `/messages` batch publish, `/channels/{channel}/messages`, message lookup, version lookup, and presence reads/history exist for the reduced SDK path. REST publish/history and token capability enforcement are covered in discovery lanes. Full Ably REST API parity is not claimed. |
+| Ably Realtime WebSocket JSON/MsgPack protocol | Node-default evidence green; browser gates red | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows covered by pinned `ably@2.21.0` JSON and MsgPack lanes. Non-WebSocket transports are intentionally unsupported. |
+| Ably REST time/token/history/message reads and publish | Node-default evidence green; browser gates red | `/time`, `/keys/{keyName}/requestToken`, `/keys/{keyName}/revokeTokens`, `/messages` batch publish, `/channels/{channel}/messages`, message lookup, version lookup, and presence reads/history exist for the selected SDK path. Full Ably REST API parity is not claimed. |
 | Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
 | Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
-| Mutable output streaming | Supported for AI Transport only | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
+| Mutable messages and output streaming | Node-default evidence green; browser REST gate red | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
 | Message annotations | Supported for the pinned annotation suite | Realtime action `21`, REST create/delete/list, summaries, pagination, JSON, and MsgPack translate onto Sockudo's native annotation store and projection pipeline. Protocol V1 remains unchanged. |
 
 Compatibility projections read a shared commit-time message envelope. This
 keeps IDs, publisher identity, timestamps, encoding chains, supported extras,
 history/recovery positions, and version operation metadata consistent across
 live delivery and REST reads while leaving Protocol V1's projection unchanged.
+
+## Distributed state authority
+
+Clustered compatibility requires Redis or Redis Cluster for coordination and a
+non-memory durable history/version driver. Sockudo does not use a process-local
+`DashMap` as cross-node authority and does not fall back from an unavailable
+coordination backend to private memory.
+
+| State | Class | Authority and retention | Backend failure behavior |
+| --- | --- | --- | --- |
+| App keys and configured rotated keys | Durable configuration | `AppManager` plus the deployment's versioned key configuration; every node must load the same generation. | Unknown or stale generations reject authentication. Secrets are never logged. |
+| Opaque tokens | Replicated ephemeral | Shared cache record for the token TTL. A process-local decoded copy is only an optimization after the shared record is validated. | Token resolution fails closed when shared state cannot be read. |
+| Nonce replay and token revocations | Replicated ephemeral security state | Atomic shared-cache claims. Revocations live for at least the maximum accepted token TTL. | Replay/revocation checks fail closed. Revocation polling disconnects sockets on every node; renewal changes the shared authorization generation so stale timers cannot restore access. |
+| WebSocket writer, auth timer, channel gate, negotiated attachment | Local connection state | The node owning the socket. Gates and queues have count and byte bounds and end with the transport. | The socket closes when safe local delivery cannot continue; another node never fabricates ownership. |
+| Session owner and recovery key | Replicated ephemeral | Compare-and-swap owner lease in shared cache, bounded by the connection-state TTL. Recovery keys are single-use and key rotation invalidates the previous key. | Resume fails closed when the owner lease or continuity record cannot be verified. A successful claim on another node supersedes the old owner. |
+| Publish idempotency claim and acknowledgement | Replicated ephemeral plus durable repair | Atomic cache claim/receipt for the idempotency TTL; canonical history/version records repair an ambiguous post-commit receipt. | A backend error does not permit a second winner. A retry is acknowledged only after its canonical commit is proven. |
+| Current presence | Replicated ephemeral | Per-connection typed membership, replicated by the horizontal adapter and tied to the node-health lease. | Duplicate leave/dead-node notifications are idempotent. Node death removes every orphan connection; failure to coordinate cleanup is degraded and observable rather than reported as a clean snapshot. |
+| Presence transitions | Durable | Configured durable history backend and its retention policy. | Current membership can remain available, but continuity-sensitive history fails closed while degraded. |
+| Attachment high-water and reconnect continuity | Local attachment plus durable canonical position | The live attachment owner captures the high-water; durable history/version streams prove reconnect ranges. | `untilAttach` requires routing affinity to the attachment owner. Resume/recover returns reset-required when stream identity or a contiguous range cannot be proven. |
+| Remote delivery suppression | Local bounded projection state | Each subscriber node keeps a contiguous per-stream delivery high-water plus a bounded set of out-of-order serials; Redis fanout carries the complete canonical envelope. | Serials at or below proven continuity remain suppressed without retaining an unbounded ledger. Missing canonical identity is not guessed; reorder-window overflow is counted and fails reset-required instead of evicting duplicate evidence. |
+| Mutable versions and delivery serials | Durable | Configured `VersionStore`; create, predecessor compare-and-apply, operation receipt, and serial allocation are one backend commit. | Mutation and recovery fail closed on conflicts, gaps, or backend errors. |
+| Annotation serials, create receipts, event stream, and summaries | Durable | The configured non-memory version-storage driver owns atomic per-channel serial allocation, stable create IDs, canonical events, materialized summaries, and bounded retention. | Annotation writes and rebuilds fail closed; no node-local projection is used in a cluster. |
+| Stats buckets | Replicated retained aggregate | Bounded local ingestion workers merge minute buckets into shared cache with TTL. | Queue drops and backend failures are counted. Queries cannot treat an unflushed or unreadable bucket as a complete cluster barrier. |
+| Push registrations, subscriptions, statuses, publish log, feedback, and schedules | Durable | Configured push storage and queue; conditional status/idempotency/worker claims use backend operations. | Production rejects accidental memory drivers. Failed provider/queue/storage work remains observable through durable status and backlog metrics. |
+
+Memory cache, history, version, annotation, push-storage, and push-queue
+implementations are single-node development choices only. Clustered startup
+rejects combinations that would split an authority between processes.
 
 Mutable REST and realtime operations call the native typed mutation service.
 That service atomically validates the predecessor, owns the delivery position,
@@ -88,6 +124,23 @@ same client ID still receives the message. A publish frame is validated in full
 before the first commit, then receives exactly one ACK or NACK covering its
 inbound `msgSerial`/`count` range, including a frame containing multiple
 messages.
+
+### Presence across reconnects
+
+Ably `DISCONNECT` and `CLOSE` have different presence lifecycles. `DISCONNECT`
+ends the current WebSocket transport but retains the connection's presence
+members until the bounded connection-state lease expires, allowing a short
+disconnect or a suspended-channel resync to preserve the authoritative member
+set. `CLOSE` is terminal: it removes the connection's members immediately and
+fans out their leave transitions. Both paths still unsubscribe the terminated
+transport session from local channel delivery.
+
+On automatic presence re-entry, Sockudo preserves a supplied member ID only
+when it is a valid `connectionId:msgSerial:index` ID owned by the current
+connection. This keeps same-connection re-entry idempotent while a missing,
+malformed, or foreign-connection ID is replaced with a server-assigned ID.
+Presence snapshots remain keyed by the `(clientId, connectionId)` pair, so the
+same client ID on distinct connections remains distinct.
 
 ### Batch REST routing
 
@@ -188,7 +241,7 @@ succeeds and the delta is smaller than the complete encoded payload. Otherwise
 the subscriber receives a full message and that full payload becomes the next
 eligible base.
 
-JSON deltas use the exact `json/vcdiff/base64` encoding chain and
+JSON deltas use the portable `json/utf-8/vcdiff/base64` encoding chain and
 `extras.delta = { from, format: "vcdiff" }`. Unsupported, binary, or cipher
 encoding chains pass through unchanged and break the chain rather than being
 reinterpreted as JSON. JSON and MsgPack subscribers use the same payload and ID
@@ -301,7 +354,9 @@ Messages are encoded once for each active JSON/MessagePack group and shared as
 immutable bytes across that group's subscribers. Session, token, channel, and
 queue state has hard bounds and periodic expiry. No compatibility lock is held
 while encoding or fanning out, and the compatibility projection does not alter
-Protocol V1 delivery.
+Protocol V1 delivery. `/operator/stats/ably-runtime` exposes `data_encoded` for
+these shared projections separately from `encoded`, which also includes
+connection, channel, ACK, and heartbeat control frames.
 
 Connection recovery keys are stored for the advertised connection-state TTL in
 the configured shared cache as well as the local runtime. A reconnect routed to
@@ -394,7 +449,7 @@ worker, and real credentials.
 | Token lifecycle | Supported for tested WebSocket subset | Canonical `access_token` and `client_id` connection parameters are accepted with documented camel-case aliases. Signed HS256 Ably JWTs and issued opaque tokens carry identity, capability, and expiry into the connection. In-band `AUTH` renews authorization without changing the connection ID; expiry and revocation emit `DISCONNECTED` 40142 and 40141. Capability downgrades fail affected channels only. |
 | LiveObjects/object modes | Intentionally out of scope | The current compatibility target does not implement Ably LiveObjects. |
 | Ably Push | Supported for the pinned REST subset | Device registration, channel subscription, listing/deletion, direct publish, and `extras.push` use native durable storage, queue, planner, provider dispatch, feedback, retry, status, scheduler, and cleanup paths. Full provider-platform parity is not claimed. |
-| Binary MsgPack Ably protocol | Supported for tested Pub/Sub subset | Realtime Pub/Sub and REST publish/history/time pass the stock `ably@2.23.0` discovery lanes with `useBinaryProtocol: true`. Full Ably platform MsgPack parity is not claimed. |
+| Binary MsgPack Ably protocol | Supported for the tested surface | Realtime Pub/Sub and REST publish/history/time are selected from pinned `ably@2.21.0` with `useBinaryProtocol: true`. Full Ably platform MsgPack parity is not claimed. |
 | Full Ably platform API parity | Intentionally out of scope | This surface is for AI Transport compatibility, not a replacement for all Ably services. |
 
 ## Test Commands
@@ -408,31 +463,23 @@ cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push
   --config config/config.toml
 ```
 
-Then run the compatibility lanes:
-
-```bash
-make ably-compat-test
-make ably-protocol-discovery
-make ably-ai-transport-test
-make ably-ai-demo
-```
-
-The authoritative pinned upstream manifest is under `sockudo-compatibility/`:
+Then run the compatibility lanes from the pinned harness:
 
 ```bash
 cd sockudo-compatibility
-ABLY_JS_DIR="$PWD/.cache/ably-js" SOCKUDO_DIR=".." node runner/run.mjs --skip-build --workers 4
-
-# Also execute upstream-pending presence race and auto-reenter bodies without
-# changing their source or expected values.
-ABLY_JS_DIR="$PWD/.cache/ably-js" SOCKUDO_DIR=".." \
-  node runner/run.mjs --skip-build --workers 1 --strict-completeness \
-  test/realtime/presence.test.js
+make conformance
+make strict-completeness
+make browser-install
+make browser-conformance
+make browser-strict
+make ait-conformance
 ```
 
-`make ably-protocol-discovery` installs Playwright Chromium and includes a real
-stock Ably browser bundle lane for JSON Pub/Sub/history. The other stable targets
-remain headless Node.js checks.
+`make browser-matrix` runs Chromium first, then the pinned Firefox and WebKit
+revisions. Browser reports fail on console or page errors and leaked contexts in
+addition to assertion, runner, pending, and accounting failures. Browser support
+services are loopback-only and real; the runner blocks requests to Ably-hosted
+infrastructure.
 
 The targets read these environment variables:
 
@@ -453,7 +500,7 @@ The targets read these environment variables:
 `make ably-ai-demo` runs two headless demos:
 
 1. A stock `@ably/ai-transport@0.4.0` chat demo using
-   `@ably/ai-transport/vercel`, stock `ably@2.23.0`, and Sockudo as the
+   `@ably/ai-transport/vercel`, pinned `ably@2.21.0`, and Sockudo as the
    configured endpoint.
 2. A recovery/history demo that disconnects during an AI output stream, appends
    additional fragments while offline, reconnects with an Ably recovery key, and

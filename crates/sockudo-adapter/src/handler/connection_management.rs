@@ -6,6 +6,8 @@ use super::ConnectionHandler;
 use crate::connection_manager::CompressionParams;
 use crate::connection_manager::ConnectionManager;
 use bytes::Bytes;
+#[cfg(feature = "ai-transport")]
+use sockudo_ai_transport::{DeferredFanoutContext, RollupDeliveryReason};
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryAppendRecord, now_ms};
@@ -805,49 +807,67 @@ impl ConnectionHandler {
             .resolved_history(channel, &self.server_options().history)
             .enabled
             && self.server_options().ai_transport.matches_channel(channel)
-            && extract_runtime_action(&message) == Some(ProtocolMessageAction::Append)
+            && matches!(
+                extract_runtime_action(&message),
+                Some(
+                    ProtocolMessageAction::Append
+                        | ProtocolMessageAction::Update
+                        | ProtocolMessageAction::Delete
+                )
+            )
             && let Some(engine) = self.ai_rollup_engine.as_ref()
         {
-            if let Some(metrics) = self.metrics() {
+            if extract_runtime_action(&message) == Some(ProtocolMessageAction::Append)
+                && let Some(metrics) = self.metrics()
+            {
                 metrics.mark_ai_rollup_append_received(&app_config.id);
             }
-            let now_ms = u64::try_from(now_ms()).unwrap_or_default();
-            let deliveries = engine.ingest(&app_config.id, channel, message, now_ms);
+            let now_ms = super::ai_rollup::rollup_now_ms();
+            let poll = engine.ingest_with_context(
+                &app_config.id,
+                channel,
+                message,
+                now_ms,
+                DeferredFanoutContext {
+                    exclude_socket: exclude_socket.copied(),
+                    start_time_ms,
+                    force_full_message,
+                    envelope,
+                },
+            );
 
-            for delivery in deliveries {
-                if let Some(metrics) = self.metrics() {
-                    if delivery.reason != sockudo_ai_transport::RollupDeliveryReason::Bypass {
-                        metrics.mark_ai_rollup_append_delivered(&delivery.app_id);
-                        metrics
-                            .observe_ai_rollup_ratio(&delivery.app_id, delivery.coalesced as f64);
-                        metrics.observe_ai_rollup_flush_latency(
-                            &delivery.app_id,
-                            delivery.latency_ms as f64,
-                        );
-                    }
-                    metrics.update_ai_rollup_active_streams(
-                        &delivery.app_id,
-                        engine.active_streams() as u64,
-                    );
+            if let Some(metrics) = self.metrics() {
+                for delta in poll.active_stream_deltas {
+                    metrics.add_ai_rollup_active_streams(&delta.app_id, delta.delta as i64);
                 }
+            }
+
+            for delivery in poll.deliveries {
+                let reason = delivery.reason;
+                let is_append = extract_runtime_action(&delivery.message)
+                    == Some(ProtocolMessageAction::Append);
+                let app_id = delivery.app_id.clone();
+                let coalesced = delivery.coalesced;
+                let latency_ms = delivery.latency_ms;
+                let context = delivery.context;
                 self.send_one_egress_message(
                     app_config,
                     &delivery.channel,
-                    delivery.message.clone(),
-                    exclude_socket,
-                    start_time_ms,
-                    force_full_message,
-                    envelope.clone().or_else(|| {
-                        MessageEnvelope::from_message(
-                            &delivery.message,
-                            None,
-                            None,
-                            sockudo_core::history::now_ms(),
-                        )
-                        .ok()
-                    }),
+                    delivery.message,
+                    context.exclude_socket.as_ref(),
+                    context.start_time_ms,
+                    context.force_full_message,
+                    context.envelope,
                 )
                 .await?;
+                if let Some(metrics) = self.metrics()
+                    && is_append
+                    && reason != RollupDeliveryReason::Bypass
+                {
+                    metrics.mark_ai_rollup_append_delivered(&app_id);
+                    metrics.observe_ai_rollup_ratio(&app_id, coalesced as f64);
+                    metrics.observe_ai_rollup_flush_latency(&app_id, latency_ms as f64);
+                }
             }
             return Ok(());
         }
@@ -865,7 +885,7 @@ impl ConnectionHandler {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn send_one_egress_message(
+    pub(super) async fn send_one_egress_message(
         &self,
         app_config: &App,
         channel: &str,
@@ -920,6 +940,7 @@ impl ConnectionHandler {
                         CompressionParams {
                             delta_compression: Arc::clone(&self.delta_compression),
                             channel_settings: channel_settings.as_ref(),
+                            envelope: envelope.clone(),
                         },
                     )
                     .await

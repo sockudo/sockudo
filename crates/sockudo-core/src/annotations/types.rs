@@ -176,12 +176,12 @@ impl Annotation {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TotalAnnotationSummary {
     pub total: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentifiedAnnotationSummary {
     pub total: u64,
@@ -189,7 +189,7 @@ pub struct IdentifiedAnnotationSummary {
     pub clipped: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MultipleAnnotationSummary {
     pub total: u64,
@@ -199,7 +199,7 @@ pub struct MultipleAnnotationSummary {
     pub total_client_ids: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum AnnotationSummary {
     Total(TotalAnnotationSummary),
@@ -474,6 +474,20 @@ pub struct AnnotationAppendOutcome {
 
 #[async_trait]
 pub trait AnnotationStore: Send + Sync {
+    /// Reserve the next durable per-channel annotation serial.
+    ///
+    /// Shared stores override this with an atomic backend allocation. The
+    /// `None` fallback preserves local-store compatibility, where the handler
+    /// generates a process-qualified serial.
+    async fn reserve_annotation_serial(
+        &self,
+        app_id: &str,
+        channel_id: &str,
+    ) -> Result<Option<AnnotationSerial>> {
+        let _ = (app_id, channel_id);
+        Ok(None)
+    }
+
     async fn append_event(
         &self,
         record: StoredAnnotationEvent,

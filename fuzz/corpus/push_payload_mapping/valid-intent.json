@@ -1,0 +1,1 @@
+{"appId":"app-1","publishId":"publish-1","targets":[{"type":"channel","channel":"alerts"}],"payload":{"title":"Hello","body":"World","templateData":{"name":"Ada"}},"providerOverrides":[]}

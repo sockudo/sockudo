@@ -4,16 +4,13 @@ use super::ScyllaHistoryStore;
 
 impl ScyllaHistoryStore {
     pub(super) async fn ensure_schema(&self) -> Result<()> {
-        let create_keyspace = format!(
-            "CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}} AND tablets = {{'enabled': false}}",
-            self.tables.keyspace
-        );
-        self.session
-            .query_unpaged(create_keyspace, ())
-            .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to create ScyllaDB history keyspace: {e}"))
-            })?;
+        super::ensure_scylla_keyspace(
+            &self.session,
+            &self.tables.keyspace,
+            &self.tables.replication_class,
+            self.tables.replication_factor,
+        )
+        .await?;
 
         let create_streams = format!(
             "CREATE TABLE IF NOT EXISTS {} (

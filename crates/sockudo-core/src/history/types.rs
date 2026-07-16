@@ -3,6 +3,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+const MAX_HISTORY_CURSOR_ENCODED_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryDirection {
@@ -44,6 +46,11 @@ impl HistoryCursor {
     }
 
     pub fn decode(encoded: &str) -> Result<Self> {
+        if encoded.len() > MAX_HISTORY_CURSOR_ENCODED_BYTES {
+            return Err(Error::InvalidMessageFormat(
+                "History cursor exceeds 16 KiB".to_string(),
+            ));
+        }
         let bytes = URL_SAFE_NO_PAD
             .decode(encoded)
             .map_err(|e| Error::InvalidMessageFormat(format!("Invalid history cursor: {e}")))?;

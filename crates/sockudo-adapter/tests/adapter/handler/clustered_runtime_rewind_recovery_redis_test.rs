@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::handler::{
-    ConnectionHandler,
+    ConnectionHandler, RealtimeEgressTap,
     types::{SubscriptionRequest, SubscriptionRewind},
 };
 use sockudo_adapter::horizontal_transport::HorizontalTransport;
@@ -40,6 +40,7 @@ use sonic_rs::{JsonValueTrait, Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock, oneshot};
@@ -240,6 +241,28 @@ async fn build_redis_node_with_version_store_and_cache(
     cache: Arc<dyn CacheManager + Send + Sync>,
     options: ServerOptions,
 ) -> ClusterNode {
+    build_redis_node_with_version_store_cache_and_tap(
+        prefix,
+        app,
+        history_store,
+        version_store,
+        cache,
+        options,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_redis_node_with_version_store_cache_and_tap(
+    prefix: &str,
+    app: &App,
+    history_store: Arc<dyn HistoryStore + Send + Sync>,
+    version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
+    cache: Arc<dyn CacheManager + Send + Sync>,
+    options: ServerOptions,
+    realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
+) -> ClusterNode {
     let app_manager = Arc::new(MemoryAppManager::new());
     app_manager.create_app(app.clone()).await.unwrap();
 
@@ -265,7 +288,7 @@ async fn build_redis_node_with_version_store_and_cache(
     adapter.start_listeners().await.unwrap();
 
     let adapter = Arc::new(adapter);
-    let builder = ConnectionHandler::builder(
+    let mut builder = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
         adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
         cache,
@@ -274,6 +297,9 @@ async fn build_redis_node_with_version_store_and_cache(
     .local_adapter(adapter.local_adapter.clone())
     .history_store(history_store)
     .metrics(Arc::new(MockMetricsInterface::new()));
+    if let Some(realtime_egress_tap) = realtime_egress_tap {
+        builder = builder.realtime_egress_tap(realtime_egress_tap);
+    }
     let handler = if let Some(version_store) = version_store {
         builder.version_store(version_store).build()
     } else {
@@ -284,6 +310,28 @@ async fn build_redis_node_with_version_store_and_cache(
         handler,
         adapter,
         app_manager,
+    }
+}
+
+#[derive(Default)]
+struct RecordingRealtimeEgressTap {
+    deliveries: AtomicUsize,
+}
+
+impl RealtimeEgressTap for RecordingRealtimeEgressTap {
+    fn has_subscribers(&self, _app_id: &str, _channel: &str) -> bool {
+        true
+    }
+
+    fn deliver(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _message: &PusherMessage,
+        _envelope: &sockudo_core::message_envelope::MessageEnvelope,
+    ) -> sockudo_core::error::Result<()> {
+        self.deliveries.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -619,6 +667,58 @@ async fn publish_on_node_a_reaches_subscriber_on_node_b_via_redis() {
     assert_eq!(delivered.message_id.as_deref(), Some("live-1"));
     assert!(delivered.stream_id.is_some());
     assert!(delivered.serial.is_some());
+}
+
+#[tokio::test]
+async fn remote_redis_delivery_reaches_the_compatibility_egress_once() {
+    if !is_redis_available().await {
+        eprintln!("Skipping test: Redis not available");
+        return;
+    }
+
+    let app = test_app();
+    let history_store = Arc::new(ClusterHistoryStore::new(Arc::new(MemoryHistoryStore::new(
+        MemoryHistoryStoreConfig::default(),
+    ))));
+    let prefix = format!("compat_egress_cluster_{}", Uuid::new_v4().simple());
+    let tap = Arc::new(RecordingRealtimeEgressTap::default());
+    let tap_for_node: Arc<dyn RealtimeEgressTap> = tap.clone();
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+
+    let node_a = build_redis_node(&prefix, &app, history_store.clone(), options.clone()).await;
+    let node_b = build_redis_node_with_version_store_cache_and_tap(
+        &prefix,
+        &app,
+        history_store,
+        None,
+        Arc::new(MockCacheManager::new()),
+        options,
+        Some(tap_for_node),
+    )
+    .await;
+    wait_for_cluster_ready(&[&node_a.adapter, &node_b.adapter], 2).await;
+
+    node_a
+        .handler
+        .broadcast_to_channel(
+            &app,
+            "compat-egress",
+            live_message("compat-egress", "cross-node", "compat-1"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    timeout(Duration::from_secs(2), async {
+        while tap.deliveries.load(Ordering::Acquire) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("remote compatibility delivery did not arrive");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(tap.deliveries.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]

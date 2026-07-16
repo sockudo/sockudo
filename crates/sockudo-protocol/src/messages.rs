@@ -206,6 +206,7 @@ impl AiHeaderValidationError {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct AiTransportHeaders<'a> {
     inner: &'a HashMap<String, String>,
 }
@@ -470,6 +471,14 @@ impl MessageExtras {
         }
 
         Ok(())
+    }
+
+    /// Validate AI headers once and return the typed transport view.
+    pub fn validated_ai_transport_headers(
+        &self,
+    ) -> Result<Option<AiTransportHeaders<'_>>, AiHeaderValidationError> {
+        self.validate_ai_headers()?;
+        Ok(self.ai_transport_headers())
     }
 }
 
@@ -1414,6 +1423,14 @@ impl PusherMessage {
         } else {
             Ok(())
         }
+    }
+
+    /// Validate AI headers once and return the typed transport view.
+    pub fn validated_ai_transport_headers(
+        &self,
+    ) -> Result<Option<AiTransportHeaders<'_>>, AiHeaderValidationError> {
+        self.validate_ai_headers()?;
+        Ok(self.ai_transport_headers())
     }
 
     /// Returns true if the given protocol version should receive extras in delivered messages.

@@ -17,7 +17,10 @@ introducing a production dependency:
 - `versioned_append_memory_budget_mean_75us`: in-memory mutable-message append application.
 - `memory_latest_by_history_1000_budget_mean_2ms`: aggregated latest projection/read.
 - `rollup_decision_append_budget_mean_25us`: append rollup decision path.
-- `rollup_flush_2000_budget_mean_10ms`: rollup decision plus flush of a 2k-append stream.
+- `rollup_empty_tick_independent_streams_budget`: due-heap tick at 2k and 50k active streams.
+- `rollup_one_percent_due_independent_streams_budget`: one percent of 2k and 50k streams due.
+- `rollup_all_due_independent_streams_budget`: every independent stream due.
+- `rollup_terminal_storm_independent_streams_budget`: terminal append for every independent stream.
 - `capability_publish_match_budget_mean_1us`: publish capability match.
 - `capability_append_any_match_budget_mean_1us`: mutation capability match.
 - `discrete_ai_input_publish_to_fanout_budget_mean_10ms`: one serialized discrete AI input fanned to 1k in-process subscribers.
@@ -38,18 +41,19 @@ by more than 10 percent. The CI job is `.github/workflows/ci.yml` job
 
 ## Hot-Path Optimization Notes
 
-The S12 pass removed an unnecessary per-append copy in `RollupEngine`: pending rollup state now
-keeps only timing metadata and the latest aggregated `PusherMessage`. The versioned-message store
-already materializes append state before egress, so rollup does not need to copy each fragment into
-`Bytes` for a second fold step. This preserves the store-receives-everything invariant and reduces
-rollup egress allocation pressure.
+The scheduler is a sharded deadline heap with generation-checked two-phase claims. Empty ticks peek
+a fixed number of shard heaps, independent of active-stream cardinality. The first append retains
+no payload after immediate delivery; a boxed pending batch is allocated only for a later append.
+The versioned-message store still materializes every append before egress. Exact atomic totals
+publish active-stream gauges without locking every shard, while per-channel active counts live in
+the same shard as their streams instead of a global mutex.
 
 Areas to re-profile before changing production behavior:
 
 - Opaque payload passthrough: do not add serde round-trips to `MessageData` or history `Bytes`.
 - Append fanout: one ingest-side message materialization, no per-subscriber payload copies.
 - Version-store reads: watch per-channel lock contention in `latest_by_history` and replay scans.
-- Timers: rollup flush scheduling should coalesce by tick and avoid per-stream wakeups.
+- Timers: keep due-only heap polling and generation-token claims; do not restore active-stream scans.
 - Extras parsing: validate once at the edge and pass typed borrowed views where possible.
 
 ## Cluster Workload
@@ -173,6 +177,10 @@ Target hardware: one 8-core node unless the scenario explicitly says cluster.
 | Append fanout | p99 <= 10 ms |
 | 50k history queries/min with active streams | p99 <= 25 ms |
 | Rollup and tracking memory | <= 4 KiB per active stream, excluding payload |
+
+The local correctness load locks 99.9 percent delivery by `window + 5 ms` for 2,000 independent
+streams. Criterion supplies the corresponding 2,000/50,000 CPU matrix; a dedicated load host is
+still required before publishing wall-clock percentile claims for 50,000 streams.
 
 ## S14 Headline Targets
 

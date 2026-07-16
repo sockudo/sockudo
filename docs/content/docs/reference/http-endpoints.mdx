@@ -44,8 +44,8 @@ Useful request controls:
 | --- | --- | --- |
 | `socket_id` | publish endpoints | Suppresses echo to the originating socket. |
 | `info` | publish endpoints | Optional response info such as `subscription_count`. |
-| `x-idempotency-key` | publish endpoints | Deduplicates accepted publishes when idempotency is enabled. |
-| `idempotency_key` | publish bodies | Body-level idempotency key accepted by Sockudo publish paths. |
+| `x-idempotency-key` | publish endpoints | Deduplicates accepted publishes when idempotency is enabled. Coordination failure returns retryable `503` instead of publishing without a claim. |
+| `idempotency_key` | publish bodies | Body-level idempotency key accepted by Sockudo publish paths; retries must reuse the same key. |
 | `message_id` | publish bodies | SDK-facing idempotent create key for AI/versioned-message publishes. Duplicate values return the original serial acknowledgement. |
 
 Revocation request body:

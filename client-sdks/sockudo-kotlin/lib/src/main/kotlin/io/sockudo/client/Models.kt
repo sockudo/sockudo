@@ -95,7 +95,24 @@ data class SubscriptionOptions(
     val events: List<String>? = null,
     val rewind: SubscriptionRewind? = null,
     val annotationSubscribe: Boolean = false,
+    val expression: SubscriptionExpression? = null,
 )
+
+sealed interface SubscriptionExpression {
+    fun subscriptionValue(): Any
+
+    data class Source(val source: String) : SubscriptionExpression {
+        override fun subscriptionValue(): Any = source
+    }
+
+    data class Descriptor(
+        val source: String,
+        val language: String = "jmespath",
+    ) : SubscriptionExpression {
+        override fun subscriptionValue(): Any =
+            linkedMapOf("language" to language, "source" to source)
+    }
+}
 
 sealed class SubscriptionRewind {
     abstract fun subscriptionValue(): Any
@@ -119,6 +136,7 @@ data class ResumeRecoveredChannel(
     val channel: String,
     val source: String,
     val replayed: Int,
+    val position: RecoveryPosition? = null,
 )
 
 data class ResumeFailedChannel(

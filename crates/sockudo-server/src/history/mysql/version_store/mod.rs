@@ -65,6 +65,7 @@ impl MysqlVersionStore {
             version_streams: format!("{}_version_streams", table_prefix),
             version_messages: format!("{}_version_messages", table_prefix),
             version_entries: format!("{}_version_entries", table_prefix),
+            annotation_streams: format!("{}_annotation_streams", table_prefix),
             annotation_events: format!("{}_annotation_events", table_prefix),
             annotation_projections: format!("{}_annotation_projections", table_prefix),
         };

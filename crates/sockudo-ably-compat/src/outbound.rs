@@ -6,6 +6,7 @@
 //! slow data consumer cannot starve ACK, ERROR, or close frames.
 
 use bytes::Bytes;
+use serde::Serialize;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -45,9 +46,17 @@ pub(crate) struct OutboundMetrics {
     pub(crate) queued_bytes: AtomicUsize,
     pub(crate) overflow: AtomicUsize,
     pub(crate) continuity_lost: AtomicUsize,
+    /// Unique encoded realtime data projections, excluding control frames.
+    pub(crate) data_encoded: AtomicUsize,
+    /// All encoded frames, including connection and channel control frames.
     pub(crate) encoded: AtomicUsize,
     pub(crate) fanout: AtomicUsize,
     pub(crate) replay_source: AtomicUsize,
+    pub(crate) recovery_backend_calls: AtomicUsize,
+    pub(crate) duplicate_suppression: AtomicUsize,
+    pub(crate) backend_failure: AtomicUsize,
+    pub(crate) degraded_state: AtomicUsize,
+    pub(crate) reset_required: AtomicUsize,
     pub(crate) expiry: AtomicUsize,
     pub(crate) filter_cache_hits: AtomicUsize,
     pub(crate) filter_cache_misses: AtomicUsize,
@@ -56,15 +65,21 @@ pub(crate) struct OutboundMetrics {
     pub(crate) filter_cache_bytes: AtomicUsize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct OutboundMetricsSnapshot {
     pub queued_messages: usize,
     pub queued_bytes: usize,
     pub overflow: usize,
     pub continuity_lost: usize,
+    pub data_encoded: usize,
     pub encoded: usize,
     pub fanout: usize,
     pub replay_source: usize,
+    pub recovery_backend_calls: usize,
+    pub duplicate_suppression: usize,
+    pub backend_failure: usize,
+    pub degraded_state: usize,
+    pub reset_required: usize,
     pub expiry: usize,
     pub filter_cache_hits: usize,
     pub filter_cache_misses: usize,
@@ -80,9 +95,15 @@ impl OutboundMetrics {
             queued_bytes: self.queued_bytes.load(Ordering::Acquire),
             overflow: self.overflow.load(Ordering::Acquire),
             continuity_lost: self.continuity_lost.load(Ordering::Acquire),
+            data_encoded: self.data_encoded.load(Ordering::Acquire),
             encoded: self.encoded.load(Ordering::Acquire),
             fanout: self.fanout.load(Ordering::Acquire),
             replay_source: self.replay_source.load(Ordering::Acquire),
+            recovery_backend_calls: self.recovery_backend_calls.load(Ordering::Acquire),
+            duplicate_suppression: self.duplicate_suppression.load(Ordering::Acquire),
+            backend_failure: self.backend_failure.load(Ordering::Acquire),
+            degraded_state: self.degraded_state.load(Ordering::Acquire),
+            reset_required: self.reset_required.load(Ordering::Acquire),
             expiry: self.expiry.load(Ordering::Acquire),
             filter_cache_hits: self.filter_cache_hits.load(Ordering::Acquire),
             filter_cache_misses: self.filter_cache_misses.load(Ordering::Acquire),
@@ -90,6 +111,11 @@ impl OutboundMetrics {
             filter_cache_entries: self.filter_cache_entries.load(Ordering::Acquire),
             filter_cache_bytes: self.filter_cache_bytes.load(Ordering::Acquire),
         }
+    }
+
+    pub(crate) fn mark_backend_failure(&self) {
+        self.backend_failure.fetch_add(1, Ordering::Relaxed);
+        self.degraded_state.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -251,6 +277,7 @@ impl AblyOutbound {
             self.continuity_lost.store(true, Ordering::Release);
             self.metrics.overflow.fetch_add(1, Ordering::Relaxed);
             self.metrics.continuity_lost.fetch_add(1, Ordering::Relaxed);
+            self.metrics.reset_required.fetch_add(1, Ordering::Relaxed);
             let error = AblyProtocolMessage {
                 action: ACTION_ERROR,
                 error: Some(crate::protocol::AblyErrorInfo {
@@ -271,6 +298,19 @@ impl AblyOutbound {
 }
 
 impl AblyOutboundReceiver {
+    #[cfg(feature = "bench")]
+    pub(crate) fn try_recv(&mut self) -> Option<OutboundFrame> {
+        if let Ok(frame) = self.control_rx.try_recv() {
+            self.release(&frame);
+            return Some(frame);
+        }
+        if let Ok(frame) = self.data_rx.try_recv() {
+            self.release(&frame);
+            return Some(frame);
+        }
+        None
+    }
+
     pub(crate) async fn recv(&mut self) -> Option<OutboundFrame> {
         loop {
             tokio::select! {
@@ -363,6 +403,24 @@ mod tests {
 
         let first = receiver.recv().await.unwrap();
         assert_eq!(first.priority, OutboundPriority::Control);
+    }
+
+    #[test]
+    fn control_encoding_is_excluded_from_shared_data_encoding_metric() {
+        let metrics = Arc::new(OutboundMetrics::default());
+        let (outbound, _receiver) = AblyOutbound::channel(
+            AblyFormat::Json,
+            OutboundLimits::default(),
+            Arc::clone(&metrics),
+        );
+
+        outbound
+            .send_protocol(&message(1), OutboundPriority::Control)
+            .unwrap();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.encoded, 1);
+        assert_eq!(snapshot.data_encoded, 0);
     }
 
     #[tokio::test]

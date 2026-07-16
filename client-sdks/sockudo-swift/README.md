@@ -100,6 +100,10 @@ Protocol V2 heartbeat behavior:
 - the Swift client uses `URLSessionWebSocketTask.sendPing` for native V2 liveness checks
 - lightweight `sockudo:ping` / `sockudo:pong` fallback messages remain reserved for compatibility and diagnostics, and they do not carry `message_id`, `serial`, or `stream_id`
 
+MessagePack and Protobuf preserve `Data` message payloads as native binary. The
+MessagePack representation uses the additive `["binary", <bin>]` tagged value;
+existing string and JSON variants are unchanged.
+
 Protocol V2 capability tokens can be supplied statically or through a provider. The initial token is sent as the WebSocket `token` query parameter. Provider-backed JWTs with `exp` are refreshed proactively at 80% of their lifetime (`iat` to `exp`, or current time to `exp` when `iat` is absent). Opaque tokens and static-only tokens are reactive only: when Sockudo emits `sockudo:token_expired` with code `40142` or `40160`, the provider is called if one exists and the SDK sends a `sockudo:auth` refresh frame with the new token.
 
 ```swift
@@ -145,7 +149,9 @@ let channel = client.subscribe(
     "price:btc",
     options: .init(
         filter: .eq("market", "spot"),
-        delta: .init(enabled: true, algorithm: .xdelta3)
+        delta: .init(enabled: true, algorithm: .xdelta3),
+        events: ["price.updated"],
+        expression: .source("data.price >= `100`")
     )
 )
 ```

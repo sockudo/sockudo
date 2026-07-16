@@ -5,6 +5,8 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize, de::Visitor};
 use std::collections::BTreeMap;
 
+const MAX_WIRE_COLLECTION_ENTRIES: usize = 4_096;
+
 /// A format-neutral wire value. Unlike `serde_json::Value`, this retains the
 /// distinction between MessagePack strings and binary values and between
 /// signed and unsigned integers.
@@ -100,8 +102,15 @@ impl<'de> Visitor<'de> for WireValueVisitor {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let mut values = Vec::with_capacity(access.size_hint().unwrap_or(0));
+        let size_hint = access.size_hint().unwrap_or(0);
+        if size_hint > MAX_WIRE_COLLECTION_ENTRIES {
+            return Err(serde::de::Error::custom("wire array exceeds entry limit"));
+        }
+        let mut values = Vec::with_capacity(size_hint);
         while let Some(value) = access.next_element()? {
+            if values.len() == MAX_WIRE_COLLECTION_ENTRIES {
+                return Err(serde::de::Error::custom("wire array exceeds entry limit"));
+            }
             values.push(value);
         }
         Ok(WireValue::Array(values))
@@ -111,8 +120,17 @@ impl<'de> Visitor<'de> for WireValueVisitor {
     where
         A: serde::de::MapAccess<'de>,
     {
+        if access
+            .size_hint()
+            .is_some_and(|size_hint| size_hint > MAX_WIRE_COLLECTION_ENTRIES)
+        {
+            return Err(serde::de::Error::custom("wire map exceeds entry limit"));
+        }
         let mut values = BTreeMap::new();
         while let Some((key, value)) = access.next_entry::<String, WireValue>()? {
+            if values.len() == MAX_WIRE_COLLECTION_ENTRIES && !values.contains_key(&key) {
+                return Err(serde::de::Error::custom("wire map exceeds entry limit"));
+            }
             values.insert(key, value);
         }
         Ok(WireValue::Map(values))
@@ -211,6 +229,20 @@ mod tests {
             ),
             value => value,
         }
+    }
+
+    #[test]
+    fn msgpack_rejects_oversized_array_before_allocating_declared_capacity() {
+        let declared_array = [0xdd, 0x00, 0x00, 0x10, 0x01];
+        let error = decode_value::<WireValue>(&declared_array, AblyFormat::MsgPack).unwrap_err();
+        assert_eq!(error, "wire array exceeds entry limit");
+    }
+
+    #[test]
+    fn msgpack_rejects_oversized_map_before_reading_entries() {
+        let declared_map = [0xdf, 0x00, 0x00, 0x10, 0x01];
+        let error = decode_value::<WireValue>(&declared_map, AblyFormat::MsgPack).unwrap_err();
+        assert_eq!(error, "wire map exceeds entry limit");
     }
 
     proptest! {

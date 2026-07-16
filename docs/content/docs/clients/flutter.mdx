@@ -69,6 +69,8 @@ final channel = client.subscribe(
   'price:btc',
   options: const SubscriptionOptions(
     filter: FilterNode(key: 'market', cmp: 'eq', val: 'spot'),
+    events: <String>['price.updated'],
+    expression: SubscriptionExpression('data.price >= `100`'),
     delta: ChannelDeltaSettings(
       enabled: true,
       algorithm: DeltaAlgorithm.xdelta3,

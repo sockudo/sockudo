@@ -85,6 +85,8 @@ val channel =
         "price:btc",
         SubscriptionOptions(
             filter = Filter.eq("market", "spot"),
+            events = listOf("price.updated"),
+            expression = SubscriptionExpression.Source("data.price >= `100`"),
             delta = ChannelDeltaSettings(
                 enabled = true,
                 algorithm = DeltaAlgorithm.xdelta3,

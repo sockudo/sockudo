@@ -170,6 +170,8 @@ impl ScyllaVersionStore {
         };
         let tables = HistoryTables {
             keyspace,
+            replication_class: db_config.replication_class.clone(),
+            replication_factor: db_config.replication_factor,
             streams: format!("{}_streams", table_prefix),
             entries: format!("{}_entries", table_prefix),
             version_streams: format!("{}_version_streams", table_prefix),
@@ -188,18 +190,13 @@ impl ScyllaVersionStore {
     }
 
     async fn ensure_version_tables(&self) -> Result<()> {
-        let create_ks = format!(
-            "CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}} AND tablets = {{'enabled': false}}",
-            self.tables.keyspace
-        );
-        self.session
-            .query_unpaged(create_ks, ())
-            .await
-            .map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to create ScyllaDB keyspace for version store: {e}"
-                ))
-            })?;
+        super::ensure_scylla_keyspace(
+            &self.session,
+            &self.tables.keyspace,
+            &self.tables.replication_class,
+            self.tables.replication_factor,
+        )
+        .await?;
 
         let stmts = [
             format!(

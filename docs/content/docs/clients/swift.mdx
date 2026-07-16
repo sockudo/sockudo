@@ -75,7 +75,9 @@ let channel = client.subscribe(
     "price:btc",
     options: .init(
         filter: .eq("market", "spot"),
-        delta: .init(enabled: true, algorithm: .xdelta3)
+        delta: .init(enabled: true, algorithm: .xdelta3),
+        events: ["price.updated"],
+        expression: .source("data.price >= `100`")
     )
 )
 ```

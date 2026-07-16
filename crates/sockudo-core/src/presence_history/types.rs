@@ -4,6 +4,8 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
 
+const MAX_PRESENCE_HISTORY_CURSOR_ENCODED_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PresenceHistoryDirection {
@@ -40,6 +42,11 @@ impl PresenceHistoryCursor {
     }
 
     pub fn decode(encoded: &str) -> Result<Self> {
+        if encoded.len() > MAX_PRESENCE_HISTORY_CURSOR_ENCODED_BYTES {
+            return Err(Error::InvalidMessageFormat(
+                "Presence history cursor exceeds 16 KiB".to_string(),
+            ));
+        }
         let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|e| {
             Error::InvalidMessageFormat(format!("Invalid presence history cursor: {e}"))
         })?;
@@ -397,5 +404,16 @@ impl PresenceHistoryReadRequest {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PresenceHistoryCursor;
+
+    #[test]
+    fn presence_history_cursor_rejects_oversized_input_before_decoding() {
+        let error = PresenceHistoryCursor::decode(&"A".repeat(16 * 1024 + 1)).unwrap_err();
+        assert!(error.to_string().contains("exceeds 16 KiB"));
     }
 }

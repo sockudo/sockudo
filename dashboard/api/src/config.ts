@@ -1,4 +1,5 @@
 import "./load-env.ts";
+import { resolveSessionSecret } from "./auth/configuration.ts";
 
 export type AppManagerDriver = "mysql" | "pgsql" | "dynamodb";
 export type DashboardDbDriver = "pgsql" | "mysql" | "sqlite";
@@ -26,16 +27,14 @@ function resolveDashboardDbDriver(): DashboardDbDriver {
 export const config = {
   port: parseInt(process.env.DASHBOARD_API_PORT ?? "3460", 10),
   corsOrigin: process.env.DASHBOARD_CORS_ORIGIN ?? "http://localhost:5174",
-  sessionSecret:
-    process.env.DASHBOARD_SESSION_SECRET ??
-    process.env.JWT_SECRET ??
-    "dev-only-change-me-in-production",
+  sessionSecret: resolveSessionSecret(process.env),
   appManagerDriver: normalizeAppDriver(
     process.env.APP_MANAGER_DRIVER ?? "pgsql",
   ),
   dashboardDbDriver: resolveDashboardDbDriver(),
   sockudoHttpUrl: process.env.SOCKUDO_HTTP_URL ?? "http://127.0.0.1:6001",
   sockudoMetricsUrl: process.env.SOCKUDO_METRICS_URL ?? "http://127.0.0.1:9601",
+  trustProxy: process.env.DASHBOARD_TRUST_PROXY === "true",
   database: {
     mysql: {
       host: process.env.DATABASE_MYSQL_HOST ?? "127.0.0.1",

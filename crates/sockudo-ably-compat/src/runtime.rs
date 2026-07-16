@@ -5,6 +5,10 @@
 //! translated at the edge into Sockudo's existing publish, history, and version
 //! stores.
 
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit as AeadKeyInit, Payload},
+};
 use axum::{
     body::{Bytes, HttpBody as _},
     extract::{Extension, Path, Query, State},
@@ -34,7 +38,7 @@ use sockudo_core::{
     },
     app::App,
     cache::CacheManager,
-    error::Result as SockudoResult,
+    error::{Error as SockudoError, Result as SockudoResult},
     history::{HistoryCursor, HistoryDirection, HistoryQueryBounds, HistoryReadRequest, now_ms},
     message_envelope::{
         MessageContent, MessageEnvelope, VersionProjection, decode_stored_message_payload,
@@ -81,7 +85,7 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value, json};
 #[cfg(feature = "delta")]
 use std::time::Instant;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
     sync::{Arc, Mutex, OnceLock, RwLock, Weak, atomic::Ordering},
     time::Duration,
@@ -349,6 +353,11 @@ fn ably_presence_from_record(record: PresenceRecord, action: u8) -> AblyPresence
     }
 }
 
+fn decode_presence_record(value: &Value) -> Option<PresenceRecord> {
+    let encoded = sonic_rs::to_vec(value).ok()?;
+    sonic_rs::from_slice(&encoded).ok()
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct AblyPresenceQuery {
@@ -439,7 +448,7 @@ impl ConnectionAuthorization {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AblyRevocationRecord {
     target_type: String,
@@ -619,6 +628,10 @@ const ABLY_FILTER_CACHE_MAX_ENTRIES: usize = 1_024;
 const ABLY_FILTER_CACHE_MAX_BYTES: usize = 1024 * 1024;
 const ABLY_ATTACH_GATE_MAX_MESSAGES: usize = ABLY_COMPAT_MAX_REPLAY_MESSAGES;
 const ABLY_ATTACH_GATE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const ABLY_DELIVERY_DEDUPE_MAX_ENTRIES: usize = ABLY_COMPAT_MAX_REPLAY_MESSAGES;
+const ABLY_REVOCATION_MAX_ENTRIES: usize = ABLY_COMPAT_MAX_TOKENS;
+const ABLY_REVOCATION_MAX_BYTES: usize = 64 * 1024 * 1024;
+const ABLY_CONNECTION_KEY_MAX_BYTES: usize = 512;
 #[cfg(feature = "delta")]
 const ABLY_DELTA_BASE_MAX_BYTES: usize = DEFAULT_MAX_MESSAGE_SIZE as usize;
 #[cfg(feature = "delta")]
@@ -771,7 +784,35 @@ struct AblyChannelState {
     subscribers: HashMap<AblySubscriberKey, AblySubscriber>,
     current_stream_id: Option<String>,
     attach_position: Option<AblyChannelPosition>,
+    delivery_frontier: u64,
+    pending_deliveries: HashSet<u64>,
+    delivery_reset_required: bool,
     last_touched_ms: i64,
+}
+
+impl AblyChannelState {
+    fn establish_delivery_frontier(&mut self, position: &AblyChannelPosition) {
+        let stream_changed = self
+            .current_stream_id
+            .as_deref()
+            .is_some_and(|current| current != position.stream_id);
+        if stream_changed || self.delivery_reset_required {
+            self.pending_deliveries.clear();
+            self.delivery_frontier = position.serial;
+        } else if position.serial > self.delivery_frontier {
+            self.delivery_frontier = position.serial;
+            let frontier = self.delivery_frontier;
+            self.pending_deliveries.retain(|serial| *serial > frontier);
+            while let Some(next) = self.delivery_frontier.checked_add(1) {
+                if !self.pending_deliveries.remove(&next) {
+                    break;
+                }
+                self.delivery_frontier = next;
+            }
+        }
+        self.current_stream_id = Some(position.stream_id.clone());
+        self.delivery_reset_required = false;
+    }
 }
 
 struct CachedAblyFilter {
@@ -785,6 +826,101 @@ struct AblyFilterCache {
     entries: HashMap<String, CachedAblyFilter>,
     bytes: usize,
     clock: u64,
+}
+
+struct StoredAblyRevocation {
+    app_id: String,
+    record: AblyRevocationRecord,
+    expires_at_ms: i64,
+    bytes: usize,
+}
+
+struct AblyRevocationStore {
+    entries: HashMap<String, StoredAblyRevocation>,
+    bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+impl AblyRevocationStore {
+    fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            bytes: 0,
+            max_entries,
+            max_bytes,
+        }
+    }
+
+    fn prune_expired(&mut self, now_ms: i64) {
+        let mut removed_bytes = 0usize;
+        self.entries.retain(|_, stored| {
+            let retain = stored.expires_at_ms > now_ms;
+            if !retain {
+                removed_bytes = removed_bytes.saturating_add(stored.bytes);
+            }
+            retain
+        });
+        self.bytes = self.bytes.saturating_sub(removed_bytes);
+    }
+
+    fn insert(
+        &mut self,
+        app_id: &str,
+        key: String,
+        record: AblyRevocationRecord,
+        expires_at_ms: i64,
+        now_ms: i64,
+    ) -> Result<(), AblyAuthError> {
+        self.prune_expired(now_ms);
+        let bytes = std::mem::size_of::<StoredAblyRevocation>()
+            .checked_add(app_id.len())
+            .and_then(|bytes| bytes.checked_add(key.len()))
+            .and_then(|bytes| bytes.checked_add(record.target_type.len()))
+            .and_then(|bytes| bytes.checked_add(record.target_value.len()))
+            .ok_or_else(AblyAuthError::internal)?;
+        let replaced_bytes = self.entries.get(&key).map_or(0, |stored| stored.bytes);
+        let next_bytes = self
+            .bytes
+            .checked_sub(replaced_bytes)
+            .and_then(|current| current.checked_add(bytes))
+            .ok_or_else(AblyAuthError::internal)?;
+        let next_entries = self.entries.len() + usize::from(!self.entries.contains_key(&key));
+        if next_entries > self.max_entries || next_bytes > self.max_bytes {
+            return Err(AblyAuthError::revocation_capacity());
+        }
+        self.entries.insert(
+            key,
+            StoredAblyRevocation {
+                app_id: app_id.to_string(),
+                record,
+                expires_at_ms,
+                bytes,
+            },
+        );
+        self.bytes = next_bytes;
+        Ok(())
+    }
+
+    fn get(&mut self, key: &str, now_ms: i64) -> Option<AblyRevocationRecord> {
+        self.prune_expired(now_ms);
+        self.entries.get(key).map(|stored| stored.record.clone())
+    }
+
+    fn records(&mut self, app_id: &str, now_ms: i64) -> Vec<AblyRevocationRecord> {
+        self.prune_expired(now_ms);
+        self.entries
+            .values()
+            .filter(|stored| stored.app_id == app_id)
+            .map(|stored| stored.record.clone())
+            .collect()
+    }
+}
+
+impl Default for AblyRevocationStore {
+    fn default() -> Self {
+        Self::new(ABLY_REVOCATION_MAX_ENTRIES, ABLY_REVOCATION_MAX_BYTES)
+    }
 }
 
 enum AblyConnectionStart {
@@ -825,6 +961,40 @@ impl AblyAuthError {
             message: message.into(),
         }
     }
+
+    fn internal() -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: 50000,
+            message: "Internal server error".to_string(),
+        }
+    }
+
+    fn backend_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: 50000,
+            message: "Authentication service temporarily unavailable".to_string(),
+        }
+    }
+
+    fn revocation_capacity() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: 50000,
+            message: "Token revocation capacity exceeded".to_string(),
+        }
+    }
+}
+
+fn auth_internal_failure(operation: &'static str) -> AblyAuthError {
+    warn!(operation, "Ably authentication internal operation failed");
+    AblyAuthError::internal()
+}
+
+fn auth_backend_failure(operation: &'static str) -> AblyAuthError {
+    warn!(operation, "Ably authentication dependency is unavailable");
+    AblyAuthError::backend_unavailable()
 }
 
 #[derive(Default)]
@@ -832,7 +1002,7 @@ pub struct AblyCompatHub {
     channels: DashMap<AblyChannelKey, Arc<Mutex<AblyChannelState>>>,
     sessions: DashMap<String, AblySessionRecord>,
     tokens: DashMap<String, AblyTokenRecord>,
-    revocations: DashMap<String, AblyRevocationRecord>,
+    revocations: Mutex<AblyRevocationStore>,
     live_sessions: DashMap<String, AblyLiveSession>,
     session_echo: DashMap<String, bool>,
     presence_registry: Arc<PresenceRegistry>,
@@ -945,6 +1115,40 @@ impl AblyCompatRuntime {
 
     pub fn presence_registry(&self) -> Arc<PresenceRegistry> {
         Arc::clone(&self.hub.presence_registry)
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn register_benchmark_subscriber(
+        &self,
+        format: AblyFormat,
+        session_id: &str,
+        channel: &str,
+    ) -> crate::outbound::AblyOutboundReceiver {
+        let (sender, receiver) = AblyOutbound::channel(
+            format,
+            OutboundLimits {
+                control_messages: 2,
+                data_messages: 1,
+                control_bytes: 16 * 1024,
+                data_bytes: 128 * 1024,
+            },
+            Arc::clone(&self.hub.metrics),
+        );
+        let state = self.hub.channel_state("benchmark-app", channel);
+        lock_channel_state(&state).subscribers.insert(
+            subscriber_key(session_id, channel),
+            AblySubscriber {
+                connection_id: Arc::from(session_id),
+                sender,
+                filter: None,
+                mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+                echo: true,
+                #[cfg(feature = "delta")]
+                delta: None,
+                attach_gate: None,
+            },
+        );
+        receiver
     }
 
     /// Bind native services after the server finishes constructing its handler.
@@ -1239,6 +1443,16 @@ impl RealtimeEgressTap for AblyCompatHub {
         message: &PusherMessage,
         envelope: &MessageEnvelope,
     ) -> SockudoResult<()> {
+        if !self.accept_delivery_position(app_id, channel, envelope)? {
+            debug!(
+                app_id = %app_id,
+                channel = %channel,
+                stream_id = ?envelope.stream_id,
+                delivery_serial = ?envelope.delivery_serial,
+                "suppressed duplicate compatibility delivery"
+            );
+            return Ok(());
+        }
         let channel_serial = envelope
             .stream_id
             .as_deref()
@@ -1449,6 +1663,66 @@ fn ably_presence_from_change(change: &PresenceChange) -> AblyPresenceMessage {
 }
 
 impl AblyCompatHub {
+    fn accept_delivery_position(
+        &self,
+        app_id: &str,
+        channel: &str,
+        envelope: &MessageEnvelope,
+    ) -> SockudoResult<bool> {
+        let Some((stream_id, serial)) = envelope.stream_id.as_deref().zip(envelope.delivery_serial)
+        else {
+            return Ok(true);
+        };
+        let state = self.channel_state(app_id, channel);
+        let mut state = lock_channel_state(&state);
+        if state
+            .current_stream_id
+            .as_deref()
+            .is_some_and(|current| current != stream_id)
+        {
+            state.current_stream_id = Some(stream_id.to_string());
+            state.delivery_frontier = 0;
+            state.pending_deliveries.clear();
+            state.delivery_reset_required = false;
+        } else if state.current_stream_id.is_none() {
+            state.current_stream_id = Some(stream_id.to_string());
+        }
+        if state.delivery_reset_required {
+            return Err(SockudoError::BufferFull(format!(
+                "compatibility delivery continuity for {app_id}/{channel} requires reset"
+            )));
+        }
+        if serial <= state.delivery_frontier || state.pending_deliveries.contains(&serial) {
+            self.metrics
+                .duplicate_suppression
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(false);
+        }
+
+        if serial == state.delivery_frontier.saturating_add(1) {
+            state.delivery_frontier = serial;
+            while let Some(next) = state.delivery_frontier.checked_add(1) {
+                if !state.pending_deliveries.remove(&next) {
+                    break;
+                }
+                state.delivery_frontier = next;
+            }
+            return Ok(true);
+        }
+
+        if state.pending_deliveries.len() >= ABLY_DELIVERY_DEDUPE_MAX_ENTRIES {
+            state.delivery_reset_required = true;
+            self.metrics.overflow.fetch_add(1, Ordering::Relaxed);
+            self.metrics.continuity_lost.fetch_add(1, Ordering::Relaxed);
+            self.metrics.reset_required.fetch_add(1, Ordering::Relaxed);
+            return Err(SockudoError::BufferFull(format!(
+                "compatibility delivery reorder window for {app_id}/{channel} exceeded {ABLY_DELIVERY_DEDUPE_MAX_ENTRIES} entries"
+            )));
+        }
+        state.pending_deliveries.insert(serial);
+        Ok(true)
+    }
+
     fn message_filter(
         &self,
         channel: &AblyChannelName,
@@ -1540,6 +1814,7 @@ impl AblyCompatHub {
         self.sessions.retain(|_, record| record.expires_at_ms > now);
         self.tokens.retain(|_, record| record.expires_ms > now);
         self.nonces.retain(|_, expires_ms| *expires_ms > now);
+        lock_revocations(&self.revocations).prune_expired(now);
 
         let mut stale_channels = Vec::new();
         #[cfg(feature = "delta")]
@@ -1692,11 +1967,7 @@ impl AblyCompatHub {
             return cache
                 .set_if_not_exists(&cache_key, "1", self.config.nonce_ttl_seconds.max(1))
                 .await
-                .map_err(|error| AblyAuthError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    code: 50000,
-                    message: error.to_string(),
-                });
+                .map_err(|_| auth_backend_failure("nonce cache claim"));
         }
 
         if self.nonces.len() >= ABLY_COMPAT_MAX_TOKENS
@@ -1723,22 +1994,24 @@ impl AblyCompatHub {
     ) -> Result<(), AblyAuthError> {
         let key = revocation_cache_key(app_id, target_type, target_value);
         if let Some(cache) = &self.cache {
-            let encoded = serde_json::to_string(&record).map_err(|error| AblyAuthError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                code: 50000,
-                message: error.to_string(),
-            })?;
+            let encoded = serde_json::to_string(&record)
+                .map_err(|_| auth_internal_failure("revocation record serialization"))?;
+            let ttl_seconds = u64::try_from(self.config.max_token_ttl_ms)
+                .map_err(|_| auth_internal_failure("revocation retention conversion"))?
+                .div_ceil(1_000)
+                .max(1);
             cache
-                .set(&key, &encoded, 24 * 60 * 60)
+                .set(&key, &encoded, ttl_seconds)
                 .await
-                .map_err(|error| AblyAuthError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    code: 50000,
-                    message: error.to_string(),
-                })?;
+                .map_err(|_| auth_backend_failure("revocation cache write"))?;
+            return Ok(());
         }
-        self.revocations.insert(key, record);
-        Ok(())
+        let now = now_ms();
+        let expires_at_ms = now
+            .max(record.issued_before)
+            .checked_add(self.config.max_token_ttl_ms)
+            .ok_or_else(|| auth_internal_failure("revocation retention calculation"))?;
+        lock_revocations(&self.revocations).insert(app_id, key, record, expires_at_ms, now)
     }
 
     async fn revocation(
@@ -1746,15 +2019,21 @@ impl AblyCompatHub {
         app_id: &str,
         target_type: &str,
         target_value: &str,
-    ) -> Option<AblyRevocationRecord> {
+    ) -> Result<Option<AblyRevocationRecord>, AblyAuthError> {
         let key = revocation_cache_key(app_id, target_type, target_value);
         if let Some(cache) = &self.cache {
-            let encoded = cache.get(&key).await.ok()??;
-            let record = serde_json::from_str::<AblyRevocationRecord>(&encoded).ok()?;
-            self.revocations.insert(key, record.clone());
-            return Some(record);
+            let Some(encoded) = cache
+                .get(&key)
+                .await
+                .map_err(|_| auth_backend_failure("revocation cache read"))?
+            else {
+                return Ok(None);
+            };
+            let record = serde_json::from_str::<AblyRevocationRecord>(&encoded)
+                .map_err(|_| auth_backend_failure("revocation cache decode"))?;
+            return Ok(Some(record));
         }
-        self.revocations.get(&key).map(|record| record.clone())
+        Ok(lock_revocations(&self.revocations).get(&key, now_ms()))
     }
 
     async fn authorization_is_revoked(
@@ -1778,47 +2057,95 @@ impl AblyCompatHub {
             targets.push(("channel", channel.as_str()));
         }
         for (target_type, target_value) in targets {
-            if self
-                .revocation(app_id, target_type, target_value)
-                .await
-                .is_some_and(|record| {
-                    authorization.issued_ms < record.issued_before && now >= record.applies_at
-                })
-            {
-                return true;
+            match self.revocation(app_id, target_type, target_value).await {
+                Ok(Some(record))
+                    if authorization.issued_ms < record.issued_before
+                        && now >= record.applies_at =>
+                {
+                    return true;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.metrics.mark_backend_failure();
+                    warn!(
+                        app_id = %app_id,
+                        error = %error.message,
+                        "revocation backend read failed; authorization rejected"
+                    );
+                    return true;
+                }
             }
         }
-        let channel_records = if let Some(cache) = &self.cache {
-            cache
-                .scan_prefix(&format!("ably-compat:revocation:{app_id}:"), 1_000)
+        if let Some(cache) = &self.cache {
+            return match self
+                .cached_channel_revocation_applies(cache.as_ref(), app_id, authorization, now)
                 .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(_, encoded)| {
-                    serde_json::from_str::<AblyRevocationRecord>(&encoded).ok()
-                })
-                .collect::<Vec<_>>()
-        } else {
-            self.revocations
-                .iter()
-                .map(|record| record.value().clone())
-                .collect::<Vec<_>>()
-        };
-        for record in channel_records {
-            if record.target_type == "channel"
-                && authorization.issued_ms < record.issued_before
-                && now >= record.applies_at
-                && ensure_ably_capability(
-                    authorization.capabilities.as_ref(),
-                    &record.target_value,
-                    AblyCapabilityCheck::AnyChannelAccess,
-                )
-                .is_ok()
             {
-                return true;
+                Ok(revoked) => revoked,
+                Err(error) => {
+                    self.metrics.mark_backend_failure();
+                    warn!(
+                        app_id = %app_id,
+                        error = %error.message,
+                        "revocation backend scan failed; authorization rejected"
+                    );
+                    true
+                }
+            };
+        }
+        lock_revocations(&self.revocations)
+            .records(app_id, now)
+            .iter()
+            .any(|record| channel_revocation_applies(record, authorization, now))
+    }
+
+    async fn cached_channel_revocation_applies(
+        &self,
+        cache: &dyn CacheManager,
+        app_id: &str,
+        authorization: &ConnectionAuthorization,
+        now: i64,
+    ) -> Result<bool, AblyAuthError> {
+        const PAGE_SIZE: usize = 512;
+        const MAX_PAGES: usize = ABLY_REVOCATION_MAX_ENTRIES.div_ceil(PAGE_SIZE) + 1;
+
+        let prefix = format!("ably-compat:revocation:{app_id}:");
+        let mut cursor = None;
+        let mut entries_seen = 0usize;
+        let mut bytes_seen = 0usize;
+        for _ in 0..MAX_PAGES {
+            let page = cache
+                .scan_prefix_page(&prefix, cursor.clone(), PAGE_SIZE)
+                .await
+                .map_err(|_| auth_backend_failure("revocation cache scan"))?;
+            if page.entries.len() > PAGE_SIZE {
+                return Err(auth_backend_failure("revocation cache page bound"));
+            }
+            entries_seen = entries_seen
+                .checked_add(page.entries.len())
+                .filter(|count| *count <= ABLY_REVOCATION_MAX_ENTRIES)
+                .ok_or_else(AblyAuthError::revocation_capacity)?;
+            for (key, encoded) in page.entries {
+                bytes_seen = bytes_seen
+                    .checked_add(key.len())
+                    .and_then(|bytes| bytes.checked_add(encoded.len()))
+                    .filter(|bytes| *bytes <= ABLY_REVOCATION_MAX_BYTES)
+                    .ok_or_else(AblyAuthError::revocation_capacity)?;
+                let record = serde_json::from_str::<AblyRevocationRecord>(&encoded)
+                    .map_err(|_| auth_backend_failure("revocation cache decode"))?;
+                if channel_revocation_applies(&record, authorization, now) {
+                    return Ok(true);
+                }
+            }
+            match page.next_cursor {
+                Some(next) if !next.is_empty() && cursor.as_deref() != Some(next.as_str()) => {
+                    cursor = Some(next);
+                }
+                Some(_) => return Err(auth_backend_failure("revocation cache cursor")),
+                None => return Ok(false),
             }
         }
-        false
+        Err(AblyAuthError::revocation_capacity())
     }
 
     fn notify_revocation_change(&self, app_id: &str, reauth_hint: bool) {
@@ -2035,7 +2362,7 @@ impl AblyCompatHub {
             .as_deref()
             .and_then(|serial| parse_ably_channel_serial(serial).ok())
         {
-            state.current_stream_id = Some(position.stream_id.clone());
+            state.establish_delivery_frontier(&position);
             state.attach_position = Some(position);
             state.last_touched_ms = now;
         }
@@ -2262,6 +2589,7 @@ impl AblyCompatHub {
                 Ok(bytes) => {
                     let encoded = Arc::new(bytes);
                     let byte_count = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+                    self.metrics.data_encoded.fetch_add(1, Ordering::Relaxed);
                     self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
                     for (subscriber_key, subscriber) in subscribers {
                         if subscriber.sender.send_data(Arc::clone(&encoded)).is_ok() {
@@ -2315,6 +2643,7 @@ impl AblyCompatHub {
                     continue;
                 }
             };
+            self.metrics.data_encoded.fetch_add(1, Ordering::Relaxed);
             self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
             let encoded_bytes = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
             for (subscriber_key, subscriber) in subscribers {
@@ -2423,6 +2752,10 @@ impl AblyCompatHub {
                     .and_then(|serial| parse_ably_channel_serial(serial).ok())
             })
             .unwrap_or_else(|| position.clone());
+        {
+            let state = self.channel_state(app_id, channel.base());
+            lock_channel_state(&state).establish_delivery_frontier(&high_water);
+        }
         let buffered = match self.finish_attach_gate(
             app_id,
             channel,
@@ -2520,32 +2853,52 @@ impl AblyCompatHub {
         let Some(requested_key) = requested_key else {
             return AblyConnectionStart::Fresh;
         };
+        if !is_well_formed_connection_key(requested_key) {
+            return AblyConnectionStart::Failed {
+                error: error_info(
+                    StatusCode::BAD_REQUEST,
+                    80018,
+                    "invalid connection id (invalid format)",
+                ),
+            };
+        }
         let now = now_ms();
-        let expired_code = if recover.is_some() { 80018 } else { 80008 };
-        let record = if let Some(record) = self.sessions.get(requested_key) {
-            Some(record.clone())
-        } else if let Some(cache) = &self.cache {
+        let record = if let Some(cache) = &self.cache {
             match cache.get(&session_cache_key(requested_key)).await {
-                Ok(Some(encoded)) => serde_json::from_str::<AblySessionRecord>(&encoded)
-                    .ok()
-                    .inspect(|record| {
+                Ok(Some(encoded)) => match serde_json::from_str::<AblySessionRecord>(&encoded) {
+                    Ok(record) => {
                         self.sessions
                             .insert(requested_key.to_string(), record.clone());
-                    }),
-                Ok(None) => None,
+                        Some(record)
+                    }
+                    Err(error) => {
+                        self.sessions.remove(requested_key);
+                        self.metrics.mark_backend_failure();
+                        warn!(error = %error, "Ably connection state cache record was invalid");
+                        None
+                    }
+                },
+                Ok(None) => {
+                    self.sessions.remove(requested_key);
+                    None
+                }
                 Err(error) => {
+                    self.sessions.remove(requested_key);
+                    self.metrics.mark_backend_failure();
                     warn!(error = %error, "Ably connection state cache read failed");
                     None
                 }
             }
         } else {
-            None
+            self.sessions
+                .get(requested_key)
+                .map(|record| record.clone())
         };
         let Some(record) = record else {
             return AblyConnectionStart::Failed {
                 error: error_info(
                     StatusCode::BAD_REQUEST,
-                    expired_code,
+                    80008,
                     "unable to recover connection (connection expired)",
                 ),
             };
@@ -2555,7 +2908,7 @@ impl AblyCompatHub {
             return AblyConnectionStart::Failed {
                 error: error_info(
                     StatusCode::BAD_REQUEST,
-                    expired_code,
+                    80008,
                     "unable to recover connection (connection expired)",
                 ),
             };
@@ -2608,6 +2961,19 @@ impl AblyCompatHub {
         }
     }
 
+    async fn replace_connection_key(
+        &self,
+        previous_connection_key: &str,
+        connection_key: String,
+        app_id: &str,
+        connection_id: &str,
+        client_id: Option<String>,
+    ) {
+        self.remember_connection(connection_key, app_id, connection_id, client_id)
+            .await;
+        self.forget_connection(previous_connection_key).await;
+    }
+
     async fn forget_connection(&self, connection_key: &str) {
         self.sessions.remove(connection_key);
         if let Some(cache) = &self.cache
@@ -2643,6 +3009,94 @@ impl AblyCompatHub {
             .map(|previous| previous.command_tx)
     }
 
+    async fn claim_session_owner(
+        &self,
+        app_id: &str,
+        connection_id: &str,
+        session_id: &str,
+    ) -> Result<(), AblyAuthError> {
+        let Some(cache) = &self.cache else {
+            return Ok(());
+        };
+        cache
+            .set(
+                &session_owner_cache_key(app_id, connection_id),
+                session_id,
+                DEFAULT_CONNECTION_STATE_TTL_MS.div_ceil(1_000),
+            )
+            .await
+            .map_err(|_| auth_backend_failure("session ownership cache claim"))
+    }
+
+    async fn refresh_session_owner(
+        &self,
+        app_id: &str,
+        connection_id: &str,
+        session_id: &str,
+    ) -> bool {
+        let Some(cache) = &self.cache else {
+            return self
+                .live_sessions
+                .get(connection_id)
+                .is_some_and(|session| session.session_id == session_id);
+        };
+        match cache
+            .compare_and_swap(
+                &session_owner_cache_key(app_id, connection_id),
+                session_id,
+                session_id,
+                DEFAULT_CONNECTION_STATE_TTL_MS.div_ceil(1_000),
+            )
+            .await
+        {
+            Ok(current) => current,
+            Err(error) => {
+                self.metrics.mark_backend_failure();
+                warn!(app_id = %app_id, error = %error, "session owner refresh failed");
+                false
+            }
+        }
+    }
+
+    async fn session_is_current(
+        &self,
+        app_id: &str,
+        connection_id: &str,
+        session_id: &str,
+    ) -> bool {
+        let Some(cache) = &self.cache else {
+            return self
+                .live_sessions
+                .get(connection_id)
+                .is_some_and(|session| session.session_id == session_id);
+        };
+        match cache
+            .get(&session_owner_cache_key(app_id, connection_id))
+            .await
+        {
+            Ok(Some(owner)) => owner == session_id,
+            Ok(None) => false,
+            Err(error) => {
+                self.metrics.mark_backend_failure();
+                warn!(app_id = %app_id, error = %error, "session owner read failed");
+                false
+            }
+        }
+    }
+
+    async fn release_session_owner(&self, app_id: &str, connection_id: &str, session_id: &str) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        if let Err(error) = cache
+            .compare_and_remove(&session_owner_cache_key(app_id, connection_id), session_id)
+            .await
+        {
+            self.metrics.mark_backend_failure();
+            warn!(app_id = %app_id, error = %error, "session owner release failed");
+        }
+    }
+
     fn unregister_live_session(&self, connection_id: &str, session_id: &str) {
         self.live_sessions
             .remove_if(connection_id, |_, current| current.session_id == session_id);
@@ -2657,7 +3111,9 @@ impl AblyCompatHub {
         capabilities: Option<ConnectionCapabilities>,
     ) -> Result<AblyTokenDetails, AblyAuthError> {
         let issued = now_ms();
-        let expires = issued.saturating_add(ttl_ms);
+        let expires = issued
+            .checked_add(ttl_ms)
+            .ok_or_else(|| auth_internal_failure("token expiry calculation"))?;
         let token = format!("sockudo-ably-{}", Uuid::new_v4());
         let record = AblyTokenRecord {
             app_id: key.app.id.clone(),
@@ -2672,20 +3128,15 @@ impl AblyCompatHub {
         };
 
         if let Some(cache) = &self.cache {
-            let encoded = serde_json::to_string(&record).map_err(|error| AblyAuthError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                code: 50000,
-                message: error.to_string(),
-            })?;
-            let ttl_seconds = u64::try_from(ttl_ms).unwrap_or(1).saturating_add(999) / 1000;
+            let encoded = serde_json::to_string(&record)
+                .map_err(|_| auth_internal_failure("token record serialization"))?;
+            let ttl_seconds = u64::try_from(ttl_ms)
+                .map_err(|_| auth_internal_failure("token retention conversion"))?
+                .div_ceil(1_000);
             cache
                 .set(&token_cache_key(&token), &encoded, ttl_seconds.max(1))
                 .await
-                .map_err(|error| AblyAuthError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    code: 50000,
-                    message: error.to_string(),
-                })?;
+                .map_err(|_| auth_backend_failure("token cache write"))?;
         }
         self.bound_tokens();
         self.tokens.insert(token.clone(), record);
@@ -2781,7 +3232,7 @@ fn project_ably_delta_message(
         message.data = Some(json!(
             base64::engine::general_purpose::STANDARD.encode(delta)
         ));
-        message.encoding = Some("json/vcdiff/base64".to_string());
+        message.encoding = Some("json/utf-8/vcdiff/base64".to_string());
         message.extras = Some(extras);
     } else {
         message.data = Some(json!(full_payload));
@@ -2958,7 +3409,7 @@ async fn send_ably_socket_failure(
     action: u8,
     error: AblyErrorInfo,
 ) {
-    let (_, mut writer) = socket.split();
+    let (mut reader, mut writer) = socket.split();
     let message = AblyProtocolMessage {
         action,
         error: Some(error),
@@ -2971,7 +3422,23 @@ async fn send_ably_socket_failure(
         AblyFormat::Json => Message::Text(bytes),
         AblyFormat::MsgPack => Message::Binary(bytes),
     };
-    let _ = writer.send(frame).await;
+    if writer.send(frame).await.is_err() {
+        return;
+    }
+    // Give the peer a bounded opportunity to process the fatal protocol frame
+    // and start its close handshake. The split reader schedules the mandatory
+    // close response when it receives a peer close, so flush that response
+    // instead of sending a second close frame. If the peer stays open, initiate
+    // the close here so browsers do not observe a transport reset.
+    let peer_started_close = matches!(
+        tokio::time::timeout(Duration::from_millis(250), reader.next()).await,
+        Ok(Some(Ok(Message::Close(_))))
+    );
+    if peer_started_close {
+        let _ = writer.flush().await;
+    } else {
+        let _ = writer.close(1000, "Ably protocol error").await;
+    }
 }
 
 struct AblyRealtimeSocketContext {
@@ -3005,6 +3472,7 @@ async fn run_ably_realtime_socket(
     } = context;
     let app = resolved.app.clone();
     let mut authorization = ConnectionAuthorization::from_resolved(&resolved);
+    let requested_recovery_key = resume.as_deref().or(recover.as_deref()).map(str::to_owned);
 
     let connection_start = hub
         .begin_connection(
@@ -3037,20 +3505,52 @@ async fn run_ably_realtime_socket(
     // not share subscriber ownership with the socket it supersedes. Otherwise
     // cleanup from the old socket can remove the recovered socket's channels.
     let session_id = format!("{}:{}", connection_id, Uuid::new_v4().simple());
+    if let Err(error) = hub
+        .claim_session_owner(&app.id, &connection_id, &session_id)
+        .await
+    {
+        hub.forget_connection(&connection_key).await;
+        return Err(sockudo_core::error::Error::Cache(error.message));
+    }
+    if matches!(connection_start, AblyConnectionStart::Resumed { .. })
+        && let Some(requested_recovery_key) = requested_recovery_key.as_deref()
+    {
+        // Recovery keys are single-use leases. The stable connection ID is
+        // retained, but a second transport cannot recover the same snapshot.
+        hub.forget_connection(requested_recovery_key).await;
+    }
     let (mut reader, mut writer) = socket.split();
     let (sender, mut outbound) =
         AblyOutbound::channel(format, OutboundLimits::default(), Arc::clone(&hub.metrics));
+    let (peer_close_tx, mut peer_close_rx) = tokio::sync::oneshot::channel();
+    let mut peer_close_tx = Some(peer_close_tx);
     let writer_task = tokio::spawn(async move {
-        while let Some(frame) = outbound.recv().await {
-            let frame = match format {
-                AblyFormat::Json => Message::Text((*frame.bytes).clone()),
-                AblyFormat::MsgPack => Message::Binary((*frame.bytes).clone()),
-            };
-            if let Err(error) = writer.send(frame).await {
-                debug!(error = %error, "Ably compatibility socket writer closed");
-                break;
+        loop {
+            tokio::select! {
+                peer_close = &mut peer_close_rx => {
+                    if peer_close.is_ok() {
+                        // Reading the peer close schedules the required close
+                        // response in sockudo-ws. Flush it immediately so the
+                        // browser does not wait for session cleanup.
+                        let _ = writer.flush().await;
+                        return;
+                    }
+                    break;
+                }
+                frame = outbound.recv() => {
+                    let Some(frame) = frame else { break };
+                    let frame = match format {
+                        AblyFormat::Json => Message::Text((*frame.bytes).clone()),
+                        AblyFormat::MsgPack => Message::Binary((*frame.bytes).clone()),
+                    };
+                    if let Err(error) = writer.send(frame).await {
+                        debug!(error = %error, "Ably compatibility socket writer closed");
+                        return;
+                    }
+                }
             }
         }
+        let _ = writer.close(1000, "Ably session closed").await;
     });
     let heartbeat_sender = sender.clone();
     let heartbeat_task = tokio::spawn(async move {
@@ -3076,6 +3576,8 @@ async fn run_ably_realtime_socket(
     if let Some(error) = initial_error {
         send_protocol_disconnected(&sender, error.code, error.message);
         hub.forget_connection(&connection_key).await;
+        hub.release_session_owner(&app.id, &connection_id, &session_id)
+            .await;
         drop(sender);
         heartbeat_task.abort();
         let _ = heartbeat_task.await;
@@ -3093,6 +3595,9 @@ async fn run_ably_realtime_socket(
     .map_err(stats_sockudo_error)?;
     if let Err(error) = hub.stats.record(opened).await {
         hub.stats.connection_closed(&app.id);
+        hub.forget_connection(&connection_key).await;
+        hub.release_session_owner(&app.id, &connection_id, &session_id)
+            .await;
         drop(sender);
         heartbeat_task.abort();
         let _ = heartbeat_task.await;
@@ -3103,25 +3608,38 @@ async fn run_ably_realtime_socket(
     let presence_service = PresenceService::new(Arc::clone(&handler));
     presence_service.register_connection(&app.id, &connection_id);
 
+    let shared_authorization = Arc::new(RwLock::new(authorization.clone()));
     let lease_hub = Arc::clone(&hub);
     let lease_key = Arc::clone(&active_connection_key);
     let lease_app_id = app.id.clone();
     let lease_connection_id = connection_id.clone();
-    let lease_client_id = authorization.client_id.clone();
+    let lease_session_id = session_id.clone();
+    let lease_authorization = Arc::clone(&shared_authorization);
     let connection_lease_task = tokio::spawn(async move {
         let refresh_interval = Duration::from_millis(DEFAULT_CONNECTION_STATE_TTL_MS / 2);
         loop {
             tokio::time::sleep(refresh_interval).await;
+            if !lease_hub
+                .refresh_session_owner(&lease_app_id, &lease_connection_id, &lease_session_id)
+                .await
+            {
+                break;
+            }
             let connection_key = lease_key
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let client_id = lease_authorization
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .client_id
                 .clone();
             lease_hub
                 .remember_connection(
                     connection_key,
                     &lease_app_id,
                     &lease_connection_id,
-                    lease_client_id.clone(),
+                    client_id,
                 )
                 .await;
         }
@@ -3138,7 +3656,6 @@ async fn run_ably_realtime_socket(
     );
 
     let mut attached_channels = HashMap::new();
-    let shared_authorization = Arc::new(RwLock::new(authorization.clone()));
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
     let previous_session = hub.register_live_session(
         connection_id.clone(),
@@ -3184,8 +3701,13 @@ async fn run_ably_realtime_socket(
                     None => break,
                 }
             }
-            _ = revocation_poll.tick(), if authorization.revocable => {
-                if hub.authorization_is_revoked(&app.id, &authorization, &attached_channels).await {
+            _ = revocation_poll.tick() => {
+                if !hub.session_is_current(&app.id, &connection_id, &session_id).await {
+                    break;
+                }
+                if authorization.revocable
+                    && hub.authorization_is_revoked(&app.id, &authorization, &attached_channels).await
+                {
                     send_protocol_disconnected(&sender, 40141, "Token revoked");
                     break;
                 }
@@ -3223,7 +3745,12 @@ async fn run_ably_realtime_socket(
                 continue;
             }
             Message::Pong(_) => continue,
-            Message::Close(_) => break,
+            Message::Close(_) => {
+                if let Some(peer_close_tx) = peer_close_tx.take() {
+                    let _ = peer_close_tx.send(());
+                }
+                break;
+            }
         };
         let inbound = match decode_ably_protocol_message(bytes.as_ref(), format) {
             Ok(inbound) => inbound,
@@ -3240,12 +3767,17 @@ async fn run_ably_realtime_socket(
             }
         };
         if inbound.action == ACTION_AUTH {
+            let previous_connection_key = active_connection_key
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
             match handle_ably_auth_update(
                 &hub,
                 &handler,
                 &app,
                 &connection_id,
                 &session_id,
+                &previous_connection_key,
                 &sender,
                 &mut attached_channels,
                 &mut authorization,
@@ -3285,6 +3817,7 @@ async fn run_ably_realtime_socket(
         .await
         {
             Ok(AblyProtocolControl::Continue) => {}
+            Ok(AblyProtocolControl::Disconnect) => break,
             Ok(AblyProtocolControl::Close) => {
                 graceful_close = true;
                 break;
@@ -3357,25 +3890,40 @@ async fn run_ably_realtime_socket(
             warn!(app_id = %app.id, error = %error, "failed to persist channel close stats");
         }
     }
-    hub.unregister_live_session(&connection_id, &session_id);
-    hub.session_echo.remove(&session_id);
+    let owns_session = hub
+        .session_is_current(&app.id, &connection_id, &session_id)
+        .await;
     connection_lease_task.abort();
     let _ = connection_lease_task.await;
+    hub.unregister_live_session(&connection_id, &session_id);
+    hub.session_echo.remove(&session_id);
     let final_connection_key = active_connection_key
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    if graceful_close {
+    if owns_session && graceful_close {
         hub.forget_connection(&final_connection_key).await;
-    } else {
+    } else if owns_session {
         hub.remember_connection(
-            final_connection_key,
+            final_connection_key.clone(),
             &app.id,
             &connection_id,
             authorization.client_id.clone(),
         )
         .await;
+        if !hub
+            .session_is_current(&app.id, &connection_id, &session_id)
+            .await
+        {
+            hub.forget_connection(&final_connection_key).await;
+        }
+    } else {
+        // A recovered transport on another node owns the stable connection.
+        // Cleanup from this stale socket must not recreate its recovery key.
+        hub.forget_connection(&final_connection_key).await;
     }
+    hub.release_session_owner(&app.id, &connection_id, &session_id)
+        .await;
     heartbeat_task.abort();
     let _ = heartbeat_task.await;
     drop(sender);
@@ -3428,6 +3976,7 @@ async fn handle_ably_auth_update(
     app: &App,
     connection_id: &str,
     session_id: &str,
+    previous_connection_key: &str,
     sender: &AblySender,
     attached_channels: &mut HashMap<String, AblyConnectionAttachment>,
     authorization: &mut ConnectionAuthorization,
@@ -3498,7 +4047,8 @@ async fn handle_ably_auth_update(
 
     *authorization = next;
     let connection_key = format!("{}:{}", app.id, Uuid::new_v4().simple());
-    hub.remember_connection(
+    hub.replace_connection_key(
+        previous_connection_key,
         connection_key.clone(),
         &app.id,
         connection_id,
@@ -3520,14 +4070,15 @@ async fn handle_ably_auth_update(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AblyProtocolControl {
     Continue,
+    Disconnect,
     Close,
 }
 
 fn ably_protocol_control(action: u8) -> AblyProtocolControl {
-    if matches!(action, ACTION_DISCONNECT | ACTION_CLOSE) {
-        AblyProtocolControl::Close
-    } else {
-        AblyProtocolControl::Continue
+    match action {
+        ACTION_DISCONNECT => AblyProtocolControl::Disconnect,
+        ACTION_CLOSE => AblyProtocolControl::Close,
+        _ => AblyProtocolControl::Continue,
     }
 }
 
@@ -3887,7 +4438,16 @@ async fn handle_ably_protocol_message(
                     .collect(),
             );
         }
-        ACTION_DISCONNECT | ACTION_CLOSE => {
+        ACTION_DISCONNECT => {
+            send_protocol(
+                sender,
+                AblyProtocolMessage {
+                    action: ACTION_DISCONNECTED,
+                    ..empty_protocol_message(ACTION_DISCONNECTED)
+                },
+            );
+        }
+        ACTION_CLOSE => {
             send_protocol(
                 sender,
                 AblyProtocolMessage {
@@ -4428,7 +4988,15 @@ async fn handle_ably_attach(
     };
 
     hub.metrics.replay_source.fetch_add(1, Ordering::Relaxed);
-    match collect_ably_cold_recovery(handler, app, channel.base(), &position).await {
+    match collect_ably_cold_recovery(
+        handler,
+        app,
+        channel.base(),
+        &position,
+        hub.metrics.as_ref(),
+    )
+    .await
+    {
         Ok(mut replay) => {
             if let Some(rewind) = rewind.as_ref() {
                 match collect_ably_rewind(handler, app, channel.base(), rewind, Some(&position))
@@ -4504,8 +5072,12 @@ async fn collect_ably_cold_recovery(
     app: &App,
     channel: &str,
     position: &AblyChannelPosition,
+    metrics: &OutboundMetrics,
 ) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
     if handler.server_options().versioned_messages.enabled {
+        metrics
+            .recovery_backend_calls
+            .fetch_add(1, Ordering::Relaxed);
         let state = handler
             .version_store()
             .stream_state(&app.id, channel)
@@ -4517,7 +5089,7 @@ async fn collect_ably_cold_recovery(
                 )
             })?;
         if state.stream_id.is_some() {
-            return collect_ably_version_recovery(handler, app, channel, position).await;
+            return collect_ably_version_recovery(handler, app, channel, position, metrics).await;
         }
         #[cfg(feature = "recovery")]
         if let Some(replay_buffer) = handler.replay_buffer() {
@@ -4528,7 +5100,7 @@ async fn collect_ably_cold_recovery(
         }
     }
 
-    collect_ably_history_recovery(handler, app, channel, position).await
+    collect_ably_history_recovery(handler, app, channel, position, metrics).await
 }
 
 async fn collect_ably_rewind(
@@ -4684,7 +5256,11 @@ async fn collect_ably_version_recovery(
     app: &App,
     channel: &str,
     position: &AblyChannelPosition,
+    metrics: &OutboundMetrics,
 ) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
+    metrics
+        .recovery_backend_calls
+        .fetch_add(1, Ordering::Relaxed);
     let stream_state = handler
         .version_store()
         .stream_state(&app.id, channel)
@@ -4732,6 +5308,9 @@ async fn collect_ably_version_recovery(
         ));
     }
 
+    metrics
+        .recovery_backend_calls
+        .fetch_add(1, Ordering::Relaxed);
     let records = handler
         .version_store()
         .replay_after(sockudo_core::version_store::VersionReplayRequest {
@@ -4788,6 +5367,7 @@ async fn collect_ably_history_recovery(
     app: &App,
     channel: &str,
     position: &AblyChannelPosition,
+    metrics: &OutboundMetrics,
 ) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
     let history_policy = app.resolved_history(channel, &handler.server_options().history);
     if !history_policy.enabled {
@@ -4797,6 +5377,9 @@ async fn collect_ably_history_recovery(
         ));
     }
 
+    metrics
+        .recovery_backend_calls
+        .fetch_add(1, Ordering::Relaxed);
     let stream_state = handler
         .history_store()
         .stream_runtime_state(&app.id, channel)
@@ -4843,6 +5426,9 @@ async fn collect_ably_history_recovery(
                 ),
             ));
         }
+        metrics
+            .recovery_backend_calls
+            .fetch_add(1, Ordering::Relaxed);
         let page = handler
             .history_store()
             .read_page(HistoryReadRequest {
@@ -5047,6 +5633,34 @@ fn publish_ack_count(inbound: &AblyProtocolMessage) -> u64 {
 
 fn ably_realtime_message_id(connection_id: &str, msg_serial: u64, index: usize) -> String {
     format!("{connection_id}:{msg_serial}:{index}")
+}
+
+fn ably_presence_message_id(
+    inbound_id: Option<&str>,
+    connection_id: &str,
+    msg_serial: u64,
+    index: usize,
+) -> String {
+    let valid_reentry_id = inbound_id.filter(|id| {
+        let Some(serial_and_index) = id
+            .strip_prefix(connection_id)
+            .and_then(|suffix| suffix.strip_prefix(':'))
+        else {
+            return false;
+        };
+        let Some((serial, index)) = serial_and_index.split_once(':') else {
+            return false;
+        };
+        !serial.is_empty()
+            && !index.is_empty()
+            && !index.contains(':')
+            && serial.parse::<u64>().is_ok()
+            && index.parse::<u64>().is_ok()
+    });
+    valid_reentry_id.map_or_else(
+        || ably_realtime_message_id(connection_id, msg_serial, index),
+        str::to_string,
+    )
 }
 
 struct AblyMessagePublishContext<'a> {
@@ -5500,9 +6114,11 @@ async fn handle_ably_presence(
             member.client_id = Some(authenticated_client_id.to_string());
         }
         member.timestamp.get_or_insert_with(now_ms);
-        member.id = Some(format!(
-            "{connection_id}:{msg_serial}:{}",
-            u64::try_from(index).unwrap_or(u64::MAX)
+        member.id = Some(ably_presence_message_id(
+            member.id.as_deref(),
+            connection_id,
+            msg_serial,
+            index,
         ));
     }
     let presence_count = u64::try_from(presence.len()).unwrap_or(u64::MAX);
@@ -7759,10 +8375,7 @@ async fn ably_channel_presence_history_inner(
             .user_info
             .as_ref()
             .and_then(decode_stored_presence_data);
-        let native = payload
-            .user_info
-            .as_ref()
-            .and_then(|value| sonic_rs::from_value::<PresenceRecord>(value).ok());
+        let native = payload.user_info.as_ref().and_then(decode_presence_record);
         let message = AblyPresenceMessage {
             id: native
                 .as_ref()
@@ -8340,17 +8953,25 @@ async fn ably_channel_history_inner(
         Some(cursor) => Some(HistoryCursor::decode(cursor)?),
         None => None,
     };
-    let attach_position = query
-        .from_serial
-        .as_deref()
-        .and_then(|serial| parse_ably_channel_serial(serial).ok())
-        .or_else(|| {
-            query
-                .until_attach
-                .unwrap_or(false)
-                .then(|| hub.until_attach_position(&resolved.app.id, &channel_name))
-                .flatten()
-        });
+    let attach_position = match query.from_serial.as_deref() {
+        Some(serial) => Some(parse_ably_channel_serial(serial).map_err(|failure| {
+            AppError::InvalidInput(failure.message)
+        })?),
+        None if query.until_attach.unwrap_or(false) => Some(
+            hub.until_attach_position(&resolved.app.id, &channel_name)
+                .ok_or_else(|| {
+                    AppError::Protocol {
+                        status: StatusCode::SERVICE_UNAVAILABLE,
+                        code: 50003,
+                        message: format!(
+                            "untilAttach continuity for channel '{}' is not authoritative on this node; retry through the realtime connection's routing affinity",
+                            channel_name.base()
+                        ),
+                    }
+                })?,
+        ),
+        None => None,
+    };
     let bounds = HistoryQueryBounds {
         start_serial: None,
         end_serial: attach_position.as_ref().map(|position| position.serial),
@@ -9460,6 +10081,30 @@ fn lock_channel_state(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn lock_revocations(
+    revocations: &Mutex<AblyRevocationStore>,
+) -> std::sync::MutexGuard<'_, AblyRevocationStore> {
+    revocations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn channel_revocation_applies(
+    record: &AblyRevocationRecord,
+    authorization: &ConnectionAuthorization,
+    now: i64,
+) -> bool {
+    record.target_type == "channel"
+        && authorization.issued_ms < record.issued_before
+        && now >= record.applies_at
+        && ensure_ably_capability(
+            authorization.capabilities.as_ref(),
+            &record.target_value,
+            AblyCapabilityCheck::AnyChannelAccess,
+        )
+        .is_ok()
+}
+
 fn encode_ably_channel_serial(stream_id: &str, serial: u64) -> String {
     format!("{stream_id}:{serial}")
 }
@@ -9685,6 +10330,18 @@ fn ably_protocol_message_from_envelope(
         messages: Some(vec![ably_message]),
         ..empty_protocol_message(ACTION_MESSAGE)
     })
+}
+
+#[cfg(feature = "bench")]
+pub(crate) fn benchmark_project_envelope(
+    channel: &str,
+    message: &PusherMessage,
+    envelope: &MessageEnvelope,
+    projection: AblyMessageProjection,
+    channel_serial: Option<String>,
+) -> Result<AblyProtocolMessage, String> {
+    ably_protocol_message_from_envelope(channel, message, envelope, projection, channel_serial)
+        .map_err(|failure| failure.message)
 }
 
 fn decode_native_message_data<T>(data: Option<&MessageData>) -> Result<T, String>
@@ -9994,10 +10651,30 @@ fn token_cache_key(token: &str) -> String {
     )
 }
 
+fn is_well_formed_connection_key(connection_key: &str) -> bool {
+    if connection_key.is_empty() || connection_key.len() > ABLY_CONNECTION_KEY_MAX_BYTES {
+        return false;
+    }
+    let Some((connection_id, nonce)) = connection_key.rsplit_once(':') else {
+        return false;
+    };
+    !connection_id.is_empty()
+        && nonce.len() == 32
+        && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn session_cache_key(connection_key: &str) -> String {
     let digest = Sha256::digest(connection_key.as_bytes());
     format!(
         "ably-compat:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+    )
+}
+
+fn session_owner_cache_key(app_id: &str, connection_id: &str) -> String {
+    let digest = Sha256::digest(connection_id.as_bytes());
+    format!(
+        "ably-compat:session-owner:{app_id}:{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
     )
 }
@@ -10425,6 +11102,26 @@ struct AblyJwtClaims {
     capability: Option<String>,
     #[serde(default, rename = "x-ably-revocation-key")]
     revocation_key: Option<String>,
+    #[serde(default, rename = "x-ably-token")]
+    embedded_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AblyJoseHeader {
+    alg: String,
+    #[serde(default)]
+    kid: Option<String>,
+    #[serde(default)]
+    enc: Option<String>,
+    #[serde(default)]
+    cty: Option<String>,
+    #[serde(default, rename = "x-ably-token")]
+    embedded_token: Option<String>,
+}
+
+struct VerifiedAblyJwt {
+    claims: AblyJwtClaims,
+    embedded_token: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10548,15 +11245,108 @@ async fn resolve_ably_jwt(
     if token.len() > 8 * 1024 {
         return Err(AblyAuthError::unauthorized("JWT exceeds 8 KiB"));
     }
-    let header = decode_header(token).map_err(|_| AblyAuthError::invalid_credentials())?;
-    if header.alg != Algorithm::HS256 {
-        return Err(AblyAuthError::unauthorized("JWT must use HS256"));
-    }
-    let key_name = header
+    let original_token = token;
+    let mut jwe_key = None;
+    let signed_token = if token.split('.').count() == 5 {
+        let header = parse_ably_jose_header(token)?;
+        if header.alg != "dir" || header.enc.as_deref() != Some("A256GCM") {
+            return Err(AblyAuthError::unauthorized("JWE must use dir with A256GCM"));
+        }
+        if header.cty.as_deref() != Some("JWT") {
+            return Err(AblyAuthError::unauthorized("JWE content type must be JWT"));
+        }
+        let key_name = header
+            .kid
+            .as_deref()
+            .ok_or_else(AblyAuthError::invalid_credentials)?;
+        let key = resolve_ably_jwt_key(hub, handler, key_name).await?;
+        let nested = decrypt_ably_compact_jwe(token, &key.key_name, &key.secret)?;
+        jwe_key = Some(key);
+        std::borrow::Cow::Owned(nested)
+    } else {
+        std::borrow::Cow::Borrowed(token)
+    };
+
+    let outer_header = parse_ably_jose_header(&signed_token)?;
+    let outer_key_name = outer_header
         .kid
         .as_deref()
         .ok_or_else(AblyAuthError::invalid_credentials)?;
-    let key = resolve_ably_key(hub, handler, key_name)
+    let outer_key = resolve_ably_jwt_key(hub, handler, outer_key_name).await?;
+    if let Some(jwe_key) = jwe_key.as_ref()
+        && (jwe_key.app.id != outer_key.app.id || jwe_key.key_name != outer_key.key_name)
+    {
+        return Err(AblyAuthError::invalid_credentials());
+    }
+    let outer = verify_ably_signed_jwt(&signed_token, &outer_key.key_name, &outer_key.secret)?;
+    let (_, outer_expires_ms) = validate_ably_jwt_times(
+        &outer.claims,
+        now_ms().div_euclid(1_000),
+        hub.config.max_token_ttl_ms,
+        allow_expired,
+    )?;
+
+    let (key, verified, issued_ms, expires_ms) = if let Some(embedded_token) =
+        outer.embedded_token.as_deref()
+    {
+        let inner_header = parse_ably_jose_header(embedded_token)?;
+        let inner_key_name = inner_header
+            .kid
+            .as_deref()
+            .ok_or_else(AblyAuthError::invalid_credentials)?;
+        let inner_key = resolve_ably_jwt_key(hub, handler, inner_key_name).await?;
+        if inner_key.app.id != outer_key.app.id {
+            return Err(AblyAuthError::invalid_credentials());
+        }
+        let inner = verify_ably_signed_jwt(embedded_token, &inner_key.key_name, &inner_key.secret)?;
+        if inner.embedded_token.is_some() {
+            return Err(AblyAuthError::unauthorized(
+                "Nested embedded JWTs are not supported",
+            ));
+        }
+        let (inner_issued_ms, inner_expires_ms) = validate_ably_jwt_times(
+            &inner.claims,
+            now_ms().div_euclid(1_000),
+            hub.config.max_token_ttl_ms,
+            allow_expired,
+        )?;
+        if outer_expires_ms > inner_expires_ms {
+            return Err(AblyAuthError::unauthorized(
+                "Embedded JWT expires before its outer JWT",
+            ));
+        }
+        (inner_key, inner, inner_issued_ms, inner_expires_ms)
+    } else {
+        if jwe_key.is_some() {
+            return Err(AblyAuthError::unauthorized(
+                "Encrypted JWT must contain an embedded Ably token",
+            ));
+        }
+        let (issued_ms, expires_ms) = validate_ably_jwt_times(
+            &outer.claims,
+            now_ms().div_euclid(1_000),
+            hub.config.max_token_ttl_ms,
+            allow_expired,
+        )?;
+        (outer_key, outer, issued_ms, expires_ms)
+    };
+
+    resolved_ably_jwt_auth(
+        key,
+        verified.claims,
+        requested_client_id,
+        issued_ms,
+        expires_ms,
+        original_token,
+    )
+}
+
+async fn resolve_ably_jwt_key(
+    hub: &AblyCompatHub,
+    handler: &Arc<ConnectionHandler>,
+    key_name: &str,
+) -> Result<ResolvedAblyKey, AblyAuthError> {
+    resolve_ably_key(hub, handler, key_name)
         .await
         .map_err(|error| {
             if error.code == 40101 {
@@ -10568,25 +11358,176 @@ async fn resolve_ably_jwt(
             } else {
                 error
             }
-        })?;
+        })
+}
+
+fn parse_ably_jose_header(token: &str) -> Result<AblyJoseHeader, AblyAuthError> {
+    if token.len() > 8 * 1024 {
+        return Err(AblyAuthError::unauthorized("JWT exceeds 8 KiB"));
+    }
+    let protected = token
+        .split_once('.')
+        .map(|(protected, _)| protected)
+        .filter(|protected| !protected.is_empty())
+        .ok_or_else(AblyAuthError::invalid_credentials)?;
+    if protected.len() > 4 * 1024 {
+        return Err(AblyAuthError::unauthorized("JOSE header exceeds 4 KiB"));
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(protected)
+        .map_err(|_| AblyAuthError::invalid_credentials())?;
+    if bytes.len() > 4 * 1024 {
+        return Err(AblyAuthError::unauthorized("JOSE header exceeds 4 KiB"));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| AblyAuthError::invalid_credentials())
+}
+
+fn verify_ably_signed_jwt(
+    token: &str,
+    expected_key_name: &str,
+    secret: &str,
+) -> Result<VerifiedAblyJwt, AblyAuthError> {
+    if token.len() > 8 * 1024 {
+        return Err(AblyAuthError::unauthorized("JWT exceeds 8 KiB"));
+    }
+    let mut segments = token.split('.');
+    if segments.next().is_none()
+        || segments.next().is_none()
+        || segments.next().is_none()
+        || segments.next().is_some()
+    {
+        return Err(AblyAuthError::invalid_credentials());
+    }
+    let header = parse_ably_jose_header(token)?;
+    if header.alg != "HS256" {
+        return Err(AblyAuthError::unauthorized("JWT must use HS256"));
+    }
+    if header.kid.as_deref() != Some(expected_key_name) {
+        return Err(AblyAuthError::invalid_credentials());
+    }
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = false;
     validation.validate_nbf = false;
     validation.required_spec_claims.clear();
     let decoded = decode::<AblyJwtClaims>(
         token,
-        &DecodingKey::from_secret(key.secret.as_bytes()),
+        &DecodingKey::from_secret(secret.as_bytes()),
         &validation,
     )
     .map_err(|_| AblyAuthError::invalid_credentials())?;
-    let claims = decoded.claims;
-    let now_seconds = now_ms().div_euclid(1000);
-    if claims.iat > now_seconds.saturating_add(30) || claims.exp <= claims.iat {
+    let mut claims = decoded.claims;
+    let embedded_token = header
+        .embedded_token
+        .or_else(|| claims.embedded_token.take());
+    if embedded_token
+        .as_deref()
+        .is_some_and(|token| token.is_empty() || token.len() > 8 * 1024)
+    {
+        return Err(AblyAuthError::unauthorized(
+            "Embedded Ably token is invalid",
+        ));
+    }
+    Ok(VerifiedAblyJwt {
+        claims,
+        embedded_token,
+    })
+}
+
+fn decrypt_ably_compact_jwe(
+    token: &str,
+    expected_key_name: &str,
+    secret: &str,
+) -> Result<String, AblyAuthError> {
+    if token.len() > 8 * 1024 {
+        return Err(AblyAuthError::unauthorized("JWT exceeds 8 KiB"));
+    }
+    let mut segments = token.split('.');
+    let protected = segments
+        .next()
+        .ok_or_else(AblyAuthError::invalid_credentials)?;
+    let encrypted_key = segments
+        .next()
+        .ok_or_else(AblyAuthError::invalid_credentials)?;
+    let iv = segments
+        .next()
+        .ok_or_else(AblyAuthError::invalid_credentials)?;
+    let ciphertext = segments
+        .next()
+        .ok_or_else(AblyAuthError::invalid_credentials)?;
+    let tag = segments
+        .next()
+        .ok_or_else(AblyAuthError::invalid_credentials)?;
+    if segments.next().is_some() || protected.is_empty() || !encrypted_key.is_empty() {
+        return Err(AblyAuthError::invalid_credentials());
+    }
+    let header = parse_ably_jose_header(token)?;
+    if header.alg != "dir"
+        || header.enc.as_deref() != Some("A256GCM")
+        || header.cty.as_deref() != Some("JWT")
+        || header.kid.as_deref() != Some(expected_key_name)
+    {
+        return Err(AblyAuthError::invalid_credentials());
+    }
+    let iv = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(iv)
+        .map_err(|_| AblyAuthError::invalid_credentials())?;
+    let mut ciphertext = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(ciphertext)
+        .map_err(|_| AblyAuthError::invalid_credentials())?;
+    let tag = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(tag)
+        .map_err(|_| AblyAuthError::invalid_credentials())?;
+    if iv.len() != 12 || tag.len() != 16 {
+        return Err(AblyAuthError::invalid_credentials());
+    }
+    ciphertext
+        .try_reserve_exact(tag.len())
+        .map_err(|_| AblyAuthError::internal())?;
+    ciphertext.extend_from_slice(&tag);
+    let key = Sha256::digest(secret.as_bytes());
+    let cipher = <Aes256Gcm as AeadKeyInit>::new_from_slice(&key)
+        .map_err(|_| AblyAuthError::invalid_credentials())?;
+    let plaintext = cipher
+        .decrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: &ciphertext,
+                aad: protected.as_bytes(),
+            },
+        )
+        .map_err(|_| AblyAuthError::invalid_credentials())?;
+    if plaintext.len() > 8 * 1024 {
+        return Err(AblyAuthError::unauthorized("Nested JWT exceeds 8 KiB"));
+    }
+    String::from_utf8(plaintext).map_err(|_| AblyAuthError::invalid_credentials())
+}
+
+fn validate_ably_jwt_times(
+    claims: &AblyJwtClaims,
+    now_seconds: i64,
+    max_token_ttl_ms: i64,
+    allow_expired: bool,
+) -> Result<(i64, i64), AblyAuthError> {
+    let issued_ms = jwt_seconds_to_millis(claims.iat)?;
+    let expires_ms = jwt_seconds_to_millis(claims.exp)?;
+    validate_jwt_lifetime_ms(issued_ms, expires_ms, max_token_ttl_ms)?;
+    if claims.iat > now_seconds.saturating_add(30) {
         return Err(AblyAuthError::unauthorized("JWT claims are invalid"));
     }
     if !allow_expired && claims.exp <= now_seconds {
         return Err(AblyAuthError::expired());
     }
+    Ok((issued_ms, expires_ms))
+}
+
+fn resolved_ably_jwt_auth(
+    key: ResolvedAblyKey,
+    claims: AblyJwtClaims,
+    requested_client_id: Option<&str>,
+    issued_ms: i64,
+    expires_ms: i64,
+    credential: &str,
+) -> Result<ResolvedAblyAuth, AblyAuthError> {
     let token_client_id = claims.client_id.clone();
     let client_id = resolve_ably_token_client_id(claims.client_id, requested_client_id)?;
     let connection_client_id =
@@ -10611,14 +11552,32 @@ async fn resolve_ably_jwt(
         client_id,
         connection_client_id,
         capabilities,
-        issued_ms: claims.iat.saturating_mul(1000),
-        expires_ms: Some(claims.exp.saturating_mul(1000)),
-        credential_id: credential_id(token),
+        issued_ms,
+        expires_ms: Some(expires_ms),
+        credential_id: credential_id(credential),
         revocable: key.revocable_tokens,
         revocation_key: claims.revocation_key,
         #[cfg(feature = "push")]
         push_device_id: None,
     })
+}
+
+fn jwt_seconds_to_millis(seconds: i64) -> Result<i64, AblyAuthError> {
+    seconds
+        .checked_mul(1_000)
+        .ok_or_else(|| AblyAuthError::unauthorized("JWT claims are invalid"))
+}
+
+fn validate_jwt_lifetime_ms(
+    issued_ms: i64,
+    expires_ms: i64,
+    max_token_ttl_ms: i64,
+) -> Result<(), AblyAuthError> {
+    expires_ms
+        .checked_sub(issued_ms)
+        .filter(|lifetime_ms| *lifetime_ms > 0 && *lifetime_ms <= max_token_ttl_ms)
+        .map(|_| ())
+        .ok_or_else(|| AblyAuthError::unauthorized("JWT claims are invalid"))
 }
 
 fn credential_id(token: &str) -> String {
@@ -10639,12 +11598,8 @@ async fn resolve_ably_key(
             .capability
             .clone()
             .unwrap_or_else(default_ably_capability);
-        let (_, capabilities) =
-            intersect_ably_capability(&capability, None).map_err(|error| AblyAuthError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                code: 50000,
-                message: format!("invalid configured Ably capability: {error:?}"),
-            })?;
+        let (_, capabilities) = intersect_ably_capability(&capability, None)
+            .map_err(|_| auth_internal_failure("configured Ably capability validation"))?;
         return Ok(ResolvedAblyKey {
             app,
             key_name: key.key_name.clone(),
@@ -10717,11 +11672,7 @@ async fn find_enabled_app_by_key(
         Ok(Some(app)) if app.enabled => Ok(app),
         Ok(Some(_)) => Err(AblyAuthError::invalid_credentials()),
         Ok(None) => Err(AblyAuthError::invalid_credentials()),
-        Err(error) => Err(AblyAuthError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: 50000,
-            message: error.to_string(),
-        }),
+        Err(_) => Err(auth_backend_failure("application lookup by key")),
     }
 }
 
@@ -10733,11 +11684,7 @@ async fn find_enabled_app_by_id(
         Ok(Some(app)) if app.enabled => Ok(app),
         Ok(Some(_)) => Err(AblyAuthError::invalid_credentials()),
         Ok(None) => Err(AblyAuthError::invalid_credentials()),
-        Err(error) => Err(AblyAuthError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: 50000,
-            message: error.to_string(),
-        }),
+        Err(_) => Err(auth_backend_failure("application lookup by id")),
     }
 }
 
@@ -10836,14 +11783,14 @@ fn encode_ably_rest_response<T: Serialize>(
 }
 
 fn encode_ably_legacy_batch_publish_response(
-    format: AblyFormat,
+    requested_format: AblyFormat,
     responses: Vec<AblyBatchPublishChannelResponse>,
 ) -> Result<Response, AppError> {
     if responses
         .iter()
         .all(|response| matches!(response, AblyBatchPublishChannelResponse::Success { .. }))
     {
-        return encode_ably_rest_response(StatusCode::CREATED, format, &responses);
+        return encode_ably_rest_response(StatusCode::CREATED, requested_format, &responses);
     }
 
     let error = error_info(
@@ -10853,7 +11800,7 @@ fn encode_ably_legacy_batch_publish_response(
     );
     let mut response = encode_ably_rest_response(
         StatusCode::BAD_REQUEST,
-        format,
+        AblyFormat::Json,
         &AblyLegacyBatchResponse {
             error: error.clone(),
             batch_response: responses,
@@ -11437,12 +12384,12 @@ fn ably_error_response_format(
     status: StatusCode,
     code: u32,
     message: impl Into<String>,
-    format: AblyFormat,
+    _requested_format: AblyFormat,
 ) -> Response {
     let error = error_info(status, code, message);
     let encoded = encode_ably_rest_response(
         status,
-        format,
+        AblyFormat::Json,
         &AblyErrorBody {
             error: error.clone(),
         },
@@ -11618,6 +12565,88 @@ fn subscriber_key(session_id: &str, requested_channel: &str) -> AblySubscriberKe
     }
 }
 
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing {
+    use super::*;
+
+    const MAX_FUZZ_INPUT_BYTES: usize = 64 * 1024;
+
+    pub fn protocol_and_rest(data: &[u8], msgpack: bool) {
+        if data.len() > MAX_FUZZ_INPUT_BYTES {
+            return;
+        }
+        let format = if msgpack {
+            AblyFormat::MsgPack
+        } else {
+            AblyFormat::Json
+        };
+        if let Ok(message) = decode_ably_protocol_message(data, format)
+            && let Ok(encoded) = encode_protocol_bytes(&message, format)
+        {
+            let decoded = decode_ably_protocol_message(&encoded, format)
+                .expect("a compatibility frame must decode after encoding");
+            let before = sonic_rs::to_vec(&message).expect("decoded frame must serialize");
+            let after = sonic_rs::to_vec(&decoded).expect("round-tripped frame must serialize");
+            assert_eq!(
+                before, after,
+                "compatibility wire round trip changed a frame"
+            );
+        }
+        let _ = decode_ably_publish_payload(data, format);
+        let _ = decode_value::<AblyBatchPublishBody>(data, format);
+        let _ = decode_value::<Vec<AblyMessage>>(data, format);
+    }
+
+    pub fn channel_filter(data: &[u8]) {
+        if data.len() > 16 * 1024 {
+            return;
+        }
+        let Ok(raw) = std::str::from_utf8(data) else {
+            return;
+        };
+        if let Ok(channel) = AblyChannelName::parse(raw.to_string())
+            && let Ok(Some(source)) = AblyMessageFilter::source_from_channel(&channel)
+        {
+            let _ = AblyMessageFilter::compile(&source);
+        }
+    }
+
+    pub fn auth(data: &[u8]) {
+        if data.len() > 16 * 1024 {
+            return;
+        }
+        let Ok(raw) = std::str::from_utf8(data) else {
+            return;
+        };
+        let (key_capability, requested_capability) = raw
+            .split_once('\0')
+            .map_or((raw, None), |(key, requested)| (key, Some(requested)));
+        let _ = intersect_ably_capability(key_capability, requested_capability);
+        let _ = parse_ably_jose_header(raw);
+        let _ = verify_ably_signed_jwt(raw, "fuzz.key", "fuzz-secret");
+        let _ = decrypt_ably_compact_jwe(raw, "fuzz.key", "fuzz-secret");
+        let _ = verify_token_request_mac("fuzz-secret", raw, raw);
+        let value = serde_json::from_str::<serde_json::Value>(raw).ok();
+        let _ = parse_token_request_integer(value.as_ref(), "fuzz");
+    }
+
+    pub fn continuity_and_state(data: &[u8]) {
+        if data.len() > 16 * 1024 {
+            return;
+        }
+        let Ok(raw) = std::str::from_utf8(data) else {
+            return;
+        };
+        let _ = parse_ably_channel_serial(raw);
+        let _ = decode_presence_snapshot_cursor(Some(raw));
+        let _ = parse_message_serial(raw);
+        if let Ok(message_serial) = MessageSerial::new("fuzz-message") {
+            let _ = decode_ably_annotation_cursor(raw, "fuzz-app", "fuzz-channel", &message_serial);
+        }
+        let _ = serde_json::from_str::<AblyConnectQuery>(raw);
+    }
+}
+
 fn send_protocol(sender: &AblySender, message: AblyProtocolMessage) {
     if let Err(error) = sender.send_protocol(&message, OutboundPriority::Control) {
         debug!(error = %error, "Ably compatibility outbound queue is unavailable");
@@ -11628,10 +12657,71 @@ fn send_protocol(sender: &AblySender, message: AblyProtocolMessage) {
 mod tests {
     use super::*;
     use base64::engine::general_purpose;
-    use sockudo_cache::MemoryCacheManager;
+    use sockudo_cache::{MemoryCacheManager, RedisCacheManager};
     use sockudo_core::{app::AppPolicy, options::MemoryCacheOptions};
     use sockudo_protocol::messages::{AiExtras, MessageExtras};
     use sockudo_protocol::versioned_messages::apply_runtime_metadata;
+    use sockudo_ws::{
+        Config as WsConfig, Http1, Stream as WsStream, WebSocketStream,
+        axum_integration::WebSocket, client::WebSocketClient,
+    };
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn full_websocket_pair() -> (WebSocket, WebSocketStream<WsStream<Http1>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            sockudo_ws::handshake::server_handshake(&mut stream)
+                .await
+                .unwrap();
+            WebSocket::from_tcp(stream, WsConfig::default())
+        });
+
+        let stream = TcpStream::connect(address).await.unwrap();
+        let client = WebSocketClient::<Http1>::new(WsConfig::default());
+        let (client, _): (WebSocketStream<WsStream<Http1>>, _) = client
+            .connect(stream, &address.to_string(), "/", None)
+            .await
+            .unwrap();
+
+        (server.await.unwrap(), client)
+    }
+
+    #[tokio::test]
+    async fn fatal_socket_error_is_delivered_before_orderly_close() {
+        let (server, client) = full_websocket_pair().await;
+        let (mut client, mut client_writer) = client.split();
+        let server = tokio::spawn(send_fatal_ably_socket_error(
+            server,
+            AblyFormat::Json,
+            AblyAuthError::invalid_credentials(),
+        ));
+
+        let error_frame = tokio::time::timeout(Duration::from_secs(1), client.next())
+            .await
+            .expect("timed out waiting for Ably error frame")
+            .expect("connection ended before Ably error frame")
+            .expect("failed to read Ably error frame");
+        let Message::Text(payload) = error_frame else {
+            panic!("expected text Ably error frame, got {error_frame:?}");
+        };
+        let protocol = decode_protocol_bytes(&payload, AblyFormat::Json).unwrap();
+        assert_eq!(protocol.action, ACTION_ERROR);
+        assert_eq!(protocol.error.unwrap().code, 40101);
+
+        client_writer
+            .close(1000, "client acknowledged error")
+            .await
+            .unwrap();
+        let close_frame = tokio::time::timeout(Duration::from_secs(1), client.next())
+            .await
+            .expect("timed out waiting for orderly close frame")
+            .expect("connection ended without an orderly close frame")
+            .expect("failed to read orderly close frame");
+        assert!(matches!(close_frame, Message::Close(_)));
+        server.await.unwrap();
+    }
 
     #[test]
     fn publish_validation_accepts_nameless_and_dataless_messages() {
@@ -12438,14 +13528,14 @@ mod tests {
     }
 
     #[test]
-    fn close_and_disconnect_actions_are_terminal() {
+    fn close_and_disconnect_actions_have_distinct_terminal_outcomes() {
         assert_eq!(
             ably_protocol_control(ACTION_CLOSE),
             AblyProtocolControl::Close
         );
         assert_eq!(
             ably_protocol_control(ACTION_DISCONNECT),
-            AblyProtocolControl::Close
+            AblyProtocolControl::Disconnect
         );
         assert_eq!(
             ably_protocol_control(ACTION_HEARTBEAT),
@@ -12453,25 +13543,97 @@ mod tests {
         );
     }
 
+    #[test]
+    fn presence_reentry_preserves_only_valid_same_connection_ids() {
+        let connection_id = "connection-a";
+        assert_eq!(
+            ably_presence_message_id(Some("connection-a:4:2"), connection_id, 9, 1),
+            "connection-a:4:2"
+        );
+        assert_eq!(
+            ably_presence_message_id(Some("connection-b:4:2"), connection_id, 9, 1),
+            "connection-a:9:1"
+        );
+        assert_eq!(
+            ably_presence_message_id(Some("connection-a:not-a-serial:2"), connection_id, 9, 1),
+            "connection-a:9:1"
+        );
+        assert_eq!(
+            ably_presence_message_id(None, connection_id, 9, 1),
+            "connection-a:9:1"
+        );
+    }
+
+    #[test]
+    fn durable_presence_payload_decodes_nested_json_data() {
+        let record = PresenceRecord {
+            id: "connection-a:client-a:0".to_string(),
+            client_id: "client-a".to_string(),
+            connection_id: "connection-a".to_string(),
+            data: Some(json!({"profile": {"name": "Ada"}})),
+            encoding: None,
+            extras: None,
+            timestamp_ms: 42,
+        };
+        let encoded = sonic_rs::to_vec(&record).unwrap();
+        let value: Value = sonic_rs::from_slice(&encoded).unwrap();
+
+        assert_eq!(decode_presence_record(&value), Some(record));
+    }
+
     #[tokio::test]
-    async fn invalid_recover_and_resume_keys_use_distinct_error_codes() {
+    async fn malformed_recover_and_resume_keys_use_invalid_format_error() {
         let hub = AblyCompatHub::default();
 
         let AblyConnectionStart::Failed { error: recover } = hub
-            .begin_connection("app", None, None, Some("missing"))
+            .begin_connection("app", None, None, Some("not-a-connection-key"))
+            .await
+        else {
+            panic!("malformed recovery key must fail");
+        };
+        let AblyConnectionStart::Failed { error: resume } = hub
+            .begin_connection("app", None, Some("not-a-connection-key"), None)
+            .await
+        else {
+            panic!("malformed resume key must fail");
+        };
+
+        assert_eq!(recover.code, 80018);
+        assert_eq!(resume.code, 80018);
+    }
+
+    #[tokio::test]
+    async fn missing_well_formed_recover_and_resume_keys_use_expired_error() {
+        let hub = AblyCompatHub::default();
+        let missing_key = "app:00000000000000000000000000000000";
+
+        let AblyConnectionStart::Failed { error: recover } = hub
+            .begin_connection("app", None, None, Some(missing_key))
             .await
         else {
             panic!("missing recovery key must fail");
         };
         let AblyConnectionStart::Failed { error: resume } = hub
-            .begin_connection("app", None, Some("missing"), None)
+            .begin_connection("app", None, Some(missing_key), None)
             .await
         else {
             panic!("missing resume key must fail");
         };
 
-        assert_eq!(recover.code, 80018);
+        assert_eq!(recover.code, 80008);
         assert_eq!(resume.code, 80008);
+    }
+
+    #[test]
+    fn connection_key_validation_is_bounded_and_matches_server_issued_shape() {
+        assert!(is_well_formed_connection_key(
+            "app:0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_well_formed_connection_key("app"));
+        assert!(!is_well_formed_connection_key("app:not-hex"));
+        assert!(!is_well_formed_connection_key(
+            &"a".repeat(ABLY_CONNECTION_KEY_MAX_BYTES + 1)
+        ));
     }
 
     #[tokio::test]
@@ -12490,7 +13652,7 @@ mod tests {
         };
         first_node
             .remember_connection(
-                "recover-key".to_string(),
+                "app:00000000000000000000000000000001".to_string(),
                 "app",
                 "connection-a",
                 Some("client-a".to_string()),
@@ -12498,7 +13660,12 @@ mod tests {
             .await;
 
         let recovered = second_node
-            .begin_connection("app", Some("client-a"), None, Some("recover-key"))
+            .begin_connection(
+                "app",
+                Some("client-a"),
+                None,
+                Some("app:00000000000000000000000000000001"),
+            )
             .await;
         assert!(matches!(
             recovered,
@@ -12508,37 +13675,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auth_key_rotation_invalidates_previous_key_on_every_runtime() {
+        let cache: Arc<dyn CacheManager> = Arc::new(MemoryCacheManager::new(
+            "ably-session-key-rotation".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let first_node = AblyCompatHub {
+            cache: Some(Arc::clone(&cache)),
+            ..AblyCompatHub::default()
+        };
+        let second_node = AblyCompatHub {
+            cache: Some(cache),
+            ..AblyCompatHub::default()
+        };
+        first_node
+            .remember_connection(
+                "app:00000000000000000000000000000001".to_string(),
+                "app",
+                "connection-a",
+                Some("client-a".to_string()),
+            )
+            .await;
+        assert!(matches!(
+            second_node
+                .begin_connection(
+                    "app",
+                    Some("client-a"),
+                    None,
+                    Some("app:00000000000000000000000000000001"),
+                )
+                .await,
+            AblyConnectionStart::Resumed { .. }
+        ));
+        first_node
+            .replace_connection_key(
+                "app:00000000000000000000000000000001",
+                "app:00000000000000000000000000000002".to_string(),
+                "app",
+                "connection-a",
+                Some("client-a".to_string()),
+            )
+            .await;
+
+        assert!(matches!(
+            second_node
+                .begin_connection(
+                    "app",
+                    Some("client-a"),
+                    None,
+                    Some("app:00000000000000000000000000000001"),
+                )
+                .await,
+            AblyConnectionStart::Failed { .. }
+        ));
+        assert!(matches!(
+            second_node
+                .begin_connection(
+                    "app",
+                    Some("client-a"),
+                    None,
+                    Some("app:00000000000000000000000000000002"),
+                )
+                .await,
+            AblyConnectionStart::Resumed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn recovered_session_owner_supersedes_the_previous_node_atomically() {
+        let cache: Arc<dyn CacheManager> = Arc::new(MemoryCacheManager::new(
+            "ably-session-owner".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let first_node = AblyCompatHub {
+            cache: Some(Arc::clone(&cache)),
+            ..AblyCompatHub::default()
+        };
+        let second_node = AblyCompatHub {
+            cache: Some(cache),
+            ..AblyCompatHub::default()
+        };
+
+        first_node
+            .claim_session_owner("app", "connection-a", "session-a")
+            .await
+            .unwrap();
+        assert!(
+            first_node
+                .session_is_current("app", "connection-a", "session-a")
+                .await
+        );
+
+        second_node
+            .claim_session_owner("app", "connection-a", "session-b")
+            .await
+            .unwrap();
+        assert!(
+            !first_node
+                .session_is_current("app", "connection-a", "session-a")
+                .await
+        );
+        assert!(
+            second_node
+                .session_is_current("app", "connection-a", "session-b")
+                .await
+        );
+        assert!(
+            !first_node
+                .refresh_session_owner("app", "connection-a", "session-a")
+                .await
+        );
+
+        first_node
+            .release_session_owner("app", "connection-a", "session-a")
+            .await;
+        assert!(
+            second_node
+                .session_is_current("app", "connection-a", "session-b")
+                .await
+        );
+        second_node
+            .release_session_owner("app", "connection-a", "session-b")
+            .await;
+        assert!(
+            !first_node
+                .session_is_current("app", "connection-a", "session-b")
+                .await
+        );
+    }
+
+    #[tokio::test]
     async fn active_connection_lease_refreshes_and_graceful_close_invalidates_it() {
         let hub = AblyCompatHub::default();
         hub.remember_connection(
-            "connection-key".to_string(),
+            "app:00000000000000000000000000000001".to_string(),
             "app",
             "connection-a",
             Some("client-a".to_string()),
         )
         .await;
         hub.sessions
-            .get_mut("connection-key")
+            .get_mut("app:00000000000000000000000000000001")
             .expect("stored lease")
             .expires_at_ms = 0;
 
         hub.remember_connection(
-            "connection-key".to_string(),
+            "app:00000000000000000000000000000001".to_string(),
             "app",
             "connection-a",
             Some("client-a".to_string()),
         )
         .await;
         assert!(matches!(
-            hub.begin_connection("app", Some("client-a"), None, Some("connection-key"))
-                .await,
+            hub.begin_connection(
+                "app",
+                Some("client-a"),
+                None,
+                Some("app:00000000000000000000000000000001"),
+            )
+            .await,
             AblyConnectionStart::Resumed { .. }
         ));
 
-        hub.forget_connection("connection-key").await;
+        hub.forget_connection("app:00000000000000000000000000000001")
+            .await;
         assert!(matches!(
-            hub.begin_connection("app", Some("client-a"), None, Some("connection-key"))
-                .await,
+            hub.begin_connection(
+                "app",
+                Some("client-a"),
+                None,
+                Some("app:00000000000000000000000000000001"),
+            )
+            .await,
             AblyConnectionStart::Failed { .. }
         ));
     }
@@ -12575,45 +13883,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_batch_publish_partial_failure_uses_40020_envelope() {
-        let responses = vec![
-            AblyBatchPublishChannelResponse::Success {
-                channel: "valid".to_string(),
-                message_id: "message-id".to_string(),
-                serials: vec!["serial-1".to_string()],
-            },
-            AblyBatchPublishChannelResponse::Failure {
-                channel: "[invalid".to_string(),
-                error: error_info(StatusCode::BAD_REQUEST, 40010, "invalid channel"),
-            },
-        ];
+    async fn legacy_batch_publish_partial_failure_uses_browser_decodable_40020_envelope() {
+        for requested_format in [AblyFormat::Json, AblyFormat::MsgPack] {
+            let responses = vec![
+                AblyBatchPublishChannelResponse::Success {
+                    channel: "valid".to_string(),
+                    message_id: "message-id".to_string(),
+                    serials: vec!["serial-1".to_string()],
+                },
+                AblyBatchPublishChannelResponse::Failure {
+                    channel: "[invalid".to_string(),
+                    error: error_info(StatusCode::BAD_REQUEST, 40010, "invalid channel"),
+                },
+            ];
 
-        let response = encode_ably_legacy_batch_publish_response(AblyFormat::Json, responses)
-            .expect("partial response encodes");
+            let response = encode_ably_legacy_batch_publish_response(requested_format, responses)
+                .expect("partial response encodes");
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            response
-                .headers()
-                .get("x-ably-errorcode")
-                .and_then(|value| value.to_str().ok()),
-            Some("40020")
-        );
-        let body = axum::body::to_bytes(response.into_body(), 4 * 1024)
-            .await
-            .expect("response body");
-        let value: Value = decode_value(body.as_ref(), AblyFormat::Json).expect("JSON response");
-        assert_eq!(value["error"]["code"].as_u64(), Some(40020));
-        assert_eq!(value["error"]["statusCode"].as_u64(), Some(400));
-        assert_eq!(
-            value["batchResponse"].as_array().map(|items| items.len()),
-            Some(2)
-        );
-        assert_eq!(value["batchResponse"][0]["channel"].as_str(), Some("valid"));
-        assert_eq!(
-            value["batchResponse"][1]["error"]["code"].as_u64(),
-            Some(40010)
-        );
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-ably-errorcode")
+                    .and_then(|value| value.to_str().ok()),
+                Some("40020")
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok()),
+                Some("application/json")
+            );
+            let body = axum::body::to_bytes(response.into_body(), 4 * 1024)
+                .await
+                .expect("response body");
+            let value: Value =
+                decode_value(body.as_ref(), AblyFormat::Json).expect("JSON response");
+            assert_eq!(value["error"]["code"].as_u64(), Some(40020));
+            assert_eq!(value["error"]["statusCode"].as_u64(), Some(400));
+            assert_eq!(
+                value["batchResponse"].as_array().map(|items| items.len()),
+                Some(2)
+            );
+            assert_eq!(value["batchResponse"][0]["channel"].as_str(), Some("valid"));
+            assert_eq!(
+                value["batchResponse"][1]["error"]["code"].as_u64(),
+                Some(40010)
+            );
+        }
     }
 
     #[tokio::test]
@@ -12740,6 +14058,157 @@ mod tests {
                 .and_then(|message| message.id.as_deref()),
             Some("message-2")
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_remote_delivery_position_reaches_local_ably_subscriber_once() {
+        let hub = AblyCompatHub::default();
+        let (sender, _receiver) = AblyOutbound::channel(
+            AblyFormat::Json,
+            OutboundLimits::default(),
+            Arc::clone(&hub.metrics),
+        );
+        let channel = AblyChannelName::parse("distributed-room".to_string()).unwrap();
+        hub.attach_clean(
+            "app",
+            &channel,
+            AblyAttachment {
+                connection_id: "subscriber-connection",
+                session_id: "subscriber-session",
+                sender,
+                filter: None,
+                params: HashMap::new(),
+                mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+                echo: true,
+                presence: Vec::new(),
+            },
+            None,
+            Vec::new(),
+        );
+        let message = PusherMessage {
+            event: Some("chat.message".to_string()),
+            channel: Some(channel.base().to_string()),
+            data: Some(MessageData::String("hello".to_string())),
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: Some("message-1".to_string()),
+            stream_id: Some("stream-1".to_string()),
+            serial: Some(7),
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+        let mut envelope = MessageEnvelope::from_message(&message, None, None, 1).unwrap();
+        envelope.set_commit_positions(Some("stream-1".to_string()), Some(7), Some(7));
+
+        RealtimeEgressTap::deliver(&hub, "app", channel.base(), &message, &envelope).unwrap();
+        RealtimeEgressTap::deliver(&hub, "app", channel.base(), &message, &envelope).unwrap();
+
+        assert_eq!(hub.metrics.snapshot().fanout, 1);
+        assert_eq!(hub.metrics.snapshot().data_encoded, 1);
+        assert_eq!(hub.metrics.snapshot().duplicate_suppression, 1);
+    }
+
+    #[test]
+    fn contiguous_delivery_frontier_suppresses_old_duplicates_without_growing_memory() {
+        let hub = AblyCompatHub::default();
+        let envelope = |serial| MessageEnvelope {
+            stream_id: Some("stream-1".to_string()),
+            delivery_serial: Some(serial),
+            ..MessageEnvelope::default()
+        };
+
+        for serial in 1..=(ABLY_DELIVERY_DEDUPE_MAX_ENTRIES as u64 + 128) {
+            assert!(
+                hub.accept_delivery_position("app", "channel", &envelope(serial))
+                    .unwrap()
+            );
+        }
+        assert!(
+            !hub.accept_delivery_position("app", "channel", &envelope(1))
+                .unwrap()
+        );
+
+        let state = hub.channel_state("app", "channel");
+        let state = lock_channel_state(&state);
+        assert_eq!(
+            state.delivery_frontier,
+            ABLY_DELIVERY_DEDUPE_MAX_ENTRIES as u64 + 128
+        );
+        assert!(state.pending_deliveries.is_empty());
+        assert!(!state.delivery_reset_required);
+    }
+
+    #[test]
+    fn out_of_order_delivery_is_emitted_once_then_folded_into_the_frontier() {
+        let hub = AblyCompatHub::default();
+        let envelope = |serial| MessageEnvelope {
+            stream_id: Some("stream-1".to_string()),
+            delivery_serial: Some(serial),
+            ..MessageEnvelope::default()
+        };
+
+        assert!(
+            hub.accept_delivery_position("app", "channel", &envelope(1))
+                .unwrap()
+        );
+        assert!(
+            hub.accept_delivery_position("app", "channel", &envelope(3))
+                .unwrap()
+        );
+        assert!(
+            !hub.accept_delivery_position("app", "channel", &envelope(3))
+                .unwrap()
+        );
+        assert!(
+            hub.accept_delivery_position("app", "channel", &envelope(2))
+                .unwrap()
+        );
+        assert!(
+            !hub.accept_delivery_position("app", "channel", &envelope(3))
+                .unwrap()
+        );
+
+        let state = hub.channel_state("app", "channel");
+        let state = lock_channel_state(&state);
+        assert_eq!(state.delivery_frontier, 3);
+        assert!(state.pending_deliveries.is_empty());
+    }
+
+    #[test]
+    fn excessive_delivery_reordering_fails_closed_and_requires_reset() {
+        let hub = AblyCompatHub::default();
+        let envelope = |serial| MessageEnvelope {
+            stream_id: Some("stream-1".to_string()),
+            delivery_serial: Some(serial),
+            ..MessageEnvelope::default()
+        };
+
+        for serial in 2..=(ABLY_DELIVERY_DEDUPE_MAX_ENTRIES as u64 + 1) {
+            assert!(
+                hub.accept_delivery_position("app", "channel", &envelope(serial))
+                    .unwrap()
+            );
+        }
+        let error = hub
+            .accept_delivery_position(
+                "app",
+                "channel",
+                &envelope(ABLY_DELIVERY_DEDUPE_MAX_ENTRIES as u64 + 2),
+            )
+            .unwrap_err();
+        assert!(matches!(error, SockudoError::BufferFull(_)));
+        assert!(
+            hub.accept_delivery_position("app", "channel", &envelope(1))
+                .is_err()
+        );
+        let metrics = hub.metrics.snapshot();
+        assert_eq!(metrics.continuity_lost, 1);
+        assert_eq!(metrics.reset_required, 1);
     }
 
     #[tokio::test]
@@ -13016,6 +14485,135 @@ mod tests {
     }
 
     #[test]
+    fn jwt_timestamp_conversion_rejects_seconds_that_overflow_milliseconds() {
+        let maximum_valid = i64::MAX / 1_000;
+        let minimum_valid = i64::MIN / 1_000;
+        assert_eq!(
+            jwt_seconds_to_millis(maximum_valid).unwrap(),
+            maximum_valid * 1_000
+        );
+        assert_eq!(
+            jwt_seconds_to_millis(minimum_valid).unwrap(),
+            minimum_valid * 1_000
+        );
+
+        for overflowing in [maximum_valid + 1, minimum_valid - 1, i64::MAX, i64::MIN] {
+            let error = jwt_seconds_to_millis(overflowing).unwrap_err();
+            assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+            assert_eq!(error.code, 40140);
+            assert_eq!(error.message, "JWT claims are invalid");
+        }
+    }
+
+    fn sign_test_jwt(header: serde_json::Value, claims: serde_json::Value, secret: &str) -> String {
+        type HmacSha256 = Hmac<Sha256>;
+        let header = general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let claims = general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+        let input = format!("{header}.{claims}");
+        let mut signer = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        signer.update(input.as_bytes());
+        format!(
+            "{input}.{}",
+            general_purpose::URL_SAFE_NO_PAD.encode(signer.finalize().into_bytes())
+        )
+    }
+
+    #[test]
+    fn embedded_jwt_verifies_signature_key_and_inner_credential() {
+        let inner = sign_test_jwt(
+            serde_json::json!({"typ":"JWT","alg":"HS256","kid":"app.key"}),
+            serde_json::json!({"iat":1_700_000_000_i64,"exp":1_700_000_600_i64}),
+            "secret",
+        );
+        let outer = sign_test_jwt(
+            serde_json::json!({
+                "typ":"JWT",
+                "alg":"HS256",
+                "kid":"app.key",
+                "x-ably-token":inner,
+            }),
+            serde_json::json!({"iat":1_700_000_000_i64,"exp":1_700_000_600_i64}),
+            "secret",
+        );
+
+        let verified = verify_ably_signed_jwt(&outer, "app.key", "secret").unwrap();
+        assert_eq!(verified.embedded_token.as_deref(), Some(inner.as_str()));
+        assert!(verify_ably_signed_jwt(&outer, "other.key", "secret").is_err());
+        assert!(verify_ably_signed_jwt(&outer, "app.key", "wrong").is_err());
+    }
+
+    #[test]
+    fn compact_jwe_decrypts_nested_jwt_and_rejects_tampering() {
+        use aes_gcm::{
+            Aes256Gcm, Nonce,
+            aead::{Aead, Payload},
+        };
+
+        let nested = "header.payload.signature";
+        let protected = general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "typ":"JWT","alg":"dir","enc":"A256GCM","cty":"JWT","kid":"app.key"
+            }))
+            .unwrap(),
+        );
+        let key = Sha256::digest(b"secret");
+        let cipher = <Aes256Gcm as AeadKeyInit>::new_from_slice(&key).unwrap();
+        let nonce = [7_u8; 12];
+        let encrypted = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: nested.as_bytes(),
+                    aad: protected.as_bytes(),
+                },
+            )
+            .unwrap();
+        let split = encrypted.len() - 16;
+        let token = format!(
+            "{}..{}.{}.{}",
+            protected,
+            general_purpose::URL_SAFE_NO_PAD.encode(nonce),
+            general_purpose::URL_SAFE_NO_PAD.encode(&encrypted[..split]),
+            general_purpose::URL_SAFE_NO_PAD.encode(&encrypted[split..]),
+        );
+        assert_eq!(
+            decrypt_ably_compact_jwe(&token, "app.key", "secret").unwrap(),
+            nested
+        );
+        assert!(decrypt_ably_compact_jwe(&token, "other.key", "secret").is_err());
+        let tampered = format!("{token}x");
+        assert!(decrypt_ably_compact_jwe(&tampered, "app.key", "secret").is_err());
+    }
+
+    #[test]
+    fn jwt_ttl_is_bounded_by_revocation_retention() {
+        let claims = AblyJwtClaims {
+            iat: 100,
+            exp: 161,
+            client_id: None,
+            capability: None,
+            revocation_key: None,
+            embedded_token: None,
+        };
+        assert!(validate_ably_jwt_times(&claims, 100, 60_000, false).is_err());
+        let valid = AblyJwtClaims { exp: 160, ..claims };
+        assert_eq!(
+            validate_ably_jwt_times(&valid, 100, 60_000, false).unwrap(),
+            (100_000, 160_000)
+        );
+    }
+
+    #[test]
+    fn jwt_lifetime_cannot_outlive_local_revocation_retention() {
+        assert!(validate_jwt_lifetime_ms(1_000, 61_000, 60_000).is_ok());
+        for (issued, expires) in [(1_000, 1_000), (2_000, 1_000), (1_000, 61_001)] {
+            let error = validate_jwt_lifetime_ms(issued, expires, 60_000).unwrap_err();
+            assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+            assert_eq!(error.message, "JWT claims are invalid");
+        }
+    }
+
+    #[test]
     fn rsa6_capability_intersection_preserves_equal_and_intersects_ops_and_paths() {
         let key = r#"{"channel0":["publish"],"channel2":["publish","subscribe"],"channel6":["*"]}"#;
         let (equal, _) = intersect_ably_capability(key, Some(key)).unwrap();
@@ -13160,13 +14758,188 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ably_errors_have_the_same_shape_in_json_and_msgpack() {
-        for format in [AblyFormat::Json, AblyFormat::MsgPack] {
+    async fn two_redis_backed_nodes_share_tokens_revocation_and_session_ownership() {
+        let prefix = format!("ably-distributed-test-{}", uuid::Uuid::new_v4().simple());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:16379/".to_string());
+        let first_cache: Arc<dyn CacheManager> = Arc::new(
+            RedisCacheManager::with_url(&redis_url, Some(&prefix))
+                .await
+                .expect("configured Redis test service must be available"),
+        );
+        let second_cache: Arc<dyn CacheManager> = Arc::new(
+            RedisCacheManager::with_url(&redis_url, Some(&prefix))
+                .await
+                .expect("configured Redis test service must be available"),
+        );
+        let first = AblyCompatRuntime::new(AblyCompatDependencies {
+            cache: Some(first_cache),
+            ..Default::default()
+        });
+        let second = AblyCompatRuntime::new(AblyCompatDependencies {
+            cache: Some(second_cache),
+            ..Default::default()
+        });
+
+        assert!(first.hub.claim_nonce("extra-key", "nonce").await.unwrap());
+        assert!(!second.hub.claim_nonce("extra-key", "nonce").await.unwrap());
+
+        let key = ResolvedAblyKey {
+            app: App::from_policy(
+                "shared-app".to_string(),
+                "primary".to_string(),
+                "primary-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+            key_name: "extra-key".to_string(),
+            secret: "secret".to_string(),
+            capability: default_ably_capability(),
+            capabilities: None,
+            revocable_tokens: true,
+            rotation_id: Some("v1".to_string()),
+        };
+        let details = first
+            .hub
+            .issue_token(
+                &key,
+                Some("client".to_string()),
+                60_000,
+                default_ably_capability(),
+                None,
+            )
+            .await
+            .unwrap();
+        let record = second.hub.resolve_token(&details.token).await.unwrap();
+        assert_eq!(record.app_id, "shared-app");
+        assert_eq!(record.client_id.as_deref(), Some("client"));
+
+        second
+            .hub
+            .store_revocation(
+                "shared-app",
+                "clientId",
+                "client",
+                AblyRevocationRecord {
+                    target_type: "clientId".to_string(),
+                    target_value: "client".to_string(),
+                    issued_before: record.issued_ms.saturating_add(1),
+                    applies_at: 0,
+                },
+            )
+            .await
+            .unwrap();
+        let old_authorization = ConnectionAuthorization {
+            generation: 1,
+            client_id: record.client_id.clone(),
+            connection_client_id: record.client_id.clone(),
+            capabilities: record.capabilities.clone(),
+            issued_ms: record.issued_ms,
+            expires_ms: Some(record.expires_ms),
+            credential_id: details.token.clone(),
+            revocable: record.revocable,
+            revocation_key: record.revocation_key.clone(),
+        };
+        assert!(
+            first
+                .hub
+                .authorization_is_revoked("shared-app", &old_authorization, &HashMap::new(),)
+                .await
+        );
+
+        let mut renewed = old_authorization.clone();
+        renewed.generation = 2;
+        renewed.issued_ms = record.issued_ms.saturating_add(2);
+        renewed.credential_id = "renewed-token".to_string();
+        assert!(
+            !first
+                .hub
+                .authorization_is_revoked("shared-app", &renewed, &HashMap::new())
+                .await
+        );
+
+        first
+            .hub
+            .claim_session_owner("shared-app", "connection-a", "node-a")
+            .await
+            .unwrap();
+        second
+            .hub
+            .claim_session_owner("shared-app", "connection-a", "node-b")
+            .await
+            .unwrap();
+        assert!(
+            !first
+                .hub
+                .session_is_current("shared-app", "connection-a", "node-a")
+                .await
+        );
+        assert!(
+            second
+                .hub
+                .session_is_current("shared-app", "connection-a", "node-b")
+                .await
+        );
+        assert!(
+            !first
+                .hub
+                .refresh_session_owner("shared-app", "connection-a", "node-a")
+                .await
+        );
+
+        second
+            .hub
+            .remember_connection(
+                "shared-app:00000000000000000000000000000001".to_string(),
+                "shared-app",
+                "connection-a",
+                Some("client".to_string()),
+            )
+            .await;
+        drop(first);
+        let restarted_cache: Arc<dyn CacheManager> = Arc::new(
+            RedisCacheManager::with_url(&redis_url, Some(&prefix))
+                .await
+                .unwrap(),
+        );
+        let restarted = AblyCompatRuntime::new(AblyCompatDependencies {
+            cache: Some(restarted_cache),
+            ..Default::default()
+        });
+        assert!(matches!(
+            restarted
+                .hub
+                .begin_connection(
+                    "shared-app",
+                    Some("client"),
+                    None,
+                    Some("shared-app:00000000000000000000000000000001"),
+                )
+                .await,
+            AblyConnectionStart::Resumed { connection_id }
+                if connection_id == "connection-a"
+        ));
+        restarted
+            .hub
+            .claim_session_owner("shared-app", "connection-a", "node-c")
+            .await
+            .unwrap();
+        assert!(
+            !second
+                .hub
+                .session_is_current("shared-app", "connection-a", "node-b")
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn ably_errors_use_browser_decodable_json_for_all_request_formats() {
+        for requested_format in [AblyFormat::Json, AblyFormat::MsgPack] {
             let response = ably_error_response_format(
                 StatusCode::UNAUTHORIZED,
                 40105,
                 "Nonce value replayed",
-                format,
+                requested_format,
             );
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
             let content_type = response
@@ -13179,20 +14952,11 @@ mod tests {
             let bytes = axum::body::to_bytes(response.into_body(), 4096)
                 .await
                 .unwrap();
-            let body: AblyErrorBody = match format {
-                AblyFormat::Json => serde_json::from_slice(&bytes).unwrap(),
-                AblyFormat::MsgPack => rmp_serde::from_slice(&bytes).unwrap(),
-            };
+            let body: AblyErrorBody = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body.error.status_code, 401);
             assert_eq!(body.error.code, 40105);
             assert_eq!(body.error.message, "Nonce value replayed");
-            assert_eq!(
-                content_type,
-                match format {
-                    AblyFormat::Json => "application/json",
-                    AblyFormat::MsgPack => "application/x-msgpack",
-                }
-            );
+            assert_eq!(content_type, "application/json");
         }
     }
 
@@ -13703,7 +15467,10 @@ mod tests {
             let encoded = encode_protocol_bytes(&projected, format).unwrap();
             let decoded = decode_protocol_bytes(&encoded, format).unwrap();
             let message = &decoded.messages.unwrap()[0];
-            assert_eq!(message.encoding.as_deref(), Some("json/vcdiff/base64"));
+            assert_eq!(
+                message.encoding.as_deref(),
+                Some("json/utf-8/vcdiff/base64")
+            );
             assert_eq!(
                 message.extras.as_ref().unwrap()["delta"]["from"],
                 "message-1"
@@ -14020,6 +15787,384 @@ mod tests {
                 .authorization_is_revoked("app", &authorization, &HashMap::new())
                 .await
         );
+    }
+
+    struct PagedRevocationCache {
+        entries: Vec<(String, String)>,
+    }
+
+    #[async_trait::async_trait]
+    impl CacheManager for PagedRevocationCache {
+        async fn has(&self, _key: &str) -> sockudo_core::error::Result<bool> {
+            Ok(false)
+        }
+
+        async fn get(&self, _key: &str) -> sockudo_core::error::Result<Option<String>> {
+            Ok(None)
+        }
+
+        async fn set(
+            &self,
+            _key: &str,
+            _value: &str,
+            _ttl_seconds: u64,
+        ) -> sockudo_core::error::Result<()> {
+            Ok(())
+        }
+
+        async fn remove(&self, _key: &str) -> sockudo_core::error::Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> sockudo_core::error::Result<()> {
+            Ok(())
+        }
+
+        async fn ttl(
+            &self,
+            _key: &str,
+        ) -> sockudo_core::error::Result<Option<std::time::Duration>> {
+            Ok(None)
+        }
+
+        async fn scan_prefix(
+            &self,
+            _prefix: &str,
+            limit: usize,
+        ) -> sockudo_core::error::Result<Vec<(String, String)>> {
+            Ok(self.entries.iter().take(limit).cloned().collect())
+        }
+
+        async fn scan_prefix_page(
+            &self,
+            _prefix: &str,
+            cursor: Option<String>,
+            limit: usize,
+        ) -> sockudo_core::error::Result<sockudo_core::cache::CacheScanPage> {
+            let start = cursor
+                .as_deref()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            let end = start.saturating_add(limit).min(self.entries.len());
+            Ok(sockudo_core::cache::CacheScanPage {
+                entries: self.entries[start..end].to_vec(),
+                next_cursor: (end < self.entries.len()).then(|| end.to_string()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_cache_channel_revocation_scan_pages_past_one_thousand_records() {
+        let mut entries = (0..1_100)
+            .map(|index| {
+                let record = AblyRevocationRecord {
+                    target_type: "channel".to_string(),
+                    target_value: format!("channel-{index}"),
+                    issued_before: 0,
+                    applies_at: 0,
+                };
+                (
+                    format!("ably-compat:revocation:app:{index}"),
+                    serde_json::to_string(&record).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        entries.push((
+            "ably-compat:revocation:app:target".to_string(),
+            serde_json::to_string(&AblyRevocationRecord {
+                target_type: "channel".to_string(),
+                target_value: "target-channel".to_string(),
+                issued_before: 200,
+                applies_at: 0,
+            })
+            .unwrap(),
+        ));
+        let cache: Arc<dyn CacheManager> = Arc::new(PagedRevocationCache { entries });
+        let hub = AblyCompatRuntime::new(AblyCompatDependencies {
+            cache: Some(cache),
+            ..Default::default()
+        });
+        let authorization = ConnectionAuthorization {
+            generation: 1,
+            client_id: None,
+            connection_client_id: None,
+            capabilities: None,
+            issued_ms: 100,
+            expires_ms: Some(1_000),
+            credential_id: "credential".to_string(),
+            revocable: true,
+            revocation_key: None,
+        };
+
+        assert!(
+            hub.hub
+                .authorization_is_revoked("app", &authorization, &HashMap::new())
+                .await
+        );
+    }
+
+    #[test]
+    fn local_revocation_store_preserves_live_evidence_when_capacity_is_exhausted() {
+        let mut store = AblyRevocationStore::new(1, usize::MAX);
+        let first = AblyRevocationRecord {
+            target_type: "clientId".to_string(),
+            target_value: "first".to_string(),
+            issued_before: 10,
+            applies_at: 10,
+        };
+        let second = AblyRevocationRecord {
+            target_type: "clientId".to_string(),
+            target_value: "second".to_string(),
+            issued_before: 11,
+            applies_at: 11,
+        };
+
+        store
+            .insert("app", "first-key".to_string(), first.clone(), 100, 10)
+            .unwrap();
+        let failure = store
+            .insert("app", "second-key".to_string(), second.clone(), 101, 11)
+            .unwrap_err();
+
+        assert_eq!(failure.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(failure.message, "Token revocation capacity exceeded");
+        assert_eq!(store.get("first-key", 99), Some(first));
+        assert_eq!(store.get("second-key", 99), None);
+
+        store
+            .insert("app", "second-key".to_string(), second.clone(), 200, 100)
+            .unwrap();
+        assert_eq!(store.get("first-key", 100), None);
+        assert_eq!(store.get("second-key", 100), Some(second));
+    }
+
+    #[test]
+    fn local_revocation_store_enforces_its_byte_limit() {
+        let mut store = AblyRevocationStore::new(10, 1);
+        let failure = store
+            .insert(
+                "app",
+                "key".to_string(),
+                AblyRevocationRecord {
+                    target_type: "clientId".to_string(),
+                    target_value: "client".to_string(),
+                    issued_before: 10,
+                    applies_at: 10,
+                },
+                100,
+                10,
+            )
+            .unwrap_err();
+
+        assert_eq!(failure.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(store.entries.is_empty());
+        assert_eq!(store.bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn local_revocation_retention_covers_the_configured_maximum_token_lifetime() {
+        let issued_before = now_ms();
+        let hub = AblyCompatHub {
+            config: AblyCompatConfig {
+                max_token_ttl_ms: 60_000,
+                ..AblyCompatConfig::default()
+            },
+            ..AblyCompatHub::default()
+        };
+        hub.store_revocation(
+            "app",
+            "clientId",
+            "client",
+            AblyRevocationRecord {
+                target_type: "clientId".to_string(),
+                target_value: "client".to_string(),
+                issued_before,
+                applies_at: issued_before,
+            },
+        )
+        .await
+        .unwrap();
+        let key = revocation_cache_key("app", "clientId", "client");
+        let expires_at_ms = lock_revocations(&hub.revocations)
+            .entries
+            .get(&key)
+            .unwrap()
+            .expires_at_ms;
+
+        assert!(expires_at_ms >= issued_before + 60_000);
+        assert!(
+            lock_revocations(&hub.revocations)
+                .get(&key, expires_at_ms - 1)
+                .is_some()
+        );
+        assert!(
+            lock_revocations(&hub.revocations)
+                .get(&key, expires_at_ms)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn local_channel_revocations_are_scoped_to_the_issuing_app() {
+        let hub = AblyCompatHub::default();
+        hub.store_revocation(
+            "app-a",
+            "channel",
+            "shared-channel",
+            AblyRevocationRecord {
+                target_type: "channel".to_string(),
+                target_value: "shared-channel".to_string(),
+                issued_before: now_ms(),
+                applies_at: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let capabilities = ably_capability_value_to_sockudo(&serde_json::json!({
+            "shared-channel": ["subscribe"]
+        }))
+        .unwrap();
+        let authorization = ConnectionAuthorization {
+            generation: 1,
+            client_id: None,
+            connection_client_id: None,
+            capabilities: Some(capabilities),
+            issued_ms: 0,
+            expires_ms: Some(i64::MAX),
+            credential_id: "app-b-token".to_string(),
+            revocable: true,
+            revocation_key: None,
+        };
+
+        assert!(
+            !hub.authorization_is_revoked("app-b", &authorization, &HashMap::new())
+                .await
+        );
+        assert!(
+            hub.authorization_is_revoked("app-a", &authorization, &HashMap::new())
+                .await
+        );
+    }
+
+    struct UnavailableCache;
+
+    #[async_trait::async_trait]
+    impl CacheManager for UnavailableCache {
+        async fn has(&self, _key: &str) -> sockudo_core::error::Result<bool> {
+            Err(sockudo_core::error::Error::Cache(
+                "coordination unavailable".to_string(),
+            ))
+        }
+
+        async fn get(&self, _key: &str) -> sockudo_core::error::Result<Option<String>> {
+            Err(sockudo_core::error::Error::Cache(
+                "coordination unavailable".to_string(),
+            ))
+        }
+
+        async fn set(
+            &self,
+            _key: &str,
+            _value: &str,
+            _ttl_seconds: u64,
+        ) -> sockudo_core::error::Result<()> {
+            Err(sockudo_core::error::Error::Cache(
+                "coordination unavailable".to_string(),
+            ))
+        }
+
+        async fn remove(&self, _key: &str) -> sockudo_core::error::Result<()> {
+            Err(sockudo_core::error::Error::Cache(
+                "coordination unavailable".to_string(),
+            ))
+        }
+
+        async fn disconnect(&self) -> sockudo_core::error::Result<()> {
+            Ok(())
+        }
+
+        async fn ttl(&self, _key: &str) -> sockudo_core::error::Result<Option<Duration>> {
+            Err(sockudo_core::error::Error::Cache(
+                "coordination unavailable".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn revocable_authorization_fails_closed_when_shared_backend_is_unavailable() {
+        let hub = AblyCompatRuntime::new(AblyCompatDependencies {
+            cache: Some(Arc::new(UnavailableCache)),
+            ..Default::default()
+        });
+        let authorization = ConnectionAuthorization {
+            generation: 1,
+            client_id: Some("client".to_string()),
+            connection_client_id: Some("client".to_string()),
+            capabilities: None,
+            issued_ms: 100,
+            expires_ms: Some(1_000),
+            credential_id: "credential".to_string(),
+            revocable: true,
+            revocation_key: None,
+        };
+
+        assert!(
+            hub.hub
+                .authorization_is_revoked("app", &authorization, &HashMap::new())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn authentication_cache_failures_do_not_reach_client_error_messages() {
+        let hub = AblyCompatRuntime::new(AblyCompatDependencies {
+            cache: Some(Arc::new(UnavailableCache)),
+            ..Default::default()
+        });
+
+        let error = hub.hub.claim_nonce("key", "nonce").await.unwrap_err();
+
+        assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error.code, 50000);
+        assert_eq!(
+            error.message,
+            "Authentication service temporarily unavailable"
+        );
+        assert!(!error.message.contains("coordination unavailable"));
+    }
+
+    #[tokio::test]
+    async fn invalid_cached_revocation_is_reported_without_serialization_details() {
+        let cache: Arc<dyn CacheManager> = Arc::new(MemoryCacheManager::new(
+            "ably-revocation-redaction".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        cache
+            .set(
+                &revocation_cache_key("app", "clientId", "client"),
+                "{sensitive backend record",
+                60,
+            )
+            .await
+            .unwrap();
+        let hub = AblyCompatRuntime::new(AblyCompatDependencies {
+            cache: Some(cache),
+            ..Default::default()
+        });
+
+        let error = hub
+            .hub
+            .revocation("app", "clientId", "client")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            error.message,
+            "Authentication service temporarily unavailable"
+        );
+        assert!(!error.message.contains("sensitive backend record"));
+        assert!(!error.message.contains("expected"));
     }
 
     #[test]

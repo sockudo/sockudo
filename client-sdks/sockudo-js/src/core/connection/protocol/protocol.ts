@@ -176,9 +176,9 @@ function encodeMsgpackEnvelope(event: SockudoEvent): any[] {
       ? null
       : rawData instanceof Uint8Array
         ? ["binary", rawData]
-      : typeof rawData === "string"
-        ? ["string", rawData]
-        : ["json", JSON.stringify(rawData)];
+        : typeof rawData === "string"
+          ? ["string", rawData]
+          : ["json", JSON.stringify(rawData)];
 
   return [
     envelope.event ?? null,

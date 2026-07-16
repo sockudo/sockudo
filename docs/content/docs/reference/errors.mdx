@@ -18,7 +18,13 @@ Sockudo uses HTTP status codes for REST failures and protocol events for WebSock
 | `409` | Conflict. | Check idempotency, version, or resource lifecycle. |
 | `413` | Payload too large. | Reduce event or push payload size. |
 | `429` | Rate limited. | Back off and inspect quota policy. |
+| `503` | Backpressure or required coordination backend unavailable. | Honor `Retry-After` when present and retry idempotent publishes with the same key. |
 | `5xx` | Server or dependency failure. | Inspect logs, metrics, adapter, cache, queue, or provider status. |
+
+HTTP `5xx` bodies expose a stable error code and a generic public message. Backend
+driver diagnostics, connection strings, credentials, and internal failure details
+are never returned to the caller; use credential-safe server metrics and logs for
+operator diagnosis.
 
 ## Auth failures
 

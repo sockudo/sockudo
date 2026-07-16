@@ -733,6 +733,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tag-filtering")]
     #[test]
     fn malformed_tag_filter_fails_closed() {
         let filter = json!({

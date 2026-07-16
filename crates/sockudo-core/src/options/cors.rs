@@ -35,6 +35,8 @@ impl Default for CorsConfig {
             methods: vec![
                 "GET".to_string(),
                 "POST".to_string(),
+                "PUT".to_string(),
+                "PATCH".to_string(),
                 "DELETE".to_string(),
                 "OPTIONS".to_string(),
             ],
@@ -116,6 +118,17 @@ mod cors_config_tests {
             assert!(
                 config.allowed_headers.iter().any(|value| value == header),
                 "missing default CORS header {header}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_allows_ably_rest_mutation_methods() {
+        let config = CorsConfig::default();
+        for method in ["PATCH", "PUT"] {
+            assert!(
+                config.methods.iter().any(|value| value == method),
+                "missing default CORS method {method}"
             );
         }
     }

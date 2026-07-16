@@ -434,10 +434,14 @@ make ably-ai-transport-test
 make ably-ai-demo
 ```
 
-The Ably targets exercise a reduced Ably Pub/Sub subset for AI Transport using local Sockudo as the
-endpoint. Start Sockudo with Cargo feature `ably-compat` plus the normal runtime `[ai_transport]`
-config before running them. They do not imply full Ably platform compatibility; see the
-compatibility scorecard in [`docs/ably-compat/`](docs/ably-compat/).
+The opt-in Ably targets exercise the pinned Ably REST and WebSocket surface, excluding Live Objects
+and all non-WebSocket realtime transports, using local Sockudo as the endpoint. The compatibility
+runtime lives in `crates/sockudo-ably-compat` and reuses native Sockudo auth, publish, history,
+recovery, presence, annotation, stats, and push services. Node defaults, browser, strict-pending,
+and AI Transport are independent evidence lanes; a pass in one is not a pass in another. The dated
+release status and scope limits are in the compatibility scorecard under
+[`docs/ably-compat/`](docs/ably-compat/) and the reports under `sockudo-compatibility/`. Do not use
+these targets to claim full Ably platform compatibility.
 
 Docs checks:
 

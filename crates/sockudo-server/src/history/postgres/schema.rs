@@ -114,6 +114,18 @@ impl PostgresHistoryStore {
             "#,
             self.tables.version_entries
         );
+        let create_annotation_streams = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                next_serial BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel)
+            )
+            "#,
+            self.tables.annotation_streams
+        );
         let create_annotation_events = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
@@ -122,6 +134,7 @@ impl PostgresHistoryStore {
                 message_serial TEXT NOT NULL,
                 annotation_serial TEXT NOT NULL,
                 annotation_type TEXT NOT NULL,
+                annotation_id TEXT NULL,
                 name TEXT NULL,
                 client_id TEXT NULL,
                 count_value BIGINT NULL,
@@ -196,6 +209,14 @@ impl PostgresHistoryStore {
             "CREATE INDEX IF NOT EXISTS {0}_created_at_idx ON {0} (created_at_ms)",
             self.tables.annotation_events
         );
+        let add_annotation_id = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS annotation_id TEXT NULL",
+            self.tables.annotation_events
+        );
+        let index_annotation_create_id = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS {0}_create_id_uidx ON {0} (app_id, channel, message_serial, annotation_type, annotation_id) WHERE action = 'annotation.create' AND annotation_id IS NOT NULL",
+            self.tables.annotation_events
+        );
         let add_oldest_time = format!(
             "ALTER TABLE {} ADD COLUMN IF NOT EXISTS oldest_available_published_at_ms BIGINT NULL",
             self.tables.streams
@@ -229,6 +250,7 @@ impl PostgresHistoryStore {
             create_version_streams,
             create_version_messages,
             create_version_entries,
+            create_annotation_streams,
             create_annotation_events,
             create_annotation_projections,
             index_version_stream_window,
@@ -242,6 +264,8 @@ impl PostgresHistoryStore {
             index_annotation_events_dedup,
             index_annotation_events_raw_replay,
             index_annotation_events_created_at,
+            add_annotation_id,
+            index_annotation_create_id,
             add_oldest_time,
             add_newest_time,
             add_durable_state,

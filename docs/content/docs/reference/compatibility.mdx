@@ -63,17 +63,48 @@ AI Transport is additive and default-off. The server release order is:
 | Protocol V1 / pusher-js canary | Must remain byte-identical with AI Transport disabled |
 | Protocol V2 non-AI clients | Existing recovery, rewind, history, mutable messages, annotations, and push remain additive |
 | `@sockudo/ai-transport` | Requires server AI Transport feature, runtime profile, and `@sockudo/client` |
-| `@ably/ai-transport` | Optional `ably-compat` feature exposing a reduced Ably Pub/Sub subset for AI Transport only; see [Ably AI Transport compatibility](/docs/server/ably-ai-transport-compatibility) |
+| `@ably/ai-transport` | Optional `ably-compat` feature exposing the tested Ably REST and WebSocket surface, excluding Live Objects; see [Ably REST, WebSocket, and AI Transport compatibility](/docs/server/ably-ai-transport-compatibility) |
 | Existing client SDKs | Full product parity depends on Protocol V2 feature enablement in each SDK |
 | Server HTTP SDKs | Existing Pusher-compatible publish APIs continue to work; AI helpers are additive |
 
-Sockudo does not claim full Ably platform compatibility. The Ably-compatible surface is feature
-gated behind `ably-compat` and scoped to AI Transport tests and demos: run lifecycle, mutable
-streaming, history projection, and recovery through Sockudo-backed durable primitives.
+Sockudo does not claim full Ably platform compatibility. The evidence-backed wording is **Ably REST
+and WebSocket compatibility, excluding Live Objects**. The opt-in `ably-compat` surface is validated
+against pinned Node, browser, strict-upstream-pending, and AI Transport manifests in
+`sockudo-compatibility/`. Exactly the two Live Objects files and the multiple/non-WebSocket
+transport file are excluded. `testExcludes` and the selected-lane known-failure entries are empty;
+upstream-default pending results are audited and executed separately, without changing their bodies,
+assertions, or expected values. A default-lane pass is not reported as a strict-completeness or
+browser pass.
+
+The current dated evidence is not release-complete: Node defaults are green at 575 passes and AIT
+is 50/50, while strict completeness and all browser release lanes remain red. The authoritative
+counts and blockers are recorded in
+`sockudo-compatibility/findings/2026-07-15-final-verification.md`.
 
 The implementation is isolated in `crates/sockudo-ably-compat` and constructed
 per server instance. Its realtime surface is WebSocket-only; Ably fallback
 transports are intentionally unsupported.
+
+## Compatibility performance evidence
+
+Compatibility releases use two complementary guards:
+
+- `make ably-compat-bench` measures the production JSON/MessagePack codec, commit-envelope and
+  history projection, error encoding, maximum 4,096-message recovery projection, and the actual
+  subscriber registry plus bounded socket queues at 1, 100, 1,000, and 10,000 subscribers. Fanout
+  assertions require one shared encoded buffer per active wire format.
+- `tests/load/ably-compat/capacity-runner.mjs` starts real one-node and Redis/Postgres-backed
+  two-node topologies. The release profile covers steady and burst publish, 64 KiB and encrypted
+  values, 1,000-subscriber fanout, 10% stalled peers, recovery, presence, append, stats, and push
+  enqueue workloads.
+
+Only executable result documents with a binary hash, exact config hash, evidence-harness hashes,
+hardware/tool metadata, latencies, throughput, resource samples, runtime counters, and
+zero-loss/duplicate/reordering/unexpected-delivery audits count as evidence. The driver retains
+exact bounded sequence bitmaps and a deterministic capped latency reservoir, never full delivered
+payloads. Plan output and `.not-run` manifests are rejected. The release guard also requires RSS to
+plateau under stalled peers and after disconnect, and can compare three or more independent
+current/baseline runs with a one-sided statistical regression test.
 
 ## Release gates
 

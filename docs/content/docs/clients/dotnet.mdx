@@ -83,7 +83,9 @@ var channel = client.Subscribe(
         Filter: Filter.And(
             Filter.Eq("market", "spot"),
             Filter.Gt("spread", "0")
-        )
+        ),
+        Events: new[] { "price.updated" },
+        Expression: "data.price >= `100`"
     )
 );
 ```

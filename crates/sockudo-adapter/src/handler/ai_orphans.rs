@@ -17,6 +17,7 @@ const ORPHAN_SWEEP_SCAN_LIMIT: usize = 4096;
 const ORPHAN_CLAIM_TTL_SECONDS: u64 = 120;
 const ACTIVE_STREAM_TTL_SAFETY_SECONDS: u64 = 60;
 const AI_STREAM_CANCELLED_WEBHOOK_REASON: &str = "orphan_timeout";
+const REGISTRY_CAS_ATTEMPTS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ActiveAiStreamEntry {
@@ -56,32 +57,28 @@ impl ConnectionHandler {
 
         let key = active_stream_key(app_id, channel, record.message_serial().as_str());
         if record_ai_status(record) == Some("streaming") {
-            let was_absent = !self.cache_manager().has(&key).await?;
             let entry = ActiveAiStreamEntry::from_record(record, now_ms());
             let value = sonic_rs::to_string(&entry).map_err(Error::from)?;
-            self.cache_manager()
-                .set(&key, &value, active_stream_ttl_seconds(self))
+            let inserted = self
+                .upsert_active_stream_entry(&key, &entry, &value)
                 .await?;
-            if was_absent {
-                self.cache_manager()
+            if inserted
+                && let Err(error) = self
+                    .cache_manager()
                     .increment_by(
                         &active_stream_count_key(app_id, channel),
                         1,
                         active_stream_ttl_seconds(self),
                     )
-                    .await?;
+                    .await
+            {
+                debug!(app_id, channel, error = %error, "failed to update advisory AI stream counter");
             }
         } else {
-            let was_present = self.cache_manager().has(&key).await?;
-            if let Err(error) = self.cache_manager().remove(&key).await {
-                debug!(
-                    app_id = %app_id,
-                    channel = %channel,
-                    message_serial = %record.message_serial().as_str(),
-                    error = %error,
-                    "AI active stream registry entry was already absent"
-                );
-            } else if was_present {
+            let removed = self
+                .remove_active_stream_at_or_before(&key, record.delivery_serial())
+                .await?;
+            if removed {
                 let next = self
                     .cache_manager()
                     .increment_by(
@@ -89,15 +86,17 @@ impl ConnectionHandler {
                         -1,
                         active_stream_ttl_seconds(self),
                     )
-                    .await?;
+                    .await
+                    .unwrap_or_default();
                 if next < 0 {
-                    self.cache_manager()
+                    let _ = self
+                        .cache_manager()
                         .set(
                             &active_stream_count_key(app_id, channel),
                             "0",
                             active_stream_ttl_seconds(self),
                         )
-                        .await?;
+                        .await;
                 }
             }
         }
@@ -107,29 +106,84 @@ impl ConnectionHandler {
 
     pub async fn ai_active_stream_count(&self, app_id: &str, channel: &str) -> Result<usize> {
         let key = active_stream_count_key(app_id, channel);
-        if self.cache_manager().get(&key).await?.is_none() {
-            let bootstrapped = self
-                .version_store()
-                .latest_by_history(app_id, channel)
-                .await?
-                .iter()
-                .filter(|record| record_ai_status(record) == Some("streaming"))
-                .count();
-            self.cache_manager()
-                .set(
-                    &key,
-                    &bootstrapped.to_string(),
-                    active_stream_ttl_seconds(self),
-                )
-                .await?;
-        }
-
-        Ok(self
-            .cache_manager()
-            .get(&key)
+        let authoritative = self
+            .version_store()
+            .latest_by_history(app_id, channel)
             .await?
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0))
+            .iter()
+            .filter(|record| record_ai_status(record) == Some("streaming"))
+            .count();
+        if let Err(error) = self
+            .cache_manager()
+            .set(
+                &key,
+                &authoritative.to_string(),
+                active_stream_ttl_seconds(self),
+            )
+            .await
+        {
+            debug!(app_id, channel, error = %error, "failed to refresh advisory AI stream counter");
+        }
+        Ok(authoritative)
+    }
+
+    async fn upsert_active_stream_entry(
+        &self,
+        key: &str,
+        entry: &ActiveAiStreamEntry,
+        value: &str,
+    ) -> Result<bool> {
+        let ttl = active_stream_ttl_seconds(self);
+        for _ in 0..REGISTRY_CAS_ATTEMPTS {
+            let Some(current_value) = self.cache_manager().get(key).await? else {
+                if self
+                    .cache_manager()
+                    .set_if_not_exists(key, value, ttl)
+                    .await?
+                {
+                    return Ok(true);
+                }
+                continue;
+            };
+            if let Ok(current) = sonic_rs::from_str::<ActiveAiStreamEntry>(&current_value)
+                && current.delivery_serial > entry.delivery_serial
+            {
+                return Ok(false);
+            }
+            if self
+                .cache_manager()
+                .compare_and_swap(key, &current_value, value, ttl)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        Err(Error::OverCapacity)
+    }
+
+    async fn remove_active_stream_at_or_before(
+        &self,
+        key: &str,
+        delivery_serial: u64,
+    ) -> Result<bool> {
+        for _ in 0..REGISTRY_CAS_ATTEMPTS {
+            let Some(current_value) = self.cache_manager().get(key).await? else {
+                return Ok(false);
+            };
+            if let Ok(current) = sonic_rs::from_str::<ActiveAiStreamEntry>(&current_value)
+                && current.delivery_serial > delivery_serial
+            {
+                return Ok(false);
+            }
+            if self
+                .cache_manager()
+                .compare_and_remove(key, &current_value)
+                .await?
+            {
+                return Ok(true);
+            }
+        }
+        Err(Error::OverCapacity)
     }
 
     pub async fn sweep_ai_stream_orphans_once(&self, now_ms: i64) -> Result<usize> {
@@ -360,13 +414,42 @@ fn cancelled_extras(current: &StoredVersionRecord) -> MessageExtras {
 
 async fn remove_active_stream_key(handler: &ConnectionHandler, entry: &ActiveAiStreamEntry) {
     let key = active_stream_key(&entry.app_id, &entry.channel, &entry.message_serial);
-    if let Err(error) = handler.cache_manager().remove(&key).await {
+    let Ok(expected) = sonic_rs::to_string(entry) else {
+        return;
+    };
+    let removed = match handler
+        .cache_manager()
+        .compare_and_remove(&key, &expected)
+        .await
+    {
+        Ok(removed) => removed,
+        Err(error) => {
+            debug!(
+                app_id = %entry.app_id,
+                channel = %entry.channel,
+                message_serial = %entry.message_serial,
+                error = %error,
+                "failed to compare-and-remove AI active stream registry key"
+            );
+            false
+        }
+    };
+    if removed
+        && let Err(error) = handler
+            .cache_manager()
+            .increment_by(
+                &active_stream_count_key(&entry.app_id, &entry.channel),
+                -1,
+                active_stream_ttl_seconds(handler),
+            )
+            .await
+    {
         debug!(
             app_id = %entry.app_id,
             channel = %entry.channel,
             message_serial = %entry.message_serial,
             error = %error,
-            "AI active stream registry key was already removed"
+            "failed to update advisory AI stream counter after removal"
         );
     }
 }
@@ -457,6 +540,41 @@ mod tests {
             }
             entries.insert(key.to_string(), value.to_string());
             Ok(true)
+        }
+
+        async fn compare_and_swap(
+            &self,
+            key: &str,
+            expected: &str,
+            value: &str,
+            _ttl_seconds: u64,
+        ) -> Result<bool> {
+            let mut entries = self.entries.lock().await;
+            if entries.get(key).map(String::as_str) != Some(expected) {
+                return Ok(false);
+            }
+            entries.insert(key.to_string(), value.to_string());
+            Ok(true)
+        }
+
+        async fn compare_and_remove(&self, key: &str, expected: &str) -> Result<bool> {
+            let mut entries = self.entries.lock().await;
+            if entries.get(key).map(String::as_str) != Some(expected) {
+                return Ok(false);
+            }
+            entries.remove(key);
+            Ok(true)
+        }
+
+        async fn increment_by(&self, key: &str, delta: i64, _ttl_seconds: u64) -> Result<i64> {
+            let mut entries = self.entries.lock().await;
+            let current = entries
+                .get(key)
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or_default();
+            let next = current.saturating_add(delta);
+            entries.insert(key.to_string(), next.to_string());
+            Ok(next)
         }
     }
 
@@ -642,5 +760,93 @@ mod tests {
             .unwrap();
         assert_eq!(latest.delivery_serial(), 2);
         assert_eq!(record_ai_status(&latest), Some("streaming"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_registry_writers_keep_the_newest_delivery_serial() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(TestCache::default());
+        let version_store = Arc::new(MemoryVersionStore::new());
+        let handler = build_handler(app_manager, cache.clone(), version_store).await;
+
+        let mut writers = Vec::new();
+        for serial in 1..=64 {
+            let handler = handler.clone();
+            writers.push(tokio::spawn(async move {
+                handler
+                    .record_ai_stream_activity(APP_ID, CHANNEL, &record(serial, streaming_extras()))
+                    .await
+                    .unwrap();
+            }));
+        }
+        for writer in writers {
+            writer.await.unwrap();
+        }
+
+        let value = cache
+            .get(&active_stream_key(APP_ID, CHANNEL, MESSAGE_SERIAL))
+            .await
+            .unwrap()
+            .expect("active stream entry");
+        let entry: ActiveAiStreamEntry = sonic_rs::from_str(&value).unwrap();
+        assert_eq!(entry.delivery_serial, 64);
+    }
+
+    #[tokio::test]
+    async fn stale_terminal_cannot_remove_a_newer_streaming_registration() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(TestCache::default());
+        let version_store = Arc::new(MemoryVersionStore::new());
+        let handler = build_handler(app_manager, cache.clone(), version_store).await;
+        handler
+            .record_ai_stream_activity(APP_ID, CHANNEL, &record(2, streaming_extras()))
+            .await
+            .unwrap();
+
+        let mut terminal = streaming_extras();
+        terminal
+            .ai
+            .as_mut()
+            .unwrap()
+            .transport
+            .as_mut()
+            .unwrap()
+            .insert("status".to_string(), "complete".to_string());
+        handler
+            .record_ai_stream_activity(APP_ID, CHANNEL, &record(1, terminal))
+            .await
+            .unwrap();
+
+        let value = cache
+            .get(&active_stream_key(APP_ID, CHANNEL, MESSAGE_SERIAL))
+            .await
+            .unwrap()
+            .expect("newer entry must remain");
+        let entry: ActiveAiStreamEntry = sonic_rs::from_str(&value).unwrap();
+        assert_eq!(entry.delivery_serial, 2);
+    }
+
+    #[tokio::test]
+    async fn evictable_counter_is_not_stream_limit_authority() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(TestCache::default());
+        let version_store = Arc::new(MemoryVersionStore::new());
+        version_store
+            .append_version(record(1, streaming_extras()))
+            .await
+            .unwrap();
+        cache
+            .set(&active_stream_count_key(APP_ID, CHANNEL), "999", 60)
+            .await
+            .unwrap();
+        let handler = build_handler(app_manager, cache, version_store).await;
+
+        assert_eq!(
+            handler
+                .ai_active_stream_count(APP_ID, CHANNEL)
+                .await
+                .unwrap(),
+            1
+        );
     }
 }

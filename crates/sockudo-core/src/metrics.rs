@@ -147,6 +147,9 @@ pub trait MetricsInterface: Send + Sync {
     /// Update currently active AI streams.
     fn update_ai_active_streams(&self, _app_id: &str, _streams: u64) {}
 
+    /// Apply an exact insertion/removal delta to currently active AI streams.
+    fn add_ai_active_streams(&self, _app_id: &str, _delta: i64) {}
+
     /// Observe AI stream lifetime in seconds.
     fn observe_ai_stream_duration(&self, _app_id: &str, _duration_seconds: f64) {}
 
@@ -164,6 +167,9 @@ pub trait MetricsInterface: Send + Sync {
 
     /// Update active AI append rollup streams.
     fn update_ai_rollup_active_streams(&self, _app_id: &str, _streams: u64) {}
+
+    /// Apply an exact insertion/removal delta to active rollup streams.
+    fn add_ai_rollup_active_streams(&self, _app_id: &str, _delta: i64) {}
 
     /// Observe latency from first pending append to flush.
     fn observe_ai_rollup_flush_latency(&self, _app_id: &str, _latency_ms: f64) {}

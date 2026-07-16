@@ -1,0 +1,48 @@
+{
+  "schema": "sockudo.ably-compat.performance-budgets.v1",
+  "criterion": {
+    "maxSignificantRegressionPercent": 10,
+    "requiredBenchmarks": [
+      "ably_compat_decode/json",
+      "ably_compat_decode/msgpack",
+      "ably_compat_projection/encrypted_binary",
+      "ably_compat_encode/json",
+      "ably_compat_encode/msgpack",
+      "ably_compat_error_encode/json",
+      "ably_compat_error_encode/msgpack",
+      "ably_compat_history_projection/one_message",
+      "ably_compat_replay/4096_messages",
+      "ably_compat_adapter_boundary/disabled",
+      "ably_compat_adapter_boundary/enabled_no_subscriber",
+      "ably_compat_adapter_fanout/json_only/10000",
+      "ably_compat_adapter_fanout/msgpack_only/10000",
+      "ably_compat_adapter_fanout/mixed/10000"
+    ]
+  },
+  "load": {
+    "minimumIndependentRuns": 3,
+    "significanceZ": 1.645,
+    "maxSignificantLatencyRegressionPercent": 10,
+    "maxSignificantThroughputRegressionPercent": 10,
+    "maxSignificantRssRegressionPercent": 10,
+    "maxPublishP99Ms": 100,
+    "maxDeliveryP99Ms": 250,
+    "maxRssPlateauSlopeBytesPerSecond": 1048576,
+    "maxPostDisconnectRssRatio": 1.05,
+    "maxCrossNodeReadyMs": 15000,
+    "requiredTopologies": ["one", "two"],
+    "requiredScenarios": [
+      "steady_publish",
+      "burst",
+      "payload_64k",
+      "encrypted_binary",
+      "fanout_1000",
+      "slow_consumers",
+      "recovery_storm",
+      "presence_churn",
+      "append_storm",
+      "stats_flush",
+      "push_enqueue"
+    ]
+  }
+}

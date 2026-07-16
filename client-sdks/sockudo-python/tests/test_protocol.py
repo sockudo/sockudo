@@ -55,6 +55,24 @@ def test_round_trips_messagepack() -> None:
     assert decoded.conflation_key == "room"
 
 
+def test_round_trips_native_binary_data() -> None:
+    data = bytes([0, 1, 2, 255])
+
+    for wire_format in (SockudoWireFormat.MESSAGEPACK, SockudoWireFormat.PROTOBUF):
+        payload = ProtocolCodec.encode_envelope(
+            {
+                "event": "sockudo:binary",
+                "channel": "binary:room-1",
+                "data": data,
+            },
+            wire_format,
+        )
+
+        decoded = ProtocolCodec.decode_event(payload, wire_format)
+
+        assert decoded.data == data
+
+
 def test_round_trips_json_uint64_serials_and_ai_extras() -> None:
     payload = ProtocolCodec.encode_envelope(
         {

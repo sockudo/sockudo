@@ -152,16 +152,26 @@ ON `sockudo_history_version_entries` (app_id, channel, delivery_serial);
 CREATE INDEX sockudo_history_version_entries_history_version_idx
 ON `sockudo_history_version_entries` (app_id, channel, history_serial, version_serial DESC);
 
+CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_streams` (
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    next_serial BIGINT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_events` (
     app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
-    message_serial VARCHAR(128) NOT NULL,
-    annotation_serial VARCHAR(128) NOT NULL,
+    message_serial VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    annotation_serial VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     annotation_type VARCHAR(256) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    annotation_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     name VARCHAR(255) NULL,
     client_id VARCHAR(255) NULL,
     count_value BIGINT NULL,
     action VARCHAR(64) NOT NULL,
+    create_annotation_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin GENERATED ALWAYS AS (CASE WHEN action = 'annotation.create' THEN annotation_id ELSE NULL END) STORED,
     data_bytes LONGBLOB NULL,
     encoding VARCHAR(255) NULL,
     annotation_timestamp_ms BIGINT NOT NULL,
@@ -171,25 +181,25 @@ CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_events` (
     PRIMARY KEY (app_id, channel, message_serial, annotation_serial)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX sockudo_history_annotation_events_summary_idx
+CREATE INDEX annotation_summary_idx
 ON `sockudo_history_annotation_events` (app_id, channel, message_serial, annotation_type, annotation_serial);
 
-CREATE INDEX sockudo_history_annotation_events_dedup_idx
-ON `sockudo_history_annotation_events` (app_id, channel, message_serial, annotation_serial);
-
-CREATE INDEX sockudo_history_annotation_events_raw_replay_idx
+CREATE INDEX annotation_raw_replay_idx
 ON `sockudo_history_annotation_events` (app_id, channel, annotation_serial);
 
-CREATE INDEX sockudo_history_annotation_events_created_at_idx
+CREATE INDEX annotation_created_at_idx
 ON `sockudo_history_annotation_events` (created_at_ms);
+
+CREATE UNIQUE INDEX annotation_create_id_uidx
+ON `sockudo_history_annotation_events` (app_id, channel, message_serial, annotation_type, create_annotation_id);
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_projections` (
     app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
-    message_serial VARCHAR(128) NOT NULL,
+    message_serial VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     annotation_type VARCHAR(256) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     summary_json JSON NOT NULL,
-    last_annotation_serial VARCHAR(128) NULL,
+    last_annotation_serial VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     updated_at_ms BIGINT NOT NULL,
     PRIMARY KEY (app_id, channel, message_serial, annotation_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

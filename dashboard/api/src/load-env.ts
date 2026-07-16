@@ -27,7 +27,9 @@ function loadDashboardEnv(): void {
       if (idx <= 0) continue;
       const key = trimmed.slice(0, idx).trim();
       if (!key) continue;
-      process.env[key] = parseEnvValue(trimmed.slice(idx + 1));
+      if (process.env[key] === undefined) {
+        process.env[key] = parseEnvValue(trimmed.slice(idx + 1));
+      }
     }
   }
 }

@@ -381,7 +381,7 @@ origin = [
   "http://127.0.0.1:5174",
   "http://localhost:5174",
 ]
-methods = ["GET", "POST", "DELETE", "OPTIONS"]
+methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 allowed_headers = [
   "Authorization",
   "Content-Type",

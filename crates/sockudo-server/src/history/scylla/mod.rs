@@ -22,6 +22,8 @@ use tracing::{error, info};
 #[derive(Clone)]
 struct HistoryTables {
     keyspace: String,
+    replication_class: String,
+    replication_factor: u32,
     streams: String,
     entries: String,
     version_streams: String,
@@ -140,6 +142,8 @@ impl ScyllaHistoryStore {
         };
         let tables = HistoryTables {
             keyspace,
+            replication_class: db_config.replication_class.clone(),
+            replication_factor: db_config.replication_factor,
             streams: format!("{}_streams", config.scylladb.table_prefix),
             entries: format!("{}_entries", config.scylladb.table_prefix),
             version_streams: format!("{}_version_streams", config.scylladb.table_prefix),
@@ -255,8 +259,53 @@ use state::*;
 
 mod store_impl;
 
+#[cfg(feature = "versioned-messages")]
+mod annotation_store;
 mod version_store;
+#[cfg(feature = "versioned-messages")]
+#[allow(unused_imports)]
+pub(super) use annotation_store::create_scylla_annotation_store;
 pub(super) use version_store::create_scylla_version_store;
 
 #[cfg(test)]
 mod tests;
+
+fn validate_cql_identifier(value: &str, label: &str) -> Result<()> {
+    if !value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(Error::Configuration(format!(
+            "{label} must contain only ASCII letters, digits, and underscores"
+        )));
+    }
+    Ok(())
+}
+
+async fn ensure_scylla_keyspace(
+    session: &Session,
+    keyspace: &str,
+    replication_class: &str,
+    replication_factor: u32,
+) -> Result<()> {
+    validate_cql_identifier(keyspace, "ScyllaDB keyspace")?;
+    validate_cql_identifier(replication_class, "ScyllaDB replication class")?;
+    if replication_factor == 0 {
+        return Err(Error::Configuration(
+            "ScyllaDB replication_factor must be greater than zero".to_string(),
+        ));
+    }
+    let query = format!(
+        "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH REPLICATION = {{'class': '{replication_class}', 'replication_factor': {replication_factor}}} AND tablets = {{'enabled': false}}"
+    );
+    session.query_unpaged(query, ()).await.map_err(|error| {
+        Error::Internal(format!(
+            "Failed to create ScyllaDB history keyspace: {error}"
+        ))
+    })?;
+    Ok(())
+}

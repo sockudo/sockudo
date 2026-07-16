@@ -29,6 +29,9 @@ pub struct ChannelSocketCount {
 pub struct CompressionParams<'a> {
     pub delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     pub channel_settings: Option<&'a sockudo_delta::ChannelDeltaSettings>,
+    /// Protocol-neutral commit identity retained for remote compatibility
+    /// projections. Local native compression does not inspect this value.
+    pub envelope: Option<MessageEnvelope>,
 }
 
 /// Interface for horizontal adapters that support cluster presence replication

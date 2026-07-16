@@ -249,18 +249,26 @@ class ProtoPusherMessage extends $pb.GeneratedMessage {
   void clearStreamId() => $_clearField(15);
 }
 
-enum ProtoMessageData_Kind { stringValue, structured, jsonValue, notSet }
+enum ProtoMessageData_Kind {
+  stringValue,
+  structured,
+  jsonValue,
+  binaryValue,
+  notSet
+}
 
 class ProtoMessageData extends $pb.GeneratedMessage {
   factory ProtoMessageData({
     $core.String? stringValue,
     ProtoStructuredData? structured,
     $core.String? jsonValue,
+    $core.List<$core.int>? binaryValue,
   }) {
     final result = create();
     if (stringValue != null) result.stringValue = stringValue;
     if (structured != null) result.structured = structured;
     if (jsonValue != null) result.jsonValue = jsonValue;
+    if (binaryValue != null) result.binaryValue = binaryValue;
     return result;
   }
 
@@ -278,17 +286,20 @@ class ProtoMessageData extends $pb.GeneratedMessage {
     1: ProtoMessageData_Kind.stringValue,
     2: ProtoMessageData_Kind.structured,
     3: ProtoMessageData_Kind.jsonValue,
+    4: ProtoMessageData_Kind.binaryValue,
     0: ProtoMessageData_Kind.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'ProtoMessageData',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'sockudo'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3])
+    ..oo(0, [1, 2, 3, 4])
     ..aOS(1, _omitFieldNames ? '' : 'stringValue')
     ..aOM<ProtoStructuredData>(2, _omitFieldNames ? '' : 'structured',
         subBuilder: ProtoStructuredData.create)
     ..aOS(3, _omitFieldNames ? '' : 'jsonValue')
+    ..a<$core.List<$core.int>>(
+        4, _omitFieldNames ? '' : 'binaryValue', $pb.PbFieldType.OY)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -313,11 +324,13 @@ class ProtoMessageData extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
   @$pb.TagNumber(3)
+  @$pb.TagNumber(4)
   ProtoMessageData_Kind whichKind() =>
       _ProtoMessageData_KindByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
   @$pb.TagNumber(3)
+  @$pb.TagNumber(4)
   void clearKind() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -348,6 +361,15 @@ class ProtoMessageData extends $pb.GeneratedMessage {
   $core.bool hasJsonValue() => $_has(2);
   @$pb.TagNumber(3)
   void clearJsonValue() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.List<$core.int> get binaryValue => $_getN(3);
+  @$pb.TagNumber(4)
+  set binaryValue($core.List<$core.int> value) => $_setBytes(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasBinaryValue() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearBinaryValue() => $_clearField(4);
 }
 
 class ProtoStructuredData extends $pb.GeneratedMessage {

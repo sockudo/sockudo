@@ -508,11 +508,11 @@ AIT-S80 [NEW] Capability token expiry emits 40142 flow.
 AIT-S81 [NEW] Revoked `jti` fails closed.
 AIT-S82 [NEW] `sockudo:auth` can refresh credentials without reconnect.
 AIT-S83 [NEW] `sockudo:presence_update` changes member data without member flap.
-AIT-S84 [VERIFIED] `[[push_rules]]` validates channel patterns, event allowlists, payload mapping fields, and per-rule rate limits at startup.
-AIT-S85 [VERIFIED] Matching channel publishes enqueue `PublishTarget::Channel` push work through the existing push pipeline.
-AIT-S86 [VERIFIED] Non-matching channel publishes do not enqueue push work.
-AIT-S87 [VERIFIED] Push rule payload mapping extracts string `title` and `body` and copies remaining object fields into `template_data.data`.
-AIT-S88 [VERIFIED] Push rule no-match scanning has a criterion benchmark with a <200 ns one-rule budget.
+AIT-P1 [VERIFIED] `[[push_rules]]` validates channel patterns, event allowlists, payload mapping fields, and per-rule rate limits at startup.
+AIT-P2 [VERIFIED] Matching channel publishes enqueue `PublishTarget::Channel` push work through the existing push pipeline.
+AIT-P3 [VERIFIED] Non-matching channel publishes do not enqueue push work.
+AIT-P4 [VERIFIED] Push rule payload mapping extracts string `title` and `body` and copies remaining object fields into `template_data.data`.
+AIT-P5 [VERIFIED] Push rule no-match scanning has a criterion benchmark with a <200 ns one-rule budget.
 AIT-S84 [NEW] Presence timeout defaults off for existing clients.
 AIT-S85 [NEW] Enabled presence timeout uses 15 s default grace.
 AIT-S86 [NEW] V2 resume cancels pending presence removal.

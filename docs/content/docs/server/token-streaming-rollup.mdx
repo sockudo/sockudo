@@ -36,6 +36,27 @@ The WebSocket query parameter `append_rollup_window` is accepted only for Protoc
 
 For a stream, the first append is delivered immediately. Later appends inside the fixed window are held and the latest append wins on egress. A terminal append with `extras.ai.transport.status` of `complete` or `cancelled`, plus `message.update` or `message.delete`, flushes pending append state before delivering the terminal operation.
 
+The scheduler keeps sharded flush and orphan deadline heaps. A tick peeks one heap per shard and
+only pops due entries; it does not scan active streams. Generation tokens make rescheduled and
+terminally removed deadlines harmless. The first append retains timing metadata only after its
+immediate fanout. Pending payload state is allocated when a later append actually needs
+coalescing.
+
+Deadline discovery and delivery are two phases. The worker enters the existing per-channel publish
+ordering gate before claiming a generation token, so a concurrent terminal mutation either flushes
+the pending append itself or waits behind the claimed delivery. Deferred context retains the app,
+channel, excluded socket/echo decision, full-message versus delta choice, original envelope, and
+continuity position.
+
+The worker processes at most 4,096 due or retry entries per tick and at most 16 channels
+concurrently. Messages within one channel remain sequential. App lookup and ordering-gate
+backpressure use a bounded 4,096-entry retry queue. Once a due delivery is claimed, its three
+fanout attempts stay inside the same channel ordering permit so a terminal mutation cannot
+overtake a retry. Exhaustion is logged with `outcome="reset_required"`; it is never treated as a
+successful delivery. Scheduler deadlines use a monotonic runtime clock and are unaffected by
+wall-clock corrections. Graceful shutdown stops deadline intake, drains pending content in bounded
+chunks, finishes bounded retries, and only then allows connection teardown.
+
 Prometheus exposes low-cardinality rollup metrics per app:
 
 - `sockudo_appends_received_total`
@@ -47,6 +68,8 @@ Prometheus exposes low-cardinality rollup metrics per app:
 Billing, rate limits, durable history, version storage, webhooks, and push accounting count original
 create/update/delete/append requests. Rollup metrics count both original append receipt and
 coalesced egress delivery, so operators can see the reduction ratio without hiding ingress load.
+Active-stream gauges are changed by exact insertion/removal deltas. Publishing a gauge does not
+lock or scan scheduler shards.
 
 Important edge cases:
 
@@ -58,5 +81,17 @@ Important edge cases:
   stream that advanced on another node.
 - `append_rollup_window=0` disables egress coalescing but does not change persistence or rate-limit
   behavior.
+
+The scheduler exposes `RollupEngine::tracking_overhead_bytes_per_stream()` for the inline tracking
+footprint, excluding key and payload allocations. The permanent Criterion matrix measures 2,000
+and 50,000 independent streams for empty tick, one-percent due, all due, and terminal-storm
+workloads:
+
+```bash
+cargo bench -p sockudo-ai-transport --bench rollup_engine -- --noplot
+```
+
+`rollup_scheduler::at_least_999_per_mille_due_by_window_plus_five_ms_under_documented_load`
+locks the deadline boundary at a 40 ms window, 5 ms tick allowance, and 2,000 independent streams.
 
 Run `scripts/ai-rollup-load-test.mjs` against a local server to exercise a synthetic `200 tok/s` stream and inspect delivery rate, final content, and append mutation latency.

@@ -592,6 +592,7 @@ where
                                         crate::connection_manager::CompressionParams {
                                             delta_compression,
                                             channel_settings: channel_settings.as_ref(),
+                                            envelope: broadcast.envelope.clone(),
                                         },
                                     )
                                     .await;

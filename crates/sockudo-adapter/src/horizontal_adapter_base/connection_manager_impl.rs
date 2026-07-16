@@ -108,6 +108,7 @@ where
                             crate::connection_manager::CompressionParams {
                                 delta_compression: Arc::clone(delta_compression),
                                 channel_settings: channel_settings.as_ref(),
+                                envelope: None,
                             },
                         )
                         .await;
@@ -288,6 +289,7 @@ where
                     crate::connection_manager::CompressionParams {
                         delta_compression: compression.delta_compression.clone(),
                         channel_settings: compression.channel_settings,
+                        envelope: compression.envelope.clone(),
                     },
                 )
                 .await;
@@ -358,7 +360,7 @@ where
             channel: channel.to_string(),
             message: message_json,
             presence_replication: None,
-            envelope: None,
+            envelope: compression.envelope,
             except_socket_id: except.map(|id| id.to_string()),
             timestamp_ms: start_time_ms.or_else(|| {
                 Some(

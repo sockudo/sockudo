@@ -1,0 +1,1 @@
+{"batch":[{"name":"event-one","channel":"public-room","data":"hello"},{"name":"ai-output","channels":["ai-room","audit-room"],"data":{"token":" world"},"message_id":"message-1","extras":{"ai":{"transport":{"run-id":"run-1","status":"streaming"}}}}]}

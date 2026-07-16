@@ -8,7 +8,14 @@ mod protocol;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use protocol::AblyFormat;
-use std::{collections::HashMap, hint::black_box, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    hint::black_box,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+const DELIVERY_DEDUPE_BOUND: usize = 4_096;
 
 fn benchmark_fanout_grouping(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("ably_fanout_grouping");
@@ -63,5 +70,64 @@ fn benchmark_fanout_grouping(criterion: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, benchmark_fanout_grouping);
+fn benchmark_remote_delivery_dedupe(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("ably_remote_delivery_dedupe");
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(2));
+    group.sample_size(50);
+
+    for deliveries in [1_usize, 100, 1_000, 10_000] {
+        let positions = (0..deliveries)
+            .map(|serial| (Arc::<str>::from("stream-1"), serial as u64 + 1))
+            .collect::<Vec<_>>();
+        group.bench_with_input(
+            BenchmarkId::new("pre_dedupe_identity_read", deliveries),
+            &positions,
+            |bencher, positions| {
+                bencher.iter(|| {
+                    for position in black_box(positions) {
+                        black_box(position);
+                    }
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("bounded_continuity_tracker", deliveries),
+            &positions,
+            |bencher, positions| {
+                bencher.iter_batched(
+                    || Mutex::new((0_u64, HashSet::new())),
+                    |state| {
+                        for (_, serial) in black_box(positions) {
+                            let mut state = state.lock().unwrap();
+                            if *serial <= state.0 || state.1.contains(serial) {
+                                continue;
+                            }
+                            if *serial == state.0.saturating_add(1) {
+                                state.0 = *serial;
+                                while let Some(next) = state.0.checked_add(1) {
+                                    if !state.1.remove(&next) {
+                                        break;
+                                    }
+                                    state.0 = next;
+                                }
+                            } else if state.1.len() < DELIVERY_DEDUPE_BOUND {
+                                state.1.insert(*serial);
+                            }
+                        }
+                        black_box(state)
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    benchmark_fanout_grouping,
+    benchmark_remote_delivery_dedupe
+);
 criterion_main!(benches);

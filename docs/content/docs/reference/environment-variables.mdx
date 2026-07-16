@@ -195,7 +195,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | `UNIX_SOCKET_PATH` | Unix socket filesystem path. |
 | `UNIX_SOCKET_PERMISSION_MODE` | Unix socket permission mode in octal. |
 | `CORS_ORIGINS` | Comma-separated CORS origin patterns. |
-| `CORS_METHODS` | Comma-separated CORS methods. |
+| `CORS_METHODS` | Comma-separated CORS methods. Defaults include `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` so browser clients can use every supported REST mutation route. |
 | `CORS_HEADERS` | Comma-separated allowed headers. |
 | `CORS_CREDENTIALS` | Enables CORS credentials. |
 

@@ -49,6 +49,21 @@ pub struct DeleteAnnotationRuntimeResult {
 }
 
 impl ConnectionHandler {
+    async fn reserve_annotation_serial(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<AnnotationSerial> {
+        if let Some(serial) = self
+            .annotation_store()
+            .reserve_annotation_serial(app_id, channel)
+            .await?
+        {
+            return Ok(serial);
+        }
+        AnnotationSerial::new(self.next_version_serial())
+    }
+
     pub async fn publish_annotation_runtime(
         &self,
         request: PublishAnnotationRuntimeRequest,
@@ -106,7 +121,9 @@ impl ConnectionHandler {
             }
         }
 
-        let serial = AnnotationSerial::new(self.next_version_serial())?;
+        let serial = self
+            .reserve_annotation_serial(&request.app.id, &request.channel)
+            .await?;
         let id = match request.id {
             Some(id) => id,
             None => AnnotationId::new(uuid::Uuid::new_v4().to_string())?,
@@ -217,7 +234,9 @@ impl ConnectionHandler {
             });
         }
 
-        let delete_serial = AnnotationSerial::new(self.next_version_serial())?;
+        let delete_serial = self
+            .reserve_annotation_serial(&request.app.id, &request.channel)
+            .await?;
         let annotation = Annotation {
             id: target.annotation.id.clone(),
             action: AnnotationAction::Delete,

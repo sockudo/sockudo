@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-#[cfg(any(feature = "redis", feature = "redis-cluster"))]
-use crate::fallback_cache_manager::FallbackCacheManager;
 use crate::memory_cache_manager::MemoryCacheManager;
 #[cfg(feature = "redis")]
 use crate::redis_cache_manager::{
@@ -84,12 +82,11 @@ impl CacheManagerFactory {
                     ..Default::default()
                 };
                 let manager = RedisCacheManager::new(standalone_redis_cache_config).await?;
-                let fallback_manager = FallbackCacheManager::new_with_health_check(
-                    Box::new(manager),
-                    config.memory.clone(),
-                )
-                .await;
-                Ok(Arc::new(fallback_manager))
+                // Redis is a coordination authority for nonces, idempotency,
+                // revocations, recovery leases, and distributed stats. A
+                // node-private memory fallback would acknowledge divergent
+                // state during an outage, so backend errors must propagate.
+                Ok(Arc::new(manager))
             }
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
@@ -122,12 +119,7 @@ impl CacheManagerFactory {
                     ..Default::default()
                 };
                 let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
-                let fallback_manager = FallbackCacheManager::new_with_health_check(
-                    Box::new(manager),
-                    config.memory.clone(),
-                )
-                .await;
-                Ok(Arc::new(fallback_manager))
+                Ok(Arc::new(manager))
             }
             CacheDriver::Memory => {
                 info!("{}", "Using memory cache manager.".to_string());
@@ -151,22 +143,17 @@ impl CacheManagerFactory {
             }
             #[cfg(not(feature = "redis"))]
             CacheDriver::Redis => {
-                info!(
-                    "{}",
-                    "Redis cache manager requested but not compiled in. Falling back to memory cache."
-                );
-                let manager =
-                    MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());
-                Ok(Arc::new(manager))
+                Err(Error::Cache(
+                    "Redis cache manager requested but the redis feature is not enabled"
+                        .to_string(),
+                ))
             }
             #[cfg(not(feature = "redis-cluster"))]
             CacheDriver::RedisCluster => {
-                info!(
-                    "Redis Cluster cache manager requested but not compiled in. Falling back to memory cache."
-                );
-                let manager =
-                    MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());
-                Ok(Arc::new(manager))
+                Err(Error::Cache(
+                    "Redis Cluster cache manager requested but the redis-cluster feature is not enabled"
+                        .to_string(),
+                ))
             }
         }
     }

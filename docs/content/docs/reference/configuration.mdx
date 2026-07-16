@@ -187,6 +187,19 @@ Annotations, including the optional Ably projection, require both global
 or on the matching channel namespace. Enabling the Ably facade does not bypass
 either gate, and Protocol V1 never receives annotation frames.
 
+`[versioned_messages].driver` also selects the annotation authority. `postgres`,
+`mysql`, `dynamodb`, `scylladb`, and `surrealdb` each use their native atomic or
+conditional commit primitives for annotation serials, stable create IDs,
+canonical events, projections, replay, and retention. The corresponding Cargo
+feature and database configuration must be present. `memory` is a single-node
+development implementation; clustered startup rejects it.
+
+For any non-local adapter, use `cache.driver = "redis"` or
+`cache.driver = "redis-cluster"` for compatibility tokens, nonce replay,
+revocations, session-owner leases, idempotency receipts, and retained stats.
+Sockudo fails startup or the affected security operation when this coordination
+authority is unavailable; it does not fall back to a private per-process cache.
+
 ## Push
 
 | Section | Purpose |

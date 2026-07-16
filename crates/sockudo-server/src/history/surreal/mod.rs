@@ -189,6 +189,12 @@ use state::*;
 
 mod store_impl;
 
+#[cfg(feature = "versioned-messages")]
+mod annotation_store;
+#[cfg(feature = "versioned-messages")]
+#[allow(unused_imports)]
+pub(super) use annotation_store::create_surreal_annotation_store;
+
 mod version_store;
 #[allow(unused_imports)]
 pub(super) use version_store::create_surreal_version_store;

@@ -2,9 +2,11 @@ use ahash::AHashMap;
 use parking_lot::Mutex;
 use sockudo_protocol::messages::{
     AI_EVENT_CANCEL, AI_EVENT_LEGACY_TURN_END, AI_EVENT_LEGACY_TURN_START, AI_EVENT_RUN_END,
-    AI_EVENT_RUN_RESUME, AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, MessageData, PusherMessage,
+    AI_EVENT_RUN_RESUME, AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, AiTransportHeaders, MessageData,
+    PusherMessage,
 };
 use sockudo_protocol::versioned_messages::extract_runtime_message_serial;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const DEFAULT_TRACKER_SHARDS: usize = 64;
 
@@ -71,6 +73,7 @@ pub struct CancelRequested {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamMetricUpdate {
     pub active_streams: usize,
+    pub active_stream_delta: isize,
     pub bytes: Option<usize>,
     pub ended_duration_seconds: Option<f64>,
 }
@@ -96,6 +99,7 @@ struct StreamKey {
 #[derive(Debug, Clone)]
 struct StreamState {
     started_ms: i64,
+    last_seen_ms: i64,
 }
 
 struct StreamShard {
@@ -105,6 +109,7 @@ struct StreamShard {
 /// Tracks AI Transport observability state without interpreting codec payloads.
 pub struct AiObservabilityTracker {
     shards: Vec<StreamShard>,
+    active_streams: AtomicUsize,
 }
 
 impl Default for AiObservabilityTracker {
@@ -122,7 +127,10 @@ impl AiObservabilityTracker {
                 streams: Mutex::new(AHashMap::new()),
             })
             .collect();
-        Self { shards }
+        Self {
+            shards,
+            active_streams: AtomicUsize::new(0),
+        }
     }
 
     #[must_use]
@@ -133,13 +141,19 @@ impl AiObservabilityTracker {
         message: &PusherMessage,
         now_ms: i64,
     ) -> AiObservabilityUpdate {
-        let mut update = classify_run_event(message);
+        let headers = match message.validated_ai_transport_headers() {
+            Ok(headers) => headers,
+            Err(_) => {
+                let mut update = classify_run_event(message, None);
+                update.unparseable = true;
+                return update;
+            }
+        };
+        let mut update = classify_run_event(message, headers.as_ref());
 
-        if message.validate_ai_headers().is_err() {
-            update.unparseable = true;
-        }
-
-        if let Some(stream) = self.observe_stream(app_id, channel, message, now_ms) {
+        if let Some(stream) =
+            self.observe_stream(app_id, channel, message, headers.as_ref(), now_ms)
+        {
             update.stream = Some(stream);
         }
 
@@ -148,10 +162,31 @@ impl AiObservabilityTracker {
 
     #[must_use]
     pub fn active_streams(&self) -> usize {
-        self.shards
-            .iter()
-            .map(|shard| shard.streams.lock().len())
-            .sum()
+        self.active_streams.load(Ordering::Acquire)
+    }
+
+    /// Expire streams whose terminal event never arrived.
+    #[must_use]
+    pub fn expire_stale(&self, now_ms: i64, max_idle_ms: i64) -> Vec<String> {
+        let mut expired_apps = Vec::new();
+        for shard in &self.shards {
+            let mut streams = shard.streams.lock();
+            let expired = streams
+                .iter()
+                .filter_map(|(key, state)| {
+                    (now_ms.saturating_sub(state.last_seen_ms) >= max_idle_ms)
+                        .then_some(key.clone())
+                })
+                .collect::<Vec<_>>();
+            for key in expired {
+                if streams.remove(&key).is_some() {
+                    let previous = self.active_streams.fetch_sub(1, Ordering::AcqRel);
+                    debug_assert!(previous > 0, "AI observability active stream underflow");
+                    expired_apps.push(key.app_id);
+                }
+            }
+        }
+        expired_apps
     }
 
     fn observe_stream(
@@ -159,9 +194,10 @@ impl AiObservabilityTracker {
         app_id: &str,
         channel: &str,
         message: &PusherMessage,
+        headers: Option<&AiTransportHeaders<'_>>,
         now_ms: i64,
     ) -> Option<StreamMetricUpdate> {
-        let headers = message.ai_transport_headers()?;
+        let headers = headers?;
         let status = headers.status()?;
         let message_serial = extract_runtime_message_serial(message)
             .or(headers.codec_message_id())
@@ -177,11 +213,23 @@ impl AiObservabilityTracker {
 
         match status {
             "streaming" => {
-                streams
-                    .entry(key)
-                    .or_insert(StreamState { started_ms: now_ms });
+                let active_stream_delta = match streams.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                        occupied.get_mut().last_seen_ms = now_ms;
+                        0
+                    }
+                    std::collections::hash_map::Entry::Vacant(vacant) => {
+                        vacant.insert(StreamState {
+                            started_ms: now_ms,
+                            last_seen_ms: now_ms,
+                        });
+                        self.active_streams.fetch_add(1, Ordering::AcqRel);
+                        1
+                    }
+                };
                 Some(StreamMetricUpdate {
-                    active_streams: self.active_streams_locked_delta(&streams, 0),
+                    active_streams: self.active_streams(),
+                    active_stream_delta,
                     bytes,
                     ended_duration_seconds: None,
                 })
@@ -190,8 +238,16 @@ impl AiObservabilityTracker {
                 let ended = streams
                     .remove(&key)
                     .map(|state| now_ms.saturating_sub(state.started_ms).max(0) as f64 / 1_000.0);
+                let active_stream_delta = if ended.is_some() {
+                    let previous = self.active_streams.fetch_sub(1, Ordering::AcqRel);
+                    debug_assert!(previous > 0, "AI observability active stream underflow");
+                    -1
+                } else {
+                    0
+                };
                 Some(StreamMetricUpdate {
-                    active_streams: self.active_streams_locked_delta(&streams, 0),
+                    active_streams: self.active_streams(),
+                    active_stream_delta,
                     bytes,
                     ended_duration_seconds: ended,
                 })
@@ -200,44 +256,22 @@ impl AiObservabilityTracker {
         }
     }
 
-    fn active_streams_locked_delta(
-        &self,
-        locked_shard: &AHashMap<StreamKey, StreamState>,
-        delta: isize,
-    ) -> usize {
-        let locked_len = locked_shard.len().saturating_add_signed(delta);
-        let other_len: usize = self
-            .shards
-            .iter()
-            .map(|shard| match shard.streams.try_lock() {
-                Some(guard) => {
-                    if std::ptr::eq(&*guard, locked_shard) {
-                        0
-                    } else {
-                        guard.len()
-                    }
-                }
-                None => 0,
-            })
-            .sum();
-        locked_len + other_len
-    }
-
     #[inline]
     fn shard(&self, key: &StreamKey) -> &StreamShard {
         &self.shards[fast_stream_shard(key, self.shards.len())]
     }
 }
 
-fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
+fn classify_run_event(
+    message: &PusherMessage,
+    headers: Option<&AiTransportHeaders<'_>>,
+) -> AiObservabilityUpdate {
     let event = message.event.as_deref();
-    let headers = message.ai_transport_headers();
     match event {
         Some(AI_EVENT_RUN_START | AI_EVENT_LEGACY_TURN_START) => AiObservabilityUpdate {
             run_started: Some(RunStarted {
-                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                run_id: headers.and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
-                    .as_ref()
                     .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
@@ -245,9 +279,8 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
         },
         Some(AI_EVENT_RUN_SUSPEND) => AiObservabilityUpdate {
             run_suspended: Some(RunLifecycleSignal {
-                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                run_id: headers.and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
-                    .as_ref()
                     .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
@@ -255,22 +288,20 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
         },
         Some(AI_EVENT_RUN_RESUME) => AiObservabilityUpdate {
             run_resumed: Some(RunLifecycleSignal {
-                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                run_id: headers.and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
-                    .as_ref()
                     .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
             ..AiObservabilityUpdate::default()
         },
         Some(AI_EVENT_RUN_END | AI_EVENT_LEGACY_TURN_END) => {
-            let reason = RunEndReason::from_header(headers.as_ref().and_then(|h| h.run_reason()));
+            let reason = RunEndReason::from_header(headers.and_then(|h| h.run_reason()));
             if reason == RunEndReason::Suspended {
                 AiObservabilityUpdate {
                     run_suspended: Some(RunLifecycleSignal {
-                        run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                        run_id: headers.and_then(|h| h.run_id()).map(str::to_owned),
                         client_id: headers
-                            .as_ref()
                             .and_then(|h| h.run_client_identity())
                             .map(str::to_owned),
                     }),
@@ -279,12 +310,9 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
             } else {
                 AiObservabilityUpdate {
                     run_ended: Some(RunEnded {
-                        run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                        run_id: headers.and_then(|h| h.run_id()).map(str::to_owned),
                         reason,
-                        error_code: headers
-                            .as_ref()
-                            .and_then(|h| h.error_code())
-                            .map(str::to_owned),
+                        error_code: headers.and_then(|h| h.error_code()).map(str::to_owned),
                     }),
                     ..AiObservabilityUpdate::default()
                 }
@@ -292,9 +320,8 @@ fn classify_run_event(message: &PusherMessage) -> AiObservabilityUpdate {
         }
         Some(AI_EVENT_CANCEL) => AiObservabilityUpdate {
             cancel_requested: Some(CancelRequested {
-                run_id: headers.as_ref().and_then(|h| h.run_id()).map(str::to_owned),
+                run_id: headers.and_then(|h| h.run_id()).map(str::to_owned),
                 client_id: headers
-                    .as_ref()
                     .and_then(|h| h.run_client_identity())
                     .map(str::to_owned),
             }),
@@ -500,5 +527,30 @@ mod tests {
         assert_eq!(stream.active_streams, 0);
         assert_eq!(stream.bytes, Some(4));
         assert_eq!(stream.ended_duration_seconds, Some(1.5));
+    }
+
+    #[test]
+    fn expires_streams_that_never_receive_a_terminal_event() {
+        let tracker = AiObservabilityTracker::new(4);
+        let update = tracker.observe(
+            "app",
+            "ai-chat",
+            &ai_message(
+                "sockudo:message.append",
+                &[
+                    ("codec-message-id", "msg-expired"),
+                    ("status", "streaming"),
+                    ("stream", "true"),
+                ],
+                "abc",
+            ),
+            1_000,
+        );
+        assert_eq!(update.stream.unwrap().active_stream_delta, 1);
+
+        assert!(tracker.expire_stale(1_999, 1_000).is_empty());
+        assert_eq!(tracker.expire_stale(2_000, 1_000), vec!["app"]);
+        assert_eq!(tracker.active_streams(), 0);
+        assert!(tracker.expire_stale(3_000, 1_000).is_empty());
     }
 }
