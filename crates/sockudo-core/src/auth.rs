@@ -88,8 +88,8 @@ impl AuthValidator {
 
         if app.is_none() {
             debug!(
-                "App not found for key: {}",
-                auth_params_from_query_struct.auth_key
+                reason = "unknown_app_key",
+                "api request authentication failed"
             );
             return Err(Error::InvalidAppKey);
         }
@@ -117,7 +117,10 @@ impl AuthValidator {
         let auth_ts: i64 = match auth_ts_str.parse() {
             Ok(ts) => ts,
             Err(_) => {
-                debug!("Invalid auth_timestamp format: {}", auth_ts_str);
+                debug!(
+                    reason = "invalid_timestamp_format",
+                    "api request authentication failed"
+                );
                 return Err(Error::Auth("Invalid auth_timestamp format".to_string()));
             }
         };
@@ -125,10 +128,8 @@ impl AuthValidator {
         let current_ts = Utc::now().timestamp();
         if (current_ts - auth_ts).abs() > 600 {
             debug!(
-                "Timestamp validation failed. Server time: {}, Provided timestamp: {}, Difference: {}s",
-                current_ts,
-                auth_ts,
-                (current_ts - auth_ts).abs()
+                reason = "timestamp_expired",
+                "api request authentication failed"
             );
             return Err(Error::Auth(
                 "Timestamp expired or too far in the future".to_string(),
@@ -148,8 +149,8 @@ impl AuthValidator {
                         let actual_body_md5 = format!("{:x}", md5::compute(body_bytes));
                         if !secure_compare(&actual_body_md5, body_md5_from_query) {
                             debug!(
-                                "body_md5 mismatch. Expected from query: {}, Calculated from body: {}",
-                                body_md5_from_query, actual_body_md5
+                                reason = "body_md5_mismatch",
+                                "api request authentication failed"
                             );
                             return Err(Error::Auth("body_md5 mismatch".to_string()));
                         }
@@ -174,8 +175,9 @@ impl AuthValidator {
             }
         } else if params_for_signing_string.contains_key("body_md5") {
             debug!(
-                "{} request should not contain 'body_md5' in query parameters.",
-                uppercased_http_method
+                http_method = %uppercased_http_method,
+                reason = "body_md5_not_allowed",
+                "api request authentication failed"
             );
             return Err(Error::Auth(format!(
                 "body_md5 must not be present in query parameters for {uppercased_http_method} requests"

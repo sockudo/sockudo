@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Notify;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub struct RabbitMqTransport {
     connection: Arc<Connection>,
@@ -77,8 +77,11 @@ impl HorizontalTransport for RabbitMqTransport {
         }
 
         info!(
-            "RabbitMQ transport initialized with exchanges: {}, {}, {}",
-            broadcast_exchange, request_exchange, response_exchange
+            adapter = "rabbitmq",
+            broadcast_exchange = %broadcast_exchange,
+            request_exchange = %request_exchange,
+            response_exchange = %response_exchange,
+            "transport initialized"
         );
 
         Ok(Self {
@@ -211,7 +214,7 @@ impl RabbitMqTransport {
         let is_running = self.is_running.clone();
         let metrics = self.metrics.clone();
 
-        info!("RabbitMQ transport consuming {kind} from queue {}", queue);
+        info!(adapter = "rabbitmq", kind = kind, queue = %queue, "transport consuming from queue");
 
         tokio::spawn(async move {
             loop {
@@ -230,13 +233,13 @@ impl RabbitMqTransport {
                         Self::handle_delivery(delivery, &handler, &metrics, kind).await;
                     }
                     Err(e) => {
-                        error!("RabbitMQ {kind} consumer error: {}", e);
+                        error!(adapter = "rabbitmq", kind = kind, error = %e, "consumer loop error");
                         break;
                     }
                 }
             }
 
-            warn!("RabbitMQ {kind} consumer loop ended");
+            warn!(adapter = "rabbitmq", kind = kind, "consumer loop ended");
         });
 
         Ok(())
@@ -278,7 +281,7 @@ impl RabbitMqTransport {
         let response_channel = channel;
         let response_exchange = response_exchange.to_owned();
 
-        info!("RabbitMQ transport consuming requests from queue {}", queue);
+        info!(adapter = "rabbitmq", queue = %queue, "transport consuming requests from queue");
 
         tokio::spawn(async move {
             loop {
@@ -296,8 +299,8 @@ impl RabbitMqTransport {
                     Ok(delivery) => {
                         match sonic_rs::from_slice::<RequestBody>(&delivery.data) {
                             Ok(request) => match handler(request).await {
-                                Ok(response) => {
-                                    if let Ok(payload) = sonic_rs::to_vec(&response) {
+                                Ok(response) => match sonic_rs::to_vec(&response) {
+                                    Ok(payload) => {
                                         if let Err(e) = response_channel
                                             .basic_publish(
                                                 response_exchange.as_str().into(),
@@ -308,41 +311,47 @@ impl RabbitMqTransport {
                                             )
                                             .await
                                         {
-                                            warn!("Failed to publish RabbitMQ response: {}", e);
+                                            warn!(adapter = "rabbitmq", error = %e, "response publish failed");
                                         } else {
-                                            debug!("Published RabbitMQ response");
+                                            trace!(
+                                                adapter = "rabbitmq",
+                                                "message published to transport"
+                                            );
                                         }
                                     }
-                                }
+                                    Err(e) => {
+                                        warn!(adapter = "rabbitmq", error = %e, "response serialization failed");
+                                    }
+                                },
                                 Err(
                                     Error::OwnRequestIgnored
                                     | Error::RequestNotForThisNode
                                     | Error::NoResponseNeeded,
                                 ) => {}
                                 Err(e) => {
-                                    warn!("RabbitMQ request handler failed: {}", e);
+                                    warn!(adapter = "rabbitmq", error = %e, "request handler failed");
                                 }
                             },
                             Err(e) => {
                                 if let Some(metrics) = metrics.get() {
                                     metrics.mark_horizontal_transport_message_dropped("rabbitmq");
                                 }
-                                warn!("Failed to parse RabbitMQ request payload: {}", e);
+                                warn!(adapter = "rabbitmq", error = %e, "request payload parse failed");
                             }
                         }
 
                         if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
-                            warn!("Failed to ack RabbitMQ request delivery: {}", e);
+                            warn!(adapter = "rabbitmq", error = %e, "request delivery ack failed");
                         }
                     }
                     Err(e) => {
-                        error!("RabbitMQ request consumer error: {}", e);
+                        error!(adapter = "rabbitmq", error = %e, "request consumer loop error");
                         break;
                     }
                 }
             }
 
-            warn!("RabbitMQ request consumer loop ended");
+            warn!(adapter = "rabbitmq", "request consumer loop ended");
         });
 
         Ok(())
@@ -385,10 +394,11 @@ impl RabbitMqTransport {
             .map_err(|e| Error::Internal(format!("Failed to bind RabbitMQ queue: {e}")))?;
 
         debug!(
-            "RabbitMQ transport bound {} queue {} to exchange {}",
-            kind,
-            queue.name().as_str(),
-            exchange
+            adapter = "rabbitmq",
+            kind = kind,
+            queue = %queue.name().as_str(),
+            exchange = %exchange,
+            "queue bound to exchange"
         );
 
         Ok(queue.name().as_str().to_string())
@@ -410,12 +420,12 @@ impl RabbitMqTransport {
                 if let Some(metrics) = metrics.get() {
                     metrics.mark_horizontal_transport_message_dropped(driver);
                 }
-                warn!("Failed to parse RabbitMQ payload: {}", e)
+                warn!(adapter = "rabbitmq", error = %e, "delivery payload parse failed")
             }
         }
 
         if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
-            warn!("Failed to ack RabbitMQ delivery: {}", e);
+            warn!(adapter = "rabbitmq", error = %e, "delivery ack failed");
         }
     }
 }

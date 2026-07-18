@@ -198,22 +198,19 @@ impl SockudoServer {
 
             match TcpListener::bind(metrics_addr).await {
                 Ok(metrics_listener) => {
-                    info!("Metrics server listening on http://{}", metrics_addr);
+                    info!(listen_addr = %metrics_addr, "metrics server listening");
                     let metrics_router_clone = metrics_router.clone();
                     tokio::spawn(async move {
                         if let Err(e) =
                             axum::serve(metrics_listener, metrics_router_clone.into_make_service())
                                 .await
                         {
-                            error!("Metrics server error: {}", e);
+                            error!(error = %e, "metrics server error");
                         }
                     });
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to bind metrics server on {}: {}. Metrics will not be available.",
-                        metrics_addr, e
-                    );
+                    warn!(listen_addr = %metrics_addr, error = %e, "failed to bind metrics server, metrics will not be available");
                 }
             }
         }
@@ -245,29 +242,26 @@ impl SockudoServer {
 
     #[cfg(unix)]
     async fn start_unix_socket_server(&self, http_router: Router) -> Result<()> {
-        info!(
-            "Starting Unix socket server at path: {}",
-            self.config.unix_socket.path
-        );
+        info!(listen_addr = %self.config.unix_socket.path, "starting unix socket server");
         let path = std::path::PathBuf::from(&self.config.unix_socket.path);
 
         if path.exists() {
             match tokio::fs::remove_file(&path).await {
                 Ok(()) => {
-                    debug!("Removed existing Unix socket file: {}", path.display());
+                    debug!(socket_path = %path.display(), "removed existing unix socket file");
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    debug!("Unix socket file was already removed: {}", path.display());
+                    debug!(socket_path = %path.display(), "unix socket file was already removed");
                 }
                 Err(e) => {
-                    warn!("Failed to remove existing Unix socket file: {}", e);
+                    warn!(error = %e, "failed to remove existing unix socket file");
                 }
             }
         }
 
         if let Some(parent) = path.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                error!("Failed to create parent directory for Unix socket: {}", e);
+                error!(error = %e, "failed to create parent directory for unix socket");
                 return Err(Error::Internal(format!(
                     "Failed to create Unix socket directory: {}",
                     e
@@ -276,15 +270,9 @@ impl SockudoServer {
 
             if let Err(e) = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))
             {
-                warn!(
-                    "Failed to set secure permissions on Unix socket parent directory: {}",
-                    e
-                );
+                warn!(error = %e, "failed to set secure permissions on unix socket parent directory");
             } else {
-                info!(
-                    "Set secure permissions (755) on Unix socket parent directory: {}",
-                    parent.display()
-                );
+                info!(socket_dir = %parent.display(), "set secure permissions on unix socket parent directory");
             }
         }
 
@@ -295,26 +283,26 @@ impl SockudoServer {
             &path,
             std::fs::Permissions::from_mode(self.config.unix_socket.permission_mode),
         ) {
-            warn!("Failed to set Unix socket permissions: {}", e);
+            warn!(error = %e, "failed to set unix socket permissions");
         } else {
             info!(
-                "Set Unix socket permissions to {:o} ({})",
-                self.config.unix_socket.permission_mode,
-                format_permission_string(self.config.unix_socket.permission_mode)
+                permission_mode = self.config.unix_socket.permission_mode,
+                permission_str = %format_permission_string(self.config.unix_socket.permission_mode),
+                "set unix socket permissions"
             );
         }
 
         let middleware = tower::util::MapRequestLayer::new(rewrite_request_uri);
         let router_with_middleware = middleware.layer(http_router);
 
-        info!("Unix socket server listening on: {}", path.display());
+        info!(listen_addr = %path.display(), "unix socket server listening");
         let app = router_with_middleware.into_make_service_with_connect_info::<UdsConnectInfo>();
         let running = &self.state.running;
 
         tokio::select! {
             result = axum::serve(uds, app) => {
                 if let Err(err) = result {
-                    error!("Unix socket server error: {}", err);
+                    error!(error = %err, "unix socket server error");
                 }
             }
             _ = self.shutdown_signal() => {
@@ -354,10 +342,7 @@ impl SockudoServer {
                     .parse::<std::net::IpAddr>()
                     .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
                 let redirect_addr = SocketAddr::from((host_ip, http_port));
-                info!(
-                    "Starting HTTP to HTTPS redirect server on {}",
-                    redirect_addr
-                );
+                info!(listen_addr = %redirect_addr, "starting http to https redirect server");
 
                 let https_port = self.config.port;
                 let redirect_app =
@@ -384,18 +369,17 @@ impl SockudoServer {
                             )
                             .await
                             {
-                                error!("HTTP redirect server error: {}", e);
+                                error!(error = %e, "http redirect server error");
                             }
                         });
                     }
-                    Err(e) => warn!(
-                        "Failed to bind HTTP redirect server on {}: {}. Redirect will not be available.",
-                        redirect_addr, e
-                    ),
+                    Err(e) => {
+                        warn!(listen_addr = %redirect_addr, error = %e, "failed to bind http redirect server, redirect will not be available")
+                    }
                 }
             }
 
-            info!("HTTPS server listening on https://{}", http_addr);
+            info!(listen_addr = %http_addr, "https server listening");
             let running = &self.state.running;
             let server = axum_server::bind(http_addr).acceptor(
                 RustlsAcceptor::new(tls_config)
@@ -405,7 +389,7 @@ impl SockudoServer {
             tokio::select! {
                 result = server.serve(router_with_middleware_ssl.into_make_service_with_connect_info::<SocketAddr>()) => {
                     if let Err(err) = result {
-                        error!("HTTPS server error: {}", err);
+                        error!(error = %err, "https server error");
                     }
                 }
                 _ = self.shutdown_signal() => {
@@ -415,7 +399,7 @@ impl SockudoServer {
             }
         } else {
             info!("SSL is not enabled, starting HTTP server");
-            info!("HTTP server listening on http://{}", http_addr);
+            info!(listen_addr = %http_addr, "http server listening");
 
             let running = &self.state.running;
             let http_server = axum_server::bind(http_addr)
@@ -427,7 +411,7 @@ impl SockudoServer {
             tokio::select! {
                 res = http_server => {
                     if let Err(err) = res {
-                        error!("HTTP server error: {}", err);
+                        error!(error = %err, "http server error");
                     }
                 }
                 _ = self.shutdown_signal() => {
@@ -494,7 +478,7 @@ impl SockudoServer {
             .announce_node_departure()
             .await
         {
-            warn!("Failed to announce node departure: {}", e);
+            warn!(error = %e, "failed to announce node departure");
         }
 
         let mut connections_to_cleanup: Vec<(String, WebSocketRef)> = Vec::new();
@@ -511,20 +495,20 @@ impl SockudoServer {
                                 }
                             }
                             Err(e) => {
-                                warn!(%app_id, "Failed to get sockets for namespace during shutdown: {}", e);
+                                warn!(%app_id, error = %e, "failed to get sockets for namespace during shutdown");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to get namespaces during shutdown: {}", e);
+                    warn!(error = %e, "failed to get namespaces during shutdown");
                 }
             }
         }
 
         info!(
-            "Collected {} connections to cleanup.",
-            connections_to_cleanup.len()
+            connection_count = connections_to_cleanup.len(),
+            "collected connections to cleanup"
         );
 
         if !connections_to_cleanup.is_empty() {
@@ -534,7 +518,7 @@ impl SockudoServer {
                     .map(|(_app_id, ws_raw_obj)| async move {
                         let mut ws = ws_raw_obj.inner.lock().await;
                         if let Err(e) = ws.close(4200, "Server shutting down".to_string()).await {
-                            error!("Failed to close WebSocket: {:?}", e);
+                            error!(error = %e, "failed to close websocket");
                         }
                     });
 
@@ -554,8 +538,8 @@ impl SockudoServer {
                 handle.abort();
             }
             info!(
-                "Aborted {} push worker supervisor tasks",
-                self.state.push_worker_handles.len()
+                worker_count = self.state.push_worker_handles.len(),
+                "aborted push worker supervisor tasks"
             );
         }
 
@@ -565,12 +549,12 @@ impl SockudoServer {
 
         // Disconnect from backend services
         if let Err(e) = self.state.cache_manager.disconnect().await {
-            warn!("Error disconnecting cache manager: {}", e);
+            warn!(error = %e, "error disconnecting cache manager");
         }
         if let Some(queue_manager_arc) = &self.state.queue_manager
             && let Err(e) = queue_manager_arc.disconnect().await
         {
-            warn!("Error disconnecting queue manager: {}", e);
+            warn!(error = %e, "error disconnecting queue manager");
         }
 
         // Clean up Unix socket file if it exists (with race condition handling)
@@ -579,20 +563,20 @@ impl SockudoServer {
             let path = std::path::PathBuf::from(&self.config.unix_socket.path);
             match tokio::fs::remove_file(&path).await {
                 Ok(()) => {
-                    info!("Removed Unix socket file: {}", self.config.unix_socket.path);
+                    info!(socket_path = %self.config.unix_socket.path, "removed unix socket file");
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    debug!("Unix socket file was already removed: {}", path.display());
+                    debug!(socket_path = %path.display(), "unix socket file was already removed");
                 }
                 Err(e) => {
-                    warn!("Failed to remove Unix socket file during shutdown: {}", e);
+                    warn!(error = %e, "failed to remove unix socket file during shutdown");
                 }
             }
         }
 
         info!(
-            "Waiting for shutdown grace period: {} seconds",
-            self.config.shutdown_grace_period
+            grace_period_s = self.config.shutdown_grace_period,
+            "waiting for shutdown grace period"
         );
         tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         info!("Server stopped");

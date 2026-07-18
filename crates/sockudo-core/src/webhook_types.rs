@@ -81,6 +81,10 @@ pub struct LambdaConfig {
 // The `payload` field will be structured to produce the Pusher-compatible format when sent.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct JobData {
+    /// Correlates one final queue envelope across webhook processing. Optional
+    /// for rolling compatibility with records produced by older versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
     pub app_key: String,
     pub app_id: String,
     pub app_secret: String,
@@ -111,3 +115,15 @@ pub type JobProcessorFnAsync = Box<
         + Sync
         + 'static,
 >;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_job_data_without_job_id_is_accepted() {
+        let legacy = r#"{"app_key":"key","app_id":"app","app_secret":"secret","payload":{"time_ms":1,"events":[]},"original_signature":"signature"}"#;
+        let job: JobData = sonic_rs::from_str(legacy).expect("legacy job data should deserialize");
+        assert_eq!(job.job_id, None);
+    }
+}

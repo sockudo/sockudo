@@ -104,7 +104,7 @@ pub async fn channel(
     _uri: Uri,
     RawQuery(_raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
-    debug!("Request for channel info for channel: {}", channel_name);
+    debug!(channel = %channel_name, "channel info request");
     validate_channel_name(&app, &channel_name).await?;
 
     let info_query_str = query_params_specific.info.as_ref();
@@ -173,7 +173,7 @@ pub async fn channel(
     }
     let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-    debug!("Channel info for '{}' retrieved successfully", channel_name);
+    debug!(channel = %channel_name, "channel info retrieved");
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
@@ -192,7 +192,7 @@ pub async fn channels(
     _uri: Uri,
     RawQuery(_raw_query_str_option): RawQuery,
 ) -> Result<axum::response::Response, AppError> {
-    debug!("Request for channels list for app_id: {}", app_id);
+    debug!(app_id = %app_id, "channels list request");
 
     let filter_prefix_str = query_params_specific
         .filter_by_prefix
@@ -275,7 +275,7 @@ pub async fn channels(
         )
         .await;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-    debug!("Channels list for app '{}' retrieved successfully", app_id);
+    debug!(app_id = %app_id, "channels list retrieved");
     Ok((StatusCode::OK, Json(response_payload)).into_response())
 }
 
@@ -287,7 +287,7 @@ pub async fn channel_users(
     Extension(app): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    debug!("Request for users in channel: {}", channel_name);
+    debug!(channel = %channel_name, "channel users request");
     validate_channel_name(&app, &channel_name).await?;
 
     if !channel_name.starts_with("presence-") {
@@ -306,10 +306,7 @@ pub async fn channel_users(
     let response_payload_val = json!({ "users": users_vec });
     let response_json_bytes = sonic_rs::to_vec(&response_payload_val)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-    info!(
-        user_count = users_vec.len(),
-        "Channel users for '{}' retrieved successfully", channel_name
-    );
+    info!(channel = %channel_name, user_count = users_vec.len(), "channel users retrieved");
     Ok((StatusCode::OK, Json(response_payload_val)))
 }
 
@@ -354,20 +351,14 @@ pub async fn terminate_user_connections(
     _uri: Uri,
     RawQuery(_raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
-    info!(
-        "Received request to terminate user connections for user_id: {}",
-        user_id
-    );
+    info!(user_id = %user_id, "terminate user connections requested");
 
     handler
         .connection_manager()
         .terminate_connection(&app.id, &user_id)
         .await?;
 
-    info!(
-        "Successfully initiated termination for user_id: {}",
-        user_id
-    );
+    info!(user_id = %user_id, "terminate user connections initiated");
 
     let response_payload = json!({ "ok": true });
     let response_size = sonic_rs::to_vec(&response_payload)?.len();

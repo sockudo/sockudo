@@ -37,7 +37,7 @@ pub(crate) async fn create_push_store(
             }
             if config.mode.eq_ignore_ascii_case("production") {
                 warn!(
-                    "Push storage driver is memory; this is intended only for tests and local development"
+                    "push storage driver is memory; intended for tests and local development only"
                 );
             }
             Ok(Arc::new(sockudo_push::MemoryPushStore::new()))

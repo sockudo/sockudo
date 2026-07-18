@@ -286,7 +286,7 @@ pub(crate) async fn apply_update_message(
         version_serial = %updated.version_serial().as_str(),
         history_serial = updated.history_serial(),
         delivery_serial = updated.delivery_serial(),
-        actor_client_id = ?updated.message.version.client_id,
+        actor_client_id = updated.message.version.client_id.as_deref().unwrap_or(""),
         "Applied versioned message.update"
     );
 
@@ -465,7 +465,7 @@ pub(crate) async fn apply_delete_message(
         version_serial = %deleted.version_serial().as_str(),
         history_serial = deleted.history_serial(),
         delivery_serial = deleted.delivery_serial(),
-        actor_client_id = ?deleted.message.version.client_id,
+        actor_client_id = deleted.message.version.client_id.as_deref().unwrap_or(""),
         "Applied versioned message.delete"
     );
 
@@ -656,7 +656,7 @@ pub(crate) async fn apply_append_message(
         version_serial = %appended.version_serial().as_str(),
         history_serial = appended.history_serial(),
         delivery_serial = appended.delivery_serial(),
-        actor_client_id = ?appended.message.version.client_id,
+        actor_client_id = appended.message.version.client_id.as_deref().unwrap_or(""),
         "Applied versioned message.append"
     );
 

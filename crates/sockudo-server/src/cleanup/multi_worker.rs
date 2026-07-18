@@ -29,8 +29,8 @@ impl MultiWorkerCleanupSystem {
         let num_workers = config.worker_threads.resolve();
 
         info!(
-            "Initializing multi-worker cleanup system with {} workers",
-            num_workers
+            worker_count = num_workers,
+            "initializing multi-worker cleanup system"
         );
 
         let mut senders = Vec::with_capacity(num_workers);
@@ -52,9 +52,9 @@ impl MultiWorkerCleanupSystem {
             );
 
             let handle = tokio::spawn(async move {
-                info!("Cleanup worker {} starting", worker_id);
+                info!(worker_id = worker_id, "cleanup worker starting");
                 worker.run(receiver).await;
-                info!("Cleanup worker {} stopped", worker_id);
+                info!(worker_id = worker_id, "cleanup worker stopped");
             });
 
             senders.push(sender);
@@ -62,8 +62,9 @@ impl MultiWorkerCleanupSystem {
         }
 
         info!(
-            "Multi-worker cleanup system initialized with {} workers, batch_size={} per worker",
-            num_workers, config.batch_size
+            worker_count = num_workers,
+            batch_size = config.batch_size,
+            "multi-worker cleanup system initialized"
         );
 
         Self {
@@ -106,9 +107,8 @@ impl MultiWorkerCleanupSystem {
         let mut shutdown_errors = Vec::new();
         for (i, handle) in self.worker_handles.into_iter().enumerate() {
             if let Err(e) = handle.await {
-                let error_msg = format!("Worker {} shutdown error: {}", i, e);
-                error!("{}", error_msg);
-                shutdown_errors.push(error_msg);
+                error!(worker_id = i, error = %e, "worker shutdown error");
+                shutdown_errors.push(format!("worker {i} shutdown error: {e}"));
             }
         }
 

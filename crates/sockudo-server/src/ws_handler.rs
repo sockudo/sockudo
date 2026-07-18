@@ -10,7 +10,7 @@ use serde::Deserialize;
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::WebSocketUpgrade;
 use std::sync::Arc;
-use tracing::log::error;
+use tracing::error;
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectionQuery {
@@ -103,7 +103,7 @@ pub async fn handle_ws_upgrade(
                 )
                 .await
             {
-                error!("Error handling socket: {e}");
+                error!(error = %e, "socket handling failed");
                 if let Some(metrics) = handler.metrics() {
                     match &e {
                         sockudo_core::error::Error::ApplicationNotFound

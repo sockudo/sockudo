@@ -24,13 +24,7 @@ pub struct MySQLAppManager {
 impl MySQLAppManager {
     /// Create a new MySQL-based AppManager with the provided configuration
     pub async fn new(config: DatabaseConnection, pooling: DatabasePooling) -> Result<Self> {
-        info!(
-            "{}",
-            format!(
-                "Initializing MySQL AppManager with database {}",
-                config.database
-            )
-        );
+        info!(database = %config.database, "mysql app manager initializing");
 
         let password = urlencoding::encode(&config.password);
         let connection_string = format!(
@@ -108,7 +102,7 @@ impl MySQLAppManager {
                 }
 
                 if is_duplicate_column_error {
-                    warn!("Column '{}' already exists (race condition)", column_name);
+                    warn!(column_name = %column_name, "column already exists, race condition");
                 } else {
                     return Err(Error::Internal(format!(
                         "Failed to add column '{}': {}",
@@ -117,8 +111,9 @@ impl MySQLAppManager {
                 }
             } else {
                 info!(
-                    "Added column '{}' to table '{}'",
-                    column_name, self.config.table_name
+                    column_name = %column_name,
+                    table_name = %self.config.table_name,
+                    "column added"
                 );
             }
         }
@@ -182,10 +177,7 @@ impl MySQLAppManager {
                 .await?;
         }
 
-        info!(
-            "{}",
-            format!("Ensured table '{}' exists", self.config.table_name)
-        );
+        info!(table_name = %self.config.table_name, "table ensured");
         Ok(())
     }
 
@@ -195,7 +187,7 @@ impl MySQLAppManager {
             return Ok(Some(app));
         }
 
-        debug!("Cache miss for app {}, fetching from database", app_id);
+        debug!(app_id = %app_id, outcome = "miss", "app cache miss");
 
         let query = format!(
             r#"SELECT
@@ -228,10 +220,7 @@ impl MySQLAppManager {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
-                error!(
-                    "{}",
-                    format!("Database error fetching app {}: {}", app_id, e)
-                );
+                error!(app_id = %app_id, error = %e, "app db fetch error");
                 Error::Internal(format!("Failed to fetch app from MySQL: {e}"))
             })?;
 
@@ -250,7 +239,7 @@ impl MySQLAppManager {
             return Ok(Some(app));
         }
 
-        debug!("Cache miss for app key {}, fetching from database", key);
+        debug!(outcome = "miss", "app cache miss");
 
         let query = format!(
             r#"SELECT
@@ -283,10 +272,7 @@ impl MySQLAppManager {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
-                error!(
-                    "{}",
-                    format!("Database error fetching app by key {}: {}", key, e)
-                );
+                error!(error = %e, "app db fetch by key error");
                 Error::Internal(format!("Failed to fetch app from MySQL: {e}"))
             })?;
 
@@ -302,7 +288,7 @@ impl MySQLAppManager {
 
     /// Register a new app in the database
     pub async fn create_app(&self, app: App) -> Result<()> {
-        info!("{}", format!("Registering new app: {}", app.id));
+        info!(app_id = %app.id, "app registering");
         let policy = app.policy();
 
         let query = format!(
@@ -349,10 +335,7 @@ impl MySQLAppManager {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                error!(
-                    "{}",
-                    format!("Database error registering app {}: {}", app.id, e)
-                );
+                error!(app_id = %app.id, error = %e, "app db register error");
                 Error::Internal(format!("Failed to insert app into MySQL: {e}"))
             })?;
 
@@ -363,7 +346,7 @@ impl MySQLAppManager {
 
     /// Update an existing app in the database
     pub async fn update_app(&self, app: App) -> Result<()> {
-        info!("{}", format!("Updating app: {}", app.id));
+        info!(app_id = %app.id, "app updating");
         let policy = app.policy();
 
         let query = format!(
@@ -412,10 +395,7 @@ impl MySQLAppManager {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                error!(
-                    "{}",
-                    format!("Database error updating app {}: {}", app.id, e)
-                );
+                error!(app_id = %app.id, error = %e, "app db update error");
                 Error::Internal(format!("Failed to update app in MySQL: {e}"))
             })?;
 
@@ -430,7 +410,7 @@ impl MySQLAppManager {
 
     /// Remove an app from the database
     pub async fn delete_app(&self, app_id: &str) -> Result<()> {
-        info!("{}", format!("Removing app: {}", app_id));
+        info!(app_id = %app_id, "app removing");
 
         let query = format!(r#"DELETE FROM `{}` WHERE id = ?"#, self.config.table_name);
 
@@ -439,10 +419,7 @@ impl MySQLAppManager {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                error!(
-                    "{}",
-                    format!("Database error removing app {}: {}", app_id, e)
-                );
+                error!(app_id = %app_id, error = %e, "app db remove error");
                 Error::Internal(format!("Failed to delete app from MySQL: {e}"))
             })?;
 
@@ -457,7 +434,7 @@ impl MySQLAppManager {
 
     /// Get all apps from the database
     pub async fn get_apps(&self) -> Result<Vec<App>> {
-        info!("{}", "Fetching all apps from database");
+        info!("fetching all apps");
 
         let query = format!(
             r#"SELECT
@@ -489,14 +466,11 @@ impl MySQLAppManager {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| {
-                error!("{}", format!("Database error fetching all apps: {}", e));
+                error!(error = %e, "app db fetch all error");
                 Error::Internal(format!("Failed to fetch apps from MySQL: {e}"))
             })?;
 
-        warn!(
-            "{}",
-            format!("Fetched {} app rows from database.", app_rows.len())
-        );
+        warn!(apps_count = app_rows.len(), "app rows fetched");
 
         let apps = stream::iter(app_rows)
             .map(|row| async {
@@ -509,10 +483,7 @@ impl MySQLAppManager {
             .collect::<Vec<App>>()
             .await;
 
-        info!(
-            "{}",
-            format!("Finished processing and caching {} apps.", apps.len())
-        );
+        info!(apps_count = apps.len(), "apps fetched and cached");
 
         Ok(apps)
     }

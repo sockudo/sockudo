@@ -152,21 +152,29 @@ impl MessageSender {
         let is_conn_err = Self::is_connection_error(error);
 
         if is_conn_err && is_shutting_down {
-            debug!("{} failed during shutdown (expected): {}", operation, error);
+            debug!(
+                operation = %operation,
+                error = %error,
+                "connection error during shutdown (expected)"
+            );
         } else if is_conn_err && msg_count <= 2 {
             warn!(
-                "Early connection {} failed (after {} messages): {}",
-                operation, msg_count, error
+                operation = %operation,
+                msg_count = msg_count,
+                error = %error,
+                "early connection error"
             );
         } else if is_conn_err {
             warn!(
-                "Connection {} failed during operation (after {} messages): {}",
-                operation, msg_count, error
+                operation = %operation,
+                msg_count = msg_count,
+                error = %error,
+                "connection error during operation"
             );
         } else if operation.is_close_operation() {
-            warn!("Failed to {}: {}", operation, error);
+            warn!(operation = %operation, error = %error, "close frame send failed");
         } else {
-            error!("Failed to {}: {}", operation, error);
+            error!(operation = %operation, error = %error, "websocket write failed");
         }
     }
 

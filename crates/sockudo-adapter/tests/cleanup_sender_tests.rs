@@ -2,7 +2,7 @@
 mod tests {
     use crossfire::mpsc;
     use sockudo_adapter::cleanup::{CleanupSender, DisconnectTask};
-    use sockudo_core::websocket::SocketId;
+    use sockudo_core::websocket::{DisconnectCause, SocketId};
     use std::time::Instant;
 
     fn create_test_task(socket_id: &str) -> DisconnectTask {
@@ -11,6 +11,7 @@ mod tests {
             app_id: "test-app".to_string(),
             subscribed_channels: vec!["channel1".to_string(), "channel2".to_string()],
             user_id: Some("user123".to_string()),
+            cause: DisconnectCause::ClientClose,
             timestamp: Instant::now(),
             connection_info: None,
             presence_ungraceful_timeout_seconds: 0,

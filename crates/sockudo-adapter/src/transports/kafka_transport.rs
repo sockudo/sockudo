@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 pub struct KafkaTransport {
     producer: FutureProducer,
@@ -87,8 +87,11 @@ impl HorizontalTransport for KafkaTransport {
             .map_err(|e| Error::Internal(format!("Failed to create Kafka producer: {e}")))?;
 
         info!(
-            "Kafka transport initialized with topics: {}, {}, {}",
-            broadcast_topic, request_topic, response_topic
+            adapter = "kafka",
+            broadcast_topic = %broadcast_topic,
+            request_topic = %request_topic,
+            response_topic = %response_topic,
+            "transport initialized"
         );
 
         Ok(Self {
@@ -207,16 +210,16 @@ impl KafkaTransport {
                                 if let Some(metrics) = metrics.get() {
                                     metrics.mark_horizontal_transport_message_dropped("kafka");
                                 }
-                                warn!("Failed to parse Kafka {kind} payload: {}", error)
+                                warn!(adapter = "kafka", kind = kind, error = %error, "transport message parse failed")
                             }
                         }
                     }
                     Err(error) => {
-                        error!("Kafka {kind} consumer error: {}", error);
+                        error!(adapter = "kafka", kind = kind, error = %error, "consumer loop error");
                     }
                 }
             }
-            warn!("Kafka {kind} consumer loop ended");
+            warn!(adapter = "kafka", kind = kind, "consumer loop ended");
         });
 
         Ok(())
@@ -267,7 +270,7 @@ impl KafkaTransport {
                                     if let Err(error) =
                                         publish_message(&producer, &response_topic, &response).await
                                     {
-                                        warn!("Failed to publish Kafka response: {}", error);
+                                        warn!(adapter = "kafka", error = %error, "response publish failed");
                                     }
                                 }
                                 Err(
@@ -276,23 +279,23 @@ impl KafkaTransport {
                                     | Error::NoResponseNeeded,
                                 ) => {}
                                 Err(error) => {
-                                    warn!("Kafka request handler failed: {}", error);
+                                    warn!(adapter = "kafka", error = %error, "request handler failed");
                                 }
                             },
                             Err(error) => {
                                 if let Some(metrics) = metrics.get() {
                                     metrics.mark_horizontal_transport_message_dropped("kafka");
                                 }
-                                warn!("Failed to parse Kafka request payload: {}", error)
+                                warn!(adapter = "kafka", error = %error, "request payload parse failed")
                             }
                         }
                     }
                     Err(error) => {
-                        error!("Kafka request consumer error: {}", error);
+                        error!(adapter = "kafka", error = %error, "request consumer loop error");
                     }
                 }
             }
-            warn!("Kafka request consumer loop ended");
+            warn!(adapter = "kafka", "request consumer loop ended");
         });
 
         Ok(())
@@ -347,7 +350,7 @@ async fn publish_message<T: serde::Serialize>(
         .await
         .map_err(|(e, _)| Error::Internal(format!("Failed to publish Kafka message: {e}")))?;
 
-    debug!("Published Kafka message to topic {}", topic);
+    trace!(adapter = "kafka", topic = %topic, "message published to transport");
     Ok(())
 }
 

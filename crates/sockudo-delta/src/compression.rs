@@ -25,82 +25,43 @@ impl DeltaCompressionManager {
         channel: &str,
         conflation_key: &str,
     ) -> Option<Arc<Vec<u8>>> {
-        tracing::debug!(
-            "get_last_message_for_socket: START socket={}, channel={}, conflation_key='{}'",
-            socket_id,
-            channel,
-            conflation_key
-        );
+        tracing::trace!(socket_id = %socket_id, channel, "get_last_message_for_socket: start");
 
         let socket_state = match self.socket_states.get(socket_id) {
             Some(s) => {
-                tracing::debug!(
-                    "get_last_message_for_socket: Found socket_state for socket={}",
-                    socket_id
-                );
+                tracing::trace!(socket_id = %socket_id, "get_last_message_for_socket: found socket state");
                 s
             }
             None => {
-                tracing::debug!(
-                    "get_last_message_for_socket: No socket_state for socket={}",
-                    socket_id
-                );
+                tracing::trace!(socket_id = %socket_id, "get_last_message_for_socket: no socket state");
                 return None;
             }
         };
 
         let channel_state = match socket_state.get_channel_state(channel) {
             Some(c) => {
-                tracing::debug!(
-                    "get_last_message_for_socket: Found channel_state for socket={}, channel={}",
-                    socket_id,
-                    channel
-                );
+                tracing::trace!(socket_id = %socket_id, channel, "get_last_message_for_socket: found channel state");
                 c
             }
             None => {
-                tracing::debug!(
-                    "get_last_message_for_socket: No channel_state for socket={}, channel={}",
-                    socket_id,
-                    channel
-                );
+                tracing::trace!(socket_id = %socket_id, channel, "get_last_message_for_socket: no channel state");
                 return None;
             }
         };
 
         let cache = match channel_state.get_conflation_state(conflation_key) {
             Some(c) => {
-                tracing::debug!(
-                    "get_last_message_for_socket: Found cache for socket={}, channel={}, conflation_key='{}'",
-                    socket_id,
-                    channel,
-                    conflation_key
-                );
+                tracing::trace!(socket_id = %socket_id, channel, "get_last_message_for_socket: found conflation cache");
                 c
             }
             None => {
-                tracing::debug!(
-                    "get_last_message_for_socket: No cache for socket={}, channel={}, conflation_key='{}'",
-                    socket_id,
-                    channel,
-                    conflation_key
-                );
+                tracing::trace!(socket_id = %socket_id, channel, "get_last_message_for_socket: no conflation cache");
                 return None;
             }
         };
 
         let result = cache.get_last_message().await;
-        tracing::debug!(
-            "get_last_message_for_socket: get_last_message() returned {} for socket={}, channel={}, conflation_key='{}'",
-            if result.is_some() {
-                "Some(message)"
-            } else {
-                "None"
-            },
-            socket_id,
-            channel,
-            conflation_key
-        );
+        tracing::trace!(socket_id = %socket_id, channel, found = result.is_some(), "get_last_message_for_socket: result");
 
         result.map(|msg| Arc::clone(&msg.content))
     }
@@ -244,18 +205,18 @@ impl DeltaCompressionManager {
                 use std::sync::atomic::Ordering;
 
                 let should_send_full = cache.should_send_full_message(&self.config).await;
-                tracing::debug!(
-                    "compress_message: should_send_full_message={}, delta_count={}, full_message_interval={}",
+                tracing::trace!(
                     should_send_full,
-                    cache.delta_count.load(Ordering::Relaxed),
-                    self.config.full_message_interval
+                    delta_count = cache.delta_count.load(Ordering::Relaxed),
+                    full_message_interval = self.config.full_message_interval,
+                    "compress_message: full check"
                 );
                 if should_send_full {
                     let sequence = cache.next_sequence.load(Ordering::Relaxed);
-                    tracing::info!(
-                        "Sending FULL message due to interval (delta_count={}, interval={})",
-                        cache.delta_count.load(Ordering::Relaxed),
-                        self.config.full_message_interval
+                    tracing::trace!(
+                        delta_count = cache.delta_count.load(Ordering::Relaxed),
+                        interval = self.config.full_message_interval,
+                        "sending full message due to interval"
                     );
                     return Ok(CompressionResult::FullMessage {
                         sequence,
@@ -267,24 +228,21 @@ impl DeltaCompressionManager {
                     Some(msg) => {
                         let base_seq = msg.sequence as usize;
                         let base_content = &msg.content;
-                        tracing::info!(
-                            "compress_message: Using base for delta: base_seq={}, base_len={}, base_last50='{}', cache_key='{}'",
+                        tracing::trace!(
+                            socket_id = %socket_id,
+                            channel,
                             base_seq,
-                            base_content.len(),
-                            String::from_utf8_lossy(
-                                &base_content[base_content.len().saturating_sub(50)..]
-                            ),
-                            cache_key
+                            base_len = base_content.len(),
+                            "using base for delta computation"
                         );
                         (msg.content.clone(), Some(base_seq))
                     }
                     None => {
                         let sequence = cache.next_sequence.load(Ordering::Relaxed);
                         tracing::warn!(
-                            "compress_message: No last message in cache (evicted?), sending FULL, socket={}, channel={}, cache_key='{}'",
-                            socket_id,
+                            socket_id = %socket_id,
                             channel,
-                            cache_key
+                            "no last message in cache, sending full message"
                         );
                         return Ok(CompressionResult::FullMessage {
                             sequence,
@@ -302,8 +260,9 @@ impl DeltaCompressionManager {
 
                 let delta = match delta {
                     Ok(d) => d,
-                    Err(_) => {
+                    Err(e) => {
                         let sequence = cache.next_sequence.load(Ordering::Relaxed);
+                        tracing::trace!(socket_id = %socket_id, channel, error = %e, "delta computation failed, falling back to full message");
                         return Ok(CompressionResult::FullMessage {
                             sequence,
                             conflation_key: conflation_key_opt,
@@ -352,19 +311,11 @@ impl DeltaCompressionManager {
             Some(state) => state,
             None => {
                 if !is_full_message {
-                    tracing::debug!(
-                        "store_sent_message: Delta message but no channel_state for socket={}, channel={} (likely unsubscribed), skipping",
-                        socket_id,
-                        channel
-                    );
+                    tracing::trace!(socket_id = %socket_id, channel, "store_sent_message: no channel state for delta, likely unsubscribed");
                     return Ok(());
                 }
 
-                tracing::debug!(
-                    "store_sent_message: Creating channel_state for socket={}, channel={} (new subscription)",
-                    socket_id,
-                    channel
-                );
+                tracing::trace!(socket_id = %socket_id, channel, "store_sent_message: creating channel state for new subscription");
                 let new_channel_state = Arc::new(ChannelState::new());
                 socket_state.set_channel_state(channel.to_string(), Arc::clone(&new_channel_state));
                 new_channel_state
@@ -394,52 +345,30 @@ impl DeltaCompressionManager {
         let cache_existed = channel_state.get_conflation_state(&cache_key).is_some();
         let mut cache = match channel_state.get_conflation_state(&cache_key) {
             Some(cache) => {
-                tracing::debug!(
-                    "store_sent_message: Found existing cache for socket={}, channel={}, cache_key='{}'",
-                    socket_id,
-                    channel,
-                    cache_key
-                );
+                tracing::trace!(socket_id = %socket_id, channel, "store_sent_message: found existing cache");
                 cache
             }
             None => {
-                tracing::debug!(
-                    "store_sent_message: Creating NEW cache for socket={}, channel={}, cache_key='{}'",
-                    socket_id,
-                    channel,
-                    cache_key
-                );
+                tracing::trace!(socket_id = %socket_id, channel, "store_sent_message: creating new cache");
                 ConflationKeyCache::new(max_messages_per_key)
             }
         };
 
         cache.add_message(sent_message_bytes).await?;
-        tracing::debug!(
-            "store_sent_message: Added message to cache (cache_existed={}, socket={}, channel={}, cache_key='{}')",
-            cache_existed,
-            socket_id,
-            channel,
-            cache_key
-        );
+        tracing::trace!(socket_id = %socket_id, channel, cache_existed, "store_sent_message: added message to cache");
 
         if is_full_message {
-            tracing::debug!(
-                "store_sent_message: Resetting delta_count (was {}) for channel={}, cache_key='{}'",
-                cache.delta_count.load(std::sync::atomic::Ordering::Relaxed),
-                channel,
-                cache_key
-            );
+            tracing::trace!(channel, "store_sent_message: resetting delta count");
             cache.reset_delta_count();
         } else {
             let old_count = cache.delta_count.load(std::sync::atomic::Ordering::Relaxed);
             cache.increment_delta_count();
             let new_count = cache.delta_count.load(std::sync::atomic::Ordering::Relaxed);
-            tracing::debug!(
-                "store_sent_message: Incremented delta_count from {} to {} for channel={}, cache_key='{}'",
+            tracing::trace!(
+                channel,
                 old_count,
                 new_count,
-                channel,
-                cache_key
+                "store_sent_message: incremented delta count"
             );
         }
 
@@ -450,12 +379,7 @@ impl DeltaCompressionManager {
                 self.config.max_conflation_states_per_channel,
             )
             .await;
-        tracing::debug!(
-            "store_sent_message: Stored cache back to channel_state (socket={}, channel={}, cache_key='{}')",
-            socket_id,
-            channel,
-            cache_key
-        );
+        tracing::trace!(socket_id = %socket_id, channel, "store_sent_message: stored cache to channel state");
 
         Ok(())
     }

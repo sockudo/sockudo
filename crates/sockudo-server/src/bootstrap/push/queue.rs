@@ -836,6 +836,7 @@ fn push_queue_job_data(
     envelope: &PushQueueEnvelope,
 ) -> sockudo_push::PushQueueResult<sockudo_core::webhook_types::JobData> {
     Ok(sockudo_core::webhook_types::JobData {
+        job_id: None,
         app_key: String::new(),
         app_id: push_queue_payload_app_id(&envelope.payload),
         app_secret: String::new(),

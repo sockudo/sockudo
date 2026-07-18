@@ -1,0 +1,82 @@
+---
+title: Logging
+description: Configure log output, understand severity levels, and filter by correlation fields.
+icon: ScrollText
+---
+
+## Configuration
+
+Sockudo installs its logging subscriber once at startup, so early boot diagnostics are visible.
+After configuration files and environment overrides are resolved, the filter and formatting
+settings are reloaded once. Output format is selected at process startup and cannot be changed by
+configuration.
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_OUTPUT_FORMAT` | `text` | `text` for human-readable, `json` for structured JSON |
+| `RUST_LOG` | — | Standard filter directive; overrides everything when set |
+| `SOCKUDO_LOG_DEBUG` | `info,sockudo=debug,tower_http=debug` | Filter when `debug = true` |
+| `SOCKUDO_LOG_PROD` | `info` | Filter when `debug = false` |
+| `LOG_INCLUDE_TARGET` | `true` | Include the module path in output |
+| `LOG_COLORS_ENABLED` | `true` | ANSI colors in text output |
+
+Filter precedence is `RUST_LOG`, then the mode-specific override, then the built-in default.
+Source location (file and line) is included when `debug = true`. The `[logging]` config section
+controls `include_target` and `colors_enabled` after configuration loads.
+
+## JSON output
+
+With `LOG_OUTPUT_FORMAT=json`, each line is a JSON object. Application event attributes live under
+`fields` so they cannot collide with formatter metadata such as `timestamp`, `level`, and
+`target`. The current span is emitted as `span`; the redundant full span list is omitted.
+
+```json
+{
+  "timestamp": "2026-07-18T12:00:00.000Z",
+  "level": "INFO",
+  "target": "sockudo_adapter::handler",
+  "span": { "name": "socket", "app_id": "my-app", "socket_id": "123.456" },
+  "fields": { "message": "socket connected", "channel_count": 3 }
+}
+```
+
+## Severity levels
+
+| Level | Meaning | Monitoring guidance |
+|---|---|---|
+| `error` | Terminal operation or delivery failure | Alert — will not self-heal |
+| `warn` | Degraded behavior, rejected input, scheduled retry | Watch for sustained patterns |
+| `info` | Startup, shutdown, connection lifecycle, final webhook/push outcomes | Dashboards and audit |
+| `debug` | Queue, cache, persistence, coordination mechanics | Enable for troubleshooting |
+| `trace` | Per-message and detailed timing events | High volume; targeted debugging only |
+
+## Correlation fields
+
+Filter and correlate events with these stable fields:
+
+| Field | Description |
+|---|---|
+| `app_id` | Application identifier |
+| `socket_id` | WebSocket connection identifier |
+| `user_id` | Authenticated user identifier |
+| `channel` | Channel name |
+| `adapter` | Horizontal transport backend (`nats`, `redis`, `kafka`, ...) |
+| `error` | Error description for failed operations |
+| `retryable` | Whether the operation will be retried |
+| `worker_id` | Background worker identifier |
+
+## Production lifecycle events
+
+The default `info` filter records socket connection, sign-in, subscription, explicit
+unsubscription, terminal disconnection (with cause), configuration loading, and final webhook and
+push outcomes. Message traffic, presence-member transitions, queue traffic, and retry internals
+remain at `debug` or `trace`. A scheduled webhook retry is a `warn`; permanent delivery failure is
+an `error`.
+
+## Data safety
+
+Logs may contain operational IDs, channel names, user IDs, and event names. Logs never contain app
+keys or secrets, signatures, tokens, authorization data, request or response bodies, message
+payloads, raw queries, webhook URLs, provider credentials, device tokens, or private keys. This
+applies at every level: enabling `debug` or `trace` never permits payload, credential, or token
+logging.

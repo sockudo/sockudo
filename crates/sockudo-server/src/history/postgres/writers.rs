@@ -47,7 +47,8 @@ impl PostgresHistoryStore {
                             app_id = %record.app_id,
                             channel = %record.channel,
                             serial = record.serial,
-                            "History write failed: {err}"
+                            error = %err,
+                            "history write failed"
                         );
                         if let Some(metrics) = metrics.as_ref() {
                             metrics.mark_history_write_failure(&record.app_id);

@@ -13,6 +13,8 @@ use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{CacheConfig, CacheDriver, MemoryCacheOptions, RedisConnection};
 use std::sync::Arc;
+#[cfg(feature = "redis-cluster")]
+use tracing::error;
 use tracing::info;
 
 pub struct CacheManagerFactory;
@@ -23,19 +25,22 @@ impl CacheManagerFactory {
         config: &CacheConfig,
         global_redis_conn_details: &RedisConnection,
     ) -> Result<Arc<dyn CacheManager + Send + Sync>> {
-        info!(
-            "{}",
-            format!("Initializing CacheManager with driver: {:?}", config.driver)
-        );
+        info!(cache_driver = ?config.driver, "initializing cache manager");
 
         match config.driver {
             #[cfg(feature = "redis")]
             CacheDriver::Redis => {
                 #[cfg(feature = "redis-cluster")]
                 if config.redis.cluster_mode {
-                    info!("{}", "Cache: Using Redis Cluster driver.".to_string());
+                    info!(
+                        cache_driver = "redis_cluster",
+                        "cache using redis cluster driver"
+                    );
                     if global_redis_conn_details.cluster_nodes.is_empty() {
-                        tracing::error!("{}", "Cache: Redis cluster mode enabled, but no cluster_nodes configured in database.redis section.".to_string());
+                        error!(
+                            cache_driver = "redis_cluster",
+                            "cache redis cluster mode enabled but no cluster nodes configured"
+                        );
                         return Err(Error::Cache(
                             "Cache: Redis cluster nodes not configured.".to_string(),
                         ));
@@ -62,10 +67,16 @@ impl CacheManagerFactory {
 
                 #[cfg(not(feature = "redis-cluster"))]
                 if config.redis.cluster_mode {
-                    info!("{}", "Cache: Redis cluster mode requested but redis-cluster feature not enabled. Falling back to standalone Redis.".to_string());
+                    info!(
+                        cache_driver = "redis",
+                        "redis cluster requested but feature not enabled, using standalone redis"
+                    );
                 }
 
-                info!("{}", "Cache: Using standalone Redis driver.".to_string());
+                info!(
+                    cache_driver = "redis",
+                    "cache using standalone redis driver"
+                );
                 let redis_url = config
                     .redis
                     .url_override
@@ -94,11 +105,14 @@ impl CacheManagerFactory {
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
                 info!(
-                    "{}",
-                    "Cache: Using Redis Cluster driver (explicitly selected).".to_string()
+                    cache_driver = "redis_cluster",
+                    "cache using redis cluster driver (explicit)"
                 );
                 if global_redis_conn_details.cluster_nodes.is_empty() {
-                    tracing::error!("{}", "Cache: Redis cluster driver selected, but no cluster_nodes configured in database.redis section.".to_string());
+                    error!(
+                        cache_driver = "redis_cluster",
+                        "cache redis cluster driver selected but no cluster nodes configured"
+                    );
                     return Err(Error::Cache(
                         "Cache: Redis cluster nodes not configured for explicit cluster driver."
                             .to_string(),
@@ -130,7 +144,7 @@ impl CacheManagerFactory {
                 Ok(Arc::new(fallback_manager))
             }
             CacheDriver::Memory => {
-                info!("{}", "Using memory cache manager.".to_string());
+                info!(cache_driver = "memory", "cache using memory driver");
                 let _mem_config = MemoryCacheOptions {
                     ttl: config.memory.ttl,
                     cleanup_interval: config.memory.cleanup_interval,
@@ -142,8 +156,8 @@ impl CacheManagerFactory {
             }
             CacheDriver::None => {
                 info!(
-                    "{}",
-                    "Cache driver is 'None'. Cache will be disabled.".to_string()
+                    cache_driver = "none",
+                    "cache driver set to none, cache disabled"
                 );
                 Err(Error::Cache(
                     "Cache driver explicitly set to 'None'.".to_string(),
@@ -152,8 +166,8 @@ impl CacheManagerFactory {
             #[cfg(not(feature = "redis"))]
             CacheDriver::Redis => {
                 info!(
-                    "{}",
-                    "Redis cache manager requested but not compiled in. Falling back to memory cache."
+                    cache_driver = "memory",
+                    "redis cache not compiled in, using memory driver fallback"
                 );
                 let manager =
                     MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());
@@ -162,7 +176,8 @@ impl CacheManagerFactory {
             #[cfg(not(feature = "redis-cluster"))]
             CacheDriver::RedisCluster => {
                 info!(
-                    "Redis Cluster cache manager requested but not compiled in. Falling back to memory cache."
+                    cache_driver = "memory",
+                    "redis cluster cache not compiled in, using memory driver fallback"
                 );
                 let manager =
                     MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());

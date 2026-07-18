@@ -212,7 +212,13 @@ impl ConnectionHandler {
                 .connection_still_uses_token(&app_config.id, &socket_id, &jti)
                 .await
                 && let Err(error) = handler
-                    .close_connection(&socket_id, &app_config, 4009, "capability token expired")
+                    .close_connection_with_cause(
+                        &socket_id,
+                        &app_config,
+                        4009,
+                        "capability token expired",
+                        sockudo_core::websocket::DisconnectCause::TokenExpired,
+                    )
                     .await
             {
                 warn!(%socket_id, error = %error, "failed to close expired token connection");
@@ -327,8 +333,14 @@ impl ConnectionHandler {
             let _ = self
                 .send_token_expired(&app_config.id, &socket_id, TOKEN_REVOKED_CODE, "revoked")
                 .await;
-            self.close_connection(&socket_id, app_config, 4009, "capability token revoked")
-                .await?;
+            self.close_connection_with_cause(
+                &socket_id,
+                app_config,
+                4009,
+                "capability token revoked",
+                sockudo_core::websocket::DisconnectCause::TokenRevoked,
+            )
+            .await?;
             result.closed_connections += 1;
         }
 

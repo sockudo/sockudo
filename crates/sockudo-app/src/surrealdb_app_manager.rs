@@ -47,7 +47,7 @@ pub struct SurrealDbAppManager {
 
 impl SurrealDbAppManager {
     pub async fn new(config: SurrealDbConfig) -> Result<Self> {
-        info!("Initializing SurrealDB AppManager at {}", config.url);
+        info!("surrealdb app manager initializing");
 
         Self::validate_identifier(&config.table_name, "table_name")?;
 
@@ -146,7 +146,7 @@ impl SurrealDbAppManager {
             return Ok(Some(app));
         }
 
-        debug!("Cache miss for app {}, fetching from SurrealDB", app_id);
+        debug!(app_id = %app_id, outcome = "miss", "app cache miss");
 
         let app = self.find_by_id_uncached(app_id).await?;
         if let Some(app) = &app {
@@ -161,7 +161,7 @@ impl SurrealDbAppManager {
             return Ok(Some(app));
         }
 
-        debug!("Cache miss for app key {}, fetching from SurrealDB", key);
+        debug!(outcome = "miss", "app cache miss");
 
         let mut response = self
             .db

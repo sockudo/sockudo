@@ -343,13 +343,13 @@ impl HistoryStore for DynamoDbHistoryStore {
         info!(
             app_id = %app_id,
             channel = %channel,
-            previous_stream_id = ?previous_stream_id,
+            previous_stream_id = previous_stream_id.as_deref().unwrap_or(""),
             new_stream_id = %new_stream.stream_id,
             purged_messages,
             purged_bytes,
             reason = %reason,
-            requested_by = ?requested_by,
-            "Operator reset durable history stream"
+            requested_by = requested_by.unwrap_or(""),
+            "operator reset durable history stream"
         );
         let inspection = self.resolved_stream_inspection(app_id, channel).await?;
         Ok(HistoryResetResult {
@@ -450,8 +450,8 @@ impl HistoryStore for DynamoDbHistoryStore {
             purged_messages,
             purged_bytes,
             reason = %request.reason,
-            requested_by = ?request.requested_by,
-            "Operator purged durable history rows"
+            requested_by = request.requested_by.as_deref().unwrap_or(""),
+            "operator purged durable history rows"
         );
         let inspection = self.resolved_stream_inspection(app_id, channel).await?;
         Ok(HistoryPurgeResult {

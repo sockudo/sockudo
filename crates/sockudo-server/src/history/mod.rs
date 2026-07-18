@@ -166,7 +166,7 @@ pub async fn create_version_store(
                     &history_config.postgres.table_prefix,
                 )
                 .await?;
-                info!("VersionStore initialized with driver: postgres");
+                info!(driver = "postgres", "version store initialized");
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "postgres"))]

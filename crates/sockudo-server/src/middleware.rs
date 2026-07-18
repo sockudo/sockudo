@@ -55,15 +55,11 @@ pub async fn pusher_api_auth_middleware(
     // 1. Extract Pusher's authentication query parameters
     let auth_q_params_struct: EventQuery = if let Some(query_str) = query_str_option {
         serde_urlencoded::from_str(query_str).map_err(|e| {
-            tracing::warn!(
-                "Failed to parse EventQuery from query string '{}': {}",
-                query_str,
-                e
-            );
+            tracing::warn!(error = %e, "event query parse failed");
             AppError::InvalidInput(format!("Invalid authentication query parameters: {e}"))
         })?
     } else {
-        tracing::warn!("Missing authentication query parameters for Pusher API auth.");
+        tracing::warn!("missing authentication query parameters");
         return Err(AppError::InvalidInput(
             "Missing authentication query parameters".to_string(),
         ));
@@ -77,13 +73,14 @@ pub async fn pusher_api_auth_middleware(
     let body_bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(err) => {
-            tracing::error!("Failed to buffer request body for auth: {}", err);
+            tracing::error!("auth request body buffering failed");
+            // TODO: HTTP response body disclosure
             return Err(AppError::InternalError(format!(
                 "Failed to read request body: {err}"
             )));
         }
     };
-    tracing::debug!("Request body buffered, {} bytes", body_bytes.len());
+    tracing::debug!(body_bytes = body_bytes.len(), "request body buffered");
 
     // 4. Perform the authentication using AuthValidator.
     let auth_validator = AuthValidator::new(handler_state.app_manager().clone());
@@ -99,17 +96,13 @@ pub async fn pusher_api_auth_middleware(
         .await
     {
         Ok(app) => {
-            tracing::debug!("Pusher API authentication successful for path: {}", path);
+            tracing::debug!(path = %path, "pusher API authentication successful");
             let mut request = HttpRequest::from_parts(parts, Body::from(body_bytes.clone()));
             request.extensions_mut().insert(app);
             Ok(next.run(request).await)
         }
         Err(e) => {
-            tracing::warn!(
-                "Pusher API authentication failed (validator returned error) for path: {}: {}",
-                path,
-                e
-            );
+            tracing::warn!(path = %path, error = %e, "pusher API authentication failed");
             Err(e.into())
         }
     }

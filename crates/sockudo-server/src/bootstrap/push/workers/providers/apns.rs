@@ -24,7 +24,7 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
         return Vec::new();
     };
     if topic.trim().is_empty() {
-        warn!("APNS_TOPIC/PUSH_APNS_TOPIC is empty; APNs dispatch worker not started");
+        warn!("apns topic env var is empty; apns dispatch worker not started");
         return Vec::new();
     }
 
@@ -38,7 +38,7 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
 
     if let Ok(stored_app_id) = stored_app_id {
         if stored_app_id.trim().is_empty() {
-            warn!("APNS_APP_ID/PUSH_APNS_APP_ID is empty; APNs dispatch worker not started");
+            warn!("apns app id env var is empty; apns dispatch worker not started");
             return Vec::new();
         }
         let mut handles = Vec::new();

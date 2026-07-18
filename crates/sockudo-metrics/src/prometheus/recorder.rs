@@ -99,8 +99,9 @@ pub(super) fn install_prometheus_recorder(
                     }
                     Err(error) => {
                         warn!(
-                            "Failed to start metrics-rs TCP exporter on {}: {}. Continuing with Prometheus exporter only.",
-                            tcp_exporter.listen_addr, error
+                            listen_addr = %tcp_exporter.listen_addr,
+                            error = %error,
+                            "failed to start metrics tcp exporter, continuing with prometheus only"
                         );
                         metrics::set_global_recorder(prometheus_recorder)
                             .expect("failed to install metrics-rs Prometheus recorder");

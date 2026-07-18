@@ -9,7 +9,7 @@ where
         self.local_adapter.init().await;
 
         if let Err(e) = self.start_listeners().await {
-            error!("Failed to start transport listeners: {}", e);
+            error!(error = %e, "failed to start transport listeners");
         }
     }
 
@@ -125,7 +125,7 @@ where
             .await;
 
         if let Err(e) = local_result {
-            warn!("Local send failed for channel {}: {}", channel, e);
+            warn!(channel = %channel, error = %e, "local send failed");
         }
 
         // Broadcast to other nodes
@@ -189,10 +189,7 @@ where
         };
 
         if let Err(e) = local_result {
-            warn!(
-                "Local send with compression failed for channel {}: {}",
-                channel, e
-            );
+            warn!(channel = %channel, error = %e, "local send with compression failed");
         }
 
         // Broadcast to other nodes with compression metadata
@@ -221,16 +218,17 @@ where
                 {
                     Ok((should_send_full, count)) => {
                         debug!(
-                            "Cluster coordination: should_send_full={}, count={} for app={}, channel={}, key={}",
-                            should_send_full, count, app_id, channel, ck
+                            should_send_full = should_send_full,
+                            count = count,
+                            app_id = %app_id,
+                            channel = %channel,
+                            conflation_key = %ck,
+                            "cluster coordination check"
                         );
                         (Some(should_send_full), Some(count))
                     }
                     Err(e) => {
-                        warn!(
-                            "Cluster coordination failed: {}, falling back to node-local",
-                            e
-                        );
+                        warn!(error = %e, "cluster coordination failed, falling back to node-local");
                         (None, None)
                     }
                 }
@@ -475,7 +473,7 @@ where
                 complete: response.complete,
             },
             Err(e) => {
-                error!("Failed to get remote channel socket count: {}", e);
+                error!(error = %e, "failed to get remote channel socket count");
                 crate::connection_manager::ChannelSocketCount {
                     count: local_count,
                     complete: false,
@@ -717,7 +715,7 @@ where
         {
             Ok(response) => Ok(local_count + response.sockets_count),
             Err(e) => {
-                error!("Failed to get remote user connections count: {}", e);
+                error!(error = %e, "failed to get remote user connections count");
                 Ok(local_count)
             }
         }
@@ -758,7 +756,7 @@ where
         {
             Ok(response) => Ok(response.sockets_count > 0),
             Err(e) => {
-                error!("Failed to get remote user connections count: {}", e);
+                error!(error = %e, "failed to get remote user connections count");
                 Ok(false)
             }
         }
@@ -796,7 +794,7 @@ where
                 }
             }
             Err(e) => {
-                error!("Failed to get remote channels with socket count: {}", e);
+                error!(error = %e, "failed to get remote channels with socket count");
             }
         }
 
@@ -819,7 +817,7 @@ where
         {
             Ok(response) => Ok(local_count + response.sockets_count),
             Err(e) => {
-                error!("Failed to get remote socket count: {}", e);
+                error!(error = %e, "failed to get remote socket count");
                 Ok(local_count)
             }
         }
@@ -870,7 +868,7 @@ where
                 Ok(())
             }
             Ok(Err(e)) => {
-                warn!("Failed to announce node departure: {}", e);
+                warn!(error = %e, "failed to announce node departure");
                 Ok(())
             }
             Err(_) => {

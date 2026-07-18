@@ -182,12 +182,12 @@ pub(super) async fn mark_channel_degraded(
             let upsert_result: std::result::Result<Option<StoredStreamRecord>, _> =
                 db.upsert(resource).content(updated).await;
             if let Err(err) = upsert_result {
-                error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist SurrealDB history degraded state: {err}");
+                error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to persist surrealdb history degraded state");
             }
         }
         Ok(None) => {}
         Err(err) => {
-            error!(app_id = %request.app_id, channel = %request.channel, "Failed to load SurrealDB history stream before degrade: {err}");
+            error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to load surrealdb history stream before degrade");
         }
     }
     if let Some(metrics) = metrics {

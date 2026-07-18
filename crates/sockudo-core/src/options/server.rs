@@ -132,7 +132,8 @@ impl ServerOptions {
 
             if self.ssl.enabled {
                 tracing::warn!(
-                    "Both Unix socket and SSL are enabled. This is unusual as Unix sockets are typically used behind reverse proxies that handle SSL termination."
+                    reason = "unusual_combination",
+                    "unix socket and ssl both enabled; unix sockets are typically used behind ssl-terminating proxies"
                 );
             }
 
@@ -259,22 +260,22 @@ impl ServerOptions {
 
         if self.unix_socket.permission_mode & 0o002 != 0 {
             warn!(
-                "Unix socket permission mode ({:o}) allows world write access. This may be a security risk. Consider using more restrictive permissions like 0o660 or 0o750.",
-                self.unix_socket.permission_mode
+                reason = "world_write_access",
+                "unix socket permission mode allows world write; consider more restrictive permissions"
             );
         }
 
         if self.unix_socket.permission_mode & 0o007 > 0o005 {
             warn!(
-                "Unix socket permission mode ({:o}) grants write permissions to others. Consider using more restrictive permissions.",
-                self.unix_socket.permission_mode
+                reason = "other_write_access",
+                "unix socket permission mode grants write to others; consider more restrictive permissions"
             );
         }
 
         if self.mode == "production" && path.starts_with("/tmp/") {
             warn!(
-                "Unix socket path '{}' is in /tmp directory. In production, consider using a more permanent location like /var/run/sockudo/ for better security and persistence.",
-                path
+                reason = "tmp_path_in_production",
+                "unix socket path is in /tmp; consider a permanent location for production"
             );
         }
 

@@ -36,8 +36,9 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
             WorkerThreadsConfig::Fixed(n)
         } else {
             warn!(
-                "Invalid CLEANUP_WORKER_THREADS value '{}', keeping current setting",
-                worker_threads_str
+                env_var = "CLEANUP_WORKER_THREADS",
+                reason = "invalid_value",
+                "env config parse failed, keeping current setting"
             );
             options.cleanup.worker_threads.clone()
         };

@@ -26,9 +26,9 @@ impl WorkerThreadsResolve for WorkerThreadsConfig {
                 let cpu_count = num_cpus::get();
                 let auto_threads = (cpu_count / 4).clamp(1, 4);
                 tracing::info!(
-                    "Auto-detected {} CPUs, using {} cleanup worker threads",
                     cpu_count,
-                    auto_threads
+                    worker_threads = auto_threads,
+                    "auto-detected cleanup worker thread count"
                 );
                 auto_threads
             }
@@ -75,10 +75,10 @@ impl CleanupSystem {
         for (i, handle) in self.worker_handles.into_iter().enumerate() {
             match handle.await {
                 Ok(()) => {
-                    tracing::debug!("Cleanup worker {} shut down successfully", i);
+                    tracing::debug!(worker_id = i, "cleanup worker shut down successfully");
                 }
                 Err(e) => {
-                    tracing::warn!("Cleanup worker {} task failed: {}", i, e);
+                    tracing::warn!(worker_id = i, error = %e, "cleanup worker task failed");
                 }
             }
         }

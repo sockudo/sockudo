@@ -171,7 +171,7 @@ pub(super) async fn mark_channel_degraded(
         .execute(pool)
         .await
     {
-        error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist MySQL history degraded state: {err}");
+        error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to persist mysql history degraded state");
     }
     if let Some(metrics) = metrics {
         let _ = refresh_history_state_metrics(pool, tables, metrics, request.app_id).await;

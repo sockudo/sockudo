@@ -88,10 +88,7 @@ pub(super) async fn record_api_metrics(
             "Recorded API message metrics"
         );
     } else {
-        debug!(
-            "{}",
-            "Metrics system not available, skipping metrics recording."
-        );
+        debug!("metrics system not available, skipping metrics recording");
     }
 }
 
@@ -350,7 +347,7 @@ pub async fn up(
 
     let (health_status, app_id_str) = if let Some(Path(app_id)) = app_id {
         tracing::Span::current().record("app_id", &app_id);
-        debug!("Health check received for app_id: {}", app_id);
+        debug!(app_id = %app_id, "health check received");
 
         let app_check = timeout(timeout_duration, handler.app_manager().find_by_id(&app_id)).await;
 
@@ -375,7 +372,7 @@ pub async fn up(
 
         let app_status = match apps_check {
             Ok(Ok(apps)) if !apps.is_empty() => {
-                debug!("Found {} configured apps", apps.len());
+                debug!(apps_count = apps.len(), "found configured apps");
                 check_system_health(&handler, timeout_duration).await
             }
             Ok(Ok(_)) => HealthStatus::Error(vec!["No apps configured".to_string()]),
@@ -391,24 +388,24 @@ pub async fn up(
 
     match &health_status {
         HealthStatus::Ok => {
-            debug!("Health check passed for {}", app_id_str);
+            debug!(app_id = %app_id_str, "health check passed");
         }
         HealthStatus::Degraded(reasons) => {
             warn!(
-                "Health check degraded for {}: {}",
-                app_id_str,
-                reasons.join(", ")
+                app_id = %app_id_str,
+                reasons = %reasons.join(", "),
+                "health check degraded"
             );
         }
         HealthStatus::Error(reasons) => {
             error!(
-                "Health check failed for {}: {}",
-                app_id_str,
-                reasons.join(", ")
+                app_id = %app_id_str,
+                reasons = %reasons.join(", "),
+                "health check failed"
             );
         }
         HealthStatus::NotFound => {
-            warn!("Health check for non-existent app_id: {}", app_id_str);
+            warn!(app_id = %app_id_str, "health check for non-existent app");
         }
     }
 
@@ -435,7 +432,7 @@ pub async fn up(
 /// Fallback handler for unmatched routes.
 /// Returns a plain text 404.
 pub async fn fallback_404(uri: Uri) -> impl IntoResponse {
-    debug!("No route matched for: {}", uri);
+    debug!(uri = %uri, "no route matched");
     (
         StatusCode::NOT_FOUND,
         [(header::CONTENT_TYPE, "text/plain")],
@@ -448,14 +445,11 @@ pub async fn fallback_404(uri: Uri) -> impl IntoResponse {
 pub async fn metrics(
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    debug!("{}", "Metrics endpoint called");
+    debug!("metrics endpoint called");
     let plaintext_metrics_str = match handler.metrics().clone() {
         Some(metrics_arc) => metrics_arc.get_metrics_as_plaintext().await,
         None => {
-            info!(
-                "{}",
-                "No metrics data available (metrics collection is not enabled)."
-            );
+            info!("metrics collection not enabled");
             "# Metrics collection is not enabled.\n".to_string()
         }
     };

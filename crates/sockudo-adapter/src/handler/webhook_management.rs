@@ -47,8 +47,9 @@ impl ConnectionHandler {
                 .await
                 .unwrap_or_else(|e| {
                     warn!(
-                        "Failed to send client_event webhook for {}: {}",
-                        request.channel, e
+                        channel = %request.channel,
+                        error = %e,
+                        "failed to send client_event webhook"
                     );
                 });
         }

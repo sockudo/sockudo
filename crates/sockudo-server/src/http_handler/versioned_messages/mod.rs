@@ -254,8 +254,8 @@ async fn resolve_mutation_actor_identity(
                 app_id = %app_id,
                 channel = %channel,
                 action = %kind.as_verb(),
-                original_client_id = ?original_client_id,
-                actor_client_id = ?actor_client_id,
+                original_client_id = original_client_id.unwrap_or(""),
+                actor_client_id = actor_client_id.as_deref().unwrap_or(""),
                 "Denied versioned message mutation authorization"
             );
             let _ = err;

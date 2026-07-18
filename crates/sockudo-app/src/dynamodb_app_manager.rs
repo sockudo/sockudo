@@ -205,8 +205,8 @@ impl DynamoDbAppManager {
                             sonic_rs::from_str::<AHashMap<String, ChannelDeltaConfig>>(json_str)
                                 .map_err(|e| {
                                     tracing::warn!(
-                                        "Failed to parse channel_delta_compression JSON: {}",
-                                        e
+                                        error = %e,
+                                        "app channel_delta_compression json parse failed"
                                     );
                                     e
                                 })
@@ -221,7 +221,7 @@ impl DynamoDbAppManager {
                     {
                         sonic_rs::from_str::<Vec<Webhook>>(json_str)
                             .map_err(|e| {
-                                tracing::warn!("Failed to parse webhooks JSON: {}", e);
+                                tracing::warn!(error = %e, "app webhooks json parse failed");
                                 e
                             })
                             .ok()
@@ -233,7 +233,7 @@ impl DynamoDbAppManager {
                     {
                         sonic_rs::from_str::<AppIdempotencyConfig>(json_str)
                             .map_err(|e| {
-                                tracing::warn!("Failed to parse idempotency JSON: {}", e);
+                                tracing::warn!(error = %e, "app idempotency json parse failed");
                                 e
                             })
                             .ok()
@@ -246,7 +246,10 @@ impl DynamoDbAppManager {
                     {
                         sonic_rs::from_str::<AppConnectionRecoveryConfig>(json_str)
                             .map_err(|e| {
-                                tracing::warn!("Failed to parse connection_recovery JSON: {}", e);
+                                tracing::warn!(
+                                    error = %e,
+                                    "app connection_recovery json parse failed"
+                                );
                                 e
                             })
                             .ok()

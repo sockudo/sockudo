@@ -29,7 +29,7 @@ pub(in crate::bootstrap::push::workers) fn start_fcm_provider_workers(
 
     if let Ok(stored_app_id) = stored_app_id {
         if stored_app_id.trim().is_empty() {
-            warn!("FCM_APP_ID/PUSH_FCM_APP_ID is empty; FCM dispatch worker not started");
+            warn!("fcm app id env var is empty; fcm dispatch worker not started");
             return Vec::new();
         }
         let mut handles = Vec::new();
@@ -104,7 +104,7 @@ pub(in crate::bootstrap::push::workers) fn start_fcm_provider_workers(
         Some(project_id) => project_id,
         None => {
             warn!(
-                "FCM dispatch requires FCM_PROJECT_ID/PUSH_FCM_PROJECT_ID or project_id in the FCM service account JSON; FCM dispatch worker not started"
+                "fcm dispatch requires a project id; set FCM_PROJECT_ID/PUSH_FCM_PROJECT_ID or include project_id in the service account json; fcm dispatch worker not started"
             );
             return Vec::new();
         }
@@ -209,7 +209,7 @@ fn create_fcm_token_provider() -> Result<(sockudo_push::CachedTokenProvider, Opt
     let provider =
         static_push_token_provider("FCM", &["FCM_PROVIDER_TOKEN", "PUSH_FCM_PROVIDER_TOKEN"])?;
     warn!(
-        "FCM_PROVIDER_TOKEN/PUSH_FCM_PROVIDER_TOKEN is a static bearer token and cannot be refreshed; use FCM_SERVICE_ACCOUNT_JSON_PATH or PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH for long-running workers"
+        "fcm provider token is a static bearer token and cannot be refreshed; use FCM_SERVICE_ACCOUNT_JSON_PATH or PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH for long-running workers"
     );
     Ok((provider, None))
 }

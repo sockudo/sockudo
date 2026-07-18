@@ -109,11 +109,8 @@ where
     pub async fn set_cluster_health(&mut self, cluster_health: &ClusterHealthConfig) -> Result<()> {
         // Validate cluster health configuration first
         if let Err(validation_error) = cluster_health.validate() {
-            warn!(
-                "Cluster health configuration validation failed: {}",
-                validation_error
-            );
-            warn!("Keeping current cluster health settings");
+            warn!(error = %validation_error, "cluster health configuration validation failed");
+            warn!("keeping current cluster health settings");
             return Ok(());
         }
 
@@ -126,8 +123,8 @@ where
         // Log warning for high-frequency heartbeats
         if cluster_health.heartbeat_interval_ms < 1000 {
             warn!(
-                "High-frequency heartbeat interval ({} ms) may cause unnecessary network load. Consider using >= 1000 ms unless high availability is critical.",
-                cluster_health.heartbeat_interval_ms
+                heartbeat_interval_ms = cluster_health.heartbeat_interval_ms,
+                "high-frequency heartbeat interval may cause unnecessary network load, consider using >= 1000ms"
             );
         }
 
@@ -307,19 +304,19 @@ where
                         if response_count >= max_expected_responses || can_early_return {
                             if can_early_return {
                                 debug!(
-                                    "Request {} early return with {}/{} responses in {}ms (found positive result)",
-                                    request_id,
-                                    response_count,
-                                    max_expected_responses,
-                                    start.elapsed().as_millis()
+                                    request_id = %request_id,
+                                    response_count = response_count,
+                                    expected = max_expected_responses,
+                                    elapsed_ms = start.elapsed().as_millis(),
+                                    "request early return with positive result"
                                 );
                             } else {
                                 debug!(
-                                    "Request {} completed with {}/{} responses in {}ms",
-                                    request_id,
-                                    response_count,
-                                    max_expected_responses,
-                                    start.elapsed().as_millis()
+                                    request_id = %request_id,
+                                    response_count = response_count,
+                                    expected = max_expected_responses,
+                                    elapsed_ms = start.elapsed().as_millis(),
+                                    "request completed"
                                 );
                             }
                             // Extract responses without removing the entry yet to avoid race condition
@@ -342,12 +339,12 @@ where
                         Vec::new()
                     };
                     warn!(
-                        "Request {} ({:?}) timed out after {}ms, got {}/{} responses",
-                        request_id,
-                        request_type,
-                        start.elapsed().as_millis(),
-                        responses.len(),
-                        max_expected_responses
+                        request_id = %request_id,
+                        request_type = ?request_type,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        responses_received = responses.len(),
+                        expected = max_expected_responses,
+                        "request timed out"
                     );
                     Some((responses, true))
                 }
@@ -466,13 +463,13 @@ where
                         // Very hot path under fanout load; keep detailed per-message
                         // diagnostics behind TRACE.
                         tracing::trace!(
-                            "Received broadcast from node {}: channel={}, event={:?}, stream_id={:?}, serial={:?}, tags={:?}",
-                            broadcast.node_id,
-                            broadcast.channel,
-                            message.event,
-                            message.stream_id,
-                            message.serial,
-                            message.tags
+                            node_id = %broadcast.node_id,
+                            channel = %broadcast.channel,
+                            event = ?message.event,
+                            stream_id = ?message.stream_id,
+                            serial = ?message.serial,
+                            tags = ?message.tags,
+                            "received broadcast"
                         );
 
                         let except_id = broadcast
@@ -488,8 +485,8 @@ where
                             let tag_filtering_enabled =
                                 horizontal_lock.local_adapter.is_tag_filtering_enabled();
                             tracing::trace!(
-                                "Tag filtering enabled on this node: {}",
-                                tag_filtering_enabled
+                                tag_filtering_enabled = tag_filtering_enabled,
+                                "tag filtering status on this node"
                             );
                         }
 
@@ -666,10 +663,7 @@ where
                                 )
                                 .await
                             {
-                                error!(
-                                    "Failed to sync presence state to new node {}: {}",
-                                    new_node_id, e
-                                );
+                                error!(node_id = %new_node_id, error = %e, "failed to sync presence state to new node");
                             }
                         });
                     }
@@ -706,8 +700,9 @@ where
         let node_timeout_ms = self.node_timeout_ms;
 
         info!(
-            "Starting cluster health system with heartbeat interval: {}ms, timeout: {}ms",
-            heartbeat_interval_ms, node_timeout_ms
+            heartbeat_interval_ms = heartbeat_interval_ms,
+            node_timeout_ms = node_timeout_ms,
+            "starting cluster health system"
         );
 
         // Start heartbeat broadcasting
@@ -755,7 +750,10 @@ where
 
                 let namespaces = match local_adapter.get_namespaces().await {
                     Ok(namespaces) => namespaces,
-                    Err(_) => continue,
+                    Err(e) => {
+                        debug!(error = %e, "namespace fetch failed, skipping");
+                        continue;
+                    }
                 };
 
                 let mut seen_apps = std::collections::HashSet::new();
@@ -853,7 +851,7 @@ where
                 };
 
                 if let Err(e) = transport.publish_request(&heartbeat_request).await {
-                    error!("Failed to send heartbeat: {}", e);
+                    error!(error = %e, "failed to send heartbeat");
                 }
             }
         });
@@ -887,14 +885,14 @@ where
 
                     if is_leader {
                         info!(
-                            "Elected as cleanup leader for {} dead nodes: {:?}",
-                            dead_nodes.len(),
-                            dead_nodes
+                            dead_node_count = dead_nodes.len(),
+                            dead_nodes = ?dead_nodes,
+                            "elected as cleanup leader"
                         );
 
                         // Process ALL dead nodes as the elected leader
                         for dead_node_id in dead_nodes {
-                            debug!("Processing dead node: {}", dead_node_id);
+                            debug!(node_id = %dead_node_id, "processing dead node");
 
                             // 1. Remove from local heartbeat tracking
                             horizontal.remove_dead_node(&dead_node_id).await;
@@ -906,7 +904,7 @@ where
                             {
                                 Ok(tasks) => tasks,
                                 Err(e) => {
-                                    error!("Failed to cleanup dead node {}: {}", dead_node_id, e);
+                                    error!(node_id = %dead_node_id, error = %e, "failed to cleanup dead node");
                                     continue;
                                 }
                             };
@@ -931,16 +929,16 @@ where
                                 // Emit event for processing by ConnectionHandler (lock-free read via OnceLock)
                                 if let Some(event_sender) = event_bus.get() {
                                     if let Err(e) = event_sender.send(event) {
-                                        error!("Failed to send dead node event: {}", e);
+                                        error!(error = %e, "failed to send dead node event");
                                     }
                                 } else {
                                     warn!("No event bus configured for dead node cleanup");
                                 }
 
                                 info!(
-                                    "Emitted cleanup event for {} orphaned presence members from dead node {}",
-                                    orphaned_members.len(),
-                                    dead_node_id
+                                    orphaned_member_count = orphaned_members.len(),
+                                    node_id = %dead_node_id,
+                                    "emitted cleanup event for orphaned presence members"
                                 );
                             }
 
@@ -970,14 +968,14 @@ where
 
                                 if let Err(e) = transport.publish_request(&dead_node_request).await
                                 {
-                                    error!("Failed to send dead node notification: {}", e);
+                                    error!(error = %e, "failed to send dead node notification");
                                 }
                             }
                         }
                     } else {
                         debug!(
-                            "Not cleanup leader for {} dead nodes, waiting for leader's broadcasts",
-                            dead_nodes.len()
+                            dead_node_count = dead_nodes.len(),
+                            "not cleanup leader, waiting for leader broadcasts"
                         );
                     }
                 }

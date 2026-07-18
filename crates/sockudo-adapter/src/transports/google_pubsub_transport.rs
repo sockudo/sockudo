@@ -10,7 +10,7 @@ use sockudo_core::options::GooglePubSubAdapterConfig;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 pub struct GooglePubSubTransport {
     broadcast_publisher: Publisher,
@@ -81,8 +81,11 @@ impl HorizontalTransport for GooglePubSubTransport {
         let response_publisher = build_publisher(&config, &response_topic).await?;
 
         info!(
-            "Google Pub/Sub transport initialized with topics: {}, {}, {}",
-            broadcast_topic, request_topic, response_topic
+            adapter = "google_pubsub",
+            broadcast_topic = %broadcast_topic,
+            request_topic = %request_topic,
+            response_topic = %response_topic,
+            "transport initialized"
         );
 
         Ok(Self {
@@ -179,18 +182,22 @@ impl GooglePubSubTransport {
                             if let Some(metrics) = metrics.get() {
                                 metrics.mark_horizontal_transport_message_dropped("google_pubsub");
                             }
-                            warn!("Failed to parse Google Pub/Sub {kind} payload: {}", error);
+                            warn!(adapter = "google_pubsub", kind = kind, error = %error, "transport message parse failed");
                             ack_handler.ack();
                         }
                     },
                     Err(error) => {
-                        error!("Google Pub/Sub {kind} consumer error: {}", error);
+                        error!(adapter = "google_pubsub", kind = kind, error = %error, "consumer loop error");
                         break;
                     }
                 }
             }
 
-            warn!("Google Pub/Sub {kind} consumer loop ended");
+            warn!(
+                adapter = "google_pubsub",
+                kind = kind,
+                "consumer loop ended"
+            );
         });
     }
 
@@ -222,10 +229,7 @@ impl GooglePubSubTransport {
                                     if let Err(error) =
                                         publish_message(&response_publisher, &response).await
                                     {
-                                        warn!(
-                                            "Failed to publish Google Pub/Sub response: {}",
-                                            error
-                                        );
+                                        warn!(adapter = "google_pubsub", error = %error, "response publish failed");
                                     }
                                     ack_handler.ack();
                                 }
@@ -237,7 +241,7 @@ impl GooglePubSubTransport {
                                     ack_handler.ack();
                                 }
                                 Err(error) => {
-                                    warn!("Google Pub/Sub request handler failed: {}", error);
+                                    warn!(adapter = "google_pubsub", error = %error, "request handler failed");
                                     ack_handler.ack();
                                 }
                             },
@@ -246,19 +250,19 @@ impl GooglePubSubTransport {
                                     metrics
                                         .mark_horizontal_transport_message_dropped("google_pubsub");
                                 }
-                                warn!("Failed to parse Google Pub/Sub request payload: {}", error);
+                                warn!(adapter = "google_pubsub", error = %error, "request payload parse failed");
                                 ack_handler.ack();
                             }
                         }
                     }
                     Err(error) => {
-                        error!("Google Pub/Sub request consumer error: {}", error);
+                        error!(adapter = "google_pubsub", error = %error, "request consumer loop error");
                         break;
                     }
                 }
             }
 
-            warn!("Google Pub/Sub request consumer loop ended");
+            warn!(adapter = "google_pubsub", "request consumer loop ended");
         });
     }
 }
@@ -285,15 +289,15 @@ impl Drop for GooglePubSubTransport {
                         .send()
                         .await
                     {
-                        warn!(
-                            "Failed to delete Google Pub/Sub subscription '{}': {}",
-                            subscription, error
-                        );
+                        warn!(adapter = "google_pubsub", subscription = %subscription, error = %error, "subscription cleanup failed");
                     }
                 }
             });
         } else {
-            warn!("No Tokio runtime available to clean up Google Pub/Sub subscriptions");
+            warn!(
+                adapter = "google_pubsub",
+                "no tokio runtime for subscription cleanup"
+            );
         }
     }
 }
@@ -326,7 +330,7 @@ async fn publish_message<T: serde::Serialize>(publisher: &Publisher, message: &T
         .await
         .map_err(|e| Error::Internal(format!("Failed to publish Google Pub/Sub message: {e}")))?;
 
-    debug!("Published Google Pub/Sub message");
+    trace!(adapter = "google_pubsub", "message published to transport");
     Ok(())
 }
 

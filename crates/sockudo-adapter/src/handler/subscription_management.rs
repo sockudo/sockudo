@@ -24,6 +24,7 @@ use sonic_rs::{JsonValueMutTrait, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionResult {
@@ -107,11 +108,11 @@ impl ConnectionHandler {
                     Some((channel_connections, _newly_subscribed, activated_locally)) => {
                         let t_after_fast = t_start.elapsed().as_micros();
                         tracing::debug!(
-                            "PERF[FAST_PATH] socket_id={} channel={} total={}μs channel_type={}μs",
-                            socket_id,
-                            request.channel,
-                            t_after_fast - t_before_fast,
-                            t_after_channel_type - t_before_channel_type
+                            socket_id = %socket_id,
+                            channel = %request.channel,
+                            total_us = t_after_fast - t_before_fast,
+                            channel_type_us = t_after_channel_type - t_before_channel_type,
+                            "subscription fast path"
                         );
                         JoinResponse {
                             success: true,
@@ -128,10 +129,10 @@ impl ConnectionHandler {
                         // Fast-path failed (socket not found), fall back to normal path
                         let t_before_fallback = t_start.elapsed().as_micros();
                         tracing::debug!(
-                            "PERF[FAST_PATH_FALLBACK] socket_id={} channel={} fallback_at={}μs",
-                            socket_id,
-                            request.channel,
-                            t_before_fallback
+                            socket_id = %socket_id,
+                            channel = %request.channel,
+                            fallback_at_us = t_before_fallback,
+                            "subscription fast path fallback"
                         );
                         let result = ChannelManager::subscribe_local(
                             &self.connection_manager,
@@ -144,10 +145,10 @@ impl ConnectionHandler {
                         .await?;
                         let t_after_fallback = t_start.elapsed().as_micros();
                         tracing::debug!(
-                            "PERF[FALLBACK_DONE] socket_id={} channel={} fallback_time={}μs",
-                            socket_id,
-                            request.channel,
-                            t_after_fallback - t_before_fallback
+                            socket_id = %socket_id,
+                            channel = %request.channel,
+                            fallback_time_us = t_after_fallback - t_before_fallback,
+                            "subscription fallback path done"
                         );
                         result
                     }
@@ -166,10 +167,11 @@ impl ConnectionHandler {
                 .await?;
                 let t_after_normal = t_start.elapsed().as_micros();
                 tracing::debug!(
-                    "PERF[NORMAL_PATH] socket_id={} channel={} reason=presence total={}μs",
-                    socket_id,
-                    request.channel,
-                    t_after_normal - t_before_normal
+                    socket_id = %socket_id,
+                    channel = %request.channel,
+                    reason = "presence",
+                    total_us = t_after_normal - t_before_normal,
+                    "subscription normal path"
                 );
                 result
             }
@@ -187,10 +189,10 @@ impl ConnectionHandler {
             .await?;
             let t_after_redis = t_start.elapsed().as_micros();
             tracing::debug!(
-                "PERF[REDIS_PATH] socket_id={} channel={} total={}μs",
-                socket_id,
-                request.channel,
-                t_after_redis - t_before_redis
+                socket_id = %socket_id,
+                channel = %request.channel,
+                total_us = t_after_redis - t_before_redis,
+                "subscription horizontal adapter path"
             );
             result
         };
@@ -228,21 +230,21 @@ impl ConnectionHandler {
                 .await
         {
             tracing::warn!(
-                "Failed to clear user auth timeout for socket {}: {}",
-                socket_id,
-                e
+                socket_id = %socket_id,
+                error = %e,
+                "failed to clear user auth timeout"
             );
         }
 
         let total = t_start.elapsed().as_micros();
         tracing::debug!(
-            "PERF[EXECUTE_SUB] socket_id={} channel={} total={}μs msg_create={}μs channel_mgr={}μs metrics={}μs",
-            socket_id,
-            request.channel,
-            total,
-            t_after_msg_create - t_before_msg_create,
-            t_after_channel_mgr - t_after_msg_create,
-            t_after_metrics - t_before_metrics
+            socket_id = %socket_id,
+            channel = %request.channel,
+            total_us = total,
+            msg_create_us = t_after_msg_create - t_before_msg_create,
+            channel_mgr_us = t_after_channel_mgr - t_after_msg_create,
+            metrics_us = t_after_metrics - t_before_metrics,
+            "execute subscription perf"
         );
 
         // Convert the channel manager result to our result type
@@ -352,16 +354,16 @@ impl ConnectionHandler {
 
             // Send delta compression cache sync if enabled for this socket and channel
             tracing::debug!(
-                "About to call send_delta_cache_sync_if_needed for socket {} channel {}",
-                socket_id,
-                request.channel
+                socket_id = %socket_id,
+                channel = %request.channel,
+                "calling send_delta_cache_sync_if_needed"
             );
             self.send_delta_cache_sync_if_needed(socket_id, app_config, &request.channel)
                 .await?;
             tracing::debug!(
-                "send_delta_cache_sync_if_needed completed successfully for socket {} channel {}",
-                socket_id,
-                request.channel
+                socket_id = %socket_id,
+                channel = %request.channel,
+                "send_delta_cache_sync_if_needed completed"
             );
         }
 
@@ -370,9 +372,9 @@ impl ConnectionHandler {
             .await
         {
             tracing::warn!(
-                "Failed to emit subscription count notifications for {}: {}",
-                request.channel,
-                e
+                channel = %request.channel,
+                error = %e,
+                "failed to emit subscription count notifications"
             );
         }
 
@@ -381,6 +383,29 @@ impl ConnectionHandler {
             self.send_missed_cache_if_exists(&app_config.id, socket_id, &request.channel)
                 .await?;
         }
+
+        // signin user_id takes precedence; fall back to presence channel_data user_id
+        let user_id = self
+            .get_user_id_for_socket(socket_id, app_config)
+            .await
+            .ok()
+            .flatten()
+            .or_else(|| {
+                subscription_result
+                    .member
+                    .as_ref()
+                    .map(|m| m.user_id.clone())
+            });
+
+        info!(
+            app_id = %app_config.id,
+            socket_id = %socket_id,
+            channel = %request.channel,
+            channel_type = %channel_type.as_str(),
+            user_id = user_id.as_deref().unwrap_or(""),
+            channel_connections = subscription_result.channel_connections.unwrap_or(0),
+            "socket subscribed"
+        );
 
         Ok(())
     }
@@ -424,9 +449,9 @@ impl ConnectionHandler {
                 .await
         {
             tracing::warn!(
-                "Failed to send channel_occupied webhook for {}: {}",
-                channel,
-                e
+                channel = %channel,
+                error = %e,
+                "failed to send channel_occupied webhook"
             );
         }
 
@@ -1008,8 +1033,8 @@ impl ConnectionHandler {
         // Skip encrypted channels - delta compression is useless for them
         if DeltaCompressionManager::is_encrypted_channel(channel) {
             tracing::debug!(
-                "Ignoring per-subscription delta settings for encrypted channel '{}' - delta compression has no benefit",
-                channel
+                channel = %channel,
+                "ignoring per-subscription delta settings for encrypted channel"
             );
             return;
         }
@@ -1023,11 +1048,11 @@ impl ConnectionHandler {
         );
 
         tracing::info!(
-            "Applied per-subscription delta settings for socket {} channel {}: enabled={:?}, algorithm={:?}",
-            socket_id,
-            channel,
-            settings.should_enable(),
-            settings.preferred_algorithm()
+            socket_id = %socket_id,
+            channel = %channel,
+            delta_enabled = settings.should_enable().unwrap_or(false),
+            delta_algorithm = %format_args!("{:?}", settings.preferred_algorithm().unwrap_or_default()),
+            "applied per-subscription delta settings"
         );
 
         // If enabling delta compression for this channel and socket doesn't have global delta enabled,
@@ -1082,10 +1107,10 @@ impl ConnectionHandler {
                             .await
                         {
                             tracing::warn!(
-                                "Failed to send per-channel delta confirmation for socket {} channel {}: {}",
-                                socket_id,
-                                channel,
-                                e
+                                socket_id = %socket_id,
+                                channel = %channel,
+                                error = %e,
+                                "failed to send per-channel delta confirmation"
                             );
                         }
                         break;
@@ -1103,21 +1128,21 @@ impl ConnectionHandler {
         channel: &str,
     ) -> Result<()> {
         tracing::debug!(
-            "send_delta_cache_sync_if_needed: START for socket {} channel {}",
-            socket_id,
-            channel
+            socket_id = %socket_id,
+            channel = %channel,
+            "delta cache sync check start"
         );
 
         // Check if delta compression is enabled for this socket
         let is_enabled = self.delta_compression.is_enabled_for_socket(socket_id);
         tracing::debug!(
-            "send_delta_cache_sync_if_needed: delta compression enabled for socket {}: {}",
-            socket_id,
-            is_enabled
+            socket_id = %socket_id,
+            delta_enabled = is_enabled,
+            "delta compression socket status"
         );
 
         if !is_enabled {
-            tracing::debug!("send_delta_cache_sync_if_needed: returning early - not enabled");
+            tracing::debug!(socket_id = %socket_id, "delta cache sync skipped — not enabled");
             return Ok(());
         }
 
@@ -1140,13 +1165,14 @@ impl ConnectionHandler {
             .and_then(|s| s.conflation_key.as_deref());
 
         tracing::debug!(
-            "send_delta_cache_sync_if_needed: conflation_key = {:?}",
-            conflation_key
+            socket_id = %socket_id,
+            has_conflation_key = conflation_key.is_some(),
+            "delta cache sync conflation key check"
         );
 
         if conflation_key.is_none() {
             // No conflation key configured, no cache sync needed
-            tracing::debug!("send_delta_cache_sync_if_needed: returning early - no conflation key");
+            tracing::debug!(socket_id = %socket_id, "delta cache sync skipped — no conflation key");
             return Ok(());
         }
 
@@ -1161,7 +1187,8 @@ impl ConnectionHandler {
         // sequence number mismatches. Each socket must receive its own full messages to establish
         // proper base messages for delta compression.
         tracing::debug!(
-            "send_delta_cache_sync_if_needed: skipping cache sync (causes sequence mismatch on resubscribe)"
+            socket_id = %socket_id,
+            "delta cache sync skipped — sequence mismatch risk on resubscribe"
         );
         Ok(())
     }

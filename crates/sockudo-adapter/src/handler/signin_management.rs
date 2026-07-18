@@ -94,9 +94,9 @@ impl ConnectionHandler {
             && let Some(watchlist) = user_info.watchlist.as_ref()
         {
             info!(
-                "Processing watchlist for user {} with {} watched users",
-                user_info.id,
-                watchlist.len()
+                user_id = %user_info.id,
+                watched_count = watchlist.len(),
+                "processing watchlist for user"
             );
 
             // Add user to watchlist manager and get initial status events
@@ -118,10 +118,10 @@ impl ConnectionHandler {
                 .await?;
 
             info!(
-                "User {} signin: {} watchlist events to send, notifying {} watchers",
-                user_info.id,
-                watchlist_events.len(),
-                watchers_to_notify.len()
+                user_id = %user_info.id,
+                watchlist_event_count = watchlist_events.len(),
+                watcher_count = watchers_to_notify.len(),
+                "user signed in with watchlist"
             );
 
             // Send watchlist events to the newly signed-in user
@@ -132,8 +132,9 @@ impl ConnectionHandler {
                     .await
                 {
                     warn!(
-                        "Failed to send watchlist event to user {}: {}",
-                        user_info.id, e
+                        user_id = %user_info.id,
+                        error = %e,
+                        "failed to send watchlist event to user"
                     );
                 }
             }
@@ -150,8 +151,9 @@ impl ConnectionHandler {
                         .await
                     {
                         warn!(
-                            "Failed to send online notification to watcher {}: {}",
-                            watcher_socket_id, e
+                            socket_id = %watcher_socket_id,
+                            error = %e,
+                            "failed to send online notification to watcher"
                         );
                     }
                 }

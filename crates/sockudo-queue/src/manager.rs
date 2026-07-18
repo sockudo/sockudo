@@ -63,10 +63,12 @@ impl QueueManagerFactory {
                 let concurrency_val = concurrency.unwrap_or(5);
                 let response_timeout_ms = response_timeout_ms.unwrap_or(30000);
                 info!(
-                    "Creating Redis queue manager (Prefix: {}, Concurrency: {}, Response timeout: {}ms)",
-                    prefix_str, concurrency_val, response_timeout_ms
+                    queue_driver = "redis",
+                    prefix = %prefix_str,
+                    concurrency_count = concurrency_val,
+                    response_timeout_ms = response_timeout_ms,
+                    "queue factory initialized"
                 );
-                debug!("Redis queue manager URL: {}", url);
                 let manager =
                     RedisQueueManager::new(url, prefix_str, concurrency_val, response_timeout_ms)
                         .await?;
@@ -84,10 +86,12 @@ impl QueueManagerFactory {
                 let response_timeout_ms = response_timeout_ms.unwrap_or(5000);
 
                 info!(
-                    "Creating Redis Cluster queue manager (Prefix: {}, Concurrency: {}, Request timeout: {}ms)",
-                    prefix_str, concurrency_val, response_timeout_ms
+                    queue_driver = "redis-cluster",
+                    prefix = %prefix_str,
+                    concurrency_count = concurrency_val,
+                    request_timeout_ms = response_timeout_ms,
+                    "queue factory initialized"
                 );
-                debug!("Redis Cluster queue manager nodes: {:?}", cluster_nodes);
 
                 let manager = RedisClusterQueueManager::new(
                     cluster_nodes,
@@ -108,7 +112,7 @@ impl QueueManagerFactory {
                 Ok(Box::new(manager))
             }
             "memory" => {
-                info!("{}", "Creating Memory queue manager".to_string());
+                info!(queue_driver = "memory", "queue factory initialized");
                 let manager = MemoryQueueManager::new();
                 manager.start_processing();
                 Ok(Box::new(manager))
@@ -177,12 +181,12 @@ impl QueueManagerFactory {
     #[cfg(feature = "sqs")]
     pub async fn create_sqs(config: SqsQueueConfig) -> Result<Box<dyn QueueInterface>> {
         info!(
-            "Creating SQS queue manager (Region: {}, Concurrency: {}, FIFO: {})",
-            config.region, config.concurrency, config.fifo
+            queue_driver = "sqs",
+            region = %config.region,
+            concurrency_count = config.concurrency,
+            fifo = config.fifo,
+            "queue factory initialized"
         );
-        if let Some(ref url_prefix) = config.queue_url_prefix {
-            debug!("SQS queue URL prefix: {}", url_prefix);
-        }
         let manager = SqsQueueManager::new(config).await?;
         Ok(Box::new(manager))
     }
@@ -201,8 +205,9 @@ impl QueueManagerFactory {
     #[cfg(feature = "sns")]
     pub async fn create_sns(config: SnsQueueConfig) -> Result<Box<dyn QueueInterface>> {
         info!(
-            "Creating SNS queue manager (Region: {}, Topic: {})",
-            config.region, config.topic_arn
+            queue_driver = "sns",
+            region = %config.region,
+            "queue factory initialized"
         );
         let manager = SnsQueueManager::new(config).await?;
         Ok(Box::new(manager))

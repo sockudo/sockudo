@@ -137,8 +137,8 @@ where
                 Ok(decoded) => Some(decoded.versioned.updated_at_ms),
                 Err(error) => {
                     tracing::warn!(
-                        app_id,
-                        publish_id,
+                        app_id = %app_id,
+                        publish_id = %publish_id,
                         operation = "decode-after-status-conflict",
                         error = %error,
                         "push publish status advisory index cleanup failed"
@@ -149,8 +149,8 @@ where
             Ok(None) => None,
             Err(error) => {
                 tracing::warn!(
-                    app_id,
-                    publish_id,
+                    app_id = %app_id,
+                    publish_id = %publish_id,
                     operation = "read-after-status-conflict",
                     error = %error,
                     "push publish status advisory index cleanup failed"
@@ -173,8 +173,8 @@ where
             .await
         {
             tracing::warn!(
-                app_id,
-                publish_id,
+                app_id = %app_id,
+                publish_id = %publish_id,
                 operation = "delete-conflicting-time-index",
                 error = %error,
                 "push publish status advisory index cleanup failed"
@@ -204,8 +204,8 @@ where
             .await
         {
             tracing::warn!(
-                app_id,
-                publish_id,
+                app_id = %app_id,
+                publish_id = %publish_id,
                 operation = "write-updated-pointer",
                 error = %error,
                 "push publish status advisory index update failed"
@@ -224,8 +224,8 @@ where
                 .await
         {
             tracing::warn!(
-                app_id,
-                publish_id,
+                app_id = %app_id,
+                publish_id = %publish_id,
                 operation = "delete-old-time-index",
                 error = %error,
                 "push publish status advisory index update failed"

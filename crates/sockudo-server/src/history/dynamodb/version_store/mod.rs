@@ -401,7 +401,7 @@ impl DynamoDbVersionStore {
             tracing::warn!(
                 table = %table_name,
                 error = %e,
-                "Unable to enable DynamoDB TTL on version store table; entries will not be auto-expired"
+                "unable to enable dynamodb ttl on version store table; entries will not be auto-expired"
             );
         }
 

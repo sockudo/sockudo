@@ -276,7 +276,8 @@ metadata is inspected through `/apps/{appId}/push/deadLetters`. Cleanup is bound
 | `[metrics]` | Enables metrics and configures the Prometheus scrape endpoint. |
 | `[metrics.prometheus]` | Prometheus metric naming options. |
 | `[metrics.tcp_exporter]` | Optional metrics-rs TCP event exporter for live clients and sidecars. |
-| logging environment | Runtime log level and structured output. |
+| `[logging]` | Controls ANSI colors and tracing-target inclusion for text/JSON output. |
+| [logging environment](/docs/reference/logging) | Runtime filters, structured output, lifecycle fields, and data-safety policy. |
 
 ## Example production skeleton
 

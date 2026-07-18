@@ -56,15 +56,18 @@ impl Namespace {
             Ok(Some(app)) => app,
             Ok(None) => {
                 error!(
-                    "App not found for app_id: {}. Cannot initialize socket: {}",
-                    self.app_id, socket_id
+                    app_id = %self.app_id,
+                    socket_id = %socket_id,
+                    "app not found, cannot initialize socket"
                 );
                 return Err(Error::ApplicationNotFound);
             }
             Err(e) => {
                 error!(
-                    "Failed to get app {} for socket {}: {}",
-                    self.app_id, socket_id, e
+                    app_id = %self.app_id,
+                    socket_id = %socket_id,
+                    error = %e,
+                    "failed to retrieve app config for socket"
                 );
                 return Err(Error::Internal(format!(
                     "Failed to retrieve app config: {e}"
@@ -112,10 +115,7 @@ impl Namespace {
                 }
             }
         } else {
-            debug!(
-                "get_channel_members called on non-existent channel: {}",
-                channel
-            );
+            debug!(channel = %channel, "get_channel_members called on non-existent channel");
         }
         Ok(presence_members)
     }
@@ -135,10 +135,7 @@ impl Namespace {
                 .map(|entry| *entry.key())
                 .collect()
         } else {
-            debug!(
-                "get_channel_sockets called on non-existent channel: {}",
-                channel
-            );
+            debug!(channel = %channel, "get_channel_sockets called on non-existent channel");
             Vec::new()
         }
     }
@@ -149,10 +146,7 @@ impl Namespace {
         except: Option<&SocketId>,
     ) -> Vec<WebSocketRef> {
         let Some(channel_sockets_ref) = self.channels.get(channel) else {
-            debug!(
-                "get_channel_socket_refs_except called on non-existent channel: {}",
-                channel
-            );
+            debug!(channel = %channel, "get_channel_socket_refs_except called on non-existent channel");
             return Vec::new();
         };
 
@@ -432,19 +426,16 @@ impl Namespace {
             drop(user_sockets_ref);
             if is_empty {
                 self.users.remove(&user_id);
-                debug!("Removed empty user entry for: {}", user_id);
+                debug!(user_id = %user_id, "removed empty user entry");
             }
         }
 
         self.presence_data.remove(&socket_id);
 
         if self.sockets.remove(&socket_id).is_some() {
-            debug!("Removed socket {} from main map.", socket_id);
+            debug!(socket_id = %socket_id, "removed socket from main map");
         } else {
-            warn!(
-                "Socket {} already removed from main map during cleanup.",
-                socket_id
-            );
+            warn!(socket_id = %socket_id, "socket already removed from main map during cleanup");
         }
     }
 
@@ -460,7 +451,7 @@ impl Namespace {
                         .close(4009, "You got disconnected by the app.".to_string())
                         .await
                     {
-                        warn!("Failed to close connection: {}", e);
+                        warn!(error = %e, "failed to close connection");
                     }
                 })
                 .collect();
@@ -518,11 +509,11 @@ impl Namespace {
         }
 
         tracing::debug!(
-            "PERF[NS_ADD_CHAN] channel={} socket={} entry_op={}ns inserted={}",
-            channel,
-            socket_id,
-            t_after_entry - t_before_entry,
-            newly_inserted
+            channel = %channel,
+            socket_id = %socket_id,
+            entry_op_ns = t_after_entry - t_before_entry,
+            inserted = newly_inserted,
+            "channel-socket entry op"
         );
 
         (newly_inserted, activated)
@@ -548,7 +539,7 @@ impl Namespace {
                 if channel.contains('*') {
                     self.wildcard_channels.remove(channel);
                 }
-                debug!("Removed empty channel entry: {}", channel);
+                debug!(channel = %channel, "removed empty channel entry");
             }
             return (removed.is_some(), vacated);
         }
@@ -569,7 +560,7 @@ impl Namespace {
             }
         }
         if self.sockets.remove(socket_id).is_some() {
-            debug!("Explicitly removed socket: {}", socket_id);
+            debug!(socket_id = %socket_id, "explicitly removed socket");
         }
     }
 
@@ -586,7 +577,7 @@ impl Namespace {
         if channel.contains('*') {
             self.wildcard_channels.remove(channel);
         }
-        debug!("Removed channel entry: {}", channel);
+        debug!(channel = %channel, "removed channel entry");
     }
 
     pub fn is_in_channel(&self, channel: &str, socket_id: &SocketId) -> bool {
@@ -623,13 +614,10 @@ impl Namespace {
             let user_sockets_ref = self.users.entry(user_id.clone()).or_default();
             user_sockets_ref.insert(ws_ref.clone());
             let socket_id = ws_ref.get_socket_id().await;
-            debug!("Added socket {} to user {}", socket_id, user_id);
+            debug!(socket_id = %socket_id, user_id = %user_id, "added socket to user");
         } else {
             let socket_id = ws_ref.get_socket_id().await;
-            warn!(
-                "User data found for socket {} but missing user ID.",
-                socket_id
-            );
+            warn!(socket_id = %socket_id, "user data found for socket but missing user id");
         }
         Ok(())
     }
@@ -644,18 +632,15 @@ impl Namespace {
                 let is_empty = user_sockets_ref.is_empty();
                 drop(user_sockets_ref);
                 if removed.is_some() {
-                    debug!("Removed socket {} from user {}", socket_id, user_id);
+                    debug!(socket_id = %socket_id, user_id = %user_id, "removed socket from user");
                 }
                 if is_empty {
                     self.users.remove(&user_id);
-                    debug!("Removed empty user entry for: {}", user_id);
+                    debug!(user_id = %user_id, "removed empty user entry");
                 }
             }
         } else {
-            warn!(
-                "User data found for socket {} during removal but missing user ID.",
-                socket_id
-            );
+            warn!(socket_id = %socket_id, "user data found for socket during removal but missing user id");
         }
         Ok(())
     }
@@ -681,15 +666,12 @@ impl Namespace {
 
             if is_empty {
                 self.users.remove(user_id);
-                debug!("Removed empty user entry for: {}", user_id);
+                debug!(user_id = %user_id, "removed empty user entry");
             }
 
-            debug!("Removed socket {} from user {}", socket_id, user_id);
+            debug!(socket_id = %socket_id, user_id = %user_id, "removed socket from user");
         } else {
-            debug!(
-                "User {} not found when removing socket {}",
-                user_id, socket_id
-            );
+            debug!(user_id = %user_id, socket_id = %socket_id, "user not found when removing socket");
         }
         Ok(())
     }

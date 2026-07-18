@@ -116,8 +116,10 @@ impl LocalAdapter {
         let max_concurrent = cpu_cores * multiplier;
 
         info!(
-            "LocalAdapter initialized with {} CPU cores, buffer multiplier {}, max concurrent {}",
-            cpu_cores, multiplier, max_concurrent
+            cpu_cores = cpu_cores,
+            buffer_multiplier = multiplier,
+            max_concurrent = max_concurrent,
+            "local adapter initialized"
         );
 
         Self {

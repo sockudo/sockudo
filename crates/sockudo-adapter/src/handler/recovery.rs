@@ -302,7 +302,8 @@ impl ConnectionHandler {
                 .await
             {
                 Ok(state) => state,
-                Err(_) => {
+                Err(e) => {
+                    warn!(error = %e, "version store state read failed");
                     return ResumeOutcome::Failed(ResumeFailure {
                         code: "persistence_unavailable",
                         reason: "version_store_state_unavailable",
@@ -408,7 +409,8 @@ impl ConnectionHandler {
                 .await
             {
                 Ok(records) => records,
-                Err(_) => {
+                Err(e) => {
+                    warn!(error = %e, "version store replay failed");
                     return ResumeOutcome::Failed(ResumeFailure {
                         code: "persistence_unavailable",
                         reason: "version_store_replay_failed",
@@ -494,7 +496,8 @@ impl ConnectionHandler {
             .await
         {
             Ok(state) => state,
-            Err(_) => {
+            Err(e) => {
+                warn!(error = %e, "history store state read failed");
                 return ResumeOutcome::Failed(ResumeFailure {
                     code: "persistence_unavailable",
                     reason: "durable_history_state_unavailable",
@@ -864,7 +867,7 @@ async fn send_replayed_bytes_impl(
             .send_raw_bytes_to_socket(socket_id, app_id, bytes)
             .await
         {
-            warn!("Failed to replay message to socket {}: {}", socket_id, err);
+            warn!(socket_id = %socket_id, error = %err, "failed to replay message to socket");
             return Err(ResumeFailure {
                 code: "persistence_unavailable",
                 reason: "failed_to_deliver_recovery_payload",

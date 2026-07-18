@@ -135,37 +135,37 @@ impl CachedAppManager {
         match self.inner.get_apps().await {
             Ok(apps) => {
                 self.remember_apps(&apps);
-                debug!("Warmed local app index with {} apps", apps.len());
+                debug!(apps_count = apps.len(), "local app index warmed");
             }
             Err(e) => {
-                warn!("Failed to warm local app index: {}", e);
+                warn!(error = %e, "local app index warm failed");
             }
         }
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
         match timeout(SHARED_CACHE_ACCESS_TIMEOUT, self.cache.get(key)).await {
-            Err(_) => {
-                warn!("Cache get timeout for {}", key);
+            Err(_elapsed) => {
+                warn!(cache_key = %key, "app cache get timeout");
                 None
             }
             Ok(result) => match result {
                 Ok(Some(json)) => match Self::deserialize(&json) {
                     Ok(value) => {
-                        debug!("Cache hit: {}", key);
+                        debug!(cache_key = %key, outcome = "hit", "app cache hit");
                         Some(value)
                     }
                     Err(e) => {
-                        warn!("Cache deserialize error for {}: {}", key, e);
+                        warn!(cache_key = %key, error = %e, "app cache deserialize error");
                         None
                     }
                 },
                 Ok(None) => {
-                    debug!("Cache miss: {}", key);
+                    debug!(cache_key = %key, outcome = "miss", "app cache miss");
                     None
                 }
                 Err(e) => {
-                    warn!("Cache get error for {}: {}", key, e);
+                    warn!(cache_key = %key, error = %e, "app cache get error");
                     None
                 }
             },
@@ -176,7 +176,7 @@ impl CachedAppManager {
         let json = match Self::serialize(value) {
             Ok(j) => j,
             Err(e) => {
-                warn!("Cache serialize error for {}: {}", key, e);
+                warn!(cache_key = %key, error = %e, "app cache serialize error");
                 return;
             }
         };
@@ -188,16 +188,16 @@ impl CachedAppManager {
         .await
         {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => warn!("Cache set error for {}: {}", key, e),
-            Err(_) => warn!("Cache set timeout for {}", key),
+            Ok(Err(e)) => warn!(cache_key = %key, error = %e, "app cache set error"),
+            Err(_elapsed) => warn!(cache_key = %key, "app cache set timeout"),
         }
     }
 
     async fn remove(&self, key: &str) {
         match timeout(SHARED_CACHE_ACCESS_TIMEOUT, self.cache.remove(key)).await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => warn!("Cache remove error for {}: {}", key, e),
-            Err(_) => warn!("Cache remove timeout for {}", key),
+            Ok(Err(e)) => warn!(cache_key = %key, error = %e, "app cache remove error"),
+            Err(_elapsed) => warn!(cache_key = %key, "app cache remove timeout"),
         }
     }
 
@@ -351,7 +351,7 @@ impl AppManager for CachedAppManager {
             for app in &apps {
                 self.cache_app(app).await;
             }
-            debug!("Cached {} apps", apps.len());
+            debug!(apps_count = apps.len(), "apps cached");
         }
 
         Ok(apps)

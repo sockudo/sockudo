@@ -88,6 +88,7 @@ async fn direct_integration() -> (WebhookIntegration, App) {
 
 fn sample_job(index: usize) -> JobData {
     JobData {
+        job_id: None,
         app_key: "bench-key".to_string(),
         app_id: "bench-app".to_string(),
         app_secret: "bench-secret".to_string(),

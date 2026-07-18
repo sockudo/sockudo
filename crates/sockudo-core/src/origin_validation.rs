@@ -107,7 +107,10 @@ impl OriginValidator {
 
     pub fn validate_origin(origin: &str, allowed_origins: &[String]) -> bool {
         if allowed_origins.is_empty() {
-            debug!("No origin restrictions configured, allowing all origins");
+            debug!(
+                outcome = "allowed",
+                "origin validation passed (no restrictions configured)"
+            );
             return true;
         }
 
@@ -116,7 +119,10 @@ impl OriginValidator {
 
         for allowed in allowed_origins {
             if allowed == "*" || allowed.eq_ignore_ascii_case("any") {
-                debug!("Wildcard origin configured, allowing all origins");
+                debug!(
+                    outcome = "allowed",
+                    "origin validation passed (wildcard configured)"
+                );
                 return true;
             }
 
@@ -124,12 +130,12 @@ impl OriginValidator {
             let normalized_pattern = NormalizedOriginPattern::new(allowed);
 
             if Self::matches_pattern(&origin_lower, &normalized_pattern) {
-                debug!("Origin {} matches allowed pattern {}", origin, allowed);
+                debug!(outcome = "allowed", "origin validation passed");
                 return true;
             }
         }
 
-        debug!("Origin {} not in allowed list", origin);
+        debug!(outcome = "rejected", "origin validation failed");
         false
     }
 

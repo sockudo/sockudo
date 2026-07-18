@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{sleep, timeout};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const IGGY_QUEUE_ATTEMPT_HEADER: &str = "sockudo-delivery-attempt";
 const IGGY_QUEUE_MAX_DELIVERY_ATTEMPTS: u32 = 5;
@@ -114,7 +114,7 @@ impl QueueInterface for IggyQueueManager {
                 let client = match connect_client(&config).await {
                     Ok(client) => Arc::new(client),
                     Err(error) => {
-                        warn!("Failed to connect Apache Iggy queue worker: {error}; retrying");
+                        warn!(error = %error, "failed to connect apache iggy queue worker, retrying");
                         retry_attempt += 1;
                         wait_before_retry(&config, retry_attempt, &shutdown, &running).await;
                         continue;
@@ -131,11 +131,9 @@ impl QueueInterface for IggyQueueManager {
                         consumer
                     }
                     Err(error) => {
-                        warn!(
-                            "Failed to initialize Apache Iggy queue consumer group '{group}': {error}; retrying"
-                        );
+                        warn!(group = %group, error = %error, "failed to initialize apache iggy queue consumer group, retrying");
                         if let Err(error) = client.shutdown().await {
-                            warn!("Failed to shutdown Apache Iggy queue worker client: {error}");
+                            warn!(error = %error, "failed to shutdown apache iggy queue worker client");
                         }
                         retry_attempt += 1;
                         wait_before_retry(&config, retry_attempt, &shutdown, &running).await;
@@ -161,9 +159,7 @@ impl QueueInterface for IggyQueueManager {
                                                     .store_offset(message.header.offset, Some(partition_id))
                                                     .await
                                                 {
-                                                    error!(
-                                                        "Failed to commit Apache Iggy queue offset: {error}"
-                                                    );
+                                                    error!(error = %error, "failed to commit apache iggy queue offset");
                                                 }
                                             } else if let Err(error) = handle_failed_job(
                                                 &QueuePublisher {
@@ -179,35 +175,31 @@ impl QueueInterface for IggyQueueManager {
                                             )
                                             .await
                                             {
-                                                warn!(
-                                                    "Apache Iggy queue job failed and could not be moved for retry/DLQ: {error}"
-                                                );
+                                                warn!(error = %error, "apache iggy queue job failed and could not be moved for retry or dlq");
                                             }
                                         }
                                         Err(error) => {
-                                            error!("Failed to deserialize Apache Iggy queue job: {error}");
+                                            error!(error = %error, "failed to deserialize apache iggy queue job");
                                             if let Err(error) = consumer
                                                 .store_offset(message.header.offset, Some(partition_id))
                                                 .await
                                             {
-                                                error!(
-                                                    "Failed to commit malformed Apache Iggy queue job: {error}"
-                                                );
+                                                error!(error = %error, "failed to commit malformed apache iggy queue job");
                                             }
                                         }
                                     }
                                 }
-                                Some(Err(error)) => warn!("Apache Iggy queue consumer failed: {error}"),
+                                Some(Err(error)) => warn!(error = %error, "apache iggy queue consumer failed"),
                                 None => break,
                             }
                         }
                     }
                 }
                 if let Err(error) = consumer.shutdown().await {
-                    warn!("Failed to shutdown Apache Iggy queue consumer: {error}");
+                    warn!(error = %error, "failed to shutdown apache iggy queue consumer");
                 }
                 if let Err(error) = client.shutdown().await {
-                    warn!("Failed to shutdown Apache Iggy queue worker client: {error}");
+                    warn!(error = %error, "failed to shutdown apache iggy queue worker client");
                 }
                 if running.load(Ordering::Relaxed) {
                     retry_attempt += 1;
@@ -489,10 +481,15 @@ async fn handle_failed_job(
 
     if retry_topic.ends_with("-dlq") {
         warn!(
-            "Apache Iggy queue job exceeded {IGGY_QUEUE_MAX_DELIVERY_ATTEMPTS} attempts; moved to {retry_topic}"
+            max_attempts = IGGY_QUEUE_MAX_DELIVERY_ATTEMPTS,
+            dlq_topic = %retry_topic,
+            "apache iggy queue job exceeded max delivery attempts, moved to dlq"
         );
     } else {
-        warn!("Apache Iggy queue job failed; republished for attempt {next_attempt}");
+        warn!(
+            attempt = next_attempt,
+            "apache iggy queue job failed, republished for retry"
+        );
     }
     Ok(())
 }
@@ -500,7 +497,10 @@ async fn handle_failed_job(
 fn delivery_attempt(message: &IggyMessage) -> u32 {
     let key = match HeaderKey::try_from(IGGY_QUEUE_ATTEMPT_HEADER) {
         Ok(key) => key,
-        Err(_) => return 1,
+        Err(e) => {
+            debug!(error = %e, "failed to parse delivery attempt header key, using default");
+            return 1;
+        }
     };
     message
         .user_headers_map()

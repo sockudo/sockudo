@@ -83,16 +83,13 @@ impl RateLimiterFactory {
     ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
         if !config.enabled {
             info!(
-                "{} rate limiting is globally disabled. Returning a permissive limiter.",
-                limiter_name
+                limiter = limiter_name,
+                "rate limiting globally disabled, using permissive limiter"
             );
             return Ok(Arc::new(MemoryRateLimiter::new(u32::MAX, 1))); // Allows all
         }
 
-        info!(
-            "Initializing {} RateLimiter with driver: {:?}",
-            limiter_name, config.driver
-        );
+        info!(limiter = limiter_name, driver = ?config.driver, "initializing rate limiter");
 
         match config.driver {
             #[cfg(feature = "redis")]
@@ -119,7 +116,10 @@ impl RateLimiterFactory {
             }
             CacheDriver::Memory => Self::create_memory_limiter(limit, limiter_name),
             CacheDriver::None => {
-                warn!("Rate limiter driver set to 'None'. Using memory limiter as fallback.");
+                warn!(
+                    limiter = limiter_name,
+                    "rate limiter driver set to none, using memory fallback"
+                );
                 Ok(Arc::new(MemoryRateLimiter::new(
                     limit.max_requests,
                     limit.window_seconds,
@@ -128,14 +128,16 @@ impl RateLimiterFactory {
             #[cfg(not(feature = "redis"))]
             CacheDriver::Redis => {
                 warn!(
-                    "Redis rate limiter requested but not compiled in. Falling back to memory limiter."
+                    limiter = limiter_name,
+                    "redis rate limiter not compiled in, using memory fallback"
                 );
                 Self::create_memory_limiter(limit, limiter_name)
             }
             #[cfg(not(feature = "redis-cluster"))]
             CacheDriver::RedisCluster => {
                 warn!(
-                    "Redis Cluster rate limiter requested but not compiled in. Falling back to memory limiter."
+                    limiter = limiter_name,
+                    "redis cluster rate limiter not compiled in, using memory fallback"
                 );
                 Self::create_memory_limiter(limit, limiter_name)
             }
@@ -151,8 +153,9 @@ impl RateLimiterFactory {
         global_redis_conn_details: &RedisConnection,
     ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
         info!(
-            "RateLimiter: Using standalone Redis backend for {}.",
-            limiter_name
+            limiter = limiter_name,
+            backend = "redis",
+            "rate limiter using redis backend"
         );
 
         let redis_url = config
@@ -186,13 +189,15 @@ impl RateLimiterFactory {
         global_redis_conn_details: &RedisConnection,
     ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
         info!(
-            "RateLimiter: Using Redis Cluster backend for {}.",
-            limiter_name
+            limiter = limiter_name,
+            backend = "redis_cluster",
+            "rate limiter using redis cluster backend"
         );
 
         if global_redis_conn_details.cluster_nodes.is_empty() {
             tracing::error!(
-                "RateLimiter: Redis cluster driver selected, but no cluster_nodes configured."
+                limiter = limiter_name,
+                "rate limiter: redis cluster nodes not configured"
             );
             return Err(sockudo_core::error::Error::Configuration(
                 "RateLimiter: Redis cluster nodes not configured.".to_string(),
@@ -226,7 +231,11 @@ impl RateLimiterFactory {
         limit: &RateLimit,
         limiter_name: &str,
     ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
-        info!("Using memory rate limiter for {}.", limiter_name);
+        info!(
+            limiter = limiter_name,
+            backend = "memory",
+            "rate limiter using memory backend"
+        );
         let limiter = MemoryRateLimiter::new(limit.max_requests, limit.window_seconds);
         Ok(Arc::new(limiter))
     }

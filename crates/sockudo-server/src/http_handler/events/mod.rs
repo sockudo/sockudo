@@ -416,10 +416,10 @@ pub async fn batch_events(
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
     tracing::Span::current().record("batch_len", batch_len);
-    debug!("Received batch events request with {} events", batch_len);
+    debug!(event_count = batch_len, "batch events request received");
 
-    for (i, event) in batch_events_vec.iter().enumerate().take(3) {
-        debug!("Batch event #{}: tags={:?}", i, event.tags);
+    for (i, _) in batch_events_vec.iter().enumerate().take(3) {
+        debug!(batch_index = i, "processing batch event");
     }
 
     if let Some(max_batch) = app_config.event_batch_size_limit()
@@ -611,7 +611,7 @@ pub async fn batch_events(
         outgoing_response_size_bytes_vec.len(),
     )
     .await;
-    debug!("{}", "Batch events processed successfully");
+    debug!("batch events processed");
     Ok((StatusCode::OK, Json(final_response_payload)))
 }
 

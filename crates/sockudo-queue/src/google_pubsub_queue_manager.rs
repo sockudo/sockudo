@@ -157,13 +157,13 @@ impl QueueInterface for GooglePubSubQueueManager {
                                 }
                             }
                             Err(e) => {
-                                error!("Failed to deserialize Google Pub/Sub queue job: {}", e);
+                                error!(error = %e, "failed to deserialize google pub/sub queue job");
                                 ack_handler.ack();
                             }
                         }
                     }
                     Err(e) => {
-                        error!("Google Pub/Sub queue consumer error: {}", e);
+                        error!(error = %e, "google pub/sub queue consumer error");
                         break;
                     }
                 }

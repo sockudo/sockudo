@@ -17,7 +17,7 @@ pub(in crate::bootstrap::push::workers) fn start_hms_provider_workers(
         return Vec::new();
     };
     if app_id.trim().is_empty() {
-        warn!("HMS_APP_ID/PUSH_HMS_APP_ID is empty; HMS dispatch worker not started");
+        warn!("hms app id env var is empty; hms dispatch worker not started");
         return Vec::new();
     }
 

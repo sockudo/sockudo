@@ -20,10 +20,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).inc();
         self.new_connections_total.with_label_values(&tags).inc();
 
-        debug!(
-            "Metrics: New connection for app {}, socket {}",
-            app_id, socket_id
-        );
+        debug!(app_id, socket_id = %socket_id, "metrics: new connection");
     }
 
     fn mark_disconnection(&self, app_id: &str, socket_id: &SocketId) {
@@ -31,10 +28,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).dec();
         self.new_disconnections_total.with_label_values(&tags).inc();
 
-        debug!(
-            "Metrics: Disconnection for app {}, socket {}",
-            app_id, socket_id
-        );
+        debug!(app_id, socket_id = %socket_id, "metrics: disconnection");
     }
 
     fn mark_connection_error(&self, app_id: &str, error_type: &str) {
@@ -45,10 +39,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
         ];
         self.connection_errors_total.with_label_values(&tags).inc();
 
-        debug!(
-            "Metrics: Connection error for app {}, error type: {}",
-            app_id, error_type
-        );
+        debug!(app_id, error_type, "metrics: connection error");
     }
 
     fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str) {
@@ -70,8 +61,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.rate_limit_checks_total.with_label_values(&tags).inc();
 
         debug!(
-            "Metrics: Rate limit check for app {}, limiter type: {}, context: {}",
-            app_id, limiter_type, request_context
+            app_id,
+            limiter_type, request_context, "metrics: rate limit check"
         );
     }
 
@@ -96,8 +87,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc();
 
         debug!(
-            "Metrics: Rate limit triggered for app {}, limiter type: {}, context: {}",
-            app_id, limiter_type, request_context
+            app_id,
+            limiter_type, request_context, "metrics: rate limit triggered"
         );
     }
 
@@ -111,10 +102,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!(
-            "Metrics: Channel subscription for app {}, channel type: {}",
-            app_id, channel_type
-        );
+        debug!(app_id, channel_type, "metrics: channel subscription");
     }
 
     fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str) {
@@ -127,10 +115,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!(
-            "Metrics: Channel unsubscription for app {}, channel type: {}",
-            app_id, channel_type
-        );
+        debug!(app_id, channel_type, "metrics: channel unsubscription");
     }
 
     fn mark_channel_activated(&self, app_id: &str, channel_type: &str) {
@@ -162,10 +147,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc_by(sent_message_size as f64);
         self.http_calls_received.with_label_values(&tags).inc();
 
-        debug!(
-            "Metrics: API message for app {}, incoming size: {}, sent size: {}",
-            app_id, incoming_message_size, sent_message_size
-        );
+        debug!(app_id, "metrics: api message recorded");
     }
 
     fn mark_ws_message_sent(&self, app_id: &str, sent_message_size: usize) {
@@ -175,10 +157,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc_by(sent_message_size as f64);
         self.ws_messages_sent.with_label_values(&tags).inc();
 
-        debug!(
-            "Metrics: WS message sent for app {}, size: {}",
-            app_id, sent_message_size
-        );
+        debug!(app_id, "metrics: ws message sent");
     }
 
     fn mark_ws_messages_sent_batch(&self, app_id: &str, sent_message_size: usize, count: usize) {
@@ -192,10 +171,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc_by(count as f64);
 
         debug!(
-            "Metrics: WS messages sent batch for app {}, count: {}, total size: {}",
             app_id,
-            count,
-            sent_message_size * count
+            batch_count = count,
+            "metrics: ws messages sent batch"
         );
     }
 
@@ -206,10 +184,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc_by(message_size as f64);
         self.ws_messages_received.with_label_values(&tags).inc();
 
-        debug!(
-            "Metrics: WS message received for app {}, size: {}",
-            app_id, message_size
-        );
+        debug!(app_id, "metrics: ws message received");
     }
 
     fn track_horizontal_adapter_resolve_time(&self, app_id: &str, time_ms: f64) {
@@ -218,10 +193,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .observe(time_ms);
 
-        debug!(
-            "Metrics: Horizontal adapter resolve time for app {}, time: {} ms",
-            app_id, time_ms
-        );
+        debug!(app_id, "metrics: horizontal adapter resolve time recorded");
     }
 
     fn track_horizontal_adapter_resolved_promises(&self, app_id: &str, resolved: bool) {
@@ -238,9 +210,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
         }
 
         debug!(
-            "Metrics: Horizontal adapter promise {} for app {}",
-            if resolved { "resolved" } else { "unresolved" },
-            app_id
+            app_id,
+            resolved, "metrics: horizontal adapter promise recorded"
         );
     }
 
@@ -250,10 +221,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!(
-            "Metrics: Horizontal adapter request sent for app {}",
-            app_id
-        );
+        debug!(app_id, "metrics: horizontal adapter request sent");
     }
 
     fn mark_horizontal_adapter_request_received(&self, app_id: &str) {
@@ -262,10 +230,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!(
-            "Metrics: Horizontal adapter request received for app {}",
-            app_id
-        );
+        debug!(app_id, "metrics: horizontal adapter request received");
     }
 
     fn mark_horizontal_adapter_response_received(&self, app_id: &str) {
@@ -274,10 +239,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!(
-            "Metrics: Horizontal adapter response received for app {}",
-            app_id
-        );
+        debug!(app_id, "metrics: horizontal adapter response received");
     }
 
     fn track_broadcast_latency(
@@ -308,8 +270,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .observe(latency_ms);
 
         debug!(
-            "Metrics: Broadcast latency for app {}, channel: {} ({}), recipients: {} ({}), latency: {} ms",
-            app_id, channel_name, channel_type, recipient_count, bucket, latency_ms
+            app_id,
+            channel_type, bucket, "metrics: broadcast latency recorded"
         );
     }
 
@@ -319,7 +281,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!("Metrics: Idempotency publish for app {}", app_id);
+        debug!(app_id, "metrics: idempotency publish recorded");
     }
 
     fn mark_idempotency_duplicate(&self, app_id: &str) {
@@ -328,7 +290,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!("Metrics: Idempotency duplicate caught for app {}", app_id);
+        debug!(app_id, "metrics: idempotency duplicate recorded");
     }
 
     fn mark_ai_transport_validated(&self, app_id: &str, event: &str) {
@@ -750,8 +712,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
                 .inc();
 
             debug!(
-                "Metrics: Horizontal delta compression enabled for app {}, channel: {} ({})",
-                app_id, channel_name, channel_type
+                app_id,
+                channel_type, "metrics: horizontal delta compression enabled"
             );
         }
     }
@@ -773,15 +735,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&[app_id, &self.port.to_string(), channel_name])
             .inc_by(saved_bytes as f64);
 
-        debug!(
-            "Metrics: Delta compression bandwidth for app {}, channel: {}, original: {} bytes, compressed: {} bytes, saved: {} bytes ({:.1}%)",
-            app_id,
-            channel_name,
-            original_bytes,
-            compressed_bytes,
-            saved_bytes,
-            (saved_bytes as f64 / original_bytes as f64) * 100.0
-        );
+        debug!(app_id, "metrics: delta compression bandwidth recorded");
     }
 
     fn track_delta_compression_full_message(&self, app_id: &str, channel_name: &str) {
@@ -789,10 +743,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&[app_id, &self.port.to_string(), channel_name])
             .inc();
 
-        debug!(
-            "Metrics: Delta compression full message for app {}, channel: {}",
-            app_id, channel_name
-        );
+        debug!(app_id, "metrics: delta compression full message recorded");
     }
 
     fn track_delta_compression_delta_message(&self, app_id: &str, channel_name: &str) {
@@ -800,15 +751,12 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&[app_id, &self.port.to_string(), channel_name])
             .inc();
 
-        debug!(
-            "Metrics: Delta compression delta message for app {}, channel: {}",
-            app_id, channel_name
-        );
+        debug!(app_id, "metrics: delta compression delta message recorded");
     }
 
     async fn clear(&self) {
         // Reset individual metrics counters - not fully supported by Prometheus Rust client
         // So we'll just log a message
-        debug!("Metrics cleared (note: Prometheus metrics can't be fully cleared)");
+        debug!("metrics cleared: prometheus metrics cannot be fully reset");
     }
 }
