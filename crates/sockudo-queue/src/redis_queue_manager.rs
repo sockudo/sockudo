@@ -1,30 +1,18 @@
-use crate::ArcJobProcessorFn;
+use crate::redis_backend::ReliableRedisQueue;
+use crate::redis_connection::StandaloneRedisProvider;
 use async_trait::async_trait;
-use redis::aio::ConnectionManager;
-use redis::{AsyncCommands, RedisResult};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use sockudo_core::queue::QueueInterface;
+use sockudo_core::error::Result;
+use sockudo_core::options::{QueueReliabilityConfig, SentinelSpec};
+use sockudo_core::queue::{
+    QueueBackendKind, QueueCapabilities, QueueHealth, QueueInterface, QueueJobId, QueueJobOptions,
+    QueueJobRequest, QueueStats,
+};
 use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-use tracing::{debug, error};
 
-const MAX_PRODUCER_CONNECTIONS: usize = 8;
-const HEALTH_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
-const RPUSH_ATTEMPTS: usize = 3;
-const RPUSH_RETRY_BASE_DELAY: Duration = Duration::from_millis(50);
-const WORKER_BLPOP_TIMEOUT_SECONDS: f64 = 1.0;
-
+/// Reliable standalone Redis/rediss or Sentinel-managed queue.
 pub struct RedisQueueManager {
-    redis_client: redis::Client,
-    redis_connection: ConnectionManager,
-    producer_connections: Box<[ConnectionManager]>,
-    next_producer_connection: AtomicUsize,
-    health_connection: ConnectionManager,
-    prefix: String,
-    concurrency: usize,
+    backend: ReliableRedisQueue<StandaloneRedisProvider>,
 }
 
 impl RedisQueueManager {
@@ -33,312 +21,110 @@ impl RedisQueueManager {
         prefix: &str,
         concurrency: usize,
         response_timeout_ms: u64,
-    ) -> sockudo_core::error::Result<Self> {
-        let client = redis::Client::open(redis_url).map_err(|e| {
-            sockudo_core::error::Error::Config(format!("Failed to open Redis client: {e}"))
-        })?;
-
-        let response_timeout = Self::response_timeout_from_ms(response_timeout_ms);
-        let connection = Self::create_connection_manager(&client, response_timeout).await?;
-        let health_connection =
-            Self::create_connection_manager(&client, Some(HEALTH_RESPONSE_TIMEOUT)).await?;
-        let producer_connections =
-            Self::create_producer_connections(&client, concurrency, response_timeout).await?;
-
-        Ok(Self {
-            redis_client: client,
-            redis_connection: connection,
-            producer_connections,
-            next_producer_connection: AtomicUsize::new(0),
-            health_connection,
-            prefix: prefix.to_string(),
+    ) -> Result<Self> {
+        Self::new_with_config(
+            redis_url,
+            None,
+            prefix,
             concurrency,
-        })
+            response_timeout_ms,
+            QueueReliabilityConfig::default(),
+        )
+        .await
     }
 
-    #[allow(dead_code)]
-    pub fn start_processing(&self) {}
-
-    async fn create_connection_manager(
-        client: &redis::Client,
-        response_timeout: Option<Duration>,
-    ) -> sockudo_core::error::Result<ConnectionManager> {
-        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
-            .set_number_of_retries(5)
-            .set_exponent_base(2.0)
-            .set_max_delay(Duration::from_millis(5000))
-            .set_response_timeout(response_timeout);
-
-        client
-            .get_connection_manager_with_config(connection_manager_config)
-            .await
-            .map_err(|e| {
-                sockudo_core::error::Error::Connection(format!(
-                    "Failed to get Redis connection: {e}"
-                ))
-            })
-    }
-
-    async fn create_producer_connections(
-        client: &redis::Client,
+    pub async fn new_with_config(
+        redis_url: &str,
+        sentinel: Option<SentinelSpec>,
+        prefix: &str,
         concurrency: usize,
-        response_timeout: Option<Duration>,
-    ) -> sockudo_core::error::Result<Box<[ConnectionManager]>> {
-        let producer_count = concurrency.clamp(1, MAX_PRODUCER_CONNECTIONS);
-        let mut producer_connections = Vec::with_capacity(producer_count);
-
-        for _ in 0..producer_count {
-            producer_connections
-                .push(Self::create_connection_manager(client, response_timeout).await?);
-        }
-
-        Ok(producer_connections.into_boxed_slice())
-    }
-
-    fn response_timeout_from_ms(response_timeout_ms: u64) -> Option<Duration> {
-        if response_timeout_ms == 0 {
-            None
-        } else {
-            Some(Duration::from_millis(response_timeout_ms))
-        }
-    }
-
-    fn producer_connection(&self) -> ConnectionManager {
-        let connection_index = self
-            .next_producer_connection
-            .fetch_add(1, Ordering::Relaxed)
-            % self.producer_connections.len();
-
-        self.producer_connections[connection_index].clone()
-    }
-
-    fn format_key(&self, queue_name: &str) -> String {
-        format!("{}:queue:{}", self.prefix, queue_name)
-    }
-
-    async fn rpush_serialized_jobs(
-        &self,
-        queue_name: &str,
-        queue_key: &str,
-        data_json: &[String],
-    ) -> sockudo_core::error::Result<()> {
-        let mut last_error = None;
-
-        for attempt in 0..RPUSH_ATTEMPTS {
-            let mut conn = self.producer_connection();
-            match conn.rpush::<_, _, ()>(queue_key, data_json.to_vec()).await {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    last_error = Some(error);
-                    if attempt + 1 < RPUSH_ATTEMPTS {
-                        tokio::time::sleep(RPUSH_RETRY_BASE_DELAY * (attempt as u32 + 1)).await;
-                    }
-                }
-            }
-        }
-
-        let error = last_error
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "unknown Redis error".to_string());
-        Err(sockudo_core::error::Error::Queue(format!(
-            "Redis RPUSH failed for queue {queue_name}: {error}"
-        )))
-    }
-
-    async fn start_worker(
-        &self,
-        queue_name: &str,
-        queue_key: String,
-        processor: ArcJobProcessorFn,
-        worker_id: usize,
-    ) -> sockudo_core::error::Result<tokio::task::JoinHandle<()>> {
-        let mut worker_conn = Self::create_connection_manager(&self.redis_client, None).await?;
-        let worker_queue_name = queue_name.to_string();
-
-        Ok(tokio::spawn(async move {
-            debug!(
-                "{}",
-                format!(
-                    "Starting Redis queue worker {} for queue: {}",
-                    worker_id, worker_queue_name
-                )
-            );
-
-            loop {
-                let blpop_result: RedisResult<Option<(String, String)>> = worker_conn
-                    .blpop(&queue_key, WORKER_BLPOP_TIMEOUT_SECONDS)
-                    .await;
-
-                match blpop_result {
-                    Ok(Some((_key, job_data_str))) => {
-                        match sonic_rs::from_str::<JobData>(&job_data_str) {
-                            Ok(job_data) => {
-                                if let Err(e) = processor(job_data).await {
-                                    error!("{}", format!("Worker error: {}", e));
-                                } else {
-                                    debug!("{}", "Worker finished".to_string());
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    "{}",
-                                    format!(
-                                        "[Worker {}] Error deserializing job data from Redis queue {}: {}. Data: '{}'",
-                                        worker_id, worker_queue_name, e, job_data_str
-                                    )
-                                );
-                            }
-                        }
-                    }
-                    Ok(None) => continue,
-                    Err(e) => {
-                        if e.to_string().contains("timed out") {
-                            continue;
-                        }
-                        error!(
-                            "{}",
-                            format!(
-                                "[Worker {}] Redis BLPOP error on queue {}: {}",
-                                worker_id, worker_queue_name, e
-                            )
-                        );
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                }
-            }
-        }))
+        response_timeout_ms: u64,
+        reliability: QueueReliabilityConfig,
+    ) -> Result<Self> {
+        let provider = StandaloneRedisProvider::connect(redis_url, sentinel).await?;
+        Ok(Self {
+            backend: ReliableRedisQueue::new(
+                provider,
+                prefix,
+                concurrency,
+                response_timeout_ms,
+                reliability,
+            )?,
+        })
     }
 }
 
 #[async_trait]
 impl QueueInterface for RedisQueueManager {
-    async fn add_to_queue(&self, queue_name: &str, data: JobData) -> sockudo_core::error::Result<()>
-    where
-        JobData: Serialize,
-    {
-        let queue_key = self.format_key(queue_name);
-        let data_json = vec![sonic_rs::to_string(&data)?];
-        self.rpush_serialized_jobs(queue_name, &queue_key, &data_json)
+    async fn add_to_queue(&self, queue_name: &str, data: JobData) -> Result<()> {
+        self.backend
+            .enqueue(queue_name, data, QueueJobOptions::default())
             .await
+            .map(|_| ())
     }
 
-    async fn add_batch_to_queue(
+    async fn enqueue(
         &self,
         queue_name: &str,
-        data: Vec<JobData>,
-    ) -> sockudo_core::error::Result<()>
-    where
-        JobData: Serialize,
-    {
-        if data.is_empty() {
-            return Ok(());
-        }
-
-        let queue_key = self.format_key(queue_name);
-        let data_json = data
-            .iter()
-            .map(sonic_rs::to_string)
-            .collect::<Result<Vec<_>, _>>()?;
-        self.rpush_serialized_jobs(queue_name, &queue_key, &data_json)
-            .await
+        data: JobData,
+        options: QueueJobOptions,
+    ) -> Result<QueueJobId> {
+        self.backend.enqueue(queue_name, data, options).await
     }
 
-    async fn process_queue(
+    async fn add_batch_to_queue(&self, queue_name: &str, data: Vec<JobData>) -> Result<()> {
+        let jobs = data
+            .into_iter()
+            .map(|data| QueueJobRequest {
+                data,
+                options: QueueJobOptions::default(),
+            })
+            .collect();
+        self.backend
+            .enqueue_batch(queue_name, jobs)
+            .await
+            .map(|_| ())
+    }
+
+    async fn enqueue_batch(
         &self,
         queue_name: &str,
-        callback: JobProcessorFnAsync,
-    ) -> sockudo_core::error::Result<()>
-    where
-        JobData: DeserializeOwned + Send + 'static,
-    {
-        let queue_key = self.format_key(queue_name);
-        let processor_arc: ArcJobProcessorFn = Arc::from(callback);
-
-        debug!(
-            "{}",
-            format!(
-                "Registered processor and starting workers for Redis queue: {}",
-                queue_name
-            )
-        );
-
-        for worker_id in 0..self.concurrency {
-            self.start_worker(
-                queue_name,
-                queue_key.clone(),
-                processor_arc.clone(),
-                worker_id,
-            )
-            .await?;
-        }
-
-        Ok(())
+        jobs: Vec<QueueJobRequest>,
+    ) -> Result<Vec<QueueJobId>> {
+        self.backend.enqueue_batch(queue_name, jobs).await
     }
 
-    async fn disconnect(&self) -> sockudo_core::error::Result<()> {
-        let mut conn = self.redis_connection.clone();
-        let pattern = format!("{}:queue:*", self.prefix);
-
-        let keys = {
-            let mut keys = Vec::new();
-            let mut iter: redis::AsyncIter<String> =
-                conn.scan_match(&pattern).await.map_err(|e| {
-                    sockudo_core::error::Error::Queue(format!(
-                        "Redis scan error during disconnect: {e}"
-                    ))
-                })?;
-
-            while let Some(key) = iter.next_item().await {
-                let key = key.map_err(|e| {
-                    sockudo_core::error::Error::Queue(format!(
-                        "Redis scan iteration error during disconnect: {e}"
-                    ))
-                })?;
-                keys.push(key);
-            }
-            keys
-        };
-
-        for key in keys {
-            conn.del::<_, ()>(&key).await.map_err(|e| {
-                sockudo_core::error::Error::Queue(format!(
-                    "Redis delete error during disconnect: {e}"
-                ))
-            })?;
-        }
-        Ok(())
-    }
-
-    async fn check_health(&self) -> sockudo_core::error::Result<()> {
-        let mut conn = self.health_connection.clone();
-
-        let response = redis::cmd("PING")
-            .query_async::<String>(&mut conn)
+    async fn process_queue(&self, queue_name: &str, callback: JobProcessorFnAsync) -> Result<()> {
+        self.backend
+            .process_queue(queue_name, Arc::from(callback))
             .await
-            .map_err(|e| {
-                sockudo_core::error::Error::Redis(format!("Queue Redis PING failed: {e}"))
-            })?;
-
-        if response == "PONG" {
-            Ok(())
-        } else {
-            Err(sockudo_core::error::Error::Redis(format!(
-                "Queue Redis PING returned unexpected response: {response}"
-            )))
-        }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    async fn disconnect(&self) -> Result<()> {
+        self.backend.disconnect().await
+    }
 
-    #[test]
-    fn zero_response_timeout_disables_redis_client_deadline() {
-        assert_eq!(RedisQueueManager::response_timeout_from_ms(0), None);
-        assert_eq!(
-            RedisQueueManager::response_timeout_from_ms(5000),
-            Some(Duration::from_millis(5000))
-        );
+    async fn check_health(&self) -> Result<()> {
+        self.backend.check_health().await
+    }
+
+    fn backend(&self) -> QueueBackendKind {
+        self.backend.backend()
+    }
+
+    fn capabilities(&self) -> QueueCapabilities {
+        self.backend.capabilities()
+    }
+
+    async fn health(&self) -> Result<QueueHealth> {
+        self.backend.health().await
+    }
+
+    async fn stats(&self, queue_name: &str) -> Result<QueueStats> {
+        self.backend.stats(queue_name).await
+    }
+
+    async fn replay_dead_letters(&self, queue_name: &str, limit: u32) -> Result<u64> {
+        self.backend.replay_dead_letters(queue_name, limit).await
     }
 }

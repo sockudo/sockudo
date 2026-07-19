@@ -35,9 +35,11 @@ ahash = { workspace = true }
 async-nats = { workspace = true, optional = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
+parking_lot = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-pubsub = { workspace = true, optional = true }
 lapin = { workspace = true, optional = true }
+metrics = { workspace = true }
 pulsar = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }
@@ -45,5 +47,10 @@ iggy = { workspace = true, optional = true }
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+[[example]]
+name = "queue_bench"
+required-features = ["redis", "redis-cluster"]

@@ -72,6 +72,15 @@ impl QueueManager {
         self.driver.add_to_queue(queue_name, data).await
     }
 
+    pub async fn enqueue(
+        &self,
+        queue_name: &str,
+        data: JobData,
+        options: sockudo_core::queue::QueueJobOptions,
+    ) -> Result<sockudo_core::queue::QueueJobId> {
+        self.driver.enqueue(queue_name, data, options).await
+    }
+
     pub async fn add_batch_to_queue(&self, queue_name: &str, data: Vec<JobData>) -> Result<()> {
         self.driver.add_batch_to_queue(queue_name, data).await
     }
@@ -90,6 +99,10 @@ impl QueueManager {
 
     pub async fn check_health(&self) -> Result<()> {
         self.driver.check_health().await
+    }
+
+    pub async fn replay_dead_letters(&self, queue_name: &str, limit: u32) -> Result<u64> {
+        self.driver.replay_dead_letters(queue_name, limit).await
     }
 }
 

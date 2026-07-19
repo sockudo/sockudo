@@ -253,9 +253,27 @@ impl QueueManagerPushQueue {
     ) -> sockudo_push::PushQueueResult<()> {
         let queue_name = envelope.stage.logical_topic();
         let job = push_queue_job_data(&envelope)?;
+        let delay_ms = envelope
+            .not_before_ms
+            .map(|not_before| not_before.saturating_sub(push_queue_now_ms()))
+            .unwrap_or_default();
         self.manager
-            .add_to_queue(&queue_name, job)
+            .enqueue(
+                &queue_name,
+                job,
+                sockudo_core::queue::QueueJobOptions {
+                    job_id: Some(envelope.message_id.clone()),
+                    deduplication_key: Some(format!(
+                        "{}:{}",
+                        envelope.stage.logical_topic(),
+                        envelope.message_id
+                    )),
+                    delay_ms,
+                    max_attempts: None,
+                },
+            )
             .await
+            .map(|_| ())
             .map_err(push_queue_manager_error)
     }
 

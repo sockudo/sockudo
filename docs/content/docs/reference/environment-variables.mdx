@@ -227,7 +227,23 @@ This page lists every runtime environment variable referenced by the server, cor
 | --- | --- |
 | `QUEUE_REDIS_CONCURRENCY` | Redis queue worker concurrency. |
 | `QUEUE_REDIS_PREFIX` | Redis queue key prefix. |
-| `QUEUE_REDIS_RESPONSE_TIMEOUT_MS` | Redis queue command response timeout in milliseconds. Set to `0` to disable the client-side deadline. |
+| `QUEUE_REDIS_RESPONSE_TIMEOUT_MS` | Redis queue command response timeout in milliseconds. Defaults to `5000` so Sentinel failover invalidates stale primary connections promptly; set to `0` to disable the client-side deadline. |
+| `QUEUE_MAX_ATTEMPTS` | Maximum Queue v2 deliveries before dead-lettering. Defaults to `5`. |
+| `QUEUE_RETRY_BASE_DELAY_MS` | Initial retry delay. Defaults to `1000`. |
+| `QUEUE_RETRY_MAX_DELAY_MS` | Maximum exponential retry delay. Defaults to `60000`. |
+| `QUEUE_RETRY_JITTER` | Symmetric retry jitter fraction from `0.0` to `1.0`. Defaults to `0.2`. |
+| `QUEUE_LEASE_DURATION_MS` | Redis Queue v2 in-flight lease duration. Defaults to `30000`. |
+| `QUEUE_LEASE_RENEW_INTERVAL_MS` | Redis Queue v2 lease renewal interval; must be below the lease duration. Defaults to `10000`. |
+| `QUEUE_STALLED_BATCH_SIZE` | Maximum expired/due jobs recovered by one Redis atomic claim. Defaults to `100`. |
+| `QUEUE_WORKER_POLL_INTERVAL_MS` | Worker recovery poll and delayed-delivery promotion bound. Defaults to `500`. |
+| `QUEUE_WORKER_PREFETCH` | Maximum jobs processed concurrently or prefetched per worker for bounded broker I/O. SQS FIFO stays serial. Defaults to `16`. |
+| `QUEUE_SHUTDOWN_TIMEOUT_MS` | Graceful worker drain timeout. Defaults to `30000`. |
+| `QUEUE_COMPLETED_RETENTION` | Completed Redis job metadata retained per queue. `0` removes immediately. Defaults to `1000`. |
+| `QUEUE_FAILED_RETENTION` | Dead-letter jobs retained per queue. Defaults to `10000`. |
+| `QUEUE_EVENT_RETENTION` | Approximate Redis lifecycle event-stream retention. Defaults to `10000`. |
+| `QUEUE_DEDUPLICATION_TTL_MS` | Application deduplication-key lifetime. Defaults to `300000`. |
+| `QUEUE_MEMORY_CAPACITY` | Maximum outstanding jobs per in-memory logical queue. Capacity errors fail closed. Defaults to `100000`. |
+| `QUEUE_MAX_BATCH_SIZE` | Maximum jobs encoded into one atomic/backend-native enqueue batch. Defaults to `1000`. |
 | `REDIS_CLUSTER_QUEUE_REQUEST_TIMEOUT_MS` | Redis Cluster queue command request timeout in milliseconds. Set to `0` to disable the cluster client deadline. |
 | `QUEUE_SQS_REGION` | SQS region. |
 | `QUEUE_SQS_VISIBILITY_TIMEOUT` | SQS visibility timeout. |

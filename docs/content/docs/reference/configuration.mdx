@@ -163,7 +163,7 @@ client_cert_path = "/etc/sockudo/tls/client.pem"
 client_key_path = "/etc/sockudo/tls/client.key"
 ```
 
-> **Note:** Sentinel TLS currently secures the horizontal Redis **adapter** (pub/sub) path. A `redis_pub_options.url` override, if set, takes precedence and uses the standalone connection path instead.
+> **Note:** Sentinel TLS secures the horizontal Redis **adapter** (pub/sub) path and Queue v2 when `queue.driver = "redis"` inherits this topology. A `redis_pub_options.url` override, if set, takes precedence for the adapter and uses its standalone connection path instead.
 
 ## Protocol features
 
@@ -414,3 +414,101 @@ publish_status_ttl_days = 30
 analytics_retention_days = 30
 cleanup_interval_secs = 300
 ```
+
+## Queue v2 reliability
+
+Queue v2 provides at-least-once delivery. Successful processors acknowledge a
+job; errors retry with bounded exponential backoff and jitter; exhausted jobs
+move to a dead-letter queue. Exactly-once execution is not promised, so handlers
+must remain idempotent. Redis, Redis Sentinel, and Redis Cluster additionally
+provide stable job IDs, deduplication, delayed jobs, renewable leases, stalled
+worker recovery, lifecycle events, and queue depth statistics through atomic Lua
+transitions.
+
+Redis workers preserve the configured callback concurrency while pipelining
+Redis I/O. `worker_prefetch` bounds the number of leased jobs buffered ahead of
+each callback worker; the default `16` amortizes claim, acknowledgement, and
+lease-renewal round trips without creating unbounded memory or failover
+exposure. Lower it for a smaller redelivery window, or raise it when Redis
+latency leaves callback workers idle. `queue.redis.response_timeout_ms`
+defaults to `5000`, allowing Sentinel clients to discard a stale primary
+connection promptly; `0` disables that deadline.
+
+For the legacy-equivalent high-throughput workload—batch enqueue, generated
+job IDs, immediate delivery, the configured default attempt count, no
+application deduplication key, and `event_retention = 0`—the Redis drivers use
+compact length-delimited frames and one raw atomic Redis transaction. Workers
+materialize each frame into the same leased Queue v2 state machine when they
+claim it, so retries, acknowledgements, stalled recovery, and dead lettering
+are unchanged while admission avoids per-job Redis writes. Supplying a stable
+`job_id`, delay, deduplication key, attempt override, or lifecycle-event
+retention selects the stricter per-job atomic path. Use that path when a caller
+must safely retry an enqueue whose network result was ambiguous.
+
+```toml
+[queue]
+driver = "redis" # memory, redis, redis-cluster, nats, rabbitmq, kafka, iggy, pulsar, google-pubsub, sqs, sns
+
+[queue.reliability]
+max_attempts = 5
+retry_base_delay_ms = 1000
+retry_max_delay_ms = 60000
+retry_jitter = 0.2
+lease_duration_ms = 30000
+lease_renew_interval_ms = 10000
+stalled_batch_size = 100
+worker_poll_interval_ms = 500
+worker_prefetch = 16
+shutdown_timeout_ms = 30000
+completed_retention = 1000
+failed_retention = 10000
+event_retention = 10000
+deduplication_ttl_ms = 300000
+memory_capacity = 100000
+max_batch_size = 1000
+```
+
+Broker-backed queues use native bulk/pipelined publishing rather than the
+compatibility loop: NATS and RabbitMQ pipeline acknowledgements, Kafka feeds
+librdkafka concurrently, Iggy and Pulsar use their producer batch APIs, Google
+Pub/Sub reuses its batching publisher, and SQS/SNS use provider batches of at
+most 10 entries. `max_batch_size` is an upper bound; a provider's smaller hard
+limit still applies. Topic, stream, queue, and publisher handles are cached
+after successful provisioning instead of issuing control-plane requests for
+every job.
+
+`worker_prefetch` also bounds concurrent callbacks for NATS, RabbitMQ, Pulsar,
+Google Pub/Sub, and standard SQS queues. SQS FIFO batches remain serial to
+preserve message-group order. `max_attempts` configures NATS delivery limits,
+Kafka and Iggy retry/DLQ transitions, RabbitMQ republish/DLQ transitions, and
+Pulsar's native dead-letter policy. SQS retry/dead-letter limits remain an AWS
+queue redrive-policy concern; Sockudo does not advertise a DLQ unless it owns
+that policy.
+
+Queue v2 options are fail-closed. A broker that cannot honor per-job delay,
+deduplication, or attempt overrides returns an error instead of silently
+discarding the option. SQS standard queues support delays up to 15 minutes;
+SQS FIFO queues support stable IDs/deduplication but not per-message delay.
+
+The Redis drivers use a new `:v2:{queue-id}:*` key namespace. All keys for one
+logical queue share a Redis Cluster hash tag, so enqueue, claim, ack, retry,
+lease renewal, delayed promotion, and dead-letter transitions are single-slot
+and atomic. Existing RPUSH/BLPOP list keys are not deleted during startup or
+shutdown; drain them with the previous release before switching producers.
+
+When `database.redis.sentinels` is configured and `queue.driver = "redis"`, the
+queue resolves the current primary through native Sentinel support. Sentinel and
+primary authentication/TLS settings remain independent. A `queue.redis.url_override`
+selects standalone Redis/rediss instead and intentionally disables inherited
+Sentinel discovery for that queue.
+
+Primary promotion preserves at-least-once, not exactly-once, semantics. A hard
+primary loss can redeliver callbacks that were active or prefetched when the node failed; a
+planned Sentinel switchover can temporarily expose a larger duplicate window
+while the old primary is still reachable. Use the stable job ID as an
+idempotency key, and quiesce producers/workers before a planned switchover when
+duplicate callbacks must be minimized.
+
+SNS is producer-only. Configuring a consumer on SNS now fails instead of
+reporting a successful no-op. A requested backend that was not compiled into the
+binary also fails startup instead of silently falling back to memory.

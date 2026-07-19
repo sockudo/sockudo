@@ -8242,6 +8242,8 @@ dependencies = [
  "google-cloud-pubsub",
  "iggy",
  "lapin",
+ "metrics",
+ "parking_lot",
  "pulsar",
  "rdkafka",
  "redis",
@@ -8249,6 +8251,7 @@ dependencies = [
  "sockudo-core",
  "sonic-rs",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]

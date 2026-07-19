@@ -12,6 +12,45 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.queue.redis.prefix = Some(prefix);
     }
 
+    // --- Queue: reliability ---
+    let reliability = &mut options.queue.reliability;
+    reliability.max_attempts = parse_env::<u32>("QUEUE_MAX_ATTEMPTS", reliability.max_attempts);
+    reliability.retry_base_delay_ms =
+        parse_env::<u64>("QUEUE_RETRY_BASE_DELAY_MS", reliability.retry_base_delay_ms);
+    reliability.retry_max_delay_ms =
+        parse_env::<u64>("QUEUE_RETRY_MAX_DELAY_MS", reliability.retry_max_delay_ms);
+    reliability.retry_jitter = parse_env::<f64>("QUEUE_RETRY_JITTER", reliability.retry_jitter);
+    reliability.lease_duration_ms =
+        parse_env::<u64>("QUEUE_LEASE_DURATION_MS", reliability.lease_duration_ms);
+    reliability.lease_renew_interval_ms = parse_env::<u64>(
+        "QUEUE_LEASE_RENEW_INTERVAL_MS",
+        reliability.lease_renew_interval_ms,
+    );
+    reliability.stalled_batch_size =
+        parse_env::<u32>("QUEUE_STALLED_BATCH_SIZE", reliability.stalled_batch_size);
+    reliability.worker_poll_interval_ms = parse_env::<u64>(
+        "QUEUE_WORKER_POLL_INTERVAL_MS",
+        reliability.worker_poll_interval_ms,
+    );
+    reliability.worker_prefetch =
+        parse_env::<usize>("QUEUE_WORKER_PREFETCH", reliability.worker_prefetch);
+    reliability.shutdown_timeout_ms =
+        parse_env::<u64>("QUEUE_SHUTDOWN_TIMEOUT_MS", reliability.shutdown_timeout_ms);
+    reliability.completed_retention =
+        parse_env::<u32>("QUEUE_COMPLETED_RETENTION", reliability.completed_retention);
+    reliability.failed_retention =
+        parse_env::<u32>("QUEUE_FAILED_RETENTION", reliability.failed_retention);
+    reliability.event_retention =
+        parse_env::<u32>("QUEUE_EVENT_RETENTION", reliability.event_retention);
+    reliability.deduplication_ttl_ms = parse_env::<u64>(
+        "QUEUE_DEDUPLICATION_TTL_MS",
+        reliability.deduplication_ttl_ms,
+    );
+    reliability.memory_capacity =
+        parse_env::<usize>("QUEUE_MEMORY_CAPACITY", reliability.memory_capacity);
+    reliability.max_batch_size =
+        parse_env::<usize>("QUEUE_MAX_BATCH_SIZE", reliability.max_batch_size);
+
     // --- Queue: SQS ---
     if let Ok(region) = std::env::var("QUEUE_SQS_REGION") {
         options.queue.sqs.region = region;

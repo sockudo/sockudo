@@ -20,6 +20,8 @@ pub mod presence_history;
 pub mod presence_registry;
 pub mod queue;
 pub mod rate_limiter;
+#[cfg(feature = "redis")]
+pub mod redis_client;
 pub mod token;
 pub mod utils;
 pub mod version_store;

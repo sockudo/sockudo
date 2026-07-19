@@ -1,3 +1,13 @@
+#[cfg(any(
+    feature = "google-pubsub",
+    feature = "iggy",
+    feature = "kafka",
+    feature = "nats",
+    feature = "pulsar",
+    feature = "rabbitmq",
+    feature = "sns"
+))]
+mod broker_batch;
 #[cfg(feature = "google-pubsub")]
 pub mod google_pubsub_queue_manager;
 #[cfg(feature = "iggy")]
@@ -12,14 +22,29 @@ pub mod nats_queue_manager;
 pub mod pulsar_queue_manager;
 #[cfg(feature = "rabbitmq")]
 pub mod rabbitmq_queue_manager;
+#[cfg(feature = "redis")]
+mod redis_backend;
 #[cfg(feature = "redis-cluster")]
 pub mod redis_cluster_queue_manager;
 #[cfg(feature = "redis")]
+mod redis_connection;
+#[cfg(feature = "redis")]
 pub mod redis_queue_manager;
+#[cfg(feature = "redis")]
+mod redis_scripts;
 #[cfg(feature = "sns")]
 pub mod sns_queue_manager;
 #[cfg(feature = "sqs")]
 pub mod sqs_queue_manager;
+#[cfg(any(
+    feature = "google-pubsub",
+    feature = "iggy",
+    feature = "kafka",
+    feature = "nats",
+    feature = "pulsar",
+    feature = "rabbitmq"
+))]
+mod worker_registry;
 
 #[cfg(feature = "google-pubsub")]
 pub use google_pubsub_queue_manager::GooglePubSubQueueManager;

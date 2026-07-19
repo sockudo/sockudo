@@ -325,10 +325,31 @@ max_capacity = 10000
 [queue]
 driver = "memory"
 
+# Queue v2 delivery guarantees. Redis, Redis Sentinel, Redis Cluster, and the
+# memory reference backend use the full set; broker-native backends map the
+# applicable values to their acknowledgement/redelivery mechanisms.
+[queue.reliability]
+max_attempts = 5
+retry_base_delay_ms = 1000
+retry_max_delay_ms = 60000
+retry_jitter = 0.2
+lease_duration_ms = 30000
+lease_renew_interval_ms = 10000
+stalled_batch_size = 100
+worker_poll_interval_ms = 500
+worker_prefetch = 16
+shutdown_timeout_ms = 30000
+completed_retention = 1000
+failed_retention = 10000
+event_retention = 10000
+deduplication_ttl_ms = 300000
+memory_capacity = 100000
+max_batch_size = 1000
+
 [queue.redis]
 concurrency = 5
 prefix = "sockudo_queue:"
-response_timeout_ms = 30000
+response_timeout_ms = 5000
 
 [queue.redis_cluster]
 concurrency = 5
