@@ -673,6 +673,41 @@ class Sockudo implements LoggerAwareInterface, SockudoInterface
         return $this->postAsync("/users/$user_id/terminate_connections", "{}");
     }
 
+    /**
+     * Force reconnect all connections established by the user with the given user id.
+     * Closes connections with code 4200, prompting clients to reconnect.
+     *
+     * @param string $user_id
+     *
+     * @throws SockudoException   If $user_id is invalid
+     * @throws ApiErrorException Throws ApiErrorException if the Channels HTTP API responds with an error
+     *
+     * @return object response body
+     *
+     */
+    public function forceReconnectUser(string $user_id): object
+    {
+        $this->validate_user_id($user_id);
+        return $this->post("/users/$user_id/force_reconnect", "{}");
+    }
+
+    /**
+     * Asynchronous request to force reconnect all connections established by the user with the given user id.
+     * Closes connections with code 4200, prompting clients to reconnect.
+     *
+     * @param string $user_id
+     *
+     * @throws SockudoException   If $user_id is invalid
+     *
+     * @return PromiseInterface promise wrapping response body
+     *
+     */
+    public function forceReconnectUserAsync(string $user_id): PromiseInterface
+    {
+        $this->validate_user_id($user_id);
+        return $this->postAsync("/users/$user_id/force_reconnect", "{}");
+    }
+
 
     /**
      * Fetch channel information for a specific channel.

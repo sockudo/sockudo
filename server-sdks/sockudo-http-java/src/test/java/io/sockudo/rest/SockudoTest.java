@@ -569,4 +569,22 @@ public class SockudoTest {
         assertThat(key1.length(), is(16));
         assertThat(key1, is(not(key2)));
     }
+
+    @Test
+    public void terminateUserConnectionsUsesCorrectPath() throws Exception {
+        context.checking(new Expectations() {{
+            oneOf(httpClient).execute(with(path("/apps/" + APP_ID + "/users/user-123/terminate_connections")));
+        }});
+
+        p.terminateUserConnections("user-123");
+    }
+
+    @Test
+    public void forceReconnectUserUsesCorrectPath() throws Exception {
+        context.checking(new Expectations() {{
+            oneOf(httpClient).execute(with(path("/apps/" + APP_ID + "/users/user-456/force_reconnect")));
+        }});
+
+        p.forceReconnectUser("user-456");
+    }
 }

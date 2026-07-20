@@ -148,6 +148,28 @@ public class Sockudo {
     }
   }
 
+  public func terminateUserConnections(
+    userId: String,
+    callback: @escaping (Result<UserConnectionResponse, SockudoError>) -> Void
+  ) {
+    apiClient.sendRequest(
+      for: TerminateUserConnectionsEndpoint(userId: userId, options: options)
+    ) { result in
+      callback(result.mapError({ SockudoError(from: $0) }))
+    }
+  }
+
+  public func forceReconnectUser(
+    userId: String,
+    callback: @escaping (Result<UserConnectionResponse, SockudoError>) -> Void
+  ) {
+    apiClient.sendRequest(
+      for: ForceReconnectUserEndpoint(userId: userId, options: options)
+    ) { result in
+      callback(result.mapError({ SockudoError(from: $0) }))
+    }
+  }
+
   public func history(
     for channel: Channel,
     options fetchOptions: ChannelHistoryFetchOptions = .init(),

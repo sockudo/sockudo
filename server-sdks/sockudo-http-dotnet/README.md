@@ -347,6 +347,24 @@ else
 }
 ```
 
+## User connection management
+
+### Terminate User Connections
+
+Disconnect every active socket for a user:
+
+```csharp
+var result = await sockudo.TerminateUserConnectionsAsync("user-123");
+```
+
+### Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```csharp
+var result = await sockudo.ForceReconnectUserAsync("user-123");
+```
+
 ## License
 
 This code is free to use under the terms of the MIT license.

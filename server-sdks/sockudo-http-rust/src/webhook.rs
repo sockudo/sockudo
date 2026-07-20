@@ -111,8 +111,8 @@ impl Webhook {
             .map(|(k, v)| (k.to_lowercase(), v.clone()))
             .collect();
 
-        let key = normalized_headers.get("x-sockudo-key").cloned();
-        let signature = normalized_headers.get("x-sockudo-signature").cloned();
+        let key = normalized_headers.get("x-pusher-key").cloned();
+        let signature = normalized_headers.get("x-pusher-signature").cloned();
         let content_type = normalized_headers.get("content-type").cloned();
 
         let (data, raw_json_events) = if Self::validate_content_type(&content_type) {
@@ -484,8 +484,8 @@ mod tests {
 
         let mut headers = BTreeMap::new();
         headers.insert("content-type".to_string(), "application/json".to_string());
-        headers.insert("x-sockudo-key".to_string(), "test_key".to_string());
-        headers.insert("x-sockudo-signature".to_string(), signature);
+        headers.insert("x-pusher-key".to_string(), "test_key".to_string());
+        headers.insert("x-pusher-signature".to_string(), signature);
 
         let webhook = Webhook::new(&token, &headers, body);
         let raw_events = webhook.get_raw_json_events().unwrap();
@@ -555,8 +555,8 @@ mod tests {
 
         let mut headers = BTreeMap::new();
         headers.insert("content-type".to_string(), "application/json".to_string());
-        headers.insert("x-sockudo-key".to_string(), "test_key".to_string());
-        headers.insert("x-sockudo-signature".to_string(), signature);
+        headers.insert("x-pusher-key".to_string(), "test_key".to_string());
+        headers.insert("x-pusher-signature".to_string(), signature);
 
         let webhook = Webhook::new(&token, &headers, body);
         assert!(webhook.is_valid(None));

@@ -224,5 +224,19 @@ namespace SockudoServer
         Task<IGetResult<T>> GetPublishStatusAsync<T>(string publishId);
         Task<IGetResult<T>> CancelScheduledPushAsync<T>(string publishId);
         Task<IGetResult<T>> PostPushDeliveryStatusAsync<T>(object deliveryEvent);
+
+        /// <summary>
+        /// Terminates all active connections for the specified user.
+        /// </summary>
+        /// <param name="userId">The ID of the user whose connections should be terminated.</param>
+        /// <returns>The result of the call to the REST API</returns>
+        Task<IGetResult<object>> TerminateUserConnectionsAsync(string userId);
+
+        /// <summary>
+        /// Forces all active connections for the specified user to reconnect by closing them with code 4200.
+        /// </summary>
+        /// <param name="userId">The ID of the user whose connections should be forced to reconnect.</param>
+        /// <returns>The result of the call to the REST API</returns>
+        Task<IGetResult<object>> ForceReconnectUserAsync(string userId);
     }
 }

@@ -366,6 +366,30 @@ describe Sockudo do
         end
       end
 
+      describe '#terminate_user_connections' do
+        it 'should call the correct URL' do
+          api_path = %r{/apps/20/users/user-123/terminate_connections}
+          stub_request(:post, api_path).to_return({
+                                                    status: 200,
+                                                    body: MultiJson.dump({})
+                                                  })
+          expect(@client.terminate_user_connections('user-123')).to eq({})
+          expect(WebMock).to have_requested(:post, api_path)
+        end
+      end
+
+      describe '#force_reconnect_user' do
+        it 'should call the correct URL' do
+          api_path = %r{/apps/20/users/user-123/force_reconnect}
+          stub_request(:post, api_path).to_return({
+                                                    status: 200,
+                                                    body: MultiJson.dump({})
+                                                  })
+          expect(@client.force_reconnect_user('user-123')).to eq({})
+          expect(WebMock).to have_requested(:post, api_path)
+        end
+      end
+
       describe '#activate_device' do
         it 'uses the admin endpoint, accepts 201, and can request token rotation' do
           api_path = %r{/apps/20/push/deviceRegistrations}

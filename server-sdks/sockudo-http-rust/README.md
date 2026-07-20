@@ -9,9 +9,9 @@ A fast, safe, and idiomatic Rust client for interacting with the Sockudo HTTP AP
 - Trigger batch events for efficiency
 - Support for end-to-end encrypted channels
 - Authorize client subscriptions to private, presence, and encrypted channels
-- Authenticate users for user-specific Pusher features
+- Authenticate users for user-specific Sockudo features
 - Terminate user connections
-- Validate and process incoming Pusher webhooks
+- Validate and process incoming Sockudo webhooks
 - Configurable host, port, scheme (HTTP/HTTPS), and timeout
 - Asynchronous API using `async/await`
 - Typed responses and errors
@@ -41,10 +41,10 @@ cargo build
 Configure and create a client:
 
 ```rust
-use sockudo_http::{Config, Pusher, PusherError};
+use sockudo_http::{Config, Sockudo, SockudoError};
 
 #[tokio::main]
-async fn main() -> Result<(), PusherError> {
+async fn main() -> Result<(), SockudoError> {
     let config = Config::builder()
         .app_id("YOUR_APP_ID")
         .key("YOUR_APP_KEY")
@@ -55,7 +55,7 @@ async fn main() -> Result<(), PusherError> {
         .timeout(std::time::Duration::from_secs(5)) // Optional
         .build()?;
 
-    let pusher = Pusher::new(config)?;
+    let sockudo = Sockudo::new(config)?;
 
     // Your application logic here...
     Ok(())
@@ -79,9 +79,9 @@ let config = Config::builder()
 You can also initialize from a URL:
 
 ```rust
-use pushers::{Pusher, PusherError};
+use sockudo_http::{Sockudo, SockudoError};
 
-let pusher = Pusher::from_url(
+let sockudo = Sockudo::from_url(
     "http://YOUR_APP_KEY:YOUR_APP_SECRET@127.0.0.1:6001/apps/YOUR_APP_ID",
     None,
 )?;
@@ -90,15 +90,15 @@ let pusher = Pusher::from_url(
 ### 2. Triggering Events
 
 ```rust
-use pushers::{Pusher, Channel, PusherError};
+use sockudo_http::{Sockudo, Channel, SockudoError};
 use sonic_rs::json;
 
-async fn trigger_event(pusher: &Pusher) -> Result<(), PusherError> {
+async fn trigger_event(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let channels = vec![Channel::from_string("my-channel")?];
     let event_name = "new-message";
     let data = json!({ "text": "Hello from Rust!" });
 
-    match pusher.trigger(&channels, event_name, data, None).await {
+    match sockudo.trigger(&channels, event_name, data, None).await {
         Ok(response) => {
             println!("Event triggered! Status: {}", response.status());
         }
@@ -114,10 +114,10 @@ If `channels` contains a single encrypted channel (e.g., `"private-encrypted-myc
 **Excluding a recipient:**
 
 ```rust
-use pushers::{Pusher, Channel, PusherError, events::TriggerParams};
+use sockudo_http::{Sockudo, Channel, SockudoError, events::TriggerParams};
 use sonic_rs::json;
 
-async fn trigger_event_exclude(pusher: &Pusher) -> Result<(), PusherError> {
+async fn trigger_event_exclude(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let channels = vec![Channel::from_string("my-channel")?];
     let event_name = "new-message";
     let data = json!({ "text": "Hello from Rust!" });
@@ -126,7 +126,7 @@ async fn trigger_event_exclude(pusher: &Pusher) -> Result<(), PusherError> {
         .socket_id("socket_id_to_exclude")
         .build();
 
-    pusher.trigger(&channels, event_name, data, Some(params)).await?;
+    sockudo.trigger(&channels, event_name, data, Some(params)).await?;
     Ok(())
 }
 ```
@@ -140,22 +140,22 @@ let params = TriggerParams::builder()
     .idempotency_key("unique-key-for-this-event")
     .build();
 
-pusher.trigger(&channels, event_name, data, Some(params)).await?;
+sockudo.trigger(&channels, event_name, data, Some(params)).await?;
 ```
 
 ### 3. Triggering Batch Events
 
 ```rust
-use pushers::{Pusher, PusherError, events::BatchEvent};
+use sockudo_http::{Sockudo, SockudoError, events::BatchEvent};
 use sonic_rs::json;
 
-async fn trigger_batch(pusher: &Pusher) -> Result<(), PusherError> {
+async fn trigger_batch(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let batch = vec![
         BatchEvent::new("event1", "channel-a", json!({ "value": 1 })),
         BatchEvent::new("event2", "channel-b", json!({ "value": 2 })),
     ];
 
-    match pusher.trigger_batch(batch).await {
+    match sockudo.trigger_batch(batch).await {
         Ok(response) => println!("Batch triggered! Status: {}", response.status()),
         Err(e) => eprintln!("Error triggering batch: {:?}", e),
     }
@@ -170,11 +170,11 @@ Tag filtering allows you to add metadata tags to events, enabling clients to fil
 **Triggering a single event with tags:**
 
 ```rust
-use pushers::{Pusher, Channel, PusherError, events::TriggerParams};
+use sockudo_http::{Sockudo, Channel, SockudoError, events::TriggerParams};
 use sonic_rs::json;
 use std::collections::HashMap;
 
-async fn trigger_with_tags(pusher: &Pusher) -> Result<(), PusherError> {
+async fn trigger_with_tags(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let channels = vec![Channel::from_string("sports-updates")?];
     let event_name = "match-event";
     let data = json!({
@@ -193,7 +193,7 @@ async fn trigger_with_tags(pusher: &Pusher) -> Result<(), PusherError> {
         .tags(tags)
         .build();
 
-    pusher.trigger(&channels, event_name, data, Some(params)).await?;
+    sockudo.trigger(&channels, event_name, data, Some(params)).await?;
     Ok(())
 }
 ```
@@ -201,11 +201,11 @@ async fn trigger_with_tags(pusher: &Pusher) -> Result<(), PusherError> {
 **Triggering batch events with tags:**
 
 ```rust
-use pushers::{Pusher, PusherError, events::BatchEvent};
+use sockudo_http::{Sockudo, SockudoError, events::BatchEvent};
 use sonic_rs::json;
 use std::collections::HashMap;
 
-async fn trigger_batch_with_tags(pusher: &Pusher) -> Result<(), PusherError> {
+async fn trigger_batch_with_tags(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let mut goal_tags = HashMap::new();
     goal_tags.insert("event_type".to_string(), "goal".to_string());
     goal_tags.insert("priority".to_string(), "high".to_string());
@@ -221,7 +221,7 @@ async fn trigger_batch_with_tags(pusher: &Pusher) -> Result<(), PusherError> {
             .with_tags(shot_tags),
     ];
 
-    pusher.trigger_batch(batch).await?;
+    sockudo.trigger_batch(batch).await?;
     Ok(())
 }
 ```
@@ -233,10 +233,10 @@ async fn trigger_batch_with_tags(pusher: &Pusher) -> Result<(), PusherError> {
 Typically done in your HTTP handler when a client attempts to subscribe:
 
 ```rust
-use pushers::{Pusher, Channel, PusherError};
+use sockudo_http::{Sockudo, Channel, SockudoError};
 use sonic_rs::json;
 
-fn authorize_channel(pusher: &Pusher) -> Result<(), PusherError> {
+fn authorize_channel(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let socket_id = "123.456";
     let channel_name = "private-mychannel";
     let channel = Channel::from_string(channel_name)?;
@@ -247,7 +247,7 @@ fn authorize_channel(pusher: &Pusher) -> Result<(), PusherError> {
         "user_info": { "name": "Alice" }
     }));
 
-    match pusher.authorize_channel(socket_id, &channel, presence_data.as_ref()) {
+    match sockudo.authorize_channel(socket_id, &channel, presence_data.as_ref()) {
         Ok(auth_signature) => {
             println!("Auth success: {:?}", auth_signature);
             // Return `auth_signature` as JSON to client
@@ -263,10 +263,10 @@ fn authorize_channel(pusher: &Pusher) -> Result<(), PusherError> {
 For server-to-user events:
 
 ```rust
-use pushers::{Pusher, PusherError};
+use sockudo_http::{Sockudo, SockudoError};
 use sonic_rs::json;
 
-fn authenticate_user(pusher: &Pusher) -> Result<(), PusherError> {
+fn authenticate_user(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let socket_id = "789.012";
     let user_data = json!({
         "id": "user-bob",      // required
@@ -274,7 +274,7 @@ fn authenticate_user(pusher: &Pusher) -> Result<(), PusherError> {
         "email": "bob@example.com"
     });
 
-    match pusher.authenticate_user(socket_id, &user_data) {
+    match sockudo.authenticate_user(socket_id, &user_data) {
         Ok(user_auth) => {
             println!("User auth success: {:?}", user_auth);
             // Return `user_auth` as JSON to client
@@ -288,15 +288,15 @@ fn authenticate_user(pusher: &Pusher) -> Result<(), PusherError> {
 ### 7. Sending an Event to a User
 
 ```rust
-use pushers::{Pusher, PusherError};
+use sockudo_http::{Sockudo, SockudoError};
 use sonic_rs::json;
 
-async fn send_to_user(pusher: &Pusher) -> Result<(), PusherError> {
+async fn send_to_user(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let user_id = "user-bob";
     let event_name = "personal-notification";
     let data = json!({ "alert": "Your report is ready!" });
 
-    match pusher.send_to_user(user_id, event_name, data).await {
+    match sockudo.send_to_user(user_id, event_name, data).await {
         Ok(response) => println!("Sent to user! Status: {}", response.status()),
         Err(e) => eprintln!("Error sending to user: {:?}", e),
     }
@@ -307,12 +307,12 @@ async fn send_to_user(pusher: &Pusher) -> Result<(), PusherError> {
 ### 8. Terminating User Connections
 
 ```rust
-use pushers::{Pusher, PusherError};
+use sockudo_http::{Sockudo, SockudoError};
 
-async fn terminate_user(pusher: &Pusher) -> Result<(), PusherError> {
+async fn terminate_user(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let user_id = "user-charlie";
 
-    match pusher.terminate_user_connections(user_id).await {
+    match sockudo.terminate_user_connections(user_id).await {
         Ok(response) => println!("Terminate successful! Status: {}", response.status()),
         Err(e) => eprintln!("Error terminating user: {:?}", e),
     }
@@ -320,13 +320,30 @@ async fn terminate_user(pusher: &Pusher) -> Result<(), PusherError> {
 }
 ```
 
-### 9. Handling Webhooks
+### 9. Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
 
 ```rust
-use pushers::{Pusher, PusherError, webhook::WebhookEvent};
+use sockudo_http::{Sockudo, SockudoError};
+
+async fn force_reconnect(sockudo: &Sockudo) -> Result<(), SockudoError> {
+    let user_id = "user-123";
+    match sockudo.force_reconnect_user(user_id).await {
+        Ok(_) => println!("Force reconnect initiated for {}", user_id),
+        Err(e) => eprintln!("Error: {}", e),
+    }
+    Ok(())
+}
+```
+
+### 10. Handling Webhooks
+
+```rust
+use sockudo_http::{Sockudo, SockudoError, webhook::WebhookEvent};
 use std::collections::BTreeMap;
 
-fn handle_webhook(pusher: &Pusher) -> Result<(), PusherError> {
+fn handle_webhook(sockudo: &Sockudo) -> Result<(), SockudoError> {
     let mut headers = BTreeMap::new();
     headers.insert("X-Pusher-Key".to_string(), "YOUR_APP_KEY".to_string());
     headers.insert("X-Pusher-Signature".to_string(), "RECEIVED_SIGNATURE".to_string());
@@ -337,7 +354,7 @@ fn handle_webhook(pusher: &Pusher) -> Result<(), PusherError> {
         "events":[{"name":"channel_occupied","channel":"my-channel"}]
     }"#;
 
-    let webhook = pusher.webhook(&headers, body);
+    let webhook = sockudo.webhook(&headers, body);
 
     if webhook.is_valid(None) {
         println!("Webhook is valid!");
@@ -370,7 +387,7 @@ fn handle_webhook(pusher: &Pusher) -> Result<(), PusherError> {
 }
 ```
 
-### 10. Example: Integration with Axum
+### 11. Example: Integration with Axum
 
 ```rust
 use axum::{
@@ -380,14 +397,14 @@ use axum::{
     routing::post,
     Router,
 };
-use pushers::{Config, Pusher, Channel};
+use sockudo_http::{Config, Sockudo, Channel};
 use serde::Deserialize;
 use sonic_rs::{json, Value};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone)]
 struct AppState {
-    pusher: Arc<Pusher>,
+    sockudo: Arc<Sockudo>,
 }
 
 #[tokio::main]
@@ -402,12 +419,12 @@ async fn main() {
         .build()
         .expect("Failed to build config");
 
-    let pusher = Arc::new(Pusher::new(config).expect("Failed to create client"));
-    let app_state = AppState { pusher };
+    let sockudo = Arc::new(Sockudo::new(config).expect("Failed to create client"));
+    let app_state = AppState { sockudo };
 
     let app = Router::new()
-        .route("/pusher/auth", post(pusher_auth_handler))
-        .route("/pusher/webhook", post(pusher_webhook_handler))
+        .route("/sockudo/auth", post(sockudo_auth_handler))
+        .route("/sockudo/webhook", post(sockudo_webhook_handler))
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
@@ -423,7 +440,7 @@ struct AuthRequest {
     presence_data: Option<Value>,
 }
 
-async fn pusher_auth_handler(
+async fn sockudo_auth_handler(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
 ) -> impl IntoResponse {
@@ -437,7 +454,7 @@ async fn pusher_auth_handler(
         }
     };
 
-    match state.pusher.authorize_channel(
+    match state.sockudo.authorize_channel(
         &payload.socket_id,
         &channel,
         payload.presence_data.as_ref(),
@@ -450,7 +467,7 @@ async fn pusher_auth_handler(
     }
 }
 
-async fn pusher_webhook_handler(
+async fn sockudo_webhook_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: String,
@@ -462,7 +479,7 @@ async fn pusher_webhook_handler(
         }
     }
 
-    let webhook = state.pusher.webhook(&hdrs_btreemap, &body);
+    let webhook = state.sockudo.webhook(&hdrs_btreemap, &body);
 
     if webhook.is_valid(None) {
         (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
@@ -474,13 +491,13 @@ async fn pusher_webhook_handler(
 
 ## Configuration Options
 
-The `Config` struct is used to configure the Pusher client. Create it using `Config::builder()`:
+The `Config` struct is used to configure the Sockudo client. Create it using `Config::builder()`:
 
 | Method | Description |
 |--------|-------------|
-| `app_id(id)` | Sets the Pusher app ID (required) |
-| `key(key)` | Sets the Pusher app key (required) |
-| `secret(secret)` | Sets the Pusher app secret (required) |
+| `app_id(id)` | Sets the Sockudo app ID (required) |
+| `key(key)` | Sets the Sockudo app key (required) |
+| `secret(secret)` | Sets the Sockudo app secret (required) |
 | `cluster(name)` | Sets a named cluster (e.g., `"eu"`, `"ap1"`). For self-hosted Sockudo, use `host` and `port` directly instead. |
 | `host(host)` | Sets a custom host if not using a standard cluster |
 | `use_tls(bool)` | Enable HTTPS (default: `true`) |
@@ -492,7 +509,7 @@ The `Config` struct is used to configure the Pusher client. Create it using `Con
 | `enable_retry(enable)` | Enable/disable retry logic (default: `true`) |
 | `max_retries(max)` | Maximum retry attempts (default: `3`) |
 
-Call `.build()` on the `ConfigBuilder` to get a `Result<Config, PusherError>`.
+Call `.build()` on the `ConfigBuilder` to get a `Result<Config, SockudoError>`.
 
 ## Channel History
 
@@ -529,7 +546,7 @@ async fn fetch_history(sockudo: &Sockudo) -> Result<(), sockudo_http::SockudoErr
 
 ## Error Handling
 
-All fallible methods return `Result<T, PusherError>`. The `PusherError` enum variants:
+All fallible methods return `Result<T, SockudoError>`. The `SockudoError` enum variants:
 
 | Variant | Description |
 |---------|-------------|

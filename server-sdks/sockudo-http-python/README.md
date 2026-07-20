@@ -119,6 +119,30 @@ sockudo.get_channel_history("orders", HistoryParams(limit=50, direction="newest_
 sockudo.get_channel_presence_history("presence-room", PresenceHistoryParams(limit=50))
 ```
 
+## User Controls
+
+Terminate all active connections for a user:
+
+```python
+# Synchronous
+sockudo.terminate_user_connections("user-123")
+
+# Asynchronous
+await async_sockudo.terminate_user_connections("user-123")
+```
+
+### Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```python
+# Synchronous
+sockudo.force_reconnect_user("user-123")
+
+# Asynchronous
+await async_sockudo.force_reconnect_user("user-123")
+```
+
 ## Versioned Messages And Annotations
 
 ```python
