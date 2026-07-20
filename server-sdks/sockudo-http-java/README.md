@@ -323,6 +323,28 @@ Result snapshot = sockudo.getChannelPresenceSnapshot(
 );
 ```
 
+### Terminate User Connections
+
+Disconnect every active socket for a user:
+
+```java
+sockudo.terminateUserConnections("user-123");
+```
+
+### Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```java
+sockudo.forceReconnectUser("user-123");
+```
+
+Async variant:
+
+```java
+CompletableFuture<Result> future = sockudoAsync.forceReconnectUser("user-123");
+```
+
 ## License
 
 This code is free to use under the terms of the MIT license.

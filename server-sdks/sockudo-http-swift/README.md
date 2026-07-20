@@ -410,6 +410,36 @@ sockudo.presenceSnapshot(
 }
 ```
 
+### Terminate User Connections
+
+Disconnect every active socket for a user:
+
+```swift
+sockudo.terminateUserConnections(userId: "user-123") { result in
+    switch result {
+    case .success:
+        print("User connections terminated")
+    case .failure(let error):
+        print("Error: \(error)")
+    }
+}
+```
+
+### Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```swift
+sockudo.forceReconnectUser(userId: "user-123") { result in
+    switch result {
+    case .success:
+        print("Force reconnect initiated")
+    case .failure(let error):
+        print("Error: \(error)")
+    }
+}
+```
+
 ## License
 
 The library is completely open source and released under the MIT license.

@@ -175,6 +175,14 @@ class Sockudo {
     });
   }
 
+  forceReconnectUser(userId: string): Promise<ResponseWithIdempotency> {
+    validateUserId(userId);
+    return this.post({
+      path: `/users/${userId}/force_reconnect`,
+      body: {},
+    });
+  }
+
   trigger(
     channels: string | string[],
     event: string,

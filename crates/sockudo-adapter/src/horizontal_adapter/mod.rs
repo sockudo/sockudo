@@ -35,6 +35,7 @@ pub enum RequestType {
     SocketExistsInChannel,    // Check if socket exists in a channel
     TerminateUserConnections, // Terminate user connections
     ChannelsWithSocketsCount, // Get channels with socket counts
+    ForceReconnect,           // Close sockets with 4200 so clients reconnect
 
     // New request types
     Sockets,                       // Get all sockets

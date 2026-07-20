@@ -232,6 +232,7 @@ pub trait ConnectionManager: Send + Sync {
         Ok(None)
     }
     async fn terminate_user_connections(&self, app_id: &str, user_id: &str) -> Result<()>;
+    async fn force_reconnect_user(&self, app_id: &str, user_id: &str) -> Result<()>;
     async fn add_user(&self, ws: WebSocketRef) -> Result<()>;
     async fn remove_user(&self, ws: WebSocketRef) -> Result<()>;
     async fn remove_user_socket(

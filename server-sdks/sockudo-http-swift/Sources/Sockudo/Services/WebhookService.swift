@@ -16,10 +16,10 @@ struct WebhookService {
     /// The Webhook request is missing body data.
     case bodyDataMissing
 
-    /// The webhook request is missing a `"X-Sockudo-Key"' header, or its value is invalid.
+    /// The webhook request is missing a `"X-Pusher-Key"' header, or its value is invalid.
     case xSockudoKeyHeaderMissingOrInvalid
 
-    /// The webhook request is missing a `"X-Sockudo-Signature"' header, or its value is invalid.
+    /// The webhook request is missing a `"X-Pusher-Signature"' header, or its value is invalid.
     case xSockudoSignatureHeaderMissingOrInvalid
 
     /// A localized human-readable description of the error.
@@ -50,11 +50,11 @@ struct WebhookService {
     }
   }
 
-  /// The `X-Sockudo-Key` header.
-  static let xSockudoKeyHeader = "X-Sockudo-Key"
+  /// The `X-Pusher-Key` header.
+  static let xSockudoKeyHeader = "X-Pusher-Key"
 
-  /// The `X-Sockudo-Signature` header.
-  static let xSockudoSignatureHeader = "X-Sockudo-Signature"
+  /// The `X-Pusher-Signature` header.
+  static let xSockudoSignatureHeader = "X-Pusher-Signature"
 
   /// Verify that the key and signature header values of the received Webhook request are valid.
   /// - Parameters:

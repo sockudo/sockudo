@@ -987,6 +987,11 @@ class Sockudo(_BaseSockudo):
             self._path(f"/users/{quote(user_id, safe='')}/terminate_connections"), {}
         )
 
+    def force_reconnect_user(self, user_id: str) -> Result:
+        return self._post(
+            self._path(f"/users/{quote(user_id, safe='')}/force_reconnect"), {}
+        )
+
     def activate_device(
         self, device: Mapping[str, Any], rotate_device_identity_token: bool = False
     ) -> Result:
@@ -1467,6 +1472,11 @@ class AsyncSockudo(_BaseSockudo):
     async def terminate_user_connections(self, user_id: str) -> Result:
         return await self._post(
             self._path(f"/users/{quote(user_id, safe='')}/terminate_connections"), {}
+        )
+
+    async def force_reconnect_user(self, user_id: str) -> Result:
+        return await self._post(
+            self._path(f"/users/{quote(user_id, safe='')}/force_reconnect"), {}
         )
 
     async def activate_device(

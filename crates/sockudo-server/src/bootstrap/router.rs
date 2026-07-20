@@ -10,8 +10,9 @@ use crate::http_handler::{
     channel_history_reset, channel_history_state, channel_message, channel_message_annotations,
     channel_message_versions, channel_presence_history, channel_presence_history_reset,
     channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
-    delete_annotation, delete_message, events, fallback_404, live, metrics, publish_annotation,
-    revoke_capability_tokens, stats, terminate_user_connections, up, update_message, usage,
+    delete_annotation, delete_message, events, fallback_404, force_reconnect_user, live, metrics,
+    publish_annotation, revoke_capability_tokens, stats, terminate_user_connections, up,
+    update_message, usage,
 };
 use crate::middleware::pusher_api_auth_middleware;
 #[cfg(feature = "push")]
@@ -368,6 +369,13 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/users/{userId}/terminate_connections",
                 post(terminate_user_connections).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/users/{userId}/force_reconnect",
+                post(force_reconnect_user).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),

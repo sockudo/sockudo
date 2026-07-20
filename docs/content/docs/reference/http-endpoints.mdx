@@ -37,6 +37,7 @@ Supported query parameters:
 | `POST` | `/apps/{appId}/batch_events` | Signed app API | Publish multiple events in one request. |
 | `POST` | `/apps/{appId}/revocations` | Signed app API | Revoke Protocol V2 capability tokens by `jti`, `client_id`, or both. Matching local sockets receive `sockudo:token_expired` and close. |
 | `POST` | `/apps/{appId}/users/{userId}/terminate_connections` | Signed app API | Disconnect every active socket for the supplied user ID. |
+| `POST` | `/apps/{appId}/users/{userId}/force_reconnect` | Signed app API | Close every active socket for the supplied user ID with code `4200`, prompting clients to reconnect. |
 
 Useful request controls:
 

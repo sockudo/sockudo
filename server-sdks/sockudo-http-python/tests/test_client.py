@@ -650,3 +650,61 @@ async def test_async_operator_controls_match_sync_surface():
         ("POST", "/apps/app-id/channels/presence-orders/presence/history/reset"),
     ]
     await sockudo.close()
+
+
+def test_force_reconnect_user_posts_to_correct_path():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={})
+
+    sockudo = make_client(handler)
+    result = sockudo.force_reconnect_user("user-123")
+
+    assert result.ok
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/apps/app-id/users/user-123/force_reconnect"
+    sockudo.close()
+
+
+def test_force_reconnect_user_url_encodes_user_id():
+    seen = {}
+
+    def handler(request):
+        # raw_path preserves percent-encoding; strip the query string
+        seen["raw_path"] = request.url.raw_path.decode().split("?")[0]
+        return httpx.Response(200, json={})
+
+    sockudo = make_client(handler)
+    sockudo.force_reconnect_user("user/with spaces")
+
+    assert seen["raw_path"] == "/apps/app-id/users/user%2Fwith%20spaces/force_reconnect"
+    sockudo.close()
+
+
+@pytest.mark.asyncio
+async def test_async_force_reconnect_user_posts_to_correct_path():
+    seen = {}
+
+    async def handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    sockudo = AsyncSockudo(
+        "app-id",
+        "key",
+        "secret",
+        options=SockudoOptions(max_retries=1),
+        client=http_client,
+    )
+    result = await sockudo.force_reconnect_user("user-123")
+
+    assert result.ok
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/apps/app-id/users/user-123/force_reconnect"
+    await sockudo.close()

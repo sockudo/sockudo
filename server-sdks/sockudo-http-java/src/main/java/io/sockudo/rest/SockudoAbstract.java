@@ -709,6 +709,33 @@ public abstract class SockudoAbstract<T> {
         return getChannelPresenceSnapshot(channelName, Collections.<String, String>emptyMap());
     }
 
+    /**
+     * Terminate all active WebSocket connections for a user.
+     * <p>
+     * Every socket currently authenticated as the given user will be disconnected.
+     *
+     * @param userId the user ID whose connections should be terminated
+     * @return a {@link Result} object encapsulating the success state and response to the request
+     */
+    public T terminateUserConnections(final String userId) {
+        final String path = "/users/" + userId + "/terminate_connections";
+        return post(path, "{}");
+    }
+
+    /**
+     * Force all active WebSocket connections for a user to reconnect.
+     * <p>
+     * Every socket currently authenticated as the given user will be closed with code {@code 4200},
+     * prompting clients to reconnect.
+     *
+     * @param userId the user ID whose connections should be force-reconnected
+     * @return a {@link Result} object encapsulating the success state and response to the request
+     */
+    public T forceReconnectUser(final String userId) {
+        final String path = "/users/" + userId + "/force_reconnect";
+        return post(path, "{}");
+    }
+
     protected abstract T doGet(final URI uri);
 
     protected T doGet(final URI uri, final Map<String, String> headers) {
@@ -1112,8 +1139,8 @@ public abstract class SockudoAbstract<T> {
     /**
      * Check the signature on a webhook received from Sockudo
      *
-     * @param xSockudoKeyHeader       the X-Sockudo-Key header as received in the webhook request
-     * @param xSockudoSignatureHeader the X-Sockudo-Signature header as received in the webhook request
+     * @param xSockudoKeyHeader       the X-Pusher-Key header as received in the webhook request
+     * @param xSockudoSignatureHeader the X-Pusher-Signature header as received in the webhook request
      * @param body                   the webhook body
      * @return enum representing the possible validities of the webhook request
      */

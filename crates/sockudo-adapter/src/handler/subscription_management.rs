@@ -656,7 +656,10 @@ impl ConnectionHandler {
             let mut conn_locked = conn_arc.inner.lock().await;
 
             if let Some(ref member) = subscription_result.member {
-                conn_locked.state.user_id = Some(member.user_id.clone());
+                // Only set connection user_id from presence if signin hasn't set it already
+                if conn_locked.state.user_id.is_none() {
+                    conn_locked.state.user_id = Some(member.user_id.clone());
+                }
 
                 let presence_info = PresenceMemberInfo {
                     user_id: member.user_id.clone(),

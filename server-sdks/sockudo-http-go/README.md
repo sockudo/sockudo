@@ -385,6 +385,30 @@ nextPage, err := client.ChannelHistory("my-channel", sockudo.HistoryParams{
 })
 ```
 
+## User Connection Management
+
+### Terminate User Connections
+
+Disconnect every active socket for a user:
+
+```go
+err := client.TerminateUserConnections("user-123")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```go
+err := client.ForceReconnectUser("user-123")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
 ## Pusher SDK Compatibility
 
 Sockudo implements the full Pusher HTTP API. If you prefer to use the official `github.com/pusher/pusher-http-go/v5` package or are migrating from Pusher, point it at your Sockudo instance:

@@ -470,6 +470,28 @@ impl Namespace {
         Ok(())
     }
 
+    pub async fn force_reconnect_user_connections(&self, user_id: &str) -> Result<()> {
+        if let Some(user_sockets_ref) = self.users.get(user_id) {
+            let user_sockets_snapshot = user_sockets_ref.clone();
+            drop(user_sockets_ref);
+
+            let cleanup_tasks: Vec<_> = user_sockets_snapshot
+                .iter()
+                .map(|ws_ref| async move {
+                    if let Err(e) = ws_ref
+                        .close(4200, "Force reconnect requested by the app.".to_string())
+                        .await
+                    {
+                        warn!(error = %e, "failed to close connection");
+                    }
+                })
+                .collect();
+
+            join_all(cleanup_tasks).await;
+        }
+        Ok(())
+    }
+
     /// `activated` reports the first socket joining the channel, computed under
     /// the shard write lock so it is safe against concurrent add/remove.
     pub fn add_channel_to_socket(&self, channel: &str, socket_id: &SocketId) -> (bool, bool) {

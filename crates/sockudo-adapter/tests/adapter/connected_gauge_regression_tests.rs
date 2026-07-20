@@ -205,6 +205,9 @@ impl ConnectionManager for FullCapacityAdapter {
     async fn terminate_user_connections(&self, _: &str, _: &str) -> Result<()> {
         Ok(())
     }
+    async fn force_reconnect_user(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
     async fn add_user(&self, _: WebSocketRef) -> Result<()> {
         Ok(())
     }
