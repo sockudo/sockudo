@@ -147,6 +147,9 @@ impl ConnectionManager for MockAdapter {
     async fn terminate_user_connections(&self, _app_id: &str, _user_id: &str) -> Result<()> {
         Ok(())
     }
+    async fn force_reconnect_user(&self, _app_id: &str, _user_id: &str) -> Result<()> {
+        Ok(())
+    }
     async fn add_user(&self, _ws: WebSocketRef) -> Result<()> {
         Ok(())
     }

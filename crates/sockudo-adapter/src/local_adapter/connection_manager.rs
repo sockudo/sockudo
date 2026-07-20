@@ -12,7 +12,7 @@ use sockudo_protocol::messages::{PusherMessage, generate_message_id};
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 fn partition_by_append_mode(sockets: Vec<WebSocketRef>) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
     sockets
@@ -633,6 +633,14 @@ impl ConnectionManager for LocalAdapter {
         let namespace = self.get_or_create_namespace(app_id).await;
         if let Err(e) = namespace.terminate_user_connections(user_id).await {
             error!("Failed to terminate user connections: {}", e);
+        }
+        Ok(())
+    }
+
+    async fn force_reconnect_user(&self, app_id: &str, user_id: &str) -> Result<()> {
+        let namespace = self.get_or_create_namespace(app_id).await;
+        if let Err(e) = namespace.force_reconnect_user_connections(user_id).await {
+            warn!(error = %e, "failed to force reconnect user connections");
         }
         Ok(())
     }

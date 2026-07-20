@@ -376,6 +376,32 @@ pub async fn terminate_user_connections(
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
+/// POST /apps/{app_id}/users/{user_id}/force_reconnect
+#[instrument(skip(handler), fields(app_id = %app_id, user_id = %user_id))]
+pub async fn force_reconnect_user(
+    Path((app_id, user_id)): Path<(String, String)>,
+    Query(_auth_q_params_struct): Query<EventQuery>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    _uri: Uri,
+    RawQuery(_raw_query_str_option): RawQuery,
+) -> Result<impl IntoResponse, AppError> {
+    info!(user_id = %user_id, "force reconnect user requested");
+
+    handler
+        .connection_manager()
+        .force_reconnect_user(&app.id, &user_id)
+        .await?;
+
+    info!(user_id = %user_id, "force reconnect user initiated");
+
+    let response_payload = json!({ "ok": true });
+    let response_size = sonic_rs::to_vec(&response_payload)?.len();
+    record_api_metrics(&handler, &app.id, 0, response_size).await;
+
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
