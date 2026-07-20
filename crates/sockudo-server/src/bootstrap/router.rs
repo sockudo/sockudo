@@ -45,6 +45,16 @@ fn expose_ably_error_headers(cors: CorsLayer) -> CorsLayer {
     ])
 }
 
+#[cfg(feature = "ably-compat")]
+fn is_ably_stats_request(
+    query: &sockudo_ably_compat::AblyStatsQuery,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    query.key.is_some()
+        || query.access_token.is_some()
+        || headers.contains_key(axum::http::header::AUTHORIZATION)
+}
+
 impl SockudoServer {
     fn build_rate_limit_layer(
         limiter: Arc<dyn RateLimiter + Send + Sync>,
@@ -578,24 +588,26 @@ impl SockudoServer {
             // when authenticated Ably requests share the legacy `/stats` path.
             router = router.route("/operator/stats", get(stats));
             #[cfg(feature = "ably-compat")]
-            if self.config.ably_compat.enabled {
+            {
                 let runtime = Arc::clone(&self.ably_compat);
-                let aggregation_runtime = Arc::clone(&self.ably_compat);
-                let delivery_runtime = Arc::clone(&self.ably_compat);
-                router = router.route(
-                    "/operator/stats/aggregation",
-                    get(move || {
-                        let snapshot = aggregation_runtime.stats_metrics();
-                        async move { axum::Json(snapshot) }
-                    }),
-                );
-                router = router.route(
-                    "/operator/stats/ably-runtime",
-                    get(move || {
-                        let snapshot = delivery_runtime.metrics();
-                        async move { axum::Json(snapshot) }
-                    }),
-                );
+                if self.config.ably_compat.enabled {
+                    let aggregation_runtime = Arc::clone(&self.ably_compat);
+                    let delivery_runtime = Arc::clone(&self.ably_compat);
+                    router = router.route(
+                        "/operator/stats/aggregation",
+                        get(move || {
+                            let snapshot = aggregation_runtime.stats_metrics();
+                            async move { axum::Json(snapshot) }
+                        }),
+                    );
+                    router = router.route(
+                        "/operator/stats/ably-runtime",
+                        get(move || {
+                            let snapshot = delivery_runtime.metrics();
+                            async move { axum::Json(snapshot) }
+                        }),
+                    );
+                }
                 router = router.route(
                     "/stats",
                     get(
@@ -606,10 +618,7 @@ impl SockudoServer {
                         >| {
                             let runtime = Arc::clone(&runtime);
                             async move {
-                                let is_ably_request = query.key.is_some()
-                                    || query.access_token.is_some()
-                                    || headers.contains_key(axum::http::header::AUTHORIZATION);
-                                if is_ably_request {
+                                if is_ably_stats_request(&query, &headers) {
                                     sockudo_ably_compat::ably_stats(
                                         query,
                                         headers,
@@ -627,8 +636,6 @@ impl SockudoServer {
                         },
                     ),
                 );
-            } else {
-                router = router.route("/stats", get(stats));
             }
             #[cfg(not(feature = "ably-compat"))]
             {
@@ -708,6 +715,37 @@ mod tests {
                     .route("/apps/{appId}/events", post(ok_handler))
                     .layer(api_layer),
             )
+    }
+
+    #[cfg(feature = "ably-compat")]
+    #[test]
+    fn authenticated_stats_requests_use_the_ably_handler() {
+        let query = sockudo_ably_compat::AblyStatsQuery::default();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::ACCEPT,
+            HeaderValue::from_static("application/x-msgpack"),
+        );
+        assert!(!is_ably_stats_request(&query, &headers));
+
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic ZGVtbzprZXk="),
+        );
+        assert!(is_ably_stats_request(&query, &headers));
+
+        headers.remove(axum::http::header::AUTHORIZATION);
+        let key_query = sockudo_ably_compat::AblyStatsQuery {
+            key: Some("demo:key".to_string()),
+            ..Default::default()
+        };
+        assert!(is_ably_stats_request(&key_query, &headers));
+
+        let token_query = sockudo_ably_compat::AblyStatsQuery {
+            access_token: Some("token".to_string()),
+            ..Default::default()
+        };
+        assert!(is_ably_stats_request(&token_query, &headers));
     }
 
     #[tokio::test]
