@@ -839,6 +839,33 @@ async fn close_frame_delivered_before_cancellation() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn close_wait_returns_error_when_writer_is_cancelled_before_flush() {
+    let socket_id = SocketId::new();
+    let (writer, _client) = create_server_writer_with_client().await;
+    let ws = WebSocket::new(socket_id, writer);
+    let ws_ref = WebSocketRef::new(ws);
+
+    ws_ref.shutdown();
+
+    let close_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        ws_ref
+            .inner
+            .lock()
+            .await
+            .message_sender
+            .send_close(4009, "user connection terminated")
+            .await
+    })
+    .await
+    .expect("send_close() must not wait forever after writer cancellation");
+
+    assert!(
+        matches!(close_result, Err(crate::error::Error::ConnectionClosed(_))),
+        "cancelled writer must report that the close frame was not flushed: {close_result:?}"
+    );
+}
+
 #[tokio::test]
 async fn shutdown_cancels_task_while_handle_retained() {
     use sockudo_ws::Message;

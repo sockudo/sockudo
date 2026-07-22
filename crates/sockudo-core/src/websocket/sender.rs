@@ -14,6 +14,7 @@ use tracing::{debug, error, warn};
 pub struct MessageSender {
     sender: MessageSenderHandle,
     close_flushed: Arc<Notify>,
+    shutdown_token: Option<CancellationToken>,
     receiver_handle: Option<JoinHandle<()>>,
 }
 
@@ -57,6 +58,7 @@ impl MessageSender {
         let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
         let close_flushed = Arc::new(Notify::new());
         let writer_close_flushed = Arc::clone(&close_flushed);
+        let close_shutdown_token = shutdown_token.clone();
 
         let receiver_handle = tokio::spawn(async move {
             let mut msg_count = 0;
@@ -142,6 +144,7 @@ impl MessageSender {
         Self {
             sender,
             close_flushed,
+            shutdown_token: Some(close_shutdown_token),
             receiver_handle: Some(receiver_handle),
         }
     }
@@ -226,6 +229,7 @@ impl MessageSender {
         Self {
             sender,
             close_flushed,
+            shutdown_token: None,
             receiver_handle: Some(receiver_handle),
         }
     }
@@ -263,7 +267,18 @@ impl MessageSender {
         self.send(Message::Close(Some(sockudo_ws::error::CloseReason::new(
             code, reason,
         ))))?;
-        flushed.await;
-        Ok(())
+
+        if let Some(shutdown_token) = &self.shutdown_token {
+            tokio::select! {
+                biased;
+                _ = flushed => Ok(()),
+                _ = shutdown_token.cancelled() => Err(Error::ConnectionClosed(
+                    "WebSocket writer stopped before flushing close frame".into(),
+                )),
+            }
+        } else {
+            flushed.await;
+            Ok(())
+        }
     }
 }
