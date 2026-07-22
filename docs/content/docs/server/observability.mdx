@@ -58,8 +58,8 @@ payloads, or raw encrypted values.
 
 AI Transport observability is domain-blind. Sockudo reads only the well-known `extras.ai.transport` headers and never labels metrics by channel, run ID, message ID, or client ID.
 Headers are validated once and then passed as a typed borrowed view to metric and webhook
-classification. An empty `run-client-id` remains unchanged on the wire but is treated as absent
-only when deriving an observability identity.
+classification. Empty `run-client-id` and `step-client-id` unknown-owner sentinels remain
+unchanged on the wire but are treated as absent when deriving an identity.
 
 Metrics exposed at `/metrics` include:
 

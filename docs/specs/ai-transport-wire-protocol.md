@@ -166,6 +166,10 @@ Transport keys:
 | `invocation-id` | Non-empty opaque string |
 | `event-id` | Non-empty opaque string |
 | `input-client-id` | Verified client identity string |
+| `step-id` | Non-empty opaque string; stable logical step identity across attempts |
+| `start-serial` | Non-empty serial of the corresponding `ai-step-start` attempt |
+| `step-reason` | `complete`, `failed`, `cancelled` |
+| `step-client-id` | Verified client identity string, or the empty native wire sentinel when the step participant is unknown |
 | `role` | `user`, `assistant`, `system`, `tool`, `agent` |
 | `error-code` | Non-empty opaque string |
 | `error-message` | Human-readable string within value limit |
@@ -175,7 +179,7 @@ Legacy transport aliases `turn-id`, `turn-client-id`, `turn-reason`, and `turn-c
 for inbound/stored compatibility. `turn-reason=suspended` maps to native `ai-run-suspend`;
 new publishers should use `ai-run-suspend` and `ai-run-resume` instead of `turn-continue`.
 
-Anti-spoof rule: any non-empty `*-client-id` value MUST match the verified connection identity from authenticated socket state or capability token. The native `run-client-id` key may additionally be present with an empty value to represent an unknown run owner; for an untrusted client that empty value is still a spoof and returns `104002`. Trusted signed app-key HTTP publishes may use the empty sentinel. The raw empty value is preserved in V2 wire extras, but is treated as absent for derived metrics, webhook identity, logs, and fallback `message.clientId` projections. All other identity keys remain non-empty. Client publishes may send `ai-input` and `ai-cancel`; `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` require trusted app key until capability tokens land, then require an agent-capable token.
+Anti-spoof rule: any non-empty `*-client-id` value MUST match the verified connection identity from authenticated socket state or capability token. The native `run-client-id` and `step-client-id` keys may additionally be present with an empty value to represent an unknown owner; for an untrusted client an empty value is still a spoof and returns `104002`. Trusted app-key publishes may use these empty sentinels. The raw empty values are preserved in V2 wire extras, but are treated as absent for derived metrics, webhook identity, logs, and fallback `message.clientId` projections. All other identity keys remain non-empty. Client publishes may send `ai-input` and `ai-cancel`; `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` require trusted app key until capability tokens land, then require an agent-capable token.
 
 Canonical sequences, expressed in existing events:
 

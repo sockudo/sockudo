@@ -346,6 +346,17 @@ impl<'a> AiTransportHeaders<'a> {
         self.get(AI_HEADER_STEP_CLIENT_ID)
     }
 
+    /// Returns the step participant for derived identity use.
+    ///
+    /// The native `step-client-id` header may be present as an empty wire
+    /// sentinel when no participant identity is known. The sentinel remains
+    /// available through [`Self::step_client_id`] but must not become an
+    /// identity in projections or other derived data.
+    #[inline]
+    pub fn step_client_identity(&self) -> Option<&'a str> {
+        self.step_client_id().filter(|value| !value.is_empty())
+    }
+
     #[inline]
     pub fn role(&self) -> Option<&'a str> {
         self.get("role")
@@ -582,7 +593,6 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
         | AI_HEADER_EVENT_ID
         | AI_HEADER_STEP_ID
         | AI_HEADER_START_SERIAL
-        | AI_HEADER_STEP_CLIENT_ID
         | AI_HEADER_MSG_REGENERATE
         | "error-code"
         | "model" => {
@@ -592,7 +602,7 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
                 )));
             }
         }
-        AI_HEADER_RUN_CLIENT_ID => {}
+        AI_HEADER_RUN_CLIENT_ID | AI_HEADER_STEP_CLIENT_ID => {}
         AI_HEADER_RUN_REASON => {
             if !matches!(value, "complete" | "cancelled" | "error") {
                 return Err(AiHeaderValidationError::invalid_transport(

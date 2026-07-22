@@ -587,7 +587,7 @@ pub(super) fn ai_client_id(message: &PusherMessage) -> Option<String> {
     transport
         .input_client_id()
         .or_else(|| transport.run_client_identity())
-        .or_else(|| transport.step_client_id())
+        .or_else(|| transport.step_client_identity())
         .map(str::to_string)
 }
 

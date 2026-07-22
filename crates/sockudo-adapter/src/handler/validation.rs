@@ -945,34 +945,33 @@ mod tests {
     }
 
     #[test]
-    fn ai_client_id_headers_allow_empty_native_unknown_owner_for_trusted_app() {
-        let message = PusherMessage {
-            event: Some("ai-run-start".to_string()),
-            channel: Some("private-ai".to_string()),
-            data: None,
-            name: None,
-            user_id: None,
-            tags: None,
-            sequence: None,
-            conflation_key: None,
-            message_id: None,
-            stream_id: None,
-            serial: None,
-            idempotency_key: None,
-            extras: Some(MessageExtras {
-                ai: Some(AiExtras {
-                    transport: Some(HashMap::from([(
-                        "run-client-id".to_string(),
-                        String::new(),
-                    )])),
-                    codec: None,
+    fn ai_client_id_headers_allow_empty_native_unknown_owners_for_trusted_app() {
+        for key in ["run-client-id", "step-client-id"] {
+            let message = PusherMessage {
+                event: Some("ai-step-start".to_string()),
+                channel: Some("private-ai".to_string()),
+                data: None,
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: Some(MessageExtras {
+                    ai: Some(AiExtras {
+                        transport: Some(HashMap::from([(key.to_string(), String::new())])),
+                        codec: None,
+                    }),
+                    ..Default::default()
                 }),
-                ..Default::default()
-            }),
-            delta_sequence: None,
-            delta_conflation_key: None,
-        };
+                delta_sequence: None,
+                delta_conflation_key: None,
+            };
 
-        validate_ai_client_id_headers(&message, None, AiPublishTrust::TrustedApp).unwrap();
+            validate_ai_client_id_headers(&message, None, AiPublishTrust::TrustedApp).unwrap();
+        }
     }
 }

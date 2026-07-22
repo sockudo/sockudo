@@ -75,6 +75,26 @@ fn publish_validation_accepts_nameless_and_dataless_messages() {
 }
 
 #[test]
+fn publish_validation_accepts_empty_ai_step_owner() {
+    let message = AblyMessage {
+        name: Some("ai-step-start".to_string()),
+        extras: Some(json!({
+            "ai": {
+                "transport": {
+                    "run-id": "run-1",
+                    "step-id": "step-1",
+                    "step-client-id": ""
+                }
+            }
+        })),
+        ..AblyMessage::default()
+    };
+
+    validate_ably_publish_message(&message, false)
+        .expect("Ably AI Transport uses an empty step owner as an unknown-owner sentinel");
+}
+
+#[test]
 fn publish_validation_rejects_reserved_and_unknown_fields() {
     let reserved = AblyMessage {
         connection_id: Some("client-supplied".to_string()),

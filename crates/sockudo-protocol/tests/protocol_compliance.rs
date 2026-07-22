@@ -3,8 +3,9 @@ use sockudo_protocol::messages::{
     AI_ERROR_INVALID_TRANSPORT_HEADER, AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_EVENT_LEGACY_TURN_END,
     AI_EVENT_LEGACY_TURN_START, AI_EVENT_OUTPUT, AI_EVENT_RUN_END, AI_EVENT_RUN_RESUME,
     AI_EVENT_RUN_START, AI_EVENT_RUN_SUSPEND, AI_HEADER_LEGACY_TURN_ID, AI_HEADER_MSG_REGENERATE,
-    AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_ID, AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue,
-    MessageData, MessageExtras, PusherMessage, is_ai_event,
+    AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_ID, AI_HEADER_STEP_CLIENT_ID,
+    AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, ExtrasValue, MessageData, MessageExtras, PusherMessage,
+    is_ai_event,
 };
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
@@ -337,7 +338,7 @@ fn test_ai_transport_model_key_rejects_empty() {
 }
 
 #[test]
-fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owner() {
+fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owners() {
     let identity_keys = [
         (AI_HEADER_RUN_ID, false),
         (AI_HEADER_RUN_CLIENT_ID, true),
@@ -351,7 +352,7 @@ fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owner() {
         ("invocation-id", false),
         ("event-id", false),
         ("step-id", false),
-        ("step-client-id", false),
+        (AI_HEADER_STEP_CLIENT_ID, true),
         ("start-serial", false),
         ("msg-regenerate", false),
         ("model", false),
@@ -371,12 +372,13 @@ fn test_ai_transport_identity_keys_reject_empty_except_native_unknown_owner() {
 }
 
 #[test]
-fn test_ai_transport_unknown_owner_sentinel_is_wire_preserved_but_not_identity() {
+fn test_ai_transport_unknown_owner_sentinels_are_wire_preserved_but_not_identities() {
     let extras = MessageExtras {
         ai: Some(AiExtras {
             transport: Some(HashMap::from([
                 (AI_HEADER_RUN_ID.to_string(), "run-1".to_string()),
                 (AI_HEADER_RUN_CLIENT_ID.to_string(), String::new()),
+                (AI_HEADER_STEP_CLIENT_ID.to_string(), String::new()),
             ])),
             codec: None,
         }),
@@ -386,8 +388,11 @@ fn test_ai_transport_unknown_owner_sentinel_is_wire_preserved_but_not_identity()
     let headers = extras.ai_transport_headers().expect("transport headers");
     assert_eq!(headers.run_client_id(), Some(""));
     assert_eq!(headers.run_client_identity(), None);
+    assert_eq!(headers.step_client_id(), Some(""));
+    assert_eq!(headers.step_client_identity(), None);
     let wire = sonic_rs::to_value(&extras).expect("serialize extras");
     assert_eq!(wire["ai"]["transport"][AI_HEADER_RUN_CLIENT_ID], "");
+    assert_eq!(wire["ai"]["transport"][AI_HEADER_STEP_CLIENT_ID], "");
 }
 
 #[test]
