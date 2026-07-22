@@ -260,7 +260,7 @@ impl ConnectionManager for LocalAdapter {
         // Get target socket references based on channel type
         let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
-            let socket_refs = namespace.get_user_sockets(user_id).await?;
+            let socket_refs = namespace.get_user_sockets(user_id)?;
 
             let mut target_refs = Vec::new();
             for socket_ref in socket_refs.iter() {
@@ -330,7 +330,7 @@ impl ConnectionManager for LocalAdapter {
         // Get target socket references based on channel type
         let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
-            let socket_refs = namespace.get_user_sockets(user_id).await?;
+            let socket_refs = namespace.get_user_sockets(user_id)?;
 
             let mut target_refs = Vec::new();
             for socket_ref in socket_refs.iter() {
@@ -448,7 +448,7 @@ impl ConnectionManager for LocalAdapter {
 
     async fn get_user_sockets(&self, user_id: &str, app_id: &str) -> Result<Vec<WebSocketRef>> {
         match self.existing_namespace(app_id) {
-            Some(namespace) => namespace.get_user_sockets(user_id).await,
+            Some(namespace) => namespace.get_user_sockets(user_id),
             None => Ok(Vec::new()),
         }
     }
@@ -676,7 +676,7 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
     ) -> Result<()> {
         match self.existing_namespace(app_id) {
-            Some(namespace) => namespace.remove_user_socket(user_id, socket_id).await,
+            Some(namespace) => namespace.remove_user_socket(user_id, socket_id),
             None => Ok(()),
         }
     }

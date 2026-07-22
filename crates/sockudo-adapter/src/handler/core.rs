@@ -403,59 +403,65 @@ impl ConnectionHandler {
 
         debug!("Using async cleanup for socket: {}", socket_id);
 
-        // Step 1: Quick connection state capture (< 1ms)
-        let disconnect_info = {
+        // Step 1: Quick connection state capture (< 1ms).
+        // Retain the WebSocketRef outside the lock scope so we can call shutdown()
+        // before queuing the cleanup task — cleanup queue latency must not extend
+        // the reader/writer task lifetime.
+        let (disconnect_task, connection) = {
             let connection_manager = &self.connection_manager;
-            let connection = connection_manager.get_connection(socket_id, app_id).await;
-
-            if let Some(conn_ref) = connection {
-                // Atomic check-and-set for disconnecting flag to ensure idempotency
-                let mut conn_locked = conn_ref.inner.lock().await;
-
-                if conn_locked.state.disconnecting {
-                    debug!("Connection {} already disconnecting, skipping", socket_id);
+            let conn_ref =
+                if let Some(c) = connection_manager.get_connection(socket_id, app_id).await {
+                    c
+                } else {
+                    // Connection doesn't exist - might have been cleaned up already
+                    debug!("Connection {} not found during disconnect", socket_id);
                     return Ok(());
-                }
+                };
 
-                // Set disconnecting flag atomically
-                conn_locked.state.disconnecting = true;
+            // Atomic check-and-set for disconnecting flag to ensure idempotency
+            let mut conn_locked = conn_ref.inner.lock().await;
 
-                let channels: Vec<String> =
-                    conn_locked.state.get_subscribed_channels_list().to_vec();
-                let user_id = conn_locked.state.user_id.clone();
-
-                // Extract presence channel info for webhook processing
-                let presence_channels: Vec<String> = channels
-                    .iter()
-                    .filter(|ch| ch.starts_with("presence-"))
-                    .cloned()
-                    .collect();
-
-                Some(DisconnectTask {
-                    socket_id: *socket_id,
-                    app_id: app_id.to_string(),
-                    subscribed_channels: channels,
-                    user_id: user_id.clone(),
-                    timestamp: Instant::now(),
-                    connection_info: if !presence_channels.is_empty() {
-                        Some(ConnectionCleanupInfo {
-                            presence_channels,
-                            auth_info: user_id.map(|uid| AuthInfo {
-                                user_id: uid,
-                                user_info: None,
-                            }),
-                        })
-                    } else {
-                        None
-                    },
-                    presence_ungraceful_timeout_seconds,
-                })
-            } else {
-                // Connection doesn't exist - might have been cleaned up already
-                debug!("Connection {} not found during disconnect", socket_id);
+            if conn_locked.state.disconnecting {
+                debug!("Connection {} already disconnecting, skipping", socket_id);
                 return Ok(());
             }
-        }; // Lock released immediately
+
+            // Set disconnecting flag atomically
+            conn_locked.state.disconnecting = true;
+
+            let channels: Vec<String> = conn_locked.state.get_subscribed_channels_list().to_vec();
+            let user_id = conn_locked.state.user_id.clone();
+
+            // Extract presence channel info for webhook processing
+            let presence_channels: Vec<String> = channels
+                .iter()
+                .filter(|ch| ch.starts_with("presence-"))
+                .cloned()
+                .collect();
+
+            let task = DisconnectTask {
+                socket_id: *socket_id,
+                app_id: app_id.to_string(),
+                subscribed_channels: channels,
+                user_id: user_id.clone(),
+                timestamp: Instant::now(),
+                connection_info: if !presence_channels.is_empty() {
+                    Some(ConnectionCleanupInfo {
+                        presence_channels,
+                        auth_info: user_id.map(|uid| AuthInfo {
+                            user_id: uid,
+                            user_info: None,
+                        }),
+                    })
+                } else {
+                    None
+                },
+                presence_ungraceful_timeout_seconds,
+            };
+
+            drop(conn_locked);
+            (task, conn_ref)
+        };
 
         // Step 2: Clear immediate timeouts (these should be fast)
         self.clear_activity_timeout(app_id, socket_id).await.ok();
@@ -475,38 +481,38 @@ impl ConnectionHandler {
         #[cfg(feature = "delta")]
         self.delta_compression.remove_socket(socket_id);
 
+        // Cancel reader/writer tasks immediately, before cleanup queue latency.
+        // shutdown() is idempotent (CancellationToken::cancel) — safe to call
+        // even if the queue-full fallback path calls it again via sync cleanup.
+        connection.shutdown();
+
         // Step 4: Queue cleanup work (non-blocking)
-        if let Some(task) = disconnect_info {
-            if let Err(_send_error) = cleanup_queue.try_send(task) {
-                // Queue is full or closed - don't return error, fall back to sync cleanup
-                warn!(
-                    "Failed to queue async cleanup for socket {} (queue full/closed), falling back to sync cleanup",
-                    socket_id
-                );
+        if let Err(_send_error) = cleanup_queue.try_send(disconnect_task) {
+            // Queue is full or closed - don't return error, fall back to sync cleanup
+            warn!(
+                "Failed to queue async cleanup for socket {} (queue full/closed), falling back to sync cleanup",
+                socket_id
+            );
 
-                // FIX: Reset the disconnecting flag using proper lock (not try_lock) to ensure
-                // the flag is always reset before falling back to sync cleanup.
-                // Using try_lock() could fail and leave the flag stuck at true forever,
-                // preventing future cleanup attempts for this connection.
-                {
-                    let connection_manager = &self.connection_manager;
-                    if let Some(conn_ref) =
-                        connection_manager.get_connection(socket_id, app_id).await
-                    {
-                        // Use .lock().await instead of try_lock() to guarantee we reset the flag
-                        let mut conn_locked = conn_ref.inner.lock().await;
-                        conn_locked.state.disconnecting = false;
-                    }
+            // FIX: Reset the disconnecting flag using proper lock (not try_lock) to ensure
+            // the flag is always reset before falling back to sync cleanup.
+            // Using try_lock() could fail and leave the flag stuck at true forever,
+            // preventing future cleanup attempts for this connection.
+            {
+                let connection_manager = &self.connection_manager;
+                if let Some(conn_ref) = connection_manager.get_connection(socket_id, app_id).await {
+                    // Use .lock().await instead of try_lock() to guarantee we reset the flag
+                    let mut conn_locked = conn_ref.inner.lock().await;
+                    conn_locked.state.disconnecting = false;
                 }
-
-                // Fall back to synchronous cleanup immediately
-                // We already have the disconnect task info, so use sync cleanup
-                return self
-                    .handle_disconnect_sync(app_id, socket_id, presence_ungraceful_timeout_seconds)
-                    .await;
             }
-            debug!("Queued async cleanup for socket: {}", socket_id);
+            // Fall back to synchronous cleanup immediately
+            // We already have the disconnect task info, so use sync cleanup
+            return self
+                .handle_disconnect_sync(app_id, socket_id, presence_ungraceful_timeout_seconds)
+                .await;
         }
+        debug!("Queued async cleanup for socket: {}", socket_id);
 
         // Step 5: Update metrics immediately (outside connection lock to minimize contention)
         if let Some(ref metrics) = self.metrics {
@@ -604,12 +610,13 @@ impl ConnectionHandler {
             .await?;
         }
 
-        // Final cleanup from connection manager (removes socket from users map)
-        self.cleanup_connection_from_manager(socket_id, app_id)
-            .await;
-
-        // Process channel unsubscriptions AFTER cleanup so presence checks see correct state
-        if !subscribed_channels.is_empty() {
+        // Remove channel memberships while the snapshot still corresponds to
+        // live namespace entries. Presence counting explicitly excludes this
+        // socket, so member_removed decisions remain correct without deleting
+        // the authoritative connection first.
+        let unsubscribe_result = if subscribed_channels.is_empty() {
+            Ok(())
+        } else {
             self.process_channel_unsubscriptions_on_disconnect(
                 socket_id,
                 &app_config,
@@ -617,8 +624,14 @@ impl ConnectionHandler {
                 &user_id,
                 presence_ungraceful_timeout_seconds,
             )
-            .await?;
-        }
+            .await
+        };
+
+        // Always finish comprehensive resource cleanup, even when channel or
+        // presence processing reports an error.
+        self.cleanup_connection_from_manager(socket_id, app_id)
+            .await;
+        unsubscribe_result?;
 
         // Update metrics
         if let Some(ref metrics) = self.metrics {

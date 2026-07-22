@@ -4,6 +4,7 @@ use crossfire::{TrySendError, mpsc};
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::sync::Arc;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -12,6 +13,7 @@ use tracing::{debug, error, warn};
 #[derive(Debug)]
 pub struct MessageSender {
     sender: MessageSenderHandle,
+    close_flushed: Arc<Notify>,
     receiver_handle: Option<JoinHandle<()>>,
 }
 
@@ -53,6 +55,8 @@ impl MessageSender {
         shutdown_token: CancellationToken,
     ) -> Self {
         let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
+        let close_flushed = Arc::new(Notify::new());
+        let writer_close_flushed = Arc::clone(&close_flushed);
 
         let receiver_handle = tokio::spawn(async move {
             let mut msg_count = 0;
@@ -99,17 +103,25 @@ impl MessageSender {
                             Ok(message) => {
                                 msg_count += 1;
 
-                                if matches!(message, Message::Close(_)) {
+                                let is_close = matches!(message, Message::Close(_));
+                                if is_close {
                                     is_shutting_down = true;
                                 }
 
-                                if let Err(e) = socket.send(message).await {
+                                let send_result = socket.send(message).await;
+                                if is_close {
+                                    writer_close_flushed.notify_one();
+                                }
+                                if let Err(e) = send_result {
                                     Self::log_connection_error(
                                         &e,
                                         SocketOperation::WriteFrame,
                                         msg_count,
                                         is_shutting_down,
                                     );
+                                    break;
+                                }
+                                if is_close {
                                     break;
                                 }
                             }
@@ -122,13 +134,14 @@ impl MessageSender {
                 }
             }
 
-            if let Err(e) = socket.close(1000, "Normal closure").await {
+            if !is_shutting_down && let Err(e) = socket.close(1000, "Normal closure").await {
                 Self::log_connection_error(&e, SocketOperation::SendCloseFrame, msg_count, true);
             }
         });
 
         Self {
             sender,
+            close_flushed,
             receiver_handle: Some(receiver_handle),
         }
     }
@@ -172,6 +185,8 @@ impl MessageSender {
 
     pub fn new(mut socket: WebSocketWriter, buffer_capacity: usize) -> Self {
         let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
+        let close_flushed = Arc::new(Notify::new());
+        let writer_close_flushed = Arc::clone(&close_flushed);
 
         let receiver_handle = tokio::spawn(async move {
             let mut msg_count = 0;
@@ -180,11 +195,16 @@ impl MessageSender {
             while let Ok(message) = receiver.recv().await {
                 msg_count += 1;
 
-                if matches!(message, Message::Close(_)) {
+                let is_close = matches!(message, Message::Close(_));
+                if is_close {
                     is_shutting_down = true;
                 }
 
-                if let Err(e) = socket.send(message).await {
+                let send_result = socket.send(message).await;
+                if is_close {
+                    writer_close_flushed.notify_one();
+                }
+                if let Err(e) = send_result {
                     Self::log_connection_error(
                         &e,
                         SocketOperation::WriteFrame,
@@ -193,15 +213,19 @@ impl MessageSender {
                     );
                     break;
                 }
+                if is_close {
+                    break;
+                }
             }
 
-            if let Err(e) = socket.close(1000, "Normal closure").await {
+            if !is_shutting_down && let Err(e) = socket.close(1000, "Normal closure").await {
                 Self::log_connection_error(&e, SocketOperation::SendCloseFrame, msg_count, true);
             }
         });
 
         Self {
             sender,
+            close_flushed,
             receiver_handle: Some(receiver_handle),
         }
     }
@@ -234,9 +258,12 @@ impl MessageSender {
         self.send(Message::text(text))
     }
 
-    pub fn send_close(&self, code: u16, reason: &str) -> Result<()> {
+    pub async fn send_close(&self, code: u16, reason: &str) -> Result<()> {
+        let flushed = self.close_flushed.notified();
         self.send(Message::Close(Some(sockudo_ws::error::CloseReason::new(
             code, reason,
-        ))))
+        ))))?;
+        flushed.await;
+        Ok(())
     }
 }

@@ -18,10 +18,12 @@ pub struct Namespace {
     pub sockets: DashMap<SocketId, WebSocketRef>,
     pub channels: DashMap<String, DashSet<SocketId>>,
     wildcard_channels: DashSet<String>,
-    pub users: DashMap<String, DashSet<WebSocketRef>>,
+    pub users: DashMap<String, DashSet<SocketId>>,
     pub presence_data: DashMap<SocketId, HashMap<String, PresenceMemberInfo>>,
     // Reverse index of channels joined per socket, for O(channels-per-socket) disconnect cleanup.
     socket_channels: DashMap<SocketId, DashSet<String>>,
+    // Reverse index: socket → set of user IDs associated with that socket.
+    socket_users: DashMap<SocketId, DashSet<String>>,
 }
 
 pub struct SocketInitOptions {
@@ -42,6 +44,7 @@ impl Namespace {
             users: DashMap::new(),
             presence_data: DashMap::new(),
             socket_channels: DashMap::new(),
+            socket_users: DashMap::new(),
         }
     }
 
@@ -393,102 +396,66 @@ impl Namespace {
     }
 
     #[inline]
-    pub async fn get_user_sockets(&self, user_id: &str) -> Result<Vec<WebSocketRef>> {
-        match self.users.get(user_id) {
-            Some(user_sockets_ref) => Ok(user_sockets_ref.iter().map(|r| r.clone()).collect()),
-            None => Ok(Vec::new()),
-        }
+    pub fn get_user_sockets(&self, user_id: &str) -> Result<Vec<WebSocketRef>> {
+        let socket_ids: Vec<SocketId> = match self.users.get(user_id) {
+            Some(user_sockets_ref) => user_sockets_ref.iter().map(|r| *r.key()).collect(),
+            None => return Ok(Vec::new()),
+        };
+
+        Ok(socket_ids
+            .into_iter()
+            .filter_map(|sid| self.get_connection(&sid))
+            .collect())
     }
 
     pub async fn cleanup_connection(&self, ws_ref: WebSocketRef) {
         let socket_id = ws_ref.get_socket_id().await;
-
-        // Signal reader and writer tasks to stop
-        ws_ref.shutdown();
-
-        let channels_to_check: Vec<String> = self
-            .socket_channels
-            .remove(&socket_id)
-            .map(|(_, set)| set.iter().map(|c| c.key().clone()).collect())
-            .unwrap_or_default();
-
-        for channel_name in channels_to_check {
-            self.channels.remove_if(&channel_name, |_, set| {
-                set.remove(&socket_id);
-                set.is_empty()
-            });
-            if channel_name.contains('*') && !self.channels.contains_key(&channel_name) {
-                self.wildcard_channels.remove(&channel_name);
-            }
-        }
-
-        let user_id_option = ws_ref.get_user_id().await;
-
-        if let Some(user_id) = user_id_option
-            && let Some(user_sockets_ref) = self.users.get_mut(&user_id)
-        {
-            user_sockets_ref.remove(&ws_ref);
-            let is_empty = user_sockets_ref.is_empty();
-            drop(user_sockets_ref);
-            if is_empty {
-                self.users.remove(&user_id);
-                debug!("Removed empty user entry for: {}", user_id);
-            }
-        }
-
-        self.presence_data.remove(&socket_id);
-
-        if self.sockets.remove(&socket_id).is_some() {
-            debug!("Removed socket {} from main map.", socket_id);
-        } else {
-            warn!(
-                "Socket {} already removed from main map during cleanup.",
-                socket_id
-            );
-        }
+        self.remove_connection(&socket_id);
     }
 
     pub async fn terminate_user_connections(&self, user_id: &str) -> Result<()> {
-        if let Some(user_sockets_ref) = self.users.get(user_id) {
-            let user_sockets_snapshot = user_sockets_ref.clone();
-            drop(user_sockets_ref);
+        let socket_ids: Vec<SocketId> = match self.users.get(user_id) {
+            Some(user_sockets_ref) => user_sockets_ref.iter().map(|r| *r.key()).collect(),
+            None => return Ok(()),
+        };
 
-            let cleanup_tasks: Vec<_> = user_sockets_snapshot
-                .iter()
-                .map(|ws_ref| async move {
-                    if let Err(e) = ws_ref
-                        .close(4009, "You got disconnected by the app.".to_string())
-                        .await
-                    {
-                        warn!("Failed to close connection: {}", e);
-                    }
-                })
-                .collect();
+        let cleanup_tasks: Vec<_> = socket_ids
+            .into_iter()
+            .filter_map(|sid| self.get_connection(&sid))
+            .map(|ws_ref| async move {
+                if let Err(e) = ws_ref
+                    .close(4009, "You got disconnected by the app.".to_string())
+                    .await
+                {
+                    warn!(error = %e, "failed to close connection");
+                }
+            })
+            .collect();
 
-            join_all(cleanup_tasks).await;
-        }
+        join_all(cleanup_tasks).await;
         Ok(())
     }
 
     pub async fn force_reconnect_user_connections(&self, user_id: &str) -> Result<()> {
-        if let Some(user_sockets_ref) = self.users.get(user_id) {
-            let user_sockets_snapshot = user_sockets_ref.clone();
-            drop(user_sockets_ref);
+        let socket_ids: Vec<SocketId> = match self.users.get(user_id) {
+            Some(user_sockets_ref) => user_sockets_ref.iter().map(|r| *r.key()).collect(),
+            None => return Ok(()),
+        };
 
-            let cleanup_tasks: Vec<_> = user_sockets_snapshot
-                .iter()
-                .map(|ws_ref| async move {
-                    if let Err(e) = ws_ref
-                        .close(4200, "Force reconnect requested by the app.".to_string())
-                        .await
-                    {
-                        warn!(error = %e, "failed to close connection");
-                    }
-                })
-                .collect();
+        let cleanup_tasks: Vec<_> = socket_ids
+            .into_iter()
+            .filter_map(|sid| self.get_connection(&sid))
+            .map(|ws_ref| async move {
+                if let Err(e) = ws_ref
+                    .close(4200, "Force reconnect requested by the app.".to_string())
+                    .await
+                {
+                    warn!(error = %e, "failed to close connection");
+                }
+            })
+            .collect();
 
-            join_all(cleanup_tasks).await;
-        }
+        join_all(cleanup_tasks).await;
         Ok(())
     }
 
@@ -556,6 +523,19 @@ impl Namespace {
     }
 
     pub fn remove_connection(&self, socket_id: &SocketId) {
+        // 1. Linearization point: remove from authoritative map first.
+        let removed = self.sockets.remove(socket_id).map(|(_, ws_ref)| ws_ref);
+
+        // 2. Cancel the connection's reader/writer tasks.
+        if let Some(ws_ref) = removed.as_ref() {
+            ws_ref.shutdown();
+            debug!(socket_id = %socket_id, "removed socket from main map");
+        }
+
+        // 3. Exhaustive user cleanup via reverse index.
+        self.remove_socket_from_all_users(socket_id);
+
+        // 4. Exhaustive channel cleanup via reverse index.
         if let Some((_, channels)) = self.socket_channels.remove(socket_id) {
             for ch in channels.iter() {
                 let channel = ch.key();
@@ -568,9 +548,8 @@ impl Namespace {
                 }
             }
         }
-        if self.sockets.remove(socket_id).is_some() {
-            debug!("Explicitly removed socket: {}", socket_id);
-        }
+        // 5. Presence data cleanup.
+        self.presence_data.remove(socket_id);
     }
 
     pub fn get_channel(&self, channel: &str) -> Result<DashSet<SocketId>> {
@@ -617,40 +596,55 @@ impl Namespace {
     }
 
     pub async fn add_user(&self, ws_ref: WebSocketRef) -> Result<()> {
-        let user_id_option = ws_ref.get_user_id().await;
+        let socket_id = *ws_ref.get_socket_id_sync();
 
-        if let Some(user_id) = user_id_option {
-            let user_sockets_ref = self.users.entry(user_id.clone()).or_default();
-            user_sockets_ref.insert(ws_ref.clone());
-            let socket_id = ws_ref.get_socket_id().await;
-            debug!("Added socket {} to user {}", socket_id, user_id);
-        } else {
-            let socket_id = ws_ref.get_socket_id().await;
-            warn!(
-                "User data found for socket {} but missing user ID.",
-                socket_id
-            );
+        let user_id = {
+            let connection = ws_ref.inner.lock().await;
+            if connection.state.disconnecting {
+                return Ok(());
+            }
+            connection.state.user_id.clone()
+        };
+
+        let Some(user_id) = user_id else {
+            warn!(socket_id = %socket_id, "socket has no user id");
+            return Ok(());
+        };
+
+        if !self.sockets.contains_key(&socket_id) {
+            return Ok(());
         }
+
+        self.socket_users
+            .entry(socket_id)
+            .or_default()
+            .insert(user_id.clone());
+        self.users
+            .entry(user_id.clone())
+            .or_default()
+            .insert(socket_id);
+
+        let still_valid = self.sockets.contains_key(&socket_id) && {
+            let connection = ws_ref.inner.lock().await;
+            !connection.state.disconnecting
+        };
+
+        if !still_valid {
+            self.remove_user_socket_association(&user_id, &socket_id);
+        } else {
+            debug!(socket_id = %socket_id, user_id = %user_id, "added socket to user");
+        }
+
         Ok(())
     }
 
     pub async fn remove_user(&self, ws_ref: WebSocketRef) -> Result<()> {
+        let socket_id = *ws_ref.get_socket_id_sync();
         let user_id_option = ws_ref.get_user_id().await;
-        let socket_id = ws_ref.get_socket_id().await;
 
         if let Some(user_id) = user_id_option {
-            if let Some(user_sockets_ref) = self.users.get_mut(&user_id) {
-                let removed = user_sockets_ref.remove(&ws_ref);
-                let is_empty = user_sockets_ref.is_empty();
-                drop(user_sockets_ref);
-                if removed.is_some() {
-                    debug!("Removed socket {} from user {}", socket_id, user_id);
-                }
-                if is_empty {
-                    self.users.remove(&user_id);
-                    debug!("Removed empty user entry for: {}", user_id);
-                }
-            }
+            self.remove_user_socket_association(&user_id, &socket_id);
+            debug!(socket_id = %socket_id, user_id = %user_id, "removed socket from user");
         } else {
             warn!(
                 "User data found for socket {} during removal but missing user ID.",
@@ -660,37 +654,9 @@ impl Namespace {
         Ok(())
     }
 
-    pub async fn remove_user_socket(&self, user_id: &str, socket_id: &SocketId) -> Result<()> {
-        if let Some(user_sockets_ref) = self.users.get_mut(user_id) {
-            let mut found_socket = None;
-
-            for ws_ref in user_sockets_ref.iter() {
-                let ws_socket_id = ws_ref.get_socket_id().await;
-                if ws_socket_id == *socket_id {
-                    found_socket = Some(ws_ref.clone());
-                    break;
-                }
-            }
-
-            if let Some(ws_ref) = found_socket {
-                user_sockets_ref.remove(&ws_ref);
-            }
-
-            let is_empty = user_sockets_ref.is_empty();
-            drop(user_sockets_ref);
-
-            if is_empty {
-                self.users.remove(user_id);
-                debug!("Removed empty user entry for: {}", user_id);
-            }
-
-            debug!("Removed socket {} from user {}", socket_id, user_id);
-        } else {
-            debug!(
-                "User {} not found when removing socket {}",
-                user_id, socket_id
-            );
-        }
+    pub fn remove_user_socket(&self, user_id: &str, socket_id: &SocketId) -> Result<()> {
+        self.remove_user_socket_association(user_id, socket_id);
+        debug!(socket_id = %socket_id, user_id = %user_id, "removed socket from user");
         Ok(())
     }
 
@@ -703,8 +669,8 @@ impl Namespace {
         let mut count = 0;
 
         if let Some(user_sockets_ref) = self.users.get(user_id) {
-            for ws_ref in user_sockets_ref.iter() {
-                let socket_id = ws_ref.get_socket_id_sync();
+            for entry in user_sockets_ref.iter() {
+                let socket_id = entry.key();
                 if excluding_socket == Some(socket_id) {
                     continue;
                 }
@@ -739,6 +705,29 @@ impl Namespace {
             .iter()
             .map(|entry| (*entry.key(), entry.value().clone()))
             .collect())
+    }
+
+    fn remove_user_socket_association(&self, user_id: &str, socket_id: &SocketId) {
+        self.users.remove_if(user_id, |_, socket_ids| {
+            socket_ids.remove(socket_id);
+            socket_ids.is_empty()
+        });
+        self.socket_users.remove_if(socket_id, |_, user_ids| {
+            user_ids.remove(user_id);
+            user_ids.is_empty()
+        });
+    }
+
+    fn remove_socket_from_all_users(&self, socket_id: &SocketId) {
+        if let Some((_, user_ids)) = self.socket_users.remove(socket_id) {
+            for user_id_entry in user_ids.iter() {
+                let user_id = user_id_entry.key();
+                self.users.remove_if(user_id.as_str(), |_, socket_ids| {
+                    socket_ids.remove(socket_id);
+                    socket_ids.is_empty()
+                });
+            }
+        }
     }
 }
 
@@ -1003,5 +992,668 @@ mod tests {
             0,
             "channel must be empty after all sockets leave"
         );
+    }
+
+    fn assert_user_index_bidirectional(namespace: &Namespace) {
+        for entry in namespace.socket_users.iter() {
+            let socket_id = entry.key();
+            for user_id_entry in entry.value().iter() {
+                let user_id = user_id_entry.key();
+                assert!(
+                    namespace
+                        .users
+                        .get(user_id.as_str())
+                        .is_some_and(|s| s.contains(socket_id)),
+                    "socket_users[{socket_id}] contains {user_id} but users[{user_id}] does not contain {socket_id}"
+                );
+            }
+        }
+        for entry in namespace.users.iter() {
+            let user_id = entry.key();
+            for socket_id_entry in entry.value().iter() {
+                let socket_id = socket_id_entry.key();
+                assert!(
+                    namespace
+                        .socket_users
+                        .get(socket_id)
+                        .is_some_and(|u| u.contains(user_id.as_str())),
+                    "users[{user_id}] contains {socket_id} but socket_users[{socket_id}] does not contain {user_id}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn live_user_association_resolves_through_sockets() {
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws_ref = namespace
+            .add_socket(
+                socket_id,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut conn = ws_ref.inner.lock().await;
+            conn.state.user_id = Some("user-1".to_string());
+        }
+
+        namespace.add_user(ws_ref.clone()).await.unwrap();
+
+        assert!(namespace.users.get("user-1").is_some());
+        assert!(namespace.users.get("user-1").unwrap().contains(&socket_id));
+        assert!(namespace.socket_users.get(&socket_id).is_some());
+        assert!(
+            namespace
+                .socket_users
+                .get(&socket_id)
+                .unwrap()
+                .contains("user-1")
+        );
+
+        let resolved = namespace.get_user_sockets("user-1").unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(*resolved[0].get_socket_id_sync(), socket_id);
+
+        assert_user_index_bidirectional(&namespace);
+    }
+
+    #[tokio::test]
+    async fn late_user_association_rolls_back_when_socket_gone() {
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws_ref = namespace
+            .add_socket(
+                socket_id,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut conn = ws_ref.inner.lock().await;
+            conn.state.user_id = Some("user-late".to_string());
+        }
+
+        namespace.sockets.remove(&socket_id);
+
+        namespace.add_user(ws_ref.clone()).await.unwrap();
+
+        assert!(
+            namespace.users.get("user-late").is_none(),
+            "user entry should have been rolled back"
+        );
+        assert!(
+            namespace.socket_users.get(&socket_id).is_none(),
+            "socket_users entry should have been rolled back"
+        );
+
+        let resolved = namespace.get_user_sockets("user-late").unwrap();
+        assert!(resolved.is_empty());
+
+        assert_user_index_bidirectional(&namespace);
+    }
+
+    #[tokio::test]
+    async fn remove_user_socket_association_cleans_both_indexes() {
+        let namespace = Namespace::new("app".to_string());
+        let s1 = SocketId::new();
+        let s2 = SocketId::new();
+        let writer1 = create_server_writer().await;
+        let writer2 = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws1 = namespace
+            .add_socket(
+                s1,
+                writer1,
+                app_manager.clone(),
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let ws2 = namespace
+            .add_socket(
+                s2,
+                writer2,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut conn = ws1.inner.lock().await;
+            conn.state.user_id = Some("shared-user".to_string());
+        }
+        {
+            let mut conn = ws2.inner.lock().await;
+            conn.state.user_id = Some("shared-user".to_string());
+        }
+
+        namespace.add_user(ws1.clone()).await.unwrap();
+        namespace.add_user(ws2.clone()).await.unwrap();
+        assert_user_index_bidirectional(&namespace);
+
+        assert_eq!(namespace.users.get("shared-user").unwrap().len(), 2);
+
+        namespace.remove_user_socket_association("shared-user", &s1);
+
+        assert_eq!(namespace.users.get("shared-user").unwrap().len(), 1);
+        assert!(namespace.users.get("shared-user").unwrap().contains(&s2));
+        assert!(namespace.socket_users.get(&s1).is_none());
+        assert_user_index_bidirectional(&namespace);
+
+        namespace.remove_user_socket_association("shared-user", &s2);
+
+        assert!(namespace.users.get("shared-user").is_none());
+        assert!(namespace.socket_users.get(&s2).is_none());
+        assert_user_index_bidirectional(&namespace);
+    }
+
+    #[tokio::test]
+    async fn remove_socket_from_all_users_cleans_all_associations() {
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws_ref = namespace
+            .add_socket(
+                socket_id,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut conn = ws_ref.inner.lock().await;
+            conn.state.user_id = Some("user-a".to_string());
+        }
+        namespace.add_user(ws_ref.clone()).await.unwrap();
+
+        namespace
+            .socket_users
+            .entry(socket_id)
+            .or_default()
+            .insert("user-b".to_string());
+        namespace
+            .users
+            .entry("user-b".to_string())
+            .or_default()
+            .insert(socket_id);
+
+        assert_user_index_bidirectional(&namespace);
+
+        namespace.remove_socket_from_all_users(&socket_id);
+
+        assert!(namespace.socket_users.get(&socket_id).is_none());
+        assert!(namespace.users.get("user-a").is_none());
+        assert!(namespace.users.get("user-b").is_none());
+        assert_user_index_bidirectional(&namespace);
+    }
+
+    #[tokio::test]
+    async fn exhaustive_teardown_removes_all_state() {
+        use crate::channel::PresenceMemberInfo;
+
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws_ref = namespace
+            .add_socket(
+                socket_id,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Two user IDs
+        {
+            let mut conn = ws_ref.inner.lock().await;
+            conn.state.user_id = Some("user-alpha".to_string());
+        }
+        namespace.add_user(ws_ref.clone()).await.unwrap();
+        namespace
+            .socket_users
+            .entry(socket_id)
+            .or_default()
+            .insert("user-beta".to_string());
+        namespace
+            .users
+            .entry("user-beta".to_string())
+            .or_default()
+            .insert(socket_id);
+
+        // Two channels (one wildcard)
+        namespace.add_channel_to_socket("presence-room", &socket_id);
+        namespace.add_channel_to_socket("events-*", &socket_id);
+
+        // Presence data
+        let mut per_socket = ahash::AHashMap::new();
+        per_socket.insert(
+            "presence-room".to_string(),
+            PresenceMemberInfo {
+                user_id: "user-alpha".to_string(),
+                user_info: None,
+            },
+        );
+        namespace.presence_data.insert(socket_id, per_socket);
+
+        let token = ws_ref.shutdown_token.clone();
+
+        // Act
+        namespace.remove_connection(&socket_id);
+
+        // Assert: authoritative map
+        assert!(namespace.sockets.get(&socket_id).is_none());
+
+        // Assert: token cancelled
+        assert!(token.is_cancelled());
+
+        // Assert: user indexes
+        assert!(namespace.users.get("user-alpha").is_none());
+        assert!(namespace.users.get("user-beta").is_none());
+        assert!(namespace.socket_users.get(&socket_id).is_none());
+
+        // Assert: channel indexes
+        assert!(!namespace.is_in_channel("presence-room", &socket_id));
+        assert!(!namespace.is_in_channel("events-*", &socket_id));
+        assert!(namespace.socket_channels.get(&socket_id).is_none());
+        assert!(!namespace.wildcard_channels.contains("events-*"));
+
+        // Assert: presence data
+        assert!(namespace.presence_data.get(&socket_id).is_none());
+
+        assert_user_index_bidirectional(&namespace);
+    }
+
+    #[tokio::test]
+    async fn duplicate_removal_is_harmless() {
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws_ref = namespace
+            .add_socket(
+                socket_id,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut conn = ws_ref.inner.lock().await;
+            conn.state.user_id = Some("user-dup".to_string());
+        }
+        namespace.add_user(ws_ref.clone()).await.unwrap();
+        namespace.add_channel_to_socket("ch-1", &socket_id);
+
+        // First removal: comprehensive teardown
+        namespace.remove_connection(&socket_id);
+
+        // Second removal: must be a no-op, no panic
+        namespace.remove_connection(&socket_id);
+
+        assert!(namespace.sockets.get(&socket_id).is_none());
+        assert!(namespace.users.get("user-dup").is_none());
+        assert!(namespace.socket_users.get(&socket_id).is_none());
+        assert!(namespace.socket_channels.get(&socket_id).is_none());
+        assert!(namespace.presence_data.get(&socket_id).is_none());
+        assert!(!namespace.is_in_channel("ch-1", &socket_id));
+    }
+
+    /// Covers the ordering where association completes before authoritative
+    /// removal. Teardown must drain both user indexes without retaining the
+    /// connection.
+    #[tokio::test]
+    async fn add_user_before_remove_connection_drains_indexes() {
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws_ref = namespace
+            .add_socket(
+                socket_id,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut conn = ws_ref.inner.lock().await;
+            conn.state.user_id = Some("alice".to_string());
+        }
+        let token = ws_ref.shutdown_token.clone();
+
+        namespace.add_user(ws_ref.clone()).await.unwrap();
+        assert!(namespace.users.get("alice").unwrap().contains(&socket_id));
+        assert!(
+            namespace
+                .socket_users
+                .get(&socket_id)
+                .unwrap()
+                .contains("alice")
+        );
+
+        namespace.remove_connection(&socket_id);
+
+        assert!(
+            namespace.users.is_empty(),
+            "users must be empty after removal"
+        );
+        assert!(
+            namespace.socket_users.is_empty(),
+            "socket_users must be empty after removal"
+        );
+        assert!(
+            namespace.sockets.is_empty(),
+            "sockets must be empty after removal"
+        );
+        assert!(token.is_cancelled(), "shutdown token must be cancelled");
+        assert_user_index_bidirectional(&namespace);
+    }
+
+    /// Race scenario 2: `remove_connection` completes first (removes socket from
+    /// the authoritative map), and only then `add_user` runs. `add_user` sees
+    /// `sockets.contains_key` = false at its pre-check and returns early without
+    /// inserting anything.
+    ///
+    /// Uses a oneshot channel to enforce strict ordering: `remove_connection`
+    /// signals completion, then `add_user` proceeds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_connection_before_add_user_prevents_insertion() {
+        use std::time::Duration;
+
+        let namespace = Arc::new(Namespace::new("app".to_string()));
+        let socket_id = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let ws_ref = namespace
+            .add_socket(
+                socket_id,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut conn = ws_ref.inner.lock().await;
+            conn.state.user_id = Some("alice".to_string());
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        let ns_rm = Arc::clone(&namespace);
+        let remove_task = tokio::spawn(async move {
+            ns_rm.remove_connection(&socket_id);
+            tx.send(()).expect("signal send failed");
+        });
+
+        let ns_add = Arc::clone(&namespace);
+        let ws_add = ws_ref.clone();
+        let add_task = tokio::spawn(async move {
+            rx.await.expect("signal recv failed");
+            ns_add.add_user(ws_add).await.unwrap();
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (rr, ra) = tokio::join!(remove_task, add_task);
+            rr.expect("remove_connection task panicked");
+            ra.expect("add_user task panicked");
+        })
+        .await
+        .expect("test timed out after 5s");
+
+        assert!(
+            namespace.users.is_empty(),
+            "users must be empty when remove_connection runs first"
+        );
+        assert!(
+            namespace.socket_users.is_empty(),
+            "socket_users must be empty when remove_connection runs first"
+        );
+        assert!(
+            namespace.sockets.is_empty(),
+            "sockets must be empty after remove_connection"
+        );
+        assert_user_index_bidirectional(&namespace);
+    }
+
+    /// Churn test: N sockets all associated with user "alice", each concurrently
+    /// added via `add_user` then removed via `remove_connection`. Final state must
+    /// be completely clean: no user entries, no socket_users entries, no sockets,
+    /// and all shutdown tokens cancelled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_add_remove_churn_leaves_empty_indexes() {
+        use std::time::Duration;
+        use tokio::task::JoinSet;
+
+        let n: usize = 16;
+        let namespace = Arc::new(Namespace::new("app".to_string()));
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        let mut socket_pairs = Vec::with_capacity(n);
+        for _ in 0..n {
+            let socket_id = SocketId::new();
+            let writer = create_server_writer().await;
+            let ws_ref = namespace
+                .add_socket(
+                    socket_id,
+                    writer,
+                    app_manager.clone(),
+                    SocketInitOptions {
+                        buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                        protocol_version: ProtocolVersion::V2,
+                        wire_format: WireFormat::Json,
+                        append_mode: sockudo_protocol::AppendMode::Delta,
+                        echo_messages: true,
+                    },
+                )
+                .await
+                .unwrap();
+            {
+                let mut conn = ws_ref.inner.lock().await;
+                conn.state.user_id = Some("alice".to_string());
+            }
+            socket_pairs.push((socket_id, ws_ref));
+        }
+
+        let tokens: Vec<_> = socket_pairs
+            .iter()
+            .map(|(_, ws)| ws.shutdown_token.clone())
+            .collect();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(n));
+        let mut join_set = JoinSet::new();
+
+        for (socket_id, ws_ref) in socket_pairs {
+            let ns = Arc::clone(&namespace);
+            let bar = Arc::clone(&barrier);
+            join_set.spawn(async move {
+                bar.wait().await;
+                ns.add_user(ws_ref).await.unwrap();
+                ns.remove_connection(&socket_id);
+            });
+        }
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(res) = join_set.join_next().await {
+                res.expect("churn task panicked");
+            }
+        })
+        .await
+        .expect("churn test timed out after 5s");
+
+        assert!(
+            namespace.users.is_empty(),
+            "users must be empty after churn"
+        );
+        assert!(
+            namespace.socket_users.is_empty(),
+            "socket_users must be empty after churn"
+        );
+        assert!(
+            namespace.sockets.is_empty(),
+            "sockets must be empty after churn"
+        );
+        for (i, token) in tokens.iter().enumerate() {
+            assert!(token.is_cancelled(), "shutdown token {i} must be cancelled");
+        }
+        assert_user_index_bidirectional(&namespace);
     }
 }
