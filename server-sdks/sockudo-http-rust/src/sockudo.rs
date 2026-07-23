@@ -216,6 +216,13 @@ impl Sockudo {
         self.post(&path, &json!({})).await
     }
 
+    /// Forces all active connections for a user to reconnect with close code 4200.
+    pub async fn force_reconnect_user(&self, user_id: &str) -> Result<Response> {
+        util::validate_user_id(user_id)?;
+        let path = format!("/users/{}/force_reconnect", user_id);
+        self.post(&path, &json!({})).await
+    }
+
     /// Fetches durable history for a channel.
     pub async fn channel_history(
         &self,
@@ -971,6 +978,75 @@ mod tests {
         assert_eq!(page.next_cursor.as_deref(), Some("abc"));
         assert_eq!(page.continuity.stream_id.as_deref(), Some("stream-1"));
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_terminate_user_connections_requests_expected_path() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.contains("POST /apps/123/users/user-charlie/terminate_connections"));
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let config = Config::builder()
+            .app_id("123")
+            .key("key")
+            .secret("secret")
+            .host("127.0.0.1")
+            .port(addr.port())
+            .use_tls(false)
+            .build()
+            .unwrap();
+        let sockudo = Sockudo::new(config).unwrap();
+        let result = sockudo.terminate_user_connections("user-charlie").await;
+        assert!(result.is_ok());
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_force_reconnect_user_requests_expected_path() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.contains("POST /apps/123/users/user-charlie/force_reconnect"));
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let config = Config::builder()
+            .app_id("123")
+            .key("key")
+            .secret("secret")
+            .host("127.0.0.1")
+            .port(addr.port())
+            .use_tls(false)
+            .build()
+            .unwrap();
+        let sockudo = Sockudo::new(config).unwrap();
+        let result = sockudo.force_reconnect_user("user-charlie").await;
+        assert!(result.is_ok());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn test_force_reconnect_user_rejects_invalid_user_id() {
+        let config = Config::new("123", "key", "secret");
+        let sockudo = Sockudo::new(config).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(sockudo.force_reconnect_user(""));
+        assert!(result.is_err());
     }
 
     #[tokio::test]

@@ -756,6 +756,24 @@ where
         self.terminate_connection(app_id, user_id).await
     }
 
+    async fn force_reconnect_user(&self, app_id: &str, user_id: &str) -> Result<()> {
+        self.local_adapter
+            .force_reconnect_user(app_id, user_id)
+            .await?;
+
+        let _response = self
+            .send_request(
+                app_id,
+                RequestType::ForceReconnect,
+                None,
+                None,
+                Some(user_id),
+            )
+            .await?;
+
+        Ok(())
+    }
+
     async fn add_user(&self, ws_ref: WebSocketRef) -> Result<()> {
         self.local_adapter.add_user(ws_ref).await
     }

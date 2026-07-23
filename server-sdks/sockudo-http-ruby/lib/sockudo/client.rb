@@ -373,6 +373,36 @@ module Sockudo
       get("/channels/#{channel_name}/users", params)
     end
 
+    # Terminate all active connections for a user
+    #
+    # POST /apps/[id]/users/[user_id]/terminate_connections
+    #
+    # @param user_id [String] The user ID whose connections should be terminated
+    #
+    # @return [Hash] See Sockudo API docs
+    #
+    # @raise [Sockudo::Error] Unsuccessful response - see the error message
+    # @raise [Sockudo::HTTPError] Error raised inside http client. The original error is wrapped in error.original_error
+    #
+    def terminate_user_connections(user_id)
+      post("/users/#{user_id}/terminate_connections")
+    end
+
+    # Force reconnect all active connections for a user
+    #
+    # POST /apps/[id]/users/[user_id]/force_reconnect
+    #
+    # @param user_id [String] The user ID whose connections should be force-reconnected
+    #
+    # @return [Hash] See Sockudo API docs
+    #
+    # @raise [Sockudo::Error] Unsuccessful response - see the error message
+    # @raise [Sockudo::HTTPError] Error raised inside http client. The original error is wrapped in error.original_error
+    #
+    def force_reconnect_user(user_id)
+      post("/users/#{user_id}/force_reconnect")
+    end
+
     # Activate or create a push device registration with admin scope
     def activate_device(device, options = {})
       post(push_path('/deviceRegistrations'), device,

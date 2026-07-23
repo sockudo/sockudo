@@ -163,6 +163,24 @@ auth = sockudo.authenticate(
 auth = sockudo.authenticate_user(params[:socket_id], { id: 'user-123', name: 'Jane Doe' })
 ```
 
+## User Connection Management
+
+### Terminate User Connections
+
+Disconnect every active socket for a user:
+
+```ruby
+sockudo.terminate_user_connections("user-123")
+```
+
+### Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```ruby
+sockudo.force_reconnect_user("user-123")
+```
+
 ## Webhooks
 
 Create a webhook object from a `Rack::Request` (available as `request` in Rails controllers and Sinatra handlers):

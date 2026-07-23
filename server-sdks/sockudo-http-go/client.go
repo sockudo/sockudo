@@ -331,6 +331,47 @@ func (c *Client) SendToUser(userId string, eventName string, data interface{}) e
 	return err
 }
 
+// TerminateUserConnections disconnects every active socket for the given user.
+func (c *Client) TerminateUserConnections(userId string) error {
+	if !validUserId(userId) {
+		return fmt.Errorf("User id '%s' is invalid", userId)
+	}
+	path := fmt.Sprintf("/apps/%s/users/%s/terminate_connections", c.AppID, userId)
+	u, err := createRequestURL("POST", c.Host, path, c.Key, c.Secret, authTimestamp(), c.Secure, []byte("{}"), nil, c.Cluster)
+	if err != nil {
+		return err
+	}
+	var reqErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		_, reqErr = c.request("POST", u, []byte("{}"))
+		if reqErr == nil || !isRetryableError(reqErr) {
+			break
+		}
+	}
+	return reqErr
+}
+
+// ForceReconnectUser closes all active connections for a user with code 4200,
+// prompting clients to reconnect.
+func (c *Client) ForceReconnectUser(userId string) error {
+	if !validUserId(userId) {
+		return fmt.Errorf("User id '%s' is invalid", userId)
+	}
+	path := fmt.Sprintf("/apps/%s/users/%s/force_reconnect", c.AppID, userId)
+	u, err := createRequestURL("POST", c.Host, path, c.Key, c.Secret, authTimestamp(), c.Secure, []byte("{}"), nil, c.Cluster)
+	if err != nil {
+		return err
+	}
+	var reqErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		_, reqErr = c.request("POST", u, []byte("{}"))
+		if reqErr == nil || !isRetryableError(reqErr) {
+			break
+		}
+	}
+	return reqErr
+}
+
 func (c *Client) validateChannelsAndTrigger(channels []string, eventName string, data interface{}, params TriggerParams) (*TriggerChannelsList, error) {
 	if len(channels) > maxTriggerableChannels {
 		return nil, fmt.Errorf("You cannot trigger on more than %d channels at once", maxTriggerableChannels)

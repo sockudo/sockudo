@@ -177,6 +177,14 @@ Disconnect all active connections for a given user:
 await sockudo.terminateUserConnections("user-123")
 ```
 
+### Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```javascript
+await sockudo.forceReconnectUser("user-123");
+```
+
 ## Webhooks
 
 Verify and parse incoming Sockudo webhooks:

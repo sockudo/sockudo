@@ -155,6 +155,14 @@ impl HorizontalAdapter {
                     response.exists = true;
                 }
             }
+            RequestType::ForceReconnect => {
+                if let Some(user_id) = &request.user_id {
+                    self.local_adapter
+                        .force_reconnect_user(&request.app_id, user_id)
+                        .await?;
+                    response.exists = true;
+                }
+            }
             RequestType::ChannelsWithSocketsCount => {
                 // Get channels with socket count from local adapter (returns HashMap now)
                 let channels = self
@@ -835,6 +843,10 @@ impl HorizontalAdapter {
 
                 RequestType::TerminateUserConnections => {
                     // If any node successfully terminated connections, mark as success
+                    combined_response.exists = combined_response.exists || response.exists;
+                }
+
+                RequestType::ForceReconnect => {
                     combined_response.exists = combined_response.exists || response.exists;
                 }
 

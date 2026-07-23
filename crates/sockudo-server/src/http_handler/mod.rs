@@ -15,7 +15,8 @@ pub(crate) mod test_support;
 
 pub use annotations::{channel_message_annotations, delete_annotation, publish_annotation};
 pub use channels::{
-    channel, channel_users, channels, revoke_capability_tokens, terminate_user_connections,
+    channel, channel_users, channels, force_reconnect_user, revoke_capability_tokens,
+    terminate_user_connections,
 };
 pub use errors::AppError;
 pub use events::{batch_events, events};

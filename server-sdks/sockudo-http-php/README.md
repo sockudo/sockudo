@@ -155,6 +155,19 @@ $auth = $sockudo->authenticateUser($socket_id, $user_id);
 echo $auth;
 ```
 
+## Force Reconnect User
+
+Close all active connections for a user with code `4200`, prompting clients to reconnect:
+
+```php
+// Synchronous
+$sockudo->forceReconnectUser("user-123");
+
+// Asynchronous
+$promise = $sockudo->forceReconnectUserAsync("user-123");
+$promise->wait();
+```
+
 ## Webhooks
 
 Pass the raw request headers and body to verify and parse incoming webhooks:

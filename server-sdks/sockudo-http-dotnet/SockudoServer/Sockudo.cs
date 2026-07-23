@@ -41,6 +41,8 @@ namespace SockudoServer
         private const string PushPublishStatusResource = "/push/publish/{0}/status";
         private const string PushScheduledResource = "/push/scheduled/{0}";
         private const string PushDeliveryStatusResource = "/push/deliveryStatus";
+        private const string UserTerminateConnectionsResource = "/users/{0}/terminate_connections";
+        private const string UserForceReconnectResource = "/users/{0}/force_reconnect";
 
         private readonly string _appKey;
         private readonly string _appSecret;
@@ -680,6 +682,22 @@ namespace SockudoServer
         public Task<IGetResult<T>> PostPushDeliveryStatusAsync<T>(object deliveryEvent)
         {
             return ExecutePushPostAsync<T>(PushDeliveryStatusResource, deliveryEvent, PushHeaders("push-admin"));
+        }
+
+        public async Task<IGetResult<object>> TerminateUserConnectionsAsync(string userId)
+        {
+            ThrowArgumentExceptionIfNullOrEmpty(userId, "userId");
+            var request = _factory.Build(SockudoMethod.POST, string.Format(UserTerminateConnectionsResource, userId), requestBody: new { });
+            var response = await _options.RestClient.ExecutePostRawAsync(request).ConfigureAwait(false);
+            return new GetResult<object>(response.Response, response.Body);
+        }
+
+        public async Task<IGetResult<object>> ForceReconnectUserAsync(string userId)
+        {
+            ThrowArgumentExceptionIfNullOrEmpty(userId, "userId");
+            var request = _factory.Build(SockudoMethod.POST, string.Format(UserForceReconnectResource, userId), requestBody: new { });
+            var response = await _options.RestClient.ExecutePostRawAsync(request).ConfigureAwait(false);
+            return new GetResult<object>(response.Response, response.Body);
         }
 
         internal static bool IsPrivateEncryptedChannel(string channelName)

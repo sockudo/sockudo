@@ -84,6 +84,8 @@ declare class Sockudo {
 
   terminateUserConnections(userId: string): Promise<Response>;
 
+  forceReconnectUser(userId: string): Promise<Response>;
+
   activateDevice(
     device: Sockudo.PushDeviceDetails,
     options?: { rotateDeviceIdentityToken?: boolean },
