@@ -6,12 +6,12 @@
 //! slow data consumer cannot starve ACK, ERROR, or close frames.
 
 use bytes::Bytes;
+use crossfire::mpsc;
 use serde::Serialize;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use tokio::sync::mpsc;
 
 use crate::codec::encode_protocol_bytes;
 use crate::protocol::{ACTION_ERROR, AblyFormat, AblyProtocolMessage, empty_protocol_message};
@@ -20,6 +20,10 @@ const DEFAULT_CONTROL_MESSAGES: usize = 32;
 const DEFAULT_DATA_MESSAGES: usize = 4_096;
 const DEFAULT_CONTROL_BYTES: usize = 64 * 1024;
 const DEFAULT_DATA_BYTES: usize = 64 * 1024 * 1024;
+
+type OutboundChannel = mpsc::Array<OutboundFrame>;
+type OutboundSender = crossfire::MAsyncTx<OutboundChannel>;
+type OutboundReceiver = crossfire::AsyncRx<OutboundChannel>;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutboundLimits {
@@ -153,8 +157,8 @@ pub(crate) struct OutboundFrame {
 #[derive(Debug)]
 pub(crate) struct AblyOutbound {
     format: AblyFormat,
-    control_tx: mpsc::Sender<OutboundFrame>,
-    data_tx: mpsc::Sender<OutboundFrame>,
+    control_tx: OutboundSender,
+    data_tx: OutboundSender,
     control_messages: AtomicUsize,
     data_messages: AtomicUsize,
     control_bytes: AtomicUsize,
@@ -166,8 +170,8 @@ pub(crate) struct AblyOutbound {
 
 #[derive(Debug)]
 pub(crate) struct AblyOutboundReceiver {
-    control_rx: mpsc::Receiver<OutboundFrame>,
-    data_rx: mpsc::Receiver<OutboundFrame>,
+    control_rx: OutboundReceiver,
+    data_rx: OutboundReceiver,
     outbound: Weak<AblyOutbound>,
 }
 
@@ -179,8 +183,8 @@ impl AblyOutbound {
         limits: OutboundLimits,
         metrics: Arc<OutboundMetrics>,
     ) -> (Arc<Self>, AblyOutboundReceiver) {
-        let (control_tx, control_rx) = mpsc::channel(limits.control_messages.max(1));
-        let (data_tx, data_rx) = mpsc::channel(limits.data_messages.max(1));
+        let (control_tx, control_rx) = mpsc::bounded_async(limits.control_messages.max(1));
+        let (data_tx, data_rx) = mpsc::bounded_async(limits.data_messages.max(1));
         let outbound = Arc::new(Self {
             format,
             control_tx,
@@ -313,24 +317,32 @@ impl AblyOutboundReceiver {
 
     pub(crate) async fn recv(&mut self) -> Option<OutboundFrame> {
         loop {
+            if let Ok(frame) = self.control_rx.try_recv() {
+                self.release(&frame);
+                return Some(frame);
+            }
+            if let Ok(frame) = self.data_rx.try_recv() {
+                self.release(&frame);
+                return Some(frame);
+            }
+            if self.control_rx.is_disconnected() && self.data_rx.is_disconnected() {
+                return None;
+            }
             tokio::select! {
                 biased;
-                frame = self.control_rx.recv() => {
-                    if let Some(frame) = frame {
+                frame = self.control_rx.recv(), if !self.control_rx.is_disconnected() => {
+                    if let Ok(frame) = frame {
                         self.release(&frame);
                         return Some(frame);
                     }
                 }
-                frame = self.data_rx.recv() => {
-                    if let Some(frame) = frame {
+                frame = self.data_rx.recv(), if !self.data_rx.is_disconnected() => {
+                    if let Ok(frame) = frame {
                         self.release(&frame);
                         return Some(frame);
                     }
                 }
                 else => return None,
-            }
-            if self.control_rx.is_closed() && self.data_rx.is_closed() {
-                return None;
             }
         }
     }

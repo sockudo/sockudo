@@ -487,7 +487,7 @@ struct AblyLiveSession {
     session_id: String,
     app_id: String,
     authorization: Arc<RwLock<ConnectionAuthorization>>,
-    command_tx: tokio::sync::mpsc::Sender<AblySessionCommand>,
+    command_tx: crossfire::MAsyncTx<crossfire::mpsc::Array<AblySessionCommand>>,
 }
 
 #[derive(Clone)]
@@ -3021,7 +3021,7 @@ impl AblyCompatHub {
         &self,
         connection_id: String,
         session: AblyLiveSession,
-    ) -> Option<tokio::sync::mpsc::Sender<AblySessionCommand>> {
+    ) -> Option<crossfire::MAsyncTx<crossfire::mpsc::Array<AblySessionCommand>>> {
         self.live_sessions
             .insert(connection_id, session)
             .map(|previous| previous.command_tx)

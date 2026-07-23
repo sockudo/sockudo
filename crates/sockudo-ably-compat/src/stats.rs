@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use base64::Engine as _;
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use crossfire::{TrySendError, mpsc, oneshot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sockudo_core::cache::CacheManager;
@@ -20,7 +21,6 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
 
 const STATS_KEY_VERSION: &str = "stats:v1";
 const STATS_CURSOR_VERSION: u8 = 1;
@@ -676,14 +676,18 @@ impl StatsStore for MemoryStatsStore {
 enum StatsCommand {
     Observe {
         observation: StatsObservation,
-        acknowledgement: Option<oneshot::Sender<Result<(), StatsError>>>,
+        acknowledgement: Option<crossfire::oneshot::TxOneshot<Result<(), StatsError>>>,
     },
-    Flush(oneshot::Sender<Result<(), StatsError>>),
+    Flush(crossfire::oneshot::TxOneshot<Result<(), StatsError>>),
 }
+
+type StatsChannel = mpsc::Array<StatsCommand>;
+type StatsSender = crossfire::MAsyncTx<StatsChannel>;
+type StatsReceiver = crossfire::AsyncRx<StatsChannel>;
 
 pub(crate) struct StatsAggregator {
     store: Arc<dyn StatsStore>,
-    sender: Option<mpsc::Sender<StatsCommand>>,
+    sender: Option<StatsSender>,
     metrics: Arc<StatsRuntimeMetrics>,
     connections: dashmap::DashMap<String, Arc<AtomicU64>>,
     channels: dashmap::DashMap<String, Arc<AtomicU64>>,
@@ -715,7 +719,7 @@ impl StatsAggregator {
             ..StatsRuntimeMetrics::default()
         });
         let sender = tokio::runtime::Handle::try_current().ok().map(|runtime| {
-            let (sender, receiver) = mpsc::channel(config.queue_capacity.max(1));
+            let (sender, receiver) = mpsc::bounded_async(config.queue_capacity.max(1));
             runtime.spawn(run_stats_worker(
                 Arc::clone(&store),
                 receiver,
@@ -741,7 +745,7 @@ impl StatsAggregator {
         let Some(sender) = &self.sender else {
             return self.store.merge(&[observation.bucket]).await;
         };
-        let (acknowledgement, receiver) = oneshot::channel();
+        let (acknowledgement, receiver) = oneshot::oneshot();
         self.metrics.backlog.fetch_add(1, Ordering::AcqRel);
         if sender
             .send(StatsCommand::Observe {
@@ -768,12 +772,12 @@ impl StatsAggregator {
             acknowledgement: None,
         }) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(TrySendError::Full(_)) => {
                 self.metrics.backlog.fetch_sub(1, Ordering::AcqRel);
                 self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
                 Err(StatsError::QueueFull)
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(TrySendError::Disconnected(_)) => {
                 self.metrics.backlog.fetch_sub(1, Ordering::AcqRel);
                 self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
                 Err(StatsError::Closed)
@@ -785,7 +789,7 @@ impl StatsAggregator {
         let Some(sender) = &self.sender else {
             return Ok(());
         };
-        let (acknowledgement, receiver) = oneshot::channel();
+        let (acknowledgement, receiver) = oneshot::oneshot();
         sender
             .send(StatsCommand::Flush(acknowledgement))
             .await
@@ -935,11 +939,11 @@ impl StatsAggregator {
 
 async fn run_stats_worker(
     store: Arc<dyn StatsStore>,
-    mut receiver: mpsc::Receiver<StatsCommand>,
+    receiver: StatsReceiver,
     metrics: Arc<StatsRuntimeMetrics>,
     flush_interval: Duration,
 ) {
-    while let Some(first) = receiver.recv().await {
+    while let Ok(first) = receiver.recv().await {
         let should_wait_for_batch = !flush_interval.is_zero()
             && matches!(&first, StatsCommand::Observe { .. })
             && receiver.is_empty();
@@ -1008,10 +1012,10 @@ async fn run_stats_worker(
             Ordering::AcqRel,
         );
         for acknowledgement in acknowledgements {
-            let _ = acknowledgement.send(result.clone());
+            acknowledgement.send(result.clone());
         }
         for barrier in barriers {
-            let _ = barrier.send(result.clone());
+            barrier.send(result.clone());
         }
     }
 }

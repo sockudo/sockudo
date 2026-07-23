@@ -355,7 +355,7 @@ pub(super) async fn run_ably_realtime_socket(
     let (mut reader, mut writer) = socket.split();
     let (sender, mut outbound) =
         AblyOutbound::channel(format, OutboundLimits::default(), Arc::clone(&hub.metrics));
-    let (peer_close_tx, mut peer_close_rx) = tokio::sync::oneshot::channel();
+    let (peer_close_tx, mut peer_close_rx) = crossfire::oneshot::oneshot();
     let mut peer_close_tx = Some(peer_close_tx);
     let writer_task = tokio::spawn(async move {
         loop {
@@ -489,7 +489,7 @@ pub(super) async fn run_ably_realtime_socket(
     );
 
     let mut attached_channels = HashMap::new();
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
+    let (command_tx, command_rx) = crossfire::mpsc::bounded_async(8);
     let previous_session = hub.register_live_session(
         connection_id.clone(),
         AblyLiveSession {
@@ -515,13 +515,13 @@ pub(super) async fn run_ably_realtime_socket(
             frame = reader.next() => frame,
             command = command_rx.recv() => {
                 match command {
-                    Some(AblySessionCommand::ReauthHint { generation })
+                    Ok(AblySessionCommand::ReauthHint { generation })
                         if generation == authorization.generation => {
                             send_protocol(&sender, empty_protocol_message(ACTION_AUTH));
                             renewal_hint_sent = true;
                             continue;
                         }
-                    Some(AblySessionCommand::RevocationChanged { generation })
+                    Ok(AblySessionCommand::RevocationChanged { generation })
                         if generation == authorization.generation => {
                             if hub.authorization_is_revoked(&app.id, &authorization, &attached_channels).await {
                                 send_protocol_disconnected(&sender, 40141, "Token revoked");
@@ -529,9 +529,9 @@ pub(super) async fn run_ably_realtime_socket(
                             }
                             continue;
                         }
-                    Some(AblySessionCommand::Superseded) => break,
-                    Some(_) => continue,
-                    None => break,
+                    Ok(AblySessionCommand::Superseded) => break,
+                    Ok(_) => continue,
+                    Err(_) => break,
                 }
             }
             _ = revocation_poll.tick() => {
@@ -580,7 +580,7 @@ pub(super) async fn run_ably_realtime_socket(
             Message::Pong(_) => continue,
             Message::Close(_) => {
                 if let Some(peer_close_tx) = peer_close_tx.take() {
-                    let _ = peer_close_tx.send(());
+                    peer_close_tx.send(());
                 }
                 break;
             }

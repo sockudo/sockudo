@@ -7939,6 +7939,7 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion",
+ "crossfire",
  "dashmap",
  "hmac 0.13.0",
  "http 1.4.2",
