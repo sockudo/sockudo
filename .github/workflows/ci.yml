@@ -525,19 +525,26 @@ jobs:
 
       - name: Confirm reported compatibility regressions
         if: steps.initial-compatibility-budget.outcome == 'failure'
-        run: >-
-          cargo bench -p sockudo-ably-compat
-          --features bench
-          --bench compatibility_hot_paths
-          --
-          --noplot
-          --baseline pr-base
+        run: |
+          set -euo pipefail
+          cp -R target/criterion target/criterion-initial
+          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --baseline pr-base
 
       - name: Enforce compatibility regression budgets
+        if: steps.initial-compatibility-budget.outcome == 'success'
         run: >-
           python3 scripts/ably-compat-release-guard.py
           --budgets tests/load/ably-compat/budgets.json
           --criterion-root target/criterion
+          --require-criterion-comparison
+
+      - name: Enforce reproduced compatibility regressions
+        if: steps.initial-compatibility-budget.outcome == 'failure'
+        run: >-
+          python3 scripts/ably-compat-release-guard.py
+          --budgets tests/load/ably-compat/budgets.json
+          --criterion-root target/criterion-initial
+          --confirmation-criterion-root target/criterion
           --require-criterion-comparison
 
       - name: Store machine-readable benchmark evidence
@@ -545,7 +552,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ably-compat-criterion-${{ github.run_id }}
-          path: target/criterion/ably_compat_*
+          path: |
+            target/criterion/ably_compat_*
+            target/criterion-initial/ably_compat_*
           if-no-files-found: error
 
   # =============================================================================
