@@ -59,15 +59,18 @@ impl Namespace {
             Ok(Some(app)) => app,
             Ok(None) => {
                 error!(
-                    "App not found for app_id: {}. Cannot initialize socket: {}",
-                    self.app_id, socket_id
+                    app_id = %self.app_id,
+                    socket_id = %socket_id,
+                    "app not found during socket initialization"
                 );
                 return Err(Error::ApplicationNotFound);
             }
             Err(e) => {
                 error!(
-                    "Failed to get app {} for socket {}: {}",
-                    self.app_id, socket_id, e
+                    app_id = %self.app_id,
+                    socket_id = %socket_id,
+                    error = %e,
+                    "app lookup failed during socket initialization"
                 );
                 return Err(Error::Internal(format!(
                     "Failed to retrieve app config: {e}"
@@ -86,7 +89,7 @@ impl Namespace {
         let websocket_ref = WebSocketRef::new(websocket);
         self.sockets.insert(socket_id, websocket_ref.clone());
 
-        debug!(socket_id = %socket_id, "WebSocket connection added successfully");
+        debug!(app_id = %self.app_id, socket_id = %socket_id, "websocket connection added");
 
         Ok(websocket_ref)
     }
@@ -115,10 +118,7 @@ impl Namespace {
                 }
             }
         } else {
-            debug!(
-                "get_channel_members called on non-existent channel: {}",
-                channel
-            );
+            debug!(channel = %channel, "channel members requested for missing channel");
         }
         Ok(presence_members)
     }
@@ -138,10 +138,7 @@ impl Namespace {
                 .map(|entry| *entry.key())
                 .collect()
         } else {
-            debug!(
-                "get_channel_sockets called on non-existent channel: {}",
-                channel
-            );
+            debug!(channel = %channel, "channel sockets requested for missing channel");
             Vec::new()
         }
     }
@@ -152,10 +149,7 @@ impl Namespace {
         except: Option<&SocketId>,
     ) -> Vec<WebSocketRef> {
         let Some(channel_sockets_ref) = self.channels.get(channel) else {
-            debug!(
-                "get_channel_socket_refs_except called on non-existent channel: {}",
-                channel
-            );
+            debug!(channel = %channel, "channel socket references requested for missing channel");
             return Vec::new();
         };
 
@@ -485,11 +479,11 @@ impl Namespace {
         }
 
         tracing::debug!(
-            "PERF[NS_ADD_CHAN] channel={} socket={} entry_op={}ns inserted={}",
-            channel,
-            socket_id,
-            t_after_entry - t_before_entry,
-            newly_inserted
+            channel = %channel,
+            socket_id = %socket_id,
+            entry_operation_ns = t_after_entry - t_before_entry,
+            inserted = newly_inserted,
+            "namespace channel add timing"
         );
 
         (newly_inserted, activated)
@@ -515,7 +509,7 @@ impl Namespace {
                 if channel.contains('*') {
                     self.wildcard_channels.remove(channel);
                 }
-                debug!("Removed empty channel entry: {}", channel);
+                debug!(channel = %channel, "empty channel entry removed");
             }
             return (removed.is_some(), vacated);
         }
@@ -565,7 +559,7 @@ impl Namespace {
         if channel.contains('*') {
             self.wildcard_channels.remove(channel);
         }
-        debug!("Removed channel entry: {}", channel);
+        debug!(channel = %channel, "channel entry removed");
     }
 
     pub fn is_in_channel(&self, channel: &str, socket_id: &SocketId) -> bool {
@@ -646,10 +640,7 @@ impl Namespace {
             self.remove_user_socket_association(&user_id, &socket_id);
             debug!(socket_id = %socket_id, user_id = %user_id, "removed socket from user");
         } else {
-            warn!(
-                "User data found for socket {} during removal but missing user ID.",
-                socket_id
-            );
+            warn!(socket_id = %socket_id, "user data missing user id during removal");
         }
         Ok(())
     }

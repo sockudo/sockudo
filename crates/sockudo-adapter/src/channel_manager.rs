@@ -158,11 +158,11 @@ impl ChannelManager {
 
         if is_already_in_channel {
             tracing::debug!(
-                "PERF[CHAN_MGR_ALREADY] channel={} local_count={} total={}μs local_update={}μs",
-                channel_name,
-                local_connections,
-                t_start.elapsed().as_micros(),
-                t_after_lock - t_before_lock
+                channel = %channel_name,
+                local_count = local_connections,
+                total_us = t_start.elapsed().as_micros(),
+                local_update_us = t_after_lock - t_before_lock,
+                "perf channel_manager already subscribed"
             );
 
             return Ok(JoinResponse {
@@ -179,12 +179,12 @@ impl ChannelManager {
 
         let total = t_start.elapsed().as_micros();
         tracing::debug!(
-            "PERF[CHAN_MGR] channel={} total={}μs channel_type={}μs parse={}μs single_lock={}μs",
-            channel_name,
-            total,
-            t_after_channel_type - t_before_channel_type,
-            t_after_parse - t_before_parse,
-            t_after_lock - t_before_lock
+            channel = %channel_name,
+            total_us = total,
+            channel_type_us = t_after_channel_type - t_before_channel_type,
+            parse_us = t_after_parse - t_before_parse,
+            single_lock_us = t_after_lock - t_before_lock,
+            "perf channel_manager subscribe"
         );
 
         Ok(Self::create_success_join_response(
@@ -611,10 +611,9 @@ impl ChannelManager {
                 }
                 Err(e) => {
                     tracing::error!(
-                        "Batch channel socket count failed for app {}: {}. \
-                         Webhook counts will reflect local node only.",
-                        app_id,
-                        e
+                        app_id = %app_id,
+                        error = %e,
+                        "batch channel socket count failed, webhook counts will reflect local node only"
                     );
                 }
             }

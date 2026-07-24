@@ -191,6 +191,38 @@ High-value reference surfaces:
 
 ## Observability
 
+Logging is a compatibility and security surface. Every log statement uses structured tracing
+fields. The subscriber lives in `crates/sockudo-server/src/logging.rs`; do not change its
+architecture.
+
+### Logging conventions
+
+- Variable values go in snake_case structured fields, never interpolated into message text.
+- Messages are stable lowercase descriptions without trailing punctuation.
+- Identity fields: `app_id`, `socket_id`, `channel`, `user_id`, `worker_id`.
+- `adapter = "nats"/"redis"/...` on horizontal transport logs only.
+- `queue_driver`, `cache_driver`, `app_manager` in factory/shared code only; individual driver
+  modules are identified by their module path.
+- Numeric suffixes: `_ms`, `_bytes`, `_count`. Numbers and booleans keep their JSON types.
+- Optional values are omitted or unwrapped (`.as_deref().unwrap_or("")`) — never
+  rendered as `Some(...)`/`None`.
+- `error = %e` is the primary diagnostic. Always log the error on every error path. Never discard
+  to `Err(_)` or `.is_err()` without logging. Sole exception: when the error `Display` may contain
+  sensitive data (URLs with credentials, request bodies, raw config) — then omit the error field
+  and use a descriptive message.
+- Do not use `error_class` as a standard field; it exists only in the webhook sender helpers.
+- Severity: `error` = terminal failure; `warn` = degraded/rejected/retry scheduled; `info` =
+  lifecycle and final outcomes; `debug` = mechanics; `trace` = per-message.
+
+### Data safety
+
+At every level, never log app keys/secrets, signatures, tokens, authorization data, headers, raw
+queries, URLs, request/response bodies, payloads, provider credentials, device tokens, or private
+keys. Debug and trace do not relax this rule. Infrastructure endpoints, node lists, raw
+configuration values, serialization input, message fragments, and transport responses are also
+content-bearing and must not be logged. Safe: operational IDs, channel/queue/topic names (without
+credentials), counts, status codes, retryability, listener addresses.
+
 For stateful/distributed changes, consider metrics and logs for:
 
 - success/failure counters

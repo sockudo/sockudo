@@ -148,8 +148,12 @@ impl ClusterCoordinator for RedisClusterCoordinator {
 
         if should_send_full {
             debug!(
-                "Cluster coordination: Full message triggered (count={}, interval={}) for app={}, channel={}, key={}",
-                count, interval, app_id, channel, conflation_key
+                app_id,
+                channel,
+                count,
+                interval,
+                outcome = "full",
+                "cluster coordination: full message triggered"
             );
 
             let _: () = conn
@@ -165,8 +169,12 @@ impl ClusterCoordinator for RedisClusterCoordinator {
             Ok((true, interval))
         } else {
             debug!(
-                "Cluster coordination: Delta message (count={}/{}) for app={}, channel={}, key={}",
-                count, interval, app_id, channel, conflation_key
+                app_id,
+                channel,
+                count,
+                interval,
+                outcome = "delta",
+                "cluster coordination: delta message"
             );
             Ok((false, count))
         }
@@ -181,10 +189,7 @@ impl ClusterCoordinator for RedisClusterCoordinator {
             .await
             .map_err(|e| Error::Redis(format!("Failed to delete counter: {}", e)))?;
 
-        debug!(
-            "Cluster coordination: Reset counter for app={}, channel={}, key={}",
-            app_id, channel, conflation_key
-        );
+        debug!(app_id, channel, "cluster coordination: reset counter");
         Ok(())
     }
 

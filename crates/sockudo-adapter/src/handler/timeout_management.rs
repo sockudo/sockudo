@@ -75,10 +75,10 @@ impl ConnectionHandler {
                 if time_since_activity < Duration::from_secs(activity_timeout) {
                     let remaining = Duration::from_secs(activity_timeout) - time_since_activity;
                     debug!(
-                        "Socket {} still active ({}s ago), waiting {} more seconds",
-                        socket_id_clone,
-                        time_since_activity.as_secs(),
-                        remaining.as_secs()
+                        socket_id = %socket_id_clone,
+                        inactive_seconds = time_since_activity.as_secs(),
+                        remaining_seconds = remaining.as_secs(),
+                        "socket remains active"
                     );
                     drop(conn_manager);
                     sleep(remaining).await;
@@ -90,15 +90,16 @@ impl ConnectionHandler {
                 let ping_result = {
                     let mut ws = conn.inner.lock().await;
                     if !ws.is_connected() {
-                        debug!("Connection {} already closed, cleaning up", socket_id_clone);
+                        debug!(socket_id = %socket_id_clone, "closed connection cleanup started");
                         drop(ws);
                         if let Err(e) = handler
                             .handle_disconnect(&app_id_clone, &socket_id_clone)
                             .await
                         {
                             warn!(
-                                "Failed to handle disconnect for already closed socket {}: {}",
-                                socket_id_clone, e
+                                socket_id = %socket_id_clone,
+                                error = %e,
+                                "closed connection cleanup failed"
                             );
                         }
                         break;
@@ -113,8 +114,8 @@ impl ConnectionHandler {
                 match ping_result {
                     Ok(_) => {
                         debug!(
-                            "Sent ping to socket {} due to activity timeout",
-                            socket_id_clone
+                            socket_id = %socket_id_clone,
+                            "activity timeout ping sent"
                         );
 
                         // Release locks before waiting for pong
@@ -136,8 +137,9 @@ impl ConnectionHandler {
                                 && ping_time.elapsed() > Duration::from_secs(PONG_TIMEOUT)
                             {
                                 warn!(
-                                    "No pong received from socket {} after ping, forcing cleanup",
-                                    socket_id_clone
+                                    socket_id = %socket_id_clone,
+                                    timeout_seconds = PONG_TIMEOUT,
+                                    "pong timeout reached, forcing cleanup"
                                 );
                                 let _ = ws
                                     .close(4201, "Pong reply not received in time".to_string())
@@ -148,8 +150,9 @@ impl ConnectionHandler {
                                     .await
                                 {
                                     warn!(
-                                        "Failed to handle timeout disconnect for socket {}: {}",
-                                        socket_id_clone, e
+                                        socket_id = %socket_id_clone,
+                                        error = %e,
+                                        "timeout disconnect handling failed"
                                     );
                                 }
                                 break;
@@ -163,8 +166,9 @@ impl ConnectionHandler {
                         // Connection is broken (e.g., broken pipe)
                         // This is expected when client disconnects abruptly
                         debug!(
-                            "Failed to send ping to socket {} (connection likely closed by client): {}",
-                            socket_id_clone, e
+                            socket_id = %socket_id_clone,
+                            error = %e,
+                            "activity timeout ping send failed"
                         );
 
                         if let Err(e) = handler
@@ -172,8 +176,9 @@ impl ConnectionHandler {
                             .await
                         {
                             warn!(
-                                "Failed to handle disconnect after ping failure for socket {}: {}",
-                                socket_id_clone, e
+                                socket_id = %socket_id_clone,
+                                error = %e,
+                                "disconnect handling after ping failure failed"
                             );
                         }
                         break; // Exit the loop after cleanup

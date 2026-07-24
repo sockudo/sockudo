@@ -223,9 +223,9 @@ impl SocketDeltaState {
 
         if let Some(settings) = self.channel_delta_settings.get(channel) {
             tracing::debug!(
-                "delta channel exact setting matched: channel={}, enabled={}",
                 channel,
-                settings.enabled
+                enabled = settings.enabled,
+                "delta channel exact setting matched"
             );
             return settings.enabled;
         }
@@ -235,20 +235,13 @@ impl SocketDeltaState {
             if is_wildcard_subscription_pattern(subscribed_channel)
                 && wildcard_pattern_matches(channel, subscribed_channel)
             {
-                tracing::debug!(
-                    "delta channel wildcard setting matched: requested_channel={}, subscribed_channel={}, enabled={}",
-                    channel,
-                    subscribed_channel,
-                    entry.enabled
-                );
-                return entry.enabled;
+                let enabled = entry.value().enabled;
+                tracing::debug!(channel, subscribed_channel = %subscribed_channel, enabled, "delta channel wildcard setting matched");
+                return enabled;
             }
         }
 
-        tracing::debug!(
-            "delta channel setting fell back to enabled: channel={}",
-            channel
-        );
+        tracing::debug!(channel, "delta channel setting fell back to enabled");
         true
     }
 

@@ -28,10 +28,11 @@ where
 {
     match T::from_str(&driver_str.to_lowercase()) {
         Ok(driver_enum) => driver_enum,
-        Err(e) => {
+        Err(_) => {
             warn!(
-                "Failed to parse {} driver from string '{}': {:?}. Using default: {:?}.",
-                driver_name, driver_str, e, default_driver
+                driver_name = driver_name,
+                reason = "parse_failed",
+                "driver config parse failed, using default"
             );
             default_driver
         }

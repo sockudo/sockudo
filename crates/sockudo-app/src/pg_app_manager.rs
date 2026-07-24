@@ -24,10 +24,7 @@ pub struct PgSQLAppManager {
 impl PgSQLAppManager {
     /// Create a new PostgreSQL-based AppManager with the provided configuration
     pub async fn new(config: DatabaseConnection, pooling: DatabasePooling) -> Result<Self> {
-        info!(
-            "Initializing PostgreSQL AppManager with database {}",
-            config.database
-        );
+        info!(database = %config.database, "postgresql app manager initializing");
 
         let password = urlencoding::encode(&config.password);
         let connection_string = format!(
@@ -130,7 +127,7 @@ impl PgSQLAppManager {
                 })?;
         }
 
-        info!("Ensured table '{}' exists", self.config.table_name);
+        info!(table_name = %self.config.table_name, "table ensured");
         Ok(())
     }
 
@@ -140,7 +137,7 @@ impl PgSQLAppManager {
             return Ok(Some(app));
         }
 
-        debug!("Cache miss for app {}, fetching from database", app_id);
+        debug!(app_id = %app_id, outcome = "miss", "app cache miss");
 
         let query = format!(
             r#"SELECT
@@ -173,7 +170,7 @@ impl PgSQLAppManager {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
-                error!("Database error fetching app {}: {}", app_id, e);
+                error!(app_id = %app_id, error = %e, "app db fetch error");
                 Error::Internal(format!("Failed to fetch app from PostgreSQL: {e}"))
             })?;
 
@@ -188,7 +185,7 @@ impl PgSQLAppManager {
 
     /// Get an app by key from cache or database
     pub async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
-        debug!("Fetching app by key {} from database", key);
+        debug!(outcome = "miss", "app cache miss");
 
         let query = format!(
             r#"SELECT
@@ -221,7 +218,7 @@ impl PgSQLAppManager {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
-                error!("Database error fetching app by key {}: {}", key, e);
+                error!(error = %e, "app db fetch by key error");
                 Error::Internal(format!("Failed to fetch app from PostgreSQL: {e}"))
             })?;
 
@@ -236,7 +233,7 @@ impl PgSQLAppManager {
 
     /// Register a new app in the database
     pub async fn create_app(&self, app: App) -> Result<()> {
-        info!("Registering new app: {}", app.id);
+        info!(app_id = %app.id, "app registering");
         let policy = app.policy();
 
         let query = format!(
@@ -298,7 +295,7 @@ impl PgSQLAppManager {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                error!("Database error registering app {}: {}", app.id, e);
+                error!(app_id = %app.id, error = %e, "app db register error");
                 Error::Internal(format!("Failed to insert app into PostgreSQL: {e}"))
             })?;
 
@@ -309,7 +306,7 @@ impl PgSQLAppManager {
 
     /// Update an existing app in the database
     pub async fn update_app(&self, app: App) -> Result<()> {
-        info!("Updating app: {}", app.id);
+        info!(app_id = %app.id, "app updating");
         let policy = app.policy();
 
         let query = format!(
@@ -376,7 +373,7 @@ impl PgSQLAppManager {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                error!("Database error updating app {}: {}", app.id, e);
+                error!(app_id = %app.id, error = %e, "app db update error");
                 Error::Internal(format!("Failed to update app in PostgreSQL: {e}"))
             })?;
 
@@ -391,7 +388,7 @@ impl PgSQLAppManager {
 
     /// Remove an app from the database
     pub async fn delete_app(&self, app_id: &str) -> Result<()> {
-        info!("Removing app: {}", app_id);
+        info!(app_id = %app_id, "app removing");
 
         let query = format!("DELETE FROM {} WHERE id = $1", self.config.table_name);
 
@@ -400,7 +397,7 @@ impl PgSQLAppManager {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                error!("Database error removing app {}: {}", app_id, e);
+                error!(app_id = %app_id, error = %e, "app db remove error");
                 Error::Internal(format!("Failed to delete app from PostgreSQL: {e}"))
             })?;
 
@@ -447,11 +444,11 @@ impl PgSQLAppManager {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| {
-                error!("Database error fetching all apps: {}", e);
+                error!(error = %e, "app db fetch all error");
                 Error::Internal(format!("Failed to fetch apps from PostgreSQL: {e}"))
             })?;
 
-        warn!("Fetched {} app rows from database.", app_rows.len());
+        warn!(apps_count = app_rows.len(), "app rows fetched");
 
         let apps = stream::iter(app_rows)
             .map(|row| async {
@@ -463,7 +460,7 @@ impl PgSQLAppManager {
             .collect::<Vec<App>>()
             .await;
 
-        info!("Finished processing and caching {} apps.", apps.len());
+        info!(apps_count = apps.len(), "apps fetched and cached");
 
         Ok(apps)
     }

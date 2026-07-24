@@ -134,7 +134,7 @@ impl QueueInterface for NatsJetStreamQueueManager {
                 let messages = match consumer.messages().await {
                     Ok(messages) => messages,
                     Err(e) => {
-                        error!("Failed to open NATS JetStream message stream: {}", e);
+                        error!(error = %e, "failed to open nats jetstream message stream");
                         break;
                     }
                 };
@@ -153,7 +153,7 @@ impl QueueInterface for NatsJetStreamQueueManager {
                                 Ok(job) => {
                                     if callback(job).await.is_ok() {
                                         if let Err(e) = message.ack().await {
-                                            error!("Failed to ack NATS queue job: {}", e);
+                                            error!(error = %e, "failed to ack nats queue job");
                                         }
                                     } else {
                                         warn!(
@@ -162,14 +162,14 @@ impl QueueInterface for NatsJetStreamQueueManager {
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to deserialize NATS queue job: {}", e);
+                                    error!(error = %e, "failed to deserialize nats queue job");
                                     let _ = message.ack().await;
                                 }
                             }
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            error!("NATS queue consumer error: {}", e);
+                            error!(error = %e, "nats queue consumer error");
                             break;
                         }
                     }

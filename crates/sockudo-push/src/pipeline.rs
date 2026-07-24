@@ -1041,9 +1041,9 @@ where
 
     metrics.publish_status_cas_exhausted(component);
     tracing::warn!(
-        component,
-        app_id,
-        publish_id,
+        component = %component,
+        app_id = %app_id,
+        publish_id = %publish_id,
         attempts = MAX_PUBLISH_STATUS_CAS_ATTEMPTS,
         "push publish status CAS retries exhausted"
     );
@@ -1067,7 +1067,7 @@ pub(crate) fn guard_publish_status_transition(
     metrics.status_transition_invariant_violation();
     tracing::warn!(
         invariant = "status_transition",
-        component,
+        component = %component,
         app_id = %status.app_id,
         publish_id = %status.publish_id,
         from = ?status.state,

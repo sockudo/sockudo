@@ -139,7 +139,7 @@ impl QueueInterface for KafkaQueueManager {
                                         if let Err(e) =
                                             consumer.commit_message(&message, CommitMode::Async)
                                         {
-                                            error!("Failed to commit Kafka queue message: {}", e);
+                                            error!(error = %e, "failed to commit kafka queue message");
                                         }
                                     } else {
                                         warn!(
@@ -148,14 +148,14 @@ impl QueueInterface for KafkaQueueManager {
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to deserialize Kafka queue job: {}", e);
+                                    error!(error = %e, "failed to deserialize kafka queue job");
                                     let _ = consumer.commit_message(&message, CommitMode::Async);
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        error!("Kafka queue consumer error: {}", e);
+                        error!(error = %e, "kafka queue consumer error");
                         break;
                     }
                 }

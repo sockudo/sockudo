@@ -24,8 +24,10 @@ impl ConnectionHandler {
             ));
             self.message_limiters.insert(*socket_id, limiter);
             debug!(
-                "Initialized message rate limiter for socket {}: {} messages per {}s",
-                socket_id, config.max_attempts, config.decay_seconds,
+                socket_id = %socket_id,
+                max_attempts = config.max_attempts,
+                decay_seconds = config.decay_seconds,
+                "message rate limiter initialized"
             );
         }
         Ok(())
@@ -51,7 +53,7 @@ impl ConnectionHandler {
                     metrics.mark_rate_limit_triggered(&app_config.id, "messages");
                 }
 
-                warn!("Message rate limit exceeded for socket {}", socket_id);
+                warn!(socket_id = %socket_id, "message rate limit exceeded");
 
                 let terminate = app_config
                     .message_rate_limit()
@@ -75,10 +77,10 @@ impl ConnectionHandler {
             ));
             self.client_event_limiters.insert(*socket_id, limiter);
             debug!(
-                "Initialized client event rate limiter for socket {}: {} events per {}s",
-                socket_id,
-                app_config.client_events_per_second_limit(),
-                app_config.client_event_decay_seconds(),
+                socket_id = %socket_id,
+                max_attempts = app_config.client_events_per_second_limit(),
+                decay_seconds = app_config.client_event_decay_seconds(),
+                "client event rate limiter initialized"
             );
         }
         Ok(())
@@ -104,8 +106,9 @@ impl ConnectionHandler {
                 }
 
                 warn!(
-                    "Client event rate limit exceeded for socket {}: event '{}'",
-                    socket_id, event_name
+                    socket_id = %socket_id,
+                    event = %event_name,
+                    "client event rate limit exceeded"
                 );
 
                 if app_config.terminate_on_limit() {
@@ -115,8 +118,8 @@ impl ConnectionHandler {
             }
         } else if app_config.client_events_per_second_limit() > 0 {
             warn!(
-                "Client event rate limiter not found for socket {} though app config expects one",
-                socket_id
+                socket_id = %socket_id,
+                "client event rate limiter not found though app config expects one"
             );
             return Err(Error::Internal("Rate limiter misconfiguration".to_string()));
         }

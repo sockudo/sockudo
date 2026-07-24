@@ -9,7 +9,7 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::webhook_types::{LambdaConfig, Webhook};
 use sonic_rs::{Value, json};
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Handles invoking AWS Lambda functions for webhooks
 #[derive(Clone)]
@@ -65,11 +65,8 @@ impl LambdaWebhookSender {
             None => {
                 if let Some(function_name_str) = &webhook.lambda_function {
                     warn!(
-                        "{}",
-                        format!(
-                            "Webhook for app {} uses legacy 'lambda_function' field. Defaulting region to 'us-east-1'. Consider updating to structured 'lambda' config.",
-                            app_id
-                        )
+                        app_id = %app_id,
+                        "legacy lambda_function field used, consider migrating to structured lambda config"
                     );
                     temp_owned_config = LambdaConfig {
                         function_name: function_name_str.clone(),
@@ -77,10 +74,7 @@ impl LambdaWebhookSender {
                     };
                     &temp_owned_config
                 } else {
-                    error!(
-                        "Missing Lambda configuration in webhook for app_id: {}",
-                        app_id
-                    );
+                    error!(app_id = %app_id, "missing lambda configuration in webhook");
                     return Err(Error::Internal(
                         "Missing Lambda configuration: Neither 'lambda' struct nor 'lambda_function' string provided.".to_string(),
                     ));
@@ -97,12 +91,11 @@ impl LambdaWebhookSender {
         })?;
 
         info!(
-            "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
-            lambda_config_ref.function_name,
-            lambda_config_ref.region,
-            app_id,
-            triggering_event_name,
-            payload_bytes.len()
+            app_id = %app_id,
+            function_name = %lambda_config_ref.function_name,
+            event = %triggering_event_name,
+            payload_bytes = payload_bytes.len(),
+            "invoking lambda function"
         );
 
         match client
@@ -114,16 +107,20 @@ impl LambdaWebhookSender {
             .await
         {
             Ok(_) => {
-                info!(
-                    "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
-                    lambda_config_ref.function_name, app_id, triggering_event_name
+                debug!(
+                    app_id = %app_id,
+                    function_name = %lambda_config_ref.function_name,
+                    event = %triggering_event_name,
+                    "lambda function invoked successfully"
                 );
                 Ok(())
             }
             Err(e) => {
                 error!(
-                    "Failed to invoke Lambda function {}: {}",
-                    lambda_config_ref.function_name, e
+                    app_id = %app_id,
+                    function_name = %lambda_config_ref.function_name,
+                    error = %e,
+                    "lambda function invocation failed"
                 );
                 Err(Error::Other(format!(
                     "Failed to invoke Lambda function: {e}"
@@ -166,8 +163,10 @@ impl LambdaWebhookSender {
         })?;
 
         info!(
-            "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
-            lambda_config_ref.function_name, app_id, triggering_event_name
+            app_id = %app_id,
+            function_name = %lambda_config_ref.function_name,
+            event = %triggering_event_name,
+            "invoking lambda function synchronously"
         );
 
         let result: core::result::Result<InvokeOutput, SdkError<InvokeError>> = client
@@ -183,16 +182,17 @@ impl LambdaWebhookSender {
                 if let Some(response_payload_blob) = output.payload() {
                     match sonic_rs::from_slice::<Value>(response_payload_blob.as_ref()) {
                         Ok(json_response) => {
-                            info!(
-                                "Received response from Lambda function {}: {:?}",
-                                lambda_config_ref.function_name, json_response
+                            debug!(
+                                function_name = %lambda_config_ref.function_name,
+                                "lambda function returned response"
                             );
                             Ok(Some(json_response))
                         }
                         Err(e) => {
                             warn!(
-                                "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
-                                e, response_payload_blob
+                                function_name = %lambda_config_ref.function_name,
+                                error = %e,
+                                "lambda function response is not valid json"
                             );
                             let response_str =
                                 String::from_utf8_lossy(response_payload_blob.as_ref());
@@ -201,19 +201,17 @@ impl LambdaWebhookSender {
                     }
                 } else {
                     info!(
-                        "Lambda function {} returned no payload",
-                        lambda_config_ref.function_name
+                        function_name = %lambda_config_ref.function_name,
+                        "lambda function returned no payload"
                     );
                     Ok(None)
                 }
             }
             Err(e) => {
                 error!(
-                    "{}",
-                    format!(
-                        "Failed to invoke Lambda function {} synchronously: {}",
-                        lambda_config_ref.function_name, e
-                    )
+                    function_name = %lambda_config_ref.function_name,
+                    error = %e,
+                    "lambda function synchronous invocation failed"
                 );
                 Err(Error::Other(format!(
                     "Failed to invoke Lambda function synchronously: {e}"

@@ -133,19 +133,19 @@ impl QueueInterface for PulsarQueueManager {
                         Ok(job) => {
                             if callback(job).await.is_ok() {
                                 if let Err(e) = consumer.ack(&message).await {
-                                    error!("Failed to ack Pulsar queue job: {}", e);
+                                    error!(error = %e, "failed to ack pulsar queue job");
                                 }
                             } else {
                                 warn!("Pulsar queue job failed; leaving message unacked for retry");
                             }
                         }
                         Err(e) => {
-                            error!("Failed to deserialize Pulsar queue job: {}", e);
+                            error!(error = %e, "failed to deserialize pulsar queue job");
                             let _ = consumer.ack(&message).await;
                         }
                     },
                     Err(e) => {
-                        error!("Pulsar queue consumer error: {}", e);
+                        error!(error = %e, "pulsar queue consumer error");
                         break;
                     }
                 }

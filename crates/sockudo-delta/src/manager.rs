@@ -45,10 +45,10 @@ impl DeltaCompressionManager {
                 let stats = manager.get_stats();
                 if stats.total_sockets > 0 {
                     tracing::debug!(
-                        "Delta compression cleanup: {} total sockets, {} enabled, {} channel states",
-                        stats.total_sockets,
-                        stats.enabled_sockets,
-                        stats.total_channel_states
+                        total_sockets = stats.total_sockets,
+                        enabled_sockets = stats.enabled_sockets,
+                        total_channel_states = stats.total_channel_states,
+                        "delta compression cleanup stats"
                     );
                 }
             }
@@ -61,8 +61,8 @@ impl DeltaCompressionManager {
         *task_guard = Some(handle);
 
         tracing::info!(
-            "Delta compression cleanup task started (interval: {:?})",
-            cleanup_interval
+            interval_secs = cleanup_interval.as_secs(),
+            "delta compression cleanup task started"
         );
     }
 
@@ -71,7 +71,7 @@ impl DeltaCompressionManager {
         let mut task_guard = self.cleanup_task_handle.lock().await;
         if let Some(handle) = task_guard.take() {
             handle.abort();
-            tracing::info!("Delta compression cleanup task stopped");
+            tracing::info!("delta compression cleanup task stopped");
         }
     }
 
@@ -144,11 +144,11 @@ impl DeltaCompressionManager {
         socket_state.set_channel_delta_settings(channel.to_string(), settings);
 
         tracing::debug!(
-            "Set per-channel delta settings for socket {} channel {}: enabled={:?}, algorithm={:?}",
-            socket_id,
+            socket_id = %socket_id,
             channel,
-            enabled,
-            algorithm
+            enabled = ?enabled,
+            algorithm = ?algorithm,
+            "set per-channel delta settings"
         );
     }
 
@@ -201,7 +201,7 @@ impl DeltaCompressionManager {
     /// This is critical for preventing memory leaks - must be called on every disconnect.
     pub fn remove_socket(&self, socket_id: &SocketId) {
         if self.socket_states.remove(socket_id).is_some() {
-            tracing::debug!("Removed delta compression state for socket: {}", socket_id);
+            tracing::debug!(socket_id = %socket_id, "removed delta compression state");
         }
     }
 
@@ -215,12 +215,7 @@ impl DeltaCompressionManager {
             let had_state = socket_state.channel_states.contains_key(channel);
             socket_state.channel_states.remove(channel);
             socket_state.remove_channel_delta_settings(channel);
-            tracing::debug!(
-                "clear_channel_state: socket={}, channel={}, had_state={}",
-                socket_id,
-                channel,
-                had_state
-            );
+            tracing::debug!(socket_id = %socket_id, channel, had_state, "cleared channel state");
         }
     }
 
@@ -251,9 +246,9 @@ impl DeltaCompressionManager {
 
         if cleaned_sockets > 0 || cleaned_channels > 0 {
             tracing::debug!(
-                "Delta compression cleanup: removed {} socket states, {} channel states",
                 cleaned_sockets,
-                cleaned_channels
+                cleaned_channels,
+                "delta compression cleanup: removed states"
             );
         }
     }

@@ -113,11 +113,7 @@ impl FilterIndex {
         match filter {
             None => {
                 // No filter = receive all messages
-                tracing::debug!(
-                    "FilterIndex: Adding socket {} to no_filter for channel {}",
-                    socket_id,
-                    channel
-                );
+                tracing::debug!(socket_id = %socket_id, channel = %channel, "filter index adding socket to no_filter");
                 self.no_filter
                     .entry(channel.to_string())
                     .or_insert_with(fast_dashset)
@@ -127,20 +123,16 @@ impl FilterIndex {
                 if let Some(indexable) = Self::extract_indexable_filter(filter_node) {
                     // Filter can be indexed
                     tracing::debug!(
-                        "FilterIndex: Adding socket {} to eq_index for channel {}, key={}, values_count={}",
-                        socket_id,
-                        channel,
-                        indexable.key,
-                        indexable.values.len()
+                        socket_id = %socket_id,
+                        channel = %channel,
+                        key = %indexable.key,
+                        values_count = indexable.values.len(),
+                        "filter index adding socket to eq_index"
                     );
                     self.add_to_eq_index(channel, socket_id, &indexable);
                 } else {
                     // Complex filter, needs per-message evaluation
-                    tracing::debug!(
-                        "FilterIndex: Adding socket {} to complex_filters for channel {} (filter not indexable)",
-                        socket_id,
-                        channel
-                    );
+                    tracing::debug!(socket_id = %socket_id, channel = %channel, "filter index adding socket to complex_filters, filter not indexable");
                     self.complex_filters
                         .entry(channel.to_string())
                         .or_insert_with(fast_dashset)

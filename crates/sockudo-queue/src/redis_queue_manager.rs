@@ -156,13 +156,7 @@ impl RedisQueueManager {
         let worker_queue_name = queue_name.to_string();
 
         Ok(tokio::spawn(async move {
-            debug!(
-                "{}",
-                format!(
-                    "Starting Redis queue worker {} for queue: {}",
-                    worker_id, worker_queue_name
-                )
-            );
+            debug!(worker_id = %worker_id, queue = %worker_queue_name, "starting redis queue worker");
 
             loop {
                 let blpop_result: RedisResult<Option<(String, String)>> = worker_conn
@@ -174,19 +168,13 @@ impl RedisQueueManager {
                         match sonic_rs::from_str::<JobData>(&job_data_str) {
                             Ok(job_data) => {
                                 if let Err(e) = processor(job_data).await {
-                                    error!("{}", format!("Worker error: {}", e));
+                                    error!(worker_id = %worker_id, queue = %worker_queue_name, error = %e, "worker processing error");
                                 } else {
-                                    debug!("{}", "Worker finished".to_string());
+                                    debug!(worker_id = %worker_id, queue = %worker_queue_name, "worker processed job");
                                 }
                             }
                             Err(e) => {
-                                error!(
-                                    "{}",
-                                    format!(
-                                        "[Worker {}] Error deserializing job data from Redis queue {}: {}. Data: '{}'",
-                                        worker_id, worker_queue_name, e, job_data_str
-                                    )
-                                );
+                                error!(worker_id = %worker_id, queue = %worker_queue_name, error = %e, "worker job deserialization error");
                             }
                         }
                     }
@@ -195,13 +183,7 @@ impl RedisQueueManager {
                         if e.to_string().contains("timed out") {
                             continue;
                         }
-                        error!(
-                            "{}",
-                            format!(
-                                "[Worker {}] Redis BLPOP error on queue {}: {}",
-                                worker_id, worker_queue_name, e
-                            )
-                        );
+                        error!(worker_id = %worker_id, queue = %worker_queue_name, error = %e, "worker redis blpop error");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
@@ -254,13 +236,7 @@ impl QueueInterface for RedisQueueManager {
         let queue_key = self.format_key(queue_name);
         let processor_arc: ArcJobProcessorFn = Arc::from(callback);
 
-        debug!(
-            "{}",
-            format!(
-                "Registered processor and starting workers for Redis queue: {}",
-                queue_name
-            )
-        );
+        debug!(queue = %queue_name, worker_count = self.concurrency, "registered processor and starting redis queue workers");
 
         for worker_id in 0..self.concurrency {
             self.start_worker(

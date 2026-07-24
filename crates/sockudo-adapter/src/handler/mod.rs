@@ -676,10 +676,10 @@ impl ConnectionHandler {
                         }
                     };
                     if let Err(e) = send_result {
-                        warn!("Failed to send origin rejection message: {}", e);
+                        warn!(error = %e, "origin rejection message send failed");
                     }
                 } else {
-                    warn!("Failed to serialize origin rejection message");
+                    warn!("origin rejection message serialization failed");
                 }
 
                 // Send close frame
@@ -690,15 +690,12 @@ impl ConnectionHandler {
                     )
                     .await
                 {
-                    warn!("Failed to send origin rejection close frame: {}", e);
+                    warn!(error = %e, "origin rejection close frame send failed");
                 }
 
                 // Ensure frames are flushed
                 if let Err(e) = socket_tx.flush().await {
-                    warn!(
-                        "Failed to flush WebSocket frames during origin rejection: {}",
-                        e
-                    );
+                    warn!(error = %e, "origin rejection websocket flush failed");
                 }
 
                 return Err(Error::OriginNotAllowed);
@@ -816,10 +813,7 @@ impl ConnectionHandler {
                     .get_sockets_count(&app_config.id)
                     .await
                     .map_err(|e| {
-                        error!(
-                            "Error getting sockets count for app {}: {}",
-                            app_config.id, e
-                        );
+                        error!(app_id = %app_config.id, error = %e, "socket count lookup failed");
                         Error::Internal("Failed to check connection quota".to_string())
                     })?;
 
@@ -877,10 +871,7 @@ impl ConnectionHandler {
             Ok(Some(_)) => Err(Error::ApplicationDisabled),
             Ok(None) => Err(Error::ApplicationNotFound),
             Err(e) => {
-                error!(
-                    "Database error during app lookup for key {}: {}",
-                    app_key, e
-                );
+                error!(error = %e, "app lookup failed");
                 Err(Error::Internal("App lookup failed".to_string()))
             }
         }
@@ -898,7 +889,7 @@ impl ConnectionHandler {
                 tokio::select! {
                     biased;
                     _ = token.cancelled() => {
-                        debug!("Reader loop for socket {} cancelled via shutdown token", socket_id);
+                        debug!(socket_id = %socket_id, "socket reader cancelled");
                         break;
                     }
                     msg = reader.next() => msg,
@@ -918,7 +909,7 @@ impl ConnectionHandler {
             };
             match message {
                 Message::Close(_) => {
-                    debug!("Received Close frame from socket {}", socket_id);
+                    debug!(socket_id = %socket_id, "socket close frame received");
                     self.handle_disconnect(&app_config.id, socket_id).await?;
                     break;
                 }
@@ -928,28 +919,25 @@ impl ConnectionHandler {
                         .await
                     {
                         if e.is_fatal() {
-                            error!("Message handling error for socket {}: {}", socket_id, e);
+                            error!(socket_id = %socket_id, error = %e, "socket message handling failed");
                             self.handle_fatal_error(socket_id, app_config, &e).await?;
                             break;
                         } else if matches!(&e, Error::ConnectionClosed(_)) {
-                            debug!("Message handling error for socket {}: {}", socket_id, e);
+                            debug!(socket_id = %socket_id, error = %e, "socket message handling stopped");
                             break;
                         } else {
-                            error!("Message handling error for socket {}: {}", socket_id, e);
+                            error!(socket_id = %socket_id, error = %e, "socket message handling failed");
                             // Send pusher:error for non-fatal errors
                             if let Err(send_err) =
                                 self.send_error(&app_config.id, socket_id, &e, None).await
                             {
-                                error!(
-                                    "Failed to send error to socket {}: {}",
-                                    socket_id, send_err
-                                );
+                                error!(socket_id = %socket_id, error = %send_err, "socket error response send failed");
                             }
                         }
                     }
                 }
                 _ => {
-                    warn!("Unsupported message type from {}", socket_id);
+                    warn!(socket_id = %socket_id, "unsupported socket message type");
                 }
             }
         }
@@ -1049,10 +1037,11 @@ impl ConnectionHandler {
                     .await;
                 let total = t0.elapsed().as_micros();
                 debug!(
-                    "PERF: subscription total={}μs parse_to_handler={}μs handler={}μs",
-                    total,
-                    t1,
-                    total - t1
+                    socket_id = %socket_id,
+                    total_us = total,
+                    parse_to_handler_us = t1,
+                    handler_us = total - t1,
+                    "subscription handling timing"
                 );
                 result
             }
@@ -1104,7 +1093,7 @@ impl ConnectionHandler {
                     .await
             }
             _ => {
-                warn!("Unknown event '{}' from socket {}", event_name, socket_id);
+                warn!(socket_id = %socket_id, event = %event_name, "unknown socket event");
                 Ok(()) // Ignore unknown events per protocol spec
             }
         }
@@ -1159,7 +1148,7 @@ impl ConnectionHandler {
         self.send_error(&app_config.id, socket_id, error, None)
             .await
             .unwrap_or_else(|e| {
-                error!("Failed to send error to socket {}: {}", socket_id, e);
+                error!(socket_id = %socket_id, error = %e, "socket error response send failed");
             });
 
         // Close connection
@@ -1189,14 +1178,14 @@ impl ConnectionHandler {
 
         // Clear timeouts
         if let Err(e) = self.clear_activity_timeout(&app_config.id, socket_id).await {
-            warn!("Failed to clear activity timeout for {}: {}", socket_id, e);
+            warn!(socket_id = %socket_id, error = %e, "activity timeout clear failed");
         }
 
         if let Err(e) = self
             .clear_user_authentication_timeout(&app_config.id, socket_id)
             .await
         {
-            warn!("Failed to clear auth timeout for {}: {}", socket_id, e);
+            warn!(socket_id = %socket_id, error = %e, "authentication timeout clear failed");
         }
 
         // Ensure disconnect cleanup is called to properly decrement connection count
@@ -1205,12 +1194,9 @@ impl ConnectionHandler {
             .handle_ungraceful_disconnect(&app_config.id, socket_id)
             .await
         {
-            warn!(
-                "Failed to handle disconnect during cleanup for {}: {}",
-                socket_id, e
-            );
+            warn!(socket_id = %socket_id, error = %e, "socket cleanup disconnect failed");
         }
 
-        debug!("Socket {} cleanup completed", socket_id);
+        debug!(socket_id = %socket_id, "socket cleanup completed");
     }
 }

@@ -55,7 +55,7 @@ impl HorizontalAdapter {
 
                 // Process expired requests
                 for request_id in expired_requests {
-                    warn!("{}", format!("Request {} expired", request_id));
+                    warn!(request_id = %request_id, "request expired");
                     if let Some((_, request)) = pending_requests.remove(&request_id) {
                         request.notify.notify_waiters();
                     }
@@ -66,13 +66,7 @@ impl HorizontalAdapter {
 
     /// Process a received request from another node
     pub async fn process_request(&self, request: RequestBody) -> Result<ResponseBody> {
-        trace!(
-            "{}",
-            format!(
-                "Processing request from node {}: {:?}",
-                request.node_id, request.request_type
-            )
-        );
+        trace!(node_id = %request.node_id, request_type = ?request.request_type, "processing request");
 
         // Skip processing our own requests
         if request.node_id == self.node_id {
@@ -279,21 +273,22 @@ impl HorizontalAdapter {
                     };
 
                     if is_new_node {
-                        info!("New node detected: {}", request.node_id);
+                        info!(node_id = %request.node_id, "new node detected");
                         // Note: State sync will be handled by the caller
                         // Return a special response that indicates new node detected
                         response.exists = true; // Use this field to signal new node
                     }
 
                     debug!(
-                        "Received heartbeat from node: {} at local time: {:?} (new: {})",
-                        request.node_id, receive_time, is_new_node
+                        node_id = %request.node_id,
+                        is_new = is_new_node,
+                        "received heartbeat"
                     );
                 }
             }
             RequestType::NodeDead => {
                 if let Some(dead_node_id) = &request.dead_node_id {
-                    debug!("Received dead node notification for: {}", dead_node_id);
+                    debug!(node_id = %dead_node_id, "received dead node notification");
 
                     // This message is only for followers to clean registry
                     // Leader already did full cleanup before sending this message
@@ -356,10 +351,7 @@ impl HorizontalAdapter {
                                                 > incoming_entry.sequence_number =>
                                         {
                                             // Keep existing (it's newer)
-                                            debug!(
-                                                "Keeping existing entry for socket {} (newer)",
-                                                socket_id
-                                            );
+                                            debug!(socket_id = %socket_id, "keeping existing presence entry (newer)");
                                         }
                                         _ => {
                                             // Insert new or replace older
@@ -370,16 +362,13 @@ impl HorizontalAdapter {
                             }
 
                             info!(
-                                "Merged presence state from node: {} ({} channels)",
-                                request.node_id,
-                                registry.get(&request.node_id).map(|d| d.len()).unwrap_or(0)
+                                node_id = %request.node_id,
+                                channel_count = registry.get(&request.node_id).map(|d| d.len()).unwrap_or(0),
+                                "merged presence state"
                             );
                         }
                         Err(e) => {
-                            warn!(
-                                "Failed to deserialize presence state from node {}: {}",
-                                request.node_id, e
-                            );
+                            warn!(node_id = %request.node_id, error = %e, "failed to deserialize presence state");
                         }
                     }
                 }
@@ -588,11 +577,11 @@ impl HorizontalAdapter {
             match response_count {
                 Some(count) if count >= max_expected_responses => {
                     debug!(
-                        "Request {} completed successfully with {}/{} responses in {}ms",
-                        request_id,
-                        count,
-                        max_expected_responses,
-                        start.elapsed().as_millis()
+                        request_id = %request_id,
+                        response_count = count,
+                        expected = max_expected_responses,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "request completed"
                     );
                     let responses = self
                         .pending_requests
@@ -613,11 +602,11 @@ impl HorizontalAdapter {
                     .map(|r| r.responses.len())
                     .unwrap_or(0);
                 warn!(
-                    "Request {} timed out after {}ms, got {} responses out of {} expected",
-                    request_id,
-                    start.elapsed().as_millis(),
-                    current_responses,
-                    max_expected_responses
+                    request_id = %request_id,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    responses_received = current_responses,
+                    expected = max_expected_responses,
+                    "request timed out"
                 );
                 let responses = self
                     .pending_requests
@@ -638,11 +627,11 @@ impl HorizontalAdapter {
                     .map(|r| r.responses.len())
                     .unwrap_or(0);
                 warn!(
-                    "Request {} timed out after {}ms, got {} responses out of {} expected",
-                    request_id,
-                    start.elapsed().as_millis(),
-                    current_responses,
-                    max_expected_responses
+                    request_id = %request_id,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    responses_received = current_responses,
+                    expected = max_expected_responses,
+                    "request timed out"
                 );
                 let responses = self
                     .pending_requests
@@ -706,8 +695,10 @@ impl HorizontalAdapter {
         // For NATS: NatsAdapter would publish to NATS subjects
         // For HTTP: HttpAdapter would POST to other nodes
         debug!(
-            "Request {} created for type {:?} on app {} - broadcasting handled by adapter",
-            request_id, request_type, app_id
+            request_id = %request_id,
+            request_type = ?request_type,
+            app_id = %app_id,
+            "request created, broadcasting handled by adapter"
         );
 
         // Wait for responses with proper timeout handling
@@ -716,10 +707,7 @@ impl HorizontalAdapter {
 
         // If we don't expect any responses (single node), return immediately
         if max_expected_responses == 0 {
-            debug!(
-                "Single node deployment, no responses expected for request {}",
-                request_id
-            );
+            debug!(request_id = %request_id, "single node deployment, no responses expected");
             self.pending_requests.remove(&request_id);
             return Ok(ResponseBody {
                 request_id: request_id.clone(),
@@ -765,10 +753,7 @@ impl HorizontalAdapter {
 
         // Validate the aggregated response
         if let Err(e) = self.validate_aggregated_response(&combined_response, &request_type) {
-            warn!(
-                "Response validation failed for request {}: {}",
-                request_id, e
-            );
+            warn!(request_id = %request_id, error = %e, "response validation failed");
         }
 
         // Track metrics
@@ -1056,10 +1041,7 @@ impl HorizontalAdapter {
                 .map(|channel_members| channel_members.len())
                 .sum();
 
-            debug!(
-                "Removed {} orphaned presence members from dead node: {}",
-                total_members, dead_node_id
-            );
+            debug!(total_members = total_members, node_id = %dead_node_id, "removed orphaned presence members from dead node");
         }
     }
 
@@ -1131,16 +1113,12 @@ impl HorizontalAdapter {
                     })
                     .collect();
 
-            debug!(
-                "Found {} unique presence members to clean up from dead node {}",
-                cleanup_tasks.len(),
-                dead_node_id
-            );
+            debug!(member_count = cleanup_tasks.len(), node_id = %dead_node_id, "found unique presence members to clean up from dead node");
 
             // Return the list of members that need broadcast cleanup
             Ok(cleanup_tasks)
         } else {
-            debug!("No presence members found for dead node {}", dead_node_id);
+            debug!(node_id = %dead_node_id, "no presence members found for dead node");
             Ok(Vec::new())
         }
     }
@@ -1174,8 +1152,11 @@ impl HorizontalAdapter {
             );
 
         debug!(
-            "Added presence entry: user {} (socket {}) in channel {} for node {}",
-            user_id, socket_id, channel, node_id
+            user_id = %user_id,
+            socket_id = %socket_id,
+            channel = %channel,
+            node_id = %node_id,
+            "added presence entry"
         );
     }
 
@@ -1195,8 +1176,10 @@ impl HorizontalAdapter {
         }
 
         debug!(
-            "Removed presence entry: socket {} in channel {} for node {}",
-            socket_id, channel, node_id
+            socket_id = %socket_id,
+            channel = %channel,
+            node_id = %node_id,
+            "removed presence entry"
         );
     }
 
@@ -1238,8 +1221,11 @@ impl HorizontalAdapter {
         }
 
         debug!(
-            "Updated presence entry: user {} (socket {}) in channel {} for node {}",
-            user_id, socket_id, channel, node_id
+            user_id = %user_id,
+            socket_id = %socket_id,
+            channel = %channel,
+            node_id = %node_id,
+            "updated presence entry"
         );
     }
 

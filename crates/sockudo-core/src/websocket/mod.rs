@@ -14,7 +14,7 @@ pub use connection::WebSocket;
 pub use reference::{BufferStats, PerChannelState, WebSocketExt, WebSocketRef};
 pub use sender::MessageSender;
 pub use socket_id::SocketId;
-pub use state::{ConnectionState, ConnectionStatus, ConnectionTimeouts};
+pub use state::{ConnectionState, ConnectionStatus, ConnectionTimeouts, DisconnectCause};
 
 #[cfg(test)]
 mod tests;

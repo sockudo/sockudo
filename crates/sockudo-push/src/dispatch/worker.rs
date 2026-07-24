@@ -191,7 +191,6 @@ impl ProviderDispatchWorker {
                         provider = ?result.provider,
                         batch_id = %result.batch_id,
                         outcome = ?result.outcome,
-                        error_class = result.error.as_ref().map(|error| error.class.as_str()),
                         failure_class = result
                             .error
                             .as_ref()

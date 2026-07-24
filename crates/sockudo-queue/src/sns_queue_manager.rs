@@ -36,7 +36,7 @@ impl SnsQueueManager {
 #[async_trait]
 impl QueueInterface for SnsQueueManager {
     async fn add_to_queue(&self, queue_name: &str, data: JobData) -> Result<()> {
-        debug!("SNS add_to_queue called for queue: {}", queue_name);
+        debug!(queue = %queue_name, "sns add_to_queue called");
 
         let json = sonic_rs::to_string(&data)
             .map_err(|e| Error::Queue(format!("Failed to serialize job data: {e}")))?;
@@ -51,9 +51,8 @@ impl QueueInterface for SnsQueueManager {
             .map_err(|e| Error::Queue(format!("Failed to publish to SNS topic: {e}")))?;
 
         info!(
-            "Published job to SNS topic {} with message ID: {}",
-            self.config.topic_arn,
-            result.message_id().unwrap_or("unknown")
+            message_id = %result.message_id().unwrap_or("unknown"),
+            "published job to sns topic"
         );
 
         Ok(())

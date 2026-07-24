@@ -63,7 +63,11 @@ impl CleanupWorker {
         receiver: super::CleanupReceiverHandle,
         cancel_token: CancellationToken,
     ) {
-        info!("Cleanup worker started with config: {:?}", self.config);
+        info!(
+            batch_size = self.config.batch_size,
+            batch_timeout_ms = self.config.batch_timeout_ms,
+            "cleanup worker started"
+        );
 
         let mut batch = Vec::with_capacity(self.config.batch_size);
         let mut last_batch_time = Instant::now();
@@ -74,10 +78,10 @@ impl CleanupWorker {
 
                 _ = cancel_token.cancelled() => {
                     if !batch.is_empty() {
-                        info!("Processing final batch of {} tasks before cancellation shutdown", batch.len());
+                        info!(task_count = batch.len(), shutdown_reason = "cancelled", "processing final cleanup batch");
                         self.process_batch(&mut batch).await;
                     }
-                    info!("Cleanup worker shutting down due to cancellation");
+                    info!(shutdown_reason = "cancelled", "cleanup worker stopping");
                     break;
                 }
 
@@ -87,7 +91,7 @@ impl CleanupWorker {
                 ) => {
                     match recv_result {
                         Ok(Ok(task)) => {
-                            debug!("Received disconnect task for socket: {}", task.socket_id);
+                            debug!(socket_id = %task.socket_id, "disconnect cleanup task received");
                             batch.push(task);
 
                             if batch.len() >= self.config.batch_size
@@ -98,15 +102,15 @@ impl CleanupWorker {
                         }
                         Ok(Err(_)) => {
                             if !batch.is_empty() {
-                                info!("Processing final batch of {} tasks before shutdown", batch.len());
+                                info!(task_count = batch.len(), shutdown_reason = "channel_closed", "processing final cleanup batch");
                                 self.process_batch(&mut batch).await;
                             }
-                            info!("Cleanup worker shutting down (channel closed)");
+                            info!(shutdown_reason = "channel_closed", "cleanup worker stopping");
                             break;
                         }
                         Err(_) => {
                             if !batch.is_empty() && last_batch_time.elapsed() >= Duration::from_millis(self.config.batch_timeout_ms) {
-                                debug!("Processing batch due to timeout: {} tasks", batch.len());
+                                debug!(task_count = batch.len(), trigger = "timeout", "processing cleanup batch");
                                 self.process_batch(&mut batch).await;
                                 last_batch_time = Instant::now();
                             }
@@ -121,7 +125,7 @@ impl CleanupWorker {
         let batch_start = Instant::now();
         let batch_size = batch.len();
 
-        debug!("Processing cleanup batch of {} tasks", batch_size);
+        debug!(task_count = batch_size, "processing cleanup batch");
 
         let mut channel_operations: AHashMap<(String, String), Vec<SocketId>> = AHashMap::new();
         let mut webhook_events = Vec::new();
@@ -154,7 +158,11 @@ impl CleanupWorker {
 
         batch.clear();
 
-        debug!("Completed cleanup batch in {:?}", batch_start.elapsed());
+        debug!(
+            task_count = batch_size,
+            elapsed_ms = batch_start.elapsed().as_millis(),
+            "cleanup batch completed"
+        );
     }
 
     async fn batch_channel_cleanup(
@@ -166,8 +174,8 @@ impl CleanupWorker {
         }
 
         debug!(
-            "Processing {} channel cleanup operations",
-            channel_operations.len()
+            operation_count = channel_operations.len(),
+            "processing channel cleanup operations"
         );
 
         let mut total_success = 0;
@@ -188,9 +196,9 @@ impl CleanupWorker {
 
         for (app_id, operations) in operations_by_app {
             debug!(
-                "Processing batch unsubscribe for app {} with {} operations",
-                app_id,
-                operations.len()
+                app_id = %app_id,
+                operation_count = operations.len(),
+                "processing batch unsubscribe"
             );
 
             match ChannelManager::batch_unsubscribe(&self.connection_manager, operations).await {
@@ -208,24 +216,22 @@ impl CleanupWorker {
                             }
                             Err(e) => {
                                 total_errors += 1;
-                                warn!(
-                                    "Batch unsubscribe operation failed for app {}: {}",
-                                    app_id, e
-                                );
+                                warn!(app_id = %app_id, error = %e, "batch unsubscribe operation failed");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Batch unsubscribe failed for app {}: {}", app_id, e);
+                    warn!(app_id = %app_id, error = %e, "batch unsubscribe failed");
                     total_errors += 1;
                 }
             }
         }
 
         debug!(
-            "Individual channel cleanup completed: {} successful, {} errors",
-            total_success, total_errors
+            success_count = total_success,
+            error_count = total_errors,
+            "individual channel cleanup completed"
         );
     }
 
@@ -234,7 +240,7 @@ impl CleanupWorker {
             return;
         }
 
-        debug!("Removing {} connections", connections.len());
+        debug!(connection_count = connections.len(), "removing connections");
 
         for (socket_id, app_id, _user_id) in connections {
             // Comprehensive: handles shutdown, user-socket mappings, channels, and presence.
@@ -244,7 +250,12 @@ impl CleanupWorker {
                 .await;
 
             if let Err(e) = result {
-                warn!("Failed to remove connection {}: {}", socket_id, e);
+                warn!(
+                    app_id = %app_id,
+                    socket_id = %socket_id,
+                    error = %e,
+                    "connection removal failed"
+                );
             }
         }
     }
@@ -301,7 +312,10 @@ impl CleanupWorker {
 
     async fn process_webhooks_async(&self, webhook_events: Vec<WebhookEvent>) {
         if let Some(webhook_integration) = &self.webhook_integration {
-            debug!("Processing {} webhook events", webhook_events.len());
+            debug!(
+                event_count = webhook_events.len(),
+                "processing cleanup webhook events"
+            );
 
             let mut events_by_app: AHashMap<String, Vec<WebhookEvent>> = AHashMap::new();
             for event in webhook_events {
@@ -323,11 +337,11 @@ impl CleanupWorker {
                     let app_config = match app_manager.find_by_id(&app_id).await {
                         Ok(Some(app)) => app,
                         Ok(None) => {
-                            warn!("App {} not found for webhook events", app_id);
+                            warn!(app_id = %app_id, "app not found for cleanup webhook events");
                             return;
                         }
                         Err(e) => {
-                            error!("Failed to get app config for {}: {}", app_id, e);
+                            error!(app_id = %app_id, error = %e, "app lookup failed for cleanup webhook events");
                             return;
                         }
                     };
@@ -343,7 +357,12 @@ impl CleanupWorker {
                         )
                         .await
                         {
-                            error!("Failed to send webhook event {}: {}", event.event_type, e);
+                            error!(
+                                app_id = %app_id,
+                                event = %event.event_type,
+                                error = %e,
+                                "cleanup webhook event send failed"
+                            );
                         }
                     }
                 });
@@ -353,7 +372,7 @@ impl CleanupWorker {
 
             for handle in webhook_handles {
                 if let Err(e) = handle.await {
-                    error!("Webhook task panicked or was cancelled: {}", e);
+                    error!(error = %e, "cleanup webhook task failed");
                 }
             }
         }
@@ -368,8 +387,10 @@ impl CleanupWorker {
         event: &WebhookEvent,
     ) -> sockudo_core::error::Result<()> {
         debug!(
-            "Sending {} webhook for app {} channel {}",
-            event.event_type, app_config.id, event.channel
+            app_id = %app_config.id,
+            channel = %event.channel,
+            event = %event.event_type,
+            "sending cleanup webhook"
         );
 
         match event.event_type.as_str() {
@@ -402,8 +423,10 @@ impl CleanupWorker {
                         )
                         .await?;
                     debug!(
-                        "Processed centralized member_removed for user {} in channel {}",
-                        user_id, event.channel
+                        app_id = %app_config.id,
+                        channel = %event.channel,
+                        user_id = %user_id,
+                        "centralized member removal processed"
                     );
                 }
             }
@@ -411,10 +434,15 @@ impl CleanupWorker {
                 webhook_integration
                     .send_channel_vacated(app_config, &event.channel)
                     .await?;
-                debug!("Sent channel_vacated webhook for channel {}", event.channel);
+                debug!(
+                    app_id = %app_config.id,
+                    channel = %event.channel,
+                    event = "channel_vacated",
+                    "cleanup webhook sent"
+                );
             }
             _ => {
-                warn!("Unknown webhook event type: {}", event.event_type);
+                warn!(event = %event.event_type, "unknown cleanup webhook event type");
             }
         }
 
@@ -699,6 +727,7 @@ mod tests {
             app_id: APP_ID.to_string(),
             subscribed_channels: vec!["public-channel".to_string()],
             user_id: Some("stale-user".to_string()),
+            cause: sockudo_core::websocket::DisconnectCause::Unknown,
             timestamp: Instant::now(),
             connection_info: None,
             presence_ungraceful_timeout_seconds: 0,

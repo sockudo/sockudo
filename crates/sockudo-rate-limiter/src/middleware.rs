@@ -167,21 +167,21 @@ where
             let key = match key_extractor.extract(&req) {
                 Ok(k) => k,
                 Err(e) => {
-                    error!("Failed to extract key for rate limiting: {}", e);
+                    error!(error = %e, "failed to extract key for rate limiting");
                     return Ok(internal_server_error_response_with_message(
                         "Key extraction failed for rate limiting.",
                     ));
                 }
             };
 
-            debug!(key = %key, "Extracted rate limit key");
+            debug!("rate limit key extracted");
 
             let final_key = if let Some(prefix) = &options.key_prefix {
                 format!("{prefix}:{key}")
             } else {
                 key
             };
-            debug!(final_key = %final_key, "Final rate limit key");
+            debug!("final rate limit key computed");
 
             let primary_limiter_type = &config_name;
 
@@ -207,9 +207,9 @@ where
             let rate_limit_result = match limiter.increment(&final_key).await {
                 Ok(result) => result,
                 Err(e) => {
-                    error!("Rate limiter backend error for key '{}': {}", final_key, e);
+                    error!(error = %e, "rate limiter backend error");
                     if options.fail_open {
-                        warn!("{}", "Rate limiter failed open");
+                        warn!("rate limiter failed open");
                         RateLimitResult {
                             allowed: true,
                             remaining: 0,
@@ -217,7 +217,7 @@ where
                             limit: 0,
                         }
                     } else {
-                        error!(key = %final_key, "Rate limiter failed closed");
+                        error!("rate limiter failed closed");
                         return Ok(internal_server_error_response_with_message(
                             "Rate limiter backend unavailable.",
                         ));
@@ -226,7 +226,7 @@ where
             };
 
             if !rate_limit_result.allowed {
-                debug!(key = %final_key, "Rate limit exceeded for config: {}", config_name);
+                debug!(config_name, outcome = "rejected", "rate limit exceeded");
 
                 if let Some(ref metrics) = metrics {
                     metrics.mark_rate_limit_triggered_with_context(
@@ -239,7 +239,7 @@ where
                 return Ok(rate_limit_error_response(Some(&rate_limit_result)));
             }
 
-            debug!(key = %final_key, "Rate limit check passed");
+            debug!(outcome = "allowed", "rate limit check passed");
             let result = inner.call(req).await;
 
             match result {
@@ -313,10 +313,7 @@ impl Default for IpKeyExtractor {
 impl KeyExtractor for IpKeyExtractor {
     fn extract<B>(&self, req: &HyperRequest<B>) -> Result<String, RateLimitMiddlewareError> {
         Ok(self.get_ip(req).unwrap_or_else(|| {
-            warn!(
-                "{}",
-                "Could not extract IP address for rate limiting, falling back to 'unknown_ip'"
-            );
+            warn!("could not extract ip for rate limiting, using unknown_ip fallback");
             "unknown_ip".to_string()
         }))
     }

@@ -27,20 +27,23 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
                     options.unix_socket.permission_mode = mode;
                 } else {
                     warn!(
-                        "UNIX_SOCKET_PERMISSION_MODE '{}' exceeds maximum value 777. Using default: {:o}",
-                        mode_str, options.unix_socket.permission_mode
+                        env_var = "UNIX_SOCKET_PERMISSION_MODE",
+                        reason = "exceeds_max_value",
+                        "env config parse failed, using default"
                     );
                 }
             } else {
                 warn!(
-                    "Failed to parse UNIX_SOCKET_PERMISSION_MODE '{}' as octal. Using default: {:o}",
-                    mode_str, options.unix_socket.permission_mode
+                    env_var = "UNIX_SOCKET_PERMISSION_MODE",
+                    reason = "not_valid_octal",
+                    "env config parse failed, using default"
                 );
             }
         } else {
             warn!(
-                "UNIX_SOCKET_PERMISSION_MODE '{}' must contain only octal digits (0-7). Using default: {:o}",
-                mode_str, options.unix_socket.permission_mode
+                env_var = "UNIX_SOCKET_PERMISSION_MODE",
+                reason = "non_octal_digits",
+                "env config parse failed, using default"
             );
         }
     }

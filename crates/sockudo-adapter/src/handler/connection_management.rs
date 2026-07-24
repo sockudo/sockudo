@@ -654,7 +654,7 @@ impl ConnectionHandler {
                         version_serial = %version_serial_value,
                         history_serial = history_serial,
                         delivery_serial = versioned_delivery_serial.unwrap_or_else(|| message.serial.unwrap_or(0)),
-                        actor_client_id = ?actor_client_id,
+                        actor_client_id = actor_client_id.as_deref().unwrap_or(""),
                         "Applied versioned message.create"
                     );
                 }
@@ -972,18 +972,37 @@ impl ConnectionHandler {
         code: u16,
         reason: &str,
     ) -> Result<()> {
+        self.close_connection_with_cause(
+            socket_id,
+            app_config,
+            code,
+            reason,
+            sockudo_core::websocket::DisconnectCause::Unknown,
+        )
+        .await
+    }
+
+    pub(crate) async fn close_connection_with_cause(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        code: u16,
+        reason: &str,
+        cause: sockudo_core::websocket::DisconnectCause,
+    ) -> Result<()> {
         if let Some(conn) = self
             .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
         {
             let mut conn_locked = conn.inner.lock().await;
+            conn_locked.state.record_disconnect_cause(cause);
             conn_locked
                 .close(code, reason.to_string())
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to close connection: {e}")))
         } else {
-            warn!("Connection not found for close: {}", socket_id);
+            warn!(socket_id = %socket_id, "connection not found for close");
             Ok(())
         }
     }
@@ -1062,11 +1081,11 @@ impl ConnectionHandler {
         if let Ok(payload) = sonic_rs::to_string(&error_message)
             && let Err(e) = ws_tx.send(Message::text(payload)).await
         {
-            warn!("Failed to send error frame: {e}");
+            warn!(error = %e, "failed to send error frame");
         }
 
         if let Err(e) = ws_tx.close(error.close_code(), &error.to_string()).await {
-            warn!("Failed to send close frame: {}", e);
+            warn!(error = %e, "failed to send close frame");
         }
     }
 

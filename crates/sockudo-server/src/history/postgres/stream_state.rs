@@ -184,7 +184,8 @@ pub(super) async fn mark_channel_degraded(
         error!(
             app_id = %request.app_id,
             channel = %request.channel,
-            "Failed to persist history degraded state: {err}"
+            error = %err,
+            "failed to persist history degraded state"
         );
     }
 

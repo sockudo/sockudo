@@ -130,7 +130,7 @@ impl QueueInterface for RabbitMqQueueManager {
                         Ok(job) => {
                             if callback(job).await.is_ok() {
                                 if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
-                                    error!("Failed to ack RabbitMQ queue delivery: {}", e);
+                                    error!(error = %e, "failed to ack rabbitmq queue delivery");
                                 }
                             } else {
                                 warn!(
@@ -139,12 +139,12 @@ impl QueueInterface for RabbitMqQueueManager {
                             }
                         }
                         Err(e) => {
-                            error!("Failed to deserialize RabbitMQ queue job: {}", e);
+                            error!(error = %e, "failed to deserialize rabbitmq queue job");
                             let _ = delivery.ack(BasicAckOptions::default()).await;
                         }
                     },
                     Err(e) => {
-                        error!("RabbitMQ queue consumer error: {}", e);
+                        error!(error = %e, "rabbitmq queue consumer error");
                         break;
                     }
                 }

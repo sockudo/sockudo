@@ -16,6 +16,8 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--budgets", required=True, type=Path)
     parser.add_argument("--criterion-root", type=Path)
+    parser.add_argument("--confirmation-criterion-root", type=Path)
+    parser.add_argument("--require-criterion-comparison", action="store_true")
     parser.add_argument("--load-result", action="append", default=[], type=Path)
     parser.add_argument("--baseline-load-result", action="append", default=[], type=Path)
     parser.add_argument("--require-independent-runs", action="store_true")
@@ -29,7 +31,14 @@ def main() -> int:
     checked: list[str] = []
 
     if args.criterion_root:
-        check_criterion(args.criterion_root, budgets["criterion"], failures, checked)
+        check_criterion(
+            args.criterion_root,
+            budgets["criterion"],
+            failures,
+            checked,
+            args.require_criterion_comparison,
+            args.confirmation_criterion_root,
+        )
 
     current = [read_json(path) for path in args.load_result]
     baseline = [read_json(path) for path in args.baseline_load_result]
@@ -58,7 +67,14 @@ def main() -> int:
     return 0
 
 
-def check_criterion(root: Path, budget: dict[str, Any], failures: list[str], checked: list[str]) -> None:
+def check_criterion(
+    root: Path,
+    budget: dict[str, Any],
+    failures: list[str],
+    checked: list[str],
+    require_comparison: bool,
+    confirmation_root: Path | None,
+) -> None:
     estimates = [
         bench_id(path, root)
         for path in root.rglob("new/estimates.json")
@@ -69,14 +85,22 @@ def check_criterion(root: Path, budget: dict[str, Any], failures: list[str], che
             failures.append(f"missing required Criterion estimate matching {required!r}")
     if estimates:
         checked.append(f"{len(estimates)} Criterion estimates discovered")
-    changes = [
-        path
-        for path in root.rglob("change/estimates.json")
-        if bench_id(path, root).startswith("ably_compat_")
-    ]
+    changes = criterion_changes(root)
     threshold = float(budget["maxSignificantRegressionPercent"]) / 100.0
     if not changes:
-        checked.append("Criterion estimates present; no saved-baseline change intervals to gate")
+        message = "Criterion estimates present; no saved-baseline change intervals to gate"
+        if require_comparison:
+            failures.append(message)
+        else:
+            checked.append(message)
+        return
+    confirmation_changes = (
+        {bench_id(path, confirmation_root): path for path in criterion_changes(confirmation_root)}
+        if confirmation_root
+        else {}
+    )
+    if confirmation_root and not confirmation_changes:
+        failures.append("confirmation Criterion evidence has no saved-baseline change intervals")
         return
     for path in changes:
         data = read_json(path)
@@ -89,14 +113,51 @@ def check_criterion(root: Path, budget: dict[str, Any], failures: list[str], che
             continue
         bench = bench_id(path, root)
         if float(lower) > threshold:
-            failures.append(
-                f"{bench}: statistically significant mean regression lower bound "
-                f"{float(lower) * 100:.2f}% exceeds {threshold * 100:.2f}%"
-            )
+            if confirmation_root:
+                confirmation_path = confirmation_changes.get(bench)
+                if confirmation_path is None:
+                    failures.append(f"{bench}: missing confirmation Criterion change interval")
+                    continue
+                confirmation_data = read_json(confirmation_path)
+                confirmation_lower = (
+                    confirmation_data.get("mean", {})
+                    .get("confidence_interval", {})
+                    .get("lower_bound")
+                )
+                if confirmation_lower is None:
+                    failures.append(
+                        f"{confirmation_path}: missing Criterion mean change confidence interval"
+                    )
+                elif float(confirmation_lower) > threshold:
+                    failures.append(
+                        f"{bench}: regression reproduced with mean lower bounds "
+                        f"{float(lower) * 100:.2f}% and "
+                        f"{float(confirmation_lower) * 100:.2f}% exceeding "
+                        f"{threshold * 100:.2f}%"
+                    )
+                else:
+                    checked.append(
+                        f"{bench}: initial regression was not reproduced "
+                        f"({float(lower) * 100:.2f}% then "
+                        f"{float(confirmation_lower) * 100:.2f}% lower bounds)"
+                    )
+            else:
+                failures.append(
+                    f"{bench}: statistically significant mean regression lower bound "
+                    f"{float(lower) * 100:.2f}% exceeds {threshold * 100:.2f}%"
+                )
         else:
             checked.append(
                 f"{bench}: change CI [{float(lower) * 100:.2f}%, {float(upper) * 100:.2f}%]"
             )
+
+
+def criterion_changes(root: Path) -> list[Path]:
+    return [
+        path
+        for path in root.rglob("change/estimates.json")
+        if bench_id(path, root).startswith("ably_compat_")
+    ]
 
 
 def check_load_result(path: Path, result: dict[str, Any], budget: dict[str, Any], failures: list[str], checked: list[str]) -> None:

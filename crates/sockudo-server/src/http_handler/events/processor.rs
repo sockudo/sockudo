@@ -100,12 +100,12 @@ pub(super) async fn process_single_event_parallel(
         None => match channel {
             Some(ch_str) => vec![ch_str],
             None => {
-                warn!("{}", "Missing 'channels' or 'channel' in event");
+                warn!("missing channels or channel in event");
                 return Err(AppError::MissingChannelInfo);
             }
         },
         Some(_) => {
-            warn!("{}", "Empty 'channels' list provided in event");
+            warn!("empty channels list in event");
             return Err(AppError::MissingChannelInfo);
         }
     };
@@ -225,10 +225,7 @@ pub(super) async fn process_single_event_parallel(
                                 .insert("user_count", json!(members_map.len()));
                         }
                         Err(e) => {
-                            warn!(
-                                "Failed to get user count for channel {}: {} (internal error: {:?})",
-                                target_channel_str, e, e
-                            );
+                            warn!(channel = %target_channel_str, error = %e, "failed to get user count for presence channel");
                         }
                     }
                 }
@@ -270,7 +267,7 @@ pub(super) async fn process_single_event_parallel(
                                 debug!(channel = %target_channel_str, cache_key = %cache_key_str, "Cached event for channel");
                             }
                             Err(e) => {
-                                error!(channel = %target_channel_str, cache_key = %cache_key_str, error = %e, "Failed to cache event (internal error: {:?})", e);
+                                error!(channel = %target_channel_str, cache_key = %cache_key_str, error = %e, "failed to cache event for channel");
                             }
                         }
                     }

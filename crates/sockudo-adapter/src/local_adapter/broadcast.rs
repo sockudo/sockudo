@@ -202,28 +202,22 @@ impl LocalAdapter {
 
             // Check if socket has delta enabled for this specific channel
             if delta_compression.is_enabled_for_socket_channel(socket_id, channel) {
-                debug!(
-                    "Socket {} has delta compression enabled for channel {}",
-                    socket_id, channel
-                );
+                debug!(socket_id = %socket_id, channel = %channel, "socket has delta compression enabled");
                 // Extract conflation key
                 let conflation_key_path = channel_settings
                     .and_then(|s| s.conflation_key.as_ref())
                     .or(delta_compression.get_conflation_key_path());
 
-                debug!(
-                    "Conflation key path for socket {}: {:?}",
-                    socket_id, conflation_key_path
-                );
+                debug!(socket_id = %socket_id, conflation_key_path = ?conflation_key_path, "conflation key path for socket");
 
                 let conflation_key = if let Some(path) = conflation_key_path {
                     let extracted = delta_compression
                         .extract_conflation_key_from_path(&base_message_bytes, path);
                     debug!(
-                        "Extracted conflation key from path '{}': '{}' (base_message_bytes len={})",
-                        path,
-                        extracted,
-                        base_message_bytes.len()
+                        path = %path,
+                        conflation_key = %extracted,
+                        base_bytes_len = base_message_bytes.len(),
+                        "extracted conflation key from path"
                     );
                     extracted
                 } else {
@@ -240,17 +234,16 @@ impl LocalAdapter {
 
                 // Get base message for delta computation
                 debug!(
-                    "Looking for base message: socket={}, channel={}, cache_key='{}', event_name='{}'",
-                    socket_id, channel, cache_key, event_name
+                    socket_id = %socket_id,
+                    channel = %channel,
+                    cache_key = %cache_key,
+                    event = %event_name,
+                    "looking for base message"
                 );
                 let base_msg =
                     delta_compression.get_last_message_for_socket(socket_id, channel, &cache_key);
                 let base_msg_opt = base_msg.await;
-                debug!(
-                    "Base message lookup result: socket={}, found={}",
-                    socket_id,
-                    base_msg_opt.is_some()
-                );
+                debug!(socket_id = %socket_id, found = base_msg_opt.is_some(), "base message lookup result");
 
                 // Hash the base message to group sockets with same base
                 let base_hash = if let Some(base) = base_msg_opt.as_ref() {
@@ -260,21 +253,18 @@ impl LocalAdapter {
                 };
 
                 debug!(
-                    "Socket {} grouped with conflation_key='{}', base_hash={} (has_base={})",
-                    socket_id,
-                    conflation_key,
-                    base_hash,
-                    base_hash != 0
+                    socket_id = %socket_id,
+                    conflation_key = %conflation_key,
+                    base_hash = base_hash,
+                    has_base = base_hash != 0,
+                    "socket grouped for delta"
                 );
                 socket_groups
                     .entry((conflation_key, base_hash))
                     .or_default()
                     .push(socket_ref);
             } else {
-                debug!(
-                    "Socket {} does NOT have delta compression enabled",
-                    socket_id
-                );
+                debug!(socket_id = %socket_id, "socket does not have delta compression enabled");
                 non_delta_sockets.push(socket_ref);
             }
         }
@@ -285,18 +275,18 @@ impl LocalAdapter {
         let mut precomputed_deltas: HashMap<(String, u64), PrecomputedDelta> = HashMap::new();
 
         debug!(
-            "Pre-computing deltas for {} socket groups ({} non-delta sockets)",
-            socket_groups.len(),
-            non_delta_sockets.len()
+            socket_groups = socket_groups.len(),
+            non_delta_sockets = non_delta_sockets.len(),
+            "pre-computing deltas for socket groups"
         );
 
         for ((conflation_key, base_hash), group_sockets) in &socket_groups {
             if *base_hash == 0 {
                 // No base message, will send full message
                 debug!(
-                    "Group (conflation_key='{}', base_hash=0) has {} sockets - will send FULL messages (first message)",
-                    conflation_key,
-                    group_sockets.len()
+                    conflation_key = %conflation_key,
+                    socket_count = group_sockets.len(),
+                    "group will send full messages (first message, no base)"
                 );
                 precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
                 continue;
@@ -317,10 +307,10 @@ impl LocalAdapter {
 
                 if should_send_full {
                     debug!(
-                        "Group (conflation_key='{}', base_hash={}) has {} sockets - sending FULL message due to interval",
-                        conflation_key,
-                        base_hash,
-                        group_sockets.len()
+                        conflation_key = %conflation_key,
+                        base_hash = base_hash,
+                        socket_count = group_sockets.len(),
+                        "group sending full message due to interval"
                     );
                     precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
                     continue;
@@ -339,15 +329,13 @@ impl LocalAdapter {
                             // Check if delta is beneficial
                             if delta.len() < base_message_bytes.len() {
                                 debug!(
-                                    "Group (conflation_key='{}', base_hash={}) has {} sockets - computed delta: {} bytes (vs {} bytes original, {:.1}% savings), base_seq={}",
-                                    conflation_key,
-                                    base_hash,
-                                    group_sockets.len(),
-                                    delta.len(),
-                                    base_message_bytes.len(),
-                                    (1.0 - (delta.len() as f64 / base_message_bytes.len() as f64))
-                                        * 100.0,
-                                    base_sequence
+                                    conflation_key = %conflation_key,
+                                    base_hash = base_hash,
+                                    socket_count = group_sockets.len(),
+                                    delta_bytes = delta.len(),
+                                    original_bytes = base_message_bytes.len(),
+                                    base_seq = base_sequence,
+                                    "group computed delta successfully"
                                 );
                                 precomputed_deltas.insert(
                                     (conflation_key.clone(), *base_hash),
@@ -356,12 +344,12 @@ impl LocalAdapter {
                             } else {
                                 // Delta not beneficial
                                 debug!(
-                                    "Group (conflation_key='{}', base_hash={}) has {} sockets - delta NOT beneficial ({} >= {} bytes), sending FULL",
-                                    conflation_key,
-                                    base_hash,
-                                    group_sockets.len(),
-                                    delta.len(),
-                                    base_message_bytes.len()
+                                    conflation_key = %conflation_key,
+                                    base_hash = base_hash,
+                                    socket_count = group_sockets.len(),
+                                    delta_bytes = delta.len(),
+                                    original_bytes = base_message_bytes.len(),
+                                    "group delta not beneficial, sending full"
                                 );
                                 precomputed_deltas
                                     .insert((conflation_key.clone(), *base_hash), None);
@@ -370,8 +358,10 @@ impl LocalAdapter {
                         Err(e) => {
                             // Delta computation failed
                             warn!(
-                                "Group (conflation_key='{}', base_hash={}) delta computation FAILED: {}, sending FULL",
-                                conflation_key, base_hash, e
+                                conflation_key = %conflation_key,
+                                base_hash = base_hash,
+                                error = %e,
+                                "group delta computation failed, sending full"
                             );
                             precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
                         }
@@ -632,20 +622,14 @@ impl LocalAdapter {
                 // Store the message WITHOUT sequence/conflation_key for future delta compression
                 // The client strips these fields before storing, so we must match that behavior
                 info!(
-                    "🔵 STORING FULL base message: seq={}, conflation_key={:?}, len={}, last50='{}'",
-                    sequence,
-                    conflation_key,
-                    base_message_bytes.len(),
-                    String::from_utf8_lossy(
-                        &base_message_bytes[base_message_bytes.len().saturating_sub(50)..]
-                    )
+                    sequence = sequence,
+                    conflation_key = ?conflation_key,
+                    len_bytes = base_message_bytes.len(),
+                    "storing full base message"
                 );
                 info!(
-                    "🔵 SENDING FULL message: len={}, last100='{}'",
-                    message_with_sequence.len(),
-                    String::from_utf8_lossy(
-                        &message_with_sequence[message_with_sequence.len().saturating_sub(100)..]
-                    )
+                    len_bytes = message_with_sequence.len(),
+                    "sending full message"
                 );
                 if let Err(e) = delta_compression
                     .store_sent_message(
@@ -658,7 +642,7 @@ impl LocalAdapter {
                     )
                     .await
                 {
-                    warn!("Failed to store full message for delta state: {e}");
+                    warn!(error = %e, "failed to store full message for delta state");
                 }
 
                 let mut full_message = base_message;
@@ -675,15 +659,12 @@ impl LocalAdapter {
             } => {
                 // Send delta message
                 info!(
-                    "🔴 SENDING DELTA: seq={}, base_index={:?}, conflation_key={:?}, delta_len={}, new_msg_len={}, new_msg_last50='{}'",
-                    sequence,
-                    base_index,
-                    conflation_key,
-                    delta.len(),
-                    base_message_bytes.len(),
-                    String::from_utf8_lossy(
-                        &base_message_bytes[base_message_bytes.len().saturating_sub(50)..]
-                    )
+                    sequence = sequence,
+                    base_index = ?base_index,
+                    conflation_key = ?conflation_key,
+                    delta_bytes = delta.len(),
+                    msg_bytes = base_message_bytes.len(),
+                    "sending delta message"
                 );
                 let algorithm_str = match algorithm {
                     sockudo_delta::DeltaAlgorithm::Fossil => "fossil",
@@ -744,7 +725,7 @@ impl LocalAdapter {
                     )
                     .await
                 {
-                    warn!("Failed to store delta base message state: {e}");
+                    warn!(error = %e, "failed to store delta base message state");
                 }
                 socket_ref.send_message(&pusher_msg)
             }
@@ -829,12 +810,12 @@ impl LocalAdapter {
             // We have a pre-computed delta, use it
             // base_sequence is the actual sequence number of the message used to compute this delta
             debug!(
-                "Sending DELTA message to socket {} on channel {} (seq={}, base_seq={}, delta_size={} bytes)",
-                socket_id,
-                channel,
-                sequence,
-                base_sequence,
-                delta_bytes.len()
+                socket_id = %socket_id,
+                channel = %channel,
+                sequence = sequence,
+                base_seq = base_sequence,
+                delta_bytes = delta_bytes.len(),
+                "sending delta message to socket"
             );
             let algorithm = delta_compression.get_algorithm();
             let omit_algorithm = delta_compression.config.omit_delta_algorithm;
@@ -908,11 +889,11 @@ impl LocalAdapter {
         } else {
             // No delta available (first message or delta not beneficial), send full message
             debug!(
-                "Sending FULL message to socket {} on channel {} (seq={}, size={} bytes)",
-                socket_id,
-                channel,
-                sequence,
-                base_message_bytes.len()
+                socket_id = %socket_id,
+                channel = %channel,
+                sequence = sequence,
+                size_bytes = base_message_bytes.len(),
+                "sending full message to socket"
             );
             // Create message with metadata for sending to client
             // IMPORTANT: Use string manipulation instead of JSON parse/re-serialize
@@ -963,14 +944,18 @@ impl LocalAdapter {
             {
                 Ok(_) => {
                     debug!(
-                        "Successfully stored FULL message for socket {} on channel {} (seq={}, will be base for future deltas)",
-                        socket_id, channel, sequence
+                        socket_id = %socket_id,
+                        channel = %channel,
+                        sequence = sequence,
+                        "stored full message for future delta base"
                     );
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to store FULL message for socket {} on channel {}: {}",
-                        socket_id, channel, e
+                        socket_id = %socket_id,
+                        channel = %channel,
+                        error = %e,
+                        "failed to store full message"
                     );
                 }
             }
@@ -1051,8 +1036,8 @@ impl LocalAdapter {
         for r in results {
             if let Err(e) = r {
                 match &e {
-                    Error::ConnectionClosed(_) => debug!("Send error: {}", e),
-                    _ => warn!("Send error: {}", e),
+                    Error::ConnectionClosed(_) => debug!(error = %e, "send error"),
+                    _ => warn!(error = %e, "send error"),
                 }
             }
         }
@@ -1205,8 +1190,11 @@ impl LocalAdapter {
         let t_before_socket_check = t_start.elapsed().as_nanos();
         if !namespace.sockets.contains_key(socket_id) {
             debug!(
-                "PERF[FAST_PATH_FAIL] channel={} socket={} reason=socket_not_found at={}ns",
-                channel, socket_id, t_before_socket_check
+                channel = %channel,
+                socket_id = %socket_id,
+                elapsed_ns = t_before_socket_check,
+                reason = "socket_not_found",
+                "perf fast path failed"
             );
             return None;
         }
@@ -1220,14 +1208,14 @@ impl LocalAdapter {
             let t_after_count = t_start.elapsed().as_nanos();
 
             debug!(
-                "PERF[FAST_PATH_ALREADY] channel={} socket={} total={}ns ns_get={}ns socket_check={}ns chan_check={}ns count={}ns",
-                channel,
-                socket_id,
-                t_after_count,
-                t_after_ns_get - t_before_ns_get,
-                t_after_socket_check - t_before_socket_check,
-                t_before_count - t_before_chan_check,
-                t_after_count - t_before_count
+                channel = %channel,
+                socket_id = %socket_id,
+                total_ns = t_after_count,
+                ns_get_ns = t_after_ns_get - t_before_ns_get,
+                socket_check_ns = t_after_socket_check - t_before_socket_check,
+                chan_check_ns = t_before_count - t_before_chan_check,
+                count_ns = t_after_count - t_before_count,
+                "perf fast path already in channel"
             );
             return Some((count, false, false));
         }
@@ -1244,15 +1232,15 @@ impl LocalAdapter {
         let t_after_count = t_start.elapsed().as_nanos();
 
         debug!(
-            "PERF[FAST_PATH_NEW] channel={} socket={} total={}ns ns_get={}ns socket_check={}ns chan_check={}ns add={}ns count={}ns",
-            channel,
-            socket_id,
-            t_after_count,
-            t_after_ns_get - t_before_ns_get,
-            t_after_socket_check - t_before_socket_check,
-            t_after_chan_check - t_before_chan_check,
-            t_after_add - t_before_add,
-            t_after_count - t_before_count
+            channel = %channel,
+            socket_id = %socket_id,
+            total_ns = t_after_count,
+            ns_get_ns = t_after_ns_get - t_before_ns_get,
+            socket_check_ns = t_after_socket_check - t_before_socket_check,
+            chan_check_ns = t_after_chan_check - t_before_chan_check,
+            add_ns = t_after_add - t_before_add,
+            count_ns = t_after_count - t_before_count,
+            "perf fast path new channel subscription"
         );
 
         Some((count, newly_subscribed, activated))

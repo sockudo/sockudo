@@ -134,12 +134,12 @@ pub(super) async fn mark_channel_degraded(
                     .send()
                     .await;
                 if let Err(err) = put_result {
-                    error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist DynamoDB history degraded state: {err}");
+                    error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to persist dynamodb history degraded state");
                 }
             }
         }
         Err(err) => {
-            error!(app_id = %request.app_id, channel = %request.channel, "Failed to load DynamoDB history stream before degrade: {err}");
+            error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to load dynamodb history stream before degrade");
         }
     }
     if let Some(metrics) = metrics {

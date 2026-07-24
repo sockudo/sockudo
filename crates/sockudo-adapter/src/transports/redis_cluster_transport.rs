@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 /// Helper function to borrow a string view from redis::Value when possible.
@@ -113,14 +113,19 @@ impl HorizontalTransport for RedisClusterTransport {
 
         if use_sharded_pubsub {
             info!(
-                "Redis Cluster using sharded pub/sub (SSUBSCRIBE/SPUBLISH) for optimal performance"
+                adapter = "redis_cluster",
+                "using sharded pub/sub (SSUBSCRIBE/SPUBLISH)"
             );
         } else {
-            debug!("Redis Cluster using standard pub/sub (SUBSCRIBE/PUBLISH)");
+            debug!(
+                adapter = "redis_cluster",
+                "using standard pub/sub (SUBSCRIBE/PUBLISH)"
+            );
         }
 
         info!(
-            "Redis Cluster transport initialized with dedicated publish and health check connections"
+            adapter = "redis_cluster",
+            "transport initialized with dedicated publish and health check connections"
         );
 
         Ok(Self {
@@ -164,7 +169,10 @@ impl HorizontalTransport for RedisClusterTransport {
             match publish_result {
                 Ok(_) => {
                     if attempt > 0 {
-                        debug!("Broadcast succeeded on retry attempt {}", attempt);
+                        debug!(
+                            adapter = "redis_cluster",
+                            attempt, "broadcast publish succeeded on retry"
+                        );
                     }
                     return Ok(());
                 }
@@ -175,11 +183,7 @@ impl HorizontalTransport for RedisClusterTransport {
                             MAX_RETRIES
                         )));
                     }
-                    warn!(
-                        "Failed to publish broadcast (attempt {}): {}",
-                        attempt + 1,
-                        e
-                    );
+                    warn!(adapter = "redis_cluster", attempt = attempt + 1, error = %e, retryable = true, "broadcast publish failed");
                     tokio::time::sleep(Duration::from_millis(retry_delay)).await;
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                 }
@@ -212,11 +216,16 @@ impl HorizontalTransport for RedisClusterTransport {
             match publish_result {
                 Ok(subscriber_count) => {
                     if attempt > 0 {
-                        debug!("Request publish succeeded on retry attempt {}", attempt);
+                        debug!(
+                            adapter = "redis_cluster",
+                            attempt, "request publish succeeded on retry"
+                        );
                     }
-                    debug!(
-                        "Broadcasted request {} to {} subscribers",
-                        request.request_id, subscriber_count
+                    trace!(
+                        adapter = "redis_cluster",
+                        request_id = %request.request_id,
+                        subscriber_count,
+                        "request published to transport"
                     );
                     return Ok(());
                 }
@@ -227,7 +236,7 @@ impl HorizontalTransport for RedisClusterTransport {
                             MAX_RETRIES
                         )));
                     }
-                    warn!("Failed to publish request (attempt {}): {}", attempt + 1, e);
+                    warn!(adapter = "redis_cluster", attempt = attempt + 1, error = %e, retryable = true, "request publish failed");
                     tokio::time::sleep(Duration::from_millis(retry_delay)).await;
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                 }
@@ -260,7 +269,10 @@ impl HorizontalTransport for RedisClusterTransport {
             match publish_result {
                 Ok(_) => {
                     if attempt > 0 {
-                        debug!("Response publish succeeded on retry attempt {}", attempt);
+                        debug!(
+                            adapter = "redis_cluster",
+                            attempt, "response publish succeeded on retry"
+                        );
                     }
                     return Ok(());
                 }
@@ -271,11 +283,7 @@ impl HorizontalTransport for RedisClusterTransport {
                             MAX_RETRIES
                         )));
                     }
-                    warn!(
-                        "Failed to publish response (attempt {}): {}",
-                        attempt + 1,
-                        e
-                    );
+                    warn!(adapter = "redis_cluster", attempt = attempt + 1, error = %e, retryable = true, "response publish failed");
                     tokio::time::sleep(Duration::from_millis(retry_delay)).await;
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                 }
@@ -318,10 +326,7 @@ impl HorizontalTransport for RedisClusterTransport {
         publish_result.map_err(|e| {
             Error::Redis(format!("Failed to publish to node {target_node_id}: {e}"))
         })?;
-        debug!(
-            "Published request {} to node {} via Redis Cluster",
-            request.request_id, target_node_id
-        );
+        trace!(adapter = "redis_cluster", request_id = %request.request_id, target_node_id = %target_node_id, "request published to node");
         Ok(())
     }
 
@@ -387,8 +392,8 @@ impl HorizontalTransport for RedisClusterTransport {
                         retry_delay = 500;
                         if reconnection_count > 0 {
                             debug!(
-                                "Redis Cluster PubSub reconnected successfully after {} attempt(s)",
-                                reconnection_count
+                                adapter = "redis_cluster",
+                                reconnection_count, "pubsub reconnected successfully"
                             );
                         }
                         if let Some(ready_tx) = ready_tx.take() {
@@ -401,9 +406,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         if let Some(metrics) = metrics.get() {
                             metrics.mark_horizontal_transport_reconnection("redis_cluster");
                         }
-                        error!(
-                            "Redis Cluster PubSub subscriber start failed: {e}, retrying in {retry_delay}ms"
-                        );
+                        error!(adapter = "redis_cluster", retry_delay_ms = retry_delay, error = %e, "pubsub subscriber start failed");
                         tokio::select! {
                             _ = shutdown.notified() => break,
                             _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
@@ -414,12 +417,13 @@ impl HorizontalTransport for RedisClusterTransport {
                 };
 
                 debug!(
-                    "Redis Cluster transport listening on channels: {}, {}, {}, {}, {}",
-                    broadcast_channel,
-                    request_channel,
-                    response_channel,
-                    node_channel,
-                    reply_channel
+                    adapter = "redis_cluster",
+                    broadcast_channel = %broadcast_channel,
+                    request_channel = %request_channel,
+                    response_channel = %response_channel,
+                    node_channel = %node_channel,
+                    reply_channel = %reply_channel,
+                    "transport subscriptions established"
                 );
 
                 // Reset reconnection count on successful subscription
@@ -455,7 +459,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         if let Some(metrics) = metrics.get() {
                             metrics.mark_horizontal_transport_message_dropped("redis_cluster");
                         }
-                        error!("Invalid push message format: {:?}", push_info);
+                        error!(adapter = "redis_cluster", "invalid push message format");
                         continue;
                     }
 
@@ -465,7 +469,10 @@ impl HorizontalTransport for RedisClusterTransport {
                             if let Some(metrics) = metrics.get() {
                                 metrics.mark_horizontal_transport_message_dropped("redis_cluster");
                             }
-                            error!("Failed to parse channel name: {:?}", push_info.data[0]);
+                            error!(
+                                adapter = "redis_cluster",
+                                "push message channel name parse failed"
+                            );
                             continue;
                         }
                     };
@@ -498,7 +505,10 @@ impl HorizontalTransport for RedisClusterTransport {
                             if let Some(metrics) = metrics.get() {
                                 metrics.mark_horizontal_transport_message_dropped("redis_cluster");
                             }
-                            error!("Failed to parse payload: {:?}", push_info.data[1]);
+                            error!(
+                                adapter = "redis_cluster",
+                                "push message payload parse failed"
+                            );
                             continue;
                         }
                     };
@@ -538,11 +548,14 @@ impl HorizontalTransport for RedisClusterTransport {
                                         // Clone connection (cheap, thread-safe per redis-rs docs)
                                         let mut conn = publish_conn.clone();
 
-                                        let _: redis::RedisResult<()> = if sharded {
+                                        let result: redis::RedisResult<()> = if sharded {
                                             conn.spublish(&target, &response_json).await
                                         } else {
                                             conn.publish(&target, response_json).await
                                         };
+                                        if let Err(e) = result {
+                                            warn!(adapter = "redis_cluster", error = %e, "response publish failed");
+                                        }
                                     }
                                 } else if let Some(metrics) = metrics_clone.get() {
                                     metrics
@@ -585,7 +598,11 @@ impl HorizontalTransport for RedisClusterTransport {
                 if let Some(metrics) = metrics.get() {
                     metrics.mark_horizontal_transport_reconnection("redis_cluster");
                 }
-                warn!("Redis Cluster PubSub connection ended, reconnecting...");
+                warn!(
+                    adapter = "redis_cluster",
+                    retryable = true,
+                    "pubsub connection ended"
+                );
                 tokio::select! {
                     _ = shutdown.notified() => break,
                     _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
@@ -638,7 +655,7 @@ impl HorizontalTransport for RedisClusterTransport {
             }
             Ok(_) => Ok(1),
             Err(e) => {
-                error!("get_node_count: SHARDNUMSUB on shard master failed: {e}");
+                error!(adapter = "redis_cluster", error = %e, "SHARDNUMSUB on shard master failed");
                 Ok(1)
             }
         }

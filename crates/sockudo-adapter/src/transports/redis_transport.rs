@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Notify;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
 
 /// Redis adapter configuration
@@ -101,20 +101,20 @@ impl HorizontalTransport for RedisTransport {
         for attempt in 0..=MAX_RETRIES {
             let mut conn = match self.client.events_connection().await {
                 Ok(conn) => conn,
-                Err(e) => {
+                Err(_e) => {
                     self.client.invalidate();
                     if attempt == MAX_RETRIES {
                         return Err(Error::Redis(format!(
-                            "Failed to acquire broadcast connection after {} attempts: {}",
+                            "Failed to acquire broadcast connection after {} attempts",
                             MAX_RETRIES + 1,
-                            e
                         )));
                     }
                     warn!(
-                        "Broadcast connection attempt {} failed: {}, retrying in {}ms",
-                        attempt + 1,
-                        e,
-                        retry_delay
+                        adapter = "redis",
+                        attempt = attempt + 1,
+                        retry_delay_ms = retry_delay,
+                        retryable = true,
+                        "broadcast connection attempt failed"
                     );
                     tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
@@ -127,27 +127,23 @@ impl HorizontalTransport for RedisTransport {
             {
                 Ok(_subscriber_count) => {
                     if attempt > 0 {
-                        debug!("Broadcast succeeded on retry attempt {}", attempt);
+                        debug!(
+                            adapter = "redis",
+                            attempt, "broadcast publish succeeded on retry"
+                        );
                     }
                     return Ok(());
                 }
                 Err(e) => {
-                    // Drop cached connections so Sentinel re-resolves the master on retry.
                     self.client.invalidate();
                     if attempt == MAX_RETRIES {
                         return Err(Error::Redis(format!(
-                            "Failed to publish broadcast after {} attempts: {}",
+                            "Failed to publish broadcast after {} attempts: {e}",
                             MAX_RETRIES + 1,
-                            e
                         )));
                     }
 
-                    warn!(
-                        "Broadcast attempt {} failed: {}, retrying in {}ms",
-                        attempt + 1,
-                        e,
-                        retry_delay
-                    );
+                    warn!(adapter = "redis", attempt = attempt + 1, retry_delay_ms = retry_delay, error = %e, retryable = true, "broadcast publish attempt failed");
                     tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                 }
@@ -173,10 +169,7 @@ impl HorizontalTransport for RedisTransport {
             }
         };
 
-        debug!(
-            "Broadcasted request {} to {} subscribers",
-            request.request_id, subscriber_count
-        );
+        trace!(adapter = "redis", request_id = %request.request_id, subscriber_count, "request published to transport");
         Ok(())
     }
 
@@ -228,10 +221,7 @@ impl HorizontalTransport for RedisTransport {
                 )));
             }
         };
-        debug!(
-            "Published request {} to node {} via Redis",
-            request.request_id, target_node_id
-        );
+        trace!(adapter = "redis", request_id = %request.request_id, target_node_id = %target_node_id, "request published to node");
         Ok(())
     }
 
@@ -255,21 +245,26 @@ impl HorizontalTransport for RedisTransport {
                 if !is_running.load(Ordering::Relaxed) {
                     break;
                 }
-                debug!("Attempting to establish pub/sub connection...");
+                debug!(
+                    adapter = "redis",
+                    "attempting to establish pub/sub connection"
+                );
 
                 // For Sentinel, this re-resolves the current master each reconnect,
                 // which is how the listener follows master failover.
                 let mut pubsub = match sub_client.pubsub().await {
                     Ok(pubsub) => {
-                        retry_delay = 500; // Reset retry delay on success
-                        debug!("Pub/sub connection established successfully");
+                        retry_delay = 500;
+                        debug!(adapter = "redis", "pub/sub connection established");
                         pubsub
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         sub_client.invalidate();
                         error!(
-                            "Failed to get pubsub connection: {}, retrying in {}ms",
-                            e, retry_delay
+                            adapter = "redis",
+                            retry_delay_ms = retry_delay,
+                            retryable = true,
+                            "pub/sub connection failed"
                         );
                         tokio::select! {
                             _ = shutdown.notified() => break,
@@ -290,10 +285,7 @@ impl HorizontalTransport for RedisTransport {
                     ])
                     .await
                 {
-                    error!(
-                        "Failed to subscribe to channels: {}, retrying in {}ms",
-                        e, retry_delay
-                    );
+                    error!(adapter = "redis", error = %e, retry_delay_ms = retry_delay, retryable = true, "pub/sub channel subscription failed");
                     tokio::select! {
                         _ = shutdown.notified() => break,
                         _ = tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)) => {}
@@ -303,12 +295,13 @@ impl HorizontalTransport for RedisTransport {
                 }
 
                 debug!(
-                    "Redis transport listening on channels: {}, {}, {}, {}, {}",
-                    broadcast_channel,
-                    request_channel,
-                    response_channel,
-                    node_channel,
-                    reply_channel
+                    adapter = "redis",
+                    broadcast_channel = %broadcast_channel,
+                    request_channel = %request_channel,
+                    response_channel = %response_channel,
+                    node_channel = %node_channel,
+                    reply_channel = %reply_channel,
+                    "transport subscriptions established"
                 );
 
                 let mut message_stream = pubsub.on_message();
@@ -362,19 +355,19 @@ impl HorizontalTransport for RedisTransport {
                                             reply_to.unwrap_or(response_channel_clone.clone());
                                         match pub_client_clone.command_connection().await {
                                             Ok(mut conn) => {
-                                                if conn
+                                                if let Err(e) = conn
                                                     .publish::<_, _, ()>(&target, response_json)
                                                     .await
-                                                    .is_err()
                                                 {
                                                     pub_client_clone.invalidate();
+                                                    warn!(adapter = "redis", error = %e, "response publish failed");
                                                 }
                                             }
-                                            Err(e) => {
+                                            Err(_e) => {
                                                 pub_client_clone.invalidate();
                                                 warn!(
-                                                    "Failed to acquire connection to publish response: {}",
-                                                    e
+                                                    adapter = "redis",
+                                                    "response connection acquisition failed"
                                                 );
                                             }
                                         }
@@ -390,23 +383,21 @@ impl HorizontalTransport for RedisTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&payload)
-                                {
-                                    response_handler(response).await;
-                                } else {
-                                    if let Some(metrics) = metrics_clone.get() {
-                                        metrics.mark_horizontal_transport_message_dropped("redis");
+                                match sonic_rs::from_slice::<ResponseBody>(&payload) {
+                                    Ok(response) => response_handler(response).await,
+                                    Err(e) => {
+                                        if let Some(metrics) = metrics_clone.get() {
+                                            metrics
+                                                .mark_horizontal_transport_message_dropped("redis");
+                                        }
+                                        warn!(adapter = "redis", error = %e, "response message parse failed");
                                     }
-                                    warn!(
-                                        "Failed to parse response message: {}",
-                                        String::from_utf8_lossy(&payload)
-                                    );
                                 }
                             });
                         }
                     } else {
                         // Error getting payload - connection might be broken
-                        warn!("Error getting message payload: {:?}", payload_result);
+                        warn!(adapter = "redis", "message payload read failed");
                         connection_broken = true;
                         break;
                     }
@@ -417,8 +408,10 @@ impl HorizontalTransport for RedisTransport {
                         metrics.mark_horizontal_transport_reconnection("redis");
                     }
                     warn!(
-                        "Pub/sub connection broken, reconnecting in {}ms...",
-                        retry_delay
+                        adapter = "redis",
+                        retry_delay_ms = retry_delay,
+                        retryable = true,
+                        "pub/sub connection broken"
                     );
                     tokio::select! {
                         _ = shutdown.notified() => break,
@@ -429,10 +422,12 @@ impl HorizontalTransport for RedisTransport {
                     if let Some(metrics) = metrics.get() {
                         metrics.mark_horizontal_transport_reconnection("redis");
                     }
-                    warn!("Pub/sub message stream ended unexpectedly, reconnecting...");
+                    warn!(
+                        adapter = "redis",
+                        retryable = true,
+                        "pub/sub message stream ended unexpectedly"
+                    );
                 }
-
-                // Connection ended, will retry in outer loop
             }
         });
 
@@ -443,7 +438,7 @@ impl HorizontalTransport for RedisTransport {
         let mut conn = match self.client.command_connection().await {
             Ok(conn) => conn,
             Err(e) => {
-                warn!("Failed to acquire connection for node count: {}", e);
+                warn!(adapter = "redis", error = %e, "connection acquisition for node count failed");
                 return Ok(1);
             }
         };
@@ -458,22 +453,28 @@ impl HorizontalTransport for RedisTransport {
                 if values.len() >= 2 {
                     if let redis::Value::Int(count) = values[1] {
                         let node_count = (count as usize).max(1);
-                        debug!(
-                            "Detected {} application instances via PUBSUB NUMSUB",
-                            node_count
+                        trace!(
+                            adapter = "redis",
+                            node_count, "application instances detected via PUBSUB NUMSUB"
                         );
                         Ok(node_count)
                     } else {
-                        warn!("PUBSUB NUMSUB returned non-integer count: {:?}", values[1]);
+                        warn!(
+                            adapter = "redis",
+                            "PUBSUB NUMSUB returned non-integer count"
+                        );
                         Ok(1)
                     }
                 } else {
-                    warn!("PUBSUB NUMSUB returned unexpected format: {:?}", values);
+                    warn!(
+                        adapter = "redis",
+                        "PUBSUB NUMSUB returned unexpected format"
+                    );
                     Ok(1)
                 }
             }
             Err(e) => {
-                error!("Failed to execute PUBSUB NUMSUB: {}", e);
+                error!(adapter = "redis", error = %e, "PUBSUB NUMSUB failed");
                 Ok(1)
             }
         }

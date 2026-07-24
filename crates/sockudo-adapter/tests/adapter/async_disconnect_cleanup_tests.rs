@@ -10,7 +10,7 @@ use sockudo_core::cache::CacheManager;
 use sockudo_core::error::Result;
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
-use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
+use sockudo_core::websocket::{DisconnectCause, SocketId, WebSocketBufferConfig};
 use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
@@ -162,6 +162,7 @@ fn dummy_disconnect_task() -> DisconnectTask {
         app_id: APP_ID.to_string(),
         subscribed_channels: vec![],
         user_id: None,
+        cause: DisconnectCause::Unknown,
         timestamp: Instant::now(),
         connection_info: None,
         presence_ungraceful_timeout_seconds: 0,

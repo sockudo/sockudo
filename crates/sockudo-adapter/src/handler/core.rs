@@ -133,8 +133,10 @@ impl ConnectionHandler {
             .await
         {
             warn!(
-                "Failed to emit unsubscribe count notifications for {}: {}",
-                channel_name, e
+                app_id = %app_config.id,
+                channel = %channel_name,
+                error = %e,
+                "unsubscribe count notification failed"
             );
         }
 
@@ -283,8 +285,9 @@ impl ConnectionHandler {
                         Ok(_) => {
                             // We successfully opened the circuit breaker
                             warn!(
-                                "Circuit breaker opened: too many cleanup failures ({}), disabling async cleanup for {} seconds",
-                                failures, CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS
+                                failure_count = failures,
+                                recovery_timeout_seconds = CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS,
+                                "async cleanup circuit breaker opened"
                             );
                         }
                         Err(_) => {
@@ -296,15 +299,16 @@ impl ConnectionHandler {
                 } else if current_time >= opened_at + CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS {
                     // Time to try recovery - enter half-open state
                     debug!(
-                        "Circuit breaker entering half-open state after {} seconds, attempting recovery",
-                        current_time - opened_at
+                        elapsed_seconds = current_time - opened_at,
+                        "async cleanup circuit breaker entering half-open state"
                     );
                     return !cleanup_queue.is_closed();
                 } else {
                     // Still in timeout period
                     debug!(
-                        "Circuit breaker still open, {} seconds remaining until recovery attempt",
-                        (opened_at + CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS) - current_time
+                        remaining_seconds =
+                            (opened_at + CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS) - current_time,
+                        "async cleanup circuit breaker remains open"
                     );
                     return false;
                 }
@@ -341,7 +345,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         presence_ungraceful_timeout_seconds: u64,
     ) -> Result<()> {
-        debug!("Handling disconnect for socket: {}", socket_id);
+        debug!(socket_id = %socket_id, "handling socket disconnect");
 
         // Try async cleanup first if queue is available and circuit breaker allows
         if self.should_use_async_cleanup().await {
@@ -367,8 +371,8 @@ impl ConnectionHandler {
 
                     if was_circuit_breaker_open > 0 {
                         info!(
-                            "Circuit breaker recovered: async cleanup successful after {} failures",
-                            previous_failures
+                            failure_count = previous_failures,
+                            "async cleanup circuit breaker recovered"
                         );
                     }
 
@@ -383,8 +387,11 @@ impl ConnectionHandler {
                         .fetch_add(1, Ordering::AcqRel)
                         + 1;
                     warn!(
-                        "Async cleanup failed for socket {} (failure #{}: {}), falling back to sync",
-                        socket_id, new_failure_count, e
+                        socket_id = %socket_id,
+                        failure_count = new_failure_count,
+                        error = %e,
+                        retryable = true,
+                        "async cleanup failed, using synchronous cleanup"
                     );
                 }
             }
@@ -404,7 +411,7 @@ impl ConnectionHandler {
     ) -> Result<()> {
         use std::time::Instant;
 
-        debug!("Using async cleanup for socket: {}", socket_id);
+        debug!(socket_id = %socket_id, cleanup_mode = "async", "using socket cleanup mode");
 
         // Step 1: Quick connection state capture (< 1ms).
         // Retain the WebSocketRef outside the lock scope so we can call shutdown()
@@ -417,7 +424,7 @@ impl ConnectionHandler {
                     c
                 } else {
                     // Connection doesn't exist - might have been cleaned up already
-                    debug!("Connection {} not found during disconnect", socket_id);
+                    debug!(socket_id = %socket_id, "connection not found during disconnect");
                     return Ok(());
                 };
 
@@ -425,7 +432,7 @@ impl ConnectionHandler {
             let mut conn_locked = conn_ref.inner.lock().await;
 
             if conn_locked.state.disconnecting {
-                debug!("Connection {} already disconnecting, skipping", socket_id);
+                debug!(socket_id = %socket_id, "connection already disconnecting");
                 return Ok(());
             }
 
@@ -434,6 +441,7 @@ impl ConnectionHandler {
 
             let channels: Vec<String> = conn_locked.state.get_subscribed_channels_list().to_vec();
             let user_id = conn_locked.state.user_id.clone();
+            let cause = conn_locked.state.disconnect_cause;
 
             // Extract presence channel info for webhook processing
             let presence_channels: Vec<String> = channels
@@ -447,6 +455,7 @@ impl ConnectionHandler {
                 app_id: app_id.to_string(),
                 subscribed_channels: channels,
                 user_id: user_id.clone(),
+                cause,
                 timestamp: Instant::now(),
                 connection_info: if !presence_channels.is_empty() {
                     Some(ConnectionCleanupInfo {
@@ -474,10 +483,7 @@ impl ConnectionHandler {
 
         // Step 3: Clean up client event rate limiter (lock-free)
         if self.client_event_limiters.remove(socket_id).is_some() {
-            debug!(
-                "Removed client event rate limiter for socket: {}",
-                socket_id
-            );
+            debug!(socket_id = %socket_id, "client event rate limiter removed");
         }
 
         // Step 3.5: MEMORY LEAK FIX - Clean up delta compression state for this socket
@@ -493,8 +499,9 @@ impl ConnectionHandler {
         if let Err(_send_error) = cleanup_queue.try_send(disconnect_task) {
             // Queue is full or closed - don't return error, fall back to sync cleanup
             warn!(
-                "Failed to queue async cleanup for socket {} (queue full/closed), falling back to sync cleanup",
-                socket_id
+                socket_id = %socket_id,
+                retryable = true,
+                "async cleanup queue unavailable, using synchronous cleanup"
             );
 
             // FIX: Reset the disconnecting flag using proper lock (not try_lock) to ensure
@@ -515,7 +522,7 @@ impl ConnectionHandler {
                 .handle_disconnect_sync(app_id, socket_id, presence_ungraceful_timeout_seconds)
                 .await;
         }
-        debug!("Queued async cleanup for socket: {}", socket_id);
+        debug!(socket_id = %socket_id, "async cleanup queued");
 
         // Step 5: Update metrics immediately (outside connection lock to minimize contention)
         if let Some(ref metrics) = self.metrics {
@@ -523,10 +530,7 @@ impl ConnectionHandler {
             metrics.mark_disconnection(app_id, socket_id);
         }
 
-        debug!(
-            "Fast disconnect processing completed for socket: {}",
-            socket_id
-        );
+        debug!(socket_id = %socket_id, "fast disconnect processing completed");
         Ok(())
     }
 
@@ -536,7 +540,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         presence_ungraceful_timeout_seconds: u64,
     ) -> Result<()> {
-        debug!("Using synchronous cleanup for socket: {}", socket_id);
+        debug!(socket_id = %socket_id, cleanup_mode = "sync", "using socket cleanup mode");
 
         // This is the original synchronous implementation
         // Check if already disconnecting and set flag atomically
@@ -551,10 +555,7 @@ impl ConnectionHandler {
                 conn_locked.state.disconnecting = true;
                 was_disconnecting
             } else {
-                debug!(
-                    "Connection {} is busy, assuming disconnect already in progress",
-                    socket_id
-                );
+                debug!(socket_id = %socket_id, "connection busy during disconnect");
                 true
             }
         } else {
@@ -562,10 +563,7 @@ impl ConnectionHandler {
         };
 
         if already_disconnecting {
-            debug!(
-                "Connection {} already disconnecting or doesn't exist, skipping",
-                socket_id
-            );
+            debug!(socket_id = %socket_id, "connection already disconnecting or missing");
             return Ok(());
         }
 
@@ -576,10 +574,7 @@ impl ConnectionHandler {
 
         // Clean up client event rate limiter
         if self.client_event_limiters.remove(socket_id).is_some() {
-            debug!(
-                "Removed client event rate limiter for socket: {}",
-                socket_id
-            );
+            debug!(socket_id = %socket_id, "client event rate limiter removed");
         }
 
         // MEMORY LEAK FIX: Clean up delta compression state for this socket
@@ -590,7 +585,7 @@ impl ConnectionHandler {
         let app_config = match self.app_manager.find_by_id(app_id).await? {
             Some(app) => app,
             None => {
-                error!("App not found during disconnect: {}", app_id);
+                error!(app_id = %app_id, socket_id = %socket_id, "app not found during disconnect");
                 self.cleanup_connection_from_manager(socket_id, app_id)
                     .await;
                 return Err(sockudo_core::error::Error::ApplicationNotFound);
@@ -641,10 +636,7 @@ impl ConnectionHandler {
             metrics.mark_disconnection(app_id, socket_id);
         }
 
-        debug!(
-            "Successfully processed synchronous disconnect for socket: {}",
-            socket_id
-        );
+        debug!(socket_id = %socket_id, "synchronous disconnect processed");
         Ok(())
     }
 
@@ -682,10 +674,7 @@ impl ConnectionHandler {
                 ))
             }
             None => {
-                warn!(
-                    "No connection found for socket during disconnect: {}",
-                    socket_id
-                );
+                warn!(socket_id = %socket_id, "connection not found during disconnect");
                 Ok((HashSet::new(), None, None))
             }
         }
@@ -704,9 +693,9 @@ impl ConnectionHandler {
         }
 
         debug!(
-            "Processing batch unsubscribe for socket {} from {} channels",
-            socket_id,
-            subscribed_channels.len()
+            socket_id = %socket_id,
+            channel_count = subscribed_channels.len(),
+            "processing disconnect batch unsubscribe"
         );
 
         // Prepare batch operations for all channels
@@ -748,8 +737,11 @@ impl ConnectionHandler {
                         }
                         Err(e) => {
                             error!(
-                                "Error unsubscribing socket {} from channel {} during disconnect: {}",
-                                socket_id, channel_name, e
+                                app_id = %app_config.id,
+                                socket_id = %socket_id,
+                                channel = %channel_name,
+                                error = %e,
+                                "channel unsubscribe failed during disconnect"
                             );
                         }
                     }
@@ -757,8 +749,10 @@ impl ConnectionHandler {
             }
             Err(e) => {
                 error!(
-                    "Batch unsubscribe failed for socket {} during disconnect: {}",
-                    socket_id, e
+                    app_id = %app_config.id,
+                    socket_id = %socket_id,
+                    error = %e,
+                    "batch unsubscribe failed during disconnect"
                 );
             }
         }
@@ -842,8 +836,10 @@ impl ConnectionHandler {
     ) -> Result<()> {
         if app_config.watchlist_events_enabled() && user_watchlist.is_some() {
             info!(
-                "Processing watchlist disconnect for user {} on socket {}",
-                user_id_str, socket_id
+                app_id = %app_config.id,
+                user_id = %user_id_str,
+                socket_id = %socket_id,
+                "processing watchlist disconnect"
             );
 
             // Remove user connection from watchlist manager
@@ -869,8 +865,11 @@ impl ConnectionHandler {
                             .await
                         {
                             warn!(
-                                "Failed to send offline notification to watcher {}: {}",
-                                watcher_socket_id, e
+                                app_id = %app_config.id,
+                                socket_id = %watcher_socket_id,
+                                user_id = %user_id_str,
+                                error = %e,
+                                "watchlist offline notification failed"
                             );
                         }
                     }
@@ -924,7 +923,7 @@ impl ConnectionHandler {
         }
     }
 
-    async fn get_user_id_for_socket(
+    pub(super) async fn get_user_id_for_socket(
         &self,
         socket_id: &SocketId,
         app_config: &App,
@@ -954,12 +953,20 @@ impl ConnectionHandler {
     ) {
         let Some(ref local_adapter) = self.local_adapter else {
             warn!(
-                "local_adapter unavailable, namespace presence mirror not updated for socket {socket_id} in channel {channel}"
+                app_id = %app_id,
+                socket_id = %socket_id,
+                channel = %channel,
+                "local adapter unavailable, presence mirror not updated"
             );
             return;
         };
         let Some(namespace) = local_adapter.namespaces.get(app_id) else {
-            warn!("namespace {app_id} missing, presence mirror not updated for socket {socket_id}");
+            warn!(
+                app_id = %app_id,
+                socket_id = %socket_id,
+                channel = %channel,
+                "namespace missing, presence mirror not updated"
+            );
             return;
         };
         namespace
@@ -977,7 +984,10 @@ impl ConnectionHandler {
     ) {
         let Some(ref local_adapter) = self.local_adapter else {
             warn!(
-                "local_adapter unavailable, namespace presence mirror not cleared for socket {socket_id} in channel {channel}"
+                app_id = %app_id,
+                socket_id = %socket_id,
+                channel = %channel,
+                "local adapter unavailable, presence mirror not cleared"
             );
             return;
         };
@@ -1070,8 +1080,11 @@ impl ConnectionHandler {
                 self.send_message_to_socket(app_id, socket_id, cache_message)
                     .await?;
                 info!(
-                    "Sent cached content to socket {} for channel {}",
-                    socket_id, channel
+                    app_id = %app_id,
+                    socket_id = %socket_id,
+                    channel = %channel,
+                    outcome = "hit",
+                    "cached channel content sent"
                 );
             }
             Ok(None) => {
@@ -1089,18 +1102,17 @@ impl ConnectionHandler {
                         .await
                 {
                     warn!(
-                        "Failed to send cache_missed webhook for channel {}: {}",
-                        channel, e
+                        app_id = %app_id,
+                        channel = %channel,
+                        error = %e,
+                        "cache miss webhook send failed"
                     );
                 }
 
-                info!(
-                    "No cached content found for channel: {}, sent cache_miss event",
-                    channel
-                );
+                info!(app_id = %app_id, channel = %channel, outcome = "miss", "channel cache lookup completed");
             }
             Err(e) => {
-                error!("Failed to get cache for channel {}: {}", channel, e);
+                error!(app_id = %app_id, channel = %channel, error = %e, "channel cache lookup failed");
 
                 // Send cache miss event as fallback
                 let cache_miss_message = PusherMessage::cache_miss_event(channel.to_string());
@@ -1146,7 +1158,7 @@ impl ConnectionHandler {
             }
         }
 
-        debug!("Stored cache for channel {} in app {}", channel, app_id);
+        debug!(app_id = %app_id, channel = %channel, "channel cache stored");
         Ok(())
     }
 
@@ -1158,7 +1170,7 @@ impl ConnectionHandler {
             Error::Internal(format!("Failed to clear cache for channel {channel}: {e}"))
         })?;
 
-        debug!("Cleared cache for channel {} in app {}", channel, app_id);
+        debug!(app_id = %app_id, channel = %channel, "channel cache cleared");
         Ok(())
     }
 
@@ -1170,7 +1182,7 @@ impl ConnectionHandler {
             Ok(Some(_)) => Ok(true),
             Ok(None) => Ok(false),
             Err(e) => {
-                warn!("Error checking cache for channel {}: {}", channel, e);
+                warn!(app_id = %app_id, channel = %channel, error = %e, "channel cache check failed");
                 Ok(false) // Assume no cache on error
             }
         }
@@ -1180,8 +1192,9 @@ impl ConnectionHandler {
     pub async fn handle_dead_node_cleanup(&self, event: DeadNodeEvent) -> Result<()> {
         let orphaned_members_count = event.orphaned_members.len();
         debug!(
-            "Processing dead node cleanup for node {}, cleaning up {} orphaned members",
-            event.dead_node_id, orphaned_members_count
+            dead_node_id = %event.dead_node_id,
+            member_count = orphaned_members_count,
+            "processing dead node cleanup"
         );
 
         // Group orphaned members by app_id to batch app config lookups
@@ -1194,9 +1207,9 @@ impl ConnectionHandler {
         }
 
         debug!(
-            "Batched {} orphaned members across {} apps for efficient processing",
-            orphaned_members_count,
-            members_by_app.len()
+            member_count = orphaned_members_count,
+            apps_count = members_by_app.len(),
+            "dead node members batched by app"
         );
 
         // Process each app once
@@ -1205,27 +1218,27 @@ impl ConnectionHandler {
                 Ok(Some(app)) => app,
                 Ok(None) => {
                     warn!(
-                        "App {} not found during dead node cleanup, skipping {} members",
-                        app_id,
-                        members.len()
+                        app_id = %app_id,
+                        member_count = members.len(),
+                        "app not found during dead node cleanup"
                     );
                     continue;
                 }
                 Err(e) => {
                     error!(
-                        "Error fetching app {} during dead node cleanup: {}, skipping {} members",
-                        app_id,
-                        e,
-                        members.len()
+                        app_id = %app_id,
+                        member_count = members.len(),
+                        error = %e,
+                        "app lookup failed during dead node cleanup"
                     );
                     continue;
                 }
             };
 
             debug!(
-                "Processing {} orphaned members for app {}",
-                members.len(),
-                app_config.id
+                app_id = %app_config.id,
+                member_count = members.len(),
+                "processing orphaned members"
             );
 
             let mut compatibility_connections = HashSet::new();
@@ -1321,13 +1334,20 @@ impl ConnectionHandler {
                     .await
                 {
                     error!(
-                        "Failed to handle member removal for user {} in channel {} (app: {}) during dead node cleanup: {}",
-                        orphaned_member.user_id, orphaned_member.channel, orphaned_member.app_id, e
+                        app_id = %orphaned_member.app_id,
+                        channel = %orphaned_member.channel,
+                        user_id = %orphaned_member.user_id,
+                        dead_node_id = %event.dead_node_id,
+                        error = %e,
+                        "orphaned member removal failed"
                     );
                 } else {
                     debug!(
-                        "Successfully cleaned up orphaned member {} from channel {} (app: {})",
-                        orphaned_member.user_id, orphaned_member.channel, orphaned_member.app_id
+                        app_id = %orphaned_member.app_id,
+                        channel = %orphaned_member.channel,
+                        user_id = %orphaned_member.user_id,
+                        dead_node_id = %event.dead_node_id,
+                        "orphaned member cleanup completed"
                     );
                 }
             }
@@ -1358,8 +1378,9 @@ impl ConnectionHandler {
         }
 
         info!(
-            "Completed dead node cleanup for node {}, processed {} orphaned members",
-            event.dead_node_id, orphaned_members_count
+            dead_node_id = %event.dead_node_id,
+            member_count = orphaned_members_count,
+            "dead node cleanup completed"
         );
 
         Ok(())

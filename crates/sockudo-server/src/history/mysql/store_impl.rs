@@ -375,7 +375,17 @@ impl HistoryStore for MySqlHistoryStore {
         if let Some(metrics) = self.metrics.as_deref() {
             let _ = refresh_history_state_metrics(&self.pool, &self.tables, metrics, app_id).await;
         }
-        info!(app_id = %app_id, channel = %channel, previous_stream_id = ?previous_stream_id, new_stream_id = %new_stream_id, purged_messages, purged_bytes, reason = %reason, requested_by = ?requested_by, "Operator reset durable history stream");
+        info!(
+            app_id = %app_id,
+            channel = %channel,
+            previous_stream_id = previous_stream_id.as_deref().unwrap_or(""),
+            new_stream_id = %new_stream_id,
+            purged_messages,
+            purged_bytes,
+            reason = %reason,
+            requested_by = requested_by.unwrap_or(""),
+            "operator reset durable history stream"
+        );
         let inspection = self.resolved_stream_inspection(app_id, channel).await?;
         Ok(HistoryResetResult {
             app_id: app_id.to_string(),
@@ -487,7 +497,18 @@ impl HistoryStore for MySqlHistoryStore {
                 refresh_history_state_metrics(&self.pool, &self.tables, metrics.as_ref(), app_id)
                     .await;
         }
-        info!(app_id = %app_id, channel = %channel, mode = %request.mode.as_str(), before_serial = request.before_serial, before_time_ms = request.before_time_ms, purged_messages, purged_bytes, reason = %request.reason, requested_by = ?request.requested_by, "Operator purged durable history rows");
+        info!(
+            app_id = %app_id,
+            channel = %channel,
+            mode = %request.mode.as_str(),
+            before_serial = request.before_serial,
+            before_time_ms = request.before_time_ms,
+            purged_messages,
+            purged_bytes,
+            reason = %request.reason,
+            requested_by = request.requested_by.as_deref().unwrap_or(""),
+            "operator purged durable history rows"
+        );
         let inspection = self.resolved_stream_inspection(app_id, channel).await?;
         Ok(HistoryPurgeResult {
             app_id: app_id.to_string(),

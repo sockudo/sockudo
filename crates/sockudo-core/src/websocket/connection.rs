@@ -92,7 +92,7 @@ impl WebSocket {
         if code >= 4000 {
             let error_message = PusherMessage::error(u32::from(code), reason.clone(), None);
             if let Err(e) = self.send_message(&error_message) {
-                warn!("Failed to send error message before close: {}", e);
+                warn!(error = %e, "failed to send error message before close");
             }
         }
 

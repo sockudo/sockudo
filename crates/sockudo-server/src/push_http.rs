@@ -3067,6 +3067,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_conflict_does_not_attach_request_to_mismatched_status() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
         let store = Arc::new(MemoryPushStore::new());
         let queue = Arc::new(MemoryPushQueue::new());
         store.upsert_device(sample_device()).await.unwrap();
@@ -3114,6 +3115,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_id_election_suppresses_a_different_intent_with_matching_status_shape() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
         let store = Arc::new(MemoryPushStore::new());
         let queue = Arc::new(MemoryPushQueue::new());
         store.upsert_device(sample_device()).await.unwrap();
@@ -3164,6 +3166,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_preview_and_queued_intent_use_resolved_template() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
         let store = Arc::new(MemoryPushStore::new());
         let queue = Arc::new(MemoryPushQueue::new());
         store.upsert_device(sample_device()).await.unwrap();
@@ -3229,6 +3232,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_rejects_when_no_provider_worker_is_available() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
         let store = Arc::new(MemoryPushStore::new());
         let queue = Arc::new(MemoryPushQueue::new());
         store.upsert_device(sample_device()).await.unwrap();
@@ -3252,6 +3256,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_fcm_publish_requires_fcm_worker_capability() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
         let store: DynPushStore = Arc::new(MemoryPushStore::new());
         let queue: DynPushQueue = Arc::new(MemoryPushQueue::new());
         let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Apns]);
@@ -3277,6 +3282,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_apns_publish_requires_apns_worker_capability() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
         let store: DynPushStore = Arc::new(MemoryPushStore::new());
         let queue: DynPushQueue = Arc::new(MemoryPushQueue::new());
         let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Fcm]);

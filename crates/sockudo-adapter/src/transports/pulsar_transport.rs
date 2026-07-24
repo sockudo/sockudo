@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 pub struct PulsarTransport {
     client: Pulsar<TokioExecutor>,
@@ -99,8 +99,11 @@ impl HorizontalTransport for PulsarTransport {
             })?;
 
         info!(
-            "Pulsar transport initialized with topics: {}, {}, {}",
-            broadcast_topic, request_topic, response_topic
+            adapter = "pulsar",
+            broadcast_topic = %broadcast_topic,
+            request_topic = %request_topic,
+            response_topic = %response_topic,
+            "transport initialized"
         );
 
         Ok(Self {
@@ -225,16 +228,16 @@ impl PulsarTransport {
                                 if let Some(metrics) = metrics.get() {
                                     metrics.mark_horizontal_transport_message_dropped("pulsar");
                                 }
-                                warn!("Failed to parse Pulsar {kind} payload: {}", error);
+                                warn!(adapter = "pulsar", kind = kind, error = %error, "transport message parse failed");
                             }
                         }
 
                         if let Err(error) = consumer.ack(&message).await {
-                            warn!("Failed to ack Pulsar {kind} message: {}", error);
+                            warn!(adapter = "pulsar", kind = kind, error = %error, "message ack failed");
                         }
                     }
                     Err(error) => {
-                        error!("Pulsar {kind} consumer error: {}", error);
+                        error!(adapter = "pulsar", kind = kind, error = %error, "consumer loop error");
                         break;
                     }
                 }
@@ -242,7 +245,7 @@ impl PulsarTransport {
 
             let _ = consumer.unsubscribe().await;
             let _ = consumer.close().await;
-            warn!("Pulsar {kind} consumer loop ended");
+            warn!(adapter = "pulsar", kind = kind, "consumer loop ended");
         });
     }
 
@@ -284,7 +287,7 @@ impl PulsarTransport {
                                     if let Err(error) =
                                         publish_message(&response_producer, &response).await
                                     {
-                                        warn!("Failed to publish Pulsar response: {}", error);
+                                        warn!(adapter = "pulsar", error = %error, "response publish failed");
                                     }
                                 }
                                 Err(
@@ -293,23 +296,23 @@ impl PulsarTransport {
                                     | Error::NoResponseNeeded,
                                 ) => {}
                                 Err(error) => {
-                                    warn!("Pulsar request handler failed: {}", error);
+                                    warn!(adapter = "pulsar", error = %error, "request handler failed");
                                 }
                             },
                             Err(error) => {
                                 if let Some(metrics) = metrics.get() {
                                     metrics.mark_horizontal_transport_message_dropped("pulsar");
                                 }
-                                warn!("Failed to parse Pulsar request payload: {}", error);
+                                warn!(adapter = "pulsar", error = %error, "request payload parse failed");
                             }
                         }
 
                         if let Err(error) = consumer.ack(&message).await {
-                            warn!("Failed to ack Pulsar request message: {}", error);
+                            warn!(adapter = "pulsar", error = %error, "request message ack failed");
                         }
                     }
                     Err(error) => {
-                        error!("Pulsar request consumer error: {}", error);
+                        error!(adapter = "pulsar", error = %error, "request consumer loop error");
                         break;
                     }
                 }
@@ -317,7 +320,7 @@ impl PulsarTransport {
 
             let _ = consumer.unsubscribe().await;
             let _ = consumer.close().await;
-            warn!("Pulsar request consumer loop ended");
+            warn!(adapter = "pulsar", "request consumer loop ended");
         });
     }
 }
@@ -340,7 +343,7 @@ async fn publish_message<T: serde::Serialize>(
         .await
         .map_err(|e| Error::Internal(format!("Failed to publish Pulsar message: {e}")))?;
 
-    debug!("Published Pulsar message");
+    trace!(adapter = "pulsar", "message published to transport");
     Ok(())
 }
 

@@ -18,7 +18,7 @@ use sonic_rs::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 const MAX_CONCURRENT_WEBHOOKS: usize = 20;
 
@@ -70,7 +70,7 @@ impl WebhookSender {
         match self.app_manager.find_by_id(app_id).await? {
             Some(app) => Ok(app),
             None => {
-                error!("Webhook: Failed to find app with ID: {}", app_id);
+                error!(app_id = %app_id, "webhook app not found");
                 Err(Error::InvalidAppKey)
             }
         }
@@ -78,7 +78,7 @@ impl WebhookSender {
 
     async fn validate_webhook_job(&self, app_id: &str, events: &[Value]) -> Result<()> {
         if events.is_empty() {
-            warn!("Webhook job for app {} has no events.", app_id);
+            warn!(app_id = %app_id, "webhook job has no events");
             return Ok(());
         }
         Ok(())
@@ -148,10 +148,7 @@ impl WebhookSender {
             Some(pattern) => match regex::Regex::new(pattern) {
                 Ok(regex) => Some(regex),
                 Err(_) => {
-                    warn!(
-                        "Ignoring invalid webhook channel_pattern regex: {}",
-                        pattern
-                    );
+                    warn!("invalid webhook channel_pattern regex");
                     return Vec::new();
                 }
             },
@@ -208,14 +205,14 @@ impl WebhookSender {
     pub async fn process_webhook_job(&self, job: JobData) -> Result<()> {
         let app_id = job.app_id.clone();
         let app_key = job.app_key.clone();
-        debug!("Processing webhook job for app_id: {}", app_id);
+        debug!(app_id = %app_id, "processing webhook job");
 
         let app_config = self.get_app_config(&app_id).await?;
 
         let webhook_configs = match app_config.webhooks_ref() {
             Some(hooks) => hooks,
             None => {
-                debug!("No webhooks configured for app: {}", app_id);
+                debug!(app_id = %app_id, "no webhooks configured for app");
                 return Ok(());
             }
         };
@@ -225,10 +222,7 @@ impl WebhookSender {
 
         let relevant_webhooks = self.find_relevant_webhooks(&job.payload.events, webhook_configs);
         if relevant_webhooks.is_empty() {
-            debug!(
-                "No matching webhook configurations for events in job for app {}",
-                app_id
-            );
+            debug!(app_id = %app_id, "no matching webhook configurations for events");
             return Ok(());
         }
 
@@ -263,7 +257,7 @@ impl WebhookSender {
 
         for task_handle in tasks {
             if let Err(e) = task_handle.await {
-                error!("Webhook task execution failed: {}", e);
+                error!(error = %e, "webhook task execution failed");
             }
         }
 
@@ -298,17 +292,14 @@ impl WebhookSender {
             #[cfg(not(feature = "lambda"))]
             {
                 warn!(
-                    "Lambda webhook configured for app {} but Lambda support not compiled in.",
-                    app_id
+                    app_id = %app_id,
+                    "lambda webhook configured but lambda feature not compiled in"
                 );
                 drop(permit);
                 tokio::spawn(async {})
             }
         } else {
-            warn!(
-                "Webhook for app {} has neither URL nor Lambda config.",
-                app_id
-            );
+            warn!(app_id = %app_id, "webhook has neither url nor lambda config");
             drop(permit);
             tokio::spawn(async {})
         }
@@ -335,24 +326,19 @@ impl WebhookSender {
 
         tokio::spawn(async move {
             let _permit = params.permit;
-            if let Err(e) = send_pusher_webhook(
+            let _ = send_pusher_webhook(
                 &client,
                 PusherWebhookRequest {
-                    url: url_str.clone(),
-                    app_key: params.app_key.clone(),
-                    signature: params.signature.clone(),
+                    url: url_str,
+                    app_key: params.app_key,
+                    signature: params.signature,
                     json_body: params.body_to_send,
                     custom_headers,
                     request_timeout_ms,
                     retry_config: retry_policy,
                 },
             )
-            .await
-            {
-                error!("Webhook send error to URL {}: {}", url_str, e);
-            } else {
-                debug!("Successfully sent Pusher webhook to URL: {}", url_str);
-            }
+            .await;
         })
     }
 
@@ -374,9 +360,18 @@ impl WebhookSender {
                 .invoke_lambda(&webhook_clone, "batch_events", &app_id, payload_for_lambda)
                 .await
             {
-                error!("Lambda webhook error for app {}: {}", app_id, e);
+                error!(
+                    delivery_method = "lambda",
+                    app_id = %app_id,
+                    error = %e,
+                    "lambda webhook invocation failed"
+                );
             } else {
-                debug!("Successfully invoked Lambda for app: {}", app_id);
+                debug!(
+                    delivery_method = "lambda",
+                    app_id = %app_id,
+                    "lambda webhook invoked successfully"
+                );
             }
         })
     }
@@ -431,13 +426,7 @@ struct PusherWebhookRequest {
     retry_config: WebhookRetryConfig,
 }
 
-/// Helper function to send a Pusher-formatted webhook with retry and exponential backoff.
-///
-/// On non-2XX responses or network errors, retries with exponential backoff
-/// for up to 5 minutes (per Pusher protocol spec).
 async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> Result<()> {
-    debug!("Sending Pusher webhook to URL: {}", request.url);
-
     let start = tokio::time::Instant::now();
     let request_timeout = Duration::from_millis(request.request_timeout_ms.max(1));
     let max_retry_duration = Duration::from_millis(request.retry_config.max_elapsed_time_ms.max(1));
@@ -465,33 +454,45 @@ async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> 
                 }
 
                 if !request.retry_config.enabled {
+                    warn!(
+                        delivery_method = "http",
+                        attempt,
+                        error = %e,
+                        "webhook delivery failed, retries disabled"
+                    );
                     return Err(e);
                 }
 
                 if let Some(max_attempts) = request.retry_config.max_attempts
                     && attempt >= max_attempts
                 {
+                    warn!(
+                        delivery_method = "http",
+                        attempt,
+                        error = %e,
+                        "webhook delivery failed, max attempts reached"
+                    );
                     return Err(e);
                 }
 
                 let elapsed = start.elapsed();
                 if elapsed + delay > max_retry_duration {
-                    error!(
-                        "Webhook to {} failed after {} attempts over {:.1}s, giving up: {}",
-                        request.url,
+                    warn!(
+                        delivery_method = "http",
                         attempt,
-                        elapsed.as_secs_f64(),
-                        e
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        error = %e,
+                        "webhook delivery budget exhausted"
                     );
                     return Err(e);
                 }
 
                 warn!(
-                    "Webhook to {} failed (attempt {}), retrying in {:.1}s: {}",
-                    request.url,
+                    delivery_method = "http",
                     attempt,
-                    delay.as_secs_f64(),
-                    e
+                    retry_delay_ms = delay.as_millis() as u64,
+                    error = %e,
+                    "webhook delivery failed, retrying"
                 );
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(Duration::from_millis(
@@ -502,7 +503,6 @@ async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> 
     }
 }
 
-/// Single attempt to send a Pusher webhook.
 async fn send_pusher_webhook_once(
     client: &Client,
     url: &str,
@@ -527,34 +527,44 @@ async fn send_pusher_webhook_once(
         Ok(response) => {
             let status = response.status();
             if status.is_success() {
-                info!(
-                    "Successfully sent Pusher webhook to {} (status: {})",
-                    url, status
+                debug!(
+                    delivery_method = "http",
+                    status = status.as_u16(),
+                    "webhook delivered"
                 );
                 Ok(())
             } else {
-                let error_text = response.text().await.unwrap_or_default();
-                error!(
-                    "Pusher webhook to {} failed with status {}: {}",
-                    url, status, error_text
-                );
-                let retryability = if should_retry_status(status) {
-                    "retryable"
+                let _ = response.text().await;
+                if should_retry_status(status) {
+                    debug!(
+                        delivery_method = "http",
+                        status = status.as_u16(),
+                        "webhook returned retryable status"
+                    );
+                    Err(Error::Other(format!(
+                        "webhook returned retryable status {status}"
+                    )))
                 } else {
-                    return Err(Error::Protocol(format!(
-                        "Webhook to {url} failed with non-retryable status {status}"
-                    )));
-                };
-                Err(Error::Other(format!(
-                    "Webhook to {url} failed with {retryability} status {status}"
-                )))
+                    error!(
+                        delivery_method = "http",
+                        status = status.as_u16(),
+                        "webhook permanent delivery failure"
+                    );
+                    Err(Error::Protocol(format!(
+                        "webhook failed with non-retryable status {status}"
+                    )))
+                }
             }
         }
         Err(e) => {
-            error!("Failed to send Pusher webhook to {}: {}", url, e);
-            Err(Error::Other(format!(
-                "HTTP request failed for webhook to {url}: {e}"
-            )))
+            let ec = request_error_class(&e);
+            debug!(
+                delivery_method = "http",
+                error_class = ec,
+                error = %e,
+                "webhook http request attempt failed"
+            );
+            Err(Error::Other(format!("webhook http request failed: {e}")))
         }
     }
 }
@@ -563,8 +573,29 @@ fn log_webhook_processing_pusher_format(app_id: &str, event_count: usize) {
     debug!(
         app_id = %app_id,
         event_count,
-        "Processing Pusher webhook payload"
+        "processing pusher webhook payload"
     );
+}
+
+#[allow(dead_code)]
+fn webhook_error_class(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else {
+        "request"
+    }
+}
+
+fn request_error_class(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else {
+        "request"
+    }
 }
 
 #[cfg(test)]
@@ -616,6 +647,7 @@ mod tests {
             WebhookSender::new(app_manager.clone(), WebhookRetryConfig::default(), 10_000);
 
         let job = JobData {
+            job_id: None,
             app_id: "test_app".to_string(),
             app_key: "test_key".to_string(),
             app_secret: "test_secret".to_string(),
@@ -639,6 +671,7 @@ mod tests {
             WebhookSender::new(app_manager.clone(), WebhookRetryConfig::default(), 10_000);
 
         let job = JobData {
+            job_id: None,
             app_id: "test_app".to_string(),
             app_key: "test_key".to_string(),
             app_secret: "test_secret".to_string(),
@@ -663,6 +696,7 @@ mod tests {
             WebhookSender::new(app_manager.clone(), WebhookRetryConfig::default(), 10_000);
 
         let job = JobData {
+            job_id: None,
             app_id: "non_existent_app".to_string(),
             app_key: "test_key".to_string(),
             app_secret: "test_secret".to_string(),
@@ -692,6 +726,7 @@ mod tests {
         for i in 0..10 {
             let sender_clone = webhook_sender.clone();
             let job = JobData {
+                job_id: None,
                 app_id: "test_app".to_string(),
                 app_key: "test_key".to_string(),
                 app_secret: "test_secret".to_string(),

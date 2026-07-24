@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 const NATS_SYS_SERVER_PING_SUBJECT: &str = "$SYS.REQ.SERVER.PING";
@@ -150,11 +150,16 @@ impl NatsTransport {
         }
 
         if count > 0 {
-            debug!("Detected {} NATS server(s) via system ping", count);
+            debug!(
+                adapter = "nats",
+                server_count = count,
+                "server count detected via system ping"
+            );
             Ok(Some(count))
         } else {
             debug!(
-                "NATS system discovery returned no responses; falling back to configured/default node count"
+                adapter = "nats",
+                "system discovery returned no responses; falling back to configured node count"
             );
             Ok(None)
         }
@@ -177,14 +182,18 @@ impl HorizontalTransport for NatsTransport {
 
     async fn new(config: Self::Config) -> Result<Self> {
         info!(
-            "NATS transport config: servers={:?}, prefix={}, request_timeout={}ms, connection_timeout={}ms",
-            config.servers, config.prefix, config.request_timeout_ms, config.connection_timeout_ms
+            adapter = "nats",
+            prefix = %config.prefix,
+            request_timeout_ms = config.request_timeout_ms,
+            connection_timeout_ms = config.connection_timeout_ms,
+            "transport initializing"
         );
         debug!(
+            adapter = "nats",
             username_configured = config.username.is_some(),
             password_configured = config.password.is_some(),
             token_configured = config.token.is_some(),
-            "NATS transport credentials configured"
+            "transport credentials configured"
         );
 
         // Build subject names before connecting so hot publish paths can reuse
@@ -199,33 +208,41 @@ impl HorizontalTransport for NatsTransport {
             .event_callback(|event| async move {
                 match event {
                     async_nats::Event::Connected => {
-                        info!("NATS connection established");
+                        info!(adapter = "nats", "connection established");
                     }
                     async_nats::Event::Disconnected => {
-                        warn!("NATS connection lost");
+                        warn!(adapter = "nats", retryable = true, "connection lost");
                     }
                     async_nats::Event::SlowConsumer(sid) => {
-                        error!(subscription_id = sid, "NATS slow consumer detected");
+                        error!(
+                            adapter = "nats",
+                            subscription_id = sid,
+                            "slow consumer detected"
+                        );
                     }
                     async_nats::Event::ServerError(err) => {
-                        error!("NATS server error: {}", err);
+                        error!(adapter = "nats", error = %err, "server error");
                     }
                     async_nats::Event::ClientError(ref err) => match err {
                         async_nats::ClientError::MaxReconnects => {
-                            error!("NATS max reconnects exhausted");
+                            error!(adapter = "nats", "max reconnects exhausted");
                         }
                         async_nats::ClientError::Other(msg) => {
-                            error!("NATS client error: {}", msg);
+                            error!(adapter = "nats", error = %msg, "client error");
                         }
                     },
                     async_nats::Event::LameDuckMode => {
-                        warn!("NATS server entering lame duck mode");
+                        warn!(
+                            adapter = "nats",
+                            retryable = true,
+                            "server entering lame duck mode"
+                        );
                     }
                     async_nats::Event::Draining => {
-                        info!("NATS client draining");
+                        info!(adapter = "nats", "client draining");
                     }
                     async_nats::Event::Closed => {
-                        warn!("NATS connection closed");
+                        warn!(adapter = "nats", retryable = true, "connection closed");
                     }
                 }
             });
@@ -294,7 +311,7 @@ impl HorizontalTransport for NatsTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish broadcast: {e}")))?;
 
-        debug!("Published broadcast message via NATS");
+        trace!(adapter = "nats", "broadcast message published to transport");
         Ok(())
     }
 
@@ -307,7 +324,7 @@ impl HorizontalTransport for NatsTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish request: {e}")))?;
 
-        debug!("Broadcasted request {} via NATS", request.request_id);
+        trace!(adapter = "nats", request_id = %request.request_id, "request published to transport");
         Ok(())
     }
 
@@ -320,7 +337,7 @@ impl HorizontalTransport for NatsTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish response: {e}")))?;
 
-        debug!("Published response via NATS");
+        trace!(adapter = "nats", "response published to transport");
         Ok(())
     }
 
@@ -385,8 +402,13 @@ impl HorizontalTransport for NatsTransport {
             .map_err(|e| Error::Internal(format!("Failed to subscribe to node subject: {e}")))?;
 
         info!(
-            "NATS transport listening on subjects: {}, {}, {}, {}, {}",
-            broadcast_subject, request_subject, response_subject, inbox_subject, node_subject
+            adapter = "nats",
+            broadcast_subject = %broadcast_subject,
+            request_subject = %request_subject,
+            response_subject = %response_subject,
+            inbox_subject = %inbox_subject,
+            node_subject = %node_subject,
+            "transport subscriptions established"
         );
 
         // Spawn a task to handle broadcast messages
@@ -418,17 +440,12 @@ impl HorizontalTransport for NatsTransport {
                             if let Some(m) = metrics_driver.get() {
                                 m.mark_horizontal_transport_message_dropped("nats");
                             }
-                            let payload_preview =
-                                String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                            error!(
-                                "Failed to parse broadcast message: {} - payload preview: {}",
-                                e, payload_preview
-                            );
+                            error!(adapter = "nats", error = %e, "broadcast message parse failed");
                         }
                     }
                 });
             }
-            warn!("Broadcast subscription ended unexpectedly");
+            warn!(adapter = "nats", "broadcast subscription ended");
         });
 
         // Spawn a task to handle request messages
@@ -464,7 +481,7 @@ impl HorizontalTransport for NatsTransport {
                                     && let Err(e) =
                                         client.publish(reply_to, response_data.into()).await
                                 {
-                                    warn!("Failed to publish response: {}", e);
+                                    warn!(adapter = "nats", error = %e, "response publish failed");
                                 }
                             }
                             metrics.record_processed();
@@ -474,17 +491,12 @@ impl HorizontalTransport for NatsTransport {
                             if let Some(m) = metrics_driver.get() {
                                 m.mark_horizontal_transport_message_dropped("nats");
                             }
-                            let payload_preview =
-                                String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                            error!(
-                                "Failed to parse request message: {} - payload preview: {}",
-                                e, payload_preview
-                            );
+                            error!(adapter = "nats", error = %e, "request message parse failed");
                         }
                     }
                 });
             }
-            warn!("Request subscription ended unexpectedly");
+            warn!(adapter = "nats", "request subscription ended");
         });
 
         // Spawn a task to handle response messages
@@ -512,16 +524,11 @@ impl HorizontalTransport for NatsTransport {
                         if let Some(m) = metrics_driver_response.get() {
                             m.mark_horizontal_transport_message_dropped("nats");
                         }
-                        let payload_preview =
-                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                        error!(
-                            "Failed to parse response message: {} - payload preview: {}",
-                            e, payload_preview
-                        );
+                        error!(adapter = "nats", error = %e, "response message parse failed");
                     }
                 }
             }
-            warn!("Response subscription ended unexpectedly");
+            warn!(adapter = "nats", "response subscription ended");
         });
 
         // Spawn a task to handle inbox responses
@@ -549,16 +556,11 @@ impl HorizontalTransport for NatsTransport {
                         if let Some(m) = metrics_driver_inbox.get() {
                             m.mark_horizontal_transport_message_dropped("nats");
                         }
-                        let payload_preview =
-                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                        error!(
-                            "Failed to parse inbox response: {} - payload preview: {}",
-                            e, payload_preview
-                        );
+                        error!(adapter = "nats", error = %e, "inbox response parse failed");
                     }
                 }
             }
-            warn!("Inbox subscription ended unexpectedly");
+            warn!(adapter = "nats", "inbox subscription ended");
         });
 
         // Spawn a task to handle per-node targeted requests
@@ -583,7 +585,17 @@ impl HorizontalTransport for NatsTransport {
                 metrics_node.record_received();
                 match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
                     Ok(request) => {
-                        let _ = node_request_handler(request).await;
+                        match node_request_handler(request).await {
+                            Ok(_)
+                            | Err(
+                                sockudo_core::error::Error::OwnRequestIgnored
+                                | sockudo_core::error::Error::RequestNotForThisNode
+                                | sockudo_core::error::Error::NoResponseNeeded,
+                            ) => {}
+                            Err(e) => {
+                                warn!(adapter = "nats", error = %e, "node request handler failed");
+                            }
+                        }
                         metrics_node.record_processed();
                     }
                     Err(e) => {
@@ -591,16 +603,11 @@ impl HorizontalTransport for NatsTransport {
                         if let Some(m) = metrics_driver_node.get() {
                             m.mark_horizontal_transport_message_dropped("nats");
                         }
-                        let preview =
-                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                        error!(
-                            "Failed to parse node-targeted request: {} - preview: {}",
-                            e, preview
-                        );
+                        error!(adapter = "nats", error = %e, "node-targeted request parse failed");
                     }
                 }
             }
-            warn!("Node subscription ended unexpectedly");
+            warn!(adapter = "nats", "node subscription ended");
         });
 
         Ok(())
@@ -616,10 +623,7 @@ impl HorizontalTransport for NatsTransport {
             Ok(Some(nodes)) => Ok(nodes.max(1)),
             Ok(None) => Ok(1),
             Err(error) => {
-                warn!(
-                    "NATS node discovery via system ping failed: {}. Falling back to 1 node",
-                    error
-                );
+                warn!(adapter = "nats", error = %error, "node discovery via system ping failed; falling back to 1 node");
                 Ok(1)
             }
         }
@@ -669,10 +673,7 @@ impl HorizontalTransport for NatsTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish request: {e}")))?;
 
-        debug!(
-            "Published request {} with reply_to via NATS",
-            request.request_id
-        );
+        trace!(adapter = "nats", request_id = %request.request_id, "request with reply published to transport");
         Ok(())
     }
 
@@ -690,10 +691,7 @@ impl HorizontalTransport for NatsTransport {
             .map_err(|e| {
                 Error::Internal(format!("Failed to publish to node {target_node_id}: {e}"))
             })?;
-        debug!(
-            "Published request {} to node {} via NATS",
-            request.request_id, target_node_id
-        );
+        trace!(adapter = "nats", request_id = %request.request_id, target_node_id = %target_node_id, "request published to node");
         Ok(())
     }
 
@@ -711,11 +709,11 @@ impl HorizontalTransport for NatsTransport {
         let (our_node_id, serialized_chunks, total_channels) = {
             let registry = horizontal.cluster_presence_registry.read().await;
             let Some(our_data) = registry.get(&horizontal.node_id) else {
-                debug!("No presence data to send to new node: {}", target_node_id);
+                debug!(adapter = "nats", target_node_id = %target_node_id, "no presence data to send to new node");
                 return Ok(());
             };
             if our_data.is_empty() {
-                debug!("Empty presence data for new node: {}", target_node_id);
+                debug!(adapter = "nats", target_node_id = %target_node_id, "empty presence data for new node");
                 return Ok(());
             }
             let total = our_data.len();
@@ -725,8 +723,11 @@ impl HorizontalTransport for NatsTransport {
 
         let total_chunks = serialized_chunks.len();
         debug!(
-            "Sending presence state to node {} in {} chunk(s) ({} channels)",
-            target_node_id, total_chunks, total_channels
+            adapter = "nats",
+            target_node_id = %target_node_id,
+            chunk_count = total_chunks,
+            channel_count = total_channels,
+            "sending presence state to node"
         );
 
         for (i, chunk_value) in serialized_chunks.into_iter().enumerate() {
@@ -751,22 +752,26 @@ impl HorizontalTransport for NatsTransport {
                 .await
             {
                 warn!(
-                    "Failed to publish presence chunk {}/{} to node {}: {}",
-                    i + 1,
-                    total_chunks,
-                    target_node_id,
-                    e
+                    adapter = "nats",
+                    target_node_id = %target_node_id,
+                    chunk_index = i + 1,
+                    chunk_count = total_chunks,
+                    error = %e,
+                    "presence chunk publish failed"
                 );
             }
         }
 
         if let Err(e) = self.client.flush().await {
-            warn!("Failed to flush NATS client after chunked sync: {}", e);
+            warn!(adapter = "nats", error = %e, "client flush after chunked sync failed");
         }
 
         info!(
-            "Sent presence state to new node: {} ({} channels in {} chunk(s))",
-            target_node_id, total_channels, total_chunks
+            adapter = "nats",
+            target_node_id = %target_node_id,
+            channel_count = total_channels,
+            chunk_count = total_chunks,
+            "presence state sent to new node"
         );
         Ok(())
     }
@@ -784,9 +789,9 @@ impl Drop for NatsTransport {
                 let client = self.client.clone();
                 handle.spawn(async move {
                     match tokio::time::timeout(Duration::from_secs(5), client.drain()).await {
-                        Ok(Ok(())) => debug!("NATS client drained successfully"),
-                        Ok(Err(e)) => warn!("NATS client drain failed: {}", e),
-                        Err(_) => warn!("NATS client drain timed out"),
+                        Ok(Ok(())) => trace!(adapter = "nats", "client drained successfully"),
+                        Ok(Err(e)) => warn!(adapter = "nats", error = %e, "client drain failed"),
+                        Err(_) => warn!(adapter = "nats", "client drain timed out"),
                     }
                 });
             }

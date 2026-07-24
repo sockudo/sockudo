@@ -10,6 +10,45 @@ use sonic_rs::Value;
 use std::time::Instant;
 use tokio::task::JoinHandle;
 
+/// Stable, content-free reason for a connection reaching terminal cleanup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DisconnectCause {
+    ClientClose,
+    TransportEof,
+    TransportError,
+    FatalError,
+    ActivityTimeout,
+    AuthTimeout,
+    TokenExpired,
+    TokenRevoked,
+    AdministrativeClose,
+    ServerShutdown,
+    #[default]
+    Unknown,
+}
+
+impl DisconnectCause {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientClose => "client_close",
+            Self::TransportEof => "transport_eof",
+            Self::TransportError => "transport_error",
+            Self::FatalError => "fatal_error",
+            Self::ActivityTimeout => "activity_timeout",
+            Self::AuthTimeout => "auth_timeout",
+            Self::TokenExpired => "token_expired",
+            Self::TokenRevoked => "token_revoked",
+            Self::AdministrativeClose => "administrative_close",
+            Self::ServerShutdown => "server_shutdown",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn may_be_replaced(self) -> bool {
+        matches!(self, Self::Unknown | Self::TransportEof)
+    }
+}
+
 #[derive(Debug)]
 pub struct ConnectionTimeouts {
     pub activity_timeout_handle: Option<JoinHandle<()>>,
@@ -78,6 +117,7 @@ pub struct ConnectionState {
     pub timeouts: ConnectionTimeouts,
     pub status: ConnectionStatus,
     pub disconnecting: bool,
+    pub disconnect_cause: DisconnectCause,
     pub delta_compression_enabled: bool,
     pub protocol_version: ProtocolVersion,
     pub wire_format: WireFormat,
@@ -111,6 +151,7 @@ impl ConnectionState {
             timeouts: ConnectionTimeouts::new(),
             status: ConnectionStatus::Active,
             disconnecting: false,
+            disconnect_cause: DisconnectCause::Unknown,
             delta_compression_enabled: false,
             protocol_version: ProtocolVersion::V1,
             wire_format: WireFormat::Json,
@@ -135,6 +176,7 @@ impl ConnectionState {
             timeouts: ConnectionTimeouts::new(),
             status: ConnectionStatus::Active,
             disconnecting: false,
+            disconnect_cause: DisconnectCause::Unknown,
             delta_compression_enabled: false,
             protocol_version: ProtocolVersion::V1,
             wire_format: WireFormat::Json,
@@ -212,10 +254,32 @@ impl ConnectionState {
     pub fn clear_timeouts(&mut self) {
         self.timeouts.clear_all();
     }
+
+    /// Records the first specific disconnect cause. A provisional EOF may be
+    /// refined when a more precise cause is observed during cleanup.
+    pub fn record_disconnect_cause(&mut self, cause: DisconnectCause) {
+        if cause != DisconnectCause::Unknown && self.disconnect_cause.may_be_replaced() {
+            self.disconnect_cause = cause;
+        }
+    }
 }
 
 impl PartialEq for ConnectionState {
     fn eq(&self, other: &Self) -> bool {
         self.socket_id == other.socket_id
+    }
+}
+
+#[cfg(test)]
+mod disconnect_cause_tests {
+    use super::*;
+
+    #[test]
+    fn specific_disconnect_cause_is_not_overwritten() {
+        let mut state = ConnectionState::new();
+        state.record_disconnect_cause(DisconnectCause::TransportEof);
+        state.record_disconnect_cause(DisconnectCause::ActivityTimeout);
+        state.record_disconnect_cause(DisconnectCause::FatalError);
+        assert_eq!(state.disconnect_cause, DisconnectCause::ActivityTimeout);
     }
 }

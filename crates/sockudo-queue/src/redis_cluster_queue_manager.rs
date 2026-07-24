@@ -43,11 +43,11 @@ impl RedisClusterQueueManager {
         let producer_connections = Self::create_producer_connections(&client, concurrency).await?;
 
         info!(
-            "Connected to Redis cluster with {} nodes, prefix: {}, concurrency: {}, request timeout: {}ms",
-            cluster_nodes.len(),
-            prefix,
-            concurrency,
-            request_timeout_ms
+            prefix = %prefix,
+            concurrency_count = concurrency,
+            node_count = cluster_nodes.len(),
+            request_timeout_ms = request_timeout_ms,
+            "connected to redis cluster queue"
         );
 
         Ok(Self {
@@ -163,13 +163,7 @@ impl RedisClusterQueueManager {
         let worker_queue_name = queue_name.to_string();
 
         Ok(tokio::spawn(async move {
-            debug!(
-                "{}",
-                format!(
-                    "Starting Redis cluster queue worker {} for queue: {}",
-                    worker_id, worker_queue_name
-                )
-            );
+            debug!(worker_id = %worker_id, queue = %worker_queue_name, "starting redis cluster queue worker");
 
             loop {
                 let blpop_result: RedisResult<Option<(String, String)>> = worker_conn
@@ -181,31 +175,19 @@ impl RedisClusterQueueManager {
                         match sonic_rs::from_str::<JobData>(&job_data_str) {
                             Ok(job_data) => {
                                 if let Err(e) = processor(job_data).await {
-                                    error!("{}", format!("Cluster worker error: {}", e));
+                                    error!(worker_id = %worker_id, queue = %worker_queue_name, error = %e, "cluster worker processing error");
                                 } else {
-                                    debug!("{}", "Cluster worker finished".to_string());
+                                    debug!(worker_id = %worker_id, queue = %worker_queue_name, "cluster worker processed job");
                                 }
                             }
                             Err(e) => {
-                                error!(
-                                    "{}",
-                                    format!(
-                                        "[Cluster Worker {}] Error deserializing job data from Redis cluster queue {}: {}. Data: '{}'",
-                                        worker_id, worker_queue_name, e, job_data_str
-                                    )
-                                );
+                                error!(worker_id = %worker_id, queue = %worker_queue_name, error = %e, "cluster worker job deserialization error");
                             }
                         }
                     }
                     Ok(None) => continue,
                     Err(e) => {
-                        error!(
-                            "{}",
-                            format!(
-                                "[Cluster Worker {}] Redis cluster BLPOP error on queue {}: {}",
-                                worker_id, worker_queue_name, e
-                            )
-                        );
+                        error!(worker_id = %worker_id, queue = %worker_queue_name, error = %e, "cluster worker redis blpop error");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
@@ -258,13 +240,7 @@ impl QueueInterface for RedisClusterQueueManager {
         let queue_key = self.format_key(queue_name);
         let processor_arc: ArcJobProcessorFn = Arc::from(callback);
 
-        debug!(
-            "{}",
-            format!(
-                "Registered processor and starting workers for Redis cluster queue: {}",
-                queue_name
-            )
-        );
+        debug!(queue = %queue_name, worker_count = self.concurrency, "registered processor and starting redis cluster queue workers");
 
         for worker_id in 0..self.concurrency {
             self.start_worker(

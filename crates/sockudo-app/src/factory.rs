@@ -27,10 +27,7 @@ impl AppManagerFactory {
         pooling: &DatabasePooling,
         cache_manager: Arc<dyn CacheManager + Send + Sync>,
     ) -> Result<Arc<dyn AppManager + Send + Sync>> {
-        info!(
-            "{}",
-            format!("Initializing AppManager with driver: {:?}", config.driver)
-        );
+        info!(driver = ?config.driver, "app manager factory initializing");
         let inner: Arc<dyn AppManager + Send + Sync> = match config.driver {
             #[cfg(feature = "mysql")]
             AppManagerDriver::Mysql => {
@@ -39,11 +36,9 @@ impl AppManagerFactory {
                     Ok(manager) => Arc::new(manager),
                     Err(e) => {
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize MySQL app manager: {}, falling back to memory manager",
-                                e
-                            )
+                            app_manager = "mysql",
+                            error = %e,
+                            "app manager init failed, falling back to memory"
                         );
                         Arc::new(MemoryAppManager::new())
                     }
@@ -65,11 +60,9 @@ impl AppManagerFactory {
                     Ok(manager) => Arc::new(manager),
                     Err(e) => {
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize DynamoDB app manager: {}, falling back to memory manager",
-                                e
-                            )
+                            app_manager = "dynamodb",
+                            error = %e,
+                            "app manager init failed, falling back to memory"
                         );
                         Arc::new(MemoryAppManager::new())
                     }
@@ -82,11 +75,9 @@ impl AppManagerFactory {
                     Ok(manager) => Arc::new(manager),
                     Err(e) => {
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize PgSQL app manager: {}, falling back to memory manager",
-                                e
-                            )
+                            app_manager = "postgres",
+                            error = %e,
+                            "app manager init failed, falling back to memory"
                         );
                         Arc::new(MemoryAppManager::new())
                     }
@@ -110,11 +101,9 @@ impl AppManagerFactory {
                     Ok(manager) => Arc::new(manager),
                     Err(e) => {
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize SurrealDB app manager: {}, falling back to memory manager",
-                                e
-                            )
+                            app_manager = "surrealdb",
+                            error = %e,
+                            "app manager init failed, falling back to memory"
                         );
                         Arc::new(MemoryAppManager::new())
                     }
@@ -137,57 +126,55 @@ impl AppManagerFactory {
                     Ok(manager) => Arc::new(manager),
                     Err(e) => {
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize ScyllaDB app manager: {}, falling back to memory manager",
-                                e
-                            )
+                            app_manager = "scylladb",
+                            error = %e,
+                            "app manager init failed, falling back to memory"
                         );
                         Arc::new(MemoryAppManager::new())
                     }
                 }
             }
             AppManagerDriver::Memory => {
-                info!("{}", "Using memory app manager.".to_string());
+                info!(app_manager = "memory", "app manager factory initialized");
                 Arc::new(MemoryAppManager::new())
             }
             #[cfg(not(feature = "mysql"))]
             AppManagerDriver::Mysql => {
                 warn!(
-                    "{}",
-                    "MySQL app manager requested but not compiled in. Falling back to memory manager."
+                    app_manager = "mysql",
+                    "app manager not compiled in, falling back to memory"
                 );
                 Arc::new(MemoryAppManager::new())
             }
             #[cfg(not(feature = "dynamodb"))]
             AppManagerDriver::Dynamodb => {
                 warn!(
-                    "{}",
-                    "DynamoDB app manager requested but not compiled in. Falling back to memory manager."
+                    app_manager = "dynamodb",
+                    "app manager not compiled in, falling back to memory"
                 );
                 Arc::new(MemoryAppManager::new())
             }
             #[cfg(not(feature = "postgres"))]
             AppManagerDriver::PgSql => {
                 warn!(
-                    "{}",
-                    "PostgreSQL app manager requested but not compiled in. Falling back to memory manager."
+                    app_manager = "postgres",
+                    "app manager not compiled in, falling back to memory"
                 );
                 Arc::new(MemoryAppManager::new())
             }
             #[cfg(not(feature = "surrealdb"))]
             AppManagerDriver::SurrealDb => {
                 warn!(
-                    "{}",
-                    "SurrealDB app manager requested but not compiled in. Falling back to memory manager."
+                    app_manager = "surrealdb",
+                    "app manager not compiled in, falling back to memory"
                 );
                 Arc::new(MemoryAppManager::new())
             }
             #[cfg(not(feature = "scylladb"))]
             AppManagerDriver::ScyllaDb => {
                 warn!(
-                    "{}",
-                    "ScyllaDB app manager requested but not compiled in. Falling back to memory manager."
+                    app_manager = "scylladb",
+                    "app manager not compiled in, falling back to memory"
                 );
                 Arc::new(MemoryAppManager::new())
             }

@@ -214,7 +214,9 @@ async fn load_tls_certificates(
 ) -> Result<Option<TlsCertificates>> {
     if (tls.client_cert_path.is_some()) ^ (tls.client_key_path.is_some()) {
         warn!(
-            "Redis {hop} TLS: both client_cert_path and client_key_path are required for mutual TLS; ignoring the partial configuration"
+            adapter = "redis",
+            hop = %hop,
+            "partial mutual tls configuration ignored"
         );
     }
 

@@ -238,7 +238,7 @@ pub(super) async fn mark_channel_degraded(
             )
             .await
         {
-            error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist ScyllaDB history degraded state: {err}");
+            error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to persist scylladb history degraded state");
         }
     }
     if let Some(metrics) = metrics {

@@ -145,10 +145,10 @@ impl CachedAppManager {
         match self.inner.get_apps().await {
             Ok(apps) => {
                 self.remember_apps(&apps);
-                debug!("Warmed local app index with {} apps", apps.len());
+                debug!(apps_count = apps.len(), "local app index warmed");
             }
             Err(e) => {
-                warn!("Failed to warm local app index: {}", e);
+                warn!(error = %e, "local app index warm failed");
             }
         }
     }
@@ -197,7 +197,11 @@ impl CachedAppManager {
         let json = match Self::serialize(value) {
             Ok(j) => j,
             Err(e) => {
-                warn!("Cache serialize error for {}: {}", key, e);
+                warn!(
+                    cache_index = Self::cache_index_label(key),
+                    error = %e,
+                    "app cache serialize error"
+                );
                 return;
             }
         };
@@ -386,7 +390,7 @@ impl AppManager for CachedAppManager {
             for app in &apps {
                 self.cache_app(app).await;
             }
-            debug!("Cached {} apps", apps.len());
+            debug!(apps_count = apps.len(), "apps cached");
         }
 
         Ok(apps)

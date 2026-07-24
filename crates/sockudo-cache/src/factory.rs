@@ -21,19 +21,19 @@ impl CacheManagerFactory {
         config: &CacheConfig,
         global_redis_conn_details: &RedisConnection,
     ) -> Result<Arc<dyn CacheManager + Send + Sync>> {
-        info!(
-            "{}",
-            format!("Initializing CacheManager with driver: {:?}", config.driver)
-        );
+        info!(cache_driver = ?config.driver, "initializing cache manager");
 
         match config.driver {
             #[cfg(feature = "redis")]
             CacheDriver::Redis => {
                 #[cfg(feature = "redis-cluster")]
                 if config.redis.cluster_mode {
-                    info!("{}", "Cache: Using Redis Cluster driver.".to_string());
+                    info!(cache_driver = "redis_cluster", "using cache driver");
                     if global_redis_conn_details.cluster_nodes.is_empty() {
-                        tracing::error!("{}", "Cache: Redis cluster mode enabled, but no cluster_nodes configured in database.redis section.".to_string());
+                        tracing::error!(
+                            cache_driver = "redis_cluster",
+                            "redis cluster cache requires configured cluster nodes"
+                        );
                         return Err(Error::Cache(
                             "Cache: Redis cluster nodes not configured.".to_string(),
                         ));
@@ -60,10 +60,14 @@ impl CacheManagerFactory {
 
                 #[cfg(not(feature = "redis-cluster"))]
                 if config.redis.cluster_mode {
-                    info!("{}", "Cache: Redis cluster mode requested but redis-cluster feature not enabled. Falling back to standalone Redis.".to_string());
+                    tracing::warn!(
+                        cache_driver = "redis",
+                        requested_driver = "redis_cluster",
+                        "redis cluster cache feature unavailable, using standalone redis"
+                    );
                 }
 
-                info!("{}", "Cache: Using standalone Redis driver.".to_string());
+                info!(cache_driver = "redis", "using cache driver");
                 let redis_url = config
                     .redis
                     .url_override
@@ -90,12 +94,12 @@ impl CacheManagerFactory {
             }
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
-                info!(
-                    "{}",
-                    "Cache: Using Redis Cluster driver (explicitly selected).".to_string()
-                );
+                info!(cache_driver = "redis_cluster", "using cache driver");
                 if global_redis_conn_details.cluster_nodes.is_empty() {
-                    tracing::error!("{}", "Cache: Redis cluster driver selected, but no cluster_nodes configured in database.redis section.".to_string());
+                    tracing::error!(
+                        cache_driver = "redis_cluster",
+                        "redis cluster cache requires configured cluster nodes"
+                    );
                     return Err(Error::Cache(
                         "Cache: Redis cluster nodes not configured for explicit cluster driver."
                             .to_string(),
@@ -122,7 +126,7 @@ impl CacheManagerFactory {
                 Ok(Arc::new(manager))
             }
             CacheDriver::Memory => {
-                info!("{}", "Using memory cache manager.".to_string());
+                info!(cache_driver = "memory", "using cache driver");
                 let _mem_config = MemoryCacheOptions {
                     ttl: config.memory.ttl,
                     cleanup_interval: config.memory.cleanup_interval,
@@ -133,10 +137,7 @@ impl CacheManagerFactory {
                 Ok(Arc::new(manager))
             }
             CacheDriver::None => {
-                info!(
-                    "{}",
-                    "Cache driver is 'None'. Cache will be disabled.".to_string()
-                );
+                info!(cache_driver = "none", "cache disabled");
                 Err(Error::Cache(
                     "Cache driver explicitly set to 'None'.".to_string(),
                 ))

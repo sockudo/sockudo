@@ -4,7 +4,7 @@ mod tests {
     use sockudo_adapter::cleanup::{
         AuthInfo, CleanupSender, ConnectionCleanupInfo, DisconnectTask,
     };
-    use sockudo_core::websocket::SocketId;
+    use sockudo_core::websocket::{DisconnectCause, SocketId};
     use std::time::Instant;
 
     fn create_disconnect_task_with_presence(socket_id: &str) -> DisconnectTask {
@@ -13,6 +13,7 @@ mod tests {
             app_id: "test-app".to_string(),
             subscribed_channels: vec!["presence-room1".to_string(), "public-channel".to_string()],
             user_id: Some("user123".to_string()),
+            cause: DisconnectCause::TransportError,
             timestamp: Instant::now(),
             connection_info: Some(ConnectionCleanupInfo {
                 presence_channels: vec!["presence-room1".to_string()],

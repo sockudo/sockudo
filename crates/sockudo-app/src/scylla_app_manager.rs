@@ -51,10 +51,7 @@ pub struct ScyllaDbAppManager {
 impl ScyllaDbAppManager {
     /// Create a new ScyllaDB-based AppManager with the provided configuration
     pub async fn new(config: ScyllaDbConfig) -> Result<Self> {
-        info!(
-            "Initializing ScyllaDB AppManager with nodes: {:?}",
-            config.nodes
-        );
+        info!("scylladb app manager initializing");
 
         let mut builder = SessionBuilder::new().known_nodes(&config.nodes);
 
@@ -131,7 +128,7 @@ impl ScyllaDbAppManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to create keyspace: {e}")))?;
 
-        info!("Ensured keyspace '{}' exists", config.keyspace);
+        info!(keyspace = %config.keyspace, "keyspace ensured");
 
         let create_table_query = format!(
             r#"CREATE TABLE IF NOT EXISTS {}.{} (
@@ -171,8 +168,9 @@ impl ScyllaDbAppManager {
             .map_err(|e| Error::Internal(format!("Failed to create table: {e}")))?;
 
         info!(
-            "Ensured table '{}.{}' exists",
-            config.keyspace, config.table_name
+            keyspace = %config.keyspace,
+            table_name = %config.table_name,
+            "table ensured"
         );
 
         let create_index_query = format!(
@@ -346,8 +344,9 @@ impl AppRow {
                         sonic_rs::from_str::<Vec<String>>(&json)
                             .map_err(|e| {
                                 error!(
-                                    "Failed to deserialize allowed_origins for app {}: {}",
-                                    self.id, e
+                                    app_id = %self.id,
+                                    error = %e,
+                                    "app allowed_origins deserialize error"
                                 )
                             })
                             .ok()
@@ -359,8 +358,9 @@ impl AppRow {
                         >(&json)
                         .map_err(|e| {
                             error!(
-                                "Failed to deserialize channel_delta_compression for app {}: {}",
-                                self.id, e
+                                app_id = %self.id,
+                                error = %e,
+                                "app channel_delta_compression deserialize error"
                             )
                         })
                         .ok()
@@ -370,7 +370,11 @@ impl AppRow {
                 webhooks: self.webhooks.and_then(|json| {
                     sonic_rs::from_str::<Vec<Webhook>>(&json)
                         .map_err(|e| {
-                            error!("Failed to deserialize webhooks for app {}: {}", self.id, e)
+                            error!(
+                                app_id = %self.id,
+                                error = %e,
+                                "app webhooks deserialize error"
+                            )
                         })
                         .ok()
                 }),
@@ -378,8 +382,9 @@ impl AppRow {
                     sonic_rs::from_str::<AppIdempotencyConfig>(&json)
                         .map_err(|e| {
                             error!(
-                                "Failed to deserialize idempotency for app {}: {}",
-                                self.id, e
+                                app_id = %self.id,
+                                error = %e,
+                                "app idempotency deserialize error"
                             )
                         })
                         .ok()
@@ -388,8 +393,9 @@ impl AppRow {
                     sonic_rs::from_str::<AppConnectionRecoveryConfig>(&json)
                         .map_err(|e| {
                             error!(
-                                "Failed to deserialize connection_recovery for app {}: {}",
-                                self.id, e
+                                app_id = %self.id,
+                                error = %e,
+                                "app connection_recovery deserialize error"
                             )
                         })
                         .ok()
@@ -414,7 +420,7 @@ impl AppManager for ScyllaDbAppManager {
             .execute_unpaged(&self.insert_stmt, values)
             .await
             .map_err(|e| {
-                error!("Database error creating app {}: {}", app.id, e);
+                error!(app_id = %app.id, error = %e, "app db create error");
                 Error::Internal(format!("Failed to insert app into ScyllaDB: {e}"))
             })?;
 
@@ -428,7 +434,7 @@ impl AppManager for ScyllaDbAppManager {
             .execute_unpaged(&self.update_stmt, values)
             .await
             .map_err(|e| {
-                error!("Database error updating app {}: {}", app.id, e);
+                error!(app_id = %app.id, error = %e, "app db update error");
                 Error::Internal(format!("Failed to update app in ScyllaDB: {e}"))
             })?;
 
@@ -440,7 +446,7 @@ impl AppManager for ScyllaDbAppManager {
             .execute_unpaged(&self.delete_stmt, (app_id,))
             .await
             .map_err(|e| {
-                error!("Database error deleting app {}: {}", app_id, e);
+                error!(app_id = %app_id, error = %e, "app db delete error");
                 Error::Internal(format!("Failed to delete app from ScyllaDB: {e}"))
             })?;
 
@@ -483,7 +489,7 @@ impl AppManager for ScyllaDbAppManager {
     }
 
     async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
-        debug!("Fetching app by key {} from ScyllaDB", key);
+        debug!("fetching app by key from scylladb");
 
         let query = format!(
             r#"SELECT id, key, secret, enabled, policy, max_connections, enable_client_messages,
@@ -504,7 +510,7 @@ impl AppManager for ScyllaDbAppManager {
             .query_iter(query, (key,))
             .await
             .map_err(|e| {
-                error!("Database error fetching app by key {}: {}", key, e);
+                error!(error = %e, "app db fetch by key error");
                 Error::Internal(format!("Failed to fetch app by key from ScyllaDB: {e}"))
             })?
             .rows_stream::<AppRow>()
@@ -523,7 +529,7 @@ impl AppManager for ScyllaDbAppManager {
     }
 
     async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
-        debug!("Fetching app {} from ScyllaDB", app_id);
+        debug!(app_id = %app_id, "fetching app by id from scylladb");
 
         let query = format!(
             r#"SELECT id, key, secret, enabled, policy, max_connections, enable_client_messages,
@@ -544,7 +550,7 @@ impl AppManager for ScyllaDbAppManager {
             .query_iter(query, (app_id,))
             .await
             .map_err(|e| {
-                error!("Database error fetching app {}: {}", app_id, e);
+                error!(app_id = %app_id, error = %e, "app db fetch error");
                 Error::Internal(format!("Failed to fetch app from ScyllaDB: {e}"))
             })?
             .rows_stream::<AppRow>()

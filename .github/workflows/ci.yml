@@ -448,6 +448,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -459,32 +461,100 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
 
-      - name: Restore previous benchmark evidence
+      - name: Cache cargo dependencies and benchmark build outputs
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-ably-bench-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+            target/release
+          key: ${{ runner.os }}-cargo-ably-build-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ably-bench-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-ably-build-${{ hashFiles('**/Cargo.lock') }}-
 
-      - name: Run compatibility benchmarks
-        run: cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot
+      - name: Resolve benchmark revisions
+        id: benchmark-revisions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          CHECKED_OUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+            head_sha="$PR_HEAD_SHA"
+          elif [[ "$EVENT_NAME" == "push" && -n "$PUSH_BEFORE_SHA" && "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            base_sha="$PUSH_BEFORE_SHA"
+            head_sha="$CHECKED_OUT_SHA"
+          else
+            base_sha="$(git rev-parse "${CHECKED_OUT_SHA}^")"
+            head_sha="$CHECKED_OUT_SHA"
+          fi
+          git cat-file -e "${base_sha}^{commit}"
+          git cat-file -e "${head_sha}^{commit}"
+          echo "base-sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$head_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Enforce compatibility regression budgets
+      - name: Benchmark base revision
+        env:
+          BASE_SHA: ${{ steps.benchmark-revisions.outputs.base-sha }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "$BASE_SHA"
+          rm -rf target/criterion
+          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --save-baseline pr-base
+
+      - name: Benchmark head revision against base
+        env:
+          HEAD_SHA: ${{ steps.benchmark-revisions.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "$HEAD_SHA"
+          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --baseline pr-base
+
+      - name: Evaluate compatibility regression budgets
+        id: initial-compatibility-budget
+        continue-on-error: true
         run: >-
           python3 scripts/ably-compat-release-guard.py
           --budgets tests/load/ably-compat/budgets.json
           --criterion-root target/criterion
+          --require-criterion-comparison
+
+      - name: Confirm reported compatibility regressions
+        if: steps.initial-compatibility-budget.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          cp -R target/criterion target/criterion-initial
+          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --baseline pr-base
+
+      - name: Enforce compatibility regression budgets
+        if: steps.initial-compatibility-budget.outcome == 'success'
+        run: >-
+          python3 scripts/ably-compat-release-guard.py
+          --budgets tests/load/ably-compat/budgets.json
+          --criterion-root target/criterion
+          --require-criterion-comparison
+
+      - name: Enforce reproduced compatibility regressions
+        if: steps.initial-compatibility-budget.outcome == 'failure'
+        run: >-
+          python3 scripts/ably-compat-release-guard.py
+          --budgets tests/load/ably-compat/budgets.json
+          --criterion-root target/criterion-initial
+          --confirmation-criterion-root target/criterion
+          --require-criterion-comparison
 
       - name: Store machine-readable benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ably-compat-criterion-${{ github.run_id }}
-          path: target/criterion/ably_compat_*
+          path: |
+            target/criterion/ably_compat_*
+            target/criterion-initial/ably_compat_*
           if-no-files-found: error
 
   # =============================================================================

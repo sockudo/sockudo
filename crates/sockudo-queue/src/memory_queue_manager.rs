@@ -41,7 +41,7 @@ impl MemoryQueueManager {
         let queues = Arc::clone(&self.queues);
         let processors = Arc::clone(&self.processors);
 
-        info!("{}", "Starting memory queue processing loop...".to_string());
+        info!("memory queue processing loop started");
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -67,11 +67,7 @@ impl MemoryQueueManager {
 
                         let batch_len = MAX_BATCH_SIZE.min(jobs_queue.len());
                         let jobs: Vec<JobData> = jobs_queue.drain(..batch_len).collect();
-                        debug!(
-                            "Processing {} jobs from memory queue {}",
-                            jobs.len(),
-                            queue_name
-                        );
+                        debug!(queue = %queue_name, job_count = jobs.len(), "processing memory queue batch");
                         drop(jobs_queue);
 
                         stream::iter(jobs)
@@ -79,7 +75,7 @@ impl MemoryQueueManager {
                                 let processor_clone = processor.clone();
                                 async move {
                                     if let Err(e) = processor_clone(job).await {
-                                        tracing::error!("Failed to process webhook job: {}", e);
+                                        tracing::error!(error = %e, "failed to process webhook job");
                                     }
                                 }
                             })
@@ -102,10 +98,7 @@ impl QueueInterface for MemoryQueueManager {
 
         if queue.len() >= MAX_QUEUE_SIZE {
             let to_remove = queue.len() - MAX_QUEUE_SIZE + 1;
-            warn!(
-                "Memory queue '{}' at capacity ({}), dropping {} oldest job(s)",
-                queue_name, MAX_QUEUE_SIZE, to_remove
-            );
+            warn!(queue = %queue_name, capacity = MAX_QUEUE_SIZE, dropped = to_remove, "memory queue at capacity, dropping oldest jobs");
             for _ in 0..to_remove {
                 queue.pop_front();
             }
@@ -124,7 +117,7 @@ impl QueueInterface for MemoryQueueManager {
             .write()
             .unwrap()
             .insert(queue_name.to_string(), Arc::from(callback));
-        debug!("Registered processor for memory queue: {}", queue_name);
+        debug!(queue = %queue_name, "registered processor for memory queue");
 
         Ok(())
     }
@@ -152,6 +145,7 @@ mod tests {
     async fn test_add_to_queue() {
         let manager = MemoryQueueManager::new();
         let data = JobData {
+            job_id: None,
             app_key: "test_key".to_string(),
             app_id: "test_id".to_string(),
             app_secret: "test_secret".to_string(),
@@ -174,6 +168,7 @@ mod tests {
     async fn test_add_batch_to_queue() {
         let manager = MemoryQueueManager::new();
         let data = JobData {
+            job_id: None,
             app_key: "test_key".to_string(),
             app_id: "test_id".to_string(),
             app_secret: "test_secret".to_string(),
@@ -196,6 +191,7 @@ mod tests {
     async fn test_disconnect() {
         let manager = MemoryQueueManager::new();
         let data = JobData {
+            job_id: None,
             app_key: "test_key".to_string(),
             app_id: "test_id".to_string(),
             app_secret: "test_secret".to_string(),
@@ -257,6 +253,7 @@ mod tests {
                 .add_to_queue(
                     "bounded",
                     JobData {
+                        job_id: None,
                         app_key: "test_key".to_string(),
                         app_id: "test_id".to_string(),
                         app_secret: "test_secret".to_string(),

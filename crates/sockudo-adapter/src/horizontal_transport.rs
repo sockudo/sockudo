@@ -102,11 +102,11 @@ pub(crate) async fn send_presence_state_to_node<T: HorizontalTransport>(
         let registry = horizontal.cluster_presence_registry.read().await;
         // Get only our node's data
         let Some(our_data) = registry.get(&horizontal.node_id) else {
-            tracing::debug!("No presence data to send to new node: {}", target_node_id);
+            tracing::debug!(target_node_id = %target_node_id, "no presence data to send to new node");
             return Ok(());
         };
         if our_data.is_empty() {
-            tracing::debug!("Empty presence data for new node: {}", target_node_id);
+            tracing::debug!(target_node_id = %target_node_id, "empty presence data for new node");
             return Ok(());
         };
         // Clone the data to avoid holding the lock
@@ -134,10 +134,7 @@ pub(crate) async fn send_presence_state_to_node<T: HorizontalTransport>(
         .publish_request_to_node(&request, target_node_id)
         .await?;
 
-    tracing::info!(
-        "Sent presence state to new node: {} (single message)",
-        target_node_id
-    );
+    tracing::info!(target_node_id = %target_node_id, "sent presence state to new node");
     Ok(())
 }
 

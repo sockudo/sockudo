@@ -11,7 +11,7 @@ use sonic_rs::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 const WEBHOOK_QUEUE_NAME: &str = "webhooks";
 
@@ -118,9 +118,7 @@ impl WebhookIntegration {
             if let Some(qm) = queue_manager {
                 integration.setup_webhook_processor(qm).await?;
             } else {
-                warn!(
-                    "Webhooks are enabled but no queue manager provided, webhooks will be disabled"
-                );
+                warn!("webhooks enabled but no queue manager provided, disabling webhooks");
                 integration.config.enabled = false;
             }
         }
@@ -143,9 +141,11 @@ impl WebhookIntegration {
         let processor: JobProcessorFnAsync = Box::new(move |job_data| {
             let sender_for_task = sender_clone.clone();
             Box::pin(async move {
-                info!(
-                    "{}",
-                    format!("Processing webhook job from queue: {:?}", job_data.app_id)
+                debug!(
+                    app_id = %job_data.app_id,
+                    webhook_job_id = job_data.job_id.as_deref().unwrap_or("legacy"),
+                    event_count = job_data.payload.events.len(),
+                    "webhook job processing started"
                 );
                 sender_for_task.process_webhook_job(job_data).await
             })
@@ -179,23 +179,17 @@ impl WebhookIntegration {
                 if jobs_to_process.is_empty() {
                     continue;
                 }
-                info!(
-                    "{}",
-                    format!(
-                        "Processing {} batched webhook jobs (Sockudo internal batching)",
-                        jobs_to_process.len()
-                    )
+                debug!(
+                    job_count = jobs_to_process.len(),
+                    "processing batched webhook jobs"
                 );
 
                 if let Some(qm) = &queue_manager_clone {
                     let batches = Self::merge_jobs_for_queue(jobs_to_process, batch_size);
                     if let Err(e) = qm.add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches).await {
                         error!(
-                            "{}",
-                            format!(
-                                "Failed to add batched jobs to queue {}: {}",
-                                WEBHOOK_QUEUE_NAME, e
-                            )
+                            error = %e,
+                            "failed to enqueue batched webhook jobs"
                         );
                     }
                 }
@@ -207,13 +201,14 @@ impl WebhookIntegration {
         self.config.enabled
     }
 
-    async fn add_webhook(&self, job_data: JobData) -> Result<()> {
+    async fn add_webhook(&self, mut job_data: JobData) -> Result<()> {
         if !self.is_enabled() {
             return Ok(());
         }
         if self.config.batching.enabled {
             self.batched_webhooks.lock().push(job_data);
         } else if let Some(qm) = &self.queue_manager {
+            job_data.job_id = Some(uuid::Uuid::new_v4().to_string());
             qm.add_to_queue(WEBHOOK_QUEUE_NAME, job_data).await?;
         } else {
             return Err(Error::Internal(
@@ -275,6 +270,10 @@ impl WebhookIntegration {
             merged.push(finished);
         }
 
+        for job in &mut merged {
+            job.job_id = Some(uuid::Uuid::new_v4().to_string());
+        }
+
         merged
     }
 
@@ -285,6 +284,7 @@ impl WebhookIntegration {
         }
 
         let JobData {
+            job_id: _,
             app_key,
             app_id,
             app_secret,
@@ -299,6 +299,7 @@ impl WebhookIntegration {
         let mut events = events.into_iter();
         for _ in 0..chunk_count {
             chunks.push(JobData {
+                job_id: None,
                 app_key: app_key.clone(),
                 app_id: app_id.clone(),
                 app_secret: app_secret.clone(),
@@ -324,6 +325,7 @@ impl WebhookIntegration {
             events: events_payload,
         };
         JobData {
+            job_id: None,
             app_key: app.key.clone(),
             app_id: app.id.clone(),
             app_secret: app.secret.clone(),
@@ -1188,6 +1190,7 @@ mod tests {
     fn test_merge_jobs_for_queue_batches_by_app_and_size() {
         let jobs = vec![
             JobData {
+                job_id: None,
                 app_key: "key-a".to_string(),
                 app_id: "app-a".to_string(),
                 app_secret: "secret-a".to_string(),
@@ -1198,6 +1201,7 @@ mod tests {
                 original_signature: "sig-1".to_string(),
             },
             JobData {
+                job_id: None,
                 app_key: "key-a".to_string(),
                 app_id: "app-a".to_string(),
                 app_secret: "secret-a".to_string(),
@@ -1208,6 +1212,7 @@ mod tests {
                 original_signature: "sig-2".to_string(),
             },
             JobData {
+                job_id: None,
                 app_key: "key-b".to_string(),
                 app_id: "app-b".to_string(),
                 app_secret: "secret-b".to_string(),
@@ -1222,6 +1227,8 @@ mod tests {
         let merged = WebhookIntegration::merge_jobs_for_queue(jobs, 2);
 
         assert_eq!(merged.len(), 2);
+        assert!(merged.iter().all(|job| job.job_id.is_some()));
+        assert_ne!(merged[0].job_id, merged[1].job_id);
         assert_eq!(merged[0].app_id, "app-a");
         assert_eq!(merged[0].payload.events.len(), 2);
         assert_eq!(merged[1].app_id, "app-b");
@@ -1231,6 +1238,7 @@ mod tests {
     #[test]
     fn test_merge_jobs_for_queue_splits_oversized_jobs() {
         let job = JobData {
+            job_id: None,
             app_key: "key-a".to_string(),
             app_id: "app-a".to_string(),
             app_secret: "secret-a".to_string(),
@@ -1248,6 +1256,8 @@ mod tests {
         let merged = WebhookIntegration::merge_jobs_for_queue(vec![job], 2);
 
         assert_eq!(merged.len(), 2);
+        assert!(merged.iter().all(|job| job.job_id.is_some()));
+        assert_ne!(merged[0].job_id, merged[1].job_id);
         assert_eq!(merged[0].payload.events.len(), 2);
         assert_eq!(merged[1].payload.events.len(), 1);
     }

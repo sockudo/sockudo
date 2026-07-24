@@ -4,10 +4,11 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     // --- CORS ---
     if let Ok(origins) = std::env::var("CORS_ORIGINS") {
         let parsed: Vec<String> = origins.split(',').map(|s| s.trim().to_string()).collect();
-        if let Err(e) = crate::origin_validation::OriginValidator::validate_patterns(&parsed) {
+        if let Err(_e) = crate::origin_validation::OriginValidator::validate_patterns(&parsed) {
             warn!(
-                "CORS_ORIGINS contains invalid patterns: {}. Keeping previous CORS origins.",
-                e
+                env_var = "CORS_ORIGINS",
+                reason = "invalid_patterns",
+                "cors origins env config rejected, keeping previous value"
             );
         } else {
             options.cors.origin = parsed;
@@ -62,8 +63,9 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.app_manager.array.apps.clear();
         if app_count > 0 {
             info!(
-                "Skipping {} inline app(s) from configuration due to environment override",
-                app_count
+                app_count = app_count,
+                source = "environment",
+                "inline apps skipped due to environment override"
             );
         }
     }
@@ -85,8 +87,9 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.app_manager.array.apps.clear();
         if app_count > 0 {
             info!(
-                "Replacing {} inline app(s) from configuration with SOCKUDO_DEFAULT_APP_* settings",
-                app_count
+                app_count = app_count,
+                source = "environment",
+                "inline apps replaced by SOCKUDO_DEFAULT_APP_* settings"
             );
         }
     }
@@ -203,18 +206,23 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         );
 
         options.app_manager.array.apps.push(default_app);
-        info!("Successfully registered default app from env");
+        info!(source = "environment", "default app registered from env");
     } else if default_app_env_configured && !default_app_enabled {
-        info!("Default app registration disabled by SOCKUDO_DEFAULT_APP_ENABLED=false");
+        info!(
+            source = "environment",
+            "default app registration disabled by env"
+        );
     } else if default_app_credentials_configured {
         warn!(
-            "SOCKUDO_DEFAULT_APP_* environment was configured but id, key, and secret were not all provided; no default app registered"
+            source = "environment",
+            reason = "incomplete_credentials",
+            "default app env configured but id, key, and secret were not all provided"
         );
     }
 
     // Special handling for REDIS_URL
     if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        info!("Applying REDIS_URL environment variable override");
+        info!(source = "environment", "redis url override applied");
 
         let redis_url_json = sonic_rs::json!(redis_url_env);
 

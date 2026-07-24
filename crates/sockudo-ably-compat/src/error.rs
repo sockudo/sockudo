@@ -45,7 +45,11 @@ pub enum AblyCompatError {
 
 impl From<sockudo_core::error::Error> for AblyCompatError {
     fn from(error: sockudo_core::error::Error) -> Self {
-        warn!(error = ?error, "converting native error at Ably compatibility boundary");
+        warn!(
+            protocol = "ably",
+            error = %error,
+            "converting native error at compatibility boundary"
+        );
         match error {
             sockudo_core::error::Error::InvalidAppKey
             | sockudo_core::error::Error::ApplicationNotFound => {

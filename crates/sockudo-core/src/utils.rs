@@ -354,8 +354,9 @@ pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
                 "false" | "0" | "no" | "off" => false,
                 _ => {
                     warn!(
-                        "Unrecognized value for {}: '{}'. Defaulting to {}.",
-                        var_name, s, default
+                        env_var = var_name,
+                        reason = "unrecognized_value",
+                        "env var has unrecognized value, using default"
                     );
                     default
                 }
@@ -377,14 +378,11 @@ where
     match env::var(var_name) {
         Ok(s) => match s.parse::<T>() {
             Ok(value) => value,
-            Err(e) => {
+            Err(_) => {
                 warn!(
-                    "Failed to parse {} as {}: '{}'. Error: {}. Defaulting to {}.",
-                    var_name,
-                    std::any::type_name::<T>(),
-                    s,
-                    e,
-                    default
+                    env_var = var_name,
+                    reason = "parse_failed",
+                    "env var parse failed, using default"
                 );
                 default
             }
@@ -406,13 +404,11 @@ where
     match env::var(var_name) {
         Ok(s) => match s.parse::<T>() {
             Ok(value) => Some(value),
-            Err(e) => {
+            Err(_) => {
                 warn!(
-                    "Failed to parse {} as {}: '{}'. Error: {}.",
-                    var_name,
-                    std::any::type_name::<T>(),
-                    s,
-                    e
+                    env_var = var_name,
+                    reason = "parse_failed",
+                    "env var parse failed, returning none"
                 );
                 None
             }
@@ -457,15 +453,17 @@ pub async fn resolve_socket_addr(host: &str, port: u16, context: &str) -> std::n
                 addr
             } else if let Some(addr) = ipv6_addr {
                 warn!(
-                    "[{}] Only IPv6 address found for {}, using: {}",
-                    context, host_port, addr
+                    context = context,
+                    addr = %addr,
+                    "only ipv6 address found, using ipv6"
                 );
                 addr
             } else {
                 let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), port);
                 warn!(
-                    "[{}] No addresses found for {}. Using fallback {}",
-                    context, host_port, fallback
+                    context = context,
+                    fallback = %fallback,
+                    "no addresses found, using fallback"
                 );
                 fallback
             }
@@ -473,8 +471,10 @@ pub async fn resolve_socket_addr(host: &str, port: u16, context: &str) -> std::n
         Err(e) => {
             let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), port);
             warn!(
-                "[{}] Failed to resolve {}: {}. Using fallback {}",
-                context, host_port, e, fallback
+                context = context,
+                error = %e,
+                fallback = %fallback,
+                "address resolution failed, using fallback"
             );
             fallback
         }

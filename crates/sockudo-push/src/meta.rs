@@ -210,8 +210,8 @@ pub fn emit_push_meta_event(event: PushMetaEvent) {
     tracing::info!(
         target: PUSH_META_LOG_TARGET,
         app_id = %event.app_id,
-        publish_id = event.publish_id.as_deref(),
-        provider = event.provider.as_deref(),
+        publish_id = event.publish_id.as_deref().unwrap_or(""),
+        provider = event.provider.as_deref().unwrap_or(""),
         event = ?event.event,
         detail = %event.detail,
         "push meta-channel event"

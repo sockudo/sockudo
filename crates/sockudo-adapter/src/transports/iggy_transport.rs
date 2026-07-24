@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 pub struct IggyTransport {
     client: Arc<IggyClient>,
@@ -71,8 +71,12 @@ impl HorizontalTransport for IggyTransport {
         let listener_id = stable_consumer_name(&config);
 
         info!(
-            "Apache Iggy transport initialized with stream '{}' and topics: {}, {}, {}",
-            stream, broadcast_topic, request_topic, response_topic
+            adapter = "iggy",
+            stream = %stream,
+            broadcast_topic = %broadcast_topic,
+            request_topic = %request_topic,
+            response_topic = %response_topic,
+            "transport initialized"
         );
 
         Ok(Self {
@@ -166,7 +170,7 @@ impl IggyTransport {
                 let client = match connect_client(&config).await {
                     Ok(client) => Arc::new(client),
                     Err(error) => {
-                        warn!("Failed to connect Apache Iggy {kind} listener: {error}; retrying");
+                        warn!(adapter = "iggy", kind = kind, error = %error, retryable = true, "listener connection failed");
                         retry_attempt += 1;
                         wait_before_retry(&config, retry_attempt, &shutdown, &is_running).await;
                         continue;
@@ -187,11 +191,9 @@ impl IggyTransport {
                         consumer
                     }
                     Err(error) => {
-                        warn!(
-                            "Failed to initialize Apache Iggy {kind} consumer: {error}; retrying"
-                        );
+                        warn!(adapter = "iggy", kind = kind, error = %error, retryable = true, "consumer initialization failed");
                         if let Err(error) = client.shutdown().await {
-                            warn!("Failed to shutdown Apache Iggy {kind} listener client: {error}");
+                            warn!(adapter = "iggy", kind = kind, error = %error, "listener client shutdown failed");
                         }
                         retry_attempt += 1;
                         wait_before_retry(&config, retry_attempt, &shutdown, &is_running).await;
@@ -231,7 +233,7 @@ impl IggyTransport {
                                                 .await;
                                             }
                                             Some(Some(Err(error))) => {
-                                                warn!("Apache Iggy {kind} consumer failed: {}", error);
+                                                warn!(adapter = "iggy", kind = kind, error = %error, "consumer message failed");
                                             }
                                             Some(None) => {
                                                 consumer_exhausted = true;
@@ -244,25 +246,30 @@ impl IggyTransport {
                                         break;
                                     }
                                 }
-                                Some(Err(error)) => warn!("Apache Iggy {kind} consumer failed: {}", error),
+                                Some(Err(error)) => warn!(adapter = "iggy", kind = kind, error = %error, "consumer message failed"),
                                 None => break,
                             }
                         }
                     }
                 }
                 if let Err(error) = consumer.shutdown().await {
-                    warn!("Failed to shutdown Apache Iggy {kind} consumer: {error}");
+                    warn!(adapter = "iggy", kind = kind, error = %error, "consumer shutdown failed");
                 }
                 if let Err(error) = client.shutdown().await {
-                    warn!("Failed to shutdown Apache Iggy {kind} listener client: {error}");
+                    warn!(adapter = "iggy", kind = kind, error = %error, "listener client shutdown failed");
                 }
                 if is_running.load(Ordering::Relaxed) {
                     retry_attempt += 1;
-                    warn!("Apache Iggy {kind} consumer loop ended unexpectedly; retrying");
+                    warn!(
+                        adapter = "iggy",
+                        kind = kind,
+                        retryable = true,
+                        "consumer loop ended unexpectedly"
+                    );
                     wait_before_retry(&config, retry_attempt, &shutdown, &is_running).await;
                 }
             }
-            warn!("Apache Iggy {kind} consumer loop ended");
+            warn!(adapter = "iggy", kind = kind, "consumer loop ended");
         });
 
         Ok(())
@@ -294,7 +301,7 @@ impl IggyTransport {
                 let client = match connect_client(&config).await {
                     Ok(client) => Arc::new(client),
                     Err(error) => {
-                        warn!("Failed to connect Apache Iggy request listener: {error}; retrying");
+                        warn!(adapter = "iggy", error = %error, retryable = true, "request listener connection failed");
                         retry_attempt += 1;
                         wait_before_retry(&config, retry_attempt, &shutdown, &is_running).await;
                         continue;
@@ -312,13 +319,9 @@ impl IggyTransport {
                 {
                     Ok(consumer) => consumer,
                     Err(error) => {
-                        warn!(
-                            "Failed to initialize Apache Iggy request consumer: {error}; retrying"
-                        );
+                        warn!(adapter = "iggy", error = %error, retryable = true, "request consumer initialization failed");
                         if let Err(error) = client.shutdown().await {
-                            warn!(
-                                "Failed to shutdown Apache Iggy request listener client: {error}"
-                            );
+                            warn!(adapter = "iggy", error = %error, "request listener client shutdown failed");
                         }
                         retry_attempt += 1;
                         wait_before_retry(&config, retry_attempt, &shutdown, &is_running).await;
@@ -338,16 +341,12 @@ impl IggyTransport {
                         producer
                     }
                     Err(error) => {
-                        warn!(
-                            "Failed to initialize Apache Iggy response producer: {error}; retrying"
-                        );
+                        warn!(adapter = "iggy", error = %error, retryable = true, "response producer initialization failed");
                         if let Err(error) = consumer.shutdown().await {
-                            warn!("Failed to shutdown Apache Iggy request consumer: {error}");
+                            warn!(adapter = "iggy", error = %error, "request consumer shutdown failed");
                         }
                         if let Err(error) = client.shutdown().await {
-                            warn!(
-                                "Failed to shutdown Apache Iggy request listener client: {error}"
-                            );
+                            warn!(adapter = "iggy", error = %error, "request listener client shutdown failed");
                         }
                         retry_attempt += 1;
                         wait_before_retry(&config, retry_attempt, &shutdown, &is_running).await;
@@ -389,7 +388,7 @@ impl IggyTransport {
                                                 .await;
                                             }
                                             Some(Some(Err(error))) => {
-                                                warn!("Apache Iggy request consumer failed: {}", error);
+                                                warn!(adapter = "iggy", error = %error, "request consumer message failed");
                                             }
                                             Some(None) => {
                                                 consumer_exhausted = true;
@@ -402,26 +401,30 @@ impl IggyTransport {
                                         break;
                                     }
                                 }
-                                Some(Err(error)) => warn!("Apache Iggy request consumer failed: {}", error),
+                                Some(Err(error)) => warn!(adapter = "iggy", error = %error, "request consumer message failed"),
                                 None => break,
                             }
                         }
                     }
                 }
                 if let Err(error) = consumer.shutdown().await {
-                    warn!("Failed to shutdown Apache Iggy request consumer: {error}");
+                    warn!(adapter = "iggy", error = %error, "request consumer shutdown failed");
                 }
                 response_producer.shutdown().await;
                 if let Err(error) = client.shutdown().await {
-                    warn!("Failed to shutdown Apache Iggy request listener client: {error}");
+                    warn!(adapter = "iggy", error = %error, "request listener client shutdown failed");
                 }
                 if is_running.load(Ordering::Relaxed) {
                     retry_attempt += 1;
-                    warn!("Apache Iggy request consumer loop ended unexpectedly; retrying");
+                    warn!(
+                        adapter = "iggy",
+                        retryable = true,
+                        "request consumer loop ended unexpectedly"
+                    );
                     wait_before_retry(&config, retry_attempt, &shutdown, &is_running).await;
                 }
             }
-            warn!("Apache Iggy request consumer loop ended");
+            warn!(adapter = "iggy", "request consumer loop ended");
         });
 
         Ok(())
@@ -445,11 +448,11 @@ async fn process_consumer_message<T>(
             if let Some(metrics) = metrics.get() {
                 metrics.mark_horizontal_transport_message_dropped("iggy");
             }
-            warn!("Failed to parse Apache Iggy {kind} payload: {}", error);
+            warn!(adapter = "iggy", kind = kind, error = %error, "transport message parse failed");
         }
     }
     if let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
-        warn!("Failed to commit Apache Iggy {kind} offset: {error}");
+        warn!(adapter = "iggy", kind = kind, error = %error, "offset commit failed");
     }
 }
 
@@ -472,25 +475,25 @@ async fn process_request_message(
         Ok(request) => match handler(request).await {
             Ok(response) => match publish_message(config, response_producer, &response).await {
                 Ok(()) => should_commit = true,
-                Err(error) => warn!("Failed to publish Apache Iggy response: {error}"),
+                Err(error) => warn!(adapter = "iggy", error = %error, "response publish failed"),
             },
             Err(
                 Error::OwnRequestIgnored | Error::RequestNotForThisNode | Error::NoResponseNeeded,
             ) => {
                 should_commit = true;
             }
-            Err(error) => warn!("Apache Iggy request handler failed: {}", error),
+            Err(error) => warn!(adapter = "iggy", error = %error, "request handler failed"),
         },
         Err(error) => {
             if let Some(metrics) = metrics.get() {
                 metrics.mark_horizontal_transport_message_dropped("iggy");
             }
-            warn!("Failed to parse Apache Iggy request payload: {}", error);
+            warn!(adapter = "iggy", error = %error, "request payload parse failed");
             should_commit = true;
         }
     }
     if should_commit && let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
-        warn!("Failed to commit Apache Iggy request offset: {error}");
+        warn!(adapter = "iggy", error = %error, "request offset commit failed");
     }
 }
 
@@ -525,11 +528,14 @@ impl Drop for IggyTransport {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
                     if let Err(error) = client.shutdown().await {
-                        warn!("Failed to shutdown Apache Iggy transport client: {error}");
+                        warn!(adapter = "iggy", error = %error, "transport client shutdown failed");
                     }
                 });
             } else {
-                warn!("No Tokio runtime available to shutdown Apache Iggy transport client");
+                warn!(
+                    adapter = "iggy",
+                    "no tokio runtime for transport client shutdown"
+                );
             }
         }
     }
@@ -732,7 +738,7 @@ async fn publish_message<T: serde::Serialize>(
         .await
         .map_err(|e| Error::Internal(format!("Failed to publish Apache Iggy message: {e}")))?;
 
-    debug!("Published Apache Iggy message");
+    trace!(adapter = "iggy", "message published to transport");
     Ok(())
 }
 

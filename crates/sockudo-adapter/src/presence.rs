@@ -251,10 +251,7 @@ impl PresenceManager {
         excluding_socket: Option<&SocketId>,
         retention: Option<sockudo_core::presence_history::PresenceHistoryRetentionPolicy>,
     ) -> Result<()> {
-        debug!(
-            "Processing presence member addition for user {} in channel {} (app: {})",
-            user_id, channel, app_config.id
-        );
+        debug!(user_id = %user_id, channel = %channel, app_id = %app_config.id, "processing presence member addition");
 
         let lock_key = presence_lock_key(&app_config.id, channel, user_id);
         let presence_lock = self.get_presence_lock(&lock_key);
@@ -293,10 +290,7 @@ impl PresenceManager {
             let should_send_event = !had_other_connections && cancelled_pending_socket.is_none();
 
             if should_send_event {
-                debug!(
-                    "User {} is joining channel {} for the first time, sending member_added events",
-                    user_id, channel
-                );
+                debug!(user_id = %user_id, channel = %channel, "user joining channel for first time, sending member_added events");
 
                 let member_added_msg = sockudo_protocol::messages::PusherMessage::member_added(
                     channel.to_string(),
@@ -356,16 +350,10 @@ impl PresenceManager {
                     .send_member_added(app_config, channel, user_id)
                     .await
             {
-                warn!(
-                    "Failed to send member_added webhook for user {} in channel {}: {}",
-                    user_id, channel, e
-                );
+                warn!(user_id = %user_id, channel = %channel, error = %e, "failed to send member_added webhook");
             }
 
-            debug!(
-                "Successfully processed member_added for user {} in channel {}",
-                user_id, channel
-            );
+            debug!(user_id = %user_id, channel = %channel, "successfully processed member_added");
 
             if presence_history_enabled {
                 self.record_presence_transition(
@@ -403,14 +391,11 @@ impl PresenceManager {
             }
         } else {
             debug!(
-                "User {} already has {} connections or pending removal in channel {}, skipping member_added events",
-                user_id,
-                if had_other_connections || had_pending_removal {
-                    "other"
-                } else {
-                    "no"
-                },
-                channel
+                user_id = %user_id,
+                channel = %channel,
+                had_other_connections = had_other_connections,
+                had_pending_removal = had_pending_removal,
+                "user already present or pending removal, skipping member_added events"
             );
         }
 
@@ -429,7 +414,7 @@ impl PresenceManager {
                 )
                 .await
                 .map_err(|e| {
-                    error!("Failed to broadcast presence join: {}", e);
+                    error!(error = %e, "failed to broadcast presence join");
                     e
                 })
                 .ok(); // Log but don't fail the operation
@@ -463,10 +448,7 @@ impl PresenceManager {
         ungraceful_timeout_seconds: u64,
         retention: Option<sockudo_core::presence_history::PresenceHistoryRetentionPolicy>,
     ) -> Result<()> {
-        debug!(
-            "Processing presence member removal for user {} in channel {} (app: {})",
-            user_id, channel, app_config.id
-        );
+        debug!(user_id = %user_id, channel = %channel, app_id = %app_config.id, "processing presence member removal");
 
         let lock_key = presence_lock_key(&app_config.id, channel, user_id);
 
@@ -537,10 +519,7 @@ impl PresenceManager {
                     return Ok(());
                 }
 
-                debug!(
-                    "User {} has no other connections in channel {}, sending member_removed events",
-                    user_id, channel
-                );
+                debug!(user_id = %user_id, channel = %channel, "user has no other connections, sending member_removed events");
 
                 let member_removed_msg =
                     PusherMessage::member_removed(channel.to_string(), user_id.to_string());
@@ -585,10 +564,7 @@ impl PresenceManager {
 
                 true
             } else {
-                debug!(
-                    "User {} has other connections in channel {}, skipping member_removed events",
-                    user_id, channel
-                );
+                debug!(user_id = %user_id, channel = %channel, "user has other connections, skipping member_removed events");
                 false
             }
         };
@@ -611,20 +587,12 @@ impl PresenceManager {
                         Err(_) => true,
                     };
                     if still_gone && let Err(e) = wi.send_member_removed(&app, &ch, &uid).await {
-                        tracing::warn!(
-                            "Failed to send member_removed webhook for user {} in channel {}: {}",
-                            uid,
-                            ch,
-                            e
-                        );
+                        tracing::warn!(user_id = %uid, channel = %ch, error = %e, "failed to send member_removed webhook");
                     }
                 });
             }
 
-            debug!(
-                "Successfully processed member_removed for user {} in channel {}",
-                user_id, channel
-            );
+            debug!(user_id = %user_id, channel = %channel, "successfully processed member_removed");
 
             if presence_history_enabled {
                 self.record_presence_transition(
@@ -677,7 +645,7 @@ impl PresenceManager {
                 )
                 .await
                 .map_err(|e| {
-                    error!("Failed to broadcast presence leave: {}", e);
+                    error!(error = %e, "failed to broadcast presence leave");
                     e
                 })
                 .ok(); // Log but don't fail the operation
@@ -739,10 +707,7 @@ impl PresenceManager {
                 .send_member_updated(app_config, channel, user_id, user_info.clone())
                 .await
         {
-            warn!(
-                "Failed to send member_updated webhook for user {} in channel {}: {}",
-                user_id, channel, e
-            );
+            warn!(user_id = %user_id, channel = %channel, error = %e, "failed to send member_updated webhook");
         }
 
         let update_msg = PusherMessage::member_updated(
@@ -842,9 +807,9 @@ impl PresenceManager {
                 .collect();
 
             warn!(
-                "Presence locks map has {} entries, removing {} stale entries",
-                self.presence_locks.len(),
-                stale_keys.len()
+                lock_count = self.presence_locks.len(),
+                stale_count = stale_keys.len(),
+                "presence locks map has many entries, removing stale entries"
             );
 
             for key in stale_keys {
@@ -913,12 +878,7 @@ impl PresenceManager {
                     Err(_) => true,
                 };
                 if still_gone && let Err(e) = wi.send_member_removed(&app, &ch, &uid).await {
-                    tracing::warn!(
-                        "Failed to send member_removed webhook for user {} in channel {}: {}",
-                        uid,
-                        ch,
-                        e
-                    );
+                    tracing::warn!(user_id = %uid, channel = %ch, error = %e, "failed to send member_removed webhook");
                 }
             });
         }
@@ -964,10 +924,7 @@ impl PresenceManager {
         )
         .await;
 
-        debug!(
-            "Successfully processed member_removed for user {} in channel {}",
-            user_id, channel
-        );
+        debug!(user_id = %user_id, channel = %channel, "successfully processed member_removed");
 
         if presence_history_enabled {
             Self::record_presence_transition_inner(
@@ -1027,8 +984,10 @@ impl PresenceManager {
             .await
         {
             warn!(
-                "Failed to record presence history transition for user {} in channel {}: {}",
-                record.user_id, record.channel, error
+                user_id = %record.user_id,
+                channel = %record.channel,
+                error = %error,
+                "failed to record presence history transition"
             );
             if let Some(metrics) = metrics {
                 metrics.mark_presence_history_write_failure(&record.app_id);

@@ -216,7 +216,7 @@ pub async fn handle_ably_realtime_upgrade(
             )
             .await
             {
-                warn!(error = %error, "Ably compatibility socket closed with error");
+                warn!(protocol = "ably", error = %error, "compatibility socket closed with error");
             }
         })
         .into_response()
@@ -377,7 +377,7 @@ pub(super) async fn run_ably_realtime_socket(
                         AblyFormat::MsgPack => Message::Binary((*frame.bytes).clone()),
                     };
                     if let Err(error) = writer.send(frame).await {
-                        debug!(error = %error, "Ably compatibility socket writer closed");
+                        debug!(protocol = "ably", error = %error, "compatibility socket writer closed");
                         return;
                     }
                 }
@@ -487,6 +487,14 @@ pub(super) async fn run_ably_realtime_socket(
             connection_error,
         ),
     );
+    info!(
+        protocol = "ably",
+        app_id = %app.id,
+        connection_id = %connection_id,
+        resumed = matches!(connection_start, AblyConnectionStart::Resumed { .. }),
+        wire_format = ?format,
+        "socket connected"
+    );
 
     let mut attached_channels = HashMap::new();
     let (command_tx, command_rx) = crossfire::mpsc::bounded_async(8);
@@ -560,7 +568,13 @@ pub(super) async fn run_ably_realtime_socket(
         let frame = match frame {
             Ok(frame) => frame,
             Err(error) => {
-                debug!(error = %error, "Ably compatibility socket reader closed");
+                debug!(
+                    protocol = "ably",
+                    app_id = %app.id,
+                    connection_id = %connection_id,
+                    error = %error,
+                    "socket reader closed"
+                );
                 break;
             }
         };
@@ -656,7 +670,13 @@ pub(super) async fn run_ably_realtime_socket(
                 break;
             }
             Err(error) => {
-                debug!(error = %error, "Ably compatibility protocol handler stopped");
+                debug!(
+                    protocol = "ably",
+                    app_id = %app.id,
+                    connection_id = %connection_id,
+                    error = %error,
+                    "protocol handler stopped"
+                );
                 break;
             }
         }
@@ -690,6 +710,7 @@ pub(super) async fn run_ably_realtime_socket(
                 .await
             {
                 warn!(
+                    protocol = "ably",
                     app_id = %app.id,
                     channel = %channel,
                     error = %error,
@@ -709,6 +730,7 @@ pub(super) async fn run_ably_realtime_socket(
             .await
         {
             warn!(
+                protocol = "ably",
                 app_id = %app.id,
                 connection_id = %connection_id,
                 error = %error,
@@ -716,11 +738,18 @@ pub(super) async fn run_ably_realtime_socket(
             );
         }
     }
+    let attached_channel_count = attached_channels.len();
     for (requested, _) in attached_channels {
         if let Ok(channel) = AblyChannelName::parse(requested)
             && let Err(error) = hub.unsubscribe(&app.id, &channel, &session_id).await
         {
-            warn!(app_id = %app.id, error = %error, "failed to persist channel close stats");
+            warn!(
+                protocol = "ably",
+                app_id = %app.id,
+                channel = %channel.requested(),
+                error = %error,
+                "channel close stats persistence failed"
+            );
         }
     }
     let owns_session = hub
@@ -765,8 +794,22 @@ pub(super) async fn run_ably_realtime_socket(
     if let Ok(closed) = StatsObservation::connection_closed(&app.id, now_ms(), stats_transport)
         && let Err(error) = hub.stats.record(closed).await
     {
-        warn!(app_id = %app.id, error = %error, "failed to persist connection close stats");
+        warn!(
+            protocol = "ably",
+            app_id = %app.id,
+            connection_id = %connection_id,
+            error = %error,
+            "connection close stats persistence failed"
+        );
     }
+    info!(
+        protocol = "ably",
+        app_id = %app.id,
+        connection_id = %connection_id,
+        channel_count = attached_channel_count,
+        graceful = graceful_close,
+        "socket disconnected"
+    );
     Ok(())
 }
 
@@ -866,7 +909,13 @@ pub(super) async fn handle_ably_auth_update(
         if let Ok(parsed) = AblyChannelName::parse(channel.clone())
             && let Err(error) = hub.unsubscribe(&app.id, &parsed, session_id).await
         {
-            warn!(app_id = %app.id, error = %error, "failed to persist channel close stats during AUTH update");
+            warn!(
+                protocol = "ably",
+                app_id = %app.id,
+                channel = %parsed.requested(),
+                error = %error,
+                "channel close stats persistence failed during auth update"
+            );
         }
         attached_channels.remove(&channel);
         send_channel_error(
@@ -1099,7 +1148,13 @@ pub(super) async fn handle_ably_protocol_message(
                 .is_err()
             {
                 if let Err(error) = hub.unsubscribe(&app.id, &channel, session_id).await {
-                    warn!(app_id = %app.id, channel = %channel.requested(), error = %error, "failed to clean up timed-out Ably attach");
+                    warn!(
+                        protocol = "ably",
+                        app_id = %app.id,
+                        channel = %channel.requested(),
+                        error = %error,
+                        "timed-out attach cleanup failed"
+                    );
                 }
                 attached_channels.remove(channel.requested());
                 send_protocol(
@@ -1168,6 +1223,13 @@ pub(super) async fn handle_ably_protocol_message(
                     channel: Some(channel.requested().to_string()),
                     ..empty_protocol_message(ACTION_DETACHED)
                 },
+            );
+            info!(
+                protocol = "ably",
+                app_id = %app.id,
+                connection_id = %connection_id,
+                channel = %channel.requested(),
+                "channel detached"
             );
         }
         ACTION_MESSAGE => {
@@ -1803,6 +1865,14 @@ pub(super) async fn handle_ably_attach(
             Vec::new()
         };
         hub.attach_clean(&app.id, channel, attachment(), attach_serial, replay);
+        info!(
+            protocol = "ably",
+            app_id = %app.id,
+            connection_id = %connection_id,
+            channel = %channel.requested(),
+            recovery_source = if rewind.is_some() { "rewind" } else { "none" },
+            "channel attached"
+        );
         return;
     };
 
@@ -1849,6 +1919,14 @@ pub(super) async fn handle_ably_attach(
                 }
             }
             hub.attach_cold_recovery(&app.id, channel, attachment(), &position, replay);
+            info!(
+                protocol = "ably",
+                app_id = %app.id,
+                connection_id = %connection_id,
+                channel = %channel.requested(),
+                recovery_source = "cold",
+                "channel attached"
+            );
         }
         Err(failure) => hub.attach_failed(
             &app.id,

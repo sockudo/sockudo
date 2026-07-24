@@ -46,13 +46,6 @@ impl PubSubMode {
             Self::Sharded => "redis_cluster_sharded",
         }
     }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Standard => "standard",
-            Self::Sharded => "sharded",
-        }
-    }
 }
 
 /// Address of a single Redis Cluster shard master.
@@ -103,7 +96,7 @@ impl Topology {
             match Self::discover_one(url).await {
                 Ok(topo) => return Ok(topo),
                 Err(e) => {
-                    warn!("Topology::discover: seed {url} failed: {e}");
+                    warn!(adapter = "redis_cluster", "seed node connection failed");
                     last_err = Some(e);
                 }
             }
@@ -113,13 +106,16 @@ impl Topology {
     }
 
     async fn discover_one(url: &str) -> Result<Self> {
-        let client = redis::Client::open(url)
-            .map_err(|e| Error::Redis(format!("Topology: failed to open client for {url}: {e}")))?;
+        let client = redis::Client::open(url).map_err(|e| {
+            Error::Redis(format!(
+                "topology: failed to open client for seed node: {e}"
+            ))
+        })?;
 
         let mut conn = client
             .get_multiplexed_async_connection()
             .await
-            .map_err(|e| Error::Redis(format!("Topology: connect to {url} failed: {e}")))?;
+            .map_err(|e| Error::Redis(format!("topology: connect to seed node failed: {e}")))?;
 
         let shards_result: redis::RedisResult<redis::Value> = redis::cmd("CLUSTER")
             .arg("SHARDS")
@@ -133,7 +129,7 @@ impl Topology {
                     .arg("SLOTS")
                     .query_async(&mut conn)
                     .await
-                    .map_err(|e| Error::Redis(format!("CLUSTER SLOTS on {url} failed: {e}")))?;
+                    .map_err(|e| Error::Redis(format!("topology: CLUSTER SLOTS failed: {e}")))?;
                 parse_cluster_slots(raw)
             }
         }
@@ -405,10 +401,12 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
 
         let client = match redis::Client::open(params.url.as_str()) {
             Ok(c) => c,
-            Err(e) => {
+            Err(_e) => {
                 warn!(
-                    "shard_listener[{}]: failed to open client: {e}, retry in {retry_delay}ms",
-                    params.shard_addr
+                    adapter = "redis_cluster",
+                    shard = %params.shard_addr,
+                    retry_delay_ms = retry_delay,
+                    "shard listener failed to open client"
                 );
                 tokio::select! {
                     _ = params.shutdown.notified() => break 'outer,
@@ -426,19 +424,24 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
             Ok(c) => {
                 if reconnection_count > 0 {
                     info!(
-                        "shard_listener[{}]: reconnected after {} attempt(s)",
-                        params.shard_addr, reconnection_count
+                        adapter = "redis_cluster",
+                        shard = %params.shard_addr,
+                        attempt_count = reconnection_count,
+                        "shard listener reconnected"
                     );
                 }
                 retry_delay = 500;
                 consecutive_failures = 0;
                 c
             }
-            Err(e) => {
+            Err(_e) => {
                 reconnection_count += 1;
                 warn!(
-                    "shard_listener[{}]: connect failed (attempt {}): {e}, retry in {retry_delay}ms",
-                    params.shard_addr, reconnection_count
+                    adapter = "redis_cluster",
+                    shard = %params.shard_addr,
+                    attempt = reconnection_count,
+                    retry_delay_ms = retry_delay,
+                    "shard listener connect failed"
                 );
                 if let Some(m) = params.metrics.get() {
                     m.mark_horizontal_transport_reconnection(params.mode.metrics_transport());
@@ -462,14 +465,16 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
         let subscribe_command = params.mode.subscribe_command();
         let mut subscribe_ok = true;
         for ch in &params.channels {
-            if let Err(e) = redis::cmd(subscribe_command)
+            if let Err(_e) = redis::cmd(subscribe_command)
                 .arg(ch.as_str())
                 .exec_async(&mut conn)
                 .await
             {
                 warn!(
-                    "shard_listener[{}]: {} failed for {ch}: {e}",
-                    params.shard_addr, subscribe_command
+                    adapter = "redis_cluster",
+                    shard = %params.shard_addr,
+                    channel = %ch,
+                    "shard subscription failed"
                 );
                 subscribe_ok = false;
                 break;
@@ -489,10 +494,10 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
         }
 
         info!(
-            "shard_listener[{}]: {} subscribed to {} channel(s)",
-            params.shard_addr,
-            params.mode.label(),
-            params.channels.len()
+            adapter = "redis_cluster",
+            shard = %params.shard_addr,
+            channel_count = params.channels.len(),
+            "shard subscribed"
         );
         if let Some(ready_tx) = params.ready_tx.take() {
             let _ = ready_tx.send(());
@@ -513,8 +518,9 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
             match push_info.kind {
                 redis::PushKind::Disconnection => {
                     warn!(
-                        "shard_listener[{}]: Disconnection push received, reconnecting",
-                        params.shard_addr
+                        adapter = "redis_cluster",
+                        shard = %params.shard_addr,
+                        "shard disconnection received, reconnecting"
                     );
                     break;
                 }
@@ -536,8 +542,10 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
 
         reconnection_count += 1;
         warn!(
-            "shard_listener[{}]: connection ended, reconnecting in {retry_delay}ms",
-            params.shard_addr
+            adapter = "redis_cluster",
+            shard = %params.shard_addr,
+            retry_delay_ms = retry_delay,
+            "shard connection ended, reconnecting"
         );
         tokio::select! {
             _ = params.shutdown.notified() => break 'outer,
@@ -546,7 +554,7 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
         retry_delay = retry_delay.saturating_mul(2).min(MAX_RETRY_DELAY);
     }
 
-    info!("shard_listener[{}]: stopped", params.shard_addr);
+    info!(adapter = "redis_cluster", shard = %params.shard_addr, "shard listener stopped");
 }
 
 /// Top-level orchestrator for slot-aware Redis Cluster sharded Pub/Sub.
@@ -632,10 +640,10 @@ impl ShardedSubscriber {
         }
 
         info!(
-            "ShardedSubscriber: {} {} channel(s) across {} shard(s)",
-            self.mode.label(),
-            self.channels.len(),
-            by_shard.len()
+            adapter = "redis_cluster",
+            channel_count = self.channels.len(),
+            shard_count = by_shard.len(),
+            "sharded subscriber initialized"
         );
 
         let (fan_tx, fan_rx): (ShardedPushSender, ShardedPushReceiver) =
@@ -702,8 +710,8 @@ impl ShardedSubscriber {
             for result in futures::future::join_all(readiness).await {
                 if !matches!(result, Ok(Ok(()))) {
                     warn!(
-                        "ShardedSubscriber: timed out waiting for initial {} subscription readiness",
-                        self.mode.label()
+                        adapter = "redis_cluster",
+                        "sharded subscriber initial subscription timed out"
                     );
                 }
             }
@@ -733,8 +741,8 @@ impl ShardedSubscriber {
 
                 let new_topo = match Topology::discover(&seed_urls_clone).await {
                     Ok(t) => t,
-                    Err(e) => {
-                        warn!("topology refresh failed: {e}");
+                    Err(_e) => {
+                        warn!(adapter = "redis_cluster", "topology refresh failed");
                         continue;
                     }
                 };
@@ -796,8 +804,9 @@ impl ShardedSubscriber {
                 drop(sh);
                 *channel_shard_map_clone.lock().await = new_map;
                 info!(
-                    "topology refresh: migrated channels across {} shard(s)",
-                    total_shards
+                    adapter = "redis_cluster",
+                    shard_count = total_shards,
+                    "topology refresh completed"
                 );
             }
         });

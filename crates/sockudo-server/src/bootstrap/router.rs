@@ -113,15 +113,11 @@ impl SockudoServer {
         if use_allow_origin_any {
             cors_builder = cors_builder.allow_origin(AllowOrigin::any());
             if self.config.cors.credentials {
-                warn!(
-                    "CORS config: 'Access-Control-Allow-Credentials' was true but 'Access-Control-Allow-Origin' is '*'. Forcing credentials to false to comply with CORS specification."
-                );
+                warn!("cors allow_credentials forced to false because allow_origin is wildcard");
                 cors_builder = cors_builder.allow_credentials(false);
             }
             if self.config.cors.origin.len() > 1 {
-                warn!(
-                    "CORS config: Wildcard '*' or 'Any' is present in origins list along with other specific origins. Wildcard will take precedence, allowing all origins."
-                );
+                warn!("cors wildcard origin takes precedence over specific origins in list");
             }
         } else if !self.config.cors.origin.is_empty() {
             let allowed_origins = self.config.cors.origin.clone();
@@ -134,13 +130,9 @@ impl SockudoServer {
             ));
             cors_builder = cors_builder.allow_credentials(self.config.cors.credentials);
         } else {
-            warn!(
-                "CORS origins list is empty and no wildcard ('*' or 'Any') is specified. CORS might be highly restrictive or disabled depending on tower-http defaults. Consider setting origins or '*' for AllowOrigin::any()."
-            );
+            warn!("cors origins list is empty; cors may be highly restrictive or disabled");
             if self.config.cors.credentials {
-                warn!(
-                    "CORS origins list is empty, and credentials set to true. Forcing credentials to false for safety as no origin is explicitly allowed."
-                );
+                warn!("cors credentials forced to false because origins list is empty");
                 cors_builder = cors_builder.allow_credentials(false);
             }
         }
@@ -159,8 +151,8 @@ impl SockudoServer {
                     .unwrap_or(0) as usize;
 
                 info!(
-                    "Applying HTTP API rate limiting middleware with trust_hops: {}",
-                    trust_hops
+                    trust_hops = trust_hops,
+                    "http api rate limiting middleware configured"
                 );
                 Some(Self::build_rate_limit_layer(
                     rate_limiter_instance.clone(),
@@ -171,12 +163,12 @@ impl SockudoServer {
                 ))
             } else {
                 warn!(
-                    "Rate limiting is enabled in config, but no RateLimiter instance found in server state for HTTP API. Rate limiting will not be applied."
+                    "http api rate limiter configured but no instance found; rate limiting skipped"
                 );
                 None
             }
         } else {
-            info!("Custom HTTP API Rate limiting is disabled in configuration.");
+            info!("http api rate limiting disabled in configuration");
             None
         };
 
@@ -190,8 +182,8 @@ impl SockudoServer {
                     .unwrap_or(0) as usize;
 
                 info!(
-                    "Applying WebSocket rate limiting middleware with trust_hops: {}",
-                    trust_hops
+                    trust_hops = trust_hops,
+                    "websocket rate limiting middleware configured"
                 );
                 Some(Self::build_rate_limit_layer(
                     rate_limiter_instance.clone(),
@@ -202,20 +194,21 @@ impl SockudoServer {
                 ))
             } else {
                 warn!(
-                    "Rate limiting is enabled in config, but no RateLimiter instance found for WebSocket upgrades. WebSocket rate limiting will not be applied."
+                    "websocket rate limiter configured but no instance found; rate limiting skipped"
                 );
                 None
             }
         } else {
-            info!("Custom WebSocket rate limiting is disabled in configuration.");
+            info!("websocket rate limiting disabled in configuration");
             None
         };
 
         let body_limit_bytes =
             (self.config.http_api.request_limit_in_mb as usize).saturating_mul(1024 * 1024);
         debug!(
-            "Configuring Axum DefaultBodyLimit to {} MB ({} bytes)",
-            self.config.http_api.request_limit_in_mb, body_limit_bytes
+            limit_mb = self.config.http_api.request_limit_in_mb,
+            limit_bytes = body_limit_bytes,
+            "configuring http body limit"
         );
 
         let mut websocket_router = Router::new().route("/app/{appKey}", get(handle_ws_upgrade));

@@ -21,7 +21,7 @@ impl NatsClusterCoordinator {
             .await
             .map_err(|e| Error::Internal(format!("Failed to connect to NATS: {}", e)))?;
 
-        info!("Connected to NATS for cluster coordination");
+        info!("connected to nats for cluster coordination");
 
         let jetstream = async_nats::jetstream::new(client);
 
@@ -29,11 +29,11 @@ impl NatsClusterCoordinator {
 
         let kv_store = match jetstream.get_key_value(&bucket_name).await {
             Ok(store) => {
-                info!("Using existing NATS KV bucket: {}", bucket_name);
+                info!(bucket = %bucket_name, "using existing nats kv bucket");
                 store
             }
             Err(_) => {
-                info!("Creating NATS KV bucket: {}", bucket_name);
+                info!(bucket = %bucket_name, "creating nats kv bucket");
                 jetstream
                     .create_key_value(async_nats::jetstream::kv::Config {
                         bucket: bucket_name.clone(),
@@ -100,8 +100,12 @@ impl ClusterCoordinator for NatsClusterCoordinator {
 
         if should_send_full {
             debug!(
-                "Cluster coordination (NATS): Full message triggered (count={}, interval={}) for app={}, channel={}, key={}",
-                new_count, interval, app_id, channel, conflation_key
+                app_id,
+                channel,
+                count = new_count,
+                interval,
+                outcome = "full",
+                "cluster coordination: full message triggered"
             );
 
             self.kv_store
@@ -112,8 +116,12 @@ impl ClusterCoordinator for NatsClusterCoordinator {
             Ok((true, interval))
         } else {
             debug!(
-                "Cluster coordination (NATS): Delta message (count={}/{}) for app={}, channel={}, key={}",
-                new_count, interval, app_id, channel, conflation_key
+                app_id,
+                channel,
+                count = new_count,
+                interval,
+                outcome = "delta",
+                "cluster coordination: delta message"
             );
 
             self.kv_store
@@ -133,10 +141,7 @@ impl ClusterCoordinator for NatsClusterCoordinator {
             .await
             .map_err(|e| Error::Internal(format!("Failed to delete NATS counter: {}", e)))?;
 
-        debug!(
-            "Cluster coordination (NATS): Reset counter for app={}, channel={}, key={}",
-            app_id, channel, conflation_key
-        );
+        debug!(app_id, channel, "cluster coordination: reset counter");
         Ok(())
     }
 

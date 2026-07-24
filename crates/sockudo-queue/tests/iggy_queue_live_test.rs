@@ -25,6 +25,7 @@ fn live_iggy_config() -> IggyConfig {
 
 fn test_job(signature: &str) -> JobData {
     JobData {
+        job_id: None,
         app_key: "test-key".to_string(),
         app_id: "test-app".to_string(),
         app_secret: "test-secret".to_string(),

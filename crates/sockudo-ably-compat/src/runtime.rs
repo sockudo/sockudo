@@ -108,7 +108,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, RwLock, Weak, atomic::Ordering},
     time::Duration,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::auth::{basic_credential, bearer_token, parse_ably_key};
@@ -1006,12 +1006,18 @@ impl AblyAuthError {
 }
 
 fn auth_internal_failure(operation: &'static str) -> AblyAuthError {
-    warn!(operation, "Ably authentication internal operation failed");
+    warn!(
+        protocol = "ably",
+        operation, "authentication internal operation failed"
+    );
     AblyAuthError::internal()
 }
 
 fn auth_backend_failure(operation: &'static str) -> AblyAuthError {
-    warn!(operation, "Ably authentication dependency is unavailable");
+    warn!(
+        protocol = "ably",
+        operation, "authentication dependency unavailable"
+    );
     AblyAuthError::backend_unavailable()
 }
 
@@ -1187,7 +1193,7 @@ impl AblyCompatRuntime {
                     );
                     while dispatcher.is_bound() {
                         if let Err(error) = worker.run_once("sockudo-ably-realtime").await {
-                            warn!(error = %error, "Ably realtime push worker tick failed");
+                            warn!(protocol = "ably", error = %error, "realtime push worker tick failed");
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
@@ -1334,7 +1340,7 @@ async fn ably_stats_api_middleware(
         }
         for observation in observations {
             if let Err(error) = runtime.hub.stats.record(observation).await {
-                warn!(app_id = %app_id, error = %error, "failed to persist Ably API stats");
+                warn!(protocol = "ably", app_id = %app_id, error = %error, "api stats persistence failed");
             }
         }
     }
@@ -1463,6 +1469,7 @@ impl RealtimeEgressTap for AblyCompatHub {
     ) -> SockudoResult<()> {
         if !self.accept_delivery_position(app_id, channel, envelope)? {
             debug!(
+                protocol = "ably",
                 app_id = %app_id,
                 channel = %channel,
                 stream_id = ?envelope.stream_id,
@@ -1481,7 +1488,7 @@ impl RealtimeEgressTap for AblyCompatHub {
             {
                 Ok(event) => event,
                 Err(error) => {
-                    warn!(app_id = %app_id, channel = %channel, error, "failed to decode native annotation delivery");
+                    warn!(protocol = "ably", app_id = %app_id, channel = %channel, error, "native annotation delivery decode failed");
                     return Ok(());
                 }
             };
@@ -1505,7 +1512,7 @@ impl RealtimeEgressTap for AblyCompatHub {
             let value: Value = match decode_native_message_data(message.data.as_ref()) {
                 Ok(value) => value,
                 Err(error) => {
-                    warn!(app_id = %app_id, channel = %channel, error, "failed to decode native annotation summary delivery");
+                    warn!(protocol = "ably", app_id = %app_id, channel = %channel, error, "native annotation summary delivery decode failed");
                     return Ok(());
                 }
             };
@@ -1539,6 +1546,7 @@ impl RealtimeEgressTap for AblyCompatHub {
                 Ok(message) => message,
                 Err(error) => {
                     warn!(
+                        protocol = "ably",
                         app_id = %app_id,
                         channel = %channel,
                         error = %error,
@@ -1895,6 +1903,7 @@ impl AblyCompatHub {
                 Ok(removals) => removals,
                 Err(error) => {
                     warn!(
+                        protocol = "ably",
                         app_id = %app_id,
                         connection_id = %connection_id,
                         error = %error,
@@ -1914,6 +1923,7 @@ impl AblyCompatHub {
                         .await
                     {
                         warn!(
+                            protocol = "ably",
                             app_id = %app_id,
                             channel = %channel,
                             error = %error,
@@ -1922,6 +1932,7 @@ impl AblyCompatHub {
                     }
                 } else if let Err(error) = self.deliver_presence(&app_id, &channel, &replication) {
                     warn!(
+                        protocol = "ably",
                         app_id = %app_id,
                         channel = %channel,
                         error = %error,
@@ -1942,6 +1953,7 @@ impl AblyCompatHub {
                     .await
             {
                 warn!(
+                    protocol = "ably",
                     app_id = %app_id,
                     connection_id = %connection_id,
                     error = %error,
@@ -2086,6 +2098,7 @@ impl AblyCompatHub {
                 Err(error) => {
                     self.metrics.mark_backend_failure();
                     warn!(
+                        protocol = "ably",
                         app_id = %app_id,
                         error = %error.message,
                         "revocation backend read failed; authorization rejected"
@@ -2103,6 +2116,7 @@ impl AblyCompatHub {
                 Err(error) => {
                     self.metrics.mark_backend_failure();
                     warn!(
+                        protocol = "ably",
                         app_id = %app_id,
                         error = %error.message,
                         "revocation backend scan failed; authorization rejected"
@@ -2621,7 +2635,7 @@ impl AblyCompatHub {
                     }
                 }
                 Err(error) => {
-                    warn!(app_id = %app_id, channel = %channel, error = %error, "failed to encode Ably delta delivery");
+                    warn!(protocol = "ably", app_id = %app_id, channel = %channel, error = %error, "delta delivery encode failed");
                 }
             }
         }
@@ -2657,7 +2671,7 @@ impl AblyCompatHub {
             let encoded = match encode_protocol_bytes(&projected, format) {
                 Ok(bytes) => Arc::new(bytes),
                 Err(error) => {
-                    warn!(app_id = %app_id, channel = %channel, error = %error, "failed to encode Ably compatibility delivery");
+                    warn!(protocol = "ably", app_id = %app_id, channel = %channel, error = %error, "compatibility delivery encode failed");
                     continue;
                 }
             };
@@ -2687,7 +2701,7 @@ impl AblyCompatHub {
             )
             && let Err(error) = self.stats.try_record(observation)
         {
-            debug!(app_id = %app_id, error = %error, "stats outbound observation was not queued");
+            debug!(protocol = "ably", app_id = %app_id, error = %error, "outbound stats observation not queued");
         }
 
         #[cfg(feature = "delta")]
@@ -2892,7 +2906,7 @@ impl AblyCompatHub {
                     Err(error) => {
                         self.sessions.remove(requested_key);
                         self.metrics.mark_backend_failure();
-                        warn!(error = %error, "Ably connection state cache record was invalid");
+                        warn!(protocol = "ably", error = %error, "connection state cache record invalid");
                         None
                     }
                 },
@@ -2903,7 +2917,7 @@ impl AblyCompatHub {
                 Err(error) => {
                     self.sessions.remove(requested_key);
                     self.metrics.mark_backend_failure();
-                    warn!(error = %error, "Ably connection state cache read failed");
+                    warn!(protocol = "ably", error = %error, "connection state cache read failed");
                     None
                 }
             }
@@ -2969,11 +2983,11 @@ impl AblyCompatHub {
                         .set(&session_cache_key(&connection_key), &encoded, ttl_seconds)
                         .await
                     {
-                        warn!(error = %error, "Ably connection state cache write failed");
+                        warn!(protocol = "ably", error = %error, "connection state cache write failed");
                     }
                 }
                 Err(error) => {
-                    warn!(error = %error, "Ably connection state serialization failed");
+                    warn!(protocol = "ably", error = %error, "connection state serialization failed");
                 }
             }
         }
@@ -2997,7 +3011,7 @@ impl AblyCompatHub {
         if let Some(cache) = &self.cache
             && let Err(error) = cache.remove(&session_cache_key(connection_key)).await
         {
-            warn!(error = %error, "Ably connection state cache removal failed");
+            warn!(protocol = "ably", error = %error, "connection state cache removal failed");
         }
     }
 
@@ -3070,7 +3084,7 @@ impl AblyCompatHub {
             Ok(current) => current,
             Err(error) => {
                 self.metrics.mark_backend_failure();
-                warn!(app_id = %app_id, error = %error, "session owner refresh failed");
+                warn!(protocol = "ably", app_id = %app_id, error = %error, "session owner refresh failed");
                 false
             }
         }
@@ -3096,7 +3110,7 @@ impl AblyCompatHub {
             Ok(None) => false,
             Err(error) => {
                 self.metrics.mark_backend_failure();
-                warn!(app_id = %app_id, error = %error, "session owner read failed");
+                warn!(protocol = "ably", app_id = %app_id, error = %error, "session owner read failed");
                 false
             }
         }
@@ -3111,7 +3125,7 @@ impl AblyCompatHub {
             .await
         {
             self.metrics.mark_backend_failure();
-            warn!(app_id = %app_id, error = %error, "session owner release failed");
+            warn!(protocol = "ably", app_id = %app_id, error = %error, "session owner release failed");
         }
     }
 
@@ -3311,7 +3325,7 @@ fn send_ably_attached(
             delta_state = Some(next);
         }
         if let Err(error) = sender.send_protocol(&message, OutboundPriority::Data) {
-            debug!(error = %error, "Ably compatibility replay queue is unavailable");
+            debug!(protocol = "ably", error = %error, "compatibility replay queue unavailable");
             break;
         }
     }
@@ -3363,7 +3377,7 @@ fn ably_filter_protocol_message(
     messages.retain(|message| match filter.matches(message) {
         Ok(matches) => matches,
         Err(error) => {
-            warn!(error = %error, "failed to evaluate Ably derived-channel filter");
+            warn!(protocol = "ably", error = %error, "derived-channel filter evaluation failed");
             false
         }
     });
@@ -3749,7 +3763,7 @@ pub mod fuzzing {
 
 fn send_protocol(sender: &AblySender, message: AblyProtocolMessage) {
     if let Err(error) = sender.send_protocol(&message, OutboundPriority::Control) {
-        debug!(error = %error, "Ably compatibility outbound queue is unavailable");
+        debug!(protocol = "ably", error = %error, "compatibility outbound queue unavailable");
     }
 }
 

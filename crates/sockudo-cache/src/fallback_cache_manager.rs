@@ -57,14 +57,15 @@ impl FallbackCacheManager {
 
         let using_fallback = match primary.check_health().await {
             Ok(()) => {
-                debug!("Primary cache is healthy at startup");
+                debug!(
+                    cache_role = "primary",
+                    status = "healthy",
+                    "primary cache healthy at startup"
+                );
                 false
             }
             Err(e) => {
-                warn!(
-                    "Primary cache unavailable at startup, starting in fallback mode. Error: {}",
-                    e
-                );
+                warn!(cache_role = "primary", status = "degraded", error = %e, "primary cache unavailable at startup, starting in fallback mode");
                 true
             }
         };
@@ -89,11 +90,12 @@ impl FallbackCacheManager {
         self.using_fallback.load(Ordering::SeqCst)
     }
 
-    fn switch_to_fallback(&self, error: &str) {
+    fn switch_to_fallback(&self, _error: &str) {
         if !self.using_fallback.swap(true, Ordering::SeqCst) {
             warn!(
-                "Redis cache unavailable, switching to in-memory fallback. Error: {}",
-                error
+                cache_role = "primary",
+                status = "degraded",
+                "primary cache unavailable, switching to in-memory fallback"
             );
             self.last_failure_time
                 .store(self.start_time.elapsed().as_secs(), Ordering::SeqCst);
@@ -124,26 +126,34 @@ impl FallbackCacheManager {
             return false;
         }
 
-        debug!("Attempting to recover Redis cache connection...");
+        debug!(
+            cache_role = "primary",
+            "attempting to recover primary cache connection"
+        );
 
         let mut primary = self.primary.lock().await;
         match primary.check_health().await {
             Ok(()) => {
-                info!("Redis cache connection recovered, synchronizing fallback data...");
+                info!(
+                    cache_role = "primary",
+                    status = "healthy",
+                    "primary cache connection recovered, synchronizing fallback data"
+                );
 
                 if let Err(e) = self.sync_fallback_to_primary(&mut primary).await {
-                    warn!(
-                        "Failed to sync fallback data to primary during recovery: {}",
-                        e
-                    );
+                    warn!(cache_role = "primary", error = %e, "failed to sync fallback data to primary during recovery");
                 }
 
                 self.using_fallback.store(false, Ordering::SeqCst);
-                info!("Successfully switched back to primary cache after recovery");
+                info!(
+                    cache_role = "primary",
+                    status = "healthy",
+                    "switched back to primary cache after recovery"
+                );
                 true
             }
             Err(e) => {
-                debug!("Redis cache still unavailable: {}", e);
+                debug!(cache_role = "primary", status = "degraded", error = %e, "primary cache still unavailable");
                 self.last_failure_time
                     .store(self.start_time.elapsed().as_secs(), Ordering::SeqCst);
                 false
@@ -162,13 +172,17 @@ impl FallbackCacheManager {
         let entries = fallback.get_all_entries().await;
 
         if entries.is_empty() {
-            debug!("No entries in fallback cache to sync");
+            debug!(
+                cache_role = "fallback",
+                "no entries in fallback cache to sync"
+            );
             return Ok(());
         }
 
         debug!(
-            "Syncing {} entries from fallback to primary cache",
-            entries.len()
+            cache_role = "fallback",
+            entry_count = entries.len(),
+            "syncing entries from fallback to primary"
         );
 
         let mut synced = 0;
@@ -179,7 +193,7 @@ impl FallbackCacheManager {
             match primary.set(&key, &value, ttl_seconds).await {
                 Ok(()) => synced += 1,
                 Err(e) => {
-                    warn!("Failed to sync key '{}' to primary cache: {}", key, e);
+                    warn!(cache_role = "fallback", error = %e, "failed to sync entry to primary cache");
                     failed += 1;
                 }
             }
@@ -187,15 +201,16 @@ impl FallbackCacheManager {
 
         if failed > 0 {
             warn!(
-                "Synced {}/{} entries from fallback to primary ({} failed)",
-                synced,
-                synced + failed,
-                failed
+                cache_role = "fallback",
+                synced_count = synced,
+                failed_count = failed,
+                "partial sync of fallback to primary"
             );
         } else {
             info!(
-                "Successfully synced {} entries from fallback to primary cache",
-                synced
+                cache_role = "fallback",
+                synced_count = synced,
+                "synced all entries from fallback to primary"
             );
         }
 
@@ -293,12 +308,12 @@ impl CacheManager for FallbackCacheManager {
     async fn disconnect(&self) -> Result<()> {
         let primary_result = self.primary.lock().await.disconnect().await;
         if let Err(ref e) = primary_result {
-            warn!(error = ?e, "Failed to disconnect primary cache");
+            warn!(cache_role = "primary", error = %e, "failed to disconnect primary cache");
         }
 
         let fallback_result = self.fallback.lock().await.disconnect().await;
         if let Err(ref e) = fallback_result {
-            warn!(error = ?e, "Failed to disconnect fallback cache");
+            warn!(cache_role = "fallback", error = %e, "failed to disconnect fallback cache");
         }
 
         match (primary_result, fallback_result) {

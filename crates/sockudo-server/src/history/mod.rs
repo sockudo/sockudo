@@ -44,7 +44,7 @@ pub async fn create_annotation_store(
                     &history_config.postgres.table_prefix,
                 )
                 .await?;
-                tracing::info!("AnnotationStore initialized with driver: postgres");
+                tracing::info!(driver = "postgres", "annotation store initialized");
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "postgres"))]
@@ -65,7 +65,7 @@ pub async fn create_annotation_store(
                     &history_config.mysql.table_prefix,
                 )
                 .await?;
-                tracing::info!("AnnotationStore initialized with driver: mysql");
+                tracing::info!(driver = "mysql", "annotation store initialized");
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "mysql"))]
@@ -85,7 +85,7 @@ pub async fn create_annotation_store(
                     versioned_config.retention_window_seconds,
                 )
                 .await?;
-                tracing::info!("AnnotationStore initialized with driver: dynamodb");
+                tracing::info!(driver = "dynamodb", "annotation store initialized");
                 Ok(store)
             }
             #[cfg(not(feature = "dynamodb"))]
@@ -106,7 +106,7 @@ pub async fn create_annotation_store(
                     versioned_config.retention_window_seconds,
                 )
                 .await?;
-                tracing::info!("AnnotationStore initialized with driver: scylladb");
+                tracing::info!(driver = "scylladb", "annotation store initialized");
                 Ok(store)
             }
             #[cfg(not(feature = "scylladb"))]
@@ -126,7 +126,7 @@ pub async fn create_annotation_store(
                     &history_config.surrealdb.table_prefix,
                 )
                 .await?;
-                tracing::info!("AnnotationStore initialized with driver: surrealdb");
+                tracing::info!(driver = "surrealdb", "annotation store initialized");
                 Ok(store)
             }
             #[cfg(not(feature = "surrealdb"))]
@@ -281,7 +281,7 @@ pub async fn create_version_store(
                     &history_config.postgres.table_prefix,
                 )
                 .await?;
-                tracing::info!("VersionStore initialized with driver: postgres");
+                tracing::info!(driver = "postgres", "version store initialized");
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "postgres"))]

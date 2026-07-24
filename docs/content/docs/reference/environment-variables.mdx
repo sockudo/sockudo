@@ -31,11 +31,14 @@ This page lists every runtime environment variable referenced by the server, cor
 
 | Variable | Purpose |
 | --- | --- |
+| `RUST_LOG` | Highest-precedence tracing filter. |
 | `SOCKUDO_LOG_DEBUG` | Default log filter when debug mode is active. |
 | `SOCKUDO_LOG_PROD` | Default log filter when debug mode is not active. |
 | `LOG_OUTPUT_FORMAT` | Set to `json` for JSON logs. |
 | `LOG_COLORS_ENABLED` | Enables or disables colored text logs. |
-| `LOG_INCLUDE_TARGET` | Includes tracing targets in text logs. |
+| `LOG_INCLUDE_TARGET` | Includes tracing targets in text or JSON logs. |
+
+See [Logging](/docs/reference/logging) for level policy, stable lifecycle fields, and data-safety requirements.
 
 ## Driver selection
 

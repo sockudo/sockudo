@@ -22,7 +22,7 @@ impl ConnectionHandler {
                 let mut conn_locked = connection.inner.lock().await;
                 conn_locked.state.status = sockudo_core::websocket::ConnectionStatus::Active;
             } else {
-                tracing::warn!("Ping received for unknown socket: {}", socket_id);
+                tracing::warn!(socket_id = %socket_id, "ping received for unknown socket");
             }
         }
 
@@ -32,7 +32,7 @@ impl ConnectionHandler {
     }
 
     pub async fn handle_pong(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
-        tracing::debug!("Received pong from socket: {}", socket_id);
+        tracing::debug!(socket_id = %socket_id, "received pong from socket");
         let connection_manager = &self.connection_manager;
         if let Some(connection) = connection_manager.get_connection(socket_id, app_id).await {
             let mut conn_locked = connection.inner.lock().await;
@@ -40,14 +40,14 @@ impl ConnectionHandler {
             // We just need to reset connection status to Active when we receive a pong
             conn_locked.state.status = sockudo_core::websocket::ConnectionStatus::Active;
         } else {
-            tracing::warn!("Pong received for unknown socket: {}", socket_id);
+            tracing::warn!(socket_id = %socket_id, "pong received for unknown socket");
         }
         Ok(())
     }
 
     #[cfg(feature = "delta")]
     pub async fn handle_enable_delta_compression(&self, socket_id: &SocketId) -> Result<()> {
-        tracing::info!("Enabling delta compression for socket: {}", socket_id);
+        tracing::info!(socket_id = %socket_id, "enabling delta compression");
 
         // Enable delta compression in the manager
         self.delta_compression.enable_for_socket(socket_id);
@@ -99,18 +99,12 @@ impl ConnectionHandler {
                 self.send_message_to_socket(&app.id, socket_id, confirmation)
                     .await?;
 
-                tracing::info!(
-                    "Delta compression enabled successfully for socket: {}",
-                    socket_id
-                );
+                tracing::info!(socket_id = %socket_id, "delta compression enabled");
                 return Ok(());
             }
         }
 
-        tracing::warn!(
-            "Could not find connection for socket {} to enable delta compression",
-            socket_id
-        );
+        tracing::warn!(socket_id = %socket_id, "could not find connection to enable delta compression");
         Ok(())
     }
 
@@ -141,9 +135,9 @@ impl ConnectionHandler {
 
         if let Some(channel_name) = channel {
             tracing::info!(
-                "Delta sync error from socket {}, resetting state for channel {}",
-                socket_id,
-                channel_name
+                socket_id = %socket_id,
+                channel = %channel_name,
+                "delta sync error — resetting channel state"
             );
 
             // Clear all delta compression state for this socket/channel combination
@@ -151,16 +145,12 @@ impl ConnectionHandler {
                 .clear_channel_state(socket_id, &channel_name);
 
             tracing::debug!(
-                "Delta compression state cleared for socket {} channel {}",
-                socket_id,
-                channel_name
+                socket_id = %socket_id,
+                channel = %channel_name,
+                "delta compression state cleared"
             );
         } else {
-            tracing::warn!(
-                "Delta sync error from socket {} but no channel specified in message: {:?}",
-                socket_id,
-                message
-            );
+            tracing::warn!(socket_id = %socket_id, "delta sync error — no channel specified in message");
         }
 
         Ok(())
@@ -293,15 +283,15 @@ impl ConnectionHandler {
 
         let total = t_start.elapsed().as_micros();
         tracing::debug!(
-            "PERF[SUB_TOTAL] socket_id={} channel={} total={}μs validate={}μs auth={}μs presence_validate={}μs execute={}μs post={}μs",
-            socket_id,
-            request.channel,
-            total,
-            t_after_validate - t_before_validate,
-            t_after_auth - t_before_auth,
-            t_after_presence_validate - t_before_presence_validate,
-            t_after_execute - t_before_execute,
-            t_after_post - t_before_post
+            socket_id = %socket_id,
+            channel = %request.channel,
+            total_us = total,
+            validate_us = t_after_validate - t_before_validate,
+            auth_us = t_after_auth - t_before_auth,
+            presence_validate_us = t_after_presence_validate - t_before_presence_validate,
+            execute_us = t_after_execute - t_before_execute,
+            post_us = t_after_post - t_before_post,
+            "subscribe request perf"
         );
 
         Ok(())
@@ -338,6 +328,13 @@ impl ConnectionHandler {
         // Send success response
         self.send_signin_success(socket_id, app_config, &request)
             .await?;
+
+        tracing::info!(
+            app_id = %app_config.id,
+            socket_id = %socket_id,
+            user_id = %user_info.id,
+            "socket signed in"
+        );
 
         Ok(())
     }
@@ -428,7 +425,7 @@ impl ConnectionHandler {
                     )
                     .await
                 {
-                    tracing::error!("Failed to send client event webhook: {}", e);
+                    tracing::error!(error = %e, "failed to send client event webhook");
                 }
             });
         }
@@ -509,7 +506,7 @@ impl ConnectionHandler {
                     )
                     .await
                 {
-                    tracing::error!("Failed to send AI event webhook: {}", e);
+                    tracing::error!(error = %e, "failed to send ai event webhook");
                 }
             });
         }
