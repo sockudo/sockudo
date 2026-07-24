@@ -12,24 +12,20 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Deserialize;
-use sockudo_adapter::ConnectionHandler;
+use sockudo_adapter::{ConnectionHandler, services::MutableMessageActor};
 use sockudo_core::app::App;
 use sockudo_core::utils::validate_channel_name;
 use sockudo_core::version_store::{
     StoredVersionRecord, VersionStoreDirection, VersionStoreReadRequest,
 };
-use sockudo_core::versioned_message_auth::{
-    MutationAuthorizationRequest, MutationKind, authorize_message_mutation,
-};
+use sockudo_core::versioned_message_auth::MutationKind;
 use sockudo_core::versioned_messages::MessageSerial;
-use sockudo_core::versioned_messages::{VersionMetadata, VersionSerial};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_protocol::versioned_messages::{
     GetMessageResponse, ListMessageVersionsResponse, MessageAction as ProtocolMessageAction,
     MessageVersionMetadata, MessageVersionsQuery, VersionDirection, VersionedRealtimeMessage,
 };
-use sonic_rs::Value;
 use std::sync::Arc;
 use tracing::{instrument, warn};
 
@@ -151,22 +147,7 @@ fn build_versioned_realtime_message_for(
     }
 }
 
-fn build_mutation_version_metadata(
-    handler: &ConnectionHandler,
-    client_id: Option<String>,
-    description: Option<String>,
-    metadata: Option<Value>,
-) -> Result<VersionMetadata, AppError> {
-    Ok(VersionMetadata {
-        serial: VersionSerial::new(handler.next_version_serial().to_string())?,
-        client_id,
-        timestamp_ms: sockudo_core::history::now_ms(),
-        description,
-        metadata,
-    })
-}
-
-async fn resolve_mutation_actor_identity(
+async fn resolve_mutation_actor(
     handler: &Arc<ConnectionHandler>,
     app_id: &str,
     channel: &str,
@@ -174,7 +155,7 @@ async fn resolve_mutation_actor_identity(
     original_client_id: Option<&str>,
     requested_client_id: Option<&str>,
     requested_socket_id: Option<&str>,
-) -> Result<Option<String>, AppError> {
+) -> Result<MutableMessageActor, AppError> {
     let action_metric = format!("message.{}", kind.as_verb());
     if let Some(raw_socket_id) = requested_socket_id {
         let socket_id = SocketId::from_string(raw_socket_id)
@@ -239,42 +220,19 @@ async fn resolve_mutation_actor_identity(
             );
             return Err(mutable_not_permitted());
         }
-        if let Err(err) = authorize_message_mutation(MutationAuthorizationRequest {
-            channel,
-            kind,
-            original_client_id,
-            actor_client_id: actor_client_id.as_deref(),
-            capabilities: capabilities.as_ref(),
+        return Ok(MutableMessageActor {
+            client_id: actor_client_id,
+            capabilities,
             privileged_server: false,
-        }) {
-            if let Some(metrics) = handler.metrics() {
-                metrics.mark_versioned_message_mutation(app_id, &action_metric, "auth_failed");
-            }
-            warn!(
-                app_id = %app_id,
-                channel = %channel,
-                action = %kind.as_verb(),
-                original_client_id = original_client_id.unwrap_or(""),
-                actor_client_id = actor_client_id.as_deref().unwrap_or(""),
-                "Denied versioned message mutation authorization"
-            );
-            let _ = err;
-            return Err(mutable_not_permitted());
-        }
-
-        return Ok(actor_client_id.or_else(|| requested_client_id.map(str::to_string)));
+        });
     }
 
-    authorize_message_mutation(MutationAuthorizationRequest {
-        channel,
-        kind,
-        original_client_id,
-        actor_client_id: requested_client_id,
+    let _ = (original_client_id, requested_client_id);
+    Ok(MutableMessageActor {
+        client_id: None,
         capabilities: None,
         privileged_server: true,
-    })?;
-
-    Ok(requested_client_id.map(str::to_string))
+    })
 }
 
 /// GET /apps/{app_id}/channels/{channel_name}/messages/{message_serial}

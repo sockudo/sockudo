@@ -1,6 +1,7 @@
 // src/adapter/handler/message_handlers.rs
 use super::ConnectionHandler;
 use super::types::*;
+use crate::services::{MessageService, PublishContext};
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::websocket::SocketId;
@@ -10,6 +11,7 @@ use sockudo_protocol::messages::{
 };
 #[cfg(feature = "delta")]
 use sonic_rs::prelude::*;
+use std::sync::Arc;
 
 impl ConnectionHandler {
     pub async fn handle_ping(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
@@ -127,6 +129,7 @@ impl ConnectionHandler {
                     .ok()
                     .and_then(|v| v.get("channel").and_then(|c| c.as_str()).map(String::from))
             }
+            Some(sockudo_protocol::messages::MessageData::Binary(_)) => None,
             None => None,
         };
 
@@ -356,9 +359,7 @@ impl ConnectionHandler {
         let message = PusherMessage {
             channel: Some(request.channel.clone()),
             event: Some(request.event.clone()),
-            data: Some(sockudo_protocol::messages::MessageData::Json(
-                request.data.clone(),
-            )),
+            data: Some(request.data.clone()),
             name: None,
             user_id: None,
             tags: None,
@@ -393,7 +394,17 @@ impl ConnectionHandler {
             }
         };
 
-        self.broadcast_to_channel(app_config, &request.channel, message, exclude_socket)
+        MessageService::new(Arc::new(self.clone()))
+            .publish_message(
+                app_config,
+                &request.channel,
+                message,
+                PublishContext {
+                    publisher_socket_id: Some(*socket_id),
+                    exclude_socket: exclude_socket.copied(),
+                    ..PublishContext::default()
+                },
+            )
             .await?;
 
         // Send webhook asynchronously (non-blocking for client).
@@ -408,7 +419,7 @@ impl ConnectionHandler {
                         &app_config,
                         &request.channel,
                         &request.event,
-                        request.data.clone(),
+                        request.webhook_data(),
                         Some(&socket_id.to_string()),
                         None, // Skip user_id for async webhooks to avoid lock dependencies
                     )
@@ -466,7 +477,17 @@ impl ConnectionHandler {
             }
         };
 
-        self.broadcast_to_channel(app_config, &channel, message, exclude_socket)
+        MessageService::new(Arc::new(self.clone()))
+            .publish_message(
+                app_config,
+                &channel,
+                message,
+                PublishContext {
+                    publisher_socket_id: Some(*socket_id),
+                    exclude_socket: exclude_socket.copied(),
+                    ..PublishContext::default()
+                },
+            )
             .await?;
 
         if !is_ephemeral && let Some(webhook_integration) = self.webhook_integration.clone() {

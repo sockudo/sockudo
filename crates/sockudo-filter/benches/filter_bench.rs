@@ -1,5 +1,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde::Deserialize;
+use sockudo_filter::{MessagePredicate, ProjectedDocument, SubscriptionView};
 use std::hint::black_box;
 
 #[derive(Debug, Deserialize)]
@@ -40,5 +41,45 @@ fn bench_filter_eval(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_filter_eval);
+fn bench_compiled_predicate(c: &mut Criterion) {
+    let cheap = MessagePredicate::compile(SubscriptionView {
+        events: vec!["order.updated".into()],
+        ..SubscriptionView::default()
+    })
+    .unwrap();
+    let expression = MessagePredicate::compile(SubscriptionView {
+        expression: Some("data.total >= `100` && headers.priority == `\"high\"`".into()),
+        ..SubscriptionView::default()
+    })
+    .unwrap();
+    let tags = std::collections::BTreeMap::<String, String>::new();
+    let document = ProjectedDocument::new(&serde_json::json!({
+        "data": {"total": 125},
+        "headers": {"priority": "high"}
+    }))
+    .unwrap();
+
+    let mut group = c.benchmark_group("compiled_predicate");
+    group.bench_function("event_only", |b| {
+        b.iter(|| {
+            black_box(cheap.matches_projected(
+                black_box(Some("order.updated")),
+                black_box(&tags),
+                None,
+            ))
+        });
+    });
+    group.bench_function("jmespath_projected_reused", |b| {
+        b.iter(|| {
+            black_box(expression.matches_projected(
+                None,
+                black_box(&tags),
+                Some(black_box(&document)),
+            ))
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_filter_eval, bench_compiled_predicate);
 criterion_main!(benches);

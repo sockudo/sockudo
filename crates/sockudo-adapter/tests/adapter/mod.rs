@@ -70,7 +70,7 @@ mod active_channels_gauge_tests;
 #[cfg(test)]
 mod clustered_active_channels_gauge_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tag-filtering"))]
 mod filter_index_disconnect_cleanup_tests;
 
 #[cfg(test)]
@@ -90,3 +90,9 @@ mod connected_gauge_regression_tests;
 
 #[cfg(test)]
 mod server_capacity_tests;
+
+#[cfg(test)]
+mod async_disconnect_cleanup_tests;
+
+#[cfg(test)]
+mod user_socket_index_regression_tests;

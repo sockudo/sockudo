@@ -360,6 +360,7 @@ pub(crate) fn test_versioned_record(
         app_id: "app-1".to_string(),
         channel: "versioned-room".to_string(),
         original_client_id: Some("user-1".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             MessageSerial::new(message_serial.to_string()).unwrap(),
             VersionMetadata {

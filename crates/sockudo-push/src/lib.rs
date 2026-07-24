@@ -71,12 +71,12 @@ pub use domain::{
     MAX_PROVIDER_OVERRIDE_BYTES, MAX_PUSH_BODY_BYTES, MAX_PUSH_ICON_BYTES, MAX_PUSH_TARGETS,
     MAX_PUSH_TITLE_BYTES, MAX_RENDERED_TEMPLATE_BYTES, MAX_TEMPLATE_DATA_BYTES,
     NotificationTemplate, Platform, ProviderCredential, ProviderCredentialMaterial, ProviderError,
-    ProviderOverridePayload, PublishCounters, PublishIntent, PublishLifecycleState,
-    PublishLogEvent, PublishStatus, PublishTarget, PushCursor, PushCursorKind, PushDomainError,
-    PushPayload, PushProviderKind, PushRecipient, RenderedProviderPayload, RetryScheduleEntry,
-    SecretString, ShardJob, ShardJobStatus, TemplateContent, TokenBucketPolicy,
-    generate_device_identity_token, hash_device_identity_token, is_hashed_device_secret,
-    stable_hash, verify_device_identity_token,
+    ProviderFailureClass, ProviderOverridePayload, PublishCounters, PublishIntent,
+    PublishLifecycleState, PublishLogEvent, PublishStatus, PublishTarget, PushCursor,
+    PushCursorKind, PushDomainError, PushPayload, PushProviderKind, PushRecipient,
+    RenderedProviderPayload, RetryScheduleEntry, SecretString, ShardJob, ShardJobStatus,
+    TemplateContent, TokenBucketPolicy, generate_device_identity_token, hash_device_identity_token,
+    is_hashed_device_secret, stable_hash, verify_device_identity_token,
 };
 pub use feedback::{PushFeedbackProcessor, device_is_terminally_failed};
 pub use memory::MemoryPushStore;

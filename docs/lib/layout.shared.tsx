@@ -1,5 +1,5 @@
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
-import { BookOpen, Code2, Newspaper, Rocket, Server } from 'lucide-react';
+import { BookOpen, Code2, Newspaper, Server } from 'lucide-react';
 import Image from 'next/image';
 import { appName, gitConfig } from './shared';
 
@@ -12,7 +12,7 @@ export function baseOptions(): BaseLayoutProps {
           <span>{appName}</span>
         </span>
       ),
-      transparentMode: 'top',
+      transparentMode: 'none',
     },
     links: [
       {
@@ -35,12 +35,6 @@ export function baseOptions(): BaseLayoutProps {
         url: '/blog',
         icon: <Newspaper className="size-4" />,
         active: 'nested-url',
-      },
-      {
-        type: 'button',
-        text: 'Start',
-        url: '/docs/getting-started/installation',
-        icon: <Rocket className="size-4" />,
       },
       {
         type: 'icon',

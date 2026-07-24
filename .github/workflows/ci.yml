@@ -439,6 +439,55 @@ jobs:
         run: scripts/ai-transport-bench-guard.sh
 
   # =============================================================================
+  # Ably Compatibility Benchmark Regression Guard
+  # =============================================================================
+  ably-compat-benchmark-regression:
+    name: Ably Compatibility Benchmark Regression
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
+
+      - name: Restore previous benchmark evidence
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ably-bench-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ably-bench-${{ hashFiles('**/Cargo.lock') }}-
+
+      - name: Run compatibility benchmarks
+        run: cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot
+
+      - name: Enforce compatibility regression budgets
+        run: >-
+          python3 scripts/ably-compat-release-guard.py
+          --budgets tests/load/ably-compat/budgets.json
+          --criterion-root target/criterion
+
+      - name: Store machine-readable benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ably-compat-criterion-${{ github.run_id }}
+          path: target/criterion/ably_compat_*
+          if-no-files-found: error
+
+  # =============================================================================
   # AI Transport Protocol Conformance
   # =============================================================================
   ai-conformance:
@@ -485,7 +534,7 @@ jobs:
   manual-build-info:
     name: 🔨 Manual Build Instructions
     runs-on: ubuntu-24.04
-    needs: [lint, test, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ai-conformance]
+    needs: [lint, test, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ably-compat-benchmark-regression, ai-conformance]
     steps:
       - name: Post build instructions
         uses: actions/github-script@v7

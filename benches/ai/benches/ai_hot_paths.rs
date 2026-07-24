@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 const APP_ID: &str = "app";
 const CHANNEL: &str = "ai:bench";
@@ -139,6 +140,7 @@ fn stored_create(
         app_id: APP_ID.to_string(),
         channel: CHANNEL.to_string(),
         original_client_id: Some("agent-1".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             MessageSerial::new(message_serial).unwrap(),
             version(delivery_serial),
@@ -190,6 +192,55 @@ fn append_wire_message(serial: &str, data: String, now: i64, terminal: bool) -> 
         Some(now as u64),
     );
     message
+}
+
+fn rollup_engine() -> RollupEngine {
+    RollupEngine::new(RollupConfig {
+        max_active_streams_per_channel: 50_000,
+        ..RollupConfig::default()
+    })
+}
+
+fn seed_independent_rollup_streams(engine: &RollupEngine, streams: usize, due: usize) {
+    for index in 0..streams {
+        let channel = format!("ai:bench:{index}");
+        let serial = format!("msg:{index}");
+        let _ = engine.ingest(
+            APP_ID,
+            &channel,
+            append_wire_message(&serial, "x".to_string(), (index * 2) as i64, false),
+            0,
+        );
+        if index < due {
+            let _ = engine.ingest(
+                APP_ID,
+                &channel,
+                append_wire_message(&serial, "xx".to_string(), (index * 2 + 1) as i64, false),
+                1,
+            );
+        }
+    }
+}
+
+fn terminal_rollup_fixture(streams: usize) -> (RollupEngine, Vec<(String, PusherMessage)>) {
+    let engine = rollup_engine();
+    seed_independent_rollup_streams(&engine, streams, streams);
+    let terminals = (0..streams)
+        .map(|index| {
+            let channel = format!("ai:bench:{index}");
+            let serial = format!("msg:{index}");
+            (
+                channel,
+                append_wire_message(
+                    &serial,
+                    "done".to_string(),
+                    (streams * 2 + index) as i64,
+                    true,
+                ),
+            )
+        })
+        .collect();
+    (engine, terminals)
 }
 
 fn bench_header_validation(c: &mut Criterion) {
@@ -284,6 +335,8 @@ fn bench_versioned_store(c: &mut Criterion) {
 
 fn bench_rollup(c: &mut Criterion) {
     let mut group = c.benchmark_group("ai_hot_paths_rollup");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
     group.throughput(Throughput::Elements(1));
     group.bench_function("rollup_decision_append_budget_mean_25us", |b| {
         let engine = RollupEngine::new(RollupConfig::default());
@@ -301,30 +354,68 @@ fn bench_rollup(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("rollup_flush_2000_budget_mean_10ms", |b| {
-        b.iter_batched(
-            || {
-                let engine = RollupEngine::new(RollupConfig::default());
-                let _ = engine.ingest(
-                    APP_ID,
-                    CHANNEL,
-                    append_wire_message(MESSAGE_SERIAL, "x".repeat(64), 0, false),
-                    0,
-                );
-                for index in 1..=2000 {
-                    let _ = engine.ingest(
-                        APP_ID,
-                        CHANNEL,
-                        append_wire_message(MESSAGE_SERIAL, "x".repeat(64), index, false),
-                        1,
-                    );
-                }
-                engine
+    for streams in [2_000_usize, 50_000] {
+        group.bench_with_input(
+            BenchmarkId::new("rollup_empty_tick_independent_streams_budget", streams),
+            &streams,
+            |b, &streams| {
+                b.iter_batched_ref(
+                    || {
+                        let engine = rollup_engine();
+                        seed_independent_rollup_streams(&engine, streams, 0);
+                        engine
+                    },
+                    |engine| black_box(engine.poll_due(1, streams)),
+                    BatchSize::LargeInput,
+                )
             },
-            |engine| black_box(engine.flush_due(40)),
-            BatchSize::SmallInput,
         );
-    });
+        group.bench_with_input(
+            BenchmarkId::new("rollup_one_percent_due_independent_streams_budget", streams),
+            &streams,
+            |b, &streams| {
+                b.iter_batched_ref(
+                    || {
+                        let engine = rollup_engine();
+                        seed_independent_rollup_streams(&engine, streams, streams.div_ceil(100));
+                        engine
+                    },
+                    |engine| black_box(engine.poll_due(40, streams)),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("rollup_all_due_independent_streams_budget", streams),
+            &streams,
+            |b, &streams| {
+                b.iter_batched_ref(
+                    || {
+                        let engine = rollup_engine();
+                        seed_independent_rollup_streams(&engine, streams, streams);
+                        engine
+                    },
+                    |engine| black_box(engine.poll_due(40, streams)),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("rollup_terminal_storm_independent_streams_budget", streams),
+            &streams,
+            |b, &streams| {
+                b.iter_batched_ref(
+                    || terminal_rollup_fixture(streams),
+                    |(engine, terminals)| {
+                        for (channel, terminal) in std::mem::take(terminals) {
+                            black_box(engine.ingest(APP_ID, &channel, terminal, 2));
+                        }
+                    },
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+    }
     group.finish();
 }
 

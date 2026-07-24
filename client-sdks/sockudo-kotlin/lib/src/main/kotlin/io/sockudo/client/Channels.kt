@@ -24,6 +24,7 @@ open class SockudoChannel internal constructor(
     var filter: FilterNode? = null
     var deltaSettings: ChannelDeltaSettings? = null
     var eventsFilter: List<String>? = null
+    var expressionFilter: SubscriptionExpression? = null
     var rewind: SubscriptionRewind? = null
     var annotationSubscribe: Boolean = false
     var attachSerial: Long? = null
@@ -84,9 +85,17 @@ open class SockudoChannel internal constructor(
                 "channel" to name,
             )
             auth.channelData?.let { payload["channel_data"] = it }
-            filter?.let { payload["tags_filter"] = JsonSupport.fromJsonElement(JsonSupport.toJsonElement(it)) }
+            if (eventsFilter != null || expressionFilter != null) {
+                payload["filter"] =
+                    linkedMapOf<String, Any?>().apply {
+                        eventsFilter?.let { put("events", it) }
+                        filter?.let { put("tags", JsonSupport.fromJsonElement(JsonSupport.toJsonElement(it))) }
+                        expressionFilter?.let { put("expression", it.subscriptionValue()) }
+                    }
+            } else {
+                filter?.let { payload["tags_filter"] = JsonSupport.fromJsonElement(JsonSupport.toJsonElement(it)) }
+            }
             deltaSettings?.let { payload["delta"] = it.subscriptionValue() }
-            eventsFilter?.let { payload["events"] = it }
             rewind?.let { payload["rewind"] = it.subscriptionValue() }
             if (annotationSubscribe) {
                 payload["modes"] = listOf("SUBSCRIBE", "ANNOTATION_SUBSCRIBE")

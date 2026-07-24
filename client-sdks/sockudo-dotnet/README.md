@@ -66,6 +66,10 @@ Protocol V2 heartbeat behavior:
 - .NET runtimes may still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages for client-side activity checks when native ping APIs are not exposed through the active transport surface
 - fallback heartbeat messages are intentionally excluded from V2 recovery metadata such as `message_id`, `serial`, and `stream_id`
 
+MessagePack and Protobuf preserve `byte[]` message data as native binary. The
+MessagePack representation uses the additive `["binary", <bin>]` tagged value;
+existing string and JSON variants are unchanged.
+
 ## Advanced Usage
 
 ### Private Channel Authorization
@@ -250,7 +254,9 @@ using Sockudo.Client;
 var channel = client.Subscribe(
     "price:btc",
     new SubscriptionOptions(
-        Filter: Filter.Eq("market", "spot")
+        Filter: Filter.Eq("market", "spot"),
+        Events: new[] { "price.updated" },
+        Expression: "data.price >= `100`"
     )
 );
 

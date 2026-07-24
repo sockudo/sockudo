@@ -142,6 +142,12 @@ pub struct MessageExtras {
     /// AI Transport metadata convention over the existing V2 extras envelope.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai: Option<AiExtras>,
+
+    /// Supported compatibility extensions which are not native Sockudo
+    /// semantics. Reserved native fields remain typed above and cannot be
+    /// shadowed through this map.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub opaque: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -200,6 +206,7 @@ impl AiHeaderValidationError {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct AiTransportHeaders<'a> {
     inner: &'a HashMap<String, String>,
 }
@@ -230,6 +237,17 @@ impl<'a> AiTransportHeaders<'a> {
     pub fn run_client_id(&self) -> Option<&'a str> {
         self.get(AI_HEADER_RUN_CLIENT_ID)
             .or_else(|| self.get(AI_HEADER_LEGACY_TURN_CLIENT_ID))
+    }
+
+    /// Returns the run owner for derived identity use.
+    ///
+    /// The native `run-client-id` header may be present as an empty wire
+    /// sentinel when the triggering input has no identified publisher. That
+    /// sentinel remains available through [`Self::run_client_id`] but must not
+    /// become an identity in metrics, webhooks, or projections.
+    #[inline]
+    pub fn run_client_identity(&self) -> Option<&'a str> {
+        self.run_client_id().filter(|value| !value.is_empty())
     }
 
     #[inline]
@@ -328,6 +346,17 @@ impl<'a> AiTransportHeaders<'a> {
         self.get(AI_HEADER_STEP_CLIENT_ID)
     }
 
+    /// Returns the step participant for derived identity use.
+    ///
+    /// The native `step-client-id` header may be present as an empty wire
+    /// sentinel when no participant identity is known. The sentinel remains
+    /// available through [`Self::step_client_id`] but must not become an
+    /// identity in projections or other derived data.
+    #[inline]
+    pub fn step_client_identity(&self) -> Option<&'a str> {
+        self.step_client_id().filter(|value| !value.is_empty())
+    }
+
     #[inline]
     pub fn role(&self) -> Option<&'a str> {
         self.get("role")
@@ -364,6 +393,45 @@ impl<'a> AiTransportHeaders<'a> {
 }
 
 impl MessageExtras {
+    const RESERVED_EXTENSION_KEYS: [&'static str; 6] = [
+        "headers",
+        "ephemeral",
+        "idempotencyKey",
+        "push",
+        "echo",
+        "ai",
+    ];
+
+    /// Add an explicitly supported opaque extension such as Ably's `ref`.
+    pub fn insert_opaque(
+        &mut self,
+        key: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Result<(), String> {
+        let key = key.into();
+        if key != "ref" {
+            return Err(format!("unsupported message extras extension '{key}'"));
+        }
+        if Self::RESERVED_EXTENSION_KEYS.contains(&key.as_str()) {
+            return Err(format!("message extras extension '{key}' is reserved"));
+        }
+        self.opaque.insert(key, value);
+        Ok(())
+    }
+
+    pub fn opaque_value(&self, key: &str) -> Option<&serde_json::Value> {
+        self.opaque.get(key)
+    }
+
+    pub fn validate_opaque(&self) -> Result<(), String> {
+        for key in self.opaque.keys() {
+            if key != "ref" || Self::RESERVED_EXTENSION_KEYS.contains(&key.as_str()) {
+                return Err(format!("unsupported message extras extension '{key}'"));
+            }
+        }
+        Ok(())
+    }
+
     /// Validate that headers (if present) contain only flat scalar values.
     /// This is structurally guaranteed by `ExtrasValue` having no Object/Array
     /// variants, but this method provides an explicit check with a clear error
@@ -414,6 +482,14 @@ impl MessageExtras {
         }
 
         Ok(())
+    }
+
+    /// Validate AI headers once and return the typed transport view.
+    pub fn validated_ai_transport_headers(
+        &self,
+    ) -> Result<Option<AiTransportHeaders<'_>>, AiHeaderValidationError> {
+        self.validate_ai_headers()?;
+        Ok(self.ai_transport_headers())
     }
 }
 
@@ -506,7 +582,6 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
     match key {
         AI_HEADER_RUN_ID
         | AI_HEADER_LEGACY_TURN_ID
-        | AI_HEADER_RUN_CLIENT_ID
         | AI_HEADER_LEGACY_TURN_CLIENT_ID
         | AI_HEADER_INPUT_CLIENT_ID
         | AI_HEADER_INPUT_CODEC_MESSAGE_ID
@@ -518,7 +593,6 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
         | AI_HEADER_EVENT_ID
         | AI_HEADER_STEP_ID
         | AI_HEADER_START_SERIAL
-        | AI_HEADER_STEP_CLIENT_ID
         | AI_HEADER_MSG_REGENERATE
         | "error-code"
         | "model" => {
@@ -528,6 +602,7 @@ fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderV
                 )));
             }
         }
+        AI_HEADER_RUN_CLIENT_ID | AI_HEADER_STEP_CLIENT_ID => {}
         AI_HEADER_RUN_REASON => {
             if !matches!(value, "complete" | "cancelled" | "error") {
                 return Err(AiHeaderValidationError::invalid_transport(
@@ -645,6 +720,9 @@ pub struct PresenceData {
 #[serde(untagged)]
 pub enum MessageData {
     String(String),
+    /// Opaque binary application data. JSON projects this as a byte array;
+    /// binary wire formats retain their native byte representation.
+    Binary(#[serde(with = "serde_bytes")] Vec<u8>),
     Structured {
         #[serde(skip_serializing_if = "Option::is_none")]
         channel_data: Option<String>,
@@ -1355,6 +1433,14 @@ impl PusherMessage {
         } else {
             Ok(())
         }
+    }
+
+    /// Validate AI headers once and return the typed transport view.
+    pub fn validated_ai_transport_headers(
+        &self,
+    ) -> Result<Option<AiTransportHeaders<'_>>, AiHeaderValidationError> {
+        self.validate_ai_headers()?;
+        Ok(self.ai_transport_headers())
     }
 
     /// Returns true if the given protocol version should receive extras in delivered messages.

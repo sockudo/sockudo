@@ -16,6 +16,8 @@ pub mod iggy_adapter;
 pub mod kafka_adapter;
 pub mod local_adapter;
 pub mod memory_rate_limiter;
+#[cfg(feature = "tag-filtering")]
+pub(crate) mod message_predicate;
 #[cfg(feature = "nats")]
 pub mod nats_adapter;
 pub mod presence;
@@ -29,6 +31,7 @@ pub mod redis_adapter;
 pub mod redis_cluster_adapter;
 #[cfg(feature = "recovery")]
 pub mod replay_buffer;
+pub mod services;
 pub mod transports;
 pub(crate) mod v2_broadcast;
 pub mod watchlist;

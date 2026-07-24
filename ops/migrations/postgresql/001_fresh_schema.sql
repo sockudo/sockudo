@@ -156,12 +156,21 @@ ON sockudo_history_version_entries (app_id, channel, delivery_serial);
 CREATE INDEX IF NOT EXISTS sockudo_history_version_entries_history_version_idx
 ON sockudo_history_version_entries (app_id, channel, history_serial, version_serial DESC);
 
+CREATE TABLE IF NOT EXISTS sockudo_history_annotation_streams (
+    app_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    next_serial BIGINT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel)
+);
+
 CREATE TABLE IF NOT EXISTS sockudo_history_annotation_events (
     app_id TEXT NOT NULL,
     channel TEXT NOT NULL,
     message_serial TEXT NOT NULL,
     annotation_serial TEXT NOT NULL,
     annotation_type TEXT NOT NULL,
+    annotation_id TEXT NULL,
     name TEXT NULL,
     client_id TEXT NULL,
     count_value BIGINT NULL,
@@ -186,6 +195,10 @@ ON sockudo_history_annotation_events (app_id, channel, annotation_serial);
 
 CREATE INDEX IF NOT EXISTS sockudo_history_annotation_events_created_at_idx
 ON sockudo_history_annotation_events (created_at_ms);
+
+CREATE UNIQUE INDEX IF NOT EXISTS sockudo_history_annotation_events_create_id_uidx
+ON sockudo_history_annotation_events (app_id, channel, message_serial, annotation_type, annotation_id)
+WHERE action = 'annotation.create' AND annotation_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sockudo_history_annotation_projections (
     app_id TEXT NOT NULL,

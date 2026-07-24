@@ -60,6 +60,7 @@ Filter and correlate events with these stable fields:
 | `socket_id` | WebSocket connection identifier |
 | `user_id` | Authenticated user identifier |
 | `channel` | Channel name |
+| `protocol` | Realtime protocol surface (`pusher`, `sockudo_v2`, or `ably`) |
 | `adapter` | Horizontal transport backend (`nats`, `redis`, `kafka`, ...) |
 | `error` | Error description for failed operations |
 | `retryable` | Whether the operation will be retried |
@@ -72,6 +73,10 @@ unsubscription, terminal disconnection (with cause), configuration loading, and 
 push outcomes. Message traffic, presence-member transitions, queue traffic, and retry internals
 remain at `debug` or `trace`. A scheduled webhook retry is a `warn`; permanent delivery failure is
 an `error`.
+
+The optional Ably compatibility surface uses the same lifecycle policy. Its connection, attachment,
+detachment, recovery-source, and disconnection events carry `protocol = "ably"` plus the applicable
+`app_id`, `connection_id`, and `channel` fields.
 
 ## Data safety
 

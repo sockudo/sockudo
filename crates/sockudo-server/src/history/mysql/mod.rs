@@ -26,6 +26,7 @@ struct HistoryTables {
     version_streams: String,
     version_messages: String,
     version_entries: String,
+    annotation_streams: String,
     annotation_events: String,
     annotation_projections: String,
 }
@@ -98,6 +99,7 @@ impl MySqlHistoryStore {
             version_streams: format!("{}_version_streams", config.mysql.table_prefix),
             version_messages: format!("{}_version_messages", config.mysql.table_prefix),
             version_entries: format!("{}_version_entries", config.mysql.table_prefix),
+            annotation_streams: format!("{}_annotation_streams", config.mysql.table_prefix),
             annotation_events: format!("{}_annotation_events", config.mysql.table_prefix),
             annotation_projections: format!("{}_annotation_projections", config.mysql.table_prefix),
         };
@@ -261,6 +263,11 @@ mod store_impl;
 mod version_store;
 #[cfg(feature = "versioned-messages")]
 pub(super) use version_store::create_mysql_version_store;
+
+#[cfg(feature = "versioned-messages")]
+mod annotation_store;
+#[cfg(feature = "versioned-messages")]
+pub(super) use annotation_store::MysqlAnnotationStore;
 
 #[cfg(test)]
 mod tests;

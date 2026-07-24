@@ -435,6 +435,69 @@ impl CacheManager for FallbackCacheManager {
         }
     }
 
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool> {
+        self.try_recover().await;
+        let _guard = self.recovery_lock.read().await;
+
+        if self.is_using_fallback() {
+            return self
+                .fallback
+                .lock()
+                .await
+                .compare_and_swap(key, expected, value, ttl_seconds)
+                .await;
+        }
+
+        let primary = self.primary.lock().await;
+        match primary
+            .compare_and_swap(key, expected, value, ttl_seconds)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.switch_to_fallback(&error.to_string());
+                self.fallback
+                    .lock()
+                    .await
+                    .compare_and_swap(key, expected, value, ttl_seconds)
+                    .await
+            }
+        }
+    }
+
+    async fn compare_and_remove(&self, key: &str, expected: &str) -> Result<bool> {
+        self.try_recover().await;
+        let _guard = self.recovery_lock.read().await;
+
+        if self.is_using_fallback() {
+            return self
+                .fallback
+                .lock()
+                .await
+                .compare_and_remove(key, expected)
+                .await;
+        }
+
+        let primary = self.primary.lock().await;
+        match primary.compare_and_remove(key, expected).await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.switch_to_fallback(&error.to_string());
+                self.fallback
+                    .lock()
+                    .await
+                    .compare_and_remove(key, expected)
+                    .await
+            }
+        }
+    }
+
     async fn increment_by(&self, key: &str, delta: i64, ttl_seconds: u64) -> Result<i64> {
         self.try_recover().await;
 

@@ -78,6 +78,7 @@ async fn send_v2_append_mode_groups_with_compression(
                     crate::connection_manager::CompressionParams {
                         delta_compression: Arc::clone(&delta_compression),
                         channel_settings,
+                        envelope: None,
                     },
                 )
                 .await,
@@ -230,6 +231,7 @@ impl ConnectionManager for LocalAdapter {
                                 crate::connection_manager::CompressionParams {
                                     delta_compression: Arc::clone(delta_compression),
                                     channel_settings: channel_settings.as_ref(),
+                                    envelope: None,
                                 },
                             )
                             .await;
@@ -246,7 +248,7 @@ impl ConnectionManager for LocalAdapter {
         // Get target socket references based on channel type
         let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
-            let socket_refs = namespace.get_user_sockets(user_id).await?;
+            let socket_refs = namespace.get_user_sockets(user_id)?;
 
             let mut target_refs = Vec::new();
             for socket_ref in socket_refs.iter() {
@@ -273,12 +275,6 @@ impl ConnectionManager for LocalAdapter {
             &mut filtered_socket_refs,
             except,
             &namespace,
-        );
-        filter_annotation_subscribers_in_place(channel, &message, &mut filtered_socket_refs);
-        crate::v2_broadcast::apply_event_name_filter_in_place(
-            channel,
-            &message,
-            &mut filtered_socket_refs,
         );
         self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
             .await;
@@ -316,7 +312,7 @@ impl ConnectionManager for LocalAdapter {
         // Get target socket references based on channel type
         let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
-            let socket_refs = namespace.get_user_sockets(user_id).await?;
+            let socket_refs = namespace.get_user_sockets(user_id)?;
 
             let mut target_refs = Vec::new();
             for socket_ref in socket_refs.iter() {
@@ -343,12 +339,6 @@ impl ConnectionManager for LocalAdapter {
             &mut filtered_socket_refs,
             except,
             &namespace,
-        );
-        filter_annotation_subscribers_in_place(channel, &message, &mut filtered_socket_refs);
-        crate::v2_broadcast::apply_event_name_filter_in_place(
-            channel,
-            &message,
-            &mut filtered_socket_refs,
         );
         self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
             .await;
@@ -431,7 +421,7 @@ impl ConnectionManager for LocalAdapter {
 
     async fn get_user_sockets(&self, user_id: &str, app_id: &str) -> Result<Vec<WebSocketRef>> {
         match self.existing_namespace(app_id) {
-            Some(namespace) => namespace.get_user_sockets(user_id).await,
+            Some(namespace) => namespace.get_user_sockets(user_id),
             None => Ok(Vec::new()),
         }
     }
@@ -659,7 +649,7 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
     ) -> Result<()> {
         match self.existing_namespace(app_id) {
-            Some(namespace) => namespace.remove_user_socket(user_id, socket_id).await,
+            Some(namespace) => namespace.remove_user_socket(user_id, socket_id),
             None => Ok(()),
         }
     }

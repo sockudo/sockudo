@@ -68,9 +68,24 @@ impl ConnectionHandler {
         self.clear_user_authentication_timeout(&app_config.id, socket_id)
             .await?;
 
-        {
+        let previous_user_id = {
             let mut conn_locked = connection_arc.inner.lock().await;
+            if conn_locked.state.disconnecting {
+                return Err(Error::ConnectionClosed(
+                    "connection is disconnecting".to_string(),
+                ));
+            }
+            let previous = conn_locked.state.user_id.clone();
             conn_locked.set_user_info(user_info.clone());
+            previous
+        };
+
+        if previous_user_id.as_deref() != Some(user_info.id.as_str())
+            && let Some(ref prev_id) = previous_user_id
+        {
+            self.connection_manager
+                .remove_user_socket(prev_id, socket_id, &app_config.id)
+                .await?;
         }
 
         // Re-add user to adapter's tracking (this updates user associations)

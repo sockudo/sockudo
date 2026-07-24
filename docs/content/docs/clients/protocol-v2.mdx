@@ -33,6 +33,14 @@ When recovery is enabled, V2 `sockudo_internal:subscription_succeeded` acknowled
 
 Successful V2 subscriptions may include `attach_serial` in `sockudo_internal:subscription_succeeded` when durable history is enabled for the channel. That value is the channel history head captured at attach time.
 
+## Binary wire data
+
+MessagePack and Protobuf preserve application message data as native bytes:
+`byte[]` on .NET, `Uint8List` on Dart, `ByteArray` on Kotlin, `bytes` on Python,
+`Data` on Swift, and `Uint8Array` on JavaScript. MessagePack uses the additive
+`["binary", <bin>]` tagged data variant; the existing string and JSON variants
+remain unchanged.
+
 ## Native events
 
 Protocol V2 uses `sockudo:` and `sockudo_internal:` prefixes for system events. Protocol V1 keeps `pusher:` and `pusher_internal:` prefixes.
@@ -50,6 +58,10 @@ client.bind("sockudo:resume_failed", (payload) => {
   console.warn("rebuild state", payload);
 });
 ```
+
+Each recovered entry may include an authoritative terminal `position`. Official
+clients apply it even when a subscription predicate suppressed the recovered
+tail, so the next resume starts from the canonical channel position.
 
 When `payload.code === "position_expired"`, resubscribe and use channel history with `until_attach: true` to backfill up to the new attach serial.
 

@@ -11,12 +11,12 @@ license-file.workspace = true
 ahash = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
+sockudo-core = { workspace = true, features = ["ai-transport"] }
 sockudo-protocol = { workspace = true }
 sonic-rs = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-sockudo-core = { workspace = true, features = ["ai-transport"] }
 tokio = { workspace = true }
 
 [[bench]]

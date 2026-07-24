@@ -4,7 +4,9 @@ use crossfire::mpsc;
 use sockudo_core::app::AppManager;
 use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::Result;
+use sockudo_core::message_envelope::MessageEnvelope;
 use sockudo_core::namespace::Namespace;
+use sockudo_core::presence_registry::PresenceReplication;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::{ProtocolVersion, WireFormat};
@@ -27,6 +29,9 @@ pub struct ChannelSocketCount {
 pub struct CompressionParams<'a> {
     pub delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     pub channel_settings: Option<&'a sockudo_delta::ChannelDeltaSettings>,
+    /// Protocol-neutral commit identity retained for remote compatibility
+    /// projections. Local native compression does not inspect this value.
+    pub envelope: Option<MessageEnvelope>,
 }
 
 /// Interface for horizontal adapters that support cluster presence replication
@@ -103,6 +108,47 @@ pub trait ConnectionManager: Send + Sync {
         app_id: &str,
         start_time_ms: Option<f64>,
     ) -> Result<()>;
+
+    /// Send a message while retaining protocol-neutral commit facts for
+    /// compatibility projections on remote nodes.
+    async fn send_with_envelope(
+        &self,
+        channel: &str,
+        message: PusherMessage,
+        except: Option<&SocketId>,
+        app_id: &str,
+        start_time_ms: Option<f64>,
+        envelope: Option<MessageEnvelope>,
+    ) -> Result<()> {
+        let _ = envelope;
+        self.send(channel, message, except, app_id, start_time_ms)
+            .await
+    }
+
+    /// Replicate protocol-neutral presence transitions to remote nodes without
+    /// exposing an internal event to Protocol V1 subscribers.
+    async fn send_presence_replication(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _replication: PresenceReplication,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return protocol-neutral presence records retained by the horizontal
+    /// presence registry, including state synced to a newly joined node.
+    async fn replicated_presence_records(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+    ) -> Result<Vec<sockudo_core::presence_registry::PresenceRecord>> {
+        Ok(Vec::new())
+    }
+
+    /// Install the optional compatibility delivery observer. Horizontal
+    /// adapters retain it for remote broadcast delivery; local adapters ignore it.
+    fn set_realtime_egress_tap(&self, _tap: Arc<dyn crate::handler::RealtimeEgressTap>) {}
 
     #[cfg(feature = "delta")]
     async fn send_with_compression(

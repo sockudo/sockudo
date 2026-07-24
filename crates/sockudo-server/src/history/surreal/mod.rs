@@ -11,9 +11,11 @@ use sockudo_core::history::{
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::{HistoryConfig, SurrealDbSettings};
 use sockudo_core::version_store::{
-    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
-    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
-    VersionWriteReservation, VersionWriteReservationBlock,
+    StoredVersionRecord, VersionCreateRejection, VersionCreateRequest, VersionCreateResult,
+    VersionMutationRejection, VersionMutationRequest, VersionMutationResult, VersionReplayRequest,
+    VersionStore, VersionStoreCursor, VersionStoreDirection, VersionStorePage,
+    VersionStoreReadRequest, VersionStreamState, VersionWriteReservation,
+    VersionWriteReservationBlock,
 };
 use sockudo_core::versioned_messages::MessageSerial;
 use sonic_rs::JsonValueTrait;
@@ -186,6 +188,12 @@ mod state;
 use state::*;
 
 mod store_impl;
+
+#[cfg(feature = "versioned-messages")]
+mod annotation_store;
+#[cfg(feature = "versioned-messages")]
+#[allow(unused_imports)]
+pub(super) use annotation_store::create_surreal_annotation_store;
 
 mod version_store;
 #[allow(unused_imports)]

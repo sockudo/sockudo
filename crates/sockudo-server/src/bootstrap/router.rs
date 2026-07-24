@@ -1,10 +1,4 @@
 use super::SockudoServer;
-#[cfg(feature = "ably-compat")]
-use crate::http_handler::{
-    ably_channel_history, ably_channel_message, ably_channel_message_versions,
-    ably_channel_publish, ably_channel_status, ably_request_token, ably_time,
-    handle_ably_realtime_upgrade,
-};
 use crate::http_handler::{
     append_message, batch_events, channel, channel_history, channel_history_purge,
     channel_history_reset, channel_history_state, channel_message, channel_message_annotations,
@@ -30,6 +24,8 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::http::Method;
 use axum::http::header::HeaderName;
+#[cfg(feature = "ably-compat")]
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Router, middleware as axum_middleware};
 use sockudo_core::metrics::MetricsInterface;
@@ -40,6 +36,25 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{debug, info, warn};
+
+#[cfg(feature = "ably-compat")]
+fn expose_ably_error_headers(cors: CorsLayer) -> CorsLayer {
+    cors.expose_headers([
+        HeaderName::from_static("x-ably-errorcode"),
+        HeaderName::from_static("x-ably-errormessage"),
+        HeaderName::from_static("link"),
+    ])
+}
+
+#[cfg(feature = "ably-compat")]
+fn is_ably_stats_request(
+    query: &sockudo_ably_compat::AblyStatsQuery,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    query.key.is_some()
+        || query.access_token.is_some()
+        || headers.contains_key(axum::http::header::AUTHORIZATION)
+}
 
 impl SockudoServer {
     fn build_rate_limit_layer(
@@ -122,6 +137,8 @@ impl SockudoServer {
             }
         }
 
+        #[cfg(feature = "ably-compat")]
+        let cors_builder = expose_ably_error_headers(cors_builder);
         let cors = cors_builder;
 
         let api_rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
@@ -197,7 +214,7 @@ impl SockudoServer {
         let mut websocket_router = Router::new().route("/app/{appKey}", get(handle_ws_upgrade));
         #[cfg(feature = "ably-compat")]
         {
-            websocket_router = websocket_router.route("/", get(handle_ably_realtime_upgrade));
+            websocket_router = websocket_router.merge(self.ably_compat.realtime_router());
         }
         if let Some(middleware) = websocket_rate_limiter_middleware_layer {
             websocket_router = websocket_router.layer(middleware);
@@ -376,22 +393,7 @@ impl SockudoServer {
 
         #[cfg(feature = "ably-compat")]
         {
-            api_router = api_router
-                .route("/time", get(ably_time))
-                .route("/keys/{keyName}/requestToken", post(ably_request_token))
-                .route("/channels/{channelName}", get(ably_channel_status))
-                .route(
-                    "/channels/{channelName}/messages",
-                    get(ably_channel_history).post(ably_channel_publish),
-                )
-                .route(
-                    "/channels/{channelName}/messages/{messageSerial}",
-                    get(ably_channel_message),
-                )
-                .route(
-                    "/channels/{channelName}/messages/{messageSerial}/versions",
-                    get(ably_channel_message_versions),
-                );
+            api_router = api_router.merge(self.ably_compat.rest_router());
         }
 
         #[cfg(feature = "push")]
@@ -576,7 +578,70 @@ impl SockudoServer {
 
         if self.config.http_api.usage_enabled {
             router = router.route("/usage", get(usage));
-            router = router.route("/stats", get(stats));
+        }
+        #[cfg(feature = "ably-compat")]
+        let stats_enabled = self.config.http_api.usage_enabled || self.config.ably_compat.enabled;
+        #[cfg(not(feature = "ably-compat"))]
+        let stats_enabled = self.config.http_api.usage_enabled;
+
+        if stats_enabled {
+            // Keep the native operator contract on an unambiguous alias even
+            // when authenticated Ably requests share the legacy `/stats` path.
+            router = router.route("/operator/stats", get(stats));
+            #[cfg(feature = "ably-compat")]
+            {
+                let runtime = Arc::clone(&self.ably_compat);
+                if self.config.ably_compat.enabled {
+                    let aggregation_runtime = Arc::clone(&self.ably_compat);
+                    let delivery_runtime = Arc::clone(&self.ably_compat);
+                    router = router.route(
+                        "/operator/stats/aggregation",
+                        get(move || {
+                            let snapshot = aggregation_runtime.stats_metrics();
+                            async move { axum::Json(snapshot) }
+                        }),
+                    );
+                    router = router.route(
+                        "/operator/stats/ably-runtime",
+                        get(move || {
+                            let snapshot = delivery_runtime.metrics();
+                            async move { axum::Json(snapshot) }
+                        }),
+                    );
+                }
+                router = router.route(
+                    "/stats",
+                    get(
+                        move |query: axum::extract::Query<sockudo_ably_compat::AblyStatsQuery>,
+                              headers: axum::http::HeaderMap,
+                              axum::extract::State(handler): axum::extract::State<
+                            Arc<sockudo_adapter::ConnectionHandler>,
+                        >| {
+                            let runtime = Arc::clone(&runtime);
+                            async move {
+                                if is_ably_stats_request(&query, &headers) {
+                                    sockudo_ably_compat::ably_stats(
+                                        query,
+                                        headers,
+                                        axum::Extension(runtime),
+                                        axum::extract::State(handler),
+                                    )
+                                    .await
+                                } else {
+                                    match stats(axum::extract::State(handler)).await {
+                                        Ok(response) => response.into_response(),
+                                        Err(error) => error.into_response(),
+                                    }
+                                }
+                            }
+                        },
+                    ),
+                );
+            }
+            #[cfg(not(feature = "ably-compat"))]
+            {
+                router = router.route("/stats", get(stats));
+            }
         }
 
         router = router
@@ -609,6 +674,21 @@ mod tests {
         StatusCode::OK
     }
 
+    #[cfg(feature = "ably-compat")]
+    async fn ably_error_handler() -> impl IntoResponse {
+        (
+            StatusCode::BAD_REQUEST,
+            [
+                (HeaderName::from_static("x-ably-errorcode"), "40000"),
+                (
+                    HeaderName::from_static("x-ably-errormessage"),
+                    "invalid request",
+                ),
+                (HeaderName::from_static("link"), "<./next>; rel=\"next\""),
+            ],
+        )
+    }
+
     fn scoped_test_router() -> Router {
         let api_layer = SockudoServer::build_rate_limit_layer(
             Arc::new(MemoryRateLimiter::new(1, 60)),
@@ -636,6 +716,37 @@ mod tests {
                     .route("/apps/{appId}/events", post(ok_handler))
                     .layer(api_layer),
             )
+    }
+
+    #[cfg(feature = "ably-compat")]
+    #[test]
+    fn authenticated_stats_requests_use_the_ably_handler() {
+        let query = sockudo_ably_compat::AblyStatsQuery::default();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::ACCEPT,
+            HeaderValue::from_static("application/x-msgpack"),
+        );
+        assert!(!is_ably_stats_request(&query, &headers));
+
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic ZGVtbzprZXk="),
+        );
+        assert!(is_ably_stats_request(&query, &headers));
+
+        headers.remove(axum::http::header::AUTHORIZATION);
+        let key_query = sockudo_ably_compat::AblyStatsQuery {
+            key: Some("demo:key".to_string()),
+            ..Default::default()
+        };
+        assert!(is_ably_stats_request(&key_query, &headers));
+
+        let token_query = sockudo_ably_compat::AblyStatsQuery {
+            access_token: Some("token".to_string()),
+            ..Default::default()
+        };
+        assert!(is_ably_stats_request(&token_query, &headers));
     }
 
     #[tokio::test]
@@ -700,5 +811,37 @@ mod tests {
             .unwrap();
         let second_api_response = app.oneshot(second_api_request).await.unwrap();
         assert_eq!(second_api_response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[cfg(feature = "ably-compat")]
+    #[tokio::test]
+    async fn cors_exposes_ably_error_headers_to_browser_clients() {
+        let app = Router::new()
+            .route("/error", get(ably_error_handler))
+            .layer(expose_ably_error_headers(CorsLayer::new().allow_origin(
+                AllowOrigin::exact(HeaderValue::from_static("https://client.example")),
+            )));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/error")
+                    .header("origin", "https://client.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let exposed = response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok())
+            .expect("Ably error headers must be browser-visible")
+            .to_ascii_lowercase();
+        assert!(exposed.contains("x-ably-errorcode"));
+        assert!(exposed.contains("x-ably-errormessage"));
+        assert!(exposed.contains("link"));
     }
 }

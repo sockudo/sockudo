@@ -1,7 +1,9 @@
 pub mod annotations_test;
+pub mod auth_token_user_index_tests;
 pub mod authentication_test;
 pub mod clustered_runtime_rewind_recovery_redis_test;
 pub mod presence_user_id_guard_test;
+#[cfg(feature = "recovery")]
 pub mod runtime_rewind_recovery_e2e_test;
 pub mod signin_test;
 pub mod validation_test;

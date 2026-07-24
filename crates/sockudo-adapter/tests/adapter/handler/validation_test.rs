@@ -4,6 +4,7 @@ mod client_event_validation_tests {
     use sockudo_adapter::handler::types::ClientEventRequest;
     use sockudo_core::app::{App, AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
     use sockudo_core::websocket::SocketId;
+    use sockudo_protocol::messages::MessageData;
     use sonic_rs::json;
 
     fn setup_test_app() -> App {
@@ -47,7 +48,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "my-event".to_string(), // Missing 'client-' prefix
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -68,7 +69,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "pusher:fake-event".to_string(), // Reserved prefix
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -89,7 +90,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "pusher_internal:fake-event".to_string(), // Reserved prefix
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -110,7 +111,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-typing".to_string(), // Valid client event
             channel: "private-channel".to_string(),
-            data: json!({"user": "alice", "status": "typing"}),
+            data: json!({"user": "alice", "status": "typing"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -126,7 +127,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -144,7 +145,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "public-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -165,7 +166,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -180,7 +181,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "presence-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -196,7 +197,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-this-is-a-very-long-event-name-that-exceeds-limit".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -217,7 +218,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": large_data}),
+            data: json!({"message": large_data}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -225,6 +226,21 @@ mod client_event_validation_tests {
 
         let err = result.unwrap_err();
         assert!(err.to_string().contains("exceeds limit"));
+    }
+
+    #[tokio::test]
+    async fn test_binary_client_event_payload_size_limit_uses_raw_bytes() {
+        let (handler, _app_manager) = create_test_connection_handler();
+        let mut app = setup_test_app();
+        app.policy.limits.max_event_payload_in_kb = Some(1);
+        let request = ClientEventRequest {
+            event: "client-binary".to_string(),
+            channel: "private-channel".to_string(),
+            data: MessageData::Binary(vec![0; 1025]),
+        };
+
+        let error = validate(&handler, &app, &request).await.unwrap_err();
+        assert!(error.to_string().contains("1025 bytes"));
     }
 
     #[tokio::test]
@@ -236,7 +252,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "private-this-is-a-very-long-channel-name-that-exceeds-limit".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
 
         let result = validate(&handler, &app, &request).await;
@@ -273,7 +289,7 @@ mod client_event_validation_tests {
             let request = ClientEventRequest {
                 event: event_name.to_string(),
                 channel: "private-channel".to_string(),
-                data: json!({"message": "test"}),
+                data: json!({"message": "test"}).into(),
             };
 
             let result = validate(&handler, &app, &request).await;
@@ -301,7 +317,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-pusher:custom".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
         assert!(validate(&handler, &app, &request).await.is_ok());
 
@@ -309,7 +325,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-pusher_internal:custom".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
         assert!(validate(&handler, &app, &request).await.is_ok());
 
@@ -317,7 +333,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
         assert!(validate(&handler, &app, &request).await.is_err());
 
@@ -325,7 +341,7 @@ mod client_event_validation_tests {
         let request = ClientEventRequest {
             event: "client-".to_string(),
             channel: "private-channel".to_string(),
-            data: json!({"message": "test"}),
+            data: json!({"message": "test"}).into(),
         };
         assert!(validate(&handler, &app, &request).await.is_ok());
     }

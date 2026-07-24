@@ -417,6 +417,7 @@ pub async fn publish_annotation(
             channel: path.channel_name,
             message_serial,
             annotation_type,
+            id: None,
             name: request.name,
             client_id: actor_client_id,
             count: request.count,
@@ -613,13 +614,12 @@ pub async fn channel_message_annotations(
             .replay_raw(RawAnnotationReplayRequest {
                 app_id: path.app_id.clone(),
                 channel_id: path.channel_name.clone(),
+                message_serial: Some(message_serial.clone()),
                 after_annotation_serial: from_serial,
-                limit: usize::MAX,
+                limit: limit.saturating_add(1),
             })
             .await?
             .into_iter()
-            .filter(|record| record.message_serial() == &message_serial)
-            .take(limit + 1)
             .collect::<Vec<_>>()
     };
     items.sort_by(|left, right| left.annotation_serial().cmp(right.annotation_serial()));

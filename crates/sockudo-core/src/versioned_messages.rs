@@ -382,6 +382,7 @@ mod tests {
                 push: None,
                 echo: Some(true),
                 ai: None,
+                opaque: Default::default(),
             }),
         )
     }

@@ -195,7 +195,8 @@ public final class ChannelHistoryPage: @unchecked Sendable {
   public let nextCursor: String?
   public let bounds: [String: Any]
   public let continuity: [String: Any]
-  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void) -> Void)?
+  private let fetchNext:
+    (@Sendable (String, @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void) -> Void)?
 
   init(
     items: [[String: Any]],
@@ -205,7 +206,9 @@ public final class ChannelHistoryPage: @unchecked Sendable {
     nextCursor: String?,
     bounds: [String: Any],
     continuity: [String: Any],
-    fetchNext: (@Sendable (String, @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void) -> Void)?
+    fetchNext: (
+      @Sendable (String, @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void) -> Void
+    )?
   ) {
     self.items = items
     self.direction = direction
@@ -265,7 +268,8 @@ public final class MessageVersionsPage: @unchecked Sendable {
   public let limit: Int
   public let hasMore: Bool
   public let nextCursor: String?
-  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void) -> Void)?
+  private let fetchNext:
+    (@Sendable (String, @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void) -> Void)?
 
   init(
     channel: String,
@@ -274,7 +278,9 @@ public final class MessageVersionsPage: @unchecked Sendable {
     limit: Int,
     hasMore: Bool,
     nextCursor: String?,
-    fetchNext: (@Sendable (String, @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void) -> Void)?
+    fetchNext: (
+      @Sendable (String, @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void) -> Void
+    )?
   ) {
     self.channel = channel
     self.items = items
@@ -310,7 +316,8 @@ public final class PresenceHistoryPage: @unchecked Sendable {
   public let nextCursor: String?
   public let bounds: PresenceHistoryBounds
   public let continuity: PresenceHistoryContinuity
-  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void) -> Void)?
+  private let fetchNext:
+    (@Sendable (String, @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void) -> Void)?
 
   init(
     items: [PresenceHistoryItem],
@@ -320,7 +327,9 @@ public final class PresenceHistoryPage: @unchecked Sendable {
     nextCursor: String?,
     bounds: PresenceHistoryBounds,
     continuity: PresenceHistoryContinuity,
-    fetchNext: (@Sendable (String, @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void) -> Void)?
+    fetchNext: (
+      @Sendable (String, @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void) -> Void
+    )?
   ) {
     self.items = items
     self.direction = direction
@@ -518,7 +527,7 @@ enum QueryString {
     }
 
     if let order = callbackOrder[eventName], !order.isEmpty,
-       let eventCallbacks = callbacks[eventName]
+      let eventCallbacks = callbacks[eventName]
     {
       for token in order {
         if let callback = eventCallbacks[token] {
@@ -858,6 +867,7 @@ public struct SubscriptionOptions: Sendable, Codable, Equatable {
   public var filter: FilterNode?
   public var delta: ChannelDeltaSettings?
   public var events: [String]?
+  public var expression: SubscriptionExpression?
   public var rewind: SubscriptionRewind?
   public var annotationSubscribe: Bool
 
@@ -865,14 +875,30 @@ public struct SubscriptionOptions: Sendable, Codable, Equatable {
     filter: FilterNode? = nil,
     delta: ChannelDeltaSettings? = nil,
     events: [String]? = nil,
+    expression: SubscriptionExpression? = nil,
     rewind: SubscriptionRewind? = nil,
     annotationSubscribe: Bool = false
   ) {
     self.filter = filter
     self.delta = delta
     self.events = events
+    self.expression = expression
     self.rewind = rewind
     self.annotationSubscribe = annotationSubscribe
+  }
+}
+
+public enum SubscriptionExpression: Sendable, Codable, Equatable {
+  case source(String)
+  case descriptor(language: String = "jmespath", source: String)
+
+  var subscriptionValue: Any {
+    switch self {
+    case .source(let source):
+      return source
+    case .descriptor(let language, let source):
+      return ["language": language, "source": source]
+    }
   }
 }
 
@@ -981,7 +1007,8 @@ public final class AnnotationEventsPage: @unchecked Sendable {
   public let limit: Int
   public let hasMore: Bool
   public let nextCursor: String?
-  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void) -> Void)?
+  private let fetchNext:
+    (@Sendable (String, @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void) -> Void)?
 
   init(
     items: [[String: Any]],
@@ -989,7 +1016,9 @@ public final class AnnotationEventsPage: @unchecked Sendable {
     limit: Int,
     hasMore: Bool,
     nextCursor: String?,
-    fetchNext: (@Sendable (String, @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void) -> Void)?
+    fetchNext: (
+      @Sendable (String, @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void) -> Void
+    )?
   ) {
     self.items = items
     self.direction = direction
@@ -1044,6 +1073,7 @@ public struct ResumeRecoveredChannel: Sendable, Codable, Equatable {
   public let channel: String
   public let source: String
   public let replayed: Int
+  public let position: RecoveryPosition?
 }
 
 public struct ResumeFailedChannel: Sendable, Codable, Equatable {
@@ -1179,13 +1209,29 @@ enum Logger {
   private nonisolated(unsafe) static var _customLog: ((String) -> Void)?
 
   static var logToConsole: Bool {
-    get { _lock.lock(); defer { _lock.unlock() }; return _logToConsole }
-    set { _lock.lock(); defer { _lock.unlock() }; _logToConsole = newValue }
+    get {
+      _lock.lock()
+      defer { _lock.unlock() }
+      return _logToConsole
+    }
+    set {
+      _lock.lock()
+      defer { _lock.unlock() }
+      _logToConsole = newValue
+    }
   }
 
   static var customLog: ((String) -> Void)? {
-    get { _lock.lock(); defer { _lock.unlock() }; return _customLog }
-    set { _lock.lock(); defer { _lock.unlock() }; _customLog = newValue }
+    get {
+      _lock.lock()
+      defer { _lock.unlock() }
+      return _customLog
+    }
+    set {
+      _lock.lock()
+      defer { _lock.unlock() }
+      _customLog = newValue
+    }
   }
 
   @SockudoActor static func debug(_ items: Any...) { log(items) }

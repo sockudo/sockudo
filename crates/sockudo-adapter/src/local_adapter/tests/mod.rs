@@ -31,6 +31,7 @@ fn v1_compatible_message_strips_v2_only_fields_for_plain_messages() {
             push: None,
             echo: Some(false),
             ai: None,
+            opaque: Default::default(),
         }),
         delta_sequence: Some(8),
         delta_conflation_key: Some("room".to_string()),

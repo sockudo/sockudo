@@ -42,6 +42,17 @@ When `ai_transport` and versioned messages are enabled for the target channel,
 AI events and publishes with `message_id` return serial acknowledgements under
 the channel entry. Retries with the same `message_id` or `X-Idempotency-Key`
 return the original serials without publishing a duplicate event.
+If the publishing node exits after durable persistence but before recording the
+idempotency acknowledgement, a retry reconstructs and atomically repairs the
+receipt from native history/version storage. Raw idempotency keys are not stored
+in message envelopes; recovery uses an app/channel-scoped hash plus the canonical
+payload fingerprint.
+
+Idempotent publishes fail closed when their shared coordination backend is
+unavailable: Sockudo returns `503 service_unavailable` instead of publishing
+without a proven claim. Concurrent retries whose first request is still active also
+return `503 backpressure` with `Retry-After: 1`. Retry either response with the same
+idempotency key; a load balancer may route the retry to a healthy node.
 
 ```json
 {
@@ -82,6 +93,31 @@ Content-Type: application/json
 
 Batching reduces HTTP overhead, but do not use it to hide unbounded payloads. Keep per-event data compact.
 
+When Cargo feature and runtime option `ably-compat` are enabled, the root REST
+router also exposes Ably-compatible batch operations:
+
+```http
+POST /messages
+GET /presence?channels=channel-a,channel-b
+POST /keys/{keyName}/revokeTokens
+```
+
+`POST /messages` accepts the raw object used by `Rest.request()` and the array of
+batch specs used by `batchPublish()`. Results preserve spec and channel order.
+The raw form returns `201` plus a flat channel result array on full success, or
+`400`/`40020` plus `{ error, batchResponse }` when one or more channels fail.
+The array form, batch presence, and token revocation return BatchResult envelopes
+with exact `successCount`, `failureCount`, and ordered item results. Publish
+success is reported only after the normal native publish pipeline commits; item
+failures do not roll back unrelated successful items.
+
+The compatibility batch edge runs no more than eight channel/target operations
+at once and rejects requests exceeding 100 specs, 1,000 results, 10,000 publish
+operations, or 10 MiB. Native event channel/message limits can lower those
+ceilings. Bodies and responses negotiate JSON or MsgPack through the same REST
+codec, and error responses include `X-Ably-ErrorCode` and
+`X-Ably-ErrorMessage`.
+
 ## Channel state
 
 ```http
@@ -112,6 +148,12 @@ GET /apps/{app_id}/channels/{channel_name}/history?limit=50&direction=newest_fir
 ```
 
 History responses use opaque cursors. Store and replay cursors as strings; do not parse them.
+Use `direction=oldest_first`/`forwards` or `direction=newest_first`/`backwards`
+with `start`, `end`, and the policy-capped `limit` to bound a stable page. A
+cursor is opaque and must be replayed with the same query shape that produced
+it. The Ably-compatible `/channels/{channel}/messages` projection additionally
+returns credential-free `first` and optional `next` Link relations that preserve
+that query shape.
 
 ## Versioned messages
 
@@ -124,6 +166,14 @@ POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/update
 POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/delete
 POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/append
 ```
+
+The optional Ably compatibility route is
+`PATCH /channels/{channel_name}/messages/{message_serial}`. Its encoded message
+body selects `message.update`, `message.delete`, or `message.append` through the
+`action` field and carries operation metadata in `version`. It is a projection
+over the same native mutation service and `VersionStore`; it does not maintain
+a compatibility-only message chain. Request and response formats are negotiated
+independently as JSON or MsgPack.
 
 ```json
 {
@@ -172,9 +222,44 @@ DELETE /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/annotati
 
 Use annotations for reactions, read receipts, moderation signals, and summary projections.
 
+With Cargo feature `ably-compat`, the compatibility router also exposes
+`GET|POST /channels/{channel}/messages/{messageSerial}/annotations`. The POST
+body is an Ably annotation array and supports both create and delete actions;
+both operations call the same native annotation service shown above. Responses
+negotiate JSON or MsgPack. List pages return credential-free relative Link
+headers with an opaque app/channel/message-scoped cursor. Realtime action `21`
+is delivered only to an attachment that negotiated `annotation_subscribe`,
+while `message.summary` uses the original message serial for ordinary
+subscribers. `annotation-publish`, `annotation-subscribe`,
+`annotation-delete-own`, and `annotation-delete-any` are evaluated independently
+from message mutation permissions.
+
 ## Push notifications
 
 Push APIs are first-class HTTP APIs, not separate infrastructure. They cover device registration, channel subscriptions, credential management, publish admission, status inspection, scheduling, cancellation, and provider callbacks.
+
+When the server is built with `ably-compat`, the root Ably REST projection also
+provides `/stats`, `/push/publish`, `/push/deviceRegistrations`,
+`/push/channelSubscriptions`, and `/push/channels`. These routes authenticate
+with Ably-compatible credentials but call a bounded typed compatibility stats
+store plus the native push domain services; they do not call Sockudo HTTP
+handlers internally. Stats pages use opaque cursors and stable Link query
+propagation. Direct push and `extras.push` enter the native durable publish log,
+queue, planner, provider-dispatch, feedback, retry, status, scheduler, and
+retention pipeline. The realtime provider delivers `__ably_push__` through the
+ordinary `MessageService` fanout path and records the actual outcome. External
+providers continue through their configured native workers and fail truthfully
+when the required feature or credentials are unavailable. Restricted Ably keys
+must carry `push-admin` or channel-scoped `push-subscribe`; device-owned requests
+also verify the stored hashed device identity token.
+
+The same projection exposes `GET /channels/{channel}/presence` and
+`GET /channels/{channel}/presence/history`. Current presence supports
+`clientId`, `connectionId`, `limit`, and opaque cursor pagination. Presence
+history additionally supports forward/backward direction and millisecond
+`start`/`end` bounds. Both routes use the native presence service and return
+credential-free `first`/`next` Link relations. History reads fail with Ably code
+`50003` when durable continuity is degraded or reset-required.
 
 ### Register a device
 

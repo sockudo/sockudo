@@ -32,10 +32,11 @@ const ProtoStructuredData = new Type("ProtoStructuredData")
   .add(new MapField("extra", 4, "string", "string"));
 
 const ProtoMessageData = new Type("ProtoMessageData")
-  .add(new OneOf("kind", ["stringValue", "structured", "jsonValue"]))
+  .add(new OneOf("kind", ["stringValue", "structured", "jsonValue", "binaryValue"]))
   .add(new Field("stringValue", 1, "string"))
   .add(new Field("structured", 2, "ProtoStructuredData"))
-  .add(new Field("jsonValue", 3, "string"));
+  .add(new Field("jsonValue", 3, "string"))
+  .add(new Field("binaryValue", 4, "bytes"));
 
 const ProtoPusherMessage = new Type("ProtoPusherMessage")
   .add(new Field("event", 1, "string"))
@@ -84,7 +85,9 @@ const MSGPACK_ENVELOPE_FIELDS = [
 
 function toUint8Array(payload: unknown): Uint8Array {
   if (payload instanceof Uint8Array) {
-    return payload;
+    return Object.getPrototypeOf(payload) === Uint8Array.prototype
+      ? payload
+      : new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
   }
   if (payload instanceof ArrayBuffer) {
     return new Uint8Array(payload);
@@ -171,9 +174,11 @@ function encodeMsgpackEnvelope(event: SockudoEvent): any[] {
   const encodedData =
     rawData === undefined
       ? null
-      : typeof rawData === "string"
-        ? ["string", rawData]
-        : ["json", JSON.stringify(rawData)];
+      : rawData instanceof Uint8Array
+        ? ["binary", rawData]
+        : typeof rawData === "string"
+          ? ["string", rawData]
+          : ["json", JSON.stringify(rawData)];
 
   return [
     envelope.event ?? null,
@@ -205,6 +210,7 @@ function decodeMsgpackValue(value: any): any {
         case "string":
         case "json":
         case "bool":
+        case "binary":
           return payload;
         case "number":
           return decodeMsgpackValue(payload);
@@ -379,7 +385,9 @@ function encodeProtobuf(event: SockudoEvent): Uint8Array {
   };
 
   if (envelope.data !== undefined) {
-    if (typeof envelope.data === "string") {
+    if (envelope.data instanceof Uint8Array) {
+      payload.data = { binaryValue: envelope.data };
+    } else if (typeof envelope.data === "string") {
       payload.data = { stringValue: envelope.data };
     } else {
       payload.data = { jsonValue: JSON.stringify(envelope.data) };
@@ -409,6 +417,8 @@ function decodeProtobuf(payload: Uint8Array): Envelope {
 
   if (decoded.data?.stringValue !== undefined) {
     envelope.data = decoded.data.stringValue;
+  } else if (decoded.data?.binaryValue !== undefined) {
+    envelope.data = toUint8Array(decoded.data.binaryValue);
   } else if (decoded.data?.jsonValue !== undefined) {
     try {
       envelope.data = parseJsonPreservingSerials(decoded.data.jsonValue);

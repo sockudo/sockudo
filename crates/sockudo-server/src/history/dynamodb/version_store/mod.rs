@@ -4,7 +4,8 @@ use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
-    KeyType, Projection, ProjectionType, ScalarAttributeType, TableStatus,
+    KeyType, Projection, ProjectionType, Put, ScalarAttributeType, TableStatus, TransactWriteItem,
+    Update,
 };
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::DynamoDbSettings;
@@ -14,9 +15,11 @@ use super::HistoryTables;
 
 #[cfg(feature = "versioned-messages")]
 use sockudo_core::version_store::{
-    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
-    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
-    VersionWriteReservation, VersionWriteReservationBlock,
+    StoredVersionRecord, VersionCreateRejection, VersionCreateRequest, VersionCreateResult,
+    VersionMutationRejection, VersionMutationRequest, VersionMutationResult, VersionReplayRequest,
+    VersionStore, VersionStoreCursor, VersionStoreDirection, VersionStorePage,
+    VersionStoreReadRequest, VersionStreamState, VersionWriteReservation,
+    VersionWriteReservationBlock,
 };
 
 #[cfg(feature = "versioned-messages")]
@@ -468,6 +471,78 @@ impl DynamoDbVersionStore {
         item.get(key)
             .and_then(|v| v.as_n().ok())
             .and_then(|n| n.parse::<i64>().ok())
+    }
+
+    fn operation_receipt_key(operation_key: &str) -> String {
+        format!("__operation__#{operation_key}")
+    }
+
+    fn entry_item(
+        &self,
+        record: &StoredVersionRecord,
+        operation: Option<&sockudo_core::message_envelope::PublishIdempotencyMetadata>,
+    ) -> Result<HashMap<String, AttributeValue>> {
+        let payload = sonic_rs::to_vec(record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
+        let app_channel = Self::app_channel_key(&record.app_id, &record.channel);
+        let mut item = HashMap::new();
+        item.insert("app_channel".to_string(), Self::attr_s(&app_channel));
+        item.insert(
+            "message_version_key".to_string(),
+            Self::attr_s(&Self::message_version_key(
+                record.message_serial().as_str(),
+                record.version_serial().as_str(),
+            )),
+        );
+        item.insert(
+            "app_channel_message".to_string(),
+            Self::attr_s(&Self::app_channel_message_key(
+                &record.app_id,
+                &record.channel,
+                record.message_serial().as_str(),
+            )),
+        );
+        item.insert("app_id".to_string(), Self::attr_s(&record.app_id));
+        item.insert("channel".to_string(), Self::attr_s(&record.channel));
+        item.insert(
+            "message_serial".to_string(),
+            Self::attr_s(record.message_serial().as_str()),
+        );
+        item.insert(
+            "version_serial".to_string(),
+            Self::attr_s(record.version_serial().as_str()),
+        );
+        item.insert(
+            "delivery_serial".to_string(),
+            Self::attr_n(record.delivery_serial()),
+        );
+        item.insert(
+            "history_serial".to_string(),
+            Self::attr_n(record.history_serial()),
+        );
+        item.insert(
+            "action".to_string(),
+            Self::attr_s(record.message.action.as_str()),
+        );
+        item.insert("payload_bytes".to_string(), Self::attr_b(payload));
+        item.insert(
+            "created_at_ms".to_string(),
+            Self::attr_n(sockudo_core::history::now_ms()),
+        );
+        if let Some(operation) = operation {
+            item.insert(
+                "operation_key".to_string(),
+                Self::attr_s(&operation.cache_key),
+            );
+            item.insert(
+                "operation_fingerprint".to_string(),
+                Self::attr_s(&operation.payload_fingerprint),
+            );
+        }
+        if let Some(expires_at) = self.expires_at_value() {
+            item.insert(Self::EXPIRES_AT_ATTR.to_string(), expires_at);
+        }
+        Ok(item)
     }
 }
 

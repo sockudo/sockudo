@@ -945,6 +945,7 @@ impl DeterministicSimulator {
                 "client-{}",
                 self.scheduler.usize_below(self.config.clients)
             )),
+            envelope: None,
             message: message.clone(),
         };
         self.real.version.append_version(record.clone()).await?;
@@ -1051,6 +1052,7 @@ impl DeterministicSimulator {
             app_id: APP_ID.to_string(),
             channel: channel.clone(),
             original_client_id: current.original_client_id.clone(),
+            envelope: current.envelope.clone(),
             message: next,
         };
         self.real.version.append_version(record.clone()).await?;
@@ -1861,6 +1863,7 @@ impl DeterministicSimulator {
                 push: None,
                 echo: Some(true),
                 ai: None,
+                opaque: Default::default(),
             }),
             delta_sequence: Some(event.serial),
             delta_conflation_key: Some(event.channel.clone()),

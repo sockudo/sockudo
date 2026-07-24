@@ -60,8 +60,7 @@ pub fn deserialize_message(bytes: &[u8], format: WireFormat) -> Result<PusherMes
             sonic_rs::from_slice(bytes).map_err(|e| format!("JSON deserialization failed: {e}"))
         }
         WireFormat::MessagePack => {
-            let msg: MsgpackPusherMessage = rmp_serde::from_slice(bytes)
-                .map_err(|e| format!("MessagePack deserialization failed: {e}"))?;
+            let msg: MsgpackPusherMessage = deserialize_msgpack_exact(bytes)?;
             Ok(msg.into())
         }
         WireFormat::Protobuf => {
@@ -104,8 +103,7 @@ pub fn deserialize_versioned_message(
             sonic_rs::from_slice(bytes).map_err(|e| format!("JSON deserialization failed: {e}"))
         }
         WireFormat::MessagePack => {
-            let msg: MsgpackVersionedRealtimeMessage = rmp_serde::from_slice(bytes)
-                .map_err(|e| format!("MessagePack deserialization failed: {e}"))?;
+            let msg: MsgpackVersionedRealtimeMessage = deserialize_msgpack_exact(bytes)?;
             Ok(msg.into())
         }
         WireFormat::Protobuf => {
@@ -117,6 +115,19 @@ pub fn deserialize_versioned_message(
 
     message.validate_v2()?;
     Ok(message)
+}
+
+fn deserialize_msgpack_exact<T>(bytes: &[u8]) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut cursor = std::io::Cursor::new(bytes);
+    let value = T::deserialize(&mut rmp_serde::Deserializer::new(&mut cursor))
+        .map_err(|error| format!("MessagePack deserialization failed: {error}"))?;
+    if cursor.position() != bytes.len() as u64 {
+        return Err("MessagePack deserialization failed: trailing bytes after value".to_string());
+    }
+    Ok(value)
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -200,7 +211,7 @@ struct MsgpackVersionedRealtimeMessage {
 
 #[derive(Clone, PartialEq, Message)]
 struct ProtoMessageData {
-    #[prost(oneof = "proto_message_data::Kind", tags = "1, 2, 3")]
+    #[prost(oneof = "proto_message_data::Kind", tags = "1, 2, 3, 4")]
     kind: Option<proto_message_data::Kind>,
 }
 
@@ -208,6 +219,7 @@ struct ProtoMessageData {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum MsgpackMessageData {
     String(String),
+    Binary(#[serde(with = "serde_bytes")] Vec<u8>),
     Structured(MsgpackStructuredData),
     Json(String),
 }
@@ -224,6 +236,8 @@ mod proto_message_data {
         Structured(ProtoStructuredData),
         #[prost(string, tag = "3")]
         Json(String),
+        #[prost(bytes, tag = "4")]
+        Binary(Vec<u8>),
     }
 }
 
@@ -499,6 +513,7 @@ impl From<MessageData> for ProtoMessageData {
     fn from(value: MessageData) -> Self {
         let kind = match value {
             MessageData::String(s) => Some(proto_message_data::Kind::String(s)),
+            MessageData::Binary(bytes) => Some(proto_message_data::Kind::Binary(bytes)),
             MessageData::Structured {
                 channel_data,
                 channel,
@@ -531,6 +546,7 @@ impl From<MessageData> for MsgpackMessageData {
     fn from(value: MessageData) -> Self {
         match value {
             MessageData::String(s) => Self::String(s),
+            MessageData::Binary(bytes) => Self::Binary(bytes),
             MessageData::Structured {
                 channel_data,
                 channel,
@@ -561,6 +577,7 @@ impl From<ProtoMessageData> for MessageData {
     fn from(value: ProtoMessageData) -> Self {
         match value.kind {
             Some(proto_message_data::Kind::String(s)) => MessageData::String(s),
+            Some(proto_message_data::Kind::Binary(bytes)) => MessageData::Binary(bytes),
             Some(proto_message_data::Kind::Structured(s)) => MessageData::Structured {
                 channel_data: s.channel_data,
                 channel: s.channel,
@@ -587,6 +604,7 @@ impl From<MsgpackMessageData> for MessageData {
     fn from(value: MsgpackMessageData) -> Self {
         match value {
             MsgpackMessageData::String(s) => MessageData::String(s),
+            MsgpackMessageData::Binary(bytes) => MessageData::Binary(bytes),
             MsgpackMessageData::Structured(s) => MessageData::Structured {
                 channel_data: s.channel_data,
                 channel: s.channel,
@@ -672,6 +690,7 @@ impl From<ProtoMessageExtras> for MessageExtras {
             push: None,
             echo: value.echo,
             ai: value.ai.map(Into::into),
+            opaque: Default::default(),
         }
     }
 }
@@ -687,6 +706,7 @@ impl From<MsgpackMessageExtras> for MessageExtras {
             push: None,
             echo: value.echo,
             ai: value.ai.map(Into::into),
+            opaque: Default::default(),
         }
     }
 }
@@ -860,6 +880,7 @@ mod tests {
                 push: None,
                 echo: Some(false),
                 ai: None,
+                opaque: Default::default(),
             }),
             delta_sequence: Some(11),
             delta_conflation_key: Some("btc".to_string()),
@@ -896,6 +917,29 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_messagepack_binary_uses_native_bin_data() {
+        let mut msg = sample_message();
+        msg.data = Some(MessageData::Binary(vec![0, 1, 2, 0xff]));
+
+        let bytes = serialize_message(&msg, WireFormat::MessagePack).unwrap();
+        let wire: MsgpackPusherMessage = deserialize_msgpack_exact(&bytes).unwrap();
+        assert_eq!(
+            wire.data,
+            Some(MsgpackMessageData::Binary(vec![0, 1, 2, 0xff]))
+        );
+
+        let decoded = deserialize_message(&bytes, WireFormat::MessagePack).unwrap();
+        assert_eq!(decoded.data, msg.data);
+    }
+
+    #[test]
+    fn messagepack_rejects_trailing_values() {
+        let mut bytes = serialize_message(&sample_message(), WireFormat::MessagePack).unwrap();
+        bytes.push(0xc0);
+        assert!(deserialize_message(&bytes, WireFormat::MessagePack).is_err());
+    }
+
+    #[test]
     fn round_trip_protobuf() {
         let msg = sample_message();
         let bytes = serialize_message(&msg, WireFormat::Protobuf).unwrap();
@@ -907,6 +951,15 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_protobuf_binary() {
+        let mut msg = sample_message();
+        msg.data = Some(MessageData::Binary(vec![0xde, 0xad, 0xbe, 0xef]));
+        let bytes = serialize_message(&msg, WireFormat::Protobuf).unwrap();
+        let decoded = deserialize_message(&bytes, WireFormat::Protobuf).unwrap();
+        assert_eq!(decoded.data, msg.data);
+    }
+
+    #[test]
     fn round_trip_versioned_messagepack() {
         let msg = sample_versioned_message();
         let bytes = serialize_versioned_message(&msg, WireFormat::MessagePack).unwrap();
@@ -914,6 +967,24 @@ mod tests {
         assert_eq!(decoded.action, msg.action);
         assert_eq!(decoded.message_serial, msg.message_serial);
         assert_eq!(decoded.version, msg.version);
+    }
+
+    #[test]
+    fn round_trip_versioned_messagepack_binary() {
+        let mut msg = sample_versioned_message();
+        msg.message.data = Some(MessageData::Binary(vec![0, 1, 0xfe, 0xff]));
+        let bytes = serialize_versioned_message(&msg, WireFormat::MessagePack).unwrap();
+        let decoded = deserialize_versioned_message(&bytes, WireFormat::MessagePack).unwrap();
+        assert_eq!(decoded.message.data, msg.message.data);
+    }
+
+    #[test]
+    fn versioned_messagepack_rejects_trailing_values() {
+        let mut bytes =
+            serialize_versioned_message(&sample_versioned_message(), WireFormat::MessagePack)
+                .unwrap();
+        bytes.push(0xc0);
+        assert!(deserialize_versioned_message(&bytes, WireFormat::MessagePack).is_err());
     }
 
     #[test]

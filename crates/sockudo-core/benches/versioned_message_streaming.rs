@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sockudo_core::error::Result;
 use sockudo_core::version_store::{
-    LeasedVersionStore, MemoryVersionStore, StoredVersionRecord, VersionReplayRequest,
-    VersionStore, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
-    VersionWriteReservation, VersionWriteReservationBlock,
+    LeasedVersionStore, MemoryVersionStore, StoredVersionRecord, VersionMutation,
+    VersionMutationLimits, VersionMutationRequest, VersionMutationResult, VersionPrecondition,
+    VersionReplayRequest, VersionStore, VersionStorePage, VersionStoreReadRequest,
+    VersionStreamState, VersionWriteReservation, VersionWriteReservationBlock,
 };
 use sockudo_core::versioned_messages::{
     MessageAppend, MessageSerial, VersionMetadata, VersionSerial, VersionedMessage,
@@ -101,6 +102,7 @@ fn record_with_data(data: String) -> StoredVersionRecord {
         app_id: "app".to_string(),
         channel: "ai-room".to_string(),
         original_client_id: Some("agent-1".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             MessageSerial::new("msg:1").unwrap(),
             version(1),
@@ -199,10 +201,46 @@ fn bench_leased_delivery_reservations(c: &mut Criterion) {
     );
 }
 
+fn bench_atomic_compare_and_append_64b_to_100k(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    c.bench_function("memory_atomic_append_64b_to_100k", |b| {
+        b.iter_batched(
+            || {
+                let store = MemoryVersionStore::new();
+                let current = record_with_data("x".repeat(100 * 1024));
+                runtime
+                    .block_on(store.append_version(current.clone()))
+                    .unwrap();
+                (store, current)
+            },
+            |(store, current)| {
+                let result = runtime
+                    .block_on(store.compare_and_apply(VersionMutationRequest {
+                        app_id: "app".to_string(),
+                        channel: "ai-room".to_string(),
+                        message_serial: current.message_serial().clone(),
+                        expected: VersionPrecondition::from_record(&current),
+                        version: version(2),
+                        mutation: VersionMutation::Append(MessageAppend {
+                            data_fragment: "y".repeat(64),
+                            extras: None,
+                        }),
+                        idempotency: None,
+                        limits: VersionMutationLimits::default(),
+                    }))
+                    .unwrap();
+                assert!(matches!(result, VersionMutationResult::Applied { .. }));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     bench_append_64b_to_100k(c);
     bench_warm_get_latest_2000_appends(c);
     bench_leased_delivery_reservations(c);
+    bench_atomic_compare_and_append_64b_to_100k(c);
 }
 
 criterion_group!(benches, criterion_benchmark);

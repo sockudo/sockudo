@@ -97,7 +97,7 @@ impl WebSocket {
         }
 
         self.state.status = ConnectionStatus::Closing;
-        self.message_sender.send_close(code, &reason)?;
+        self.message_sender.send_close(code, &reason).await?;
         self.state.clear_timeouts();
         self.state.status = ConnectionStatus::Closed;
 

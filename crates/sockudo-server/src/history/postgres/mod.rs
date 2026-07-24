@@ -1,3 +1,5 @@
+#[cfg(feature = "versioned-messages")]
+mod annotation_store;
 mod history_record;
 mod history_store;
 mod history_store_impl;
@@ -10,6 +12,8 @@ mod writers;
 use sockudo_core::error::{Error, Result};
 use sqlx::PgConnection;
 
+#[cfg(feature = "versioned-messages")]
+pub(super) use annotation_store::PostgresAnnotationStore;
 pub(super) use history_store::PostgresHistoryStore;
 #[cfg(feature = "versioned-messages")]
 pub(super) use version_store::PostgresVersionStore;
@@ -21,6 +25,7 @@ struct HistoryTables {
     version_streams: String,
     version_messages: String,
     version_entries: String,
+    annotation_streams: String,
     annotation_events: String,
     annotation_projections: String,
 }

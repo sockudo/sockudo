@@ -146,18 +146,32 @@ impl MySqlHistoryStore {
             "#,
             self.tables.version_entries, MAX_VERSIONED_SERIAL_LENGTH, MAX_VERSIONED_SERIAL_LENGTH
         );
+        let create_annotation_streams = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                next_serial BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            "#,
+            self.tables.annotation_streams
+        );
         let create_annotation_events = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
                 app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
-                message_serial VARCHAR({}) NOT NULL,
-                annotation_serial VARCHAR({}) NOT NULL,
+                message_serial VARCHAR({}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                annotation_serial VARCHAR({}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
                 annotation_type VARCHAR(256) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                annotation_id VARCHAR({}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
                 name VARCHAR(255) NULL,
                 client_id VARCHAR(255) NULL,
                 count_value BIGINT NULL,
                 action VARCHAR(64) NOT NULL,
+                create_annotation_id VARCHAR({}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin GENERATED ALWAYS AS (CASE WHEN action = 'annotation.create' THEN annotation_id ELSE NULL END) STORED,
                 data_bytes LONGBLOB NULL,
                 encoding VARCHAR(255) NULL,
                 annotation_timestamp_ms BIGINT NOT NULL,
@@ -167,17 +181,21 @@ impl MySqlHistoryStore {
                 PRIMARY KEY (app_id, channel, message_serial, annotation_serial)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             "#,
-            self.tables.annotation_events, MAX_VERSIONED_SERIAL_LENGTH, MAX_VERSIONED_SERIAL_LENGTH
+            self.tables.annotation_events,
+            MAX_VERSIONED_SERIAL_LENGTH,
+            MAX_VERSIONED_SERIAL_LENGTH,
+            MAX_VERSIONED_SERIAL_LENGTH,
+            MAX_VERSIONED_SERIAL_LENGTH
         );
         let create_annotation_projections = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
                 app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
-                message_serial VARCHAR({}) NOT NULL,
+                message_serial VARCHAR({}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
                 annotation_type VARCHAR(256) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 summary_json JSON NOT NULL,
-                last_annotation_serial VARCHAR({}) NULL,
+                last_annotation_serial VARCHAR({}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (app_id, channel, message_serial, annotation_type)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -215,19 +233,19 @@ impl MySqlHistoryStore {
             self.tables.version_entries
         );
         let index_annotation_events_summary = format!(
-            "CREATE INDEX {0}_summary_idx ON {0} (app_id, channel, message_serial, annotation_type, annotation_serial)",
-            self.tables.annotation_events
-        );
-        let index_annotation_events_dedup = format!(
-            "CREATE INDEX {0}_dedup_idx ON {0} (app_id, channel, message_serial, annotation_serial)",
+            "CREATE INDEX annotation_summary_idx ON {0} (app_id, channel, message_serial, annotation_type, annotation_serial)",
             self.tables.annotation_events
         );
         let index_annotation_events_raw_replay = format!(
-            "CREATE INDEX {0}_raw_replay_idx ON {0} (app_id, channel, annotation_serial)",
+            "CREATE INDEX annotation_raw_replay_idx ON {0} (app_id, channel, annotation_serial)",
             self.tables.annotation_events
         );
         let index_annotation_events_created_at = format!(
-            "CREATE INDEX {0}_created_at_idx ON {0} (created_at_ms)",
+            "CREATE INDEX annotation_created_at_idx ON {0} (created_at_ms)",
+            self.tables.annotation_events
+        );
+        let index_annotation_events_create_id = format!(
+            "CREATE UNIQUE INDEX annotation_create_id_uidx ON {0} (app_id, channel, message_serial, annotation_type, create_annotation_id)",
             self.tables.annotation_events
         );
         for sql in [
@@ -236,6 +254,7 @@ impl MySqlHistoryStore {
             create_version_streams,
             create_version_messages,
             create_version_entries,
+            create_annotation_streams,
             create_annotation_events,
             create_annotation_projections,
         ] {
@@ -279,6 +298,22 @@ impl MySqlHistoryStore {
             "BIGINT NULL",
         )
         .await?;
+        self.add_column_if_not_exists(
+            &self.tables.annotation_events,
+            "annotation_id",
+            &format!(
+                "VARCHAR({MAX_VERSIONED_SERIAL_LENGTH}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL"
+            ),
+        )
+        .await?;
+        self.add_column_if_not_exists(
+            &self.tables.annotation_events,
+            "create_annotation_id",
+            &format!(
+                "VARCHAR({MAX_VERSIONED_SERIAL_LENGTH}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin GENERATED ALWAYS AS (CASE WHEN action = 'annotation.create' THEN annotation_id ELSE NULL END) STORED"
+            ),
+        )
+        .await?;
 
         for sql in [
             index_serial,
@@ -289,9 +324,9 @@ impl MySqlHistoryStore {
             index_version_entries_replay,
             index_version_entries_history,
             index_annotation_events_summary,
-            index_annotation_events_dedup,
             index_annotation_events_raw_replay,
             index_annotation_events_created_at,
+            index_annotation_events_create_id,
         ] {
             let _ = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                 .execute(&self.pool)

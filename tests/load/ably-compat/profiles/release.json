@@ -1,0 +1,20 @@
+{
+  "name": "ably-compat-release",
+  "topologies": ["one", "two"],
+  "scenarios": [
+    { "name": "steady_publish", "messages": 6000, "subscribers": 100, "ratePerSecond": 1000, "payloadBytes": 256 },
+    { "name": "burst", "messages": 10000, "subscribers": 100, "concurrency": 200, "payloadBytes": 256 },
+    { "name": "payload_64k", "messages": 1000, "subscribers": 100, "concurrency": 20, "payloadBytes": 65536 },
+    { "name": "encrypted_binary", "messages": 5000, "subscribers": 100, "concurrency": 100, "payloadBytes": 4096 },
+    { "name": "fanout_1000", "messages": 1000, "subscribers": 1000, "concurrency": 20, "payloadBytes": 256 },
+    { "name": "slow_consumers", "messages": 2000, "subscribers": 1000, "slowPercent": 10, "concurrency": 20, "payloadBytes": 65536, "stallHoldMs": 60000 },
+    { "name": "recovery_storm", "connections": 1000, "messages": 100 },
+    { "name": "presence_churn", "transitions": 10000 },
+    { "name": "append_storm", "streams": 2000, "appendsPerStream": 100, "concurrency": 200 },
+    { "name": "stats_flush", "observations": 10000 },
+    { "name": "push_enqueue", "publishes": 10000 }
+  ],
+  "settleTimeoutMs": 120000,
+  "sampleIntervalMs": 1000,
+  "postDisconnectSettleMs": 30000
+}

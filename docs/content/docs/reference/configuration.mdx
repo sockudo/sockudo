@@ -25,6 +25,90 @@ For deployment overrides and secrets, use the complete [environment variable ref
 | `[app_manager.array]` | Static in-config app definitions. |
 | `[[app_manager.array.apps]]` | App ID, key, secret, enabled flag, limits, and policy. |
 
+## Ably compatibility keys
+
+`App.key` and `App.secret` are always the implicit primary credential. When the
+server is built with `ably-compat`, `[ably_compat]` can opt an app into additional
+Ably key names without creating sibling apps:
+
+```toml
+[ably_compat]
+enabled = true
+realtime_admission = "accept"
+attach_timeout_ms = 10000
+max_token_ttl_ms = 86400000
+token_request_timestamp_skew_ms = 900000
+nonce_ttl_seconds = 900
+stats_fixture_ingest_enabled = false
+stats_queue_capacity = 4096
+stats_flush_interval_ms = 10
+stats_retention_seconds = 34560000
+stats_max_scan_entries = 100000
+stats_cas_retries = 8
+
+[[ably_compat.keys]]
+app_id = "app-id"
+key_name = "app-key-readonly"
+secret = "replace-with-a-secret"
+capability = '{"chat:*":["subscribe","history"]}'
+revocable_tokens = true
+enabled = true
+rotation_id = "2026-07"
+```
+
+Each entry supports optional `created_at_ms`, `expires_at_ms`, and
+`revoked_at_ms` rotation boundaries. Disabled, expired, or revoked keys reject
+new key authentication. Tokens from a key with `revocable_tokens = true` are
+also rejected after that key is disabled, revoked, expired, or replaced with a
+different `rotation_id`. Secrets and bearer tokens are never written to logs.
+
+TokenRequest timestamps are accepted only within the configured skew. Nonces
+are claimed atomically in the configured cache for `nonce_ttl_seconds`, and
+issued token records use the same cache, allowing issuance on one node and use
+on another. Use a shared cache driver such as Redis in multi-node deployments.
+
+The server's `ably-compat` Cargo feature explicitly enables native AI Transport,
+recovery, delta, and push support. Runtime `[ably_compat].enabled` and the key
+registry remain the opt-in boundary; Protocol V1 routes and frames are unchanged.
+`realtime_admission = "placement_constraint"` is an operator/drain mode for a
+listener: authenticated Ably WebSocket upgrades receive `DISCONNECTED` error
+`50320`, prompting the SDK to try its configured fallback hosts over WebSocket.
+It does not enable Comet, polling, streaming, SSE, or any other realtime
+transport. The default is `accept`.
+`attach_timeout_ms` bounds the complete native presence/recovery/history attach
+path. On expiry Sockudo removes the partial subscription and returns
+`DETACHED`/`50003`; the default is 10 seconds.
+Ably `delta=vcdiff` is negotiated per realtime channel and uses a fixed bounded
+compatibility cache; native `[delta_compression]` settings continue to configure
+only Sockudo's Pusher/V2 delta contract and do not select the Ably VCDIFF mode.
+Compatibility statistics use canonical UTC minute buckets in the configured
+cache and derive hour, day, and month results when queried. Sum counters and
+peak gauges retain their distinct rollup semantics. In multi-node or
+restart-safe deployments, use a shared persistent cache such as Redis; the
+memory cache is node-local and does not survive a restart.
+Redis-backed entries retain their configured TTL across an individual Sockudo
+node's graceful shutdown; use the explicit cache administration APIs for
+destructive prefix cleanup.
+
+The recording worker is bounded by `stats_queue_capacity`, combines at most 256
+observations per write batch, and waits up to `stats_flush_interval_ms` to form a
+batch. REST and realtime publishes that receive an application ACK wait for the
+canonical bucket merge first. Outbound delivery accounting uses the nonblocking
+bounded path, so an abrupt process crash can lose observations that were still
+queued; queue saturation is reported as a drop rather than allowing unbounded
+memory growth. Retention, bounded query scans, and compare-and-swap retries are
+controlled by `stats_retention_seconds`, `stats_max_scan_entries`, and
+`stats_cas_retries`.
+
+`stats_fixture_ingest_enabled` exposes authenticated `POST /stats` only for
+conformance fixture provisioning and defaults to `false`. Fixture intervals are
+validated and written through the same minute-store and rollup contract as live
+observations; the HTTP handler does not return canned fixture values.
+
+Compatibility device registrations and channel subscriptions use
+`[push].storage_driver`, so clustered or restart-safe deployments should select
+the same durable push store used by native push APIs.
+
 ## Runtime backends
 
 | Section | Purpose |
@@ -91,11 +175,30 @@ client_key_path = "/etc/sockudo/tls/client.key"
 | `[presence_history]` | Historical presence transitions and snapshots. |
 | `[annotations]` | V2 annotation publish/delete/summary surfaces. |
 | `[delta]` | Delta algorithms, cache size, and conflation behavior. |
-| `[tag_filtering]` | V2 filter parsing and match controls. |
+| `[tag_filtering]` | V2 event/tag/JMESPath subscription predicates and tag projection controls. Predicate source, AST, tree, and projected-message memory are hard-bounded. |
 | `[webhooks]` | Webhook delivery, batching, and retry. |
 | `[ai_transport]` | AI Transport validation and session-channel matching. |
 | `[ai_transport.rollup]` | Append rollup egress coalescing and orphan tracking. |
 | `[[ai_transport.channels]]` | Channel prefixes where AI Transport validation applies. |
+
+Annotations, including the optional Ably projection, require both global
+`[annotations].enabled = true` and app/channel policy opt-in. Set
+`annotations_enabled = true` under `[app_manager.array.apps.policy.channels]`
+or on the matching channel namespace. Enabling the Ably facade does not bypass
+either gate, and Protocol V1 never receives annotation frames.
+
+`[versioned_messages].driver` also selects the annotation authority. `postgres`,
+`mysql`, `dynamodb`, `scylladb`, and `surrealdb` each use their native atomic or
+conditional commit primitives for annotation serials, stable create IDs,
+canonical events, projections, replay, and retention. The corresponding Cargo
+feature and database configuration must be present. `memory` is a single-node
+development implementation; clustered startup rejects it.
+
+For any non-local adapter, use `cache.driver = "redis"` or
+`cache.driver = "redis-cluster"` for compatibility tokens, nonce replay,
+revocations, session-owner leases, idempotency receipts, and retained stats.
+Sockudo fails startup or the affected security operation when this coordination
+authority is unavailable; it does not fall back to a private per-process cache.
 
 ## Push
 

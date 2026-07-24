@@ -11,6 +11,26 @@ use crate::manager::DeltaCompressionManager;
 use crate::messages::CachedMessage;
 use crate::state::{ChannelState, ConflationKeyCache};
 
+/// Compute an RFC 3284 VCDIFF payload without applying Sockudo's native
+/// per-socket policy. Protocol adapters use this when their wire contract
+/// explicitly negotiated VCDIFF and own the delivery-local base chain.
+pub fn compute_vcdiff(base_message: &[u8], new_message: &[u8]) -> Result<Vec<u8>> {
+    let mut delta = Vec::new();
+    oxidelta::compress::encoder::encode_all(
+        &mut delta,
+        base_message,
+        new_message,
+        oxidelta::compress::encoder::CompressOptions {
+            // The pinned Ably decoder implements RFC 3284 data/instruction
+            // windows but does not consume the optional Adler-32 trailer.
+            checksum: false,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| Error::Internal(format!("VCDIFF encoding failed: {error}")))?;
+    Ok(delta)
+}
+
 impl DeltaCompressionManager {
     /// Get the delta compression algorithm from config
     pub fn get_algorithm(&self) -> DeltaAlgorithm {
@@ -412,15 +432,7 @@ impl DeltaCompressionManager {
 
     /// Compute delta using Xdelta3 algorithm
     fn compute_xdelta3_delta(&self, old_message: &[u8], new_message: &[u8]) -> Result<Vec<u8>> {
-        let mut delta = Vec::new();
-        oxidelta::compress::encoder::encode_all(
-            &mut delta,
-            old_message,
-            new_message,
-            oxidelta::compress::encoder::CompressOptions::default(),
-        )
-        .map_err(|e| Error::Internal(format!("Xdelta3 encoding failed: {e}")))?;
-        Ok(delta)
+        compute_vcdiff(old_message, new_message)
     }
 
     /// Get cached messages for a channel (for initial sync on subscription).

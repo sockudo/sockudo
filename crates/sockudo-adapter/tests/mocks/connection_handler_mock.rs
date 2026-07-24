@@ -449,19 +449,18 @@ impl MetricsInterface for MockMetricsInterface {
 #[allow(dead_code)]
 pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
     let app_manager = MockAppManager::new();
-    let delta_manager = Arc::new(sockudo_delta::DeltaCompressionManager::new(
-        sockudo_delta::DeltaCompressionConfig::default(),
-    ));
-
-    let handler = ConnectionHandler::builder(
+    let builder = ConnectionHandler::builder(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(MockCacheManager::new()),
         ServerOptions::default(),
     )
-    .metrics(Arc::new(MockMetricsInterface::new()))
-    .delta_compression(delta_manager)
-    .build();
+    .metrics(Arc::new(MockMetricsInterface::new()));
+    #[cfg(feature = "delta")]
+    let builder = builder.delta_compression(Arc::new(sockudo_delta::DeltaCompressionManager::new(
+        sockudo_delta::DeltaCompressionConfig::default(),
+    )));
+    let handler = builder.build();
 
     (handler, app_manager)
 }
@@ -469,17 +468,16 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
 pub fn create_test_connection_handler_with_app_manager(
     app_manager: MockAppManager,
 ) -> ConnectionHandler {
-    let delta_manager = Arc::new(sockudo_delta::DeltaCompressionManager::new(
-        sockudo_delta::DeltaCompressionConfig::default(),
-    ));
-
-    ConnectionHandler::builder(
+    let builder = ConnectionHandler::builder(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(MockCacheManager::new()),
         ServerOptions::default(),
     )
-    .metrics(Arc::new(MockMetricsInterface::new()))
-    .delta_compression(delta_manager)
-    .build()
+    .metrics(Arc::new(MockMetricsInterface::new()));
+    #[cfg(feature = "delta")]
+    let builder = builder.delta_compression(Arc::new(sockudo_delta::DeltaCompressionManager::new(
+        sockudo_delta::DeltaCompressionConfig::default(),
+    )));
+    builder.build()
 }

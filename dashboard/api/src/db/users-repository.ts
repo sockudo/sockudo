@@ -7,6 +7,16 @@ import type {
   UserRole,
 } from "../types/user.ts";
 
+function toBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "t" || normalized === "true";
+  }
+  return false;
+}
+
 function mapUser(row: Record<string, unknown>): DashboardUser {
   return {
     id: String(row.id),
@@ -14,7 +24,7 @@ function mapUser(row: Record<string, unknown>): DashboardUser {
     password_hash: String(row.password_hash),
     name: String(row.name ?? ""),
     role: String(row.role) as UserRole,
-    active: row.active === true || row.active === 1 || row.active === "1",
+    active: toBoolean(row.active),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -67,7 +77,7 @@ export class UsersRepository {
     await this.db.execute(
       `INSERT INTO dashboard_users (id, email, password_hash, name, role, active)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, email, password_hash, name, role, active ? 1 : 0],
+      [id, email, password_hash, name, role, active],
     );
 
     const created = await this.findById(id);
@@ -91,7 +101,7 @@ export class UsersRepository {
       `UPDATE dashboard_users
        SET email = ?, password_hash = ?, name = ?, role = ?, active = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [email, password_hash, name, role, active ? 1 : 0, id],
+      [email, password_hash, name, role, active, id],
     );
 
     const updated = await this.findById(id);

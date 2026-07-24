@@ -4,6 +4,8 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
 
+const MAX_PRESENCE_HISTORY_CURSOR_ENCODED_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PresenceHistoryDirection {
@@ -40,6 +42,11 @@ impl PresenceHistoryCursor {
     }
 
     pub fn decode(encoded: &str) -> Result<Self> {
+        if encoded.len() > MAX_PRESENCE_HISTORY_CURSOR_ENCODED_BYTES {
+            return Err(Error::InvalidMessageFormat(
+                "Presence history cursor exceeds 16 KiB".to_string(),
+            ));
+        }
         let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|e| {
             Error::InvalidMessageFormat(format!("Invalid presence history cursor: {e}"))
         })?;
@@ -162,6 +169,30 @@ pub struct PresenceHistoryReadRequest {
     pub limit: usize,
     pub cursor: Option<PresenceHistoryCursor>,
     pub bounds: PresenceHistoryQueryBounds,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PresenceHistoryFilter {
+    pub user_id: Option<String>,
+    pub connection_id: Option<String>,
+}
+
+impl PresenceHistoryFilter {
+    #[must_use]
+    pub fn matches(&self, item: &PresenceHistoryItem) -> bool {
+        self.user_id
+            .as_deref()
+            .is_none_or(|user_id| item.user_id == user_id)
+            && self
+                .connection_id
+                .as_deref()
+                .is_none_or(|connection_id| item.connection_id.as_deref() == Some(connection_id))
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.user_id.is_none() && self.connection_id.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -373,5 +404,16 @@ impl PresenceHistoryReadRequest {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PresenceHistoryCursor;
+
+    #[test]
+    fn presence_history_cursor_rejects_oversized_input_before_decoding() {
+        let error = PresenceHistoryCursor::decode(&"A".repeat(16 * 1024 + 1)).unwrap_err();
+        assert!(error.to_string().contains("exceeds 16 KiB"));
     }
 }

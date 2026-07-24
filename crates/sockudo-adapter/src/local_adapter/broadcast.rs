@@ -180,7 +180,10 @@ impl LocalAdapter {
         use futures::stream::{self, StreamExt};
 
         let socket_count = target_socket_refs.len();
+        #[cfg(feature = "tag-filtering")]
         let tag_filtering = self.tag_filtering_enabled.load(Ordering::Acquire);
+        #[cfg(not(feature = "tag-filtering"))]
+        let tag_filtering = false;
 
         // OPTIMIZATION: Pre-compute deltas at broadcast level to avoid recomputing for each socket
         // Strategy:
@@ -1051,21 +1054,16 @@ impl LocalAdapter {
         namespace: &Namespace,
     ) {
         #[cfg(feature = "tag-filtering")]
-        {
-            crate::v2_broadcast::apply_tag_filter_in_place(
-                &self.filter_index,
-                self.tag_filtering_enabled.load(Ordering::Acquire),
-                channel,
-                message,
-                v2_sockets,
-                except,
-                namespace,
-            )
-        }
+        let filtering_enabled = self.tag_filtering_enabled.load(Ordering::Acquire);
         #[cfg(not(feature = "tag-filtering"))]
-        {
-            let _ = (channel, message, v2_sockets, except, namespace);
-        }
+        let filtering_enabled = false;
+        let _ = (except, namespace);
+        crate::v2_broadcast::apply_subscription_predicates_in_place(
+            filtering_enabled,
+            channel,
+            message,
+            v2_sockets,
+        );
     }
 
     /// Apply tag filtering to V2 sockets, also verifying protocol version on
@@ -1081,21 +1079,18 @@ impl LocalAdapter {
         namespace: &Namespace,
     ) {
         #[cfg(feature = "tag-filtering")]
-        {
-            crate::v2_broadcast::apply_tag_filter_v2_only_in_place(
-                &self.filter_index,
-                self.tag_filtering_enabled.load(Ordering::Acquire),
-                channel,
-                message,
-                v2_sockets,
-                except,
-                namespace,
-            )
-        }
+        let filtering_enabled = self.tag_filtering_enabled.load(Ordering::Acquire);
         #[cfg(not(feature = "tag-filtering"))]
-        {
-            let _ = (channel, message, v2_sockets, except, namespace);
-        }
+        let filtering_enabled = false;
+        let _ = (except, namespace);
+        v2_sockets
+            .retain(|socket| socket.protocol_version == sockudo_protocol::ProtocolVersion::V2);
+        crate::v2_broadcast::apply_subscription_predicates_in_place(
+            filtering_enabled,
+            channel,
+            message,
+            v2_sockets,
+        );
     }
 
     /// Strip tags from message if tag inclusion is disabled for this channel.
@@ -1125,12 +1120,42 @@ impl LocalAdapter {
         message: &PusherMessage,
         sockets: &mut Vec<WebSocketRef>,
     ) {
+        let mut shared_message = None;
+        let mut message_size = None;
         let mut index = 0;
         while index < sockets.len() {
-            if sockets[index].buffer_rewind_message(channel, message).await {
-                sockets.swap_remove(index);
-            } else {
+            if !sockets[index].has_rewind_gate(channel) {
                 index += 1;
+                continue;
+            }
+
+            let shared_message =
+                Arc::clone(shared_message.get_or_insert_with(|| Arc::new(message.clone())));
+            let message_size = *message_size.get_or_insert_with(|| {
+                sonic_rs::to_vec(message).map_or(usize::MAX, |bytes| bytes.len())
+            });
+            match sockets[index]
+                .buffer_rewind_message(channel, shared_message, message_size)
+                .await
+            {
+                Ok(true) => {
+                    sockets.swap_remove(index);
+                }
+                Ok(false) => {
+                    // The drain won the race and closed the detached gate. Keep
+                    // this socket in the live fanout set so the message is not lost.
+                    index += 1;
+                }
+                Err(error) => {
+                    warn!(
+                        socket_id = %sockets[index].get_socket_id_sync(),
+                        channel,
+                        %error,
+                        "attach gate overflowed; closing connection because continuity cannot be proven"
+                    );
+                    sockets[index].shutdown();
+                    sockets.swap_remove(index);
+                }
             }
         }
     }

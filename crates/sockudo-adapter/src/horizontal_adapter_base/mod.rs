@@ -67,6 +67,7 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     app_manager: Option<Arc<dyn AppManager + Send + Sync>>,
     // Cache manager for cross-region idempotency deduplication (set once via OnceLock)
     cache_manager: Arc<OnceLock<Arc<dyn sockudo_core::cache::CacheManager + Send + Sync>>>,
+    realtime_egress_tap: Arc<OnceLock<Arc<dyn crate::handler::RealtimeEgressTap>>>,
     // Idempotency TTL (seconds) used when registering keys from remote broadcasts
     idempotency_ttl: AtomicU64,
     // Shared run flag for background loops so dropping the adapter stops heartbeats/cleanup tasks.

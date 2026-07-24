@@ -169,6 +169,7 @@ public static class ProtocolCodec
         return data switch
         {
             null => null,
+            byte[] bytes => new object?[] { "binary", bytes },
             string text => new object?[] { "string", text },
             _ => new object?[] { "json", JsonSupport.Encode(data) },
         };
@@ -221,7 +222,7 @@ public static class ProtocolCodec
     {
         if (value is object?[] array)
         {
-            if (array.Length == 2 && array[0] is string tag && tag is "string" or "json" or "number" or "bool")
+            if (array.Length == 2 && array[0] is string tag && tag is "string" or "json" or "number" or "bool" or "binary")
             {
                 return array[1];
             }
@@ -245,7 +246,11 @@ public static class ProtocolCodec
         if (envelope.TryGetValue("data", out var data) && data is not null)
         {
             var nested = new List<byte>();
-            if (data is string text)
+            if (data is byte[] bytes)
+            {
+                ProtoWriter.WriteBytes(nested, 4, bytes);
+            }
+            else if (data is string text)
             {
                 ProtoWriter.WriteString(nested, 1, text);
             }
@@ -378,6 +383,8 @@ public static class ProtocolCodec
                     return reader.ReadString();
                 case 3:
                     return reader.ReadString();
+                case 4:
+                    return reader.ReadBytes();
                 default:
                     reader.Skip(wireType);
                     break;

@@ -164,7 +164,9 @@ impl CacheManager for RedisCacheManager {
     }
 
     async fn disconnect(&self) -> Result<()> {
-        self.clear_prefix().await?;
+        // ConnectionManager clones share reconnecting client state and release
+        // their resources on drop. Never clear the prefix here: another node
+        // may still own TTL-managed recovery, token, stats, or rate-limit data.
         Ok(())
     }
 
@@ -300,6 +302,40 @@ impl CacheManager for RedisCacheManager {
             .await
             .map_err(|e| Error::Cache(format!("Redis SET NX error: {e}")))?;
         Ok(result.is_some())
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool> {
+        let mut connection = self.connection.clone();
+        let result: i32 = redis::Script::new(
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]); return 1 else return 0 end",
+        )
+        .key(self.prefixed_key(key))
+        .arg(expected)
+        .arg(value)
+        .arg(ttl_seconds.max(1))
+        .invoke_async(&mut connection)
+        .await
+        .map_err(|e| Error::Cache(format!("Redis compare-and-swap error: {e}")))?;
+        Ok(result == 1)
+    }
+
+    async fn compare_and_remove(&self, key: &str, expected: &str) -> Result<bool> {
+        let mut connection = self.connection.clone();
+        let result: i32 = redis::Script::new(
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+        )
+        .key(self.prefixed_key(key))
+        .arg(expected)
+        .invoke_async(&mut connection)
+        .await
+        .map_err(|e| Error::Cache(format!("Redis compare-and-remove error: {e}")))?;
+        Ok(result == 1)
     }
 
     async fn increment_by(&self, key: &str, delta: i64, ttl_seconds: u64) -> Result<i64> {

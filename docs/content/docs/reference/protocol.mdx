@@ -71,7 +71,24 @@ V2 keeps the event/channel shape familiar, then adds metadata required for conti
 }
 ```
 
-Use V2 when the client needs to reconnect without guessing what it missed, rewind a subscription from known history, filter by tags, receive deltas, or render mutable message state.
+Use V2 when the client needs to reconnect without guessing what it missed, rewind a subscription from known history, filter by event, tags, or message content, receive deltas, or render mutable message state.
+
+### Subscription predicates
+
+V2 subscriptions accept one compound `filter`. Its non-empty `events`, `tags`, and `expression` components use AND semantics; separate exact and wildcard subscriptions use OR semantics. The expression form is either a JMESPath source string or `{ "language": "jmespath", "source": "..." }`.
+
+```json
+{
+  "channel": "orders.*",
+  "filter": {
+    "events": ["order.updated"],
+    "tags": { "cmp": "eq", "key": "region", "val": "eu" },
+    "expression": "data.total >= `100` && headers.priority == `\"high\"`"
+  }
+}
+```
+
+Predicates compile once at subscription time and apply consistently to live fanout, rewind, and recovery. Expression projection exposes `event`, `channel`, `data`, `name`, `userId`, `tags`, public `headers`, `messageId`, `streamId`, `serial`, and `action`. Internal `sockudo_` headers, extras, and idempotency keys are never exposed. Source, AST, filter-tree, and projected-document sizes are bounded; invalid input is rejected and evaluation errors fail closed. This remains gated by Protocol V2 and `[tag_filtering].enabled`; Protocol V1 channel validation and delivery are unchanged.
 
 ```mermaid
 sequenceDiagram
@@ -142,3 +159,8 @@ For mixed deployments, treat Protocol V1 as a stable contract and Protocol V2 as
 ## Push is outside the WebSocket protocol
 
 Push notifications are HTTP-driven. They target device registrations, channel push subscriptions, clients, or explicit recipients. A push payload may reference a realtime channel or message serial, but provider delivery is not part of WebSocket ordering.
+
+The optional Ably compatibility facade can resolve an Ably realtime-channel push
+recipient into a native `MessageService` publish. This is an internal push target,
+not another network provider or fallback transport; it follows the channel's
+ordinary fanout, persistence, history, version, and idempotency semantics.

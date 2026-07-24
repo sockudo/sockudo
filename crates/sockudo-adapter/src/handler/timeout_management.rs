@@ -2,7 +2,6 @@ use super::ConnectionHandler;
 use bytes::Bytes;
 use sockudo_core::error::Result;
 use sockudo_core::websocket::SocketId;
-use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::PONG_TIMEOUT;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
@@ -34,21 +33,13 @@ impl ConnectionHandler {
         // Clear any existing timeout
         self.clear_activity_timeout(app_id, socket_id).await?;
 
-        let Some(connection) = self
+        let Some(_connection) = self
             .connection_manager
             .get_connection(socket_id, app_id)
             .await
         else {
             return Ok(());
         };
-
-        if connection.protocol_version == ProtocolVersion::V2 {
-            debug!(
-                socket_id = %socket_id,
-                "skipping app-level activity timeout for v2 socket — native ws ping/pong handles heartbeats"
-            );
-            return Ok(());
-        }
 
         let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();
@@ -85,9 +76,9 @@ impl ConnectionHandler {
                     let remaining = Duration::from_secs(activity_timeout) - time_since_activity;
                     debug!(
                         socket_id = %socket_id_clone,
-                        last_activity_secs = time_since_activity.as_secs(),
-                        remaining_secs = remaining.as_secs(),
-                        "socket still active, waiting before next ping check"
+                        inactive_seconds = time_since_activity.as_secs(),
+                        remaining_seconds = remaining.as_secs(),
+                        "socket remains active"
                     );
                     drop(conn_manager);
                     sleep(remaining).await;
@@ -99,7 +90,7 @@ impl ConnectionHandler {
                 let ping_result = {
                     let mut ws = conn.inner.lock().await;
                     if !ws.is_connected() {
-                        debug!(socket_id = %socket_id_clone, "connection already closed, cleaning up");
+                        debug!(socket_id = %socket_id_clone, "closed connection cleanup started");
                         drop(ws);
                         if let Err(e) = handler
                             .handle_disconnect(&app_id_clone, &socket_id_clone)
@@ -108,7 +99,7 @@ impl ConnectionHandler {
                             warn!(
                                 socket_id = %socket_id_clone,
                                 error = %e,
-                                "failed to handle disconnect for already closed socket"
+                                "closed connection cleanup failed"
                             );
                         }
                         break;
@@ -124,7 +115,7 @@ impl ConnectionHandler {
                     Ok(_) => {
                         debug!(
                             socket_id = %socket_id_clone,
-                            "sent ping due to activity timeout"
+                            "activity timeout ping sent"
                         );
 
                         // Release locks before waiting for pong
@@ -147,10 +138,8 @@ impl ConnectionHandler {
                             {
                                 warn!(
                                     socket_id = %socket_id_clone,
-                                    "no pong received after ping, forcing cleanup"
-                                );
-                                ws.state.record_disconnect_cause(
-                                    sockudo_core::websocket::DisconnectCause::ActivityTimeout,
+                                    timeout_seconds = PONG_TIMEOUT,
+                                    "pong timeout reached, forcing cleanup"
                                 );
                                 let _ = ws
                                     .close(4201, "Pong reply not received in time".to_string())
@@ -163,7 +152,7 @@ impl ConnectionHandler {
                                     warn!(
                                         socket_id = %socket_id_clone,
                                         error = %e,
-                                        "failed to handle timeout disconnect"
+                                        "timeout disconnect handling failed"
                                     );
                                 }
                                 break;
@@ -179,7 +168,7 @@ impl ConnectionHandler {
                         debug!(
                             socket_id = %socket_id_clone,
                             error = %e,
-                            "failed to send ping — connection likely closed by client"
+                            "activity timeout ping send failed"
                         );
 
                         if let Err(e) = handler
@@ -189,7 +178,7 @@ impl ConnectionHandler {
                             warn!(
                                 socket_id = %socket_id_clone,
                                 error = %e,
-                                "failed to handle disconnect after ping failure"
+                                "disconnect handling after ping failure failed"
                             );
                         }
                         break; // Exit the loop after cleanup
@@ -253,9 +242,6 @@ impl ConnectionHandler {
 
                 // Check if user is still not authenticated
                 if !ws.state.is_authenticated() {
-                    ws.state.record_disconnect_cause(
-                        sockudo_core::websocket::DisconnectCause::AuthTimeout,
-                    );
                     let _ = ws
                         .close(
                             4009,

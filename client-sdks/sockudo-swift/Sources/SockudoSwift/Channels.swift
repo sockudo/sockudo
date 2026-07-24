@@ -13,6 +13,7 @@ import Sodium
   var tagsFilter: FilterNode?
   var deltaSettings: ChannelDeltaSettings?
   var eventsFilter: [String]?
+  var expressionFilter: SubscriptionExpression?
   var rewind: SubscriptionRewind?
   var annotationSubscribe = false
 
@@ -35,26 +36,34 @@ import Sodium
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
+  public func on(
+    _ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void
+  )
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
   }
 
   @discardableResult
-  public func bind(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
+  public func bind(
+    _ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void
+  )
     -> EventBindingToken
   {
     on(eventName, callback: callback)
   }
 
   @discardableResult
-  public func onGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
+  public func onGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void)
+    -> EventBindingToken
+  {
     dispatcher.bindGlobal(callback)
   }
 
   @discardableResult
-  public func bindGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
+  public func bindGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void)
+    -> EventBindingToken
+  {
     onGlobal(callback)
   }
 
@@ -141,16 +150,27 @@ import Sodium
           if let channelData = data.channelData {
             payload["channel_data"] = channelData
           }
-          if let filter = self.tagsFilter, let filterJSON = try? JSON.encodeData(filter),
+          if self.eventsFilter != nil || self.expressionFilter != nil {
+            var filterPayload: [String: Any] = [:]
+            if let eventsFilter = self.eventsFilter {
+              filterPayload["events"] = eventsFilter
+            }
+            if let filter = self.tagsFilter, let filterJSON = try? JSON.encodeData(filter),
+              let tags = try? JSON.decode(filterJSON)
+            {
+              filterPayload["tags"] = tags
+            }
+            if let expression = self.expressionFilter {
+              filterPayload["expression"] = expression.subscriptionValue
+            }
+            payload["filter"] = filterPayload
+          } else if let filter = self.tagsFilter, let filterJSON = try? JSON.encodeData(filter),
             let json = try? JSON.decode(filterJSON)
           {
             payload["tags_filter"] = json
           }
           if let deltaSettings = self.deltaSettings {
             payload["delta"] = deltaSettings.subscriptionValue()
-          }
-          if let eventsFilter = self.eventsFilter {
-            payload["events"] = eventsFilter
           }
           if let rewind = self.rewind {
             payload["rewind"] = rewind.subscriptionValue()
@@ -283,7 +303,8 @@ import Sodium
     _ messageSerial: String,
     completion: sending @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
-    client.fetchLatestMessage(channelName: name, messageSerial: messageSerial, completion: completion)
+    client.fetchLatestMessage(
+      channelName: name, messageSerial: messageSerial, completion: completion)
   }
 
   public func getMessageVersions(
@@ -561,7 +582,8 @@ import Sodium
     _ messageSerial: String,
     completion: sending @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
-    client.fetchLatestMessage(channelName: name, messageSerial: messageSerial, completion: completion)
+    client.fetchLatestMessage(
+      channelName: name, messageSerial: messageSerial, completion: completion)
   }
 
   override public func getMessageVersions(

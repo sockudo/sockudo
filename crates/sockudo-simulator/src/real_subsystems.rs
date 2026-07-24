@@ -302,6 +302,7 @@ fn platform_for_provider(provider: PushProviderKind) -> Platform {
         PushProviderKind::Apns => Platform::Ios,
         PushProviderKind::WebPush => Platform::Browser,
         PushProviderKind::Wns => Platform::Windows,
+        PushProviderKind::Realtime => Platform::Other,
     }
 }
 
@@ -327,6 +328,9 @@ fn recipient_for_provider(
         },
         PushProviderKind::Wns => PushRecipient::Wns {
             channel_uri: SecretString::new(format!("https://wns.example.com/{device_id}"))?,
+        },
+        PushProviderKind::Realtime => PushRecipient::Realtime {
+            channel: format!("push:{device_id}"),
         },
     })
 }

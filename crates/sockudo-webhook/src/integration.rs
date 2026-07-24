@@ -218,6 +218,24 @@ impl WebhookIntegration {
         Ok(())
     }
 
+    /// Enqueue latency-sensitive work directly into the bounded queue.
+    ///
+    /// AI lifecycle traffic bypasses the optional in-process batching vector so
+    /// producer backpressure and queue retry policy remain authoritative.
+    async fn add_bounded_webhook(&self, job_data: JobData) -> Result<()> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+        let Some(queue_manager) = &self.queue_manager else {
+            return Err(Error::Internal(
+                "Queue manager not initialized for webhooks".to_string(),
+            ));
+        };
+        queue_manager
+            .add_to_queue(WEBHOOK_QUEUE_NAME, job_data)
+            .await
+    }
+
     fn merge_jobs_for_queue(jobs: Vec<JobData>, batch_size: usize) -> Vec<JobData> {
         let mut merged = Vec::with_capacity(jobs.len());
         let mut current: Option<JobData> = None;
@@ -490,7 +508,7 @@ impl WebhookIntegration {
             app.id, channel, message_serial
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook(job_data).await
+        self.add_bounded_webhook(job_data).await
     }
 
     pub async fn send_ai_run_started(
@@ -516,7 +534,7 @@ impl WebhookIntegration {
             run_id.unwrap_or("unknown")
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook(job_data).await
+        self.add_bounded_webhook(job_data).await
     }
 
     pub async fn send_ai_turn_started(
@@ -542,7 +560,7 @@ impl WebhookIntegration {
             turn_id.unwrap_or("unknown")
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook(job_data).await
+        self.add_bounded_webhook(job_data).await
     }
 
     pub async fn send_ai_run_ended(
@@ -571,7 +589,7 @@ impl WebhookIntegration {
             reason
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook(job_data).await
+        self.add_bounded_webhook(job_data).await
     }
 
     pub async fn send_ai_turn_ended(
@@ -600,7 +618,7 @@ impl WebhookIntegration {
             reason
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook(job_data).await
+        self.add_bounded_webhook(job_data).await
     }
 
     pub async fn send_ai_cancel_requested(
@@ -627,7 +645,7 @@ impl WebhookIntegration {
             turn_id.unwrap_or("unknown")
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook(job_data).await
+        self.add_bounded_webhook(job_data).await
     }
 
     pub async fn send_ai_stream_orphaned(
@@ -651,7 +669,7 @@ impl WebhookIntegration {
             app.id, channel, message_serial
         );
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
-        self.add_webhook(job_data).await
+        self.add_bounded_webhook(job_data).await
     }
 
     pub async fn send_message_version_created(
@@ -842,6 +860,37 @@ mod tests {
             .send_ai_stream_cancelled(&app, "ai-chat", "msg-1", "orphan_timeout")
             .await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ai_webhooks_bypass_the_unbounded_batching_vector() {
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["ai_run_started".to_string()],
+            ..Webhook::default()
+        }]);
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(
+            WebhookConfig {
+                batching: BatchingConfig {
+                    enabled: true,
+                    duration: 60_000,
+                    size: 100,
+                },
+                ..WebhookConfig::default()
+            },
+            app_manager,
+            Some(queue_manager),
+        )
+        .await
+        .unwrap();
+
+        integration
+            .send_ai_run_started(&app, "ai-chat", Some("run-1"), Some("client-1"))
+            .await
+            .unwrap();
+        assert!(integration.batched_webhooks.lock().is_empty());
     }
 
     #[tokio::test]

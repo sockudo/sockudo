@@ -44,6 +44,12 @@ fn history_cursor_round_trip() {
     assert_eq!(decoded, cursor);
 }
 
+#[test]
+fn history_cursor_rejects_oversized_input_before_decoding() {
+    let error = HistoryCursor::decode(&"A".repeat(16 * 1024 + 1)).unwrap_err();
+    assert!(error.to_string().contains("exceeds 16 KiB"));
+}
+
 #[tokio::test]
 async fn memory_history_store_orders_newest_first_with_cursor() {
     let store = MemoryHistoryStore::new(MemoryHistoryStoreConfig::default());

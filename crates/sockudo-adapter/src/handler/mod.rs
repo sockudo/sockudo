@@ -2,6 +2,8 @@
 #[cfg(feature = "ai-transport")]
 pub mod ai_observability;
 pub mod ai_orphans;
+#[cfg(feature = "ai-transport")]
+mod ai_rollup;
 pub mod annotations;
 pub mod auth_tokens;
 pub mod authentication;
@@ -25,6 +27,8 @@ use crate::ConnectionManager;
 use crate::presence::PresenceManager;
 use crate::watchlist::WatchlistManager;
 #[cfg(feature = "ai-transport")]
+use ai_rollup::{AiWorkerLifecycle, start_rollup_worker};
+#[cfg(feature = "ai-transport")]
 use sockudo_ai_transport::{RollupConfig, RollupEngine, observability::AiObservabilityTracker};
 use sockudo_core::annotations::{AnnotationStore, MemoryAnnotationStore};
 use sockudo_core::app::App;
@@ -32,12 +36,14 @@ use sockudo_core::app::AppManager;
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryStore, NoopHistoryStore};
+use sockudo_core::message_envelope::MessageEnvelope;
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::presence_history::{NoopPresenceHistoryStore, PresenceHistoryStore};
+use sockudo_core::presence_registry::{PresenceRegistry, PresenceReplication};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_core::version_store::{NoopVersionStore, VersionStore};
-use sockudo_core::websocket::{DisconnectCause, SocketId};
+use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
 use sockudo_protocol::messages::{MessageData, PusherMessage, is_ai_event};
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
@@ -49,16 +55,83 @@ use sockudo_ws::Message;
 use sockudo_ws::axum_integration::{WebSocket, WebSocketReader, WebSocketWriter};
 use sonic_rs::Value;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
-use tokio::sync::Semaphore;
-use tracing::{Instrument, debug, error, info, warn};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::{debug, error, warn};
 
 type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
 type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
+const MAX_CHANNEL_PUBLISH_WAITERS: usize = 4_096;
 
-#[async_trait::async_trait]
+struct ChannelPublishGate {
+    semaphore: Arc<Semaphore>,
+    waiters: AtomicUsize,
+}
+
+impl ChannelPublishGate {
+    fn new() -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(1)),
+            waiters: AtomicUsize::new(0),
+        }
+    }
+}
+
+struct ChannelPublishPermit {
+    key: String,
+    gate: Arc<ChannelPublishGate>,
+    gates: Arc<FastDashMap<String, Arc<ChannelPublishGate>>>,
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+struct ChannelPublishWaiter(Arc<ChannelPublishGate>);
+
+impl Drop for ChannelPublishWaiter {
+    fn drop(&mut self) {
+        self.0.waiters.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Drop for ChannelPublishPermit {
+    fn drop(&mut self) {
+        self.permit.take();
+        self.gates.remove_if(&self.key, |_, current| {
+            Arc::ptr_eq(current, &self.gate)
+                && Arc::strong_count(current) == 2
+                && current.waiters.load(Ordering::Acquire) == 0
+                && current.semaphore.available_permits() == 1
+        });
+    }
+}
+
 pub trait RealtimeEgressTap: Send + Sync {
-    async fn deliver(&self, app_id: &str, channel: &str, message: &PusherMessage) -> Result<()>;
+    fn has_subscribers(&self, app_id: &str, channel: &str) -> bool;
+
+    fn deliver(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message: &PusherMessage,
+        envelope: &MessageEnvelope,
+    ) -> Result<()>;
+
+    fn deliver_presence(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _replication: &PresenceReplication,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn replicate_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: &PresenceReplication,
+    ) -> Result<()> {
+        self.deliver_presence(app_id, channel, replication)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -87,6 +160,8 @@ pub struct ConnectionHandler {
     pub(crate) ai_rollup_engine: Option<Arc<RollupEngine>>,
     #[cfg(feature = "ai-transport")]
     pub(crate) ai_observability_tracker: Option<Arc<AiObservabilityTracker>>,
+    #[cfg(feature = "ai-transport")]
+    ai_worker_lifecycle: Option<Arc<AiWorkerLifecycle>>,
     pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -94,6 +169,7 @@ pub struct ConnectionHandler {
     message_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
     presence_update_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
     history_request_limits: Arc<FastDashMap<SocketId, Arc<Semaphore>>>,
+    publish_order_gates: Arc<FastDashMap<String, Arc<ChannelPublishGate>>>,
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -103,6 +179,8 @@ pub struct ConnectionHandler {
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     /// Presence manager for race-safe presence channel operations
     pub(crate) presence_manager: Arc<PresenceManager>,
+    /// Protocol-neutral authority for virtual/current presence members.
+    presence_registry: Arc<PresenceRegistry>,
     #[cfg(feature = "recovery")]
     /// Replay buffer for connection recovery (enabled via config)
     pub(crate) replay_buffer: Option<Arc<crate::replay_buffer::ReplayBuffer>>,
@@ -122,6 +200,7 @@ pub struct ConnectionHandlerBuilder {
     annotation_store: Option<Arc<dyn AnnotationStore + Send + Sync>>,
     version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
     presence_history_store: Option<Arc<dyn PresenceHistoryStore + Send + Sync>>,
+    presence_registry: Option<Arc<PresenceRegistry>>,
     realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     server_options: ServerOptions,
@@ -148,6 +227,7 @@ impl ConnectionHandlerBuilder {
             annotation_store: None,
             version_store: None,
             presence_history_store: None,
+            presence_registry: None,
             realtime_egress_tap: None,
             webhook_integration: None,
             server_options,
@@ -191,6 +271,11 @@ impl ConnectionHandlerBuilder {
         presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     ) -> Self {
         self.presence_history_store = Some(presence_history_store);
+        self
+    }
+
+    pub fn presence_registry(mut self, presence_registry: Arc<PresenceRegistry>) -> Self {
+        self.presence_registry = Some(presence_registry);
         self
     }
 
@@ -260,14 +345,15 @@ impl ConnectionHandlerBuilder {
         };
 
         #[cfg(feature = "ai-transport")]
-        if let Some(engine) = ai_rollup_engine.as_ref() {
-            start_ai_rollup_worker(
-                Arc::clone(engine),
-                Arc::clone(&self.connection_manager),
-                self.realtime_egress_tap.clone(),
-                self.metrics.clone(),
-                self.server_options.ai_transport.rollup.wheel_tick_ms,
-            );
+        let ai_worker_lifecycle = self
+            .server_options
+            .ai_transport
+            .enabled
+            .then(|| Arc::new(AiWorkerLifecycle::new()));
+
+        if let Some(tap) = self.realtime_egress_tap.as_ref() {
+            self.connection_manager
+                .set_realtime_egress_tap(Arc::clone(tap));
         }
 
         let handler = ConnectionHandler {
@@ -293,6 +379,8 @@ impl ConnectionHandlerBuilder {
                 .ai_transport
                 .enabled
                 .then(|| Arc::new(AiObservabilityTracker::default())),
+            #[cfg(feature = "ai-transport")]
+            ai_worker_lifecycle,
             presence_history_store: self
                 .presence_history_store
                 .unwrap_or_else(|| Arc::new(NoopPresenceHistoryStore)),
@@ -302,6 +390,7 @@ impl ConnectionHandlerBuilder {
             message_limiters: Arc::new(fast_dashmap()),
             presence_update_limiters: Arc::new(fast_dashmap()),
             history_request_limits: Arc::new(fast_dashmap()),
+            publish_order_gates: Arc::new(fast_dashmap()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
             server_options: Arc::new(self.server_options),
             cleanup_queue: self.cleanup_queue,
@@ -310,6 +399,9 @@ impl ConnectionHandlerBuilder {
             #[cfg(feature = "delta")]
             delta_compression,
             presence_manager: Arc::new(PresenceManager::new()),
+            presence_registry: self
+                .presence_registry
+                .unwrap_or_else(|| Arc::new(PresenceRegistry::default())),
             #[cfg(feature = "recovery")]
             replay_buffer,
             running: self
@@ -319,8 +411,26 @@ impl ConnectionHandlerBuilder {
 
         #[cfg(feature = "ai-transport")]
         if handler.server_options.ai_transport.enabled {
+            let lifecycle = handler
+                .ai_worker_lifecycle
+                .as_ref()
+                .expect("enabled AI transport must have worker lifecycle")
+                .clone();
+            if let Some(engine) = handler.ai_rollup_engine.as_ref() {
+                let mut worker_handler = handler.clone();
+                worker_handler.ai_worker_lifecycle = None;
+                start_rollup_worker(
+                    worker_handler,
+                    Arc::clone(&lifecycle),
+                    Arc::clone(engine),
+                    handler.server_options.ai_transport.rollup.wheel_tick_ms,
+                );
+            }
+            let mut orphan_handler = handler.clone();
+            orphan_handler.ai_worker_lifecycle = None;
             start_ai_stream_orphan_worker(
-                handler.clone(),
+                orphan_handler,
+                lifecycle,
                 handler
                     .server_options
                     .ai_transport
@@ -335,84 +445,27 @@ impl ConnectionHandlerBuilder {
 }
 
 #[cfg(feature = "ai-transport")]
-fn start_ai_rollup_worker(
-    engine: Arc<RollupEngine>,
-    connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
-    realtime_egress_tap: Option<Arc<dyn RealtimeEgressTap>>,
-    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+fn start_ai_stream_orphan_worker(
+    handler: ConnectionHandler,
+    lifecycle: Arc<AiWorkerLifecycle>,
     wheel_tick_ms: u64,
 ) {
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        return;
-    };
-    let tick_ms = wheel_tick_ms.max(1);
-    handle.spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(tick_ms));
-        loop {
-            interval.tick().await;
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-                .unwrap_or_default();
-            let mut deliveries = engine.flush_due(now_ms);
-            deliveries.extend(engine.sweep_orphans(now_ms));
-            for delivery in deliveries {
-                if let Some(metrics) = metrics.as_ref() {
-                    metrics.mark_ai_rollup_append_delivered(&delivery.app_id);
-                    metrics.observe_ai_rollup_ratio(&delivery.app_id, delivery.coalesced as f64);
-                    metrics.observe_ai_rollup_flush_latency(
-                        &delivery.app_id,
-                        delivery.latency_ms as f64,
-                    );
-                    metrics.update_ai_rollup_active_streams(
-                        &delivery.app_id,
-                        engine.active_streams() as u64,
-                    );
-                }
-                let app_id = delivery.app_id.clone();
-                let channel = delivery.channel.clone();
-                let message_for_tap = delivery.message.clone();
-                if let Err(error) = connection_manager
-                    .send(
-                        &delivery.channel,
-                        delivery.message,
-                        None,
-                        &delivery.app_id,
-                        None,
-                    )
-                    .await
-                {
-                    warn!(
-                        app_id = %delivery.app_id,
-                        channel = %delivery.channel,
-                        error = %error,
-                        "failed to flush AI append rollup delivery"
-                    );
-                } else if let Some(tap) = realtime_egress_tap.as_ref()
-                    && let Err(error) = tap.deliver(&app_id, &channel, &message_for_tap).await
-                {
-                    warn!(
-                        app_id = %app_id,
-                        channel = %channel,
-                        error = %error,
-                        "realtime egress tap failed during AI rollup flush"
-                    );
-                }
-            }
-        }
-    });
-}
-
-#[cfg(feature = "ai-transport")]
-fn start_ai_stream_orphan_worker(handler: ConnectionHandler, wheel_tick_ms: u64) {
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        return;
-    };
-    handle.spawn(async move {
+    let cancellation = lifecycle.token();
+    lifecycle.spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(wheel_tick_ms));
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = cancellation.cancelled() => return,
+                _ = interval.tick() => {}
+            }
             let now_ms = sockudo_core::history::now_ms();
+            let max_idle_ms = handler
+                .server_options
+                .ai_transport
+                .rollup
+                .orphan_ttl_ms
+                .min(i64::MAX as u64) as i64;
+            handler.expire_ai_observability_streams(now_ms, max_idle_ms);
             if let Err(error) = handler.sweep_ai_stream_orphans_once(now_ms).await {
                 warn!(error = %error, "failed to sweep AI stream orphan registry");
             }
@@ -421,6 +474,44 @@ fn start_ai_stream_orphan_worker(handler: ConnectionHandler, wheel_tick_ms: u64)
 }
 
 impl ConnectionHandler {
+    /// Stop AI background workers and wait for the bounded rollup shutdown drain.
+    pub async fn shutdown_ai_workers(&self) {
+        #[cfg(feature = "ai-transport")]
+        if let Some(lifecycle) = self.ai_worker_lifecycle.as_ref() {
+            lifecycle.shutdown().await;
+        }
+    }
+
+    async fn acquire_channel_publish_permit(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<ChannelPublishPermit> {
+        let key = format!("{app_id}\0{channel}");
+        let gate = self
+            .publish_order_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(ChannelPublishGate::new()))
+            .clone();
+        let previous = gate.waiters.fetch_add(1, Ordering::AcqRel);
+        if previous >= MAX_CHANNEL_PUBLISH_WAITERS {
+            gate.waiters.fetch_sub(1, Ordering::AcqRel);
+            return Err(Error::OverCapacity);
+        }
+        let waiter = ChannelPublishWaiter(Arc::clone(&gate));
+        let permit = Arc::clone(&gate.semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|_| Error::ConnectionClosed("publish order gate closed".to_string()))?;
+        drop(waiter);
+        Ok(ChannelPublishPermit {
+            key,
+            gate,
+            gates: Arc::clone(&self.publish_order_gates),
+            permit: Some(permit),
+        })
+    }
+
     /// Create a new `ConnectionHandlerBuilder`.
     pub fn builder(
         app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -445,6 +536,26 @@ impl ConnectionHandler {
     /// Get a reference to the presence manager
     pub fn presence_manager(&self) -> &Arc<PresenceManager> {
         &self.presence_manager
+    }
+
+    pub fn presence_registry(&self) -> &Arc<PresenceRegistry> {
+        &self.presence_registry
+    }
+
+    /// Deliver presence locally and replicate it horizontally through a
+    /// dedicated internal envelope that is never sent to Protocol V1 sockets.
+    pub async fn fanout_presence(
+        &self,
+        app_id: &str,
+        channel: &str,
+        replication: PresenceReplication,
+    ) -> Result<()> {
+        if let Some(tap) = self.realtime_egress_tap.as_ref() {
+            tap.deliver_presence(app_id, channel, &replication)?;
+        }
+        self.connection_manager
+            .send_presence_replication(app_id, channel, replication)
+            .await
     }
 
     pub fn app_manager(&self) -> &Arc<dyn AppManager + Send + Sync> {
@@ -565,10 +676,10 @@ impl ConnectionHandler {
                         }
                     };
                     if let Err(e) = send_result {
-                        warn!(error = %e, "failed to send origin rejection message");
+                        warn!(error = %e, "origin rejection message send failed");
                     }
                 } else {
-                    warn!("Failed to serialize origin rejection message");
+                    warn!("origin rejection message serialization failed");
                 }
 
                 // Send close frame
@@ -579,12 +690,12 @@ impl ConnectionHandler {
                     )
                     .await
                 {
-                    warn!(error = %e, "failed to send origin rejection close frame");
+                    warn!(error = %e, "origin rejection close frame send failed");
                 }
 
                 // Ensure frames are flushed
                 if let Err(e) = socket_tx.flush().await {
-                    warn!(error = %e, "failed to flush websocket frames during origin rejection");
+                    warn!(error = %e, "origin rejection websocket flush failed");
                 }
 
                 return Err(Error::OriginNotAllowed);
@@ -593,13 +704,6 @@ impl ConnectionHandler {
 
         // Initialize socket with atomic quota check
         let socket_id = SocketId::new();
-        let socket_span = tracing::info_span!(
-            "socket",
-            app_id = %app_config.id,
-            socket_id = %socket_id,
-            protocol = ?protocol_version,
-            wire_format = ?wire_format,
-        );
         self.initialize_socket_with_quota_check(
             socket_id,
             socket_tx,
@@ -660,13 +764,6 @@ impl ConnectionHandler {
             // Send connection established
             self.send_connection_established(&app_config.id, &socket_id)
                 .await?;
-            info!(
-                app_id = %app_config.id,
-                socket_id = %socket_id,
-                protocol = ?protocol_version,
-                wire_format = ?wire_format,
-                "socket connected"
-            );
 
             // Setup timeouts
             self.setup_initial_timeouts(&socket_id, &app_config).await?;
@@ -675,7 +772,6 @@ impl ConnectionHandler {
             self.run_message_loop(socket_rx, &socket_id, &app_config, shutdown_token)
                 .await
         }
-        .instrument(socket_span)
         .await;
 
         self.cleanup_socket(&socket_id, &app_config).await;
@@ -717,11 +813,7 @@ impl ConnectionHandler {
                     .get_sockets_count(&app_config.id)
                     .await
                     .map_err(|e| {
-                        error!(
-                            app_id = %app_config.id,
-                            error = %e,
-                            "error getting sockets count"
-                        );
+                        error!(app_id = %app_config.id, error = %e, "socket count lookup failed");
                         Error::Internal("Failed to check connection quota".to_string())
                     })?;
 
@@ -779,7 +871,7 @@ impl ConnectionHandler {
             Ok(Some(_)) => Err(Error::ApplicationDisabled),
             Ok(None) => Err(Error::ApplicationNotFound),
             Err(e) => {
-                error!(error = %e, "application lookup failed");
+                error!(error = %e, "app lookup failed");
                 Err(Error::Internal("App lookup failed".to_string()))
             }
         }
@@ -797,7 +889,7 @@ impl ConnectionHandler {
                 tokio::select! {
                     biased;
                     _ = token.cancelled() => {
-                        debug!(socket_id = %socket_id, "reader loop cancelled via shutdown token");
+                        debug!(socket_id = %socket_id, "socket reader cancelled");
                         break;
                     }
                     msg = reader.next() => msg,
@@ -808,38 +900,16 @@ impl ConnectionHandler {
 
             let next = match next {
                 Some(n) => n,
-                None => {
-                    self.record_disconnect_cause(
-                        &app_config.id,
-                        socket_id,
-                        DisconnectCause::TransportEof,
-                    )
-                    .await;
-                    break;
-                }
+                None => break,
             };
 
             let message = match next {
                 Ok(m) => m,
-                Err(e) => {
-                    self.record_disconnect_cause(
-                        &app_config.id,
-                        socket_id,
-                        DisconnectCause::TransportError,
-                    )
-                    .await;
-                    return Err(Error::WebSocket(e));
-                }
+                Err(e) => return Err(Error::WebSocket(e)),
             };
             match message {
                 Message::Close(_) => {
-                    self.record_disconnect_cause(
-                        &app_config.id,
-                        socket_id,
-                        DisconnectCause::ClientClose,
-                    )
-                    .await;
-                    debug!(socket_id = %socket_id, "received close frame");
+                    debug!(socket_id = %socket_id, "socket close frame received");
                     self.handle_disconnect(&app_config.id, socket_id).await?;
                     break;
                 }
@@ -849,35 +919,25 @@ impl ConnectionHandler {
                         .await
                     {
                         if e.is_fatal() {
-                            self.record_disconnect_cause(
-                                &app_config.id,
-                                socket_id,
-                                DisconnectCause::FatalError,
-                            )
-                            .await;
-                            error!(socket_id = %socket_id, error = %e, "fatal message handling error");
+                            error!(socket_id = %socket_id, error = %e, "socket message handling failed");
                             self.handle_fatal_error(socket_id, app_config, &e).await?;
                             break;
                         } else if matches!(&e, Error::ConnectionClosed(_)) {
-                            debug!(socket_id = %socket_id, error = %e, "connection closed during message handling");
+                            debug!(socket_id = %socket_id, error = %e, "socket message handling stopped");
                             break;
                         } else {
-                            error!(socket_id = %socket_id, error = %e, "message handling error");
+                            error!(socket_id = %socket_id, error = %e, "socket message handling failed");
                             // Send pusher:error for non-fatal errors
                             if let Err(send_err) =
                                 self.send_error(&app_config.id, socket_id, &e, None).await
                             {
-                                error!(
-                                    socket_id = %socket_id,
-                                    error = %send_err,
-                                    "failed to send error to socket"
-                                );
+                                error!(socket_id = %socket_id, error = %send_err, "socket error response send failed");
                             }
                         }
                     }
                 }
                 _ => {
-                    warn!(socket_id = %socket_id, "unsupported message type");
+                    warn!(socket_id = %socket_id, "unsupported socket message type");
                 }
             }
         }
@@ -977,10 +1037,11 @@ impl ConnectionHandler {
                     .await;
                 let total = t0.elapsed().as_micros();
                 debug!(
+                    socket_id = %socket_id,
                     total_us = total,
                     parse_to_handler_us = t1,
                     handler_us = total - t1,
-                    "subscription perf"
+                    "subscription handling timing"
                 );
                 result
             }
@@ -1032,7 +1093,7 @@ impl ConnectionHandler {
                     .await
             }
             _ => {
-                warn!(socket_id = %socket_id, event = %event_name, "unknown event ignored");
+                warn!(socket_id = %socket_id, event = %event_name, "unknown socket event");
                 Ok(()) // Ignore unknown events per protocol spec
             }
         }
@@ -1065,22 +1126,10 @@ impl ConnectionHandler {
             .ok_or_else(|| Error::ClientEvent("Channel required for client event".into()))?
             .clone();
 
-        let data = match &message.data {
-            Some(MessageData::Json(data)) => data.clone(),
-            Some(MessageData::String(s)) => {
-                sonic_rs::from_str(s).unwrap_or_else(|_| Value::from(s.as_str()))
-            }
-            Some(MessageData::Structured { extra, .. }) => {
-                // For client events, the data is in the extra fields
-                // Always convert the extra HashMap to a JSON object to preserve structure
-                if !extra.is_empty() {
-                    sonic_rs::to_value(extra).unwrap_or_else(|_| Value::new_object())
-                } else {
-                    Value::new_null()
-                }
-            }
-            None => Value::new_null(),
-        };
+        let data = message
+            .data
+            .clone()
+            .unwrap_or_else(|| MessageData::Json(Value::new_null()));
 
         Ok(ClientEventRequest {
             event,
@@ -1099,7 +1148,7 @@ impl ConnectionHandler {
         self.send_error(&app_config.id, socket_id, error, None)
             .await
             .unwrap_or_else(|e| {
-                error!(socket_id = %socket_id, error = %e, "failed to send error");
+                error!(socket_id = %socket_id, error = %e, "socket error response send failed");
             });
 
         // Close connection
@@ -1129,14 +1178,14 @@ impl ConnectionHandler {
 
         // Clear timeouts
         if let Err(e) = self.clear_activity_timeout(&app_config.id, socket_id).await {
-            warn!(socket_id = %socket_id, error = %e, "failed to clear activity timeout");
+            warn!(socket_id = %socket_id, error = %e, "activity timeout clear failed");
         }
 
         if let Err(e) = self
             .clear_user_authentication_timeout(&app_config.id, socket_id)
             .await
         {
-            warn!(socket_id = %socket_id, error = %e, "failed to clear auth timeout");
+            warn!(socket_id = %socket_id, error = %e, "authentication timeout clear failed");
         }
 
         // Ensure disconnect cleanup is called to properly decrement connection count
@@ -1145,7 +1194,7 @@ impl ConnectionHandler {
             .handle_ungraceful_disconnect(&app_config.id, socket_id)
             .await
         {
-            warn!(socket_id = %socket_id, error = %e, "failed to handle disconnect during cleanup");
+            warn!(socket_id = %socket_id, error = %e, "socket cleanup disconnect failed");
         }
 
         debug!(socket_id = %socket_id, "socket cleanup completed");

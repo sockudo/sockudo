@@ -8,7 +8,10 @@ const port = Number(process.env.ABLY_PORT ?? '6001');
 const tls = process.env.ABLY_TLS === 'true';
 const key = process.env.ABLY_KEY ?? 'app-key:app-secret';
 const clientId = process.env.ABLY_CLIENT_ID ?? 'sockudo-ably-ait-client';
-const agentClientId = process.env.ABLY_AGENT_CLIENT_ID ?? 'sockudo-ably-ait-agent';
+// Agent runs without an identified triggering input use the stock SDK's empty
+// run-client-id sentinel. Keep the connection itself unidentified so this
+// exercises the real unknown-owner protocol path.
+const agentClientId = process.env.ABLY_AGENT_CLIENT_ID;
 const channelName = process.env.ABLY_CHANNEL ?? `private-ai-ably-chat-${Date.now()}`;
 const prompt = process.env.ABLY_DEMO_PROMPT ?? 'Say hello from Sockudo AI Transport.';
 
@@ -41,15 +44,16 @@ function onceConnection(client, state) {
 }
 
 function createRealtime(clientIdValue) {
-  return new Ably.Realtime({
+  const options = {
     key,
-    clientId: clientIdValue,
     endpoint,
     port,
     tls,
     useBinaryProtocol: false,
     autoConnect: false,
-  });
+  };
+  if (clientIdValue) options.clientId = clientIdValue;
+  return new Ably.Realtime(options);
 }
 
 function streamChunks(chunks) {

@@ -208,6 +208,7 @@ fn versioned_record() -> StoredVersionRecord {
         app_id: APP_ID.to_string(),
         channel: CHANNEL.to_string(),
         original_client_id: Some("author".to_string()),
+        envelope: None,
         message: VersionedMessage::new_create(
             message_serial(),
             VersionMetadata {
@@ -287,7 +288,10 @@ async fn build_harness() -> AnnotationHarness {
     build_harness_with_shared_stores(version_store, Arc::new(MemoryAnnotationStore::new())).await
 }
 
-async fn connect_v2_socket(harness: &AnnotationHarness) -> (SocketId, ClientReader) {
+async fn connect_socket(
+    harness: &AnnotationHarness,
+    protocol_version: ProtocolVersion,
+) -> (SocketId, ClientReader) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -319,7 +323,7 @@ async fn connect_v2_socket(harness: &AnnotationHarness) -> (SocketId, ClientRead
             &harness.app.id,
             harness.app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
             WebSocketBufferConfig::default(),
-            ProtocolVersion::V2,
+            protocol_version,
             WireFormat::Json,
             true,
             sockudo_protocol::AppendMode::Delta,
@@ -328,6 +332,10 @@ async fn connect_v2_socket(harness: &AnnotationHarness) -> (SocketId, ClientRead
         .unwrap();
 
     (socket_id, reader)
+}
+
+async fn connect_v2_socket(harness: &AnnotationHarness) -> (SocketId, ClientReader) {
+    connect_socket(harness, ProtocolVersion::V2).await
 }
 
 async fn sign_in_with_capabilities(
@@ -360,6 +368,8 @@ fn subscribe_request(annotation_subscribe: bool) -> SubscriptionRequest {
         channel_data: None,
         #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
         #[cfg(feature = "delta")]
         delta: None,
         rewind: None,
@@ -440,6 +450,7 @@ async fn publish_annotation(
             channel: CHANNEL.to_string(),
             message_serial: message_serial(),
             annotation_type: annotation_type(annotation_type_value),
+            id: None,
             name: name.map(str::to_string),
             client_id: client_id.map(str::to_string),
             count,
@@ -781,6 +792,96 @@ async fn publish_annotation_delivers_summary_and_delete_delivers_decrement() {
 }
 
 #[tokio::test]
+async fn caller_annotation_id_suppresses_sequential_retry_delivery_and_counting() {
+    let harness = build_harness().await;
+    let id = AnnotationId::new("retry-id").unwrap();
+    let publish = || PublishAnnotationRuntimeRequest {
+        app: harness.app.clone(),
+        channel: CHANNEL.to_string(),
+        message_serial: message_serial(),
+        annotation_type: annotation_type("reactions:total.v1"),
+        id: Some(id.clone()),
+        name: None,
+        client_id: Some("client-1".to_string()),
+        count: None,
+        data: None,
+        encoding: None,
+    };
+
+    let first = harness
+        .handler
+        .publish_annotation_runtime(publish())
+        .await
+        .unwrap();
+    let retry = harness
+        .handler
+        .publish_annotation_runtime(publish())
+        .await
+        .unwrap();
+
+    let mut conflicting = publish();
+    conflicting.count = Some(2);
+    let conflict = match harness
+        .handler
+        .publish_annotation_runtime(conflicting)
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("same annotation id with a different payload must fail"),
+    };
+
+    assert_eq!(first.annotation_serial, retry.annotation_serial);
+    assert!(conflict.to_string().contains("different payload"));
+    let AnnotationSummary::Total(summary) = retry.projection.summary else {
+        panic!("expected total summary");
+    };
+    assert_eq!(summary.total, 1);
+}
+
+#[tokio::test]
+async fn caller_annotation_id_suppresses_concurrent_retry_counting() {
+    let harness = build_harness().await;
+    let id = AnnotationId::new("concurrent-retry-id").unwrap();
+    let publish = || PublishAnnotationRuntimeRequest {
+        app: harness.app.clone(),
+        channel: CHANNEL.to_string(),
+        message_serial: message_serial(),
+        annotation_type: annotation_type("reactions:total.v1"),
+        id: Some(id.clone()),
+        name: None,
+        client_id: Some("client-1".to_string()),
+        count: None,
+        data: None,
+        encoding: None,
+    };
+
+    let (first, retry) = tokio::join!(
+        harness.handler.publish_annotation_runtime(publish()),
+        harness.handler.publish_annotation_runtime(publish()),
+    );
+    let first = first.unwrap();
+    let retry = retry.unwrap();
+    assert_eq!(first.annotation_serial, retry.annotation_serial);
+
+    let events = harness
+        .handler
+        .annotation_store()
+        .get_events(AnnotationEventsRequest {
+            app_id: APP_ID.to_string(),
+            channel_id: CHANNEL.to_string(),
+            message_serial: message_serial(),
+            annotation_type: annotation_type("reactions:total.v1"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let AnnotationSummary::Total(summary) = retry.projection.summary else {
+        panic!("expected total summary");
+    };
+    assert_eq!(summary.total, 1);
+}
+
+#[tokio::test]
 async fn flag_publish_rejects_unidentified_client() {
     let harness = build_harness().await;
 
@@ -791,6 +892,7 @@ async fn flag_publish_rejects_unidentified_client() {
             channel: CHANNEL.to_string(),
             message_serial: message_serial(),
             annotation_type: annotation_type("reactions:flag.v1"),
+            id: None,
             name: None,
             client_id: None,
             count: None,
@@ -852,6 +954,33 @@ async fn annotation_subscribe_receives_raw_events_but_ordinary_subscribe_does_no
     let raw_payload = message_data(&raw);
     assert_eq!(raw_payload["action"].as_str(), Some("annotation.create"));
     assert_eq!(raw_payload["type"].as_str(), Some("reactions:distinct.v1"));
+}
+
+#[tokio::test]
+async fn protocol_v1_subscription_receives_no_annotation_or_summary_frames() {
+    let harness = build_harness().await;
+    let (socket_id, mut reader) = connect_socket(&harness, ProtocolVersion::V1).await;
+    harness
+        .handler
+        .handle_subscribe_request(&socket_id, &harness.app, subscribe_request(false))
+        .await
+        .unwrap();
+    let ack = recv_message(&mut reader).await;
+    assert_eq!(
+        ack.event.as_deref(),
+        Some("pusher_internal:subscription_succeeded")
+    );
+
+    publish_annotation(
+        &harness,
+        "reactions:distinct.v1",
+        Some("like"),
+        Some("client-1"),
+        None,
+    )
+    .await;
+
+    expect_no_message(&mut reader).await;
 }
 
 #[tokio::test]
@@ -986,6 +1115,56 @@ async fn shared_annotation_store_converges_under_two_node_concurrent_publishes()
         names["like"].client_ids,
         vec!["client-a".to_string(), "client-b".to_string()]
     );
+}
+
+#[tokio::test]
+async fn shared_annotation_store_converges_under_two_node_concurrent_counting_publishes() {
+    let version_store = Arc::new(MemoryVersionStore::new());
+    version_store
+        .append_version(versioned_record())
+        .await
+        .unwrap();
+    let annotation_store = Arc::new(MemoryAnnotationStore::new());
+    let node_a =
+        build_harness_with_shared_stores(version_store.clone(), annotation_store.clone()).await;
+    let node_b = build_harness_with_shared_stores(version_store, annotation_store).await;
+
+    let (result_a, result_b) = tokio::join!(
+        publish_annotation(
+            &node_a,
+            "reactions:multiple.v1",
+            Some("vote"),
+            Some("client-a"),
+            Some(2),
+        ),
+        publish_annotation(
+            &node_b,
+            "reactions:multiple.v1",
+            Some("vote"),
+            Some("client-b"),
+            Some(3),
+        ),
+    );
+    assert_ne!(result_a.annotation_serial, result_b.annotation_serial);
+
+    let projection = node_a
+        .handler
+        .annotation_store()
+        .get_projection(AnnotationProjectionRequest {
+            app_id: APP_ID.to_string(),
+            channel_id: CHANNEL.to_string(),
+            message_serial: message_serial(),
+            annotation_type: annotation_type("reactions:multiple.v1"),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let AnnotationSummary::Multiple(names) = projection.summary else {
+        panic!("expected multiple summary");
+    };
+    assert_eq!(names["vote"].total, 5);
+    assert_eq!(names["vote"].client_counts["client-a"], 2);
+    assert_eq!(names["vote"].client_counts["client-b"], 3);
 }
 
 #[tokio::test]

@@ -1,9 +1,10 @@
-use super::buffer::{RewindGate, SizedMessage};
+use super::buffer::{RewindGate, RewindGateAdmission, RewindGateDrain, SizedMessage};
 use super::*;
 use bytes::Bytes;
 use sockudo_filter::node::FilterNodeBuilder;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::axum_integration::WebSocketWriter;
+use std::sync::Arc;
 
 #[test]
 fn test_socket_id_generation() {
@@ -186,6 +187,33 @@ fn test_byte_counter_would_exceed() {
 }
 
 #[test]
+fn test_byte_counter_reservation_is_atomic_at_limit() {
+    let counter = Arc::new(ByteCounter::new());
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let mut threads = Vec::with_capacity(8);
+
+    for _ in 0..8 {
+        let counter = Arc::clone(&counter);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            counter.try_reserve(6, 10)
+        }));
+    }
+
+    let admitted = threads
+        .into_iter()
+        .map(|thread| thread.join().expect("reservation thread panicked"))
+        .filter(|admitted| *admitted)
+        .count();
+
+    assert_eq!(admitted, 1);
+    assert_eq!(counter.get(), 6);
+    counter.sub(6);
+    assert_eq!(counter.get(), 0);
+}
+
+#[test]
 fn test_sized_message() {
     let bytes = Bytes::from("hello world");
     let msg = SizedMessage::new(bytes.clone());
@@ -199,7 +227,7 @@ fn test_rewind_gate_buffers_and_drains_messages() {
     let message = BufferedRewindMessage {
         serial: Some(1),
         message_id: Some("msg-1".to_string()),
-        message: PusherMessage {
+        message: Arc::new(PusherMessage {
             event: Some("evt".to_string()),
             channel: Some("chat".to_string()),
             data: None,
@@ -215,14 +243,91 @@ fn test_rewind_gate_buffers_and_drains_messages() {
             extras: None,
             delta_sequence: None,
             delta_conflation_key: None,
-        },
+        }),
     };
-    gate.try_buffer(message.clone(), 128).unwrap();
-    let drained = gate.drain();
+    assert_eq!(gate.try_buffer(message, 64), RewindGateAdmission::Buffered);
+    let RewindGateDrain::Buffered(drained) = gate.finish() else {
+        panic!("bounded gate should drain without overflow");
+    };
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].serial, Some(1));
     assert_eq!(drained[0].message_id.as_deref(), Some("msg-1"));
-    assert!(gate.drain().is_empty());
+}
+
+#[test]
+fn rewind_gate_fails_closed_when_count_or_byte_limit_overflows() {
+    let message = || BufferedRewindMessage {
+        serial: Some(1),
+        message_id: Some("msg-1".to_string()),
+        message: Arc::new(PusherMessage::pong()),
+    };
+
+    let mut count_gate = RewindGate::new(WebSocketBufferConfig::with_both_limits(1, 1_024, true));
+    assert_eq!(
+        count_gate.try_buffer(message(), 1),
+        RewindGateAdmission::Buffered
+    );
+    assert!(matches!(
+        count_gate.try_buffer(message(), 1),
+        RewindGateAdmission::Overflowed(_)
+    ));
+    assert!(matches!(
+        count_gate.finish(),
+        RewindGateDrain::Overflowed(_)
+    ));
+
+    let mut byte_gate = RewindGate::new(WebSocketBufferConfig::with_both_limits(10, 4, true));
+    assert!(matches!(
+        byte_gate.try_buffer(message(), 5),
+        RewindGateAdmission::Overflowed(_)
+    ));
+    assert!(matches!(byte_gate.finish(), RewindGateDrain::Overflowed(_)));
+}
+
+#[test]
+fn rewind_gate_rejects_late_admission_after_drain_for_live_delivery() {
+    let mut gate = RewindGate::new(WebSocketBufferConfig::with_both_limits(10, 1_024, true));
+    assert!(matches!(gate.finish(), RewindGateDrain::Buffered(messages) if messages.is_empty()));
+    let admission = gate.try_buffer(
+        BufferedRewindMessage {
+            serial: Some(1),
+            message_id: Some("msg-1".to_string()),
+            message: Arc::new(PusherMessage::pong()),
+        },
+        1,
+    );
+
+    assert_eq!(admission, RewindGateAdmission::Closed);
+}
+
+#[test]
+fn rewind_gates_share_one_message_allocation_across_subscribers() {
+    let shared = Arc::new(PusherMessage::pong());
+    let buffered = || BufferedRewindMessage {
+        serial: Some(1),
+        message_id: Some("msg-1".to_string()),
+        message: Arc::clone(&shared),
+    };
+    let mut first = RewindGate::new(WebSocketBufferConfig::with_both_limits(10, 1_024, true));
+    let mut second = RewindGate::new(WebSocketBufferConfig::with_both_limits(10, 1_024, true));
+
+    assert_eq!(
+        first.try_buffer(buffered(), 1),
+        RewindGateAdmission::Buffered
+    );
+    assert_eq!(
+        second.try_buffer(buffered(), 1),
+        RewindGateAdmission::Buffered
+    );
+    let RewindGateDrain::Buffered(first) = first.finish() else {
+        panic!("first gate should drain");
+    };
+    let RewindGateDrain::Buffered(second) = second.finish() else {
+        panic!("second gate should drain");
+    };
+
+    assert!(Arc::ptr_eq(&first[0].message, &second[0].message));
+    assert!(Arc::ptr_eq(&first[0].message, &shared));
 }
 
 #[test]
@@ -313,6 +418,19 @@ fn create_test_pong_message(channel: &str, serial: u64, message_id: &str) -> Pus
     message.serial = Some(serial);
     message.message_id = Some(message_id.to_string());
     message
+}
+
+async fn buffer_test_rewind_message(
+    ws_ref: &WebSocketRef,
+    channel: &str,
+    message: PusherMessage,
+) -> crate::error::Result<bool> {
+    let message_size = sonic_rs::to_vec(&message)
+        .expect("test message should serialize")
+        .len();
+    ws_ref
+        .buffer_rewind_message(channel, Arc::new(message), message_size)
+        .await
 }
 
 #[tokio::test]
@@ -411,6 +529,7 @@ async fn subscribe_getters_return_expected_values() {
             "presence-room".to_string(),
             Some(filter.clone()),
             Some(event_name_filter.clone()),
+            None,
             true,
         )
         .await;
@@ -437,12 +556,13 @@ async fn resubscribe_preserves_rewind_gate_and_clears_attach_serial() {
 
     ws_ref.start_rewind_gate("presence-room".to_string());
     assert!(
-        ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 1, "msg-1"),
-            )
-            .await
+        buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 1, "msg-1"),
+        )
+        .await
+        .expect("gate admission should succeed")
     );
     ws_ref.set_attach_serial("presence-room".to_string(), 41);
 
@@ -451,21 +571,26 @@ async fn resubscribe_preserves_rewind_gate_and_clears_attach_serial() {
             "presence-room".to_string(),
             Some(FilterNodeBuilder::eq("region", "us-east")),
             Some(vec!["message-created".to_string()]),
+            None,
             false,
         )
         .await;
 
     assert_eq!(ws_ref.attach_serial("presence-room"), None);
     assert!(
-        ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 2, "msg-2"),
-            )
-            .await
+        buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 2, "msg-2"),
+        )
+        .await
+        .expect("gate admission should succeed")
     );
 
-    let drained = ws_ref.finish_rewind_gate("presence-room").await;
+    let drained = ws_ref
+        .finish_rewind_gate("presence-room")
+        .await
+        .expect("gate should drain");
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].serial, Some(1));
     assert_eq!(drained[1].serial, Some(2));
@@ -480,18 +605,20 @@ async fn unsubscribe_removes_all_per_channel_state() {
             "presence-room".to_string(),
             Some(FilterNodeBuilder::eq("region", "us-east")),
             Some(vec!["message-created".to_string()]),
+            None,
             true,
         )
         .await;
     ws_ref.set_attach_serial("presence-room".to_string(), 99);
     ws_ref.start_rewind_gate("presence-room".to_string());
     assert!(
-        ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 1, "msg-1"),
-            )
-            .await
+        buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 1, "msg-1"),
+        )
+        .await
+        .expect("gate admission should succeed")
     );
 
     assert!(ws_ref.unsubscribe_from_channel("presence-room").await);
@@ -500,14 +627,21 @@ async fn unsubscribe_removes_all_per_channel_state() {
     assert!(!ws_ref.allows_annotation_events_sync("presence-room"));
     assert_eq!(ws_ref.attach_serial("presence-room"), None);
     assert!(
-        !ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 2, "msg-2"),
-            )
-            .await
+        !buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 2, "msg-2"),
+        )
+        .await
+        .expect("inactive gate should not fail")
     );
-    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
+    assert!(
+        ws_ref
+            .finish_rewind_gate("presence-room")
+            .await
+            .expect("inactive gate should drain")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -519,35 +653,47 @@ async fn finish_rewind_gate_drains_buffered_messages() {
 
     ws_ref.start_rewind_gate("presence-room".to_string());
     assert!(
-        ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 1, "msg-1"),
-            )
-            .await
+        buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 1, "msg-1"),
+        )
+        .await
+        .expect("gate admission should succeed")
     );
     assert!(
-        ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 2, "msg-2"),
-            )
-            .await
+        buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 2, "msg-2"),
+        )
+        .await
+        .expect("gate admission should succeed")
     );
 
-    let drained = ws_ref.finish_rewind_gate("presence-room").await;
+    let drained = ws_ref
+        .finish_rewind_gate("presence-room")
+        .await
+        .expect("gate should drain");
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].message_id.as_deref(), Some("msg-1"));
     assert_eq!(drained[1].message_id.as_deref(), Some("msg-2"));
     assert!(!ws_ref.cancellation_token().is_cancelled());
-    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
     assert!(
-        !ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 3, "msg-3"),
-            )
+        ws_ref
+            .finish_rewind_gate("presence-room")
             .await
+            .expect("closed gate should drain")
+            .is_empty()
+    );
+    assert!(
+        !buffer_test_rewind_message(
+            &ws_ref,
+            "presence-room",
+            create_test_pong_message("presence-room", 3, "msg-3"),
+        )
+        .await
+        .expect("closed gate should use live delivery")
     );
 }
 
@@ -561,26 +707,27 @@ async fn rewind_gate_message_overflow_shuts_down_connection() {
 
     for serial in 1..=2 {
         assert!(
-            ws_ref
-                .buffer_rewind_message(
-                    "presence-room",
-                    &create_test_pong_message("presence-room", serial, &format!("msg-{serial}"),),
-                )
-                .await
+            buffer_test_rewind_message(
+                &ws_ref,
+                "presence-room",
+                create_test_pong_message("presence-room", serial, &format!("msg-{serial}")),
+            )
+            .await
+            .expect("messages within the configured limit should be buffered")
         );
     }
     assert!(!ws_ref.cancellation_token().is_cancelled());
 
-    assert!(
-        ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 3, "msg-3"),
-            )
-            .await
-    );
+    let error = buffer_test_rewind_message(
+        &ws_ref,
+        "presence-room",
+        create_test_pong_message("presence-room", 3, "msg-3"),
+    )
+    .await
+    .expect_err("overflow must fail closed");
+    assert!(error.to_string().contains("attach gate exceeded"));
     assert!(ws_ref.cancellation_token().is_cancelled());
-    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
+    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_err());
 }
 
 #[tokio::test]
@@ -596,19 +743,23 @@ async fn rewind_gate_byte_overflow_shuts_down_connection() {
     .await;
     ws_ref.start_rewind_gate("presence-room".to_string());
 
-    assert!(ws_ref.buffer_rewind_message("presence-room", &first).await);
+    assert!(
+        buffer_test_rewind_message(&ws_ref, "presence-room", first)
+            .await
+            .expect("first message should fit exactly")
+    );
     assert!(!ws_ref.cancellation_token().is_cancelled());
 
-    assert!(
-        ws_ref
-            .buffer_rewind_message(
-                "presence-room",
-                &create_test_pong_message("presence-room", 2, "msg-2"),
-            )
-            .await
-    );
+    let error = buffer_test_rewind_message(
+        &ws_ref,
+        "presence-room",
+        create_test_pong_message("presence-room", 2, "msg-2"),
+    )
+    .await
+    .expect_err("byte overflow must fail closed");
+    assert!(error.to_string().contains("attach gate exceeded"));
     assert!(ws_ref.cancellation_token().is_cancelled());
-    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_empty());
+    assert!(ws_ref.finish_rewind_gate("presence-room").await.is_err());
 }
 
 #[tokio::test]
@@ -778,4 +929,134 @@ async fn test_shutdown_token_cancels_receiver() {
         token.is_cancelled(),
         "shutdown() must cancel the CancellationToken so the receiver task exits"
     );
+}
+
+#[tokio::test]
+async fn close_frame_delivered_before_cancellation() {
+    use sockudo_ws::Message;
+
+    let socket_id = SocketId::new();
+    let (writer, mut client) = create_server_writer_with_client().await;
+    let ws = WebSocket::new(socket_id, writer);
+    let ws_ref = WebSocketRef::new(ws);
+    let token = ws_ref.cancellation_token();
+
+    assert!(
+        !token.is_cancelled(),
+        "precondition: shutdown token must not be pre-cancelled"
+    );
+
+    let close_result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ws_ref.close(4009, "user connection terminated".to_string()),
+    )
+    .await
+    .expect("close() must complete within 2 s");
+
+    assert!(
+        close_result.is_ok(),
+        "close() returned Err — the close frame was not enqueued before cancellation \
+         (channel was already disconnected, meaning token fired before enqueue): {close_result:?}"
+    );
+
+    assert!(
+        token.is_cancelled(),
+        "shutdown token must be cancelled by the time close() returns"
+    );
+
+    let close_frame_received = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match client.next().await {
+                Some(Ok(Message::Close(Some(frame)))) => {
+                    assert_eq!(frame.code, 4009);
+                    assert_eq!(frame.reason.as_str(), "user connection terminated");
+                    return true;
+                }
+                Some(Ok(Message::Close(None))) => {
+                    panic!("close frame must include the requested code and reason")
+                }
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => panic!("client read error: {e}"),
+                None => return false,
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for close frame at client");
+
+    assert!(
+        close_frame_received,
+        "client stream ended without delivering a close frame"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_wait_returns_error_when_writer_is_cancelled_before_flush() {
+    let socket_id = SocketId::new();
+    let (writer, _client) = create_server_writer_with_client().await;
+    let ws = WebSocket::new(socket_id, writer);
+    let ws_ref = WebSocketRef::new(ws);
+
+    ws_ref.shutdown();
+
+    let close_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        ws_ref
+            .inner
+            .lock()
+            .await
+            .message_sender
+            .send_close(4009, "user connection terminated")
+            .await
+    })
+    .await
+    .expect("send_close() must not wait forever after writer cancellation");
+
+    assert!(
+        matches!(close_result, Err(crate::error::Error::ConnectionClosed(_))),
+        "cancelled writer must report that the close frame was not flushed: {close_result:?}"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_cancels_task_while_handle_retained() {
+    use sockudo_ws::Message;
+
+    let socket_id = SocketId::new();
+    let (writer, client) = create_server_writer_with_client().await;
+    let ws = WebSocket::new(socket_id, writer);
+    let ws_ref = WebSocketRef::new(ws);
+
+    let _retained_sender = ws_ref.message_sender.clone();
+
+    ws_ref.shutdown();
+
+    assert!(
+        ws_ref.cancellation_token().is_cancelled(),
+        "shutdown() must cancel the token synchronously"
+    );
+
+    let (task_done_tx, task_done_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let mut client = client;
+        loop {
+            match client.next().await {
+                Some(Ok(Message::Close(_))) => {
+                    let _ = task_done_tx.send(());
+                    break;
+                }
+                Some(Ok(_)) => continue,
+                _ => break,
+            }
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), task_done_rx)
+        .await
+        .expect(
+            "writer task did not terminate within 2 s — \
+             cancellation must drive task exit even with retained sender handle",
+        )
+        .expect("completion oneshot closed without firing");
+
+    drop(_retained_sender);
 }

@@ -7,7 +7,7 @@ import { createAuthRoutes } from "./routes/auth.ts";
 import { createAppsRoutes } from "./routes/apps.ts";
 import { createWebhooksRoutes } from "./routes/webhooks.ts";
 import { createUsersRoutes } from "./routes/users.ts";
-import { opsRoutes } from "./routes/ops.ts";
+import { createOpsRoutes } from "./routes/ops.ts";
 
 const appsRepo = createAppsRepository();
 const dashboard = await bootstrapDashboard();
@@ -34,13 +34,17 @@ app.get("/health", (c) =>
 
 app.route("/api/v1/auth", createAuthRoutes(dashboard.users));
 app.route("/api/v1/users", createUsersRoutes(dashboard.users));
-app.route("/api/v1/apps", createAppsRoutes(appsRepo));
-app.route("/api/v1/apps", createWebhooksRoutes(appsRepo));
-app.route("/api/v1/ops", opsRoutes);
+app.route("/api/v1/apps", createAppsRoutes(appsRepo, dashboard.users));
+app.route("/api/v1/apps", createWebhooksRoutes(appsRepo, dashboard.users));
+app.route("/api/v1/ops", createOpsRoutes(dashboard.users));
 
 const server = Bun.serve({
   port: config.port,
-  fetch: app.fetch,
+  fetch(request, server) {
+    return app.fetch(request, {
+      remoteAddress: server.requestIP(request)?.address ?? "unknown",
+    });
+  },
 });
 
 console.log(`

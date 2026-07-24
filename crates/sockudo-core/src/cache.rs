@@ -24,7 +24,11 @@ pub trait CacheManager: Send + Sync {
     /// Remove a key from the cache
     async fn remove(&self, key: &str) -> Result<()>;
 
-    /// Disconnect the manager's made connections
+    /// Release client resources without deleting shared cache entries.
+    ///
+    /// Stored values are TTL-managed coordination state and can be shared by
+    /// other nodes. Destructive test or administrative cleanup must use an
+    /// explicit backend-specific operation instead.
     async fn disconnect(&self) -> Result<()>;
 
     /// Health check for the cache manager
@@ -65,6 +69,34 @@ pub trait CacheManager: Send + Sync {
             return Ok(false);
         }
         self.set(key, value, ttl_seconds).await?;
+        Ok(true)
+    }
+
+    /// Atomically replace `expected` with `value` while retaining a bounded TTL.
+    ///
+    /// Distributed implementations must override this default with a server-side
+    /// compare-and-swap operation. The fallback is intended only for simple test
+    /// doubles which do not coordinate multiple processes.
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool> {
+        if self.get(key).await?.as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        self.set(key, value, ttl_seconds).await?;
+        Ok(true)
+    }
+
+    /// Atomically remove `key` only when its current value equals `expected`.
+    async fn compare_and_remove(&self, key: &str, expected: &str) -> Result<bool> {
+        if self.get(key).await?.as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        self.remove(key).await?;
         Ok(true)
     }
 

@@ -14,6 +14,7 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 sonic-rs = "0.5.6"
 sockudo-core = { path = "../crates/sockudo-core" }
+sockudo-ably-compat = { path = "../crates/sockudo-ably-compat", features = ["fuzzing"] }
 sockudo-protocol = { path = "../crates/sockudo-protocol" }
 sockudo-push = { path = "../crates/sockudo-push", default-features = false }
 
@@ -55,6 +56,62 @@ bench = false
 [[bin]]
 name = "mutation_request"
 path = "fuzz_targets/mutation_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_formats"
+path = "fuzz_targets/wire_formats.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "versioned_wire"
+path = "fuzz_targets/versioned_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message_data"
+path = "fuzz_targets/message_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connection_state"
+path = "fuzz_targets/connection_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ably_protocol_rest"
+path = "fuzz_targets/ably_protocol_rest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ably_channel_filter"
+path = "fuzz_targets/ably_channel_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ably_auth"
+path = "fuzz_targets/ably_auth.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ably_continuity_state"
+path = "fuzz_targets/ably_continuity_state.rs"
 test = false
 doc = false
 bench = false

@@ -73,6 +73,7 @@ impl PostgresHistoryStore {
             version_streams: format!("{}_version_streams", config.postgres.table_prefix),
             version_messages: format!("{}_version_messages", config.postgres.table_prefix),
             version_entries: format!("{}_version_entries", config.postgres.table_prefix),
+            annotation_streams: format!("{}_annotation_streams", config.postgres.table_prefix),
             annotation_events: format!("{}_annotation_events", config.postgres.table_prefix),
             annotation_projections: format!(
                 "{}_annotation_projections",

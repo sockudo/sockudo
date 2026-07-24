@@ -2,8 +2,9 @@
 
 use libfuzzer_sys::fuzz_target;
 use sockudo_push::{
-    ChannelPushRule, ProviderOverridePayload, PushPayload, PushProviderKind,
-    render_provider_payload,
+    ChannelPushRule, MAX_PUSH_BODY_BYTES, MAX_PUSH_ICON_BYTES, MAX_PUSH_TARGETS,
+    MAX_PUSH_TITLE_BYTES, ProviderOverridePayload, PublishIntent, PushCursor, PushPayload,
+    PushProviderKind, render_provider_payload,
 };
 use sonic_rs::json;
 
@@ -15,7 +16,25 @@ fuzz_target!(|data: &[u8]| {
     }
 
     if let Ok(payload) = serde_json::from_slice::<PushPayload>(data) {
-        let _ = payload.validate();
+        let validation = payload.validate();
+        if payload
+            .title
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_PUSH_TITLE_BYTES)
+            || payload
+                .body
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_PUSH_BODY_BYTES)
+            || payload
+                .icon
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_PUSH_ICON_BYTES)
+        {
+            assert!(
+                validation.is_err(),
+                "oversized push payload field was accepted"
+            );
+        }
         for provider in [
             PushProviderKind::Fcm,
             PushProviderKind::Apns,
@@ -46,6 +65,9 @@ fuzz_target!(|data: &[u8]| {
         ] {
             let _ = render_provider_payload(provider, &payload, &overrides);
         }
+        for override_payload in overrides {
+            let _ = override_payload.validate();
+        }
     }
 
     if let Ok(rule) = serde_json::from_slice::<ChannelPushRule>(data) {
@@ -56,5 +78,35 @@ fuzz_target!(|data: &[u8]| {
         });
         let _ = rule.validate();
         let _ = rule.map_payload(&message);
+    }
+
+    if let Ok(intent) = serde_json::from_slice::<PublishIntent>(data) {
+        let validation = intent.validate();
+        if intent.targets.len() > MAX_PUSH_TARGETS {
+            assert!(
+                validation.is_err(),
+                "push intent with too many targets was accepted"
+            );
+        }
+        if validation.is_ok() {
+            let key = intent.idempotency_key();
+            let encoded = sonic_rs::to_vec(&intent).expect("push intent must serialize");
+            let decoded = sonic_rs::from_slice::<PublishIntent>(&encoded)
+                .expect("serialized push intent must deserialize");
+            assert_eq!(decoded, intent);
+            assert_eq!(decoded.idempotency_key(), key);
+        }
+    }
+
+    if let Ok(cursor) = serde_json::from_slice::<PushCursor>(data)
+        && let Ok(encoded) = cursor.encode()
+    {
+        let decoded = PushCursor::decode(&encoded, &cursor.app_id)
+            .expect("encoded push cursor must decode for its app");
+        assert_eq!(decoded, cursor);
+    }
+
+    if let Ok(input) = std::str::from_utf8(data) {
+        let _ = PushCursor::decode(input, "app");
     }
 });

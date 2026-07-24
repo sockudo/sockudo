@@ -24,6 +24,14 @@ CHAOS_ARGS ?=
 CHAOS_PUSH_FEATURES ?= v2,monolith,push-fcm
 CHAOS_PUSH_ARGS ?= --push-provider-profile flaky --exercise-push true --require-push-provider-hit true
 
+# Outside-in distributed correctness defaults. The old and new paths must be
+# separately built packages; the harness rejects identical binary hashes.
+DISTRIBUTED_CHAOS_SEED ?= 12648430
+DISTRIBUTED_CHAOS_DURATION_MS ?= 120000
+DISTRIBUTED_CHAOS_OLD_BIN ?= sockudo-compatibility/.cache/sockudo/target/debug/sockudo
+DISTRIBUTED_CHAOS_NEW_BIN ?= target/debug/sockudo
+DISTRIBUTED_CHAOS_ARGS ?=
+
 # Compose file set per environment (dashboard included for dev/prod)
 ifeq ($(ENV),dev)
 COMPOSE_ARGS := -f $(COMPOSE_FILE) -f docker-compose.dev.yml -f $(COMPOSE_DASHBOARD)
@@ -192,6 +200,25 @@ test: ## Run basic connectivity tests
 	@echo "$(YELLOW)Testing dashboard UI...$(RESET)"
 	@curl -f http://localhost:5174/ || echo "$(RED)Dashboard UI test failed$(RESET)"
 
+.PHONY: presence-bench-guard
+presence-bench-guard: ## Require authoritative presence to beat legacy single/parallel cycles
+	@scripts/presence-bench-guard.sh
+
+.PHONY: ably-compat-bench
+ably-compat-bench: ## Run production-path Ably codec, projection, replay, and fanout Criterion groups
+	@cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot $(ARGS)
+
+.PHONY: ably-compat-capacity-smoke
+ably-compat-capacity-smoke: ## Start real one/two-node Sockudo topologies and run the representative Ably capacity smoke
+	@node tests/load/ably-compat/capacity-runner.mjs \
+		--profile tests/load/ably-compat/profiles/smoke.json \
+		--binary target/debug/sockudo --execute $(ARGS)
+
+.PHONY: ably-compat-capacity-plan
+ably-compat-capacity-plan: ## Print the one/two-node release capacity plan without treating it as evidence
+	@node tests/load/ably-compat/capacity-runner.mjs \
+		--profile tests/load/ably-compat/profiles/release.json $(ARGS)
+
 .PHONY: simulator
 simulator: ## Run deterministic indestructibility simulator (override SIM_SEED/SIM_TICKS/SIM_ARGS)
 	@echo "$(BLUE)Running Sockudo deterministic simulator seed=$(SIM_SEED) ticks=$(SIM_TICKS)...$(RESET)"
@@ -273,6 +300,17 @@ binary-chaos: ## Run manual outside-in binary chaos harness (local only; overrid
 .PHONY: binary-chaos-push
 binary-chaos-push: ## Run manual outside-in binary chaos with fake FCM provider outcomes (local only)
 	@$(MAKE) binary-chaos CHAOS_FEATURES="$(CHAOS_PUSH_FEATURES)" CHAOS_ARGS="$(CHAOS_PUSH_ARGS) $(CHAOS_ARGS)"
+
+.PHONY: distributed-correctness-chaos
+distributed-correctness-chaos: ## Roll two real binaries under load, partition Redis, kill a presence owner, and audit durable state
+	@test -x "$(DISTRIBUTED_CHAOS_OLD_BIN)" || { echo "Missing executable old binary: $(DISTRIBUTED_CHAOS_OLD_BIN)" >&2; exit 1; }
+	@docker compose -f docker-compose.test.yml up -d redis-test postgres-test
+	@cargo build -p sockudo --features "v2,redis,postgres"
+	@node tools/chaos/distributed-correctness.mjs \
+		--seed $(DISTRIBUTED_CHAOS_SEED) \
+		--duration-ms $(DISTRIBUTED_CHAOS_DURATION_MS) \
+		--old-bin "$(DISTRIBUTED_CHAOS_OLD_BIN)" \
+		--new-bin "$(DISTRIBUTED_CHAOS_NEW_BIN)" $(DISTRIBUTED_CHAOS_ARGS)
 
 .PHONY: sentinel-tls-up
 sentinel-tls-up: ## Start the opt-in Redis Sentinel + TLS test fixture

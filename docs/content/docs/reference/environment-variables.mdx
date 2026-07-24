@@ -83,6 +83,24 @@ See [Logging](/docs/reference/logging) for level policy, stable lifecycle fields
 | `SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS` | Comma-separated origin allowlist for the default app. |
 | `SOCKUDO_DEFAULT_APP_ANNOTATIONS_ENABLED` | Enables annotations for the default app channel policy. |
 
+## Ably compatibility credentials
+
+| Variable | Purpose |
+| --- | --- |
+| `SOCKUDO_ABLY_COMPAT_ENABLED` | Enables the optional additional-key registry. The primary `App.key`/`App.secret` remains available independently. |
+| `SOCKUDO_ABLY_COMPAT_REALTIME_ADMISSION` | Ably WebSocket admission mode: `accept` (default) or `placement_constraint`, which returns `DISCONNECTED` error `50320` so clients try configured WebSocket fallback hosts. No fallback realtime transport is enabled. |
+| `SOCKUDO_ABLY_COMPAT_ATTACH_TIMEOUT_MS` | Maximum native ATTACH processing time before Sockudo removes the partial subscription and returns `DETACHED`/`50003`. Defaults to `10000`. |
+| `SOCKUDO_ABLY_COMPAT_KEYS_JSON` | JSON array of additional keys with `app_id`, `key_name`, `secret`, optional `capability`, `revocable_tokens`, `enabled`, and rotation metadata. Treat this value as a secret. |
+| `SOCKUDO_ABLY_COMPAT_MAX_TOKEN_TTL_MS` | Maximum accepted TokenRequest TTL in milliseconds. Defaults to 24 hours. |
+| `SOCKUDO_ABLY_COMPAT_TOKEN_REQUEST_TIMESTAMP_SKEW_MS` | Maximum absolute TokenRequest timestamp skew. Defaults to 15 minutes. |
+| `SOCKUDO_ABLY_COMPAT_NONCE_TTL_SECONDS` | Shared replay-protection TTL for TokenRequest nonces. Defaults to 15 minutes. |
+| `SOCKUDO_ABLY_COMPAT_STATS_FIXTURE_INGEST_ENABLED` | Enables authenticated conformance fixture writes through `POST /stats`. Defaults to `false`; do not enable on public deployments. |
+| `SOCKUDO_ABLY_COMPAT_STATS_QUEUE_CAPACITY` | Maximum bounded aggregation backlog. Defaults to `4096`. |
+| `SOCKUDO_ABLY_COMPAT_STATS_FLUSH_INTERVAL_MS` | Maximum batching delay before a stats-store merge. Defaults to `10`. |
+| `SOCKUDO_ABLY_COMPAT_STATS_RETENTION_SECONDS` | Cache retention for canonical minute buckets. Defaults to 400 days. |
+| `SOCKUDO_ABLY_COMPAT_STATS_MAX_SCAN_ENTRIES` | Maximum minute buckets read by one stats query. Defaults to `100000`. |
+| `SOCKUDO_ABLY_COMPAT_STATS_CAS_RETRIES` | Maximum compare-and-swap retries when merging a shared bucket. Defaults to `8`. |
+
 ## Redis
 
 | Variable | Purpose |
@@ -180,7 +198,7 @@ See [Logging](/docs/reference/logging) for level policy, stable lifecycle fields
 | `UNIX_SOCKET_PATH` | Unix socket filesystem path. |
 | `UNIX_SOCKET_PERMISSION_MODE` | Unix socket permission mode in octal. |
 | `CORS_ORIGINS` | Comma-separated CORS origin patterns. |
-| `CORS_METHODS` | Comma-separated CORS methods. |
+| `CORS_METHODS` | Comma-separated CORS methods. Defaults include `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` so browser clients can use every supported REST mutation route. |
 | `CORS_HEADERS` | Comma-separated allowed headers. |
 | `CORS_CREDENTIALS` | Enables CORS credentials. |
 

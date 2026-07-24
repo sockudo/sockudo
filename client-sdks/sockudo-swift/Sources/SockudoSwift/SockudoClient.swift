@@ -173,7 +173,8 @@ import Network
     self.messageProcessor = MessageProcessor(
       pipeline: pipeline,
       prefix: p,
-      deduplicationCapacity: options.messageDeduplication ? options.messageDeduplicationCapacity : nil,
+      deduplicationCapacity: options.messageDeduplication
+        ? options.messageDeduplicationCapacity : nil,
       deltaOptions: options.deltaCompression
     )
     self.config = ResolvedConfiguration(options: options)
@@ -244,7 +245,8 @@ import Network
   }
 
   private static func base64URLDecodedData(_ value: String) -> Data? {
-    var encoded = value
+    var encoded =
+      value
       .replacingOccurrences(of: "-", with: "+")
       .replacingOccurrences(of: "_", with: "/")
     let padding = encoded.count % 4
@@ -264,26 +266,34 @@ import Network
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
+  public func on(
+    _ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void
+  )
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
   }
 
   @discardableResult
-  public func bind(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
+  public func bind(
+    _ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void
+  )
     -> EventBindingToken
   {
     on(eventName, callback: callback)
   }
 
   @discardableResult
-  public func onGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
+  public func onGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void)
+    -> EventBindingToken
+  {
     dispatcher.bindGlobal(callback)
   }
 
   @discardableResult
-  public func bindGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void) -> EventBindingToken {
+  public func bindGlobal(_ callback: @escaping @SockudoActor (String, Any?) -> Void)
+    -> EventBindingToken
+  {
     onGlobal(callback)
   }
 
@@ -314,6 +324,7 @@ import Network
       channel.tagsFilter = options.filter
       channel.deltaSettings = options.delta
       channel.eventsFilter = options.events
+      channel.expressionFilter = options.expression
       channel.rewind = options.rewind
       channel.annotationSubscribe = options.annotationSubscribe
     }
@@ -566,7 +577,8 @@ import Network
       channelPositions[update.channel] = update.position
     }
     if let resyncChannel = message.resyncChannel {
-      _ = try? sendEvent(name: p.event("delta_sync_error"), data: ["channel": resyncChannel], channel: nil)
+      _ = try? sendEvent(
+        name: p.event("delta_sync_error"), data: ["channel": resyncChannel], channel: nil)
     }
     if let stats = message.updatedDeltaStats {
       cachedDeltaStats = stats
@@ -643,6 +655,11 @@ import Network
         } else if eventName == p.event("delta_cache_sync") {
         } else if eventName == p.event("resume_success") {
           let data = Self.decodeResumeSuccessData(event.data)
+          for recovered in data.recovered {
+            if let position = recovered.position, recovered.channel.isEmpty == false {
+              channelPositions[recovered.channel] = position
+            }
+          }
           Logger.debug("Connection recovery succeeded", data)
           dispatcher.emit(eventName, data: data)
         } else if eventName == p.event("resume_failed") {
@@ -687,7 +704,9 @@ import Network
 
   func handle(rawMessage: URLSessionWebSocketTask.Message) {
     guard let event = try? pipeline.decode(rawMessage) else { return }
-    deliverMessage(ProcessedMessage(event: event, recoveryUpdate: nil, resyncChannel: nil, updatedDeltaStats: nil))
+    deliverMessage(
+      ProcessedMessage(
+        event: event, recoveryUpdate: nil, resyncChannel: nil, updatedDeltaStats: nil))
   }
 
   private func refreshCapabilityToken() {
@@ -985,7 +1004,9 @@ import Network
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
+  public func on(
+    _ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void
+  )
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
@@ -1075,7 +1096,9 @@ import Network
   }
 
   @discardableResult
-  public func on(_ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void)
+  public func on(
+    _ eventName: String, callback: @escaping @SockudoActor (Any?, EventMetadata?) -> Void
+  )
     -> EventBindingToken
   {
     dispatcher.bind(eventName, callback: callback)
@@ -1093,8 +1116,8 @@ import Network
   }
 }
 
-private extension SockudoClient {
-  static func decodeCapabilityTokenAuthData(_ raw: Any?) -> CapabilityTokenAuthData {
+extension SockudoClient {
+  fileprivate static func decodeCapabilityTokenAuthData(_ raw: Any?) -> CapabilityTokenAuthData {
     let payload = raw as? [String: Any] ?? [:]
     return CapabilityTokenAuthData(
       clientID: payload["client_id"] as? String ?? payload["clientId"] as? String,
@@ -1103,7 +1126,9 @@ private extension SockudoClient {
     )
   }
 
-  static func decodeCapabilityTokenExpiredData(_ raw: Any?) -> CapabilityTokenExpiredData {
+  fileprivate static func decodeCapabilityTokenExpiredData(_ raw: Any?)
+    -> CapabilityTokenExpiredData
+  {
     let payload = raw as? [String: Any] ?? [:]
     return CapabilityTokenExpiredData(
       code: wireInt64(payload["code"]).flatMap { Int(exactly: $0) },
@@ -1111,20 +1136,34 @@ private extension SockudoClient {
     )
   }
 
-  static func decodeResumeSuccessData(_ raw: Any?) -> ResumeSuccessData {
+  fileprivate static func decodeResumeSuccessData(_ raw: Any?) -> ResumeSuccessData {
     let payload = raw as? [String: Any] ?? [:]
     let recovered = (payload["recovered"] as? [[String: Any]] ?? []).map {
       ResumeRecoveredChannel(
         channel: $0["channel"] as? String ?? "",
         source: $0["source"] as? String ?? "",
-        replayed: ($0["replayed"] as? NSNumber)?.intValue ?? 0
+        replayed: ($0["replayed"] as? NSNumber)?.intValue ?? 0,
+        position: decodeRecoveryPosition($0["position"])
       )
     }
     let failed = (payload["failed"] as? [[String: Any]] ?? []).map(decodeResumeFailedData)
     return ResumeSuccessData(recovered: recovered, failed: failed)
   }
 
-  static func decodeResumeFailedData(_ raw: [String: Any]) -> ResumeFailedChannel {
+  fileprivate static func decodeRecoveryPosition(_ raw: Any?) -> RecoveryPosition? {
+    guard let payload = raw as? [String: Any],
+      let serial = wireInt64(payload["serial"]).flatMap(Int.init(exactly:))
+    else {
+      return nil
+    }
+    return RecoveryPosition(
+      streamID: payload["stream_id"] as? String,
+      serial: serial,
+      lastMessageID: payload["last_message_id"] as? String
+    )
+  }
+
+  fileprivate static func decodeResumeFailedData(_ raw: [String: Any]) -> ResumeFailedChannel {
     ResumeFailedChannel(
       channel: raw["channel"] as? String ?? "",
       code: raw["code"] as? String ?? "",
@@ -1136,11 +1175,11 @@ private extension SockudoClient {
     )
   }
 
-  static func decodeResumeFailedData(_ raw: Any?) -> ResumeFailedChannel {
+  fileprivate static func decodeResumeFailedData(_ raw: Any?) -> ResumeFailedChannel {
     decodeResumeFailedData(raw as? [String: Any] ?? [:])
   }
 
-  static func decodeRewindCompleteData(_ raw: Any?) -> RewindCompleteData {
+  fileprivate static func decodeRewindCompleteData(_ raw: Any?) -> RewindCompleteData {
     let payload = raw as? [String: Any] ?? [:]
     return RewindCompleteData(
       historicalCount: (payload["historical_count"] as? NSNumber)?.intValue ?? 0,
@@ -1398,7 +1437,8 @@ extension SockudoClient {
       action: "snapshot"
     ) { [weak self] result in
       guard let self else { return }
-      completion(result.flatMap { payload in .success(self.decodePresenceSnapshot(payload: payload)) })
+      completion(
+        result.flatMap { payload in .success(self.decodePresenceSnapshot(payload: payload)) })
     }
   }
 
@@ -1858,7 +1898,8 @@ extension SockudoClient {
   }
 
   private nonisolated func decodePresenceSnapshot(payload: [String: Any]) -> PresenceSnapshot {
-    let members = ((payload["members"] as? [Any]) ?? []).compactMap { raw -> PresenceSnapshotMember? in
+    let members = ((payload["members"] as? [Any]) ?? []).compactMap {
+      raw -> PresenceSnapshotMember? in
       guard let member = raw as? [String: Any] else { return nil }
       return PresenceSnapshotMember(
         userID: member["user_id"] as? String ?? "",
@@ -2032,7 +2073,9 @@ extension SockudoClient {
     )
   }
 
-  private nonisolated func decodePresenceHistoryBounds(_ payload: [String: Any]?) -> PresenceHistoryBounds {
+  private nonisolated func decodePresenceHistoryBounds(_ payload: [String: Any]?)
+    -> PresenceHistoryBounds
+  {
     PresenceHistoryBounds(
       startSerial: (payload?["start_serial"] as? NSNumber)?.int64Value,
       endSerial: (payload?["end_serial"] as? NSNumber)?.int64Value,
@@ -2041,13 +2084,17 @@ extension SockudoClient {
     )
   }
 
-  private nonisolated func decodePresenceHistoryContinuity(_ payload: [String: Any]?) -> PresenceHistoryContinuity {
+  private nonisolated func decodePresenceHistoryContinuity(_ payload: [String: Any]?)
+    -> PresenceHistoryContinuity
+  {
     PresenceHistoryContinuity(
       streamID: payload?["stream_id"] as? String,
       oldestAvailableSerial: (payload?["oldest_available_serial"] as? NSNumber)?.int64Value,
       newestAvailableSerial: (payload?["newest_available_serial"] as? NSNumber)?.int64Value,
-      oldestAvailablePublishedAtMS: (payload?["oldest_available_published_at_ms"] as? NSNumber)?.int64Value,
-      newestAvailablePublishedAtMS: (payload?["newest_available_published_at_ms"] as? NSNumber)?.int64Value,
+      oldestAvailablePublishedAtMS: (payload?["oldest_available_published_at_ms"] as? NSNumber)?
+        .int64Value,
+      newestAvailablePublishedAtMS: (payload?["newest_available_published_at_ms"] as? NSNumber)?
+        .int64Value,
       retainedEvents: (payload?["retained_events"] as? NSNumber)?.int64Value ?? 0,
       retainedBytes: (payload?["retained_bytes"] as? NSNumber)?.int64Value ?? 0,
       degraded: payload?["degraded"] as? Bool ?? false,
@@ -2065,13 +2112,29 @@ private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @u
   private var _didClose: (@Sendable (URLSessionWebSocketTask.CloseCode, String?) -> Void)?
 
   var didOpen: (@Sendable () -> Void)? {
-    get { lock.lock(); defer { lock.unlock() }; return _didOpen }
-    set { lock.lock(); defer { lock.unlock() }; _didOpen = newValue }
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return _didOpen
+    }
+    set {
+      lock.lock()
+      defer { lock.unlock() }
+      _didOpen = newValue
+    }
   }
 
   var didClose: (@Sendable (URLSessionWebSocketTask.CloseCode, String?) -> Void)? {
-    get { lock.lock(); defer { lock.unlock() }; return _didClose }
-    set { lock.lock(); defer { lock.unlock() }; _didClose = newValue }
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return _didClose
+    }
+    set {
+      lock.lock()
+      defer { lock.unlock() }
+      _didClose = newValue
+    }
   }
 
   func urlSession(

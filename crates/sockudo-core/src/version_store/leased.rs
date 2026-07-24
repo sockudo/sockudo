@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::versioned_messages::MessageSerial;
 use ahash::AHashMap;
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -246,6 +247,21 @@ impl VersionStore for LeasedVersionStore {
         self.inner.append_version(record).await
     }
 
+    async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        // Atomic commits own their delivery position in the durable store and
+        // therefore deliberately bypass process-local reservation leases.
+        self.inner.commit_create(request).await
+    }
+
+    async fn compare_and_apply(
+        &self,
+        request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        // Mutations deliberately bypass delivery leases: the underlying store
+        // owns predecessor validation and delivery allocation in one commit.
+        self.inner.compare_and_apply(request).await
+    }
+
     async fn get_latest(
         &self,
         app_id: &str,
@@ -253,6 +269,17 @@ impl VersionStore for LeasedVersionStore {
         message_serial: &MessageSerial,
     ) -> Result<Option<StoredVersionRecord>> {
         self.inner.get_latest(app_id, channel, message_serial).await
+    }
+
+    async fn get_latest_batch(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serials: &[MessageSerial],
+    ) -> Result<BTreeMap<MessageSerial, StoredVersionRecord>> {
+        self.inner
+            .get_latest_batch(app_id, channel, message_serials)
+            .await
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {

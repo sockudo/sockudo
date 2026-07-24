@@ -11,7 +11,7 @@ use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::*;
 use sockudo_protocol::messages::{
     AI_ERROR_EVENT_NOT_PERMITTED, AI_ERROR_INVALID_TRANSPORT_HEADER, AiHeaderValidationError,
-    AiPublishTrust, PusherMessage, is_ai_client_publish_event,
+    AiPublishTrust, MessageData, PusherMessage, is_ai_client_publish_event,
 };
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
@@ -434,7 +434,10 @@ impl ConnectionHandler {
 
         // Validate payload size
         if let Some(max_payload_kb) = app_config.event_payload_limit_kb() {
-            let payload_size = utils::data_to_bytes_flexible(vec![request.data.clone()]);
+            let payload_size = match &request.data {
+                MessageData::Binary(bytes) => bytes.len(),
+                data => sonic_rs::to_vec(data).map_or(0, |bytes| bytes.len()),
+            };
             if payload_size > (max_payload_kb as usize * 1024) {
                 return Err(Error::ClientEvent(format!(
                     "Event payload size ({payload_size} bytes) exceeds limit ({max_payload_kb}KB)"
@@ -899,5 +902,76 @@ mod tests {
         };
 
         validate_ai_client_id_headers(&message, None, AiPublishTrust::TrustedApp).unwrap();
+    }
+
+    #[test]
+    fn ai_client_id_headers_reject_empty_unknown_owner_from_untrusted_clients() {
+        for key in ["run-client-id", "input-client-id", "step-client-id"] {
+            let message = PusherMessage {
+                event: Some("ai-input".to_string()),
+                channel: Some("private-ai".to_string()),
+                data: None,
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: Some(MessageExtras {
+                    ai: Some(AiExtras {
+                        transport: Some(HashMap::from([(key.to_string(), String::new())])),
+                        codec: None,
+                    }),
+                    ..Default::default()
+                }),
+                delta_sequence: None,
+                delta_conflation_key: None,
+            };
+
+            let error = validate_ai_client_id_headers(
+                &message,
+                Some("authenticated-client"),
+                AiPublishTrust::Client,
+            )
+            .expect_err(key);
+            assert_eq!(
+                error.code,
+                sockudo_protocol::messages::AI_ERROR_CLIENT_ID_SPOOF
+            );
+        }
+    }
+
+    #[test]
+    fn ai_client_id_headers_allow_empty_native_unknown_owners_for_trusted_app() {
+        for key in ["run-client-id", "step-client-id"] {
+            let message = PusherMessage {
+                event: Some("ai-step-start".to_string()),
+                channel: Some("private-ai".to_string()),
+                data: None,
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: Some(MessageExtras {
+                    ai: Some(AiExtras {
+                        transport: Some(HashMap::from([(key.to_string(), String::new())])),
+                        codec: None,
+                    }),
+                    ..Default::default()
+                }),
+                delta_sequence: None,
+                delta_conflation_key: None,
+            };
+
+            validate_ai_client_id_headers(&message, None, AiPublishTrust::TrustedApp).unwrap();
+        }
     }
 }

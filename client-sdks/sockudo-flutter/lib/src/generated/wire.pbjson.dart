@@ -105,6 +105,7 @@ const ProtoMessageData$json = {
       '10': 'structured'
     },
     {'1': 'json_value', '3': 3, '4': 1, '5': 9, '9': 0, '10': 'jsonValue'},
+    {'1': 'binary_value', '3': 4, '4': 1, '5': 12, '9': 0, '10': 'binaryValue'},
   ],
   '8': [
     {'1': 'kind'},
@@ -115,7 +116,8 @@ const ProtoMessageData$json = {
 final $typed_data.Uint8List protoMessageDataDescriptor = $convert.base64Decode(
     'ChBQcm90b01lc3NhZ2VEYXRhEiMKDHN0cmluZ192YWx1ZRgBIAEoCUgAUgtzdHJpbmdWYWx1ZR'
     'I+CgpzdHJ1Y3R1cmVkGAIgASgLMhwuc29ja3Vkby5Qcm90b1N0cnVjdHVyZWREYXRhSABSCnN0'
-    'cnVjdHVyZWQSHwoKanNvbl92YWx1ZRgDIAEoCUgAUglqc29uVmFsdWVCBgoEa2luZA==');
+    'cnVjdHVyZWQSHwoKanNvbl92YWx1ZRgDIAEoCUgAUglqc29uVmFsdWUSIwoMYmluYXJ5X3ZhbH'
+    'VlGAQgASgMSABSC2JpbmFyeVZhbHVlQgYKBGtpbmQ=');
 
 @$core.Deprecated('Use protoStructuredDataDescriptor instead')
 const ProtoStructuredData$json = {

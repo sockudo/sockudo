@@ -516,6 +516,7 @@ impl ChannelManager {
                     result
                 }
             }
+            MessageData::Binary(_) => socket_id_str,
         }
     }
 

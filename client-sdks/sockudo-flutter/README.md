@@ -92,6 +92,10 @@ Protocol V2 heartbeat behavior:
 - Flutter/Dart runtimes may still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages for client-side activity checks where native ping APIs are not exposed consistently
 - fallback heartbeat messages are intentionally excluded from V2 recovery metadata such as `message_id`, `serial`, and `stream_id`
 
+MessagePack and Protobuf preserve `Uint8List` message data as native binary. The
+MessagePack representation uses the additive `["binary", <bin>]` tagged value;
+existing string and JSON variants are unchanged.
+
 Protocol V2 capability tokens:
 
 ```dart
@@ -143,6 +147,8 @@ final channel = client.subscribe(
   'price:btc',
   options: const SubscriptionOptions(
     filter: FilterNode(key: 'market', cmp: 'eq', val: 'spot'),
+    events: <String>['price.updated'],
+    expression: SubscriptionExpression('data.price >= `100`'),
     delta: ChannelDeltaSettings(
       enabled: true,
       algorithm: DeltaAlgorithm.xdelta3,

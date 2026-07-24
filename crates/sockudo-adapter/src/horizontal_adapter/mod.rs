@@ -137,6 +137,13 @@ pub struct BroadcastMessage {
     pub app_id: String,
     pub channel: String,
     pub message: String,
+    /// Protocol-neutral presence replication. When set, receiving nodes apply
+    /// this through the realtime egress tap and never fan it out to V1 sockets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_replication: Option<sockudo_core::presence_registry::PresenceReplication>,
+    /// Commit-time facts needed by protocol projections on receiving nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<sockudo_core::message_envelope::MessageEnvelope>,
     pub except_socket_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp_ms: Option<f64>, // Timestamp when broadcast was initiated (milliseconds since epoch with microsecond precision)

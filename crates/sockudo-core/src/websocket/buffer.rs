@@ -2,6 +2,7 @@ use bytes::Bytes;
 use crossfire::mpsc;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Buffer limit strategy for WebSocket connections
@@ -144,6 +145,19 @@ impl ByteCounter {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    /// Atomically reserve `size` bytes without exceeding `limit`.
+    ///
+    /// Callers must release the reservation with [`Self::sub`] if the
+    /// corresponding message is not enqueued.
+    #[inline]
+    pub fn try_reserve(&self, size: usize, limit: usize) -> bool {
+        self.bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(size).filter(|next| *next <= limit)
+            })
+            .is_ok()
+    }
+
     #[inline]
     pub fn would_exceed(&self, size: usize, limit: usize) -> bool {
         self.get().saturating_add(size) > limit
@@ -160,7 +174,7 @@ pub struct SizedMessage {
 pub struct BufferedRewindMessage {
     pub serial: Option<u64>,
     pub message_id: Option<String>,
-    pub message: PusherMessage,
+    pub message: Arc<PusherMessage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,13 +201,33 @@ pub(super) struct RewindGateOverflow {
     pub(super) incoming_message_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RewindGateState {
+    Open,
+    Closed,
+    Overflowed(RewindGateOverflow),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RewindGateAdmission {
+    Buffered,
+    Closed,
+    Overflowed(RewindGateOverflow),
+}
+
+#[derive(Debug)]
+pub(super) enum RewindGateDrain {
+    Buffered(Vec<BufferedRewindMessage>),
+    Overflowed(RewindGateOverflow),
+}
+
 #[derive(Debug)]
 pub struct RewindGate {
     buffered: Vec<BufferedRewindMessage>,
     buffered_bytes: usize,
     max_messages: usize,
     max_bytes: Option<usize>,
-    overflowed: bool,
+    state: RewindGateState,
 }
 
 impl Default for RewindGate {
@@ -204,76 +238,83 @@ impl Default for RewindGate {
 
 impl RewindGate {
     pub(super) fn new(config: WebSocketBufferConfig) -> Self {
+        let max_messages = config.channel_capacity();
         Self {
-            buffered: Vec::new(),
+            buffered: Vec::with_capacity(max_messages.min(64)),
             buffered_bytes: 0,
-            max_messages: config.channel_capacity(),
+            max_messages,
             max_bytes: config.limit.byte_limit(),
-            overflowed: false,
+            state: RewindGateState::Open,
         }
     }
 
     pub(super) fn try_buffer(
         &mut self,
         message: BufferedRewindMessage,
-        message_bytes: usize,
-    ) -> Result<(), RewindGateOverflow> {
-        debug_assert!(!self.overflowed, "invalid rewind gate accepted new work");
+        message_size: usize,
+    ) -> RewindGateAdmission {
+        match self.state {
+            RewindGateState::Closed => return RewindGateAdmission::Closed,
+            RewindGateState::Overflowed(overflow) => {
+                return RewindGateAdmission::Overflowed(overflow);
+            }
+            RewindGateState::Open => {}
+        }
 
         if self.buffered.len() >= self.max_messages {
-            return Err(self.invalidate(RewindGateOverflow {
+            return self.invalidate(RewindGateOverflow {
                 limit_kind: RewindGateLimit::Messages,
                 limit: self.max_messages,
                 buffered_messages: self.buffered.len(),
                 buffered_bytes: self.buffered_bytes,
-                incoming_message_bytes: message_bytes,
-            }));
+                incoming_message_bytes: message_size,
+            });
         }
 
-        let Some(next_buffered_bytes) = self.buffered_bytes.checked_add(message_bytes) else {
-            return Err(self.invalidate(RewindGateOverflow {
+        let Some(bytes) = self.buffered_bytes.checked_add(message_size) else {
+            return self.invalidate(RewindGateOverflow {
                 limit_kind: RewindGateLimit::Bytes,
                 limit: self.max_bytes.unwrap_or(usize::MAX),
                 buffered_messages: self.buffered.len(),
                 buffered_bytes: self.buffered_bytes,
-                incoming_message_bytes: message_bytes,
-            }));
+                incoming_message_bytes: message_size,
+            });
         };
         if let Some(max_bytes) = self.max_bytes
-            && next_buffered_bytes > max_bytes
+            && bytes > max_bytes
         {
-            return Err(self.invalidate(RewindGateOverflow {
+            return self.invalidate(RewindGateOverflow {
                 limit_kind: RewindGateLimit::Bytes,
                 limit: max_bytes,
                 buffered_messages: self.buffered.len(),
                 buffered_bytes: self.buffered_bytes,
-                incoming_message_bytes: message_bytes,
-            }));
+                incoming_message_bytes: message_size,
+            });
         }
 
         self.buffered.push(message);
-        self.buffered_bytes = next_buffered_bytes;
-        Ok(())
+        self.buffered_bytes = bytes;
+        RewindGateAdmission::Buffered
     }
 
-    pub(super) fn drain(&mut self) -> Vec<BufferedRewindMessage> {
+    pub(super) fn finish(&mut self) -> RewindGateDrain {
+        let state = std::mem::replace(&mut self.state, RewindGateState::Closed);
         self.buffered_bytes = 0;
-        std::mem::take(&mut self.buffered)
+        match state {
+            RewindGateState::Open => RewindGateDrain::Buffered(std::mem::take(&mut self.buffered)),
+            RewindGateState::Closed => RewindGateDrain::Buffered(Vec::new()),
+            RewindGateState::Overflowed(overflow) => {
+                self.buffered.clear();
+                RewindGateDrain::Overflowed(overflow)
+            }
+        }
     }
 
-    pub(super) fn is_overflowed(&self) -> bool {
-        self.overflowed
-    }
-
-    pub(super) fn fail_closed(&mut self) {
+    fn invalidate(&mut self, overflow: RewindGateOverflow) -> RewindGateAdmission {
         self.buffered.clear();
         self.buffered_bytes = 0;
-        self.overflowed = true;
-    }
-
-    fn invalidate(&mut self, overflow: RewindGateOverflow) -> RewindGateOverflow {
-        self.fail_closed();
-        overflow
+        self.state = RewindGateState::Overflowed(overflow);
+        RewindGateAdmission::Overflowed(overflow)
     }
 }
 

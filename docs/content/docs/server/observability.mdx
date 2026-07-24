@@ -41,9 +41,25 @@ The TCP exporter has bounded buffering by default. When buffers fill, event samp
 | Webhooks | queued, delivered, failed, retried, dead-lettered |
 | Push | accepted, scheduled, dispatched, provider errors, publish status outcomes |
 
+When `ably-compat` is enabled, two lock-free operator snapshots supplement Prometheus:
+
+- `/operator/stats/ably-runtime` reports queued messages/bytes, overflow and continuity loss,
+  total encoded frames, shared data-projection encodes (`data_encoded`), fanout counts, replay
+  source and recovery backend calls, duplicate suppression, backend/degraded/reset state, expiry,
+  and derived-filter cache pressure. `data_encoded` excludes ACK, heartbeat, connection, and
+  channel-control frames, so it is the counter used to verify one encode per active data format.
+- `/operator/stats/aggregation` reports the bounded stats queue capacity, backlog, accepted,
+  flushed, dropped, and failed observations.
+
+These endpoints expose counters only. They never return credentials, device tokens, channel
+payloads, or raw encrypted values.
+
 ## AI Transport
 
 AI Transport observability is domain-blind. Sockudo reads only the well-known `extras.ai.transport` headers and never labels metrics by channel, run ID, message ID, or client ID.
+Headers are validated once and then passed as a typed borrowed view to metric and webhook
+classification. Empty `run-client-id` and `step-client-id` unknown-owner sentinels remain
+unchanged on the wire but are treated as absent when deriving an identity.
 
 Metrics exposed at `/metrics` include:
 
@@ -65,6 +81,12 @@ Metrics exposed at `/metrics` include:
 - `sockudo_versioned_message_retrieval_total{surface,result}`
 
 The four production signals are run outcomes, stream rate, rejects by code, and rollup efficiency. Use `docs/public/grafana/ai-transport-observability.json` as the starting Grafana dashboard.
+
+Active-stream gauges use exact atomic insertion/removal deltas. Tracker entries that never receive
+a terminal event expire at the configured AI orphan TTL and decrement the same gauge exactly.
+AI lifecycle webhooks are awaited into the configured bounded webhook queue, which supplies
+backpressure and retry handling; Sockudo does not spawn an unbounded Tokio task per event or retain
+AI events in the optional in-process batching vector.
 
 Dashboard starter panels:
 

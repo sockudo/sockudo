@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { UsersController } from "../controllers/users-controller.ts";
 import type { UsersRepository } from "../db/users-repository.ts";
-import { requireAdmin, requireAuth } from "../auth/middleware.ts";
+import { createRequireAdmin, createRequireAuth } from "../auth/middleware.ts";
 import type { AppVariables } from "../types/hono.ts";
 
 export function createUsersRoutes(usersRepo: UsersRepository) {
   const controller = new UsersController(usersRepo);
   const users = new Hono<{ Variables: AppVariables }>();
+  const requireAuth = createRequireAuth(usersRepo);
+  const requireAdmin = createRequireAdmin(usersRepo);
 
   users.use("*", requireAuth);
 

@@ -173,10 +173,57 @@ def test_subscribe_tracks_event_filters() -> None:
 
     channel = client.subscribe(
         "orders",
-        SubscriptionOptions(events=["order.created", "order.cancelled"]),
+        SubscriptionOptions(
+            events=["order.created", "order.cancelled"],
+            expression="data.total >= `100`",
+        ),
     )
 
     assert channel.events_filter == ["order.created", "order.cancelled"]
+    assert channel.expression_filter == "data.total >= `100`"
+
+
+@pytest.mark.asyncio
+async def test_resume_success_applies_authoritative_channel_position() -> None:
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster="local",
+            force_tls=False,
+            connection_recovery=True,
+        ),
+    )
+    payload = json.dumps(
+        {
+            "event": "sockudo:resume_success",
+            "data": json.dumps(
+                {
+                    "recovered": [
+                        {
+                            "channel": "orders",
+                            "source": "durable",
+                            "replayed": 0,
+                            "position": {
+                                "stream_id": "stream-2",
+                                "serial": 42,
+                                "last_message_id": "message-42",
+                            },
+                        }
+                    ],
+                    "failed": [],
+                }
+            ),
+        }
+    )
+
+    await client._handle_raw_message(payload)
+
+    assert client._channel_positions["orders"] == RecoveryPosition(
+        serial=42,
+        stream_id="stream-2",
+        last_message_id="message-42",
+    )
+    client._cancel_activity_timer()
 
 
 def test_reset_delta_stats_and_clear_channel_state() -> None:

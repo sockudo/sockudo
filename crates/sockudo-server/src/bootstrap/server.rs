@@ -7,15 +7,12 @@ use crate::cleanup::CleanupSender;
 use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
 use crate::history::create_history_store;
 #[cfg(feature = "versioned-messages")]
-use crate::history::create_version_store;
-#[cfg(feature = "ably-compat")]
-use crate::http_handler::global_ably_hub;
+use crate::history::{create_annotation_store, create_version_store};
 use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::factory::AdapterFactory;
 use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
-use sockudo_cache::MemoryCacheManager;
 use sockudo_core::auth::AuthValidator;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{AdapterDriver, DeltaCoordinationBackend, QueueDriver, ServerOptions};
@@ -46,16 +43,8 @@ impl SockudoServer {
         let debug_enabled = config.debug;
         info!(debug = debug_enabled, "initializing sockudo server");
 
-        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
-            .await
-            .unwrap_or_else(|e| {
-                warn!(error = %e, "cache manager factory creation failed, using memory cache");
-                let fallback_cache_options = config.cache.memory.clone();
-                Arc::new(MemoryCacheManager::new(
-                    "fallback_cache".to_string(),
-                    fallback_cache_options,
-                ))
-            });
+        let cache_manager =
+            CacheManagerFactory::create(&config.cache, &config.database.redis).await?;
         info!(cache_driver = ?config.cache.driver, "cache manager initialized");
 
         let app_manager = AppManagerFactory::create(
@@ -82,86 +71,95 @@ impl SockudoServer {
             let receiver_opt = connection_manager.configure_dead_node_events();
 
             if receiver_opt.is_some() {
-                info!(adapter = ?config.adapter.driver, "event bus configured for clustering adapter");
+                info!(adapter = ?config.adapter.driver, "dead node cleanup event bus configured");
             } else {
-                info!(adapter = ?config.adapter.driver, "adapter does not require dead node cleanup events");
+                info!(adapter = ?config.adapter.driver, "dead node cleanup event bus not required");
             }
 
             receiver_opt
         } else {
-            info!("Cluster health disabled, skipping dead node cleanup event bus setup");
+            info!("cluster health disabled");
             None
         };
 
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
-        let metrics =
-            if config.metrics.enabled {
-                info!(metrics_driver = ?config.metrics.driver, "initializing metrics");
-                match MetricsFactory::create(
-                    config.metrics.driver.as_ref(),
-                    config.metrics.port,
-                    Some(&config.metrics.prometheus.prefix),
-                    config.metrics.tcp_exporter.enabled.then(|| {
-                        sockudo_metrics::TcpExporterOptions {
-                            host: config.metrics.tcp_exporter.host.clone(),
-                            port: config.metrics.tcp_exporter.port,
-                            buffer_size: config.metrics.tcp_exporter.buffer_size,
-                        }
+        let metrics = if config.metrics.enabled {
+            info!(metrics_driver = ?config.metrics.driver, "initializing metrics");
+            match MetricsFactory::create(
+                config.metrics.driver.as_ref(),
+                config.metrics.port,
+                Some(&config.metrics.prometheus.prefix),
+                config
+                    .metrics
+                    .tcp_exporter
+                    .enabled
+                    .then(|| sockudo_metrics::TcpExporterOptions {
+                        host: config.metrics.tcp_exporter.host.clone(),
+                        port: config.metrics.tcp_exporter.port,
+                        buffer_size: config.metrics.tcp_exporter.buffer_size,
                     }),
-                )
-                .await
-                {
-                    Some(metrics_driver) => {
-                        info!("Metrics driver initialized successfully");
-                        Some(metrics_driver)
-                    }
-                    None => {
-                        warn!("Failed to initialize metrics driver, metrics will be disabled");
-                        None
-                    }
+            )
+            .await
+            {
+                Some(metrics_driver) => {
+                    info!(metrics_driver = ?config.metrics.driver, "metrics driver initialized");
+                    Some(metrics_driver)
                 }
-            } else {
-                info!("Metrics are disabled in configuration");
-                None
-            };
+                None => {
+                    warn!(metrics_driver = ?config.metrics.driver, "metrics driver initialization failed");
+                    None
+                }
+            }
+        } else {
+            info!("metrics disabled");
+            None
+        };
 
         let http_api_rate_limiter_instance = if config.rate_limiter.enabled {
             RateLimiterFactory::create_api(&config.rate_limiter, &config.database.redis)
                 .await
                 .unwrap_or_else(|e| {
-                    error!(error = %e, "failed to initialize http api rate limiter, using permissive limiter");
+                    error!(error = %e, limiter = "http_api", "rate limiter initialization failed, using permissive limiter");
                     Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(
                         u32::MAX, 1,
                     ))
                 })
         } else {
-            info!("HTTP API Rate limiting is globally disabled. Using a permissive limiter.");
+            info!(
+                limiter = "http_api",
+                "rate limiting disabled, using permissive limiter"
+            );
             Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1))
         };
         info!(
+            limiter = "http_api",
             enabled = config.rate_limiter.enabled,
-            rate_limiter_driver = ?config.rate_limiter.driver,
-            "http api rate limiter initialized"
+            driver = ?config.rate_limiter.driver,
+            "rate limiter initialized"
         );
 
         let websocket_rate_limiter_instance = if config.rate_limiter.enabled {
             RateLimiterFactory::create_websocket(&config.rate_limiter, &config.database.redis)
                 .await
                 .unwrap_or_else(|e| {
-                    error!(error = %e, "failed to initialize websocket rate limiter, using permissive limiter");
+                    error!(error = %e, limiter = "websocket", "rate limiter initialization failed, using permissive limiter");
                     Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(
                         u32::MAX, 1,
                     ))
                 })
         } else {
-            info!("WebSocket rate limiting is globally disabled. Using a permissive limiter.");
+            info!(
+                limiter = "websocket",
+                "rate limiting disabled, using permissive limiter"
+            );
             Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1))
         };
         info!(
+            limiter = "websocket",
             enabled = config.rate_limiter.enabled,
-            rate_limiter_driver = ?config.rate_limiter.driver,
-            "websocket rate limiter initialized"
+            driver = ?config.rate_limiter.driver,
+            "rate limiter initialized"
         );
 
         #[cfg(feature = "push")]
@@ -183,22 +181,26 @@ impl SockudoServer {
             )
             .await
             .unwrap_or_else(|e| {
-            error!(error = %e, "failed to initialize push acceptance rate limiter, using permissive limiter");
+                error!(error = %e, limiter = "push_acceptance", "rate limiter initialization failed, using permissive limiter");
                 Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(
                     u32::MAX,
                     1,
                 ))
             })
         } else {
-            info!("Push acceptance rate limiting is disabled. Using a permissive limiter.");
+            info!(
+                limiter = "push_acceptance",
+                "rate limiting disabled, using permissive limiter"
+            );
             Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1))
         };
         #[cfg(feature = "push")]
         info!(
+            limiter = "push_acceptance",
             enabled = config.rate_limiter.enabled && push_acceptance_rps > 0,
-            rate_limiter_driver = ?config.rate_limiter.driver,
-            limit_rps = push_acceptance_rps,
-            "push acceptance rate limiter initialized"
+            driver = ?config.rate_limiter.driver,
+            limit_per_second = push_acceptance_rps,
+            "rate limiter initialized"
         );
 
         let owned_default_queue_redis_url: String;
@@ -215,11 +217,11 @@ impl SockudoServer {
             QueueDriver::Sqs => {
                 match QueueManagerFactory::create_sqs(config.queue.sqs.clone()).await {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with SQS driver");
+                        info!(queue_driver = "sqs", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize sqs queue manager, queues will be disabled");
+                        warn!(queue_driver = "sqs", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
@@ -227,11 +229,11 @@ impl SockudoServer {
             QueueDriver::Sns => {
                 match QueueManagerFactory::create_sns(config.queue.sns.clone()).await {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with SNS driver");
+                        info!(queue_driver = "sns", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize sns queue manager, queues will be disabled");
+                        warn!(queue_driver = "sns", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
@@ -239,11 +241,11 @@ impl SockudoServer {
             QueueDriver::Nats => {
                 match QueueManagerFactory::create_nats(config.queue.nats.clone()).await {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with NATS JetStream driver");
+                        info!(queue_driver = "nats", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize nats jetstream queue manager, queues will be disabled");
+                        warn!(queue_driver = "nats", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
@@ -251,11 +253,11 @@ impl SockudoServer {
             QueueDriver::RabbitMq => {
                 match QueueManagerFactory::create_rabbitmq(config.queue.rabbitmq.clone()).await {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with RabbitMQ driver");
+                        info!(queue_driver = "rabbitmq", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize rabbitmq queue manager, queues will be disabled");
+                        warn!(queue_driver = "rabbitmq", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
@@ -263,11 +265,11 @@ impl SockudoServer {
             QueueDriver::Kafka => {
                 match QueueManagerFactory::create_kafka(config.queue.kafka.clone()).await {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with Kafka driver");
+                        info!(queue_driver = "kafka", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize kafka queue manager, queues will be disabled");
+                        warn!(queue_driver = "kafka", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
@@ -275,11 +277,11 @@ impl SockudoServer {
             QueueDriver::Iggy => {
                 match QueueManagerFactory::create_iggy(config.queue.iggy.clone()).await {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with Apache Iggy driver");
+                        info!(queue_driver = "iggy", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize apache iggy queue manager, queues will be disabled");
+                        warn!(queue_driver = "iggy", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
@@ -287,11 +289,11 @@ impl SockudoServer {
             QueueDriver::Pulsar => {
                 match QueueManagerFactory::create_pulsar(config.queue.pulsar.clone()).await {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with Pulsar driver");
+                        info!(queue_driver = "pulsar", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize pulsar queue manager, queues will be disabled");
+                        warn!(queue_driver = "pulsar", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
@@ -301,17 +303,17 @@ impl SockudoServer {
                     .await
                 {
                     Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with Google Pub/Sub driver");
+                        info!(queue_driver = "google_pubsub", "queue manager initialized");
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(error = %e, "failed to initialize google pubsub queue manager, queues will be disabled");
+                        warn!(queue_driver = "google_pubsub", error = %e, "queue manager initialization failed, queues disabled");
                         None
                     }
                 }
             }
             QueueDriver::None => {
-                info!("Queue driver set to None, queue manager will be disabled.");
+                info!(queue_driver = "none", "queue manager disabled");
                 None
             }
             QueueDriver::Redis | QueueDriver::RedisCluster | QueueDriver::Memory => {
@@ -386,7 +388,11 @@ impl SockudoServer {
                         Some(Arc::new(QueueManager::new(queue_driver_impl)))
                     }
                     Err(e) => {
-                        warn!(queue_driver = ?config.queue.driver, error = %e, "failed to initialize queue manager, queues will be disabled");
+                        warn!(
+                            queue_driver = ?config.queue.driver,
+                            error = %e,
+                            "queue manager initialization failed, queues disabled"
+                        );
                         None
                     }
                 }
@@ -415,16 +421,28 @@ impl SockudoServer {
         {
             Ok(integration) => {
                 if integration.is_enabled() {
-                    info!("Webhook integration initialized successfully with queue manager");
+                    info!(
+                        enabled = true,
+                        queue_enabled = true,
+                        "webhook integration initialized"
+                    );
                 } else if queue_manager_opt.is_none() {
-                    info!("Webhooks disabled (no queue manager available)");
+                    info!(
+                        enabled = false,
+                        queue_enabled = false,
+                        "webhook integration disabled"
+                    );
                 } else {
-                    info!("Webhook integration initialized (disabled)");
+                    info!(
+                        enabled = false,
+                        queue_enabled = true,
+                        "webhook integration initialized"
+                    );
                 }
                 Arc::new(integration)
             }
             Err(e) => {
-                warn!(error = %e, "failed to initialize webhook integration, creating disabled instance");
+                warn!(error = %e, "webhook integration initialization failed, using disabled instance");
                 let disabled_config = WebhookConfig {
                     enabled: false,
                     ..Default::default()
@@ -450,12 +468,76 @@ impl SockudoServer {
         )
         .await;
 
+        #[cfg(feature = "versioned-messages")]
+        let annotation_store: Arc<
+            dyn sockudo_core::annotations::AnnotationStore + Send + Sync,
+        > = if config.annotations.enabled {
+            create_annotation_store(
+                &config.versioned_messages,
+                &config.history,
+                &config.database,
+                &config.database_pooling,
+            )
+            .await?
+        } else {
+            Arc::new(sockudo_core::annotations::NoopAnnotationStore)
+        };
+        #[cfg(feature = "versioned-messages")]
+        if config.annotations.enabled && config.versioned_messages.retention_window_seconds > 0 {
+            let purge_store = Arc::clone(&annotation_store);
+            let retention_ms =
+                (config.versioned_messages.retention_window_seconds as i64).saturating_mul(1_000);
+            let interval = std::time::Duration::from_secs(
+                config.versioned_messages.purge_interval_seconds.max(10),
+            );
+            let batch_size = config.versioned_messages.purge_batch_size.max(1);
+            let max_per_tick = config.versioned_messages.max_purge_per_tick;
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    let cutoff = sockudo_core::history::now_ms().saturating_sub(retention_ms);
+                    let mut total = 0_u64;
+                    let mut cleanup_backlog = false;
+                    loop {
+                        match purge_store.purge_before(cutoff, batch_size).await {
+                            Ok((deleted, has_more)) => {
+                                total = total.saturating_add(deleted);
+                                cleanup_backlog = has_more;
+                                if !has_more || total >= max_per_tick as u64 {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "annotation store purge failed"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    if total > 0 {
+                        tracing::debug!(deleted = total, "annotation store purge tick complete");
+                    }
+                    if cleanup_backlog {
+                        tracing::warn!(
+                            deleted = total,
+                            max_per_tick,
+                            "annotation cleanup backlog remains after the bounded purge tick"
+                        );
+                    }
+                }
+            });
+        }
+
         // Initialize cleanup queue if enabled
         let cleanup_config = config.cleanup.clone();
 
         // Validate cleanup configuration
         if let Err(e) = cleanup_config.validate() {
-            error!(error = %e, "invalid cleanup configuration");
+            error!(error = %e, "cleanup configuration invalid");
             return Err(Error::Internal(format!(
                 "Invalid cleanup configuration: {}",
                 e
@@ -475,16 +557,16 @@ impl SockudoServer {
 
             let cleanup_sender =
                 if let Some(direct_sender) = multi_worker_system.get_direct_sender() {
-                    info!("Using direct sender for single worker (optimized)");
+                    info!(cleanup_mode = "direct", "cleanup sender initialized");
                     CleanupSender::Direct(direct_sender)
                 } else {
-                    info!("Using multi-worker sender with round-robin distribution");
+                    info!(cleanup_mode = "multi_worker", "cleanup sender initialized");
                     CleanupSender::Multi(multi_worker_system.get_sender())
                 };
 
             let worker_handles = multi_worker_system.get_worker_handles();
 
-            info!("Multi-worker cleanup system initialized");
+            info!("multi-worker cleanup system initialized");
             (Some(cleanup_sender), Some(worker_handles))
         } else {
             (None, None)
@@ -538,12 +620,13 @@ impl SockudoServer {
                             {
                                 Ok(coordinator) => {
                                     info!(
-                                        "Delta compression cluster coordination enabled via Redis"
+                                        coordination_backend = "redis",
+                                        "delta compression cluster coordination enabled"
                                     );
                                     manager.set_cluster_coordinator(Arc::new(coordinator));
                                 }
                                 Err(e) => {
-                                    warn!(error = %e, "failed to setup redis delta coordination, falling back to node-local");
+                                    warn!(coordination_backend = "redis", error = %e, "delta coordination initialization failed, using node-local state");
                                 }
                             }
                         }
@@ -558,12 +641,13 @@ impl SockudoServer {
                             {
                                 Ok(coordinator) => {
                                     info!(
-                                        "Delta compression cluster coordination enabled via Redis Cluster"
+                                        coordination_backend = "redis_cluster",
+                                        "delta compression cluster coordination enabled"
                                     );
                                     manager.set_cluster_coordinator(Arc::new(coordinator));
                                 }
                                 Err(e) => {
-                                    warn!(error = %e, "failed to setup redis cluster delta coordination, falling back to node-local");
+                                    warn!(coordination_backend = "redis_cluster", error = %e, "delta coordination initialization failed, using node-local state");
                                 }
                             }
                         }
@@ -579,23 +663,25 @@ impl SockudoServer {
                             {
                                 Ok(coordinator) => {
                                     info!(
-                                        "Delta compression cluster coordination enabled via NATS"
+                                        coordination_backend = "nats",
+                                        "delta compression cluster coordination enabled"
                                     );
                                     manager.set_cluster_coordinator(Arc::new(coordinator));
                                 }
                                 Err(e) => {
-                                    warn!(error = %e, "failed to setup nats delta coordination, falling back to node-local");
+                                    warn!(coordination_backend = "nats", error = %e, "delta coordination initialization failed, using node-local state");
                                 }
                             }
                         }
                         DeltaCoordinationBackend::None => {
                             info!(
-                                "Delta compression cluster coordination disabled or unsupported for this adapter"
+                                coordination_backend = "none",
+                                "delta compression cluster coordination disabled"
                             );
                         }
                         #[allow(unreachable_patterns)]
                         other => {
-                            warn!(backend = ?other, "delta coordination backend requested but not compiled in, falling back to node-local");
+                            warn!(coordination_backend = ?other, "delta coordination backend unavailable, using node-local state");
                         }
                     }
                 }
@@ -613,8 +699,8 @@ impl SockudoServer {
             typed_adapter.set_cache_manager(cache_manager.clone(), config.idempotency.ttl_seconds);
             info!(
                 adapter = ?config.adapter.driver,
-                ttl_s = config.idempotency.ttl_seconds,
-                "cross-region idempotency deduplication configured for adapter"
+                ttl_seconds = config.idempotency.ttl_seconds,
+                "cross-region idempotency configured"
             );
         }
 
@@ -663,6 +749,22 @@ impl SockudoServer {
             #[cfg(all(feature = "push", feature = "monolith"))]
             push_worker_handles,
         };
+
+        #[cfg(feature = "ably-compat")]
+        let ably_presence_registry =
+            Arc::new(sockudo_core::presence_registry::PresenceRegistry::default());
+
+        #[cfg(feature = "ably-compat")]
+        let ably_compat = Arc::new(sockudo_ably_compat::AblyCompatRuntime::new(
+            sockudo_ably_compat::AblyCompatDependencies {
+                config: config.ably_compat.clone(),
+                cache: Some(state.cache_manager.clone()),
+                presence_registry: Arc::clone(&ably_presence_registry),
+                push_store: Some(state.push_store.clone()),
+                push_queue: Some(state.push_queue.clone()),
+                push_admission: Some(state.push_admission.clone()),
+            },
+        ));
 
         let mut builder = ConnectionHandler::builder(
             state.app_manager.clone(),
@@ -714,9 +816,10 @@ impl SockudoServer {
                 }
             });
             info!(
-                retention_s = config.history.retention_window_seconds,
-                interval_s = interval.as_secs(),
-                "history store purge worker started"
+                store = "history",
+                retention_seconds = config.history.retention_window_seconds,
+                interval_seconds = interval.as_secs(),
+                "store purge worker started"
             );
         }
 
@@ -786,15 +889,24 @@ impl SockudoServer {
                     }
                 });
                 info!(
-                    retention_s = config.versioned_messages.retention_window_seconds,
-                    interval_s = interval.as_secs(),
-                    "version store purge worker started"
+                    store = "version",
+                    retention_seconds = config.versioned_messages.retention_window_seconds,
+                    interval_seconds = interval.as_secs(),
+                    "store purge worker started"
                 );
             }
 
             builder = builder.version_store(version_store);
         }
         builder = builder.presence_history_store(presence_history_store);
+        #[cfg(feature = "versioned-messages")]
+        {
+            builder = builder.annotation_store(annotation_store);
+        }
+        #[cfg(feature = "ably-compat")]
+        {
+            builder = builder.presence_registry(ably_presence_registry);
+        }
 
         if let Some(adapter) = state.local_adapter.clone() {
             builder = builder.local_adapter(adapter);
@@ -807,7 +919,7 @@ impl SockudoServer {
         }
         #[cfg(feature = "ably-compat")]
         {
-            builder = builder.realtime_egress_tap(global_ably_hub());
+            builder = builder.realtime_egress_tap(ably_compat.egress_tap());
         }
 
         #[cfg(feature = "delta")]
@@ -818,17 +930,20 @@ impl SockudoServer {
         builder = builder.running(Arc::clone(&state.running));
         let handler = Arc::new(builder.build());
 
+        #[cfg(feature = "ably-compat")]
+        ably_compat.bind_handler(&handler);
+
         // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
         if let Some(event_receiver) = dead_node_event_receiver {
             let handler_clone = handler.clone();
             tokio::spawn(async move {
-                info!("Starting dead node cleanup event processing loop");
+                info!("dead node cleanup event loop started");
                 while let Ok(event) = event_receiver.recv().await {
                     if let Err(e) = handler_clone.handle_dead_node_cleanup(event).await {
-                        error!(error = %e, "error processing dead node cleanup event");
+                        error!(error = %e, "dead node cleanup event processing failed");
                     }
                 }
-                info!("Dead node cleanup event processing loop ended");
+                info!("dead node cleanup event loop stopped");
             });
         }
 
@@ -847,8 +962,8 @@ impl SockudoServer {
                 }
             });
             info!(
-                interval_s = eviction_interval.as_secs(),
-                "connection recovery replay buffer eviction task started"
+                interval_seconds = eviction_interval.as_secs(),
+                "connection recovery replay eviction task started"
             );
         }
 
@@ -858,9 +973,9 @@ impl SockudoServer {
                 .set_metrics(metrics_instance_arc.clone())
                 .await
             {
-                warn!(error = %e, "failed to set metrics for adapter");
+                warn!(adapter = ?config.adapter.driver, error = %e, "adapter metrics configuration failed");
             } else {
-                info!(adapter = ?config.adapter.driver, "metrics configured for adapter");
+                info!(adapter = ?config.adapter.driver, "adapter metrics configured");
             }
         }
 
@@ -870,7 +985,7 @@ impl SockudoServer {
             typed_adapter
                 .set_delta_compression(delta_compression_manager.clone(), app_manager.clone())
                 .await;
-            info!(adapter = ?config.adapter.driver, "delta compression initialized for adapter");
+            info!(adapter = ?config.adapter.driver, "delta compression initialized");
         }
 
         // Set tag filtering enabled flag using TypedAdapter
@@ -878,14 +993,14 @@ impl SockudoServer {
         {
             typed_adapter.set_tag_filtering_enabled(config.tag_filtering.enabled);
             if config.tag_filtering.enabled {
-                info!(adapter = ?config.adapter.driver, "tag filtering enabled for adapter");
+                info!(adapter = ?config.adapter.driver, "tag filtering enabled");
             }
 
             // Set global enable_tags flag using TypedAdapter
             typed_adapter.set_enable_tags_globally(config.tag_filtering.enable_tags);
             info!(
                 enable_tags = config.tag_filtering.enable_tags,
-                "global enable_tags configured"
+                "global tag setting configured"
             );
         }
 
@@ -893,11 +1008,13 @@ impl SockudoServer {
             config,
             state,
             handler,
+            #[cfg(feature = "ably-compat")]
+            ably_compat,
         })
     }
 
     pub(crate) async fn init(&self) -> Result<()> {
-        info!("Server init sequence started.");
+        info!("server init sequence started");
         self.state.app_manager.init().await?;
 
         // Initialize ConnectionManager (Adapter)
@@ -918,19 +1035,19 @@ impl SockudoServer {
                         if let Err(update_err) =
                             self.state.app_manager.update_app(app.clone()).await
                         {
-                            error!(app_id = %app.id, error = %update_err, "failed to update existing app");
+                            error!(app_id = %app.id, error = %update_err, "existing app update failed");
                         } else {
-                            info!(app_id = %app.id, "app updated successfully");
+                            info!(app_id = %app.id, "app updated");
                         }
                     }
                     Ok(None) => match self.state.app_manager.create_app(app.clone()).await {
                         Ok(_) => info!(app_id = %app.id, "new app registered"),
                         Err(create_err) => {
-                            error!(app_id = %app.id, error = %create_err, "failed to register new app")
+                            error!(app_id = %app.id, error = %create_err, "new app registration failed")
                         }
                     },
                     Err(e) => {
-                        error!(app_id = %app.id, error = %e, "error checking app existence, skipping registration");
+                        error!(app_id = %app.id, error = %e, "app existence check failed, registration skipped");
                     }
                 }
             }
@@ -939,21 +1056,21 @@ impl SockudoServer {
         // Log registered apps
         match self.state.app_manager.get_apps().await {
             Ok(apps) => {
-                info!(apps_count = apps.len(), "server registered apps summary");
+                info!(apps_count = apps.len(), "registered apps summary");
                 for app in apps {
                     info!(app_id = %app.id, enabled = app.enabled, "registered app");
                 }
             }
-            Err(e) => warn!(error = %e, "failed to retrieve registered apps"),
+            Err(e) => warn!(error = %e, "registered apps retrieval failed"),
         }
 
         // Initialize Metrics
         if let Some(metrics) = &self.state.metrics
             && let Err(e) = metrics.init().await
         {
-            warn!(error = %e, "failed to initialize metrics");
+            warn!(error = %e, "metrics initialization failed");
         }
-        info!("Server init sequence completed.");
+        info!("server init sequence completed");
         Ok(())
     }
 }

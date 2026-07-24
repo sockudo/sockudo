@@ -788,6 +788,7 @@ pub fn provider_label(provider: PushProviderKind) -> &'static str {
         PushProviderKind::WebPush => "webpush",
         PushProviderKind::Hms => "hms",
         PushProviderKind::Wns => "wns",
+        PushProviderKind::Realtime => "realtime",
     }
 }
 

@@ -296,6 +296,7 @@ class SubscriptionOptions:
     delta: Optional[ChannelDeltaSettings] = None
     events: Optional[List[str]] = None
     rewind: Optional["SubscriptionRewind"] = None
+    expression: Optional[Union[str, Dict[str, str]]] = None
 
 
 @dataclass
@@ -1053,18 +1054,36 @@ class ProtocolCodec:
                 }
             else:
                 raise SockudoException("Unable to decode event envelope")
-            return envelope, json.dumps(envelope, separators=(",", ":"))
+            return envelope, json.dumps(
+                envelope,
+                separators=(",", ":"),
+                default=lambda value: (
+                    list(value)
+                    if isinstance(value, (bytes, bytearray, memoryview))
+                    else str(value)
+                ),
+            )
         envelope = ProtocolCodec._decode_protobuf(
             raw_message
             if isinstance(raw_message, bytes)
             else raw_message.encode("utf-8")
         )
-        return envelope, json.dumps(envelope, separators=(",", ":"))
+        return envelope, json.dumps(
+            envelope,
+            separators=(",", ":"),
+            default=lambda value: (
+                list(value)
+                if isinstance(value, (bytes, bytearray, memoryview))
+                else str(value)
+            ),
+        )
 
     @staticmethod
     def _encode_messagepack_data(value: Any) -> Any:
         if value is None:
             return None
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return ["binary", bytes(value)]
         if isinstance(value, str):
             return ["string", value]
         return ["json", json.dumps(value, separators=(",", ":"))]
@@ -1100,7 +1119,7 @@ class ProtocolCodec:
         if isinstance(value, list):
             if len(value) == 2 and isinstance(value[0], str):
                 tag = value[0]
-                if tag in {"string", "json", "number", "bool"}:
+                if tag in {"string", "json", "number", "bool", "binary"}:
                     return value[1]
             return [ProtocolCodec._decode_messagepack_value(item) for item in value]
         if isinstance(value, dict):
@@ -1150,7 +1169,9 @@ class ProtocolCodec:
         if "data" in envelope and envelope.get("data") is not None:
             nested = bytearray()
             data = envelope["data"]
-            if isinstance(data, str):
+            if isinstance(data, (bytes, bytearray, memoryview)):
+                _write_bytes_field(nested, 4, bytes(data))
+            elif isinstance(data, str):
                 _write_string_field(nested, 1, data)
             else:
                 _write_string_field(nested, 3, json.dumps(data, separators=(",", ":")))
@@ -1274,15 +1295,17 @@ class ProtocolCodec:
             tag, index = _read_varint(payload, index)
             field = tag >> 3
             wire = tag & 0x7
-            if field in {1, 3} and wire == 2:
+            if field in {1, 3, 4} and wire == 2:
                 value, index = _read_length_delimited(payload, index)
-                data[field] = value.decode("utf-8")
+                data[field] = value if field == 4 else value.decode("utf-8")
             else:
                 index = _skip_unknown(payload, index, wire)
         if 1 in data:
             return data[1]
         if 3 in data:
             return data[3]
+        if 4 in data:
+            return data[4]
         return None
 
     @staticmethod
@@ -1601,6 +1624,7 @@ class SockudoChannel:
         self.filter: Optional[FilterNode] = None
         self.delta_settings: Optional[ChannelDeltaSettings] = None
         self.events_filter: Optional[List[str]] = None
+        self.expression_filter: Optional[Union[str, Dict[str, str]]] = None
         self.rewind: Optional[SubscriptionRewind] = None
         self.attach_serial: Optional[int] = None
 
@@ -1701,12 +1725,19 @@ class SockudoChannel:
             payload: Dict[str, Any] = {"auth": auth.auth, "channel": self.name}
             if auth.channel_data is not None:
                 payload["channel_data"] = auth.channel_data
-            if self.filter is not None:
+            if self.events_filter is not None or self.expression_filter is not None:
+                subscription_filter: Dict[str, Any] = {}
+                if self.events_filter is not None:
+                    subscription_filter["events"] = self.events_filter
+                if self.filter is not None:
+                    subscription_filter["tags"] = self.filter.to_dict()
+                if self.expression_filter is not None:
+                    subscription_filter["expression"] = self.expression_filter
+                payload["filter"] = subscription_filter
+            elif self.filter is not None:
                 payload["tags_filter"] = self.filter.to_dict()
             if self.delta_settings is not None:
                 payload["delta"] = self.delta_settings.subscription_value()
-            if self.events_filter is not None:
-                payload["events"] = self.events_filter
             if self.rewind is not None:
                 payload["rewind"] = self.rewind.subscription_value()
             await self.client.send_event(
@@ -2510,6 +2541,7 @@ class SockudoClient:
             channel.filter = options.filter
             channel.delta_settings = options.delta
             channel.events_filter = options.events
+            channel.expression_filter = options.expression
             channel.rewind = options.rewind
         channel.subscribe_if_possible()
         return channel
@@ -2670,6 +2702,32 @@ class SockudoClient:
                         failed_channel.is_subscribed = False
                         failed_channel.subscription_pending = False
                         failed_channel.subscribe_if_possible()
+                self.dispatcher.emit(event_name, event.data)
+            elif event_name == self.prefix.event("resume_success"):
+                payload = event.data if isinstance(event.data, dict) else {}
+                recovered = payload.get("recovered")
+                if self.options.connection_recovery and isinstance(recovered, list):
+                    for item in recovered:
+                        if not isinstance(item, dict):
+                            continue
+                        channel_name = item.get("channel")
+                        position = item.get("position")
+                        if not isinstance(channel_name, str) or not isinstance(
+                            position, dict
+                        ):
+                            continue
+                        serial = _coerce_int(position.get("serial"))
+                        if serial is None:
+                            continue
+                        self._channel_positions[channel_name] = RecoveryPosition(
+                            serial=serial,
+                            stream_id=position.get("stream_id")
+                            if isinstance(position.get("stream_id"), str)
+                            else None,
+                            last_message_id=position.get("last_message_id")
+                            if isinstance(position.get("last_message_id"), str)
+                            else None,
+                        )
                 self.dispatcher.emit(event_name, event.data)
             elif event_name == self.prefix.internal("watchlist_events"):
                 self.watchlist.handle(event.data)

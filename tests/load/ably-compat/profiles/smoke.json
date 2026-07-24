@@ -1,0 +1,20 @@
+{
+  "name": "ably-compat-smoke",
+  "topologies": ["one", "two"],
+  "scenarios": [
+    { "name": "steady_publish", "messages": 20, "subscribers": 4, "ratePerSecond": 20, "payloadBytes": 256 },
+    { "name": "burst", "messages": 40, "subscribers": 4, "concurrency": 10, "payloadBytes": 256 },
+    { "name": "payload_64k", "messages": 4, "subscribers": 2, "concurrency": 1, "payloadBytes": 65536 },
+    { "name": "encrypted_binary", "messages": 10, "subscribers": 2, "concurrency": 2, "payloadBytes": 4096 },
+    { "name": "fanout_1000", "messages": 5, "subscribers": 20, "concurrency": 1, "payloadBytes": 256 },
+    { "name": "slow_consumers", "messages": 10, "subscribers": 20, "slowPercent": 10, "concurrency": 2, "payloadBytes": 4096, "stallHoldMs": 3000 },
+    { "name": "recovery_storm", "connections": 4, "messages": 4 },
+    { "name": "presence_churn", "transitions": 20 },
+    { "name": "append_storm", "streams": 4, "appendsPerStream": 20, "concurrency": 4 },
+    { "name": "stats_flush", "observations": 20 },
+    { "name": "push_enqueue", "publishes": 4 }
+  ],
+  "settleTimeoutMs": 15000,
+  "sampleIntervalMs": 500,
+  "postDisconnectSettleMs": 2000
+}

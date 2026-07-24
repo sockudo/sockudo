@@ -5,11 +5,12 @@ use axum::extract::RawQuery;
 use axum::http::{HeaderMap, Uri};
 use sockudo_core::auth::EventQuery;
 use sockudo_core::version_store::{MemoryVersionStore, VersionStore};
+use sockudo_core::versioned_messages::{VersionMetadata, VersionSerial};
 use sockudo_protocol::messages::{ApiMessageData, MessageData, PusherApiMessage};
 use sockudo_protocol::versioned_messages::{
     AppendMessageRequest, DeleteMessageRequest, UpdateMessageRequest,
 };
-use sonic_rs::{JsonContainerTrait, JsonValueTrait, json};
+use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value, json};
 
 #[tokio::test]
 async fn channel_message_returns_latest_versioned_item() {

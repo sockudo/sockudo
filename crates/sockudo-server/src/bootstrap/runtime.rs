@@ -470,6 +470,7 @@ impl SockudoServer {
     pub(crate) async fn stop(&self) -> Result<()> {
         info!("Stopping server...");
         self.state.running.store(false, Ordering::SeqCst);
+        self.handler.shutdown_ai_workers().await;
 
         // Tell cluster peers this node is leaving and no responses are expected
         if let Err(e) = self

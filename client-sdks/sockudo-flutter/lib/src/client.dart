@@ -229,6 +229,7 @@ class SockudoClient {
       channel.filter = options.filter;
       channel.deltaSettings = options.delta;
       channel.eventsFilter = options.events;
+      channel.expressionFilter = options.expression;
       channel.rewind = options.rewind;
       channel.annotationSubscribe = options.annotationSubscribe;
     }
@@ -611,6 +612,12 @@ class SockudoClient {
         }
       } else if (eventName == _p.event('resume_success')) {
         final data = _decodeResumeSuccessData(event.data);
+        for (final recovered in data.recovered) {
+          final position = recovered.position;
+          if (recovered.channel.isNotEmpty && position != null) {
+            _channelPositions[recovered.channel] = position;
+          }
+        }
         SockudoLogger.debug('Connection recovery succeeded: $data');
         _dispatcher.emit(eventName, data);
       } else if (eventName == _p.event('resume_failed')) {
@@ -695,6 +702,7 @@ class SockudoClient {
                     channel: item['channel'] as String? ?? '',
                     source: item['source'] as String? ?? '',
                     replayed: (item['replayed'] as num?)?.toInt() ?? 0,
+                    position: _decodeRecoveryPosition(item['position']),
                   ),
                 )
                 .toList(growable: false)
@@ -702,6 +710,22 @@ class SockudoClient {
       failed: failedRaw is List
           ? failedRaw.map(_decodeResumeFailedData).toList(growable: false)
           : const <ResumeFailedChannel>[],
+    );
+  }
+
+  RecoveryPosition? _decodeRecoveryPosition(Object? raw) {
+    final payload = raw is Map ? raw : null;
+    if (payload == null) {
+      return null;
+    }
+    final serial = normalizeWireSerial(payload['serial']);
+    if (serial == null) {
+      return null;
+    }
+    return RecoveryPosition(
+      streamId: payload['stream_id'] as String?,
+      serial: serial,
+      lastMessageId: payload['last_message_id'] as String?,
     );
   }
 
@@ -943,6 +967,7 @@ class SockudoChannel {
   FilterNode? filter;
   ChannelDeltaSettings? deltaSettings;
   List<String>? eventsFilter;
+  SubscriptionExpression? expressionFilter;
   SubscriptionRewind? rewind;
   bool annotationSubscribe = false;
 
@@ -1007,14 +1032,18 @@ class SockudoChannel {
       if (auth.channelData != null) {
         payload['channel_data'] = auth.channelData;
       }
-      if (filter != null) {
+      if (eventsFilter != null || expressionFilter != null) {
+        payload['filter'] = <String, Object?>{
+          if (eventsFilter != null) 'events': eventsFilter,
+          if (filter != null) 'tags': filter!.toJson(),
+          if (expressionFilter != null)
+            'expression': expressionFilter!.toSubscriptionValue(),
+        };
+      } else if (filter != null) {
         payload['tags_filter'] = filter!.toJson();
       }
       if (deltaSettings != null) {
         payload['delta'] = deltaSettings!.toSubscriptionValue();
-      }
-      if (eventsFilter != null) {
-        payload['events'] = eventsFilter;
       }
       if (rewind != null) {
         payload['rewind'] = rewind!.toSubscriptionValue();

@@ -1,6 +1,7 @@
 use super::*;
 use crate::ConnectionManager;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::presence_registry::PresenceRecord;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::sync::atomic::Ordering;
@@ -1072,13 +1073,29 @@ impl HorizontalAdapter {
 
         // O(1) lookup and removal of entire node's data
         if let Some(dead_node_data) = removed_node_data {
-            // Group sockets by (app_id, channel, user_id) to avoid duplicate cleanup calls for same user
-            let mut unique_members =
-                ahash::AHashMap::<(String, String, String), Option<Arc<sonic_rs::Value>>>::new();
+            // Native presence emits one last-leave per user. Compatibility
+            // presence additionally needs every connection identity so its
+            // typed registry can remove all members owned by the dead node.
+            let mut unique_members = ahash::AHashMap::<
+                (String, String, String, Option<String>),
+                Option<Arc<sonic_rs::Value>>,
+            >::new();
 
             for (channel, sockets) in dead_node_data {
                 for (_socket_id, entry) in sockets {
-                    let key = (entry.app_id.clone(), channel.clone(), entry.user_id.clone());
+                    let compatibility_connection_id = entry
+                        .user_info
+                        .as_deref()
+                        .and_then(|value| sonic_rs::to_vec(value).ok())
+                        .and_then(|value| sonic_rs::from_slice::<PresenceRecord>(&value).ok())
+                        .filter(|member| member.client_id == entry.user_id)
+                        .map(|member| member.connection_id);
+                    let key = (
+                        entry.app_id.clone(),
+                        channel.clone(),
+                        entry.user_id.clone(),
+                        compatibility_connection_id,
+                    );
                     // Keep user_info from first socket (they should all be the same for same user)
                     unique_members.entry(key).or_insert(entry.user_info);
                 }
@@ -1089,7 +1106,7 @@ impl HorizontalAdapter {
             let cleanup_tasks: Vec<(String, String, String, Option<sonic_rs::Value>)> =
                 unique_members
                     .into_iter()
-                    .map(|((app_id, channel, user_id), user_info)| {
+                    .map(|((app_id, channel, user_id, _), user_info)| {
                         let user_info = user_info
                             .map(|info| Arc::try_unwrap(info).unwrap_or_else(|arc| (*arc).clone()));
                         (app_id, channel, user_id, user_info)

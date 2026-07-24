@@ -11,6 +11,8 @@ use sockudo_core::options::{DynamoDbSettings, HistoryConfig};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
+#[cfg(feature = "versioned-messages")]
+mod annotation_store;
 mod degraded;
 mod items;
 mod provisioning;
@@ -20,6 +22,9 @@ mod store_impl;
 mod version_store;
 mod writes;
 
+#[cfg(feature = "versioned-messages")]
+#[allow(unused_imports)]
+pub(super) use annotation_store::create_dynamodb_annotation_store;
 #[allow(unused_imports)]
 #[cfg(feature = "versioned-messages")]
 pub use version_store::{DynamoDbVersionStore, create_dynamodb_version_store};

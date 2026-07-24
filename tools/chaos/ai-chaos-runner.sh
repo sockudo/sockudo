@@ -3,11 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.ai-transport.yml}"
-SCALE_COMPOSE_FILE="${SCALE_COMPOSE_FILE:-test/load/docker-compose.ai-transport-scale.yml}"
+SCALE_COMPOSE_FILE="${SCALE_COMPOSE_FILE:-tests/load/docker-compose.ai-transport-scale.yml}"
 RESULT_DIR="${RESULT_DIR:-target/ai-chaos}"
-PROFILE="${PROFILE:-test/load/profiles/smoke.json}"
+PROFILE="${PROFILE:-tests/load/profiles/smoke.json}"
 NODE_URLS="${SOCKUDO_NODE_URLS:-http://127.0.0.1:6001,http://127.0.0.1:6002,http://127.0.0.1:6003,http://127.0.0.1:6004,http://127.0.0.1:6005}"
 METRICS_URLS="${SOCKUDO_METRICS_URLS:-http://127.0.0.1:9601/metrics,http://127.0.0.1:9602/metrics,http://127.0.0.1:9603/metrics,http://127.0.0.1:9604/metrics,http://127.0.0.1:9605/metrics}"
+export AI_REDIS_HOST_PORT="${AI_REDIS_HOST_PORT:-26379}"
+export AI_POSTGRES_HOST_PORT="${AI_POSTGRES_HOST_PORT:-25433}"
 
 scenario="${1:-all}"
 CHAOS_FAILED=0
@@ -31,6 +33,29 @@ wait_for_http() {
   done
 }
 
+wait_for_write_ready() {
+  local name="$1"
+  local deadline=$((SECONDS + 90))
+  until node tests/load/ai-scale-runner.mjs \
+    --profile "$PROFILE" \
+    --urls "$NODE_URLS" \
+    --metricsUrls "$METRICS_URLS" \
+    --output "$RESULT_DIR/readiness-${name}.json" \
+    --name "readiness-${name}" \
+    --activeStreams 5 \
+    --durationSeconds 1 \
+    --meanResponseTokens 1 \
+    --sampleTranscriptCount 5 \
+    --requestTimeoutMs 5000 \
+    >/dev/null 2>&1; do
+    if (( SECONDS > deadline )); then
+      echo "timed out waiting for write readiness; inspect $RESULT_DIR/readiness-${name}.json" >&2
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 ensure_cluster() {
   compose up -d --build sockudo-node-1 sockudo-node-2 sockudo-node-3 sockudo-node-4 sockudo-node-5 redis postgres
   wait_for_http "http://127.0.0.1:6001/up/app-id"
@@ -38,12 +63,13 @@ ensure_cluster() {
   wait_for_http "http://127.0.0.1:6003/up/app-id"
   wait_for_http "http://127.0.0.1:6004/up/app-id"
   wait_for_http "http://127.0.0.1:6005/up/app-id"
+  wait_for_write_ready "cluster"
 }
 
 run_load() {
   local name="$1"
   shift
-  node test/load/ai-scale-runner.mjs \
+  node tests/load/ai-scale-runner.mjs \
     --profile "$PROFILE" \
     --urls "$NODE_URLS" \
     --metricsUrls "$METRICS_URLS" \
@@ -99,6 +125,7 @@ scenario_redis_failover() {
   compose restart redis
   wait_load_recording_failure "$LOAD_PID"
   wait_for_http "http://127.0.0.1:6001/up/app-id"
+  wait_for_write_ready "redis-restart"
   run_load "redis-restart-after" --durationSeconds 5 --activeStreams 8 --sampleTranscriptCount 8
 }
 

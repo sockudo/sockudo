@@ -1,4 +1,5 @@
 using Sodium;
+using System.Collections;
 using System.Globalization;
 using System.Net.WebSockets;
 using System.Reflection;
@@ -316,6 +317,101 @@ public sealed class ProtocolTests
         Assert.Equal(7L, decoded.Serial);
         Assert.Equal(7, decoded.Sequence);
         Assert.Equal("room", decoded.ConflationKey);
+    }
+
+    [Theory]
+    [InlineData(SockudoWireFormat.MessagePack)]
+    [InlineData(SockudoWireFormat.Protobuf)]
+    public void RoundTripsNativeBinaryData(SockudoWireFormat wireFormat)
+    {
+        var data = new byte[] { 0, 1, 2, 255 };
+        var payload = ProtocolCodec.EncodeEnvelope(
+            new Dictionary<string, object?>
+            {
+                ["event"] = "sockudo:binary",
+                ["channel"] = "binary:room-1",
+                ["data"] = data,
+            },
+            wireFormat
+        );
+
+        var decoded = ProtocolCodec.DecodeEvent(payload, wireFormat);
+
+        Assert.Equal(data, Assert.IsType<byte[]>(decoded.Data));
+    }
+
+    [Fact]
+    public void SubscriptionExpressionsSupportTheSourceShorthand()
+    {
+        var client = new SockudoClient(
+            "app-key",
+            new SockudoOptions(Cluster: "local", ForceTls: false)
+        );
+
+        var channel = client.Subscribe(
+            "orders",
+            new SubscriptionOptions(
+                Events: new[] { "order.updated" },
+                Expression: "data.total >= `100`"
+            )
+        );
+
+        Assert.Equal(new[] { "order.updated" }, channel.EventsFilter);
+        Assert.Equal("data.total >= `100`", channel.ExpressionFilter?.Source);
+        Assert.Equal("jmespath", channel.ExpressionFilter?.Language);
+    }
+
+    [Fact]
+    public async Task ResumeSuccessAppliesAuthoritativeChannelPosition()
+    {
+        var client = new SockudoClient(
+            "app-key",
+            new SockudoOptions(Cluster: "local", ForceTls: false, ConnectionRecovery: true)
+        );
+        var raw = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["event"] = "sockudo:resume_success",
+            ["data"] = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["recovered"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["channel"] = "orders",
+                        ["source"] = "durable",
+                        ["replayed"] = 0,
+                        ["position"] = new Dictionary<string, object?>
+                        {
+                            ["stream_id"] = "stream-2",
+                            ["serial"] = 42,
+                            ["last_message_id"] = "message-42",
+                        },
+                    },
+                },
+                ["failed"] = Array.Empty<object>(),
+            }),
+        });
+        var handler = typeof(SockudoClient).GetMethod(
+            "HandleRawMessageAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        )!;
+
+        await (Task)handler.Invoke(
+            client,
+            new object[] { Encoding.UTF8.GetBytes(raw), WebSocketMessageType.Text }
+        )!;
+
+        var positionsField = typeof(SockudoClient).GetField(
+            "_channelPositions",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        )!;
+        var positions = Assert.IsAssignableFrom<IDictionary>(positionsField.GetValue(client));
+        var position = positions["orders"];
+        Assert.NotNull(position);
+        var recoveredPosition = position!;
+        Assert.Equal(42L, recoveredPosition.GetType().GetProperty("Serial")!.GetValue(recoveredPosition));
+        Assert.Equal("stream-2", recoveredPosition.GetType().GetProperty("StreamId")!.GetValue(recoveredPosition));
+        Assert.Equal("message-42", recoveredPosition.GetType().GetProperty("LastMessageId")!.GetValue(recoveredPosition));
     }
 
     [Fact]

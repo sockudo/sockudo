@@ -85,12 +85,18 @@ public sealed record MessageExtras(
         new Dictionary<string, object?>(StringComparer.Ordinal);
 }
 
+public sealed record SubscriptionExpression(string Source, string Language = "jmespath")
+{
+    public static implicit operator SubscriptionExpression(string source) => new(source);
+}
+
 public sealed record SubscriptionOptions(
     FilterNode? Filter = null,
     ChannelDeltaSettings? Delta = null,
     IReadOnlyList<string>? Events = null,
     SubscriptionRewind? Rewind = null,
-    bool AnnotationSubscribe = false
+    bool AnnotationSubscribe = false,
+    SubscriptionExpression? Expression = null
 );
 
 public abstract record SubscriptionRewind
