@@ -58,4 +58,6 @@ Pass matching `--baseline-load-result` files to enable the one-sided
 statistical regression gate. Criterion's own confidence interval is used when
 `change/estimates.json` exists. CI benchmarks the pull request base and head on
 the same runner, then passes `--require-criterion-comparison` so missing
-same-run comparison evidence fails closed.
+same-run comparison evidence fails closed. When the first comparison exceeds a
+budget, CI takes one bounded confirmation sample of the head revision against
+the same base before enforcing the final result.

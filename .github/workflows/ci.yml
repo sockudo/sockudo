@@ -514,6 +514,25 @@ jobs:
           git checkout --detach "$HEAD_SHA"
           cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --baseline pr-base
 
+      - name: Evaluate compatibility regression budgets
+        id: initial-compatibility-budget
+        continue-on-error: true
+        run: >-
+          python3 scripts/ably-compat-release-guard.py
+          --budgets tests/load/ably-compat/budgets.json
+          --criterion-root target/criterion
+          --require-criterion-comparison
+
+      - name: Confirm reported compatibility regressions
+        if: steps.initial-compatibility-budget.outcome == 'failure'
+        run: >-
+          cargo bench -p sockudo-ably-compat
+          --features bench
+          --bench compatibility_hot_paths
+          --
+          --noplot
+          --baseline pr-base
+
       - name: Enforce compatibility regression budgets
         run: >-
           python3 scripts/ably-compat-release-guard.py
