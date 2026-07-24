@@ -56,4 +56,6 @@ python3 scripts/ably-compat-release-guard.py \
 
 Pass matching `--baseline-load-result` files to enable the one-sided
 statistical regression gate. Criterion's own confidence interval is used when
-`change/estimates.json` exists.
+`change/estimates.json` exists. CI benchmarks the pull request base and head on
+the same runner, then passes `--require-criterion-comparison` so missing
+same-run comparison evidence fails closed.

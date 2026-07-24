@@ -16,6 +16,7 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--budgets", required=True, type=Path)
     parser.add_argument("--criterion-root", type=Path)
+    parser.add_argument("--require-criterion-comparison", action="store_true")
     parser.add_argument("--load-result", action="append", default=[], type=Path)
     parser.add_argument("--baseline-load-result", action="append", default=[], type=Path)
     parser.add_argument("--require-independent-runs", action="store_true")
@@ -29,7 +30,13 @@ def main() -> int:
     checked: list[str] = []
 
     if args.criterion_root:
-        check_criterion(args.criterion_root, budgets["criterion"], failures, checked)
+        check_criterion(
+            args.criterion_root,
+            budgets["criterion"],
+            failures,
+            checked,
+            args.require_criterion_comparison,
+        )
 
     current = [read_json(path) for path in args.load_result]
     baseline = [read_json(path) for path in args.baseline_load_result]
@@ -58,7 +65,13 @@ def main() -> int:
     return 0
 
 
-def check_criterion(root: Path, budget: dict[str, Any], failures: list[str], checked: list[str]) -> None:
+def check_criterion(
+    root: Path,
+    budget: dict[str, Any],
+    failures: list[str],
+    checked: list[str],
+    require_comparison: bool,
+) -> None:
     estimates = [
         bench_id(path, root)
         for path in root.rglob("new/estimates.json")
@@ -76,7 +89,11 @@ def check_criterion(root: Path, budget: dict[str, Any], failures: list[str], che
     ]
     threshold = float(budget["maxSignificantRegressionPercent"]) / 100.0
     if not changes:
-        checked.append("Criterion estimates present; no saved-baseline change intervals to gate")
+        message = "Criterion estimates present; no saved-baseline change intervals to gate"
+        if require_comparison:
+            failures.append(message)
+        else:
+            checked.append(message)
         return
     for path in changes:
         data = read_json(path)
