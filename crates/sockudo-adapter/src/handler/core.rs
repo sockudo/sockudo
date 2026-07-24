@@ -5,6 +5,9 @@ use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
 use crate::horizontal_adapter::DeadNodeEvent;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::presence_registry::{
+    PresenceChange, PresenceChangeAction, PresenceRecord, PresenceReplication,
+};
 
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::{ErrorData, MessageData, PusherMessage};
@@ -902,6 +905,9 @@ impl ConnectionHandler {
                     Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
                 })
             }
+            MessageData::Binary(_) => Err(Error::InvalidMessageFormat(
+                "Binary data is invalid in an unsubscribe message".into(),
+            )),
         }
     }
 
@@ -1209,8 +1215,74 @@ impl ConnectionHandler {
                 app_config.id
             );
 
+            let mut compatibility_connections = HashSet::new();
+
             // Process all members for this app
             for orphaned_member in members {
+                let compatibility_member = orphaned_member
+                    .user_info
+                    .as_ref()
+                    .and_then(|value| sonic_rs::to_vec(value).ok())
+                    .and_then(|value| sonic_rs::from_slice::<PresenceRecord>(&value).ok())
+                    .filter(|member| member.client_id == orphaned_member.user_id);
+                if let Some(mut member) = compatibility_member {
+                    compatibility_connections.insert(member.connection_id.clone());
+                    match self.presence_registry.leave(
+                        &app_config.id,
+                        &orphaned_member.channel,
+                        &member.connection_id,
+                        &member.client_id,
+                    ) {
+                        Ok(Some(transition)) => {
+                            if let Some(previous) = transition.previous {
+                                member = previous;
+                            }
+                            member.timestamp_ms = sockudo_core::history::now_ms();
+                            let wire_id = Some(member.id.clone());
+                            if let Err(error) = self
+                                .fanout_presence(
+                                    &app_config.id,
+                                    &orphaned_member.channel,
+                                    PresenceReplication {
+                                        changes: vec![PresenceChange {
+                                            action: PresenceChangeAction::Leave,
+                                            member,
+                                            wire_id,
+                                        }],
+                                        unregister_connection: None,
+                                    },
+                                )
+                                .await
+                            {
+                                error!(
+                                    app_id = %app_config.id,
+                                    channel = %orphaned_member.channel,
+                                    dead_node_id = %event.dead_node_id,
+                                    error = %error,
+                                    "failed to replicate Ably dead-node presence cleanup"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            debug!(
+                                app_id = %app_config.id,
+                                channel = %orphaned_member.channel,
+                                connection_id = %member.connection_id,
+                                "suppressed duplicate Ably dead-node presence cleanup"
+                            );
+                        }
+                        Err(error) => {
+                            error!(
+                                app_id = %app_config.id,
+                                channel = %orphaned_member.channel,
+                                connection_id = %member.connection_id,
+                                error = %error,
+                                "failed to remove Ably orphan from typed presence"
+                            );
+                        }
+                    }
+                }
+
                 let presence_history_policy = app_config.resolved_presence_history(
                     &orphaned_member.channel,
                     &self.server_options().presence_history,
@@ -1243,6 +1315,30 @@ impl ConnectionHandler {
                     debug!(
                         "Successfully cleaned up orphaned member {} from channel {} (app: {})",
                         orphaned_member.user_id, orphaned_member.channel, orphaned_member.app_id
+                    );
+                }
+            }
+
+            for connection_id in compatibility_connections {
+                self.presence_registry
+                    .unregister_connection(&app_config.id, &connection_id);
+                if let Err(error) = self
+                    .fanout_presence(
+                        &app_config.id,
+                        "",
+                        PresenceReplication {
+                            changes: Vec::new(),
+                            unregister_connection: Some(connection_id.clone()),
+                        },
+                    )
+                    .await
+                {
+                    error!(
+                        app_id = %app_config.id,
+                        connection_id = %connection_id,
+                        dead_node_id = %event.dead_node_id,
+                        error = %error,
+                        "failed to replicate Ably dead-node connection cleanup"
                     );
                 }
             }

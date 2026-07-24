@@ -81,6 +81,7 @@ pub(super) fn recipient_token(recipient: &PushRecipient) -> Option<&str> {
         PushRecipient::Apns { device_token } => Some(device_token.expose_secret()),
         PushRecipient::Web { endpoint, .. } => Some(endpoint.expose_secret()),
         PushRecipient::Wns { channel_uri } => Some(channel_uri.expose_secret()),
+        PushRecipient::Realtime { .. } => None,
     }
 }
 

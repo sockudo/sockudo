@@ -1,8 +1,13 @@
 pub mod node;
 mod ops;
+mod predicate;
 
 pub use node::FilterNode;
 pub use ops::{CompareOp, LogicalOp};
+pub use predicate::{
+    MessagePredicate, PredicateCompileError, PredicateEvaluationError, PredicateId,
+    PredicateLimits, ProjectedDocument, SubscriptionView,
+};
 
 use ahash::AHashMap as HashMap;
 use memchr::memmem;
@@ -13,6 +18,34 @@ use std::collections::BTreeMap; // SIMD-accelerated substring search
 pub trait TagMap {
     fn get_tag(&self, key: &str) -> Option<&String>;
     fn contains_tag(&self, key: &str) -> bool;
+}
+
+/// Zero-sized tag source for publications that carry no tags.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmptyTagMap;
+
+impl TagMap for EmptyTagMap {
+    #[inline]
+    fn get_tag(&self, _key: &str) -> Option<&String> {
+        None
+    }
+
+    #[inline]
+    fn contains_tag(&self, _key: &str) -> bool {
+        false
+    }
+}
+
+impl<T: TagMap> TagMap for Option<T> {
+    #[inline]
+    fn get_tag(&self, key: &str) -> Option<&String> {
+        self.as_ref().and_then(|tags| tags.get_tag(key))
+    }
+
+    #[inline]
+    fn contains_tag(&self, key: &str) -> bool {
+        self.as_ref().is_some_and(|tags| tags.contains_tag(key))
+    }
 }
 
 impl TagMap for HashMap<String, String> {

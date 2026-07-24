@@ -62,6 +62,7 @@ async function runExecutableWorkload(config, runId) {
   const latestLatencies = [];
   const serials = [];
   const transcripts = [];
+  const failureSamples = [];
   let failures = 0;
   let appendsAttempted = 0;
   const streams = [];
@@ -75,6 +76,11 @@ async function runExecutableWorkload(config, runId) {
       serials.push(messageSerial);
     } catch (error) {
       failures += 1;
+      recordFailure(failureSamples, {
+        stage: "create",
+        streamIndex,
+        error: boundedError(error)
+      });
       logVerbose(`create failed stream=${streamIndex}: ${error.message}`);
     }
   }
@@ -91,7 +97,6 @@ async function runExecutableWorkload(config, runId) {
     await Promise.all(streams.map(async (stream) => {
       const node = config.urls[(stream.streamIndex + appendIndex) % config.urls.length];
       const fragment = tokenFor(stream.streamIndex, appendIndex, config.tokenBytes);
-      stream.expected += fragment;
       appendsAttempted += 1;
       const requestStarted = performance.now();
       try {
@@ -106,9 +111,16 @@ async function runExecutableWorkload(config, runId) {
             }
           }
         });
+        stream.expected += fragment;
         latencies.push(performance.now() - requestStarted);
       } catch (error) {
         failures += 1;
+        recordFailure(failureSamples, {
+          stage: "append",
+          streamIndex: stream.streamIndex,
+          appendIndex,
+          error: boundedError(error)
+        });
         logVerbose(`append failed stream=${stream.streamIndex} append=${appendIndex}: ${error.message}`);
       }
     }));
@@ -136,6 +148,11 @@ async function runExecutableWorkload(config, runId) {
       });
     } catch (error) {
       failures += 1;
+      recordFailure(failureSamples, {
+        stage: "latest",
+        streamIndex: stream.streamIndex,
+        error: boundedError(error)
+      });
       logVerbose(`latest failed stream=${stream.streamIndex}: ${error.message}`);
     }
   }
@@ -144,6 +161,7 @@ async function runExecutableWorkload(config, runId) {
     skipped: false,
     appendsAttempted,
     failures,
+    failureSamples,
     appendRequestLatencyMs: summarize(latencies),
     appendToLatestLatencyMs: summarize(latestLatencies),
     serialAudit: auditSerials(serials),
@@ -153,6 +171,17 @@ async function runExecutableWorkload(config, runId) {
       samples: transcripts
     }
   };
+}
+
+function recordFailure(samples, failure) {
+  if (samples.length < 64) {
+    samples.push(failure);
+  }
+}
+
+function boundedError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length <= 512 ? message : `${message.slice(0, 509)}...`;
 }
 
 async function createMessage(config, baseUrl, channel) {
@@ -206,7 +235,8 @@ async function signedJson(config, baseUrl, method, path, body) {
   const response = await fetch(url, {
     method,
     headers: { "content-type": "application/json" },
-    body: bodyText
+    body: bodyText,
+    signal: AbortSignal.timeout(config.requestTimeoutMs)
   });
   const text = await response.text();
   if (!response.ok) {
@@ -316,6 +346,7 @@ function normalizeConfig(profile, args) {
     historyOnJoinProbability: numberArg(args.historyOnJoinProbability, profile.historyOnJoinProbability ?? 0),
     sampleTranscriptCount: numberArg(args.sampleTranscriptCount, profile.sampleTranscriptCount ?? 10),
     maxAppendDeliveryP99Ms: numberArg(args.maxAppendDeliveryP99Ms, profile.maxAppendDeliveryP99Ms ?? 25),
+    requestTimeoutMs: numberArg(args.requestTimeoutMs, profile.requestTimeoutMs ?? 30000),
     clientClockSkewMs: signedNumberArg(args.clientClockSkewMs, profile.clientClockSkewMs ?? 0),
     loadGenerators: numberArg(args.loadGenerators, profile.loadGenerators ?? 1),
     subscribersPerSession: {

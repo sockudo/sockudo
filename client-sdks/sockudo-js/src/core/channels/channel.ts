@@ -21,6 +21,8 @@ export type SubscriptionRewind =
 
 export interface ChannelSubscriptionOptions {
   filter?: any;
+  /** JMESPath source evaluated against the bounded Protocol V2 message projection. */
+  expression?: string | { language: "jmespath"; source: string };
   delta?: { enabled?: boolean; algorithm?: "fossil" | "xdelta3" };
   events?: string[];
   rewind?: SubscriptionRewind;
@@ -191,6 +193,7 @@ export default class Channel extends EventsDispatcher {
   subscriptionCount: null;
   tagsFilter: FilterNode | null;
   eventsFilter: string[] | null;
+  expressionFilter: string | { language: "jmespath"; source: string } | null;
   deltaSettings: ChannelDeltaSettings | null;
   rewind: SubscriptionRewind | null;
   annotationSubscribe: boolean;
@@ -207,6 +210,7 @@ export default class Channel extends EventsDispatcher {
     this.subscriptionCancelled = false;
     this.tagsFilter = null;
     this.eventsFilter = null;
+    this.expressionFilter = null;
     this.deltaSettings = null;
     this.rewind = null;
     this.annotationSubscribe = false;
@@ -452,12 +456,14 @@ export default class Channel extends EventsDispatcher {
             channel: this.name,
           };
 
-          if (this.tagsFilter) {
+          if (this.eventsFilter || this.expressionFilter) {
+            subscribeData.filter = {
+              events: this.eventsFilter ?? undefined,
+              tags: this.tagsFilter ?? undefined,
+              expression: this.expressionFilter ?? undefined,
+            };
+          } else if (this.tagsFilter) {
             subscribeData.tags_filter = this.tagsFilter;
-          }
-
-          if (this.eventsFilter) {
-            subscribeData.events = this.eventsFilter;
           }
 
           if (this.rewind !== null) {

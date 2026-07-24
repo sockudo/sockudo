@@ -504,6 +504,8 @@ async fn run_cross_node_cold_recovery_test(history_store: Arc<dyn HistoryStore +
                 channel_data: None,
                 #[cfg(feature = "tag-filtering")]
                 tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
                 #[cfg(feature = "delta")]
                 delta: None,
                 rewind: None,

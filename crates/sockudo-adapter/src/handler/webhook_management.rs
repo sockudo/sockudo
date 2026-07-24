@@ -40,7 +40,7 @@ impl ConnectionHandler {
                     app_config,
                     &request.channel,
                     &request.event,
-                    request.data.clone(),
+                    request.webhook_data(),
                     Some(&socket_id.to_string()),
                     user_id.as_deref(), // Convert Option<String> to Option<&str>
                 )

@@ -5,6 +5,8 @@ use sockudo_core::history::{
     HistoryCursor, HistoryDirection, HistoryItem, HistoryQueryBounds, HistoryReadRequest,
     HistoryRetentionStats,
 };
+use sockudo_core::message_envelope::decode_stored_message_payload;
+use sockudo_core::version_store::StoredVersionRecord;
 use sockudo_core::versioned_messages::MessageSerial;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::ProtocolVersion;
@@ -14,7 +16,7 @@ use sockudo_protocol::versioned_messages::{
     extract_runtime_message_serial,
 };
 use sonic_rs::{JsonValueTrait, Value, json};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const DEFAULT_HISTORY_LIMIT: usize = 100;
@@ -110,12 +112,15 @@ impl ConnectionHandler {
             })
             .await?;
 
+        let latest_by_serial = self
+            .latest_versions_for_history_items(app_config, &request.channel, &page.items)
+            .await?;
         let mut items = Vec::with_capacity(page.items.len());
         for item in page.items {
-            items.push(
-                self.history_item_response(app_config, &request.channel, item)
-                    .await?,
-            );
+            let latest = history_item_message_serial(&item)?
+                .as_ref()
+                .and_then(|serial| latest_by_serial.get(serial));
+            items.push(self.history_item_response(item, latest)?);
         }
 
         let response_payload = json!({
@@ -185,59 +190,81 @@ impl ConnectionHandler {
         })
     }
 
-    pub(crate) async fn history_item_to_realtime_message(
+    pub(crate) async fn history_items_to_realtime_messages(
         &self,
         app_config: &App,
         channel: &str,
-        item: &HistoryItem,
-    ) -> Result<PusherMessage> {
-        let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
-            .map_err(|e| {
-                Error::InvalidMessageFormat(format!("Invalid stored history payload: {e}"))
-            })?;
-
-        if !self.server_options().versioned_messages.enabled {
-            return Ok(raw_message);
-        }
-
-        let Some(message_serial) = extract_runtime_message_serial(&raw_message) else {
-            return Ok(raw_message);
+        items: &[HistoryItem],
+    ) -> Result<Vec<PusherMessage>> {
+        let latest_by_serial = self
+            .latest_versions_for_history_items(app_config, channel, items)
+            .await?;
+        let version_stream_id = if latest_by_serial.is_empty() {
+            None
+        } else {
+            self.version_store()
+                .stream_state(&app_config.id, channel)
+                .await?
+                .stream_id
         };
 
-        let Some(latest) = self
-            .version_store()
-            .get_latest(
-                &app_config.id,
-                channel,
-                &MessageSerial::new(message_serial)?,
-            )
-            .await?
-        else {
-            return Ok(raw_message);
-        };
-
-        let stream_id = self
-            .version_store()
-            .stream_state(&app_config.id, channel)
-            .await?
-            .stream_id
-            .or_else(|| raw_message.stream_id.clone());
-
-        Ok(self.build_runtime_message_from_record(&latest, stream_id))
+        items
+            .iter()
+            .map(|item| {
+                let raw_message = decode_stored_message_payload(item.payload_bytes.as_ref())
+                    .map(|payload| payload.message)
+                    .map_err(|e| {
+                        Error::InvalidMessageFormat(format!("Invalid stored history payload: {e}"))
+                    })?;
+                let latest = extract_runtime_message_serial(&raw_message)
+                    .map(MessageSerial::new)
+                    .transpose()?
+                    .as_ref()
+                    .and_then(|serial| latest_by_serial.get(serial));
+                Ok(match latest {
+                    Some(latest) => self.build_runtime_message_from_record(
+                        latest,
+                        version_stream_id
+                            .clone()
+                            .or_else(|| raw_message.stream_id.clone()),
+                    ),
+                    None => raw_message,
+                })
+            })
+            .collect()
     }
 
-    async fn history_item_response(
+    async fn latest_versions_for_history_items(
         &self,
         app_config: &App,
         channel: &str,
+        items: &[HistoryItem],
+    ) -> Result<BTreeMap<MessageSerial, StoredVersionRecord>> {
+        if !self.server_options().versioned_messages.enabled {
+            return Ok(BTreeMap::new());
+        }
+
+        let message_serials = items
+            .iter()
+            .map(history_item_message_serial)
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        self.version_store()
+            .get_latest_batch(&app_config.id, channel, &message_serials)
+            .await
+    }
+
+    fn history_item_response(
+        &self,
         item: HistoryItem,
+        latest: Option<&StoredVersionRecord>,
     ) -> Result<Value> {
         let mut event_name = item.event_name.clone();
         let mut operation_kind = item.operation_kind.clone();
         let mut payload_size_bytes = item.payload_size_bytes;
-        let message = self
-            .history_item_to_response_message(app_config, channel, &item)
-            .await?;
+        let message = self.history_item_to_response_message(&item, latest)?;
 
         if let Some(message_event) = message
             .get("event")
@@ -265,13 +292,13 @@ impl ConnectionHandler {
         }))
     }
 
-    async fn history_item_to_response_message(
+    fn history_item_to_response_message(
         &self,
-        app_config: &App,
-        channel: &str,
         item: &HistoryItem,
+        latest: Option<&StoredVersionRecord>,
     ) -> Result<Value> {
-        let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+        let raw_message = decode_stored_message_payload(item.payload_bytes.as_ref())
+            .map(|payload| payload.message)
             .map_err(|e| {
                 Error::InvalidMessageFormat(format!("Invalid stored history payload: {e}"))
             })?;
@@ -280,19 +307,11 @@ impl ConnectionHandler {
             return sonic_rs::to_value(&raw_message).map_err(Error::from);
         }
 
-        let Some(message_serial) = extract_runtime_message_serial(&raw_message) else {
+        let Some(_message_serial) = extract_runtime_message_serial(&raw_message) else {
             return sonic_rs::to_value(&raw_message).map_err(Error::from);
         };
 
-        let Some(latest) = self
-            .version_store()
-            .get_latest(
-                &app_config.id,
-                channel,
-                &MessageSerial::new(message_serial)?,
-            )
-            .await?
-        else {
+        let Some(latest) = latest else {
             return sonic_rs::to_value(&raw_message).map_err(Error::from);
         };
 
@@ -330,6 +349,15 @@ impl ConnectionHandler {
 
         sonic_rs::to_value(&message).map_err(Error::from)
     }
+}
+
+fn history_item_message_serial(item: &HistoryItem) -> Result<Option<MessageSerial>> {
+    let raw_message = decode_stored_message_payload(item.payload_bytes.as_ref())
+        .map(|payload| payload.message)
+        .map_err(|e| Error::InvalidMessageFormat(format!("Invalid stored history payload: {e}")))?;
+    extract_runtime_message_serial(&raw_message)
+        .map(MessageSerial::new)
+        .transpose()
 }
 
 fn parse_channel_history_frame(message: &PusherMessage) -> Result<ChannelHistoryFrameRequest> {

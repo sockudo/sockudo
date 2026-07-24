@@ -14,6 +14,8 @@ struct StoredVersionStreamRec {
     next_delivery_serial: i64,
     oldest_delivery_serial: Option<i64>,
     newest_delivery_serial: Option<i64>,
+    #[serde(default)]
+    open_stream_count: i64,
     updated_at_ms: i64,
 }
 
@@ -26,6 +28,12 @@ struct StoredVersionMessageRec {
     latest_version_serial: String,
     latest_entry_key: String,
     history_serial: i64,
+    #[serde(default)]
+    latest_payload_bytes: Vec<u8>,
+    #[serde(default)]
+    append_count: i64,
+    #[serde(default)]
+    is_open_stream: bool,
     updated_at_ms: i64,
 }
 
@@ -40,6 +48,14 @@ struct StoredVersionEntryRec {
     payload_bytes: Vec<u8>,
     // Server-side append time (ms since epoch). Indexed for the purge worker
     // which deletes rows older than the retention cutoff in batched queries.
+    created_at_ms: i64,
+}
+
+#[cfg(feature = "versioned-messages")]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct StoredVersionReceiptRec {
+    operation_fingerprint: String,
+    payload_bytes: Vec<u8>,
     created_at_ms: i64,
 }
 
@@ -61,6 +77,7 @@ struct VersionStoreTables {
     streams: String,
     messages: String,
     entries: String,
+    receipts: String,
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -77,6 +94,10 @@ pub async fn create_surreal_version_store(
     validate_identifier(
         &format!("{table_prefix}_version_streams"),
         "version streams table",
+    )?;
+    validate_identifier(
+        &format!("{table_prefix}_version_receipts"),
+        "version receipts table",
     )?;
     validate_identifier(
         &format!("{table_prefix}_version_messages"),
@@ -115,10 +136,12 @@ pub async fn create_surreal_version_store(
         streams: format!("{table_prefix}_version_streams"),
         messages: format!("{table_prefix}_version_messages"),
         entries: format!("{table_prefix}_version_entries"),
+        receipts: format!("{table_prefix}_version_receipts"),
     };
 
     let query = format!(
         "DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;\
+         DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;\
          DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;\
          DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;\
          DEFINE INDEX IF NOT EXISTS {}_app_idx ON TABLE {} FIELDS app_id;\
@@ -131,6 +154,7 @@ pub async fn create_surreal_version_store(
         tables.streams,
         tables.messages,
         tables.entries,
+        tables.receipts,
         tables.streams,
         tables.streams,
         tables.messages,

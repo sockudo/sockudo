@@ -1,5 +1,7 @@
 import { Hono } from "hono";
-import { requireAuth } from "../auth/middleware.ts";
+import { createRequireAuth } from "../auth/middleware.ts";
+import type { UsersRepository } from "../db/users-repository.ts";
+import type { AppVariables } from "../types/hono.ts";
 import type { AppsRepository } from "../db/types.ts";
 import {
   mergePolicy,
@@ -15,8 +17,12 @@ function generateSecret(): string {
     .join("");
 }
 
-export function createAppsRoutes(repo: AppsRepository) {
-  const apps = new Hono();
+export function createAppsRoutes(
+  repo: AppsRepository,
+  usersRepo: UsersRepository,
+) {
+  const apps = new Hono<{ Variables: AppVariables }>();
+  const requireAuth = createRequireAuth(usersRepo);
 
   apps.use("*", requireAuth);
 

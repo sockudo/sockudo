@@ -69,6 +69,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 md5 = { workspace = true }
 sockudo-app = { workspace = true }
+sockudo-cache = { workspace = true, features = ["redis"] }
 num_cpus = { workspace = true }
 papaya = { workspace = true }
 criterion = { workspace = true }

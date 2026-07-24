@@ -6,11 +6,7 @@
 
 use bytes::Bytes;
 use sockudo_core::error::{Error, Result};
-#[cfg(feature = "tag-filtering")]
-use sockudo_core::namespace::Namespace;
 use sockudo_core::utils::{is_wildcard_subscription_pattern, wildcard_pattern_matches};
-#[cfg(feature = "tag-filtering")]
-use sockudo_core::websocket::SocketId;
 use sockudo_core::websocket::WebSocketRef;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{
@@ -48,128 +44,192 @@ pub(crate) fn prepare_v2_message(mut message: PusherMessage) -> Result<(PusherMe
 }
 
 // ---------------------------------------------------------------------------
-// Tag filtering helpers (only compiled with the `tag-filtering` feature)
+// Subscription predicate helpers
 // ---------------------------------------------------------------------------
 
-/// Apply tag filtering to V2 sockets using the filter index.
-///
-/// Looks up the message's tags in the index and returns only the sockets that
-/// should receive the message. Sockets with no filter receive all messages.
-#[cfg(feature = "tag-filtering")]
-fn matching_channel_filter_entries(
-    socket: &WebSocketRef,
-    channel: &str,
-) -> Vec<Option<std::sync::Arc<sockudo_filter::FilterNode>>> {
-    socket
-        .channel_state
-        .iter()
-        .filter_map(|entry| {
-            let subscribed_channel = entry.key();
-            let subscribed_channel = subscribed_channel.as_ref();
-            let matches = subscribed_channel == channel
-                || (is_wildcard_subscription_pattern(subscribed_channel)
-                    && wildcard_pattern_matches(channel, subscribed_channel));
-            matches.then(|| entry.value().filter.clone())
-        })
-        .collect()
-}
-
-#[cfg(feature = "tag-filtering")]
-fn should_deliver_for_tags(
-    socket: &WebSocketRef,
-    channel: &str,
-    tags: Option<&std::collections::BTreeMap<String, String>>,
+fn subscription_view_allows(
+    state: &sockudo_core::websocket::PerChannelState,
+    message: &PusherMessage,
+    filtering_enabled: bool,
+    #[cfg(feature = "tag-filtering")] document: Option<&sockudo_filter::ProjectedDocument>,
 ) -> bool {
-    let matching_filters = matching_channel_filter_entries(socket, channel);
-    if matching_filters.is_empty() {
+    #[cfg(not(feature = "tag-filtering"))]
+    let _ = filtering_enabled;
+    if message.event.as_deref() == Some(sockudo_protocol::messages::ANNOTATION_EVENT_NAME)
+        && !state.annotation_subscribe
+    {
         return false;
     }
 
-    matching_filters
-        .into_iter()
-        .any(|filter| match (&filter, tags) {
-            (None, _) => true,
-            (Some(filter), Some(tags)) => sockudo_filter::matches(filter, tags),
-            (Some(_), None) => false,
-        })
+    #[cfg(feature = "tag-filtering")]
+    if filtering_enabled && let Some(predicate) = &state.predicate {
+        return predicate
+            .matches_projected(message.event.as_deref(), &message.tags, document)
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    predicate_id = predicate.id().as_u64(),
+                    error = %error,
+                    "subscription predicate evaluation failed closed"
+                );
+                false
+            });
+    }
+
+    if state.event_name_filter.as_ref().is_some_and(|names| {
+        !names.is_empty()
+            && message
+                .event
+                .as_ref()
+                .is_none_or(|event| !names.iter().any(|name| name == event))
+    }) {
+        return false;
+    }
+
+    #[cfg(feature = "tag-filtering")]
+    if filtering_enabled && let Some(filter) = &state.filter {
+        return message
+            .tags
+            .as_ref()
+            .is_some_and(|tags| sockudo_filter::matches(filter, tags));
+    }
+
+    true
 }
 
-fn event_name_filter_allows(socket: &WebSocketRef, channel: &str, event_name: &str) -> bool {
-    let mut matched = false;
+fn should_deliver_for_subscription(
+    socket: &WebSocketRef,
+    channel: &str,
+    message: &PusherMessage,
+    filtering_enabled: bool,
+    #[cfg(feature = "tag-filtering")] document: Option<&sockudo_filter::ProjectedDocument>,
+) -> bool {
+    if let Some(state) = socket.channel_state.get(channel)
+        && subscription_view_allows(
+            state.value(),
+            message,
+            filtering_enabled,
+            #[cfg(feature = "tag-filtering")]
+            document,
+        )
+    {
+        return true;
+    }
 
     for entry in socket.channel_state.iter() {
         let subscribed_channel = entry.key();
         let subscribed_channel = subscribed_channel.as_ref();
-        let channel_matches = subscribed_channel == channel
-            || (is_wildcard_subscription_pattern(subscribed_channel)
-                && wildcard_pattern_matches(channel, subscribed_channel));
-        if !channel_matches {
+        if subscribed_channel == channel
+            || !is_wildcard_subscription_pattern(subscribed_channel)
+            || !wildcard_pattern_matches(channel, subscribed_channel)
+        {
             continue;
         }
-
-        matched = true;
-        match &entry.value().event_name_filter {
-            None => return true,
-            Some(names) if names.is_empty() => return true,
-            Some(names) if names.iter().any(|name| name == event_name) => return true,
-            Some(_) => {}
+        if subscription_view_allows(
+            entry.value(),
+            message,
+            filtering_enabled,
+            #[cfg(feature = "tag-filtering")]
+            document,
+        ) {
+            return true;
         }
     }
+    false
+}
 
-    !matched
+#[cfg(feature = "recovery")]
+pub(crate) fn has_matching_subscription(socket: &WebSocketRef, channel: &str) -> bool {
+    socket.channel_state.iter().any(|entry| {
+        let subscribed = entry.key().as_ref();
+        subscribed == channel
+            || (is_wildcard_subscription_pattern(subscribed)
+                && wildcard_pattern_matches(channel, subscribed))
+    })
 }
 
 #[cfg(feature = "tag-filtering")]
-pub(crate) fn apply_tag_filter_in_place(
-    filter_index: &crate::filter_index::FilterIndex,
-    tag_filtering_enabled: bool,
-    channel: &str,
-    message: &PusherMessage,
-    v2_sockets: &mut Vec<WebSocketRef>,
-    except: Option<&SocketId>,
-    namespace: &Namespace,
-) {
-    if !tag_filtering_enabled {
-        return;
+fn matching_subscription_requires_document(socket: &WebSocketRef, channel: &str) -> bool {
+    if socket.channel_state.get(channel).is_some_and(|state| {
+        state
+            .predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate.requires_document())
+    }) {
+        return true;
     }
-
-    let _ = (filter_index, except, namespace);
-
-    v2_sockets.retain(|socket| should_deliver_for_tags(socket, channel, message.tags.as_ref()));
+    socket.channel_state.iter().any(|state| {
+        let subscribed = state.key().as_ref();
+        is_wildcard_subscription_pattern(subscribed)
+            && wildcard_pattern_matches(channel, subscribed)
+            && state
+                .predicate
+                .as_ref()
+                .is_some_and(|predicate| predicate.requires_document())
+    })
 }
 
-#[cfg(feature = "tag-filtering")]
-pub(crate) fn apply_tag_filter_v2_only_in_place(
-    filter_index: &crate::filter_index::FilterIndex,
-    tag_filtering_enabled: bool,
+pub(crate) fn socket_allows_message(
+    socket: &WebSocketRef,
     channel: &str,
     message: &PusherMessage,
-    v2_sockets: &mut Vec<WebSocketRef>,
-    except: Option<&SocketId>,
-    namespace: &Namespace,
-) {
-    if !tag_filtering_enabled {
-        return;
-    }
+    filtering_enabled: bool,
+) -> bool {
+    #[cfg(feature = "tag-filtering")]
+    let document = matching_subscription_requires_document(socket, channel)
+        .then(|| {
+            sockudo_filter::ProjectedDocument::new_bounded(
+                &crate::message_predicate::NativeMessageProjection::from_message(message),
+                64 * 1024,
+            )
+        })
+        .transpose()
+        .unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "message predicate projection failed closed");
+            None
+        });
 
-    let _ = (filter_index, except, namespace);
-    v2_sockets.retain(|socket| {
-        socket.protocol_version == sockudo_protocol::ProtocolVersion::V2
-            && should_deliver_for_tags(socket, channel, message.tags.as_ref())
+    should_deliver_for_subscription(
+        socket,
+        channel,
+        message,
+        filtering_enabled,
+        #[cfg(feature = "tag-filtering")]
+        document.as_ref(),
+    )
+}
+
+pub(crate) fn apply_subscription_predicates_in_place(
+    filtering_enabled: bool,
+    channel: &str,
+    message: &PusherMessage,
+    sockets: &mut Vec<WebSocketRef>,
+) {
+    #[cfg(feature = "tag-filtering")]
+    let document = sockets
+        .iter()
+        .any(|socket| matching_subscription_requires_document(socket, channel))
+        .then(|| {
+            sockudo_filter::ProjectedDocument::new_bounded(
+                &crate::message_predicate::NativeMessageProjection::from_message(message),
+                64 * 1024,
+            )
+        })
+        .transpose()
+        .unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "message predicate projection failed closed");
+            None
+        });
+
+    sockets.retain(|socket| {
+        should_deliver_for_subscription(
+            socket,
+            channel,
+            message,
+            filtering_enabled,
+            #[cfg(feature = "tag-filtering")]
+            document.as_ref(),
+        )
     });
-}
-
-pub(crate) fn apply_event_name_filter_in_place(
-    channel: &str,
-    message: &PusherMessage,
-    sockets: &mut Vec<sockudo_core::websocket::WebSocketRef>,
-) {
-    let event_name = match message.event.as_deref() {
-        Some(name) => name,
-        None => return,
-    };
-
-    sockets.retain(|socket| event_name_filter_allows(socket, channel, event_name));
 }
 
 /// Strip tags from a message if tag inclusion is disabled for the channel.
@@ -200,5 +260,78 @@ pub(crate) fn should_enable_tags(
     #[cfg(not(feature = "delta"))]
     {
         global_enable_tags
+    }
+}
+
+#[cfg(all(test, feature = "tag-filtering"))]
+mod predicate_tests {
+    use super::*;
+    use sockudo_core::websocket::PerChannelState;
+    use sockudo_filter::{MessagePredicate, SubscriptionView, node::FilterNodeBuilder};
+    use std::{collections::BTreeMap, sync::Arc};
+
+    fn message(event: &str, region: &str) -> PusherMessage {
+        let mut message =
+            PusherMessage::channel_event(event, "orders.eu", sonic_rs::json!({"total": 125}));
+        message.data = Some(sockudo_protocol::messages::MessageData::Json(
+            sonic_rs::json!({"total": 125}),
+        ));
+        message.tags = Some(BTreeMap::from([("region".into(), region.into())]));
+        message
+    }
+
+    #[test]
+    fn subscription_components_are_anded_within_one_view() {
+        let predicate = MessagePredicate::compile(SubscriptionView {
+            events: vec!["order.updated".into()],
+            tags: Some(FilterNodeBuilder::eq("region", "eu")),
+            expression: Some("data.total >= `100`".into()),
+        })
+        .unwrap();
+        let state = PerChannelState {
+            predicate: Some(Arc::new(predicate)),
+            ..PerChannelState::default()
+        };
+        let accepted = message("order.updated", "eu");
+        let document = sockudo_filter::ProjectedDocument::new_bounded(
+            &crate::message_predicate::NativeMessageProjection::from_message(&accepted),
+            64 * 1024,
+        )
+        .unwrap();
+        assert!(subscription_view_allows(
+            &state,
+            &accepted,
+            true,
+            Some(&document)
+        ));
+        assert!(!subscription_view_allows(
+            &state,
+            &message("order.created", "eu"),
+            true,
+            Some(&document)
+        ));
+        assert!(!subscription_view_allows(
+            &state,
+            &message("order.updated", "us"),
+            true,
+            Some(&document)
+        ));
+    }
+
+    #[test]
+    fn annotation_permission_is_part_of_the_accepting_view() {
+        let state = PerChannelState {
+            predicate: Some(Arc::new(
+                MessagePredicate::compile(SubscriptionView::default()).unwrap(),
+            )),
+            annotation_subscribe: false,
+            ..PerChannelState::default()
+        };
+        assert!(!subscription_view_allows(
+            &state,
+            &message(sockudo_protocol::messages::ANNOTATION_EVENT_NAME, "eu"),
+            true,
+            None
+        ));
     }
 }

@@ -3,6 +3,7 @@ use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::horizontal_adapter::{DeadNodeEvent, RequestType};
 use sockudo_adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo_core::options::ClusterHealthConfig;
+use sockudo_core::presence_registry::PresenceRecord;
 use std::time::Duration;
 
 #[tokio::test]
@@ -260,6 +261,43 @@ async fn test_dead_node_cleanup_removes_presence_data() {
         assert!(user_id == "user-456" || user_id == "user-999");
         assert!(user_info.is_some());
     }
+}
+
+#[tokio::test]
+async fn dead_node_cleanup_keeps_each_ably_connection_for_same_client() {
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(MockConfig::default())
+        .await
+        .unwrap();
+    for connection_id in ["connection-a", "connection-b"] {
+        let member = PresenceRecord {
+            connection_id: connection_id.to_string(),
+            client_id: "shared-client".to_string(),
+            id: format!("{connection_id}:1:0"),
+            data: None,
+            encoding: None,
+            extras: None,
+            timestamp_ms: 1,
+        };
+        adapter
+            .horizontal
+            .add_presence_entry(
+                "dead-node",
+                "room",
+                &format!("ably:{connection_id}:shared-client"),
+                "shared-client",
+                "app",
+                Some(sonic_rs::to_value(&member).unwrap()),
+            )
+            .await;
+    }
+
+    let cleanup = adapter
+        .horizontal
+        .handle_dead_node_cleanup("dead-node")
+        .await
+        .unwrap();
+
+    assert_eq!(cleanup.len(), 2);
 }
 
 #[tokio::test]

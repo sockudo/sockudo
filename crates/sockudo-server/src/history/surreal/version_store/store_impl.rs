@@ -78,6 +78,7 @@ impl VersionStore for SurrealVersionStore {
                 next_delivery_serial: block_size_i64.saturating_add(1),
                 oldest_delivery_serial: None,
                 newest_delivery_serial: None,
+                open_stream_count: 0,
                 updated_at_ms: now_ms,
             };
             let create_result: Result<Option<StoredVersionStreamRec>> = self
@@ -129,7 +130,7 @@ impl VersionStore for SurrealVersionStore {
             message_serial: msg_serial.to_string(),
             version_serial: ver_serial.to_string(),
             delivery_serial: delivery_serial as i64,
-            payload_bytes,
+            payload_bytes: payload_bytes.clone(),
             created_at_ms: now_ms,
         };
 
@@ -196,6 +197,12 @@ impl VersionStore for SurrealVersionStore {
                     latest_version_serial: ver_serial.to_string(),
                     latest_entry_key: entry_id.clone(),
                     history_serial: history_serial as i64,
+                    latest_payload_bytes: payload_bytes.clone(),
+                    append_count: i64::from(
+                        record.message.action
+                            == sockudo_core::versioned_messages::MessageAction::Append,
+                    ),
+                    is_open_stream: record.is_open_ai_stream(),
                     updated_at_ms: now_ms,
                 };
                 let create_msg: std::result::Result<Option<StoredVersionMessageRec>, _> = self
@@ -260,6 +267,355 @@ impl VersionStore for SurrealVersionStore {
         Ok(())
     }
 
+    async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        if let Some(limit) = request.limits.max_accumulated_message_bytes
+            && request.record.data_bytes()? > limit
+        {
+            return Ok(VersionCreateResult::Rejected(
+                VersionCreateRejection::AccumulatedMessageBytes { limit },
+            ));
+        }
+        let stream_record_id = deterministic_key(
+            [
+                request.record.app_id.as_str(),
+                request.record.channel.as_str(),
+            ]
+            .into_iter(),
+        );
+        let existing_stream: Option<StoredVersionStreamRec> = self
+            .db
+            .select((self.tables.streams.clone(), stream_record_id.clone()))
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read version stream: {e}")))?;
+        let next_delivery = existing_stream
+            .as_ref()
+            .map_or(1, |stream| stream.next_delivery_serial) as u64;
+        let open_count = existing_stream
+            .as_ref()
+            .map_or(0, |stream| stream.open_stream_count) as usize;
+        if request.record.is_open_ai_stream()
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+            && open_count >= limit
+        {
+            return Ok(VersionCreateResult::Rejected(
+                VersionCreateRejection::OpenStreamingMessages { limit },
+            ));
+        }
+        let message_id = deterministic_key(
+            [
+                request.record.app_id.as_str(),
+                request.record.channel.as_str(),
+                request.record.message_serial().as_str(),
+            ]
+            .into_iter(),
+        );
+        if let Some(existing) = self
+            .get_latest(
+                &request.record.app_id,
+                &request.record.channel,
+                request.record.message_serial(),
+            )
+            .await?
+        {
+            return Ok(VersionCreateResult::Conflict {
+                current: Some(existing),
+            });
+        }
+        let stream_id = format!("{}/{}", request.record.app_id, request.record.channel);
+        let record = request
+            .record
+            .with_delivery_position(&stream_id, next_delivery);
+        let payload_bytes = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize create record: {e}")))?;
+        let now_ms = sockudo_core::history::now_ms();
+        let entry_id = deterministic_key(
+            [
+                record.app_id.as_str(),
+                record.channel.as_str(),
+                record.message_serial().as_str(),
+                record.version_serial().as_str(),
+            ]
+            .into_iter(),
+        );
+        let entry = StoredVersionEntryRec {
+            app_id: record.app_id.clone(),
+            channel: record.channel.clone(),
+            message_serial: record.message_serial().as_str().to_string(),
+            version_serial: record.version_serial().as_str().to_string(),
+            delivery_serial: next_delivery as i64,
+            payload_bytes: payload_bytes.clone(),
+            created_at_ms: now_ms,
+        };
+        let message = StoredVersionMessageRec {
+            app_id: record.app_id.clone(),
+            channel: record.channel.clone(),
+            message_serial: record.message_serial().as_str().to_string(),
+            latest_version_serial: record.version_serial().as_str().to_string(),
+            latest_entry_key: entry_id.clone(),
+            history_serial: record.history_serial() as i64,
+            latest_payload_bytes: payload_bytes,
+            append_count: 0,
+            is_open_stream: record.is_open_ai_stream(),
+            updated_at_ms: now_ms,
+        };
+        let next_open = open_count + usize::from(record.is_open_ai_stream());
+        let (stream_statement, stream_content) = if let Some(stream) = existing_stream {
+            (
+                "LET $stream_write = UPDATE ONLY type::record($stream_table, $stream_id) SET next_delivery_serial = $next_delivery, open_stream_count = $next_open, oldest_delivery_serial = IF oldest_delivery_serial IS NONE THEN $delivery ELSE oldest_delivery_serial END, newest_delivery_serial = $delivery, updated_at_ms = $now WHERE next_delivery_serial = $expected_delivery AND open_stream_count = $expected_open RETURN AFTER; IF $stream_write = NONE { THROW 'version_conflict'; };",
+                Some(stream),
+            )
+        } else {
+            (
+                "LET $stream_write = CREATE ONLY type::record($stream_table, $stream_id) CONTENT $stream_content;",
+                None,
+            )
+        };
+        let stream = stream_content.unwrap_or(StoredVersionStreamRec {
+            app_id: record.app_id.clone(),
+            channel: record.channel.clone(),
+            stream_id: stream_id.clone(),
+            next_delivery_serial: 2,
+            oldest_delivery_serial: Some(1),
+            newest_delivery_serial: Some(1),
+            open_stream_count: next_open as i64,
+            updated_at_ms: now_ms,
+        });
+        let sql = format!(
+            "BEGIN TRANSACTION; {stream_statement} LET $message_write = CREATE ONLY type::record($message_table, $message_id) CONTENT $message_content; LET $entry_write = CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; COMMIT TRANSACTION;"
+        );
+        let response = self
+            .db
+            .query(sql)
+            .bind(("stream_table", self.tables.streams.clone()))
+            .bind(("stream_id", stream_record_id))
+            .bind(("stream_content", stream))
+            .bind(("next_delivery", (next_delivery + 1) as i64))
+            .bind(("next_open", next_open as i64))
+            .bind(("delivery", next_delivery as i64))
+            .bind(("now", now_ms))
+            .bind(("expected_delivery", next_delivery as i64))
+            .bind(("expected_open", open_count as i64))
+            .bind(("message_table", self.tables.messages.clone()))
+            .bind(("message_id", message_id))
+            .bind(("message_content", message))
+            .bind(("entry_table", self.tables.entries.clone()))
+            .bind(("entry_id", entry_id))
+            .bind(("entry_content", entry))
+            .await;
+        match response.and_then(|response| response.check()) {
+            Ok(_) => Ok(VersionCreateResult::Applied { record, stream_id }),
+            Err(error)
+                if error.to_string().contains("version_conflict")
+                    || error.to_string().contains("already exists")
+                    || error.to_string().contains("already been created") =>
+            {
+                Ok(VersionCreateResult::Conflict {
+                    current: self
+                        .get_latest(&record.app_id, &record.channel, record.message_serial())
+                        .await?,
+                })
+            }
+            Err(error) => Err(Error::Internal(format!(
+                "Failed to transact SurrealDB version create: {error}"
+            ))),
+        }
+    }
+
+    async fn compare_and_apply(
+        &self,
+        request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        let stream_record_id =
+            deterministic_key([request.app_id.as_str(), request.channel.as_str()].into_iter());
+        let Some(stream): Option<StoredVersionStreamRec> = self
+            .db
+            .select((self.tables.streams.clone(), stream_record_id.clone()))
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read version stream: {e}")))?
+        else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+        if let Some(operation) = request.idempotency.as_ref() {
+            let receipt_id = deterministic_key(
+                [
+                    request.app_id.as_str(),
+                    request.channel.as_str(),
+                    operation.cache_key.as_str(),
+                ]
+                .into_iter(),
+            );
+            if let Some(receipt) = self
+                .db
+                .select::<Option<StoredVersionReceiptRec>>((
+                    self.tables.receipts.clone(),
+                    receipt_id,
+                ))
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to read mutation receipt: {e}")))?
+            {
+                if receipt.operation_fingerprint != operation.payload_fingerprint {
+                    return Err(Error::IdempotencyConflict);
+                }
+                let record = sonic_rs::from_slice(&receipt.payload_bytes).map_err(|e| {
+                    Error::Internal(format!("Failed to decode mutation receipt: {e}"))
+                })?;
+                return Ok(VersionMutationResult::Duplicate {
+                    record,
+                    stream_id: stream.stream_id,
+                });
+            }
+        }
+        let message_id = deterministic_key(
+            [
+                request.app_id.as_str(),
+                request.channel.as_str(),
+                request.message_serial.as_str(),
+            ]
+            .into_iter(),
+        );
+        let Some(message): Option<StoredVersionMessageRec> = self
+            .db
+            .select((self.tables.messages.clone(), message_id.clone()))
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read mutation predecessor: {e}")))?
+        else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+        let current = if message.latest_payload_bytes.is_empty() {
+            self.get_latest(&request.app_id, &request.channel, &request.message_serial)
+                .await?
+                .ok_or_else(|| Error::Internal("Latest version entry is missing".to_string()))?
+        } else {
+            sonic_rs::from_slice(&message.latest_payload_bytes).map_err(|e| {
+                Error::Internal(format!("Failed to decode mutation predecessor: {e}"))
+            })?
+        };
+        let delivery_serial =
+            (stream.next_delivery_serial as u64).max(current.delivery_serial().saturating_add(1));
+        let outcome = request.apply_to(
+            &current,
+            &stream.stream_id,
+            delivery_serial,
+            message.append_count as usize,
+        )?;
+        let VersionMutationResult::Applied { record, .. } = outcome else {
+            return Ok(outcome);
+        };
+        let opens = !current.is_open_ai_stream() && record.is_open_ai_stream();
+        let closes = current.is_open_ai_stream() && !record.is_open_ai_stream();
+        if opens
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+            && stream.open_stream_count as usize >= limit
+        {
+            return Ok(VersionMutationResult::Rejected(
+                VersionMutationRejection::OpenStreamingMessages { limit },
+            ));
+        }
+        let payload_bytes = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize mutation record: {e}")))?;
+        let now_ms = sockudo_core::history::now_ms();
+        let entry_id = deterministic_key(
+            [
+                record.app_id.as_str(),
+                record.channel.as_str(),
+                record.message_serial().as_str(),
+                record.version_serial().as_str(),
+            ]
+            .into_iter(),
+        );
+        let entry = StoredVersionEntryRec {
+            app_id: record.app_id.clone(),
+            channel: record.channel.clone(),
+            message_serial: record.message_serial().as_str().to_string(),
+            version_serial: record.version_serial().as_str().to_string(),
+            delivery_serial: delivery_serial as i64,
+            payload_bytes: payload_bytes.clone(),
+            created_at_ms: now_ms,
+        };
+        let next_open = stream.open_stream_count + i64::from(opens) - i64::from(closes);
+        let next_append = message.append_count
+            + i64::from(matches!(
+                request.mutation,
+                sockudo_core::version_store::VersionMutation::Append(_)
+            ));
+        let (receipt_statement, receipt_id, receipt) = if let Some(operation) =
+            request.idempotency.as_ref()
+        {
+            (
+                "LET $receipt_write = CREATE ONLY type::record($receipt_table, $receipt_id) CONTENT $receipt_content;",
+                deterministic_key(
+                    [
+                        request.app_id.as_str(),
+                        request.channel.as_str(),
+                        operation.cache_key.as_str(),
+                    ]
+                    .into_iter(),
+                ),
+                StoredVersionReceiptRec {
+                    operation_fingerprint: operation.payload_fingerprint.clone(),
+                    payload_bytes: payload_bytes.clone(),
+                    created_at_ms: now_ms,
+                },
+            )
+        } else {
+            (
+                "",
+                "unused".to_string(),
+                StoredVersionReceiptRec {
+                    operation_fingerprint: String::new(),
+                    payload_bytes: Vec::new(),
+                    created_at_ms: now_ms,
+                },
+            )
+        };
+        let query = self
+            .db
+            .query(format!(
+                "BEGIN TRANSACTION; LET $stream_write = UPDATE ONLY type::record($stream_table, $stream_id) SET next_delivery_serial = $next_delivery, open_stream_count = $next_open, newest_delivery_serial = $delivery, updated_at_ms = $now WHERE next_delivery_serial = $expected_delivery AND open_stream_count = $expected_open RETURN AFTER; IF $stream_write = NONE {{ THROW 'version_conflict'; }}; LET $message_write = UPDATE ONLY type::record($message_table, $message_id) SET latest_version_serial = $next_version, latest_entry_key = $entry_id, latest_payload_bytes = $payload, append_count = $next_append, is_open_stream = $is_open, updated_at_ms = $now WHERE latest_version_serial = $expected_version RETURN AFTER; IF $message_write = NONE {{ THROW 'version_conflict'; }}; LET $entry_write = CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; {receipt_statement} COMMIT TRANSACTION;"
+            ))
+            .bind(("stream_table", self.tables.streams.clone()))
+            .bind(("stream_id", stream_record_id))
+            .bind(("next_delivery", (delivery_serial + 1) as i64))
+            .bind(("next_open", next_open))
+            .bind(("delivery", delivery_serial as i64))
+            .bind(("now", now_ms))
+            .bind(("expected_delivery", stream.next_delivery_serial))
+            .bind(("expected_open", stream.open_stream_count))
+            .bind(("message_table", self.tables.messages.clone()))
+            .bind(("message_id", message_id))
+            .bind(("next_version", record.version_serial().as_str().to_string()))
+            .bind(("payload", payload_bytes.clone()))
+            .bind(("next_append", next_append))
+            .bind(("is_open", record.is_open_ai_stream()))
+            .bind(("expected_version", current.version_serial().as_str().to_string()))
+            .bind(("entry_table", self.tables.entries.clone()))
+            .bind(("entry_id", entry_id))
+            .bind(("entry_content", entry))
+            .bind(("receipt_table", self.tables.receipts.clone()))
+            .bind(("receipt_id", receipt_id))
+            .bind(("receipt_content", receipt));
+        match query.await.and_then(|response| response.check()) {
+            Ok(_) => Ok(VersionMutationResult::Applied {
+                record,
+                stream_id: stream.stream_id,
+            }),
+            Err(error)
+                if error.to_string().contains("version_conflict")
+                    || error.to_string().contains("already exists")
+                    || error.to_string().contains("already been created") =>
+            {
+                Ok(VersionMutationResult::Conflict {
+                    current: self
+                        .get_latest(&request.app_id, &request.channel, &request.message_serial)
+                        .await?,
+                })
+            }
+            Err(error) => Err(Error::Internal(format!(
+                "Failed to transact SurrealDB version mutation: {error}"
+            ))),
+        }
+    }
+
     async fn get_latest(
         &self,
         app_id: &str,
@@ -278,6 +634,15 @@ impl VersionStore for SurrealVersionStore {
         let Some(msg) = msg_record else {
             return Ok(None);
         };
+
+        if !msg.latest_payload_bytes.is_empty() {
+            let record = sonic_rs::from_slice(&msg.latest_payload_bytes).map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to deserialize SurrealDB latest version: {e}"
+                ))
+            })?;
+            return Ok(Some(record));
+        }
 
         let entry: Option<StoredVersionEntryRec> = self
             .db

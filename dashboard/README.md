@@ -58,6 +58,8 @@ Docker services: `dashboard-api`, `dashboard-web` (see [Docker](#docker) below).
 ```bash
 # 1. Configure environment
 cp dashboard/.env.example .env
+# Replace the empty DASHBOARD_SESSION_SECRET value with the output of:
+openssl rand -base64 32
 
 # 2. Install API, run migrations, seed first admin
 cd dashboard/api
@@ -224,7 +226,8 @@ Roles: `admin` (full access including user management), `operator` (apps/webhook
 |----------|---------|
 | `APP_MANAGER_DRIVER` | Sockudo app store: `mysql`, `pgsql`, `dynamodb` |
 | `DASHBOARD_DATABASE_DRIVER` | Override dashboard DB driver |
-| `DASHBOARD_SESSION_SECRET` | JWT session signing secret |
+| `DASHBOARD_SESSION_SECRET` | Required JWT session signing secret (at least 32 bytes; no fallback) |
+| `DASHBOARD_TRUST_PROXY` | Trust the first `X-Forwarded-For` address for login limits; enable only behind a proxy that replaces the header |
 | `DASHBOARD_SQLITE_PATH` | SQLite path when using sqlite driver |
 | `DATABASE_*` | Shared DB credentials (mysql/pgsql) |
 | `SOCKUDO_HTTP_URL` | Sockudo main port for `/stats` |
@@ -240,5 +243,8 @@ Sockudo caches apps in memory. After dashboard app/webhook changes, nodes may ta
 ## Security
 
 - Use strong passwords (min 8 chars) for all dashboard users.
-- Set a random `DASHBOARD_SESSION_SECRET` in production.
+- Set a random, unique `DASHBOARD_SESSION_SECRET` in every environment. The API fails at startup if it is missing, shorter than 32 bytes, or a documented placeholder. Generate one with `openssl rand -base64 32`.
+- Login attempts are limited in bounded in-process windows by both source IP and normalized account identity. Successful authentication clears the account window; source-IP attempts remain counted. Multi-replica deployments should also enforce a shared limit at the ingress.
+- Existing sessions are rejected immediately when their user is deleted or disabled, and password changes invalidate previously issued sessions. Current database roles are applied on every protected request, so demotions take effect immediately.
+- Deploying this hardening change invalidates older dashboard cookies that lack the credential-version, issuer, and audience claims; operators must sign in again once.
 - Put the dashboard behind TLS and restrict network access.

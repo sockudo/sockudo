@@ -208,6 +208,11 @@ export default class Sockudo {
       // Handle connection recovery protocol events
       if (eventName === prefixedEvent("resume_success")) {
         const resumeData = normalizeResumeSuccessData(event.data);
+        for (const recovered of resumeData.recovered) {
+          if (recovered.channel && recovered.position) {
+            this.channelPositions.set(recovered.channel, recovered.position);
+          }
+        }
         Logger.debug("Connection recovery succeeded", resumeData);
         this.global_emitter.emit(eventName, resumeData);
         return;
@@ -446,6 +451,7 @@ export default class Sockudo {
       if (
         typeof options === "object" &&
         ("filter" in options ||
+          "expression" in options ||
           "delta" in options ||
           "events" in options ||
           "rewind" in options ||
@@ -459,6 +465,9 @@ export default class Sockudo {
         }
         if (options.events) {
           channel.eventsFilter = options.events;
+        }
+        if (options.expression) {
+          channel.expressionFilter = options.expression;
         }
         if ("rewind" in options) {
           channel.rewind = options.rewind ?? null;
@@ -566,6 +575,14 @@ function normalizeResumeRecoveredChannel(value: any) {
     channel: value?.channel ?? "",
     source: value?.source ?? "",
     replayed: typeof value?.replayed === "number" ? value.replayed : 0,
+    position:
+      value?.position && isWireSerial(value.position.serial)
+        ? {
+            stream_id: value.position.stream_id,
+            serial: value.position.serial,
+            last_message_id: value.position.last_message_id,
+          }
+        : undefined,
   };
 }
 

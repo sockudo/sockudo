@@ -16,10 +16,10 @@ pub use store::{NoopPresenceHistoryStore, PresenceHistoryStore};
 pub use tracking::TrackingPresenceHistoryStore;
 pub use types::{
     PresenceHistoryCursor, PresenceHistoryDirection, PresenceHistoryDurableState,
-    PresenceHistoryEventCause, PresenceHistoryEventKind, PresenceHistoryItem, PresenceHistoryPage,
-    PresenceHistoryPayload, PresenceHistoryQueryBounds, PresenceHistoryReadRequest,
-    PresenceHistoryResetResult, PresenceHistoryRetentionPolicy, PresenceHistoryRetentionStats,
-    PresenceHistoryRuntimeStatus, PresenceHistoryStreamInspection,
+    PresenceHistoryEventCause, PresenceHistoryEventKind, PresenceHistoryFilter,
+    PresenceHistoryItem, PresenceHistoryPage, PresenceHistoryPayload, PresenceHistoryQueryBounds,
+    PresenceHistoryReadRequest, PresenceHistoryResetResult, PresenceHistoryRetentionPolicy,
+    PresenceHistoryRetentionStats, PresenceHistoryRuntimeStatus, PresenceHistoryStreamInspection,
     PresenceHistoryStreamRuntimeState, PresenceHistoryTransitionRecord, PresenceSnapshot,
     PresenceSnapshotMember, PresenceSnapshotRequest,
 };

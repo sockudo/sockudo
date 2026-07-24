@@ -159,7 +159,7 @@ impl VersionStore for DynamoDbVersionStore {
             "action".to_string(),
             Self::attr_s(record.message.action.as_str()),
         );
-        entry_item.insert("payload_bytes".to_string(), Self::attr_b(payload));
+        entry_item.insert("payload_bytes".to_string(), Self::attr_b(payload.clone()));
         entry_item.insert("created_at_ms".to_string(), Self::attr_n(now_ms));
         if let Some(expires_at) = self.expires_at_value() {
             entry_item.insert(Self::EXPIRES_AT_ATTR.to_string(), expires_at);
@@ -185,12 +185,12 @@ impl VersionStore for DynamoDbVersionStore {
         // Advance version_messages if this version_serial is greater.
         let (update_expr, expires_value) = if let Some(expires) = self.expires_at_value() {
             (
-                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now), expires_at = :exp",
+                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, latest_payload_bytes = :payload, is_open_stream = :is_open, append_count = if_not_exists(append_count, :zero) + :append_increment, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now), expires_at = :exp",
                 Some(expires),
             )
         } else {
             (
-                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now)",
+                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, latest_payload_bytes = :payload, is_open_stream = :is_open, append_count = if_not_exists(append_count, :zero) + :append_increment, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now)",
                 None,
             )
         };
@@ -210,6 +210,19 @@ impl VersionStore for DynamoDbVersionStore {
             .expression_attribute_values(":vs", Self::attr_s(record.version_serial().as_str()))
             .expression_attribute_values(":ds", Self::attr_n(record.delivery_serial()))
             .expression_attribute_values(":action", Self::attr_s(record.message.action.as_str()))
+            .expression_attribute_values(":payload", Self::attr_b(payload.clone()))
+            .expression_attribute_values(
+                ":is_open",
+                AttributeValue::Bool(record.is_open_ai_stream()),
+            )
+            .expression_attribute_values(":zero", Self::attr_n(0))
+            .expression_attribute_values(
+                ":append_increment",
+                Self::attr_n(usize::from(
+                    record.message.action
+                        == sockudo_core::versioned_messages::MessageAction::Append,
+                )),
+            )
             .expression_attribute_values(":now", Self::attr_n(now_ms))
             .expression_attribute_values(":hs", Self::attr_n(record.history_serial()))
             .expression_attribute_values(
@@ -236,12 +249,405 @@ impl VersionStore for DynamoDbVersionStore {
         Ok(())
     }
 
+    async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        if let Some(limit) = request.limits.max_accumulated_message_bytes
+            && request.record.data_bytes()? > limit
+        {
+            return Ok(VersionCreateResult::Rejected(
+                VersionCreateRejection::AccumulatedMessageBytes { limit },
+            ));
+        }
+        let app_channel = Self::app_channel_key(&request.record.app_id, &request.record.channel);
+        let stream_item = self
+            .client
+            .get_item()
+            .table_name(&self.tables.version_streams)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read version stream: {e}")))?
+            .item;
+        let next_delivery = stream_item
+            .as_ref()
+            .and_then(|item| Self::item_num(item, "next_delivery_serial"))
+            .unwrap_or(1) as u64;
+        let open_count = stream_item
+            .as_ref()
+            .and_then(|item| Self::item_num(item, "open_stream_count"))
+            .unwrap_or(0) as usize;
+        if request.record.is_open_ai_stream()
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+            && open_count >= limit
+        {
+            return Ok(VersionCreateResult::Rejected(
+                VersionCreateRejection::OpenStreamingMessages { limit },
+            ));
+        }
+        let message_key = request.record.message_serial().as_str().to_string();
+        let existing = self
+            .client
+            .get_item()
+            .table_name(&self.tables.version_messages)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .key("message_serial", Self::attr_s(&message_key))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read create target: {e}")))?
+            .item;
+        if existing.is_some() {
+            let current = self
+                .get_latest(
+                    &request.record.app_id,
+                    &request.record.channel,
+                    request.record.message_serial(),
+                )
+                .await?
+                .ok_or_else(|| {
+                    Error::Internal("Existing message has no readable version entry".to_string())
+                })?;
+            return Ok(VersionCreateResult::Conflict {
+                current: Some(current),
+            });
+        }
+
+        let stream_id = format!("{}/{}", request.record.app_id, request.record.channel);
+        let record = request
+            .record
+            .with_delivery_position(&stream_id, next_delivery);
+        let payload = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize create record: {e}")))?;
+        let now_ms = sockudo_core::history::now_ms();
+        let next_open = open_count + usize::from(record.is_open_ai_stream());
+        let stream_write = if stream_item.is_some() {
+            let update = Update::builder()
+                .table_name(&self.tables.version_streams)
+                .key("app_channel", Self::attr_s(&app_channel))
+                .update_expression("SET next_delivery_serial = :next, open_stream_count = :new_open, updated_at_ms = :now, oldest_available_delivery_serial = if_not_exists(oldest_available_delivery_serial, :delivery), newest_available_delivery_serial = :delivery")
+                .condition_expression("next_delivery_serial = :expected AND (attribute_not_exists(open_stream_count) OR open_stream_count = :open)")
+                .expression_attribute_values(":next", Self::attr_n(next_delivery + 1))
+                .expression_attribute_values(":expected", Self::attr_n(next_delivery))
+                .expression_attribute_values(":open", Self::attr_n(open_count))
+                .expression_attribute_values(":new_open", Self::attr_n(next_open))
+                .expression_attribute_values(":delivery", Self::attr_n(next_delivery))
+                .expression_attribute_values(":now", Self::attr_n(now_ms))
+                .build()
+                .map_err(|e| Error::Internal(format!("Failed to build stream update: {e}")))?;
+            TransactWriteItem::builder().update(update).build()
+        } else {
+            let mut item = HashMap::new();
+            item.insert("app_channel".to_string(), Self::attr_s(&app_channel));
+            item.insert("app_id".to_string(), Self::attr_s(&record.app_id));
+            item.insert("channel".to_string(), Self::attr_s(&record.channel));
+            item.insert("next_delivery_serial".to_string(), Self::attr_n(2));
+            item.insert("open_stream_count".to_string(), Self::attr_n(next_open));
+            item.insert(
+                "oldest_available_delivery_serial".to_string(),
+                Self::attr_n(1),
+            );
+            item.insert(
+                "newest_available_delivery_serial".to_string(),
+                Self::attr_n(1),
+            );
+            item.insert("migration_state".to_string(), Self::attr_s("native_only"));
+            item.insert("updated_at_ms".to_string(), Self::attr_n(now_ms));
+            let put = Put::builder()
+                .table_name(&self.tables.version_streams)
+                .set_item(Some(item))
+                .condition_expression("attribute_not_exists(app_channel)")
+                .build()
+                .map_err(|e| Error::Internal(format!("Failed to build stream create: {e}")))?;
+            TransactWriteItem::builder().put(put).build()
+        };
+        let entry_put = Put::builder()
+            .table_name(&self.tables.version_entries)
+            .set_item(Some(self.entry_item(&record, None)?))
+            .condition_expression("attribute_not_exists(message_version_key)")
+            .build()
+            .map_err(|e| Error::Internal(format!("Failed to build create entry: {e}")))?;
+        let mut message_item = HashMap::new();
+        message_item.insert("app_channel".to_string(), Self::attr_s(&app_channel));
+        message_item.insert("message_serial".to_string(), Self::attr_s(&message_key));
+        message_item.insert(
+            "latest_version_serial".to_string(),
+            Self::attr_s(record.version_serial().as_str()),
+        );
+        message_item.insert(
+            "latest_delivery_serial".to_string(),
+            Self::attr_n(next_delivery),
+        );
+        message_item.insert(
+            "latest_action".to_string(),
+            Self::attr_s(record.message.action.as_str()),
+        );
+        message_item.insert("latest_payload_bytes".to_string(), Self::attr_b(payload));
+        message_item.insert("append_count".to_string(), Self::attr_n(0));
+        message_item.insert(
+            "is_open_stream".to_string(),
+            AttributeValue::Bool(record.is_open_ai_stream()),
+        );
+        message_item.insert(
+            "history_serial".to_string(),
+            Self::attr_n(record.history_serial()),
+        );
+        message_item.insert("created_at_ms".to_string(), Self::attr_n(now_ms));
+        message_item.insert("updated_at_ms".to_string(), Self::attr_n(now_ms));
+        let message_put = Put::builder()
+            .table_name(&self.tables.version_messages)
+            .set_item(Some(message_item))
+            .condition_expression("attribute_not_exists(message_serial)")
+            .build()
+            .map_err(|e| Error::Internal(format!("Failed to build message create: {e}")))?;
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(stream_write)
+            .transact_items(TransactWriteItem::builder().put(entry_put).build())
+            .transact_items(TransactWriteItem::builder().put(message_put).build())
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(VersionCreateResult::Applied { record, stream_id }),
+            Err(error) if error.to_string().contains("TransactionCanceled") => {
+                let current = self
+                    .get_latest(&record.app_id, &record.channel, record.message_serial())
+                    .await?;
+                if let Some(current) = current {
+                    Ok(VersionCreateResult::Conflict {
+                        current: Some(current),
+                    })
+                } else {
+                    Ok(VersionCreateResult::Conflict { current: None })
+                }
+            }
+            Err(error) => Err(Error::Internal(format!(
+                "Failed to transact version create: {error}"
+            ))),
+        }
+    }
+
+    async fn compare_and_apply(
+        &self,
+        request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        let app_channel = Self::app_channel_key(&request.app_id, &request.channel);
+        if let Some(operation) = request.idempotency.as_ref() {
+            let receipt_key = Self::operation_receipt_key(&operation.cache_key);
+            if let Some(item) = self
+                .client
+                .get_item()
+                .table_name(&self.tables.version_entries)
+                .key("app_channel", Self::attr_s(&app_channel))
+                .key("message_version_key", Self::attr_s(&receipt_key))
+                .consistent_read(true)
+                .send()
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to read operation receipt: {e}")))?
+                .item
+            {
+                let fingerprint = Self::item_str(&item, "operation_fingerprint");
+                if fingerprint.as_deref() != Some(operation.payload_fingerprint.as_str()) {
+                    return Err(Error::IdempotencyConflict);
+                }
+                let bytes = item
+                    .get("payload_bytes")
+                    .and_then(|value| value.as_b().ok())
+                    .map(|value| value.as_ref().to_vec())
+                    .ok_or_else(|| Error::Internal("Receipt payload is missing".to_string()))?;
+                let record = sonic_rs::from_slice(&bytes).map_err(|e| {
+                    Error::Internal(format!("Failed to decode operation receipt: {e}"))
+                })?;
+                return Ok(VersionMutationResult::Duplicate {
+                    record,
+                    stream_id: format!("{}/{}", request.app_id, request.channel),
+                });
+            }
+        }
+        let stream_item = self
+            .client
+            .get_item()
+            .table_name(&self.tables.version_streams)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read version stream: {e}")))?
+            .item;
+        let Some(stream_item) = stream_item else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+        let next_delivery =
+            Self::item_num(&stream_item, "next_delivery_serial").unwrap_or(1) as u64;
+        let open_count = Self::item_num(&stream_item, "open_stream_count").unwrap_or(0) as usize;
+        let message_item = self
+            .client
+            .get_item()
+            .table_name(&self.tables.version_messages)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .key(
+                "message_serial",
+                Self::attr_s(request.message_serial.as_str()),
+            )
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read mutation predecessor: {e}")))?
+            .item;
+        let Some(message_item) = message_item else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+        let current = if let Some(current_bytes) = message_item
+            .get("latest_payload_bytes")
+            .and_then(|value| value.as_b().ok())
+        {
+            sonic_rs::from_slice(current_bytes.as_ref()).map_err(|e| {
+                Error::Internal(format!("Failed to decode mutation predecessor: {e}"))
+            })?
+        } else {
+            self.get_latest(&request.app_id, &request.channel, &request.message_serial)
+                .await?
+                .ok_or_else(|| {
+                    Error::Internal("Message has no readable version entry".to_string())
+                })?
+        };
+        let append_count = Self::item_num(&message_item, "append_count").unwrap_or(0) as usize;
+        let delivery_serial = next_delivery.max(current.delivery_serial().saturating_add(1));
+        let stream_id = format!("{}/{}", request.app_id, request.channel);
+        let outcome = request.apply_to(&current, &stream_id, delivery_serial, append_count)?;
+        let VersionMutationResult::Applied { record, .. } = outcome else {
+            return Ok(outcome);
+        };
+        let opens = !current.is_open_ai_stream() && record.is_open_ai_stream();
+        let closes = current.is_open_ai_stream() && !record.is_open_ai_stream();
+        if opens
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+            && open_count >= limit
+        {
+            return Ok(VersionMutationResult::Rejected(
+                VersionMutationRejection::OpenStreamingMessages { limit },
+            ));
+        }
+        let next_open = open_count
+            .saturating_add(usize::from(opens))
+            .saturating_sub(usize::from(closes));
+        let next_append_count = append_count
+            + usize::from(matches!(
+                request.mutation,
+                sockudo_core::version_store::VersionMutation::Append(_)
+            ));
+        let now_ms = sockudo_core::history::now_ms();
+        let payload = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize mutation record: {e}")))?;
+        let stream_update = Update::builder()
+            .table_name(&self.tables.version_streams)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .update_expression("SET next_delivery_serial = :next, open_stream_count = :new_open, newest_available_delivery_serial = :delivery, updated_at_ms = :now")
+            .condition_expression("next_delivery_serial = :expected AND (attribute_not_exists(open_stream_count) OR open_stream_count = :open)")
+            .expression_attribute_values(":next", Self::attr_n(delivery_serial + 1))
+            .expression_attribute_values(":expected", Self::attr_n(next_delivery))
+            .expression_attribute_values(":open", Self::attr_n(open_count))
+            .expression_attribute_values(":new_open", Self::attr_n(next_open))
+            .expression_attribute_values(":delivery", Self::attr_n(delivery_serial))
+            .expression_attribute_values(":now", Self::attr_n(now_ms))
+            .build()
+            .map_err(|e| Error::Internal(format!("Failed to build stream mutation: {e}")))?;
+        let entry_put = Put::builder()
+            .table_name(&self.tables.version_entries)
+            .set_item(Some(
+                self.entry_item(&record, request.idempotency.as_ref())?,
+            ))
+            .condition_expression("attribute_not_exists(message_version_key)")
+            .build()
+            .map_err(|e| Error::Internal(format!("Failed to build mutation entry: {e}")))?;
+        let message_update = Update::builder()
+            .table_name(&self.tables.version_messages)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .key(
+                "message_serial",
+                Self::attr_s(request.message_serial.as_str()),
+            )
+            .update_expression("SET latest_version_serial = :next_vs, latest_delivery_serial = :next_ds, latest_action = :action, latest_payload_bytes = :payload, append_count = :append_count, is_open_stream = :is_open, updated_at_ms = :now")
+            .condition_expression("latest_version_serial = :expected_vs AND latest_delivery_serial = :expected_ds")
+            .expression_attribute_values(":next_vs", Self::attr_s(record.version_serial().as_str()))
+            .expression_attribute_values(":next_ds", Self::attr_n(delivery_serial))
+            .expression_attribute_values(":action", Self::attr_s(record.message.action.as_str()))
+            .expression_attribute_values(":payload", Self::attr_b(payload.clone()))
+            .expression_attribute_values(":append_count", Self::attr_n(next_append_count))
+            .expression_attribute_values(":is_open", AttributeValue::Bool(record.is_open_ai_stream()))
+            .expression_attribute_values(":now", Self::attr_n(now_ms))
+            .expression_attribute_values(":expected_vs", Self::attr_s(current.version_serial().as_str()))
+            .expression_attribute_values(":expected_ds", Self::attr_n(current.delivery_serial()))
+            .build()
+            .map_err(|e| Error::Internal(format!("Failed to build message mutation: {e}")))?;
+        let mut transaction = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(stream_update).build())
+            .transact_items(TransactWriteItem::builder().put(entry_put).build())
+            .transact_items(TransactWriteItem::builder().update(message_update).build());
+        if let Some(operation) = request.idempotency.as_ref() {
+            let mut receipt = HashMap::new();
+            receipt.insert("app_channel".to_string(), Self::attr_s(&app_channel));
+            receipt.insert(
+                "message_version_key".to_string(),
+                Self::attr_s(&Self::operation_receipt_key(&operation.cache_key)),
+            );
+            receipt.insert(
+                "operation_fingerprint".to_string(),
+                Self::attr_s(&operation.payload_fingerprint),
+            );
+            receipt.insert("payload_bytes".to_string(), Self::attr_b(payload));
+            let receipt_put = Put::builder()
+                .table_name(&self.tables.version_entries)
+                .set_item(Some(receipt))
+                .condition_expression("attribute_not_exists(message_version_key)")
+                .build()
+                .map_err(|e| Error::Internal(format!("Failed to build operation receipt: {e}")))?;
+            transaction =
+                transaction.transact_items(TransactWriteItem::builder().put(receipt_put).build());
+        }
+        match transaction.send().await {
+            Ok(_) => Ok(VersionMutationResult::Applied { record, stream_id }),
+            Err(error) if error.to_string().contains("TransactionCanceled") => {
+                Ok(VersionMutationResult::Conflict {
+                    current: self
+                        .get_latest(&request.app_id, &request.channel, &request.message_serial)
+                        .await?,
+                })
+            }
+            Err(error) => Err(Error::Internal(format!(
+                "Failed to transact version mutation: {error}"
+            ))),
+        }
+    }
+
     async fn get_latest(
         &self,
         app_id: &str,
         channel: &str,
         message_serial: &sockudo_core::versioned_messages::MessageSerial,
     ) -> Result<Option<StoredVersionRecord>> {
+        let app_channel = Self::app_channel_key(app_id, channel);
+        if let Some(item) = self
+            .client
+            .get_item()
+            .table_name(&self.tables.version_messages)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .key("message_serial", Self::attr_s(message_serial.as_str()))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read latest message: {e}")))?
+            .item
+            && let Some(bytes) = item
+                .get("latest_payload_bytes")
+                .and_then(|value| value.as_b().ok())
+        {
+            let record = sonic_rs::from_slice(bytes.as_ref())
+                .map_err(|e| Error::Internal(format!("Failed to decode latest message: {e}")))?;
+            return Ok(Some(record));
+        }
         let app_channel_message =
             Self::app_channel_message_key(app_id, channel, message_serial.as_str());
         // Query the message GSI sorted by version_serial DESC, limit 1.

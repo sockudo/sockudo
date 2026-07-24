@@ -1,5 +1,5 @@
-import CryptoKit
 import CXDelta3
+import CryptoKit
 import Foundation
 import Testing
 
@@ -923,7 +923,8 @@ func capabilityTokenRefreshDelayFallsBackToNowWhenIatMissing() throws {
 
   #expect(abs(delay - 800) < 0.001)
   #expect(SockudoClient.capabilityTokenRefreshDelay(for: "opaque-token") == nil)
-  #expect(SockudoClient.capabilityTokenRefreshDelay(for: try unsignedJWT(claims: ["iat": 1])) == nil)
+  #expect(
+    SockudoClient.capabilityTokenRefreshDelay(for: try unsignedJWT(claims: ["iat": 1])) == nil)
 }
 
 @Test @SockudoActor
@@ -1026,6 +1027,80 @@ func messagePackRoundTrip() throws {
   #expect(decoded.serial == 7)
   #expect(decoded.sequence == 7)
   #expect(decoded.conflationKey == "room")
+}
+
+@Test @SockudoActor
+func nativeBinaryRoundTrip() throws {
+  let data = Data([0, 1, 2, 255])
+
+  for wireFormat in [SockudoWireFormat.messagepack, .protobuf] {
+    let payload = try ProtocolCodec.encodeEnvelope(
+      [
+        "event": "sockudo:binary",
+        "channel": "binary:room-1",
+        "data": data,
+      ],
+      format: wireFormat
+    )
+
+    let decoded = try ProtocolCodec.decodeEvent(
+      websocketMessage(from: payload),
+      format: wireFormat
+    )
+
+    #expect(decoded.data as? Data == data)
+  }
+}
+
+@Test
+func subscriptionExpressionsPreserveBothWireVariants() {
+  #expect(
+    SubscriptionExpression.source("data.total >= `100`").subscriptionValue as? String
+      == "data.total >= `100`"
+  )
+  #expect(
+    SubscriptionExpression.descriptor(source: "headers.priority == `\"high\"`")
+      .subscriptionValue as? [String: String]
+      == ["language": "jmespath", "source": "headers.priority == `\"high\"`"]
+  )
+}
+
+@Test @SockudoActor
+func resumeSuccessAppliesAuthoritativeChannelPosition() throws {
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(
+      cluster: "local",
+      protocolVersion: 2,
+      forceTLS: false,
+      connectionRecovery: true
+    )
+  )
+  let raw = try JSON.encodeString([
+    "event": "sockudo:resume_success",
+    "data": [
+      "recovered": [
+        [
+          "channel": "orders",
+          "source": "durable",
+          "replayed": 0,
+          "position": [
+            "stream_id": "stream-2",
+            "serial": 42,
+            "last_message_id": "message-42",
+          ],
+        ]
+      ],
+      "failed": [],
+    ],
+  ])
+
+  client.handle(rawMessage: .string(raw))
+
+  #expect(
+    client.recoveryPosition(for: "orders")
+      == RecoveryPosition(streamID: "stream-2", serial: 42, lastMessageID: "message-42")
+  )
 }
 
 @Test @SockudoActor
@@ -1365,7 +1440,8 @@ func liveV2HeartbeatUsesControlFramesOnIdle() async throws {
   do {
     let unexpected = try await receiveMessage(from: task, timeout: 8)
     let event = try decodedEvent(unexpected)
-    Issue.record("Expected no protocol heartbeat messages on idle V2 connection, got \(event.event)")
+    Issue.record(
+      "Expected no protocol heartbeat messages on idle V2 connection, got \(event.event)")
   } catch ReceiveTimeoutError.timedOut {
     // Expected: control-frame heartbeats are not surfaced as normal protocol messages.
   }
@@ -1717,7 +1793,7 @@ struct ConcurrencyComplianceTests {
     // All 19 are data-transfer types with [String: Any] or Any fields.
     // See individual // @unchecked Sendable comments in source files for justifications.
     // If this number grows, revisit: https://github.com/sockudo/sockudo
-    #expect(Bool(true)) // Compile-time contract; runtime is a formality.
+    #expect(Bool(true))  // Compile-time contract; runtime is a formality.
   }
 
   @Test @SockudoActor

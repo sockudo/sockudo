@@ -11,6 +11,7 @@ use sockudo_core::presence_history::{
     PresenceHistoryEventKind, PresenceHistoryRetentionPolicy, PresenceHistoryStore,
     PresenceHistoryTransitionRecord, TrackingPresenceHistoryStore,
 };
+use sockudo_core::presence_registry::PresenceRecord;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
 async fn seed_valid_snapshot_history(
@@ -327,6 +328,77 @@ async fn dead_node_cleanup_replay_does_not_duplicate_presence_history_rows() {
     assert_eq!(
         page.items[1].cause,
         PresenceHistoryEventCause::OrphanCleanup
+    );
+}
+
+#[tokio::test]
+async fn dead_node_cleanup_removes_ably_virtual_member_from_typed_registry_once() {
+    let app = test_app();
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(app.clone()).await.unwrap();
+    let adapter =
+        Arc::new(LocalAdapter::new()) as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+    let cache = Arc::new(MemoryCacheManager::new(
+        "test-ably-orphan".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let handler = Arc::new(
+        ConnectionHandlerBuilder::new(
+            app_manager,
+            adapter,
+            cache,
+            sockudo_core::options::ServerOptions::default(),
+        )
+        .build(),
+    );
+    let member = PresenceRecord {
+        connection_id: "ably-connection-1".to_string(),
+        client_id: "user-1".to_string(),
+        id: "ably-connection-1:1:0".to_string(),
+        data: Some(sonic_rs::json!({ "name": "Ada" })),
+        encoding: Some("json".to_string()),
+        extras: None,
+        timestamp_ms: sockudo_core::history::now_ms(),
+    };
+    handler
+        .presence_registry()
+        .register_connection("app-1", &member.connection_id);
+    handler
+        .presence_registry()
+        .enter("app-1", "presence-room", member.clone())
+        .unwrap();
+
+    let encoded_member = sonic_rs::to_value(&member).unwrap();
+    assert_eq!(
+        sonic_rs::from_slice::<PresenceRecord>(&sonic_rs::to_vec(&encoded_member).unwrap())
+            .unwrap(),
+        member
+    );
+    let cleanup_event = sockudo_adapter::horizontal_adapter::DeadNodeEvent {
+        dead_node_id: "dead-node".to_string(),
+        orphaned_members: vec![sockudo_adapter::horizontal_adapter::OrphanedMember {
+            app_id: "app-1".to_string(),
+            channel: "presence-room".to_string(),
+            user_id: "user-1".to_string(),
+            user_info: Some(encoded_member),
+        }],
+    };
+
+    handler
+        .handle_dead_node_cleanup(cleanup_event.clone())
+        .await
+        .unwrap();
+    handler
+        .handle_dead_node_cleanup(cleanup_event)
+        .await
+        .unwrap();
+
+    assert!(
+        handler
+            .presence_registry()
+            .snapshot("app-1", "presence-room")
+            .is_empty(),
+        "dead-node cleanup must remove the Ably virtual member from typed presence"
     );
 }
 

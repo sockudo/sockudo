@@ -17,6 +17,7 @@ pub(crate) struct PushAdmissionSnapshot {
     planner_worker_count: u32,
     shard_worker_count: u32,
     feedback_worker_count: u32,
+    fanout_fast_threshold: u64,
     backpressure_lag_threshold_secs: u64,
     providers: BTreeMap<PushProviderKind, PushProviderCapability>,
 }
@@ -86,6 +87,7 @@ impl PushAdmissionSnapshot {
             planner_worker_count: config.push.planner_worker_count,
             shard_worker_count: config.push.shard_worker_count,
             feedback_worker_count: config.push.feedback_worker_count,
+            fanout_fast_threshold: config.push.fanout_fast_threshold,
             backpressure_lag_threshold_secs: config.push.backpressure_lag_threshold_secs,
             providers,
         }
@@ -114,6 +116,7 @@ impl PushAdmissionSnapshot {
             planner_worker_count: 1,
             shard_worker_count: 1,
             feedback_worker_count: 1,
+            fanout_fast_threshold: sockudo_push::DEFAULT_PUSH_FANOUT_FAST_THRESHOLD,
             backpressure_lag_threshold_secs: 60,
             providers,
         }
@@ -270,6 +273,29 @@ impl PushAdmissionSnapshot {
     }
 }
 
+#[cfg(feature = "ably-compat")]
+impl sockudo_ably_compat::AblyPushAdmissionGuard for PushAdmissionSnapshot {
+    fn rejection_for(
+        &self,
+        targets: &[PublishTarget],
+        required_providers: &BTreeSet<PushProviderKind>,
+        expected_recipients: u64,
+    ) -> Option<String> {
+        let regime = if expected_recipients < self.fanout_fast_threshold {
+            FanoutRegime::FastPath
+        } else {
+            FanoutRegime::ShardPath
+        };
+        self.rejection_for_targets(targets, regime)
+            .or_else(|| {
+                required_providers
+                    .iter()
+                    .find_map(|provider| self.provider_rejection(*provider))
+            })
+            .map(|rejection| rejection.message())
+    }
+}
+
 impl PushAdmissionRejection {
     pub(crate) fn message(&self) -> String {
         match self {
@@ -334,6 +360,7 @@ async fn provider_status(
         PushProviderKind::WebPush => webpush_status(),
         PushProviderKind::Hms => hms_status(),
         PushProviderKind::Wns => wns_status(),
+        PushProviderKind::Realtime => PushProviderStatus::Active,
     }
 }
 
@@ -344,6 +371,7 @@ fn provider_enabled(config: &ServerOptions, provider: PushProviderKind) -> bool 
         PushProviderKind::WebPush => config.push.webpush_enabled,
         PushProviderKind::Hms => config.push.hms_enabled,
         PushProviderKind::Wns => config.push.wns_enabled,
+        PushProviderKind::Realtime => config.ably_compat.enabled,
     }
 }
 
@@ -694,6 +722,7 @@ fn all_providers() -> Vec<PushProviderKind> {
         PushProviderKind::WebPush,
         PushProviderKind::Hms,
         PushProviderKind::Wns,
+        PushProviderKind::Realtime,
     ]
 }
 
@@ -704,6 +733,7 @@ fn provider_label(provider: PushProviderKind) -> &'static str {
         PushProviderKind::WebPush => "Web Push",
         PushProviderKind::Hms => "HMS",
         PushProviderKind::Wns => "WNS",
+        PushProviderKind::Realtime => "Realtime",
     }
 }
 
@@ -755,6 +785,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(rejection, PushAdmissionRejection::NoProviderWorkers);
+    }
+
+    #[cfg(feature = "ably-compat")]
+    #[test]
+    fn ably_projection_rejects_a_resolved_provider_without_an_active_worker() {
+        use sockudo_ably_compat::AblyPushAdmissionGuard;
+
+        let snapshot = PushAdmissionSnapshot::testing_active([PushProviderKind::Realtime]);
+        let targets = [PublishTarget::Device {
+            device_id: "device-1".to_owned(),
+        }];
+
+        let rejection =
+            snapshot.rejection_for(&targets, &BTreeSet::from([PushProviderKind::Fcm]), 1);
+        assert!(
+            rejection
+                .as_deref()
+                .is_some_and(|message| message.contains("FCM provider worker is disabled"))
+        );
+        assert!(
+            snapshot
+                .rejection_for(&targets, &BTreeSet::from([PushProviderKind::Realtime]), 1,)
+                .is_none()
+        );
     }
 
     #[test]

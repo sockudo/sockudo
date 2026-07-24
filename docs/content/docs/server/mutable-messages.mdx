@@ -20,6 +20,12 @@ preserving an ordered version log for history and recovery.
 Wire constants live in `sockudo-protocol/src/versioned_messages.rs`; store semantics live in
 `sockudo-core/src/versioned_messages.rs` and `sockudo-core/src/version_store.rs`.
 
+At commit time Sockudo also records a protocol-neutral message envelope in the
+version record and new history payloads. It preserves the client message ID,
+publisher identity and timestamp, typed stream/history/delivery positions,
+complete encoding chain, user-visible extras, and operation metadata. Older
+stored payloads remain readable through the envelope migration fallback.
+
 ## Aggregation
 
 Sockudo stores each operation as a version. Latest reads and history substitution return the latest
@@ -32,6 +38,21 @@ visible state, not a raw operation log, when versioned messages are enabled.
   serial.
 - Replay continuity requires contiguous delivery serials.
 
+Every create or mutation commits through one `VersionStore` transaction. The
+transaction validates the exact predecessor, reserves the next delivery
+position, writes the version, and stores any idempotency receipt together. A
+failed transaction exposes neither a version nor a delivery gap. Concurrent
+appends retry from the newest aggregate, so each accepted fragment appears once
+and in commit order. Accumulated-byte, append-count, open-stream, and terminal
+state checks are part of that transaction; in-memory counters are observability
+only.
+
+`op_id` is scoped by app, channel, message, and action. Replaying the same ID
+with the same canonical operation returns the original acknowledgement without
+fanout. Reusing it with a different operation is an idempotency conflict.
+Memory, PostgreSQL, MySQL, DynamoDB, ScyllaDB, and SurrealDB implement the same
+compare-and-apply contract.
+
 ## HTTP surfaces
 
 Signed app HTTP auth can create mutable messages through `/events`. Mutation and read surfaces are:
@@ -43,6 +64,33 @@ Signed app HTTP auth can create mutable messages through `/events`. Mutation and
 | `POST` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}/append` |
 | `GET` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}` |
 | `GET` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}/versions` |
+
+The optional Ably compatibility facade projects the pinned SDK shape over the
+same service:
+
+```http
+PATCH /channels/{channel}/messages/{messageSerial}
+Content-Type: application/json
+```
+
+```json
+{
+  "serial": "message-serial",
+  "action": "message.append",
+  "data": " fragment",
+  "version": {
+    "serial": "optional-version-serial",
+    "clientId": "verified-or-server-attributed-client",
+    "timestamp": 1710000000000,
+    "description": "stream fragment",
+    "metadata": { "source": "agent" }
+  }
+}
+```
+
+`message.update` and `message.delete` use the same envelope. JSON and MsgPack
+requests, successes, and errors all use the negotiated compatibility encoder.
+The path and body serial must identify the same logical message.
 
 Mutation bodies may include `socket_id` and `client_id` to bind the operation to a connected V2
 actor. Without `socket_id`, signed app-key HTTP requests are privileged server operations.
@@ -63,6 +111,9 @@ Capabilities are channel-pattern maps:
 `*_any` grants are checked first. `*_own` grants require an identified actor, an identified
 original creator, and a constant-time match between actor `client_id` and original creator
 `client_id`. Trusted app-key server requests bypass as privileged operations.
+For token-authenticated compatibility clients, an operation-supplied `clientId`
+is metadata only after the authenticated actor and capability check succeeds;
+it is never identity proof.
 
 ## Limits
 

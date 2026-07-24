@@ -90,8 +90,9 @@ export function useChannel<TChannel extends Channel = Channel>(
         filter: options.filter ?? null,
         delta: options.delta ?? null,
         events: options.events ?? null,
+        expression: options.expression ?? null,
       }),
-    [options.filter, options.delta, options.events],
+    [options.filter, options.delta, options.events, options.expression],
   );
 
   callbacksRef.current = options;

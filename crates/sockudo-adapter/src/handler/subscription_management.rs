@@ -8,7 +8,9 @@ use sockudo_core::annotations::AnnotationProjectionsForChannelRequest;
 use sockudo_core::app::App;
 use sockudo_core::channel::{ChannelType, PresenceMemberInfo};
 use sockudo_core::error::Result;
-use sockudo_core::history::{HistoryDirection, HistoryItem, HistoryReadRequest, now_ms};
+#[cfg(test)]
+use sockudo_core::history::HistoryItem;
+use sockudo_core::history::{HistoryDirection, HistoryReadRequest, now_ms};
 #[cfg(feature = "delta")]
 use sockudo_delta::DeltaCompressionManager;
 
@@ -337,8 +339,8 @@ impl ConnectionHandler {
             )
             .await?;
 
-            if let Some(attach_serial) = attach_serial {
-                self.drain_attach_gate(socket_id, app_config, &request.channel, attach_serial)
+            if attach_serial.is_some() {
+                self.drain_attach_gate(socket_id, app_config, &request.channel)
                     .await?;
             }
         }
@@ -497,31 +499,78 @@ impl ConnectionHandler {
         }
 
         let max_page_size = history_policy.max_page_size;
-        let page = self
-            .history_store()
-            .read_page(build_rewind_history_read_request(
-                &app_config.id,
-                &request.channel,
-                rewind,
-                max_page_size,
-            ))
-            .await?;
+        let desired = rewind.limit().min(max_page_size);
+        let scan_limit = max_page_size.saturating_mul(16).max(desired);
+        let mut history_request = build_rewind_history_read_request(
+            &app_config.id,
+            &request.channel,
+            rewind,
+            max_page_size,
+        );
+        let mut selected = Vec::with_capacity(desired);
+        let mut scanned = 0usize;
+        let mut retained_newest = None;
+        let mut truncated_by_retention = false;
+        let source_has_more;
 
-        let items = normalize_rewind_items_for_delivery(rewind, page.items);
+        loop {
+            let page = self
+                .history_store()
+                .read_page(history_request.clone())
+                .await?;
+            retained_newest = retained_newest.or(page.retained.newest_serial);
+            truncated_by_retention |= page.truncated_by_retention;
+            let page_has_more = page.has_more;
+            let next_cursor = page.next_cursor;
 
-        let history_head_serial = items
-            .last()
-            .map(|item| item.serial)
-            .or(page.retained.newest_serial);
-        let delivered_message_ids = items
+            let page_items = page.items;
+            let projected_messages = self
+                .history_items_to_realtime_messages(app_config, &request.channel, &page_items)
+                .await?;
+            for (item, message) in page_items.into_iter().zip(projected_messages) {
+                scanned = scanned.saturating_add(1);
+                if crate::v2_broadcast::socket_allows_message(
+                    &connection,
+                    &request.channel,
+                    &message,
+                    true,
+                ) {
+                    selected.push((item, message));
+                    if selected.len() == desired {
+                        break;
+                    }
+                }
+                if scanned == scan_limit {
+                    break;
+                }
+            }
+
+            if selected.len() == desired || scanned == scan_limit || !page_has_more {
+                source_has_more = page_has_more;
+                break;
+            }
+            let Some(cursor) = next_cursor else {
+                source_has_more = false;
+                break;
+            };
+            history_request.cursor = Some(cursor);
+        }
+
+        if matches!(rewind, SubscriptionRewind::Count(_)) {
+            selected.reverse();
+        }
+        let history_head_serial = retained_newest;
+        let delivered_message_ids = selected
             .iter()
-            .filter_map(|item| item.message_id.clone())
+            .filter_map(|(item, _)| item.message_id.clone())
             .collect::<HashSet<_>>();
 
-        self.send_rewind_history_items(socket_id, app_config, &request.channel, &items)
-            .await?;
+        for (_, message) in &selected {
+            self.send_message_to_socket(&app_config.id, socket_id, message.clone())
+                .await?;
+        }
 
-        let buffered = connection.finish_rewind_gate(&request.channel).await;
+        let buffered = connection.finish_rewind_gate(&request.channel).await?;
         let live_messages =
             filter_buffered_rewind_messages(buffered, history_head_serial, &delivered_message_ids);
         let live_count = live_messages.len();
@@ -530,41 +579,22 @@ impl ConnectionHandler {
                 .await?;
         }
 
-        let truncated_by_limit = match rewind {
-            SubscriptionRewind::Count(count) => *count > max_page_size,
-            SubscriptionRewind::Seconds(_) => page.has_more,
-        };
-        let rewind_complete = !page.truncated_by_retention && !truncated_by_limit;
+        let truncated_by_limit = rewind.limit() > max_page_size
+            || (source_has_more && (selected.len() == desired || scanned == scan_limit));
+        let rewind_complete = !truncated_by_retention && !truncated_by_limit;
 
         self.send_rewind_complete(
             socket_id,
             app_config,
             &request.channel,
-            items.len(),
+            selected.len(),
             live_count,
             rewind_complete,
-            page.truncated_by_retention,
+            truncated_by_retention,
             truncated_by_limit,
         )
         .await?;
 
-        Ok(())
-    }
-
-    async fn send_rewind_history_items(
-        &self,
-        socket_id: &SocketId,
-        app_config: &App,
-        channel: &str,
-        items: &[HistoryItem],
-    ) -> Result<()> {
-        for item in items {
-            let message = self
-                .history_item_to_realtime_message(app_config, channel, item)
-                .await?;
-            self.send_message_to_socket(&app_config.id, socket_id, message)
-                .await?;
-        }
         Ok(())
     }
 
@@ -626,31 +656,20 @@ impl ConnectionHandler {
                 let tag_filter = request.tags_filter.clone();
                 #[cfg(not(feature = "tag-filtering"))]
                 let tag_filter = None;
+                #[cfg(feature = "tag-filtering")]
+                let predicate = request.predicate.clone();
+                #[cfg(not(feature = "tag-filtering"))]
+                let predicate = None;
 
                 conn_arc
                     .subscribe_to_channel_with_filters(
                         request.channel.clone(),
                         tag_filter,
                         request.event_name_filter.clone(),
+                        predicate,
                         request.annotation_subscribe,
                     )
                     .await;
-            }
-
-            // Register with filter index for O(1) message routing (if local adapter is available).
-            // Skip when tag filtering is off, since the index is never read on the broadcast path.
-            #[cfg(feature = "tag-filtering")]
-            if let Some(ref local_adapter) = self.local_adapter
-                && local_adapter.is_tag_filtering_enabled()
-            {
-                let filter_index = local_adapter.get_filter_index();
-                // Get the filter we just stored on the socket
-                let filter_node = conn_arc.get_channel_filter_sync(&request.channel);
-                filter_index.add_socket_filter(
-                    &request.channel,
-                    *socket_id,
-                    filter_node.as_deref(),
-                );
             }
 
             let mut conn_locked = conn_arc.inner.lock().await;
@@ -853,7 +872,6 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
         channel: &str,
-        attach_serial: u64,
     ) -> Result<()> {
         let Some(connection) = self
             .connection_manager
@@ -863,11 +881,8 @@ impl ConnectionHandler {
             return Ok(());
         };
 
-        let buffered = connection.finish_rewind_gate(channel).await;
-        let delivered_message_ids = HashSet::new();
-        for message in
-            filter_buffered_rewind_messages(buffered, Some(attach_serial), &delivered_message_ids)
-        {
+        let buffered = connection.finish_rewind_gate(channel).await?;
+        for message in filter_buffered_attach_messages(buffered) {
             self.send_message_to_socket(&app_config.id, socket_id, message)
                 .await?;
         }
@@ -1230,7 +1245,20 @@ fn filter_buffered_rewind_messages(
                 .is_none_or(|message_id| !delivered_message_ids.contains(message_id));
             after_history_head && not_duplicate
         })
-        .map(|message| message.message)
+        .map(|message| Arc::unwrap_or_clone(message.message))
+        .collect()
+}
+
+fn filter_buffered_attach_messages(
+    mut buffered: Vec<sockudo_core::websocket::BufferedRewindMessage>,
+) -> Vec<PusherMessage> {
+    // A clean attach has not delivered history. Messages admitted after native
+    // subscriber registration therefore remain live deliveries even when the
+    // history head capture races ahead of them.
+    buffered.sort_by_key(|message| message.serial.unwrap_or(u64::MAX));
+    buffered
+        .into_iter()
+        .map(|message| Arc::unwrap_or_clone(message.message))
         .collect()
 }
 
@@ -1253,6 +1281,7 @@ fn build_rewind_history_read_request(
     }
 }
 
+#[cfg(test)]
 fn normalize_rewind_items_for_delivery(
     rewind: &SubscriptionRewind,
     mut items: Vec<HistoryItem>,
@@ -1307,17 +1336,17 @@ mod rewind_tests {
             sockudo_core::websocket::BufferedRewindMessage {
                 serial: Some(3),
                 message_id: Some("msg-3".to_string()),
-                message: test_message("three"),
+                message: Arc::new(test_message("three")),
             },
             sockudo_core::websocket::BufferedRewindMessage {
                 serial: Some(4),
                 message_id: Some("msg-4".to_string()),
-                message: test_message("four"),
+                message: Arc::new(test_message("four")),
             },
             sockudo_core::websocket::BufferedRewindMessage {
                 serial: Some(5),
                 message_id: Some("msg-5".to_string()),
-                message: test_message("five"),
+                message: Arc::new(test_message("five")),
             },
         ];
 
@@ -1325,6 +1354,20 @@ mod rewind_tests {
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].event.as_deref(), Some("four"));
         assert_eq!(filtered[1].event.as_deref(), Some("five"));
+    }
+
+    #[test]
+    fn clean_attach_keeps_messages_buffered_at_or_before_high_watermark() {
+        let buffered = vec![sockudo_core::websocket::BufferedRewindMessage {
+            serial: Some(3),
+            message_id: Some("msg-3".to_string()),
+            message: Arc::new(test_message("three")),
+        }];
+
+        let filtered = filter_buffered_attach_messages(buffered);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].event.as_deref(), Some("three"));
     }
 
     #[test]

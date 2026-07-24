@@ -8,6 +8,7 @@
     "start": "bun --env-file=../../.env --env-file=../.env run src/index.ts",
     "migrate": "bun --env-file=../../.env --env-file=../.env run src/cli/migrate.ts",
     "seed:admin": "bun --env-file=../../.env --env-file=../.env run src/cli/seed-admin.ts",
+    "test": "NODE_ENV=test DASHBOARD_SESSION_SECRET=test-only-dashboard-session-secret-32-bytes bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

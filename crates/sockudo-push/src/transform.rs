@@ -7,9 +7,9 @@ use thiserror::Error;
 
 use crate::domain::{
     MAX_APNS_PAYLOAD_BYTES, MAX_FCM_PAYLOAD_BYTES, MAX_HMS_PAYLOAD_BYTES,
-    MAX_RENDERED_TEMPLATE_BYTES, MAX_WEB_PUSH_PAYLOAD_BYTES, MAX_WNS_PAYLOAD_BYTES,
-    NotificationTemplate, ProviderOverridePayload, PushPayload, PushProviderKind,
-    RenderedProviderPayload, validate_web_push_endpoint,
+    MAX_REALTIME_PAYLOAD_BYTES, MAX_RENDERED_TEMPLATE_BYTES, MAX_WEB_PUSH_PAYLOAD_BYTES,
+    MAX_WNS_PAYLOAD_BYTES, NotificationTemplate, ProviderOverridePayload, PushPayload,
+    PushProviderKind, RenderedProviderPayload, validate_web_push_endpoint,
 };
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -37,12 +37,13 @@ pub struct EffectivePushPayload {
     pub provider_overrides: Vec<ProviderOverridePayload>,
 }
 
-pub const PUSH_PROVIDER_RENDER_ORDER: [PushProviderKind; 5] = [
+pub const PUSH_PROVIDER_RENDER_ORDER: [PushProviderKind; 6] = [
     PushProviderKind::Fcm,
     PushProviderKind::Apns,
     PushProviderKind::WebPush,
     PushProviderKind::Hms,
     PushProviderKind::Wns,
+    PushProviderKind::Realtime,
 ];
 
 pub fn render_all_provider_payloads(
@@ -133,6 +134,10 @@ pub fn render_provider_payload(
                 },
                 "audio": { "src": payload.sound }
             },
+            "data": payload.template_data
+        }),
+        PushProviderKind::Realtime => json!({
+            "notification": notification_object(&payload),
             "data": payload.template_data
         }),
     };
@@ -333,6 +338,7 @@ fn validate_provider_override(
         PushProviderKind::Apns => validate_apns_fields(payload),
         PushProviderKind::WebPush => validate_web_push_fields(payload),
         PushProviderKind::Wns => validate_wns_fields(payload),
+        PushProviderKind::Realtime => Ok(()),
     }
 }
 
@@ -378,6 +384,7 @@ fn provider_payload_limit(provider: PushProviderKind) -> usize {
         PushProviderKind::WebPush => MAX_WEB_PUSH_PAYLOAD_BYTES,
         PushProviderKind::Hms => MAX_HMS_PAYLOAD_BYTES,
         PushProviderKind::Wns => MAX_WNS_PAYLOAD_BYTES,
+        PushProviderKind::Realtime => MAX_REALTIME_PAYLOAD_BYTES,
     }
 }
 
@@ -388,6 +395,7 @@ fn provider_label(provider: PushProviderKind) -> &'static str {
         PushProviderKind::WebPush => "webPush",
         PushProviderKind::Hms => "hms",
         PushProviderKind::Wns => "wns",
+        PushProviderKind::Realtime => "realtime",
     }
 }
 
@@ -607,6 +615,10 @@ mod tests {
             ProviderOverridePayload {
                 provider: PushProviderKind::Wns,
                 payload: json!({"type": "toast", "toast": {"visual": {}}}),
+            },
+            ProviderOverridePayload {
+                provider: PushProviderKind::Realtime,
+                payload: json!({"notification": {"title": "realtime"}}),
             },
         ];
 

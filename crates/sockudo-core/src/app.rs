@@ -246,7 +246,7 @@ pub struct AppChannelsPolicyRef<'a> {
     pub channel_namespaces: Option<&'a [ChannelNamespace]>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Clone, Serialize, Default)]
 pub struct App {
     pub id: String,
     pub key: String,
@@ -254,6 +254,20 @@ pub struct App {
     pub enabled: bool,
     #[serde(default)]
     pub policy: AppPolicy,
+}
+
+impl std::fmt::Debug for App {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("App")
+            .field("id", &self.id)
+            .field("key", &"<redacted>")
+            .field("secret", &"<redacted>")
+            .field("enabled", &self.enabled)
+            // Policies can contain webhook authorization headers and credential-bearing URLs.
+            .field("policy", &"<redacted>")
+            .finish()
+    }
 }
 
 impl App {
@@ -800,6 +814,24 @@ pub trait AppManager: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_redacts_app_credentials() {
+        let app = App::from_policy(
+            "test-app".to_string(),
+            "sensitive-key".to_string(),
+            "sensitive-secret".to_string(),
+            true,
+            AppPolicy::default(),
+        );
+
+        let debug = format!("{app:?}");
+
+        assert!(debug.contains("test-app"));
+        assert!(!debug.contains("sensitive-key"));
+        assert!(!debug.contains("sensitive-secret"));
+        assert!(debug.contains("<redacted>"));
+    }
 
     fn test_app_json(limits_overrides: &str, policy_suffix: &str) -> String {
         format!(

@@ -49,6 +49,23 @@ Recovery is two-tier:
 2. Durable recovery uses `HistoryStore` when `stream_id`, serial bounds, and retention prove
    continuity.
 
+Both tiers replay the Protocol V2 wire message, not Sockudo's durable storage
+wrapper. Durable rows are decoded through the shared history projection first,
+so recovery and ordinary history reads preserve the same IDs, publisher fields,
+version projection, stream ID, and serial.
+
+Versioned mutations keep the delivery position reserved by the native version
+service. The hot replay buffer adopts that position instead of allocating a
+second serial. Recovery validates every serial in the returned range; a missing
+position or mixed stream generation falls through to durable recovery and then
+fails closed if the durable tier cannot prove the same continuity.
+
+The native V2 attach gate registers the subscriber before capturing the durable
+high-water mark. Concurrent publishes are held in a count-and-byte-bounded gate,
+shared across subscribers with immutable message references, then drained after
+rewind without a lock held across delivery. Overflow closes the affected
+connection because the live-plus-replay sequence can no longer be proven.
+
 If the durable stream is degraded or reset-required, Sockudo fails closed instead of pretending the
 stream is continuous.
 
@@ -65,6 +82,8 @@ channel.bind("sockudo:rewind_complete", (payload) => {
   console.log(payload.historical_count, payload.complete);
 });
 ```
+
+When a V2 subscription has a compound predicate, rewind scans durable history in bounded pages until it fills the requested matching count or reaches the scan/retention boundary. Suppressed rows still advance the channel's canonical continuity position. Hot and durable recovery apply the same predicate after the client has reattached that subscription; a legacy resume sent before reattachment retains the unfiltered recovery contract. Each recovered-channel entry in `sockudo:resume_success` includes the terminal `position` so clients advance continuity even when the predicate suppresses the tail.
 
 ## Durable channel history
 
@@ -100,11 +119,19 @@ The response uses the same history payload shape as app-key HTTP history: `items
 
 `until_attach` is the late-join gaplessness rule: the history page stops at the serial captured when
 the subscription succeeded, and live fanout continues above that serial. Clients should reduce
-history first, then live messages.
+history first, then live messages. In a cluster, route this request to the node that owns the live
+attachment. If Sockudo cannot find that authoritative attachment position, it rejects the read
+instead of silently removing the upper bound and returning a page that could overlap live delivery.
 
 ## Presence history
 
 Presence history records joins, leaves, causes, and continuity metadata. It is different from the current presence member list.
+
+Protocol projections must write transitions through the native presence
+service. Current membership remains available if the durable tier fails, but
+the tracking store marks that channel degraded. Continuity-sensitive history
+reads then fail closed until the durable stream is healthy or explicitly reset;
+they must not return a partial page as complete.
 
 ```ts
 const channel = client.subscribe("presence-lobby");

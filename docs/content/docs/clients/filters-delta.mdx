@@ -33,6 +33,20 @@ client.subscribe("market:btc", {
 });
 ```
 
+Protocol V2 subscriptions can combine event names, tag filters, and a bounded
+JMESPath expression. Every supplied component must match:
+
+```ts
+client.subscribe("orders.*", {
+  events: ["order.updated"],
+  filter: Filter.eq("region", "eu"),
+  expression: 'data.total >= `100` && headers.priority == `"high"`',
+});
+```
+
+The native .NET, Flutter/Dart, Kotlin, Python, and Swift clients expose the same
+compound predicate through their language-specific `SubscriptionOptions` type.
+
 ## Supported comparisons
 
 | Comparison | Meaning |

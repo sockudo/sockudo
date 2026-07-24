@@ -102,6 +102,88 @@ class ProtocolWireFormatTest {
     }
 
     @Test
+    fun roundTripsNativeBinaryData() {
+        val data = byteArrayOf(0, 1, 2, -1)
+
+        listOf(SockudoWireFormat.messagepack, SockudoWireFormat.protobuf).forEach { wireFormat ->
+            val payload =
+                ProtocolCodec.encodeEnvelope(
+                    linkedMapOf(
+                        "event" to "sockudo:binary",
+                        "channel" to "binary:room-1",
+                        "data" to data,
+                    ),
+                    wireFormat,
+                )
+
+            val decoded = ProtocolCodec.decodeEvent(payload, wireFormat)
+
+            assertTrue(data.contentEquals(decoded.data as ByteArray))
+        }
+    }
+
+    @Test
+    fun subscriptionExpressionsPreserveBothWireVariants() {
+        assertEquals(
+            "data.total >= `100`",
+            SubscriptionExpression.Source("data.total >= `100`").subscriptionValue(),
+        )
+        assertEquals(
+            mapOf("language" to "jmespath", "source" to "headers.priority == `\"high\"`"),
+            SubscriptionExpression.Descriptor(source = "headers.priority == `\"high\"`").subscriptionValue(),
+        )
+    }
+
+    @Test
+    fun resumeSuccessAppliesAuthoritativeChannelPosition() {
+        val client =
+            SockudoClient(
+                "app-key",
+                SockudoOptions(
+                    cluster = "local",
+                    protocolVersion = 2,
+                    forceTls = false,
+                    connectionRecovery = true,
+                ),
+            )
+        val raw =
+            JsonSupport.encode(
+                mapOf(
+                    "event" to "sockudo:resume_success",
+                    "data" to
+                        JsonSupport.encode(
+                            mapOf(
+                                "recovered" to
+                                    listOf(
+                                        mapOf(
+                                            "channel" to "orders",
+                                            "source" to "durable",
+                                            "replayed" to 0,
+                                            "position" to
+                                                mapOf(
+                                                    "stream_id" to "stream-2",
+                                                    "serial" to 42,
+                                                    "last_message_id" to "message-42",
+                                                ),
+                                        ),
+                                    ),
+                                "failed" to emptyList<Any>(),
+                            ),
+                        ),
+                ),
+            )
+        val method = SockudoClient::class.java.getDeclaredMethod("handleRawMessage", Any::class.java)
+        method.isAccessible = true
+
+        method.invoke(client, raw)
+
+        assertEquals(
+            RecoveryPosition(streamId = "stream-2", serial = 42, lastMessageId = "message-42"),
+            client.getRecoveryPosition("orders"),
+        )
+    }
+
+    @Test
     fun roundTripsProtobuf() {
         val payload =
             ProtocolCodec.encodeEnvelope(

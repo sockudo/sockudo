@@ -43,11 +43,11 @@ enum ProtocolCodec: Sendable {
     case .messagepack:
       let data = try data(from: message)
       let envelope = try MessagePackCodec.decode(data)
-      return .init(envelope: envelope, rawMessage: try JSON.encodeString(envelope))
+      return .init(envelope: envelope, rawMessage: try JSON.encodeString(jsonDebugValue(envelope)))
     case .protobuf:
       let data = try data(from: message)
       let envelope = try ProtobufCodec.decode(data)
-      return .init(envelope: envelope, rawMessage: try JSON.encodeString(envelope))
+      return .init(envelope: envelope, rawMessage: try JSON.encodeString(jsonDebugValue(envelope)))
     }
   }
 
@@ -184,6 +184,19 @@ enum ProtocolCodec: Sendable {
       throw SockudoError.messageParseError("Unsupported WebSocket message")
     }
   }
+
+  private static func jsonDebugValue(_ value: Any) -> Any {
+    if let data = value as? Data {
+      return Array(data)
+    }
+    if let array = value as? [Any] {
+      return array.map(jsonDebugValue)
+    }
+    if let map = value as? [String: Any] {
+      return map.mapValues(jsonDebugValue)
+    }
+    return value
+  }
 }
 
 private enum MessagePackCodec: Sendable {
@@ -235,7 +248,9 @@ private enum MessagePackCodec: Sendable {
     }
     let dataValue: Any
     if let rawData = envelope["data"] {
-      if let stringData = rawData as? String {
+      if let binaryData = rawData as? Data {
+        dataValue = ["binary", binaryData]
+      } else if let stringData = rawData as? String {
         dataValue = ["string", stringData]
       } else {
         dataValue = ["json", (try? JSON.encodeString(rawData)) ?? "null"]
@@ -287,7 +302,7 @@ private enum MessagePackCodec: Sendable {
     if let array = value as? [Any] {
       if array.count == 2, let kind = array[0] as? String {
         switch kind {
-        case "string", "json", "number", "bool":
+        case "string", "json", "number", "bool", "binary":
           return decodeEnvelopeValue(array[1]) ?? array[1]
         case "structured":
           return decodeEnvelopeValue(array[1])
@@ -329,6 +344,8 @@ private struct MessagePackEncoder: @unchecked Sendable {
     case let value as Float:
       data.append(0xca)
       append(bigEndian: value.bitPattern)
+    case let value as Data:
+      try encode(binary: value)
     case let value as String:
       try encode(string: value)
     case let value as [String: Any]:
@@ -382,6 +399,21 @@ private struct MessagePackEncoder: @unchecked Sendable {
       append(bigEndian: UInt32(utf8.count))
     }
     data.append(utf8)
+  }
+
+  private mutating func encode(binary value: Data) throws {
+    switch value.count {
+    case 0...0xff:
+      data.append(0xc4)
+      data.append(UInt8(value.count))
+    case 0x100...0xffff:
+      data.append(0xc5)
+      append(bigEndian: UInt16(value.count))
+    default:
+      data.append(0xc6)
+      append(bigEndian: UInt32(value.count))
+    }
+    data.append(value)
   }
 
   private mutating func encode(array: [Any]) throws {
@@ -480,6 +512,9 @@ private struct MessagePackDecoder: @unchecked Sendable {
     case 0xc0: return NSNull()
     case 0xc2: return false
     case 0xc3: return true
+    case 0xc4: return try readBytes(length: Int(readByte()))
+    case 0xc5: return try readBytes(length: Int(try readUInt16()))
+    case 0xc6: return try readBytes(length: Int(try readUInt32()))
     case 0xca: return Double(Float(bitPattern: try readUInt32()))
     case 0xcb: return Double(bitPattern: try readUInt64())
     case 0xcc: return Int(readByte())
@@ -579,7 +614,9 @@ private enum ProtobufCodec: Sendable {
     }
     if let data = envelope["data"] {
       var nested = ProtoWriter()
-      if let string = data as? String {
+      if let binary = data as? Data {
+        nested.writeData(field: 4, value: binary)
+      } else if let string = data as? String {
         nested.writeString(field: 1, value: string)
       } else {
         nested.writeString(field: 3, value: try JSON.encodeString(data))
@@ -784,6 +821,7 @@ private enum ProtobufCodec: Sendable {
       case (3, .lengthDelimited):
         let raw = try reader.readString()
         return (try? JSON.decodeString(raw)) ?? raw
+      case (4, .lengthDelimited): return try reader.readData()
       default: try reader.skip(wireType: wireType)
       }
     }

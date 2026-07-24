@@ -115,6 +115,12 @@ async function realtimePubSub({ binary }) {
   const clientId = `${baseClientId}-${binary ? 'msgpack' : 'json'}-${runId}`;
   const client = new Ably.Realtime(realtimeOptions({ clientId, binary }));
   const channelName = `ably-protocol-${binary ? 'msgpack' : 'json'}-${runId}`;
+  const historyData = { seed: true, binary, runId };
+  const rest = new Ably.Rest(restOptions({ clientId, binary }));
+  await withTimeout(
+    rest.channels.get(channelName).publish('protocol-discovery', historyData),
+    'seed history before attach',
+  );
   try {
     client.connect();
     await withTimeout(onceConnection(client, 'connected'), 'connect');
@@ -135,7 +141,7 @@ async function realtimePubSub({ binary }) {
 
     const history = await withTimeout(channel.history({ limit: 1, untilAttach: true }), 'history');
     assert.ok(history.items.length >= 1, 'expected at least one history item');
-    assert.equal(history.items[0].name, 'protocol-discovery');
+    expectMessage(history.items[0], 'protocol-discovery', historyData);
 
     await withTimeout(channel.detach(), 'detach');
     return { channel: channelName, clientId };
@@ -387,6 +393,21 @@ async function browserChromiumPubSub() {
             }
           }
 
+          const historyData = { seed: true, via: 'browser', runId };
+          const rest = new AblyBrowser.Rest({
+            key,
+            clientId,
+            endpoint,
+            port,
+            tls,
+            useBinaryProtocol: false,
+            logLevel: 0,
+          });
+          await withBrowserTimeout(
+            rest.channels.get(channelName).publish('browser-protocol-discovery', historyData),
+            'browser seed history before attach',
+          );
+
           const client = new AblyBrowser.Realtime({
             key,
             clientId,
@@ -431,7 +452,7 @@ async function browserChromiumPubSub() {
             if (!history.items.length) {
               throw new Error('expected at least one browser history item');
             }
-            expectBrowserMessage(history.items[0], 'browser-protocol-discovery', data);
+            expectBrowserMessage(history.items[0], 'browser-protocol-discovery', historyData);
 
             await withBrowserTimeout(channel.detach(), 'browser detach');
             return {

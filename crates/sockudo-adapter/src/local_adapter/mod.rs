@@ -14,9 +14,7 @@ use std::sync::Arc;
 #[cfg(feature = "delta")]
 use std::sync::OnceLock;
 #[cfg(feature = "tag-filtering")]
-use std::sync::atomic::AtomicBool;
-#[cfg(any(feature = "tag-filtering", feature = "delta"))]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Semaphore;
 use tracing::info;
 

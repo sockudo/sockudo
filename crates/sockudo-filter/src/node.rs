@@ -237,7 +237,9 @@ impl FilterNode {
     pub fn validate(&self) -> Option<String> {
         if let Some(ref op) = self.op {
             // This is a logical node
-            let logical_op = LogicalOp::parse(op)?;
+            let Some(logical_op) = LogicalOp::parse(op) else {
+                return Some(format!("unknown logical operator: {op}"));
+            };
 
             match logical_op {
                 LogicalOp::And | LogicalOp::Or => {
@@ -267,8 +269,12 @@ impl FilterNode {
                 return Some("Leaf node requires a non-empty key".to_string());
             }
 
-            let cmp = self.cmp.as_ref()?;
-            let compare_op = CompareOp::parse(cmp)?;
+            let Some(cmp) = self.cmp.as_ref() else {
+                return Some("Leaf node requires a comparison operator".to_string());
+            };
+            let Some(compare_op) = CompareOp::parse(cmp) else {
+                return Some(format!("unknown comparison operator: {cmp}"));
+            };
 
             match compare_op {
                 CompareOp::In | CompareOp::NotIn => {
@@ -392,6 +398,19 @@ impl FilterNodeBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validation_rejects_unknown_logical_and_comparison_operators() {
+        let unknown_logical: FilterNode =
+            sonic_rs::from_str(r#"{"op":"xor","nodes":[{"key":"kind","cmp":"eq","val":"event"}]}"#)
+                .expect("shape deserializes before semantic validation");
+        assert!(unknown_logical.validate().is_some());
+
+        let unknown_comparison: FilterNode =
+            sonic_rs::from_str(r#"{"key":"kind","cmp":"regex","val":"event.*"}"#)
+                .expect("shape deserializes before semantic validation");
+        assert!(unknown_comparison.validate().is_some());
+    }
 
     #[test]
     fn test_serialize_simple_filter() {

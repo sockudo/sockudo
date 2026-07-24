@@ -202,6 +202,7 @@ pub(super) fn provider_label(provider: PushProviderKind) -> &'static str {
         PushProviderKind::WebPush => "webPush",
         PushProviderKind::Hms => "hms",
         PushProviderKind::Wns => "wns",
+        PushProviderKind::Realtime => "realtime",
     }
 }
 

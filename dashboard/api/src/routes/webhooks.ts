@@ -1,10 +1,16 @@
 import { Hono } from "hono";
-import { requireAuth } from "../auth/middleware.ts";
+import { createRequireAuth } from "../auth/middleware.ts";
+import type { UsersRepository } from "../db/users-repository.ts";
+import type { AppVariables } from "../types/hono.ts";
 import type { AppsRepository } from "../db/types.ts";
 import { toPublicApp, type Webhook } from "../types/app.ts";
 
-export function createWebhooksRoutes(repo: AppsRepository) {
-  const webhooks = new Hono();
+export function createWebhooksRoutes(
+  repo: AppsRepository,
+  usersRepo: UsersRepository,
+) {
+  const webhooks = new Hono<{ Variables: AppVariables }>();
+  const requireAuth = createRequireAuth(usersRepo);
 
   webhooks.use("*", requireAuth);
 

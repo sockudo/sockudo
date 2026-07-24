@@ -256,6 +256,7 @@ async fn ait_s011_012_memory_version_store_projects_latest_visible_state() {
                 app_id: "app".to_string(),
                 channel: "ai:room".to_string(),
                 original_client_id: Some("client-1".to_string()),
+                envelope: None,
                 message,
             })
             .await
@@ -524,7 +525,7 @@ fn ait_s069_to_s073_rollup_table_and_reduced_state_are_deterministic() {
 }
 
 #[test]
-fn ait_s083_to_s086_presence_timeout_defaults_off_and_can_be_configured() {
+fn ait_s084_085_presence_timeout_defaults_off_and_can_be_configured() {
     let default = PresenceConfig::default();
     assert_eq!(default.ungraceful_timeout_seconds, 0);
 

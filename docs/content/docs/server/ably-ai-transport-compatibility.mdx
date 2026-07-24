@@ -1,38 +1,455 @@
 ---
-title: Ably AI Transport compatibility
-description: Sockudo's reduced Ably Pub/Sub subset for Ably AI Transport clients, tests, and demos.
+title: Ably REST, WebSocket, and AI Transport compatibility
+description: Sockudo's evidence-backed Ably REST and WebSocket compatibility surface, excluding Live Objects.
 icon: BadgeCheck
 ---
 
-Sockudo can expose a reduced Ably-compatible Pub/Sub surface for AI Transport
-workloads when the server is built with Cargo feature `ably-compat`. The goal
-is not broad Ably platform parity; the goal is to let Ably AI Transport clients
-exercise run lifecycle, mutable streaming, history, and recovery against
-Sockudo-backed durable primitives.
+Sockudo can expose an Ably-compatible REST and WebSocket surface when the server
+is built with Cargo feature `ably-compat`. The evidence-backed scope is **Ably
+REST and WebSocket compatibility, excluding Live Objects**. It also supports
+Ably AI Transport clients through Sockudo's native mutable-message, history,
+recovery, presence, annotation, stats, and push services.
 
-Use this wording in public material:
+The facade lives in the optional `sockudo-ably-compat` workspace crate. The
+server constructs one `AblyCompatRuntime` per server instance and merges its
+routes. Socket writers and attachment state remain local to that process;
+authorization, session ownership, recovery, and durable channel state use the
+shared authorities described below. Ably realtime is WebSocket-only: Comet,
+XHR polling or streaming, SSE, long polling, and other fallback transports are
+intentionally unsupported.
 
-- **Ably AI Transport compatible**
-- **Ably Pub/Sub subset for AI Transport**
+Use **Ably REST and WebSocket compatibility, excluding Live Objects** in public
+material. Do not describe this as full Ably compatibility.
 
-Avoid broader full-platform claims until the current Ably SDK test suite passes
-against Sockudo and the scorecard records that evidence.
+The pinned manifest classifies 41 target files. Exactly the two Live Objects
+files and the multiple/non-WebSocket transport file are excluded, and there are
+no per-test exclusions. Node defaults, browser execution, strict execution of
+upstream-pending bodies, and AI Transport have separate reports and pass/fail
+states. A result from one lane is never used to claim another lane passed.
+
+Current release evidence is not fully green. The fresh Node default lane is
+575 passed with no failures, and the AIT lane is 50/50. The strict lane has four
+pinned-fixture failures before its wire assertion; Chromium, Firefox, and WebKit
+remain red on fatal browser diagnostics and/or assertions. See the dated
+`sockudo-compatibility/findings/2026-07-15-final-verification.md` report before
+publishing an unqualified compatibility claim.
 
 ## Compatibility Matrix
 
 | Surface | Status | Scope |
 | --- | --- | --- |
-| Ably Realtime WebSocket JSON/MsgPack protocol | Supported for tested Pub/Sub subset | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows covered by stock `ably@2.23.0` discovery lanes in JSON and MsgPack modes. Full Ably Realtime parity is not claimed. |
-| Ably REST time/token/history/message reads and publish | Supported for tested Pub/Sub subset | `/time`, `/keys/{keyName}/requestToken`, `/channels/{channel}/messages`, message lookup, and version lookup exist for the reduced SDK path. REST publish/history and token capability enforcement are covered in discovery lanes. Full Ably REST API parity is not claimed. |
+| Ably Realtime WebSocket JSON/MsgPack protocol | Node-default evidence green; browser gates red | Root WebSocket endpoint accepts Ably `ProtocolMessage` connect, attach, detach, message, presence, auth, heartbeat, ACK, and NACK flows covered by pinned `ably@2.21.0` JSON and MsgPack lanes. Non-WebSocket transports are intentionally unsupported. |
+| Ably REST time/token/history/message reads and publish | Node-default evidence green; browser gates red | `/time`, `/keys/{keyName}/requestToken`, `/keys/{keyName}/revokeTokens`, `/messages` batch publish, `/channels/{channel}/messages`, message lookup, version lookup, and presence reads/history exist for the selected SDK path. Full Ably REST API parity is not claimed. |
 | Run lifecycle vocabulary | Supported | Native AI Transport docs and fixtures use `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. |
 | Legacy turn vocabulary | Legacy alias | `ai-turn-start`, `ai-turn-end`, `turn-id`, and `turn-reason` remain accepted for migration, but new docs and demos use run vocabulary. |
-| Mutable output streaming | Supported for AI Transport only | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
-| History and recovery | Supported for AI Transport only | The harness covers history projection and recovery of missed append fragments. Broader Ably pagination/link behavior remains limited. |
-| Presence enter/update/leave | Supported for AI Transport only | Realtime presence frames are ACKed and fanned out for the reduced path. Full Ably presence-history parity is not claimed. |
-| Channel modes/capabilities | Not yet implemented | Attach accepts requested SDK modes, but Ably mode capability enforcement is not complete. Sockudo app auth remains authoritative. |
+| Mutable messages and output streaming | Node-default evidence green; browser REST gate red | Ably `publish`, `appendMessage`, `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and history map to Sockudo versioned messages. |
+| Message annotations | Supported for the pinned annotation suite | Realtime action `21`, REST create/delete/list, summaries, pagination, JSON, and MsgPack translate onto Sockudo's native annotation store and projection pipeline. Protocol V1 remains unchanged. |
+
+Compatibility projections read a shared commit-time message envelope. This
+keeps IDs, publisher identity, timestamps, encoding chains, supported extras,
+history/recovery positions, and version operation metadata consistent across
+live delivery and REST reads while leaving Protocol V1's projection unchanged.
+
+## Distributed state authority
+
+Clustered compatibility requires Redis or Redis Cluster for coordination and a
+non-memory durable history/version driver. Sockudo does not use a process-local
+`DashMap` as cross-node authority and does not fall back from an unavailable
+coordination backend to private memory.
+
+| State | Class | Authority and retention | Backend failure behavior |
+| --- | --- | --- | --- |
+| App keys and configured rotated keys | Durable configuration | `AppManager` plus the deployment's versioned key configuration; every node must load the same generation. | Unknown or stale generations reject authentication. Secrets are never logged. |
+| Opaque tokens | Replicated ephemeral | Shared cache record for the token TTL. A process-local decoded copy is only an optimization after the shared record is validated. | Token resolution fails closed when shared state cannot be read. |
+| Nonce replay and token revocations | Replicated ephemeral security state | Atomic shared-cache claims. Revocations live for at least the maximum accepted token TTL. | Replay/revocation checks fail closed. Revocation polling disconnects sockets on every node; renewal changes the shared authorization generation so stale timers cannot restore access. |
+| WebSocket writer, auth timer, channel gate, negotiated attachment | Local connection state | The node owning the socket. Gates and queues have count and byte bounds and end with the transport. | The socket closes when safe local delivery cannot continue; another node never fabricates ownership. |
+| Session owner and recovery key | Replicated ephemeral | Compare-and-swap owner lease in shared cache, bounded by the connection-state TTL. Recovery keys are single-use and key rotation invalidates the previous key. | Resume fails closed when the owner lease or continuity record cannot be verified. A successful claim on another node supersedes the old owner. |
+| Publish idempotency claim and acknowledgement | Replicated ephemeral plus durable repair | Atomic cache claim/receipt for the idempotency TTL; canonical history/version records repair an ambiguous post-commit receipt. | A backend error does not permit a second winner. A retry is acknowledged only after its canonical commit is proven. |
+| Current presence | Replicated ephemeral | Per-connection typed membership, replicated by the horizontal adapter and tied to the node-health lease. | Duplicate leave/dead-node notifications are idempotent. Node death removes every orphan connection; failure to coordinate cleanup is degraded and observable rather than reported as a clean snapshot. |
+| Presence transitions | Durable | Configured durable history backend and its retention policy. | Current membership can remain available, but continuity-sensitive history fails closed while degraded. |
+| Attachment high-water and reconnect continuity | Local attachment plus durable canonical position | The live attachment owner captures the high-water; durable history/version streams prove reconnect ranges. | `untilAttach` requires routing affinity to the attachment owner. Resume/recover returns reset-required when stream identity or a contiguous range cannot be proven. |
+| Remote delivery suppression | Local bounded projection state | Each subscriber node keeps a contiguous per-stream delivery high-water plus a bounded set of out-of-order serials; Redis fanout carries the complete canonical envelope. | Serials at or below proven continuity remain suppressed without retaining an unbounded ledger. Missing canonical identity is not guessed; reorder-window overflow is counted and fails reset-required instead of evicting duplicate evidence. |
+| Mutable versions and delivery serials | Durable | Configured `VersionStore`; create, predecessor compare-and-apply, operation receipt, and serial allocation are one backend commit. | Mutation and recovery fail closed on conflicts, gaps, or backend errors. |
+| Annotation serials, create receipts, event stream, and summaries | Durable | The configured non-memory version-storage driver owns atomic per-channel serial allocation, stable create IDs, canonical events, materialized summaries, and bounded retention. | Annotation writes and rebuilds fail closed; no node-local projection is used in a cluster. |
+| Stats buckets | Replicated retained aggregate | Bounded local ingestion workers merge minute buckets into shared cache with TTL. | Queue drops and backend failures are counted. Queries cannot treat an unflushed or unreadable bucket as a complete cluster barrier. |
+| Push registrations, subscriptions, statuses, publish log, feedback, and schedules | Durable | Configured push storage and queue; conditional status/idempotency/worker claims use backend operations. | Production rejects accidental memory drivers. Failed provider/queue/storage work remains observable through durable status and backlog metrics. |
+
+Memory cache, history, version, annotation, push-storage, and push-queue
+implementations are single-node development choices only. Clustered startup
+rejects combinations that would split an authority between processes.
+
+Mutable REST and realtime operations call the native typed mutation service.
+That service atomically validates the predecessor, owns the delivery position,
+commits the aggregate and individual version, enforces stream limits, and stores
+the operation receipt in the configured `VersionStore`. The compatibility layer
+only decodes/encodes Ably JSON or MsgPack shapes. It has no parallel mutable
+state, counter, or handler-to-handler call.
+
+### Publish identity and retries
+
+Ably messages may omit `name`, `data`, or both; the facade does not manufacture
+an event name. The commit envelope retains the original encoding chain,
+`headers`, `ref`, `ai`, and `push` extras, message ID, authenticated publisher
+client ID, originating connection ID, and server publish timestamp. Live
+delivery, durable history, rewind, recovery, message reads, and mutation
+projections all read those same commit-time facts.
+
+`X-Ably-ClientId` is decoded as strict standard-base64 UTF-8, matching the Ably
+SDK request format. A query/header identity mismatch, fixed-token mismatch,
+message identity mismatch, or mutation-operation identity mismatch is rejected
+before persistence. REST `message.connectionKey` is accepted only when it
+identifies a currently live connection in the same app; the target identity is
+then used for authorization and delivery stamping. `connectionId` remains a
+server-assigned output field.
+
+`message.id` uses Sockudo's shared publish-idempotency coordinator. The first
+node atomically claims the app/channel/id tuple, commits through the normal
+history/version/fanout pipeline, and stores the exact serial receipt. An
+identical REST or realtime retry returns that receipt without publishing again;
+the same ID with a different canonical payload or publisher identity fails
+deterministically. Redis and Redis Cluster use atomic compare-and-swap scripts,
+so a handler-local acknowledgement cache is never the cross-node authority.
+The durable envelope stores only the hashed idempotency identity and payload
+fingerprint. If a node exits after history/version persistence but before the
+receipt compare-and-swap, another node reads the authoritative durable record,
+atomically repairs the pending receipt, and returns the original acknowledgement
+without repeating persistence or fanout. Ordinary publishes retain their
+message-ID acknowledgement shape; versioned publishes retain the exact original
+message, history, delivery, and version serial tuple.
+
+Realtime echo combines the connection `echoMessages` setting, the channel
+`echo` parameter, and the optional message-level `extras.echo` override. Only
+the actual originating connection is suppressed; another connection with the
+same client ID still receives the message. A publish frame is validated in full
+before the first commit, then receives exactly one ACK or NACK covering its
+inbound `msgSerial`/`count` range, including a frame containing multiple
+messages.
+
+### Presence across reconnects
+
+Ably `DISCONNECT` and `CLOSE` have different presence lifecycles. `DISCONNECT`
+ends the current WebSocket transport but retains the connection's presence
+members until the bounded connection-state lease expires, allowing a short
+disconnect or a suspended-channel resync to preserve the authoritative member
+set. `CLOSE` is terminal: it removes the connection's members immediately and
+fans out their leave transitions. Both paths still unsubscribe the terminated
+transport session from local channel delivery.
+
+On automatic presence re-entry, Sockudo preserves a supplied member ID only
+when it is a valid `connectionId:msgSerial:index` ID owned by the current
+connection. This keeps same-connection re-entry idempotent while a missing,
+malformed, or foreign-connection ID is replaced with a server-assigned ID.
+Presence snapshots remain keyed by the `(clientId, connectionId)` pair, so the
+same client ID on distinct connections remains distinct.
+
+### Batch REST routing
+
+The Ably compatibility router accepts both `POST /messages` request families.
+A raw `Rest.request()` batch spec returns the legacy ordered channel array with
+`201` when every publish commits. If any channel fails, already committed
+channels remain successful and the route returns `400`/`40020` with
+`{ error, batchResponse }`; every entry retains its original position and its
+own `messageId` or `error`. The `batchPublish()` array body returns an ordered
+array of `{ successCount, failureCount, results }` envelopes with `200`, including
+per-channel partial failures.
+
+Every message is parsed and validated before its channel work starts. Successful
+items call the native `MessageService` and are not acknowledged until its
+idempotency, durable history/version, fanout, metrics, webhook, and optional push
+path returns a commit receipt. `GET /presence` reads each channel independently
+through the native `PresenceService`; `/keys/{keyName}/revokeTokens` writes each
+valid target through the shared revocation store. A failure in one presence read
+or revocation write is therefore an item failure, not a fabricated whole-batch
+success or a rollback of unrelated items.
+
+Batch work is bounded and ordered. At most eight channel/target operations run
+concurrently. A request accepts at most 100 specs, 1,000 channel results, 10,000
+channel-message publish operations, and 10 MiB of encoded JSON or MsgPack. The
+per-spec channel and message limits are additionally capped by
+`event_limits.max_channels_at_once` and `event_limits.max_batch_size`. Known
+resources reject unsupported methods immediately with `405` and `Allow`; unknown
+resources return `404`. JSON/MsgPack content types, Ably error headers, and
+pagination links use the shared REST encoders.
+
+### Channel names
+
+The Ably facade parses channel names independently from Sockudo's native
+Pusher-compatible validator. After REST path decoding, Ably channels may contain
+spaces, namespace colons, braces, quotes, and Unicode. Empty names, control
+characters, reserved leading `:` names, malformed qualifiers, and names larger
+than 16 KiB of UTF-8 are rejected with Ably error code `40010`. These rules apply
+consistently to REST channel operations and realtime attach, publish, and
+presence frames; Protocol V1 validation is unchanged.
+
+Qualified names such as `[?rewind=1]room` and `[filter=...]room` retain their
+full name on Ably wire messages, capability checks, attach state, and errors.
+Their base name (`room`) is the sole identity used by Sockudo fanout, history,
+recovery, presence, and mutable-message services. Attaching both a base and a
+qualified name therefore creates two subscription projections over one channel
+authority, not duplicate durable state.
+
+Derived `[filter=<base64>]` subscriptions compile the decoded JMESPath expression
+once at attach. The expression is size-bounded and filters both live messages and
+recovery backlog before wire encoding; malformed base64, UTF-8, or JMESPath fails
+only that channel with code `40010` and leaves the connection usable.
+Compiled predicates are shared by expression through a bounded 1,024-entry,
+1 MiB cache. Cache hit, miss, eviction, current-entry, and current-byte counters
+are included in the compatibility runtime metrics snapshot. Compilation happens
+outside the cache lock, and delivery evaluates the cached predicate over the
+real Ably message projection, including extras and headers.
+
+Realtime attach negotiates channel modes as typed flags. `params.modes` takes
+precedence over the protocol mode flags, unknown parameters are not reflected,
+and an attach without explicit modes receives the supported Ably default set.
+String, boolean, and finite numeric attach parameters are normalized at the
+JSON/MsgPack protocol boundary; binary, null, array, object, and non-finite
+values are rejected instead of widening runtime parameter handling.
+The negotiated parameters and flags are echoed on every `ATTACHED` outcome.
+Each connection retains a typed attachment contract containing the parsed
+qualified/base name, accepted parameters, explicit/default modes, compiled
+filter, attach position, and presence state. Reattach requests that omit these
+fields reuse the retained contract instead of reverting to unrelated defaults.
+Publish, presence entry, message subscription, and presence subscription are
+enforced independently; a disallowed publish or presence operation is NACKed
+with `40160` without failing the connection or another channel.
+
+REST history uses Sockudo's opaque durable-history cursor. When more results are
+available, the facade emits Ably-compatible relative `first` and `next` Link
+relations and preserves the original direction, limit, and bounds without
+reflecting credentials into the link. JSON and MsgPack pagination use the same
+cursor and base-channel state.
+For realtime rewind, the selected durable/versioned message is collected before
+`ATTACHED`; `HAS_BACKLOG` is set exactly when a replay item follows that frame.
+Rewind accepts positive message counts and positive `s`, `m`, or `h` time forms,
+is capped by the resolved channel history policy, and is delivered oldest first.
+An `ATTACH_RESUME` request retains the channel position but does not replay the
+rewind selection a second time.
+
+### Ably VCDIFF delta delivery
+
+An Ably channel may request `params.delta = "vcdiff"` on `ATTACH`. The accepted
+value is echoed on `ATTACHED`; other delta modes are not accepted or reflected.
+This is an Ably-only egress projection and is separate from Sockudo's native
+Pusher/V2 delta events and `[delta_compression]` algorithm settings.
+
+Each attached subscriber retains at most one base for each requested channel,
+keyed by the last delivered Ably message ID. A base is limited to 64 KiB and
+expires after 120 seconds; the periodic compatibility sweep removes idle expired
+bases. Detach, connection close, reattach, recovery discontinuity, and a native
+stream-generation change reset the base. VCDIFF is emitted only when encoding
+succeeds and the delta is smaller than the complete encoded payload. Otherwise
+the subscriber receives a full message and that full payload becomes the next
+eligible base.
+
+JSON deltas use the portable `json/utf-8/vcdiff/base64` encoding chain and
+`extras.delta = { from, format: "vcdiff" }`. Unsupported, binary, or cipher
+encoding chains pass through unchanged and break the chain rather than being
+reinterpreted as JSON. JSON and MsgPack subscribers use the same payload and ID
+semantics. Missing bases and decode errors are handled by ably-js as `40018`
+reattach recovery; a client that requested VCDIFF without installing its plugin
+fails the channel with `40019`. The reattach starts with a full canonical
+message before delta delivery resumes.
+
+Only the per-subscriber wire projection is compressed. Durable history, hot
+replay, recovery inputs, webhooks, annotations, push, and cross-node fanout all
+retain and distribute the original complete message. Run
+`cargo bench -p sockudo-ably-compat --bench ably_vcdiff --features delta` to
+measure CPU time, allocation count/bytes, and encoded/full ratios for similar
+and dissimilar 1 KiB and 64 KiB payloads at 1, 100, and 1,000 subscribers.
+
+Subscriber registration happens before the canonical attach high-water mark is
+captured. A bounded count-and-byte gate holds concurrent fanout until `ATTACHED`,
+drops gated rows already covered by rewind/recovery, and then drains only later
+positions in order. Gate overflow or a stream-generation change fails that
+channel closed instead of silently losing a publish.
+
+### Presence
+
+Ably virtual connections register with Sockudo's typed `PresenceService` and a
+bounded current-member registry keyed by app, base channel, connection, and
+client. Enter, update, leave, detach, explicit close, recovery expiry,
+failed-resume re-entry, ATTACHED `HAS_PRESENCE`, and SYNC all project from that
+authority. Duplicate disconnects are idempotent; two connections with one
+client ID remain separate members while native first-join/last-leave facts are
+preserved. Presence extras, data, timestamps, encoding chains, and
+`connectionId:serial:index` member IDs are retained. Large SYNC sets move
+members into ordered 100-item continuation frames without per-chunk member
+clones. Inbound action-16 frames request the current authoritative SYNC instead
+of failing the connection.
+
+Virtual members are also written to Sockudo's native horizontal presence
+registry with stable virtual socket identities. Native new-node presence-state
+sync rebuilds current snapshots, while a dedicated protocol-neutral broadcast
+envelope carries live transitions to Ably subscribers on other nodes. Receiving
+nodes consume that envelope before Protocol V1 fanout, so compatibility
+replication cannot appear as a Pusher event.
+
+`GET /channels/{channel}/presence` reads the current native snapshot with limit,
+client-id, connection-id, and opaque pagination cursor support. Presence
+transitions are recorded through Sockudo's configured `PresenceHistoryStore`;
+the Ably history route supports direction, time bounds, the same filters,
+policy-capped limits, and cursor-preserving `first`/`next` Link relations. Sparse
+filters use bounded native-store scans and return a continuation rather than
+performing unbounded work. The route projects native records back to Ably
+actions and retains data, encoding, extras, timestamps, and IDs. A degraded or
+reset-required durable stream returns `503`/`50003` instead of presenting an
+unproven history as complete. Qualified attaches and REST reads use the same
+base-channel registry and durable history, so qualifiers never create parallel
+presence state.
+
+The current-member hot path uses a lock-free authenticated-app index,
+per-connection channel handles, inline storage for the common one-connection
+client, and bounded sharded capacity reservations. Same-client transitions
+remain serialized to preserve exact first-join/last-leave facts, while
+disjoint clients avoid shared channel-lookup and global-capacity cache lines.
+Empty app and connection channel caches are bounded and pruned only when no
+current member or connection handle depends on them.
+
+Run `scripts/presence-bench-guard.sh` (or `make presence-bench-guard`) after a
+presence hot-path change. The guard compares authoritative and legacy cycles in
+the same Criterion process and requires the authoritative confidence interval
+to remain faster for both single-worker and eight-worker disjoint-client loads.
+
+### Message annotations
+
+Realtime annotation action `21` and
+`GET|POST /channels/{channel}/messages/{messageSerial}/annotations` are edge
+projections over Sockudo's native `AnnotationStore`; the facade does not keep a
+second annotation store. Create and delete events retain their annotation
+action, message serial, type, name, client identity, data, encoding, server
+timestamp, and monotonically ordered annotation serial. A caller-supplied
+annotation ID makes an identical retry idempotent.
+
+Channel modes and capabilities are separate concerns. `annotation_publish`
+permits create, `annotation_subscribe` permits raw action-21 delivery, and
+`annotation-delete-own` / `annotation-delete-any` authorize delete independently
+from mutable-message permissions. Ordinary subscribers receive only
+`message.summary`; raw annotations are emitted only when the negotiated
+annotation-subscribe mode is present. Multiple/counting summaries rename the
+native `clientCounts` member to Ably's `clientIds` only at this edge.
+
+REST annotation pages negotiate JSON or MsgPack and return relative `first` and
+`next` Link relations. The cursor is opaque and scoped to the authenticated app,
+base channel, and original message serial; credentials are never reflected into
+links. Live fanout and recovery use the same durable delivery positions as the
+native summary/raw events. An unprovable history gap therefore fails through
+the existing recovery path instead of fabricating annotation state.
+
+The surface requires global `[annotations].enabled`, versioned messages, and an
+app/channel policy with annotations enabled. Protocol V1 receives neither the
+raw annotation event nor the V2/Ably summary projection.
+
+### Realtime delivery bounds
+
+Compatibility delivery is injected at the native local delivery boundary. It
+is interest-gated, synchronous, and non-blocking when no Ably session is
+attached to a channel. Active sessions use separate bounded control and data
+queues, each limited by both frame count and bytes. ACK, ERROR, heartbeat, and
+close-control frames are prioritized over data frames. A data overflow marks
+continuity lost, sends a recoverable `90003` error when possible, and removes
+the stalled subscriber; the next attach/recovery reads canonical Sockudo hot
+replay or durable history.
+
+Messages are encoded once for each active JSON/MessagePack group and shared as
+immutable bytes across that group's subscribers. Session, token, channel, and
+queue state has hard bounds and periodic expiry. No compatibility lock is held
+while encoding or fanning out, and the compatibility projection does not alter
+Protocol V1 delivery. `/operator/stats/ably-runtime` exposes `data_encoded` for
+these shared projections separately from `encoded`, which also includes
+connection, channel, ACK, and heartbeat control frames.
+
+Connection recovery keys are stored for the advertised connection-state TTL in
+the configured shared cache as well as the local runtime. A reconnect routed to
+another node can therefore validate the key and recover each reattached channel
+from canonical hot replay or durable history; a missing or expired `recover` key
+returns `80018`. The active key lease is refreshed at half the advertised TTL,
+then receives a full TTL from an ungraceful disconnect; an explicit `CLOSE`
+invalidates the active key after sending `CLOSED`. Cached state never includes
+app secrets or provider credentials.
+
+Realtime remains WebSocket-only. Operator listeners configured with
+`[ably_compat].realtime_admission = "placement_constraint"` return a genuine
+`DISCONNECTED`/`50320` placement response, allowing the SDK to reconnect to a
+configured fallback host over WebSocket. This admission mode does not add
+Comet, XHR, SSE, polling, or streaming transports. Realtime messages without an
+explicit ID derive the stable Ably ID `connectionId:msgSerial:index`; retrying
+an unacknowledged frame therefore reuses the native idempotency path instead of
+duplicating persistence or fanout.
+
+ATTACH processing is bounded by `ably_compat.attach_timeout_ms` across native
+presence snapshot, hot recovery, and durable history dependencies. A timeout
+cancels that work, removes the partially registered subscriber, and returns a
+channel-scoped `DETACHED`/`50003`, allowing the SDK's normal channel retry timer
+to run without leaving a delivery route active before `ATTACHED`.
+
+Token expiry and revocation checks are generation-stamped. An `AUTH` update
+atomically replaces credential identity, client identity, capability, expiry,
+and revocation metadata, so an older timer or delayed revocation cannot close a
+renewed session. Revocations are stored in the configured shared cache and are
+visible to compatibility sessions on every node. The targets `clientId`,
+`revocationKey`, and `channel`, `issuedBefore`, and the delayed
+`allowReauthMargin` flow are supported. Tokens, JWTs, key secrets, and signing
+material are not written to compatibility logs.
+
+### Statistics and push
+
+Authenticated `GET /stats` supports minute, hour, day, and month units;
+inclusive interval-ID or epoch-millisecond `start` and `end` bounds;
+forward/backward direction; policy-capped limits; opaque, query-scoped cursors;
+and credential-free `first`/`next` Link relations. Canonical UTC minute buckets
+are merged through the configured cache using compare-and-swap, and larger units
+are deterministic read-time projections. A shared persistent cache such as
+Redis provides cross-node and restart-safe history; the memory backend remains
+node-local.
+
+Live counters cover inbound and delivered outbound message counts and encoded
+bytes, API and token-request outcomes, connections, channels, presence, and push
+admission. A bounded batching worker persists publish, attach, and connection
+observations before their application acknowledgements; nonblocking outbound
+delivery observations report drops on saturation. The worker's backlog,
+capacity, drops, flush failures, completed batches, observation count, and lag
+are available from `GET /operator/stats/aggregation`. Authenticated conformance
+interval ingestion is separately disabled by default and, when enabled, writes
+through the same typed minute store rather than returning canned fixture data.
+
+The Ably push projection is compiled only with `ably-compat`, which also enables
+Sockudo's native `push` feature. Device registrations and channel subscriptions
+use the configured native `DynPushStore`. `/push/publish` and ordinary publishes
+with `extras.push` create native `PublishIntent` records through `PushPipeline`;
+they do not publish directly from the REST handler. Planning, queue admission,
+provider batching, retry, feedback, aggregate status, repair, and retention use
+the same workers and durable records as Sockudo's native push API.
+
+The Ably-channel test transport is the native realtime provider. Its dispatch
+worker publishes `__ably_push__` through `MessageService` and reports an accepted
+provider outcome only after real realtime fanout succeeds. Retries reuse a
+bounded delivery id so duplicate provider attempts remain idempotent. Client-ID
+channel subscriptions are represented by typed client-scoped native
+subscriptions and resolve the client's current durable device set at planning
+time. `push-admin` and `push-subscribe` capabilities remain channel scoped;
+device-scoped operations verify the hashed device identity token, and updates do
+not rotate that token. Recipient scans are paged, and provider credentials,
+device tokens, private keys, and raw payloads are not logged.
+
+For an in-process deployment, build with `monolith` so planner, retry, feedback,
+scheduler, repair, and cleanup workers run beside the compatibility realtime
+provider worker. External FCM, APNs, Web Push, HMS, and WNS outcomes are never
+synthesized: delivery requires the corresponding native provider feature,
+worker, and real credentials.
+
+## Additional compatibility surfaces
+
+| Surface | Status | Scope |
+| --- | --- | --- |
+
+| History and recovery | Supported for tested Pub/Sub subset | The harness covers forward/backward REST pagination, `untilAttach`, history projection, and recovery of missed append fragments. Broader Ably history API parity is not claimed. |
+| Presence enter/update/leave | Supported for tested Pub/Sub subset | Realtime presence is ACKed, server-stamped, synchronized, and fanned out; REST current presence and durable presence history share the same base-channel authority. Full Ably presence API parity is not claimed. |
+| Message annotations | Supported for the pinned annotation suite | Realtime create/delete and raw subscription, summary projection, REST pagination, and JSON/MsgPack all use the native annotation subsystem. |
+| Keys and capabilities | Supported for tested Pub/Sub subset | `App.key`/`App.secret` is the primary credential; opt-in `[ably_compat]` keys share its app state. Key and token capabilities are enforced for REST publish/history/status/message reads and realtime attach/publish/presence operations. |
+| Token lifecycle | Supported for tested WebSocket subset | Canonical `access_token` and `client_id` connection parameters are accepted with documented camel-case aliases. Signed HS256 Ably JWTs and issued opaque tokens carry identity, capability, and expiry into the connection. In-band `AUTH` renews authorization without changing the connection ID; expiry and revocation emit `DISCONNECTED` 40142 and 40141. Capability downgrades fail affected channels only. |
 | LiveObjects/object modes | Intentionally out of scope | The current compatibility target does not implement Ably LiveObjects. |
-| Ably Push | Intentionally out of scope | Sockudo has native push APIs, but Ably Push compatibility is not part of this target. |
-| Binary MsgPack Ably protocol | Supported for tested Pub/Sub subset | Realtime Pub/Sub and REST publish/history/time pass the stock `ably@2.23.0` discovery lanes with `useBinaryProtocol: true`. Full Ably platform MsgPack parity is not claimed. |
+| Ably Push | Supported for the pinned REST subset | Device registration, channel subscription, listing/deletion, direct publish, and `extras.push` use native durable storage, queue, planner, provider dispatch, feedback, retry, status, scheduler, and cleanup paths. Full provider-platform parity is not claimed. |
+| Binary MsgPack Ably protocol | Supported for the tested surface | Realtime Pub/Sub and REST publish/history/time are selected from pinned `ably@2.21.0` with `useBinaryProtocol: true`. Full Ably platform MsgPack parity is not claimed. |
 | Full Ably platform API parity | Intentionally out of scope | This surface is for AI Transport compatibility, not a replacement for all Ably services. |
 
 ## Test Commands
@@ -42,22 +459,27 @@ history, and versioned messages enabled. The default repository config uses
 `app-key:app-secret` and an AI channel prefix of `private-ai-`.
 
 ```bash
-cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push" -- \
+cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push,monolith" -- \
   --config config/config.toml
 ```
 
-Then run the compatibility lanes:
+Then run the compatibility lanes from the pinned harness:
 
 ```bash
-make ably-compat-test
-make ably-protocol-discovery
-make ably-ai-transport-test
-make ably-ai-demo
+cd sockudo-compatibility
+make conformance
+make strict-completeness
+make browser-install
+make browser-conformance
+make browser-strict
+make ait-conformance
 ```
 
-`make ably-protocol-discovery` installs Playwright Chromium and includes a real
-stock Ably browser bundle lane for JSON Pub/Sub/history. The other stable targets
-remain headless Node.js checks.
+`make browser-matrix` runs Chromium first, then the pinned Firefox and WebKit
+revisions. Browser reports fail on console or page errors and leaked contexts in
+addition to assertion, runner, pending, and accounting failures. Browser support
+services are loopback-only and real; the runner blocks requests to Ably-hosted
+infrastructure.
 
 The targets read these environment variables:
 
@@ -78,7 +500,7 @@ The targets read these environment variables:
 `make ably-ai-demo` runs two headless demos:
 
 1. A stock `@ably/ai-transport@0.4.0` chat demo using
-   `@ably/ai-transport/vercel`, stock `ably@2.23.0`, and Sockudo as the
+   `@ably/ai-transport/vercel`, pinned `ably@2.21.0`, and Sockudo as the
    configured endpoint.
 2. A recovery/history demo that disconnects during an AI output stream, appends
    additional fragments while offline, reconnects with an Ably recovery key, and

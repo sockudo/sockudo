@@ -35,8 +35,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#fefcfb' },
-    { media: '(prefers-color-scheme: dark)', color: '#0a131a' },
+    { media: '(prefers-color-scheme: light)', color: '#fbfaff' },
+    { media: '(prefers-color-scheme: dark)', color: '#0b0811' },
   ],
 };
 
@@ -44,6 +44,9 @@ export default function Layout({ children }: LayoutProps<'/'>) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
       <body className="flex flex-col min-h-screen">
+        <a className="skip-link" href="#main-content">
+          Skip to main content
+        </a>
         <RootProvider>{children}</RootProvider>
         <DatabuddyAnalytics />
       </body>

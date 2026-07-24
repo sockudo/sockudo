@@ -37,6 +37,7 @@ Environment variables:
 cd tests/ably-compat
 npm ci
 npm run smoke
+npm run multi-key
 npm run protocol:discovery
 npm run pubsub:chat
 npm run ait:mutable
@@ -55,6 +56,11 @@ make ably-ai-demo
 
 `npm run smoke` verifies that the Ably SDK connects, attaches, subscribes,
 publishes, receives the same message, reads history, and detaches.
+
+`npm run multi-key` consumes the generated six-key conformance fixture. It
+proves that a capability-scoped key can publish and enter presence while the
+primary key observes the same live delivery, history, and presence state, and
+that a subscribe-only key cannot publish.
 
 `npm run protocol:discovery` probes a broader stock `ably` SDK surface and emits
 a machine-readable scorecard. The required lane is the JSON Realtime Pub/Sub

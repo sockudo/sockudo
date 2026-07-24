@@ -353,6 +353,11 @@ fn token_from_message(message: &PusherMessage) -> Result<String> {
                 "sockudo:auth data must contain token".to_string(),
             ));
         }
+        MessageData::Binary(_) => {
+            return Err(Error::InvalidMessageFormat(
+                "sockudo:auth data must be JSON".to_string(),
+            ));
+        }
     };
 
     value

@@ -47,16 +47,22 @@ COPY crates/sockudo-webhook/Cargo.toml crates/sockudo-webhook/Cargo.toml
 COPY crates/sockudo-delta/Cargo.toml crates/sockudo-delta/Cargo.toml
 COPY crates/sockudo-push/Cargo.toml crates/sockudo-push/Cargo.toml
 COPY crates/sockudo-ai-transport/Cargo.toml crates/sockudo-ai-transport/Cargo.toml
+COPY crates/sockudo-ably-compat/Cargo.toml crates/sockudo-ably-compat/Cargo.toml
 COPY crates/sockudo-adapter/Cargo.toml crates/sockudo-adapter/Cargo.toml
 COPY crates/sockudo-server/Cargo.toml crates/sockudo-server/Cargo.toml
+COPY crates/sockudo-simulator/Cargo.toml crates/sockudo-simulator/Cargo.toml
 COPY benches/ai/Cargo.toml benches/ai/Cargo.toml
 
 # Create dummy lib.rs / main.rs for each crate so cargo can resolve the workspace
 # and build dependencies without the real source code
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport adapter; do \
+RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter; do \
         mkdir -p crates/sockudo-$dir/src && \
         echo "// dummy" > crates/sockudo-$dir/src/lib.rs; \
     done && \
+    mkdir -p crates/sockudo-push/examples && \
+    echo "fn main() {}" > crates/sockudo-push/examples/webpush_send.rs && \
+    mkdir -p crates/sockudo-simulator/src && \
+    echo "fn main() {}" > crates/sockudo-simulator/src/main.rs && \
     mkdir -p benches/ai/src && \
     echo "// dummy" > benches/ai/src/lib.rs && \
     mkdir -p benches/ai/benches && \
@@ -68,6 +74,10 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
 RUN test -f Cargo.lock || cargo generate-lockfile
 
 ARG SOCKUDO_FEATURES=full
+ARG CARGO_PROFILE_RELEASE_LTO=true
+ARG CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+ENV CARGO_PROFILE_RELEASE_LTO=${CARGO_PROFILE_RELEASE_LTO}
+ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}
 
 # Set jemalloc's page size to 4KB (use 16 for 64KB-page hosts)
 ARG JEMALLOC_SYS_WITH_LG_PAGE=12
@@ -76,9 +86,10 @@ ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 # Build dependencies only (this layer is cached unless Cargo.toml files change)
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}" || true
 # Clean up dummy sources but keep compiled deps
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport adapter server; do \
+RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter server simulator; do \
         rm -rf crates/sockudo-$dir/src; \
     done && \
+    rm -rf crates/sockudo-push/examples && \
     rm -rf benches/ai/src benches/ai/benches && \
     rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
 

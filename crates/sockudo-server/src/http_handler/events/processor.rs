@@ -1,12 +1,15 @@
 use futures_util::future::join_all;
-use sockudo_adapter::ConnectionHandler;
+use sockudo_adapter::{
+    ConnectionHandler,
+    services::{MessageService, PublishContext},
+};
 use sockudo_core::app::App;
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use sockudo_protocol::messages::{ApiMessageData, MessageData, PusherApiMessage, PusherMessage};
 use sonic_rs::{Value, json};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, error, field, instrument, warn};
 
 use super::super::AppError;
@@ -25,14 +28,8 @@ fn build_cache_payload(
     }))
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct MessageIdIdempotencyContext {
-    pub(super) enabled: bool,
-    pub(super) ttl_seconds: u64,
-}
-
 /// Helper to process a single event and return channel info if requested
-#[instrument(skip(handler, event_data, app, start_time_ms, message_id_idempotency), fields(app_id = app.id, event_name = field::Empty))]
+#[instrument(skip(handler, event_data, app, start_time_ms), fields(app_id = app.id, event_name = field::Empty))]
 pub(super) async fn process_single_event_parallel(
     handler: &Arc<ConnectionHandler>,
     app: &App,
@@ -40,7 +37,6 @@ pub(super) async fn process_single_event_parallel(
     collect_info: bool,
     start_time_ms: Option<f64>,
     idempotency_key: Option<String>,
-    message_id_idempotency: MessageIdIdempotencyContext,
 ) -> Result<HashMap<String, Value>, AppError> {
     let PusherApiMessage {
         name,
@@ -153,72 +149,6 @@ pub(super) async fn process_single_event_parallel(
             )
             .await?;
 
-            if let Some(message_id) = message_id_for_task.as_deref()
-                && message_id_idempotency.enabled
-            {
-                let cache_key = message_id_cache_key(&app.id, &target_channel_str, message_id);
-                match handler_clone.cache_manager().get(&cache_key).await {
-                    Ok(Some(cached)) if cached != "__processing__" => {
-                        if let Some(metrics) = handler_clone.metrics() {
-                            metrics.mark_idempotency_duplicate(&app.id);
-                        }
-                        let cached_ack = sonic_rs::from_str(&cached).unwrap_or_else(|_| json!({}));
-                        return Ok(Some((target_channel_str.clone(), cached_ack)));
-                    }
-                    Ok(Some(_)) => {
-                        if let Some(cached_ack) =
-                            wait_for_message_id_ack(handler_clone.as_ref(), &cache_key).await
-                        {
-                            if let Some(metrics) = handler_clone.metrics() {
-                                metrics.mark_idempotency_duplicate(&app.id);
-                            }
-                            return Ok(Some((target_channel_str.clone(), cached_ack)));
-                        }
-                        return Err(AppError::Backpressure {
-                            message: "message_id duplicate is still processing".to_string(),
-                            retry_after_seconds: 1,
-                        });
-                    }
-                    Ok(None) => {
-                        if let Some(metrics) = handler_clone.metrics() {
-                            metrics.mark_idempotency_publish(&app.id);
-                        }
-                        match handler_clone
-                            .cache_manager()
-                            .set_if_not_exists(
-                                &cache_key,
-                                "__processing__",
-                                message_id_idempotency.ttl_seconds,
-                            )
-                            .await
-                        {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                if let Some(cached_ack) =
-                                    wait_for_message_id_ack(handler_clone.as_ref(), &cache_key)
-                                        .await
-                                {
-                                    if let Some(metrics) = handler_clone.metrics() {
-                                        metrics.mark_idempotency_duplicate(&app.id);
-                                    }
-                                    return Ok(Some((target_channel_str.clone(), cached_ack)));
-                                }
-                                return Err(AppError::Backpressure {
-                                    message: "message_id duplicate is still processing".to_string(),
-                                    retry_after_seconds: 1,
-                                });
-                            }
-                            Err(e) => {
-                                warn!(message_id = %message_id, error = %e, "Failed to claim message_id idempotency key, proceeding without dedup");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(message_id = %message_id, error = %e, "Failed to check message_id idempotency cache, proceeding without dedup");
-                    }
-                }
-            }
-
             let _message_to_send = PusherMessage {
                 channel: Some(target_channel_str.clone()),
                 name: None,
@@ -245,12 +175,17 @@ pub(super) async fn process_single_event_parallel(
             let timestamp_ms = start_time_ms;
 
             let force_full = matches!(delta_flag_for_task, Some(false));
-            let publish_ack = handler_clone
-                .publish_to_channel_with_timing(
+            let publish_result = MessageService::new(Arc::clone(&handler_clone))
+                .publish_message_with_timing(
                     app,
                     &target_channel_str,
                     _message_to_send,
-                    socket_id_for_task.as_ref(),
+                    PublishContext {
+                        publisher_socket_id: socket_id_for_task,
+                        exclude_socket: socket_id_for_task,
+                        idempotency_key: (*idempotency_key_for_task).clone(),
+                        ..PublishContext::default()
+                    },
                     timestamp_ms,
                     force_full,
                 )
@@ -261,11 +196,22 @@ pub(super) async fn process_single_event_parallel(
                 let is_presence = target_channel_str.starts_with("presence-");
                 let mut current_channel_info_map = sonic_rs::Object::new();
 
-                if let Some(ack) = publish_ack {
-                    current_channel_info_map.insert("message_serial", json!(ack.message_serial));
-                    current_channel_info_map.insert("history_serial", json!(ack.history_serial));
-                    current_channel_info_map.insert("delivery_serial", json!(ack.delivery_serial));
-                    current_channel_info_map.insert("version_serial", json!(ack.version_serial));
+                let receipt = publish_result.receipt;
+                current_channel_info_map.insert(
+                    "acknowledgement_id",
+                    json!(receipt.acknowledgement_id),
+                );
+                if let Some(message_serial) = receipt.message_serial {
+                    current_channel_info_map.insert("message_serial", json!(message_serial));
+                }
+                if let Some(history_serial) = receipt.history_serial {
+                    current_channel_info_map.insert("history_serial", json!(history_serial));
+                }
+                if let Some(delivery_serial) = receipt.delivery_serial {
+                    current_channel_info_map.insert("delivery_serial", json!(delivery_serial));
+                }
+                if let Some(version_serial) = receipt.version_serial {
+                    current_channel_info_map.insert("version_serial", json!(version_serial));
                 }
 
                 if is_presence && info_for_task.as_deref().is_some_and(|s| s.contains("user_count")) {
@@ -299,17 +245,6 @@ pub(super) async fn process_single_event_parallel(
                 }
 
                 if !current_channel_info_map.is_empty() {
-                    if let Some(message_id) = message_id_for_task.as_deref()
-                        && message_id_idempotency.enabled
-                        && let Ok(serialized) =
-                            sonic_rs::to_string(&current_channel_info_map.clone().into_value())
-                    {
-                        let cache_key = message_id_cache_key(&app.id, &target_channel_str, message_id);
-                        let _ = handler_clone
-                            .cache_manager()
-                            .set(&cache_key, &serialized, message_id_idempotency.ttl_seconds)
-                            .await;
-                    }
                     collected_channel_specific_info = Some((
                         target_channel_str.clone(),
                         current_channel_info_map.into_value(),
@@ -365,20 +300,4 @@ pub(super) async fn process_single_event_parallel(
     }
 
     Ok(final_channels_info_map)
-}
-
-async fn wait_for_message_id_ack(handler: &ConnectionHandler, cache_key: &str) -> Option<Value> {
-    for _ in 0..6 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        if let Ok(Some(cached)) = handler.cache_manager().get(cache_key).await
-            && cached != "__processing__"
-        {
-            return Some(sonic_rs::from_str(&cached).unwrap_or_else(|_| json!({})));
-        }
-    }
-    None
-}
-
-fn message_id_cache_key(app_id: &str, channel: &str, message_id: &str) -> String {
-    format!("app:{app_id}:channel:{channel}:message_id:{message_id}")
 }

@@ -379,6 +379,12 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .set(streams as f64);
     }
 
+    fn add_ai_active_streams(&self, app_id: &str, delta: i64) {
+        self.ai_active_streams
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .add(delta as f64);
+    }
+
     fn observe_ai_stream_duration(&self, app_id: &str, duration_seconds: f64) {
         self.ai_stream_duration_seconds
             .with_label_values(&[app_id, &self.port.to_string()])
@@ -520,6 +526,12 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.active_streams
             .with_label_values(&[app_id, &self.port.to_string()])
             .set(streams as f64);
+    }
+
+    fn add_ai_rollup_active_streams(&self, app_id: &str, delta: i64) {
+        self.active_streams
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .add(delta as f64);
     }
 
     fn observe_ai_rollup_flush_latency(&self, app_id: &str, latency_ms: f64) {

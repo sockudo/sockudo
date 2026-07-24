@@ -25,6 +25,8 @@ x-sockudo-ai-env: &sockudo-ai-env
   DATABASE_POSTGRES_USERNAME: "postgres"
   DATABASE_POSTGRES_PASSWORD: "postgres123"
   DATABASE_POSTGRES_DATABASE: "sockudo_ai"
+  DATABASE_POSTGRES_POOL_MIN: "2"
+  DATABASE_POSTGRES_POOL_MAX: "16"
   SOCKUDO_DEFAULT_APP_ID: "app-id"
   SOCKUDO_DEFAULT_APP_KEY: "app-key"
   SOCKUDO_DEFAULT_APP_SECRET: "app-secret"
@@ -38,6 +40,8 @@ x-sockudo-node: &sockudo-node
     target: runtime
     args:
       SOCKUDO_FEATURES: "v2,ai-transport,redis,postgres"
+      CARGO_PROFILE_RELEASE_LTO: "${AI_DOCKER_RELEASE_LTO:-false}"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "${AI_DOCKER_RELEASE_CODEGEN_UNITS:-8}"
   command: ["sockudo", "--config", "/app/config/config.ai-transport-compose.toml"]
   depends_on:
     redis:
@@ -87,7 +91,7 @@ services:
     image: redis:7-alpine
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
-      - "16379:6379"
+      - "${AI_REDIS_HOST_PORT:-16379}:6379"
     networks:
       - sockudo-ai-network
     healthcheck:
@@ -98,12 +102,13 @@ services:
 
   postgres:
     image: postgres:15-alpine
+    command: postgres -c max_connections=300
     environment:
       POSTGRES_PASSWORD: "postgres123"
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "sockudo_ai"
     ports:
-      - "15433:5432"
+      - "${AI_POSTGRES_HOST_PORT:-15433}:5432"
     volumes:
       - sockudo-ai-postgres-data:/var/lib/postgresql/data
     networks:

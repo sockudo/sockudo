@@ -50,6 +50,29 @@ channel.bind("price-updated", (payload) => {
 });
 ```
 
+## Binary wire formats
+
+Protocol V2 can negotiate JSON, MessagePack, or Protobuf with `wireFormat`.
+MessagePack and Protobuf preserve `Uint8Array` message data as native binary
+values without a JSON or base64 intermediate.
+
+```ts
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  protocolVersion: 2,
+  wireFormat: "messagepack",
+});
+
+const channel = client.subscribe("private-binary");
+channel.trigger("client-binary", new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+```
+
+Native MessagePack uses the additive tagged data variant
+`["binary", <bin>]`. Existing string, structured, and JSON variants retain
+their previous representation.
+
 ## Private and presence auth
 
 ```ts

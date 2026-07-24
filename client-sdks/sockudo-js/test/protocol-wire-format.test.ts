@@ -84,6 +84,21 @@ describe("protocol wire formats", () => {
     expect(decoded.conflation_key).toBe("room");
   });
 
+  it("round trips native messagepack binary data", () => {
+    setWireFormat("messagepack");
+    const data = new Uint8Array([0, 1, 2, 255]);
+    const payload = Protocol.encodeMessage({
+      event: "sockudo:binary",
+      channel: "binary:room-1",
+      data,
+    });
+
+    const decoded = Protocol.decodeMessage({ data: payload } as MessageEvent);
+
+    expect(decoded.event).toBe("sockudo:binary");
+    expect(decoded.data).toEqual(data);
+  });
+
   it("round trips protobuf", () => {
     setWireFormat("protobuf");
     const payload = Protocol.encodeMessage({
@@ -119,6 +134,20 @@ describe("protocol wire formats", () => {
       ephemeral: undefined,
       idempotency_key: undefined,
     });
+  });
+
+  it("round trips protobuf binary data", () => {
+    setWireFormat("protobuf");
+    const data = new Uint8Array([222, 173, 190, 239]);
+    const payload = Protocol.encodeMessage({
+      event: "sockudo:binary",
+      channel: "binary:room-2",
+      data,
+    });
+
+    const decoded = Protocol.decodeMessage({ data: payload } as MessageEvent);
+
+    expect(decoded.data).toEqual(data);
   });
 
   it("serializes rewind subscription options", () => {

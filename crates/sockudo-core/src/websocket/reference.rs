@@ -1,6 +1,6 @@
 use super::buffer::{
-    BufferedRewindMessage, ByteCounter, MessageSenderHandle, RewindGate, SizedMessage,
-    SizedMessageSenderHandle, WebSocketBufferConfig,
+    BufferedRewindMessage, ByteCounter, MessageSenderHandle, RewindGate, RewindGateAdmission,
+    RewindGateDrain, SizedMessage, SizedMessageSenderHandle, WebSocketBufferConfig,
 };
 use super::capabilities::ConnectionCapabilities;
 use super::connection::WebSocket;
@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use bytes::Bytes;
 use crossfire::TrySendError;
 use dashmap::DashMap;
-use sockudo_filter::FilterNode;
+use sockudo_filter::{FilterNode, MessagePredicate};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sonic_rs::Value;
@@ -47,6 +47,8 @@ pub struct WebSocketRef {
 #[derive(Default)]
 pub struct PerChannelState {
     pub filter: Option<Arc<FilterNode>>,
+    /// V2 compile-once delivery predicate. All components are evaluated atomically.
+    pub predicate: Option<Arc<MessagePredicate>>,
     /// V2 event name filter. None = receive all events.
     pub event_name_filter: Option<Vec<String>>,
     /// V2 raw annotation delivery mode.
@@ -103,9 +105,12 @@ impl WebSocketRef {
     pub fn send_broadcast(&self, bytes: Bytes) -> Result<()> {
         let msg_size = bytes.len();
 
-        if let Some(ref counter) = self.byte_counter
-            && let Some(byte_limit) = self.buffer_config.limit.byte_limit()
-            && counter.would_exceed(msg_size, byte_limit)
+        let byte_reservation = self
+            .byte_counter
+            .as_ref()
+            .zip(self.buffer_config.limit.byte_limit());
+        if let Some((counter, byte_limit)) = byte_reservation
+            && !counter.try_reserve(msg_size, byte_limit)
         {
             return self.handle_buffer_full("byte limit", byte_limit, Some(msg_size));
         }
@@ -113,19 +118,22 @@ impl WebSocketRef {
         let sized_msg = SizedMessage::new(bytes);
 
         match self.broadcast_tx.try_send(sized_msg) {
-            Ok(()) => {
-                if let Some(ref counter) = self.byte_counter {
-                    counter.add(msg_size);
-                }
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
+                if let Some((counter, _)) = byte_reservation {
+                    counter.sub(msg_size);
+                }
                 let limit = self.buffer_config.limit.message_limit().unwrap_or(0);
                 self.handle_buffer_full("message limit", limit, None)
             }
-            Err(TrySendError::Disconnected(_)) => Err(Error::ConnectionClosed(
-                "Broadcast channel closed".to_string(),
-            )),
+            Err(TrySendError::Disconnected(_)) => {
+                if let Some((counter, _)) = byte_reservation {
+                    counter.sub(msg_size);
+                }
+                Err(Error::ConnectionClosed(
+                    "Broadcast channel closed".to_string(),
+                ))
+            }
         }
     }
 
@@ -264,7 +272,7 @@ impl WebSocketRef {
     pub async fn subscribe_to_channel(&self, channel: String) {
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel(channel.clone());
-        self.upsert_channel_state(Arc::<str>::from(channel), None, None, false);
+        self.upsert_channel_state(Arc::<str>::from(channel), None, None, None, false);
     }
 
     pub async fn subscribe_to_channel_with_filter(
@@ -278,7 +286,13 @@ impl WebSocketRef {
 
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel_with_filter(channel.clone(), filter.clone());
-        self.upsert_channel_state(Arc::<str>::from(channel), filter.map(Arc::new), None, false);
+        self.upsert_channel_state(
+            Arc::<str>::from(channel),
+            filter.map(Arc::new),
+            None,
+            None,
+            false,
+        );
     }
 
     /// Subscribe with both tag filter and event name filter (V2).
@@ -287,6 +301,7 @@ impl WebSocketRef {
         channel: String,
         mut tag_filter: Option<FilterNode>,
         event_name_filter: Option<Vec<String>>,
+        predicate: Option<Arc<MessagePredicate>>,
         annotation_subscribe: bool,
     ) {
         if let Some(ref mut f) = tag_filter {
@@ -299,6 +314,7 @@ impl WebSocketRef {
             Arc::<str>::from(channel),
             tag_filter.map(Arc::new),
             event_name_filter,
+            predicate,
             annotation_subscribe,
         );
     }
@@ -349,76 +365,90 @@ impl WebSocketRef {
     }
 
     pub fn start_rewind_gate(&self, channel: String) {
-        self.channel_state
+        let mut state = self
+            .channel_state
             .entry(Arc::<str>::from(channel))
-            .or_default()
-            .rewind_gate = Some(Arc::new(Mutex::new(RewindGate::new(self.buffer_config))));
+            .or_default();
+        state
+            .rewind_gate
+            .get_or_insert_with(|| Arc::new(Mutex::new(RewindGate::new(self.buffer_config))));
     }
 
-    pub async fn buffer_rewind_message(&self, channel: &str, message: &PusherMessage) -> bool {
+    pub fn has_rewind_gate(&self, channel: &str) -> bool {
+        self.channel_state
+            .get(channel)
+            .is_some_and(|entry| entry.value().rewind_gate.is_some())
+    }
+
+    pub async fn buffer_rewind_message(
+        &self,
+        channel: &str,
+        message: Arc<PusherMessage>,
+        message_size: usize,
+    ) -> Result<bool> {
         let Some(gate) = self
             .channel_state
             .get(channel)
             .and_then(|entry| entry.value().rewind_gate.clone())
         else {
-            return false;
+            return Ok(false);
         };
 
         let mut gate = gate.lock().await;
-        if gate.is_overflowed() {
-            return true;
-        }
-
-        let message_bytes = match sockudo_protocol::wire::serialize_message(
-            message,
-            self.wire_format,
-        ) {
-            Ok(payload) => payload.len(),
-            Err(_) => {
-                warn!(
-                    socket_id = %self.socket_id,
-                    channel,
-                    reason = "serialization_failed",
-                    "Rewind gate rejected a live message; shutting down connection to preserve continuity"
-                );
-                gate.fail_closed();
-                drop(gate);
-                self.shutdown();
-                return true;
-            }
-        };
         let buffered = BufferedRewindMessage {
             serial: message.serial,
             message_id: message.message_id.clone(),
-            message: message.clone(),
+            message,
         };
-        if let Err(overflow) = gate.try_buffer(buffered, message_bytes) {
-            warn!(
-                socket_id = %self.socket_id,
-                channel,
-                limit_kind = overflow.limit_kind.as_str(),
-                limit = overflow.limit,
-                buffered_messages = overflow.buffered_messages,
-                buffered_bytes = overflow.buffered_bytes,
-                incoming_message_bytes = overflow.incoming_message_bytes,
-                "Rewind gate overflow; shutting down connection to preserve continuity"
-            );
-            drop(gate);
-            self.shutdown();
+        match gate.try_buffer(buffered, message_size) {
+            RewindGateAdmission::Buffered => Ok(true),
+            RewindGateAdmission::Closed => Ok(false),
+            RewindGateAdmission::Overflowed(overflow) => {
+                warn!(
+                    socket_id = %self.socket_id,
+                    channel,
+                    limit_kind = overflow.limit_kind.as_str(),
+                    limit = overflow.limit,
+                    buffered_messages = overflow.buffered_messages,
+                    buffered_bytes = overflow.buffered_bytes,
+                    incoming_message_bytes = overflow.incoming_message_bytes,
+                    "Rewind gate overflow; shutting down connection to preserve continuity"
+                );
+                let error = Error::BufferFull(format!(
+                    "attach gate exceeded bounded {} capacity (limit: {}, buffered messages: {}, buffered bytes: {}, incoming bytes: {})",
+                    overflow.limit_kind.as_str(),
+                    overflow.limit,
+                    overflow.buffered_messages,
+                    overflow.buffered_bytes,
+                    overflow.incoming_message_bytes
+                ));
+                drop(gate);
+                self.shutdown();
+                Err(error)
+            }
         }
-        true
     }
 
-    pub async fn finish_rewind_gate(&self, channel: &str) -> Vec<BufferedRewindMessage> {
+    pub async fn finish_rewind_gate(&self, channel: &str) -> Result<Vec<BufferedRewindMessage>> {
         let Some(gate) = self
             .channel_state
             .get_mut(channel)
             .and_then(|mut entry| entry.rewind_gate.take())
         else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let mut gate = gate.lock().await;
-        gate.drain()
+        match gate.finish() {
+            RewindGateDrain::Buffered(buffered) => Ok(buffered),
+            RewindGateDrain::Overflowed(overflow) => Err(Error::BufferFull(format!(
+                "attach gate overflowed before continuity could be established ({} limit: {}, buffered messages: {}, buffered bytes: {}, incoming bytes: {})",
+                overflow.limit_kind.as_str(),
+                overflow.limit,
+                overflow.buffered_messages,
+                overflow.buffered_bytes,
+                overflow.incoming_message_bytes
+            ))),
+        }
     }
 
     fn upsert_channel_state(
@@ -426,12 +456,14 @@ impl WebSocketRef {
         channel: Arc<str>,
         filter: Option<Arc<FilterNode>>,
         event_name_filter: Option<Vec<String>>,
+        predicate: Option<Arc<MessagePredicate>>,
         annotation_subscribe: bool,
     ) {
         let mut state = self.channel_state.entry(channel).or_default();
         // Preserve any rewind gate started just before subscription setup.
         state.filter = filter;
         state.event_name_filter = event_name_filter;
+        state.predicate = predicate;
         state.annotation_subscribe = annotation_subscribe;
         state.attach_serial = None;
     }

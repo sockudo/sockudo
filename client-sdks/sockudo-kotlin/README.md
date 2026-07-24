@@ -75,6 +75,10 @@ Protocol V2 heartbeat behavior:
 - Kotlin/JVM runtimes may still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages for client-side activity checks when the underlying transport does not expose a direct ping API
 - fallback heartbeat messages are intentionally excluded from V2 recovery metadata such as `message_id`, `serial`, and `stream_id`
 
+MessagePack and Protobuf preserve `ByteArray` message data as native binary. The
+MessagePack representation uses the additive `["binary", <bin>]` tagged value;
+existing string and JSON variants are unchanged.
+
 ## Advanced Usage
 
 ### Channel Auth
@@ -112,6 +116,8 @@ val channel =
         "price:btc",
         SubscriptionOptions(
             filter = Filter.eq("market", "spot"),
+            events = listOf("price.updated"),
+            expression = SubscriptionExpression.Source("data.price >= `100`"),
             delta = ChannelDeltaSettings(enabled = true, algorithm = DeltaAlgorithm.xdelta3),
         ),
 )

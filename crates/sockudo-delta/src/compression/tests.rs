@@ -1,4 +1,13 @@
 use super::*;
+
+#[test]
+fn explicit_vcdiff_round_trips_short_compatibility_payloads() {
+    let base = br#"{"count":1,"status":"active"}"#;
+    let target = br#"{"count":2,"status":"active"}"#;
+    let delta = compute_vcdiff(base, target).expect("VCDIFF encoding");
+    let decoded = oxidelta::compress::decoder::decode_all(base, &delta).expect("VCDIFF decoding");
+    assert_eq!(decoded, target);
+}
 use sockudo_core::delta_types::DeltaCompressionConfig;
 
 #[tokio::test]

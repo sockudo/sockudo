@@ -5,6 +5,7 @@
   "scripts": {
     "test": "npm run smoke && npm run ait:mutable && npm run ait:recovery",
     "smoke": "node smoke.mjs",
+    "multi-key": "node multi-key.mjs",
     "protocol:discovery": "node protocol-discovery.mjs",
     "pubsub:chat": "node pubsub-chat-smoke.mjs",
     "demo:pubsub-chat": "node pubsub-chat-server.mjs",

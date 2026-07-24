@@ -16,7 +16,11 @@ async fn test_verify_channel_authentication_public_channel() {
         channel: "public-channel".to_string(),
         auth: None,
         channel_data: None,
+        #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
+        #[cfg(feature = "delta")]
         delta: None,
         rewind: None,
         event_name_filter: None,
@@ -40,7 +44,11 @@ async fn test_verify_channel_authentication_private_channel_no_auth() {
         channel: "private-channel".to_string(),
         auth: None,
         channel_data: None,
+        #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
+        #[cfg(feature = "delta")]
         delta: None,
         rewind: None,
         event_name_filter: None,
@@ -91,7 +99,11 @@ async fn test_verify_channel_authentication_private_channel_with_auth() {
         channel,
         auth: Some(auth),
         channel_data: None,
+        #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
+        #[cfg(feature = "delta")]
         delta: None,
         rewind: None,
         event_name_filter: None,
@@ -145,7 +157,11 @@ async fn test_verify_channel_authentication_presence_channel() {
         channel,
         auth: Some(auth),
         channel_data: Some(channel_data),
+        #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
+        #[cfg(feature = "delta")]
         delta: None,
         rewind: None,
         event_name_filter: None,

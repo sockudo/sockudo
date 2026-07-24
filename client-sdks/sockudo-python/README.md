@@ -4,6 +4,10 @@ Async Sockudo client SDK for Python.
 
 `sockudo-python` is a Pusher-compatible realtime client for Python applications. It preserves the familiar subscribe/bind/channel model while adding Sockudo-native features such as filter-aware subscriptions, delta reconstruction, and encrypted channel handling.
 
+MessagePack and Protobuf preserve `bytes` message data as native binary. The
+MessagePack representation uses the additive `["binary", <bin>]` tagged value;
+existing string and JSON variants are unchanged.
+
 ## Features
 
 - Protocol V2 by default, with V1 compatibility
@@ -260,6 +264,8 @@ channel = client.subscribe(
     "price:btc",
     options=SubscriptionOptions(
         filter=Filter.eq("market", "spot"),
+        events=["price.updated"],
+        expression="data.price >= `100`",
     ),
 )
 

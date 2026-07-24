@@ -78,7 +78,7 @@ impl Sockudo {
         let path_segments: Vec<&str> = parsed_url.path().split('/').collect();
         let app_id = path_segments
             .last()
-            .filter(|s| !s.is_empty())
+            .filter(|segment| !segment.is_empty())
             .ok_or_else(|| SockudoError::Config {
                 message: "App ID not found in URL path".to_string(),
             })?;

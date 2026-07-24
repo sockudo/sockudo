@@ -32,6 +32,10 @@ pub struct ConnectionCapabilities {
     pub message_delete_any: Option<Vec<String>>,
     pub message_append_own: Option<Vec<String>>,
     pub message_append_any: Option<Vec<String>>,
+    #[serde(rename = "push-admin", alias = "push_admin")]
+    pub push_admin: Option<Vec<String>>,
+    #[serde(rename = "push-subscribe", alias = "push_subscribe")]
+    pub push_subscribe: Option<Vec<String>>,
 }
 
 impl ConnectionCapabilities {
@@ -89,6 +93,18 @@ impl ConnectionCapabilities {
             .is_some_and(|patterns| Self::matches_any(patterns, channel))
     }
 
+    pub fn allows_push_admin(&self, channel: &str) -> bool {
+        self.push_admin
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_push_subscribe(&self, channel: &str) -> bool {
+        self.push_subscribe
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
     pub fn allows_message_mutation_own(
         &self,
         kind: crate::versioned_message_auth::MutationKind,
@@ -132,5 +148,24 @@ impl ConnectionCapabilities {
                 self.message_append_any.as_deref()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_capabilities_are_explicit_and_channel_scoped() {
+        let capabilities = ConnectionCapabilities {
+            push_admin: Some(vec!["pushenabled:admin:*".to_string()]),
+            push_subscribe: Some(vec!["pushenabled:*".to_string()]),
+            ..Default::default()
+        };
+
+        assert!(capabilities.allows_push_admin("pushenabled:admin:ops"));
+        assert!(!capabilities.allows_push_admin("pushenabled:client"));
+        assert!(capabilities.allows_push_subscribe("pushenabled:client"));
+        assert!(!capabilities.allows_push_subscribe("private:client"));
     }
 }

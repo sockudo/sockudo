@@ -5,6 +5,7 @@ use tracing::warn;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerOptions {
+    pub ably_compat: AblyCompatConfig,
     pub adapter: AdapterConfig,
     pub app_manager: AppManagerConfig,
     pub cache: CacheConfig,
@@ -58,6 +59,7 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
+            ably_compat: AblyCompatConfig::default(),
             adapter: AdapterConfig::default(),
             app_manager: AppManagerConfig::default(),
             cache: CacheConfig::default(),
@@ -121,6 +123,52 @@ impl ServerOptions {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.ably_compat.validate()?;
+        if self.ai_transport.enabled {
+            self.ai_transport.validate_deployment_matrix(
+                &self.adapter,
+                &self.cache,
+                &self.history,
+                &self.versioned_messages,
+            )?;
+        }
+        let clustered = self.adapter.driver != AdapterDriver::Local;
+        let shared_cache = matches!(
+            self.cache.driver,
+            CacheDriver::Redis | CacheDriver::RedisCluster
+        );
+        if clustered && (self.ably_compat.enabled || self.idempotency.enabled) && !shared_cache {
+            return Err(
+                "clustered Ably compatibility and idempotency require cache.driver=redis or redis-cluster; node-local cache cannot authorize or deduplicate across nodes"
+                    .to_string(),
+            );
+        }
+        if clustered && self.ably_compat.enabled && !self.adapter.cluster_health.enabled {
+            return Err(
+                "clustered Ably compatibility requires adapter.cluster_health.enabled so dead-node presence can be removed"
+                    .to_string(),
+            );
+        }
+        if clustered && self.history.enabled && self.history.backend == HistoryBackend::Memory {
+            return Err(
+                "clustered history requires a durable non-memory history backend".to_string(),
+            );
+        }
+        if clustered && self.presence_history.enabled && !self.history.enabled {
+            return Err(
+                "clustered presence history requires history.enabled with a durable backend"
+                    .to_string(),
+            );
+        }
+        if clustered
+            && self.versioned_messages.enabled
+            && self.versioned_messages.driver == VersionStoreDriver::Memory
+        {
+            return Err(
+                "clustered mutable messages and annotations require a durable non-memory version store"
+                    .to_string(),
+            );
+        }
         if self.unix_socket.enabled {
             if self.unix_socket.path.is_empty() {
                 return Err(
@@ -161,8 +209,16 @@ impl ServerOptions {
             if self.history.retention_window_seconds == 0 {
                 return Err("history.retention_window_seconds must be greater than 0".to_string());
             }
-            if self.history.postgres.table_prefix.trim().is_empty() {
-                return Err("history.postgres.table_prefix must not be empty".to_string());
+            let (driver, table_prefix) = match self.history.backend {
+                HistoryBackend::Postgres => ("postgres", &self.history.postgres.table_prefix),
+                HistoryBackend::Mysql => ("mysql", &self.history.mysql.table_prefix),
+                HistoryBackend::DynamoDb => ("dynamodb", &self.history.dynamodb.table_prefix),
+                HistoryBackend::SurrealDb => ("surrealdb", &self.history.surrealdb.table_prefix),
+                HistoryBackend::ScyllaDb => ("scylladb", &self.history.scylladb.table_prefix),
+                HistoryBackend::Memory => ("memory", &self.history.postgres.table_prefix),
+            };
+            if self.history.backend != HistoryBackend::Memory && table_prefix.trim().is_empty() {
+                return Err(format!("history.{driver}.table_prefix must not be empty"));
             }
         }
 
@@ -177,8 +233,35 @@ impl ServerOptions {
             }
         }
 
-        if self.versioned_messages.enabled && self.versioned_messages.max_page_size == 0 {
-            return Err("versioned_messages.max_page_size must be greater than 0".to_string());
+        if self.versioned_messages.enabled {
+            if self.versioned_messages.max_page_size == 0 {
+                return Err("versioned_messages.max_page_size must be greater than 0".to_string());
+            }
+            let durable_prefix = match self.versioned_messages.driver {
+                VersionStoreDriver::Memory => None,
+                VersionStoreDriver::Postgres => {
+                    Some(("postgres", self.history.postgres.table_prefix.as_str()))
+                }
+                VersionStoreDriver::Mysql => {
+                    Some(("mysql", self.history.mysql.table_prefix.as_str()))
+                }
+                VersionStoreDriver::DynamoDb => {
+                    Some(("dynamodb", self.history.dynamodb.table_prefix.as_str()))
+                }
+                VersionStoreDriver::ScyllaDb => {
+                    Some(("scylladb", self.history.scylladb.table_prefix.as_str()))
+                }
+                VersionStoreDriver::SurrealDb => {
+                    Some(("surrealdb", self.history.surrealdb.table_prefix.as_str()))
+                }
+            };
+            if let Some((driver, prefix)) = durable_prefix
+                && prefix.trim().is_empty()
+            {
+                return Err(format!(
+                    "versioned_messages.driver={driver} requires history.{driver}.table_prefix"
+                ));
+            }
         }
         if self.presence.update_rate_limit_per_member_per_second == 0 {
             return Err(
@@ -190,12 +273,6 @@ impl ServerOptions {
             return Err("annotations require versioned_messages.enabled".to_string());
         }
         if self.ai_transport.enabled {
-            self.ai_transport.validate_deployment_matrix(
-                &self.adapter,
-                &self.cache,
-                &self.history,
-                &self.versioned_messages,
-            )?;
             if self.ai_transport.max_accumulated_message_bytes == 0 {
                 return Err(
                     "ai_transport.max_accumulated_message_bytes must be greater than 0".to_string(),
@@ -296,5 +373,51 @@ mod tests {
     #[test]
     fn default_health_check_timeout_leaves_probe_headroom() {
         assert_eq!(ServerOptions::default().health_check_timeout_ms, 2000);
+    }
+
+    #[test]
+    fn clustered_compatibility_rejects_node_local_coordination() {
+        let mut options = ServerOptions::default();
+        options.ably_compat.enabled = true;
+        options.adapter.driver = AdapterDriver::Redis;
+        options.cache.driver = CacheDriver::Memory;
+
+        let error = options.validate().unwrap_err();
+        assert!(error.contains("cache.driver=redis or redis-cluster"));
+    }
+
+    #[test]
+    fn clustered_state_accepts_shared_coordination_and_durable_stores() {
+        let mut options = ServerOptions::default();
+        options.ably_compat.enabled = true;
+        options.adapter.driver = AdapterDriver::Redis;
+        options.cache.driver = CacheDriver::Redis;
+        options.history.enabled = true;
+        options.history.backend = HistoryBackend::Postgres;
+        options.versioned_messages.enabled = true;
+        options.versioned_messages.driver = VersionStoreDriver::Postgres;
+
+        options.validate().unwrap();
+    }
+
+    #[test]
+    fn clustered_annotations_accept_every_durable_version_driver() {
+        for driver in [
+            VersionStoreDriver::Postgres,
+            VersionStoreDriver::Mysql,
+            VersionStoreDriver::DynamoDb,
+            VersionStoreDriver::ScyllaDb,
+            VersionStoreDriver::SurrealDb,
+        ] {
+            let mut options = ServerOptions::default();
+            options.adapter.driver = AdapterDriver::Redis;
+            options.cache.driver = CacheDriver::Redis;
+            options.annotations.enabled = true;
+            options.versioned_messages.enabled = true;
+            options.versioned_messages.driver = driver.clone();
+            options
+                .validate()
+                .unwrap_or_else(|error| panic!("{driver:?} was rejected: {error}"));
+        }
     }
 }

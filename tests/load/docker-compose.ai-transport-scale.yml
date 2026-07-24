@@ -1,11 +1,13 @@
 services:
   sockudo-node-4:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile
       target: runtime
       args:
         SOCKUDO_FEATURES: "v2,ai-transport,redis,postgres"
+        CARGO_PROFILE_RELEASE_LTO: "${AI_DOCKER_RELEASE_LTO:-false}"
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "${AI_DOCKER_RELEASE_CODEGEN_UNITS:-8}"
     command: ["sockudo", "--config", "/app/config/config.ai-transport-compose.toml"]
     depends_on:
       redis:
@@ -37,6 +39,8 @@ services:
       DATABASE_POSTGRES_USERNAME: "postgres"
       DATABASE_POSTGRES_PASSWORD: "postgres123"
       DATABASE_POSTGRES_DATABASE: "sockudo_ai"
+      DATABASE_POSTGRES_POOL_MIN: "2"
+      DATABASE_POSTGRES_POOL_MAX: "16"
       SOCKUDO_DEFAULT_APP_ID: "app-id"
       SOCKUDO_DEFAULT_APP_KEY: "app-key"
       SOCKUDO_DEFAULT_APP_SECRET: "app-secret"
@@ -47,7 +51,7 @@ services:
       - "6004:6001"
       - "9604:9601"
     volumes:
-      - ../../config/config.ai-transport-compose.toml:/app/config/config.ai-transport-compose.toml:ro
+      - ./config/config.ai-transport-compose.toml:/app/config/config.ai-transport-compose.toml:ro
     networks:
       - sockudo-ai-network
     healthcheck:
@@ -59,11 +63,13 @@ services:
 
   sockudo-node-5:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile
       target: runtime
       args:
         SOCKUDO_FEATURES: "v2,ai-transport,redis,postgres"
+        CARGO_PROFILE_RELEASE_LTO: "${AI_DOCKER_RELEASE_LTO:-false}"
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "${AI_DOCKER_RELEASE_CODEGEN_UNITS:-8}"
     command: ["sockudo", "--config", "/app/config/config.ai-transport-compose.toml"]
     depends_on:
       redis:
@@ -95,6 +101,8 @@ services:
       DATABASE_POSTGRES_USERNAME: "postgres"
       DATABASE_POSTGRES_PASSWORD: "postgres123"
       DATABASE_POSTGRES_DATABASE: "sockudo_ai"
+      DATABASE_POSTGRES_POOL_MIN: "2"
+      DATABASE_POSTGRES_POOL_MAX: "16"
       SOCKUDO_DEFAULT_APP_ID: "app-id"
       SOCKUDO_DEFAULT_APP_KEY: "app-key"
       SOCKUDO_DEFAULT_APP_SECRET: "app-secret"
@@ -105,7 +113,7 @@ services:
       - "6005:6001"
       - "9605:9601"
     volumes:
-      - ../../config/config.ai-transport-compose.toml:/app/config/config.ai-transport-compose.toml:ro
+      - ./config/config.ai-transport-compose.toml:/app/config/config.ai-transport-compose.toml:ro
     networks:
       - sockudo-ai-network
     healthcheck:
@@ -119,13 +127,13 @@ services:
     image: node:22-alpine
     working_dir: /repo
     volumes:
-      - ../..:/repo:ro
+      - .:/repo:ro
     environment:
       SOCKUDO_NODE_URLS: "http://sockudo-node-1:6001,http://sockudo-node-2:6001,http://sockudo-node-3:6001,http://sockudo-node-4:6001,http://sockudo-node-5:6001"
       SOCKUDO_APP_ID: "app-id"
       SOCKUDO_APP_KEY: "app-key"
       SOCKUDO_APP_SECRET: "app-secret"
-    command: ["node", "test/load/ai-scale-runner.mjs", "--profile", "test/load/profiles/smoke.json", "--output", "/tmp/ai-scale-result.json"]
+    command: ["node", "tests/load/ai-scale-runner.mjs", "--profile", "tests/load/profiles/smoke.json", "--output", "/tmp/ai-scale-result.json"]
     depends_on:
       sockudo-node-1:
         condition: service_healthy

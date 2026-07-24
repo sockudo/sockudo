@@ -1,0 +1,133 @@
+name: Distributed Correctness Chaos
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_ref:
+        description: Previous release/ref to roll from (defaults to HEAD^)
+        required: false
+        type: string
+      duration_seconds:
+        description: Active workload duration (minimum 30)
+        required: false
+        default: "600"
+        type: string
+  schedule:
+    - cron: "41 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distributed-correctness-chaos
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  outside-in:
+    name: Rolling deployment, partition, and presence cleanup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository with predecessor
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo inputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-distributed-correctness-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libpq-dev cmake protobuf-compiler libprotobuf-dev postgresql-client
+
+      - name: Start shared Redis and PostgreSQL
+        run: docker compose -f docker-compose.test.yml up -d redis-test postgres-test
+
+      - name: Wait for shared dependencies
+        run: |
+          ready=0
+          for attempt in $(seq 1 60); do
+            if docker exec "$(docker ps -q -f name=redis-test)" redis-cli ping >/dev/null 2>&1 && \
+              PGPASSWORD=postgres123 psql -h 127.0.0.1 -p 15432 -U postgres -d sockudo_test -c "SELECT 1" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            echo "Waiting for Redis and PostgreSQL ($attempt/60)"
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker compose -f docker-compose.test.yml logs redis-test postgres-test
+            exit 1
+          fi
+
+      - name: Resolve previous package ref
+        id: previous
+        env:
+          REQUESTED_OLD_REF: ${{ inputs.old_ref }}
+        run: |
+          old_ref="${REQUESTED_OLD_REF:-HEAD^}"
+          if ! git rev-parse --verify "${old_ref}^{commit}" >/dev/null 2>&1; then
+            git fetch --no-tags --depth=1 origin "$old_ref"
+            old_ref=FETCH_HEAD
+          fi
+          resolved_ref="$(git rev-parse --verify "${old_ref}^{commit}")"
+          echo "ref=$resolved_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Build previous package in an isolated worktree
+        env:
+          OLD_REF: ${{ steps.previous.outputs.ref }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/distributed-old-source" "$OLD_REF"
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/distributed-old-target" \
+            cargo build --manifest-path "$RUNNER_TEMP/distributed-old-source/Cargo.toml" \
+              -p sockudo --features "v2,redis,postgres"
+          cp target/distributed-old-target/debug/sockudo target/distributed-old-sockudo
+
+      - name: Build release-candidate package
+        run: cargo build -p sockudo --features "v2,redis,postgres"
+
+      - name: Run ten-minute outside-in chaos lane
+        env:
+          REQUESTED_DURATION_SECONDS: ${{ inputs.duration_seconds }}
+        run: |
+          duration_seconds="${REQUESTED_DURATION_SECONDS:-600}"
+          node tools/chaos/distributed-correctness.mjs \
+            --duration-ms "$((duration_seconds * 1000))" \
+            --old-bin target/distributed-old-sockudo \
+            --new-bin target/debug/sockudo
+
+      - name: Capture dependency logs
+        if: failure()
+        run: |
+          mkdir -p target/distributed-correctness/dependencies
+          docker compose -f docker-compose.test.yml logs redis-test postgres-test \
+            > target/distributed-correctness/dependencies/docker.log 2>&1 || true
+
+      - name: Upload replayable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-correctness-${{ github.run_id }}
+          path: target/distributed-correctness/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Tear down shared dependencies
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v

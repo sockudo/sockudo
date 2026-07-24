@@ -25,6 +25,7 @@ message ProtoMessageData {
     string string_value = 1;
     ProtoStructuredData structured = 2;
     string json_value = 3;
+    bytes binary_value = 4;
   }
 }
 

@@ -2,7 +2,7 @@
 ///
 /// These operators are used to compare tag values against filter values.
 /// All string representations are lowercase for consistency with the protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompareOp {
     /// Equality: tag_value == filter_value
     Equal,
@@ -97,7 +97,7 @@ impl std::str::FromStr for CompareOp {
 /// Logical operators for branch nodes in the filter tree.
 ///
 /// These operators combine multiple filter nodes into more complex expressions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogicalOp {
     /// Logical AND: all child nodes must match
     And,

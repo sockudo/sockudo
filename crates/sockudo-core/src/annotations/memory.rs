@@ -186,6 +186,87 @@ impl AnnotationStore for MemoryAnnotationStore {
         .await
     }
 
+    async fn append_create_idempotent(
+        &self,
+        mut record: StoredAnnotationEvent,
+    ) -> Result<AnnotationAppendOutcome> {
+        record.validate()?;
+        if record.annotation.action != AnnotationAction::Create {
+            let canonical_serial = record.annotation.serial.clone();
+            let projection = self.append_event(record).await?;
+            return Ok(AnnotationAppendOutcome {
+                projection,
+                canonical_serial,
+                inserted: true,
+            });
+        }
+        if record.stored_at_ms == 0 {
+            record.stored_at_ms = now_ms();
+        }
+
+        let projection_request = AnnotationProjectionRequest {
+            app_id: record.app_id.clone(),
+            channel_id: record.channel_id.clone(),
+            message_serial: record.message_serial().clone(),
+            annotation_type: record.annotation_type().clone(),
+        };
+        let projection_key = Self::event_projection_key(&record);
+        let channel_key = Self::channel_key(&record.app_id, &record.channel_id);
+        let canonical_serial = {
+            let mut state = self.state.write().await;
+            if let Some(existing) =
+                state
+                    .events_by_projection
+                    .get(&projection_key)
+                    .and_then(|events| {
+                        events.values().find(|event| {
+                            event.annotation.action == AnnotationAction::Create
+                                && event.annotation.id == record.annotation.id
+                        })
+                    })
+            {
+                if existing.annotation.name != record.annotation.name
+                    || existing.annotation.client_id != record.annotation.client_id
+                    || existing.annotation.count != record.annotation.count
+                    || existing.annotation.data != record.annotation.data
+                    || existing.annotation.encoding != record.annotation.encoding
+                {
+                    return Err(crate::error::Error::InvalidMessageFormat(format!(
+                        "Annotation id '{}' was already used with a different payload",
+                        record.annotation.id.as_str()
+                    )));
+                }
+                Some(existing.annotation.serial.clone())
+            } else {
+                state
+                    .events_by_projection
+                    .entry(projection_key.clone())
+                    .or_default()
+                    .insert(record.annotation_serial().clone(), record.clone());
+                state
+                    .raw_by_channel
+                    .entry(channel_key)
+                    .or_default()
+                    .insert(record.annotation_serial().clone(), record.clone());
+                None
+            }
+        };
+
+        let projection = self
+            .rebuild_projection_optimistic(
+                projection_request,
+                AnnotationProjectionOptions::default(),
+            )
+            .await?;
+        Ok(AnnotationAppendOutcome {
+            projection,
+            canonical_serial: canonical_serial
+                .clone()
+                .unwrap_or_else(|| record.annotation.serial.clone()),
+            inserted: canonical_serial.is_none(),
+        })
+    }
+
     async fn get_events(
         &self,
         request: AnnotationEventsRequest,
@@ -223,6 +304,12 @@ impl AnnotationStore for MemoryAnnotationStore {
                     .after_annotation_serial
                     .as_ref()
                     .is_none_or(|after| *serial > after)
+            })
+            .filter(|(_, record)| {
+                request
+                    .message_serial
+                    .as_ref()
+                    .is_none_or(|message_serial| record.message_serial() == message_serial)
             })
             .map(|(_, record)| record.clone())
             .take(request.limit)

@@ -2,6 +2,7 @@ use super::types::*;
 use crate::error::{Error, Result};
 use crate::versioned_messages::MessageSerial;
 use async_trait::async_trait;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[async_trait]
 pub trait VersionStore: Send + Sync {
@@ -52,12 +53,59 @@ pub trait VersionStore: Send + Sync {
 
     async fn append_version(&self, record: StoredVersionRecord) -> Result<()>;
 
+    /// Atomically admit a new logical message, reserve its delivery position,
+    /// and commit the create record.
+    async fn commit_create(&self, _request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        Err(Error::Configuration(
+            "version store does not support atomic create commits".to_string(),
+        ))
+    }
+
+    /// Atomically validate a predecessor, reserve the delivery position, and
+    /// commit the next version (including its idempotency receipt and limits).
+    async fn compare_and_apply(
+        &self,
+        _request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        Err(Error::Configuration(
+            "version store does not support atomic compare-and-apply".to_string(),
+        ))
+    }
+
     async fn get_latest(
         &self,
         app_id: &str,
         channel: &str,
         message_serial: &MessageSerial,
     ) -> Result<Option<StoredVersionRecord>>;
+
+    /// Fetch the latest visible versions for a bounded set of logical messages.
+    ///
+    /// Missing serials are omitted from the returned map. Backends should
+    /// override this when they can perform a more selective batch read. The
+    /// fallback deliberately uses one channel-wide read instead of issuing one
+    /// storage request per history row.
+    async fn get_latest_batch(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serials: &[MessageSerial],
+    ) -> Result<BTreeMap<MessageSerial, StoredVersionRecord>> {
+        if message_serials.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let requested = message_serials.iter().collect::<BTreeSet<_>>();
+        let latest = self.latest_by_history(app_id, channel).await?;
+        Ok(latest
+            .into_iter()
+            .filter_map(|record| {
+                requested
+                    .contains(record.message_serial())
+                    .then(|| (record.message_serial().clone(), record))
+            })
+            .collect())
+    }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage>;
 

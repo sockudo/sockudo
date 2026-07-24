@@ -1,0 +1,1 @@
+{"event":"sockudo:message.create","channel":"ai-room","data":"hello","serial":1,"action":"create","message_serial":"message-1","history_serial":1,"delivery_serial":1,"version":{"serial":"version-1","timestamp_ms":1}}

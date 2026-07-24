@@ -629,6 +629,7 @@ class SubscriptionOptions {
     this.filter,
     this.delta,
     this.events,
+    this.expression,
     this.rewind,
     this.annotationSubscribe = false,
   });
@@ -636,8 +637,25 @@ class SubscriptionOptions {
   final FilterNode? filter;
   final ChannelDeltaSettings? delta;
   final List<String>? events;
+  final SubscriptionExpression? expression;
   final SubscriptionRewind? rewind;
   final bool annotationSubscribe;
+}
+
+class SubscriptionExpression {
+  const SubscriptionExpression(this.source) : language = null;
+
+  const SubscriptionExpression.descriptor({
+    required this.source,
+    this.language = 'jmespath',
+  });
+
+  final String source;
+  final String? language;
+
+  Object toSubscriptionValue() => language == null
+      ? source
+      : <String, String>{'language': language!, 'source': source};
 }
 
 class SubscriptionRewind {
@@ -683,11 +701,13 @@ class ResumeRecoveredChannel {
     required this.channel,
     required this.source,
     required this.replayed,
+    this.position,
   });
 
   final String channel;
   final String source;
   final int replayed;
+  final RecoveryPosition? position;
 }
 
 class ResumeFailedChannel {

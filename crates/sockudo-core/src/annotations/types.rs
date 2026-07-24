@@ -176,12 +176,12 @@ impl Annotation {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TotalAnnotationSummary {
     pub total: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentifiedAnnotationSummary {
     pub total: u64,
@@ -189,7 +189,7 @@ pub struct IdentifiedAnnotationSummary {
     pub clipped: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MultipleAnnotationSummary {
     pub total: u64,
@@ -199,7 +199,7 @@ pub struct MultipleAnnotationSummary {
     pub total_client_ids: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum AnnotationSummary {
     Total(TotalAnnotationSummary),
@@ -363,6 +363,10 @@ impl AnnotationEventsRequest {
 pub struct RawAnnotationReplayRequest {
     pub app_id: String,
     pub channel_id: String,
+    /// Restrict replay to one message before applying `limit`.
+    ///
+    /// `None` retains channel-wide replay for reconnect consumers.
+    pub message_serial: Option<MessageSerial>,
     pub after_annotation_serial: Option<AnnotationSerial>,
     pub limit: usize,
 }
@@ -461,12 +465,51 @@ impl StoredAnnotationProjection {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AnnotationAppendOutcome {
+    pub projection: StoredAnnotationProjection,
+    pub canonical_serial: AnnotationSerial,
+    pub inserted: bool,
+}
+
 #[async_trait]
 pub trait AnnotationStore: Send + Sync {
+    /// Reserve the next durable per-channel annotation serial.
+    ///
+    /// Shared stores override this with an atomic backend allocation. The
+    /// `None` fallback preserves local-store compatibility, where the handler
+    /// generates a process-qualified serial.
+    async fn reserve_annotation_serial(
+        &self,
+        app_id: &str,
+        channel_id: &str,
+    ) -> Result<Option<AnnotationSerial>> {
+        let _ = (app_id, channel_id);
+        Ok(None)
+    }
+
     async fn append_event(
         &self,
         record: StoredAnnotationEvent,
     ) -> Result<StoredAnnotationProjection>;
+
+    /// Atomically suppress a repeated create carrying the same annotation ID.
+    ///
+    /// Stores with shared or transactional state should override this method.
+    /// The fallback preserves existing store compatibility but cannot close a
+    /// race between concurrent writers.
+    async fn append_create_idempotent(
+        &self,
+        record: StoredAnnotationEvent,
+    ) -> Result<AnnotationAppendOutcome> {
+        let canonical_serial = record.annotation.serial.clone();
+        let projection = self.append_event(record).await?;
+        Ok(AnnotationAppendOutcome {
+            projection,
+            canonical_serial,
+            inserted: true,
+        })
+    }
 
     async fn get_events(
         &self,

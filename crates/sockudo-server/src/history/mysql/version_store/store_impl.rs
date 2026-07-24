@@ -234,6 +234,326 @@ impl VersionStore for MysqlVersionStore {
         Ok(())
     }
 
+    async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            Error::Internal(format!("Failed to begin version create transaction: {e}"))
+        })?;
+        let now_ms = sockudo_core::history::now_ms();
+        let stream_id = format!("{}/{}", request.record.app_id, request.record.channel);
+        let ensure_stream = format!(
+            "INSERT IGNORE INTO `{}` (app_id, channel, next_delivery_serial, updated_at_ms) VALUES (?, ?, 1, ?)",
+            self.tables.version_streams
+        );
+        sqlx::query(sqlx::AssertSqlSafe(ensure_stream.as_str()))
+            .bind(&request.record.app_id)
+            .bind(&request.record.channel)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to initialize version stream: {e}")))?;
+        let lock_stream = format!(
+            "SELECT next_delivery_serial FROM `{}` WHERE app_id = ? AND channel = ? FOR UPDATE",
+            self.tables.version_streams
+        );
+        let stream = sqlx::query(sqlx::AssertSqlSafe(lock_stream.as_str()))
+            .bind(&request.record.app_id)
+            .bind(&request.record.channel)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to lock version stream: {e}")))?;
+        let latest_sql = format!(
+            "SELECT payload_bytes FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? ORDER BY version_serial DESC LIMIT 1",
+            self.tables.version_entries
+        );
+        if let Some(row) = sqlx::query(sqlx::AssertSqlSafe(latest_sql.as_str()))
+            .bind(&request.record.app_id)
+            .bind(&request.record.channel)
+            .bind(request.record.message_serial().as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to check version create target: {e}")))?
+        {
+            let payload: Vec<u8> = row.get("payload_bytes");
+            let current = sonic_rs::from_slice(&payload).map_err(|e| {
+                Error::Internal(format!("Failed to decode existing version record: {e}"))
+            })?;
+            return Ok(VersionCreateResult::Conflict {
+                current: Some(current),
+            });
+        }
+        if let Some(limit) = request.limits.max_accumulated_message_bytes
+            && request.record.data_bytes()? > limit
+        {
+            return Ok(VersionCreateResult::Rejected(
+                VersionCreateRejection::AccumulatedMessageBytes { limit },
+            ));
+        }
+        if request.record.is_open_ai_stream()
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+        {
+            let count_sql = format!(
+                "SELECT COUNT(*) AS count FROM `{}` WHERE app_id = ? AND channel = ? AND is_open_stream = TRUE",
+                self.tables.version_messages
+            );
+            let count = sqlx::query(sqlx::AssertSqlSafe(count_sql.as_str()))
+                .bind(&request.record.app_id)
+                .bind(&request.record.channel)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to count open streams: {e}")))?
+                .get::<i64, _>("count") as usize;
+            if count >= limit {
+                return Ok(VersionCreateResult::Rejected(
+                    VersionCreateRejection::OpenStreamingMessages { limit },
+                ));
+            }
+        }
+        let delivery_serial = stream.get::<i64, _>("next_delivery_serial") as u64;
+        let record = request
+            .record
+            .with_delivery_position(&stream_id, delivery_serial);
+        let payload = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
+        let insert_entry = format!(
+            "INSERT INTO `{}` (app_id, channel, message_serial, version_serial, delivery_serial, history_serial, action, client_id, description, event_name, payload_bytes, payload_size_bytes, version_timestamp_ms, created_at_ms, operation_key, operation_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            self.tables.version_entries
+        );
+        sqlx::query(sqlx::AssertSqlSafe(insert_entry.as_str()))
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(record.message_serial().as_str())
+            .bind(record.version_serial().as_str())
+            .bind(delivery_serial as i64)
+            .bind(record.history_serial() as i64)
+            .bind(record.message.action.as_str())
+            .bind(record.message.version.client_id.as_deref())
+            .bind(record.message.version.description.as_deref())
+            .bind(record.message.name.as_deref())
+            .bind(payload.as_slice())
+            .bind(payload.len() as i64)
+            .bind(record.message.version.timestamp_ms)
+            .bind(now_ms)
+            .bind(None::<&str>)
+            .bind(None::<&str>)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to insert create version: {e}")))?;
+        let insert_message = format!(
+            "INSERT INTO `{}` (app_id, channel, message_serial, history_serial, original_client_id, latest_version_serial, latest_delivery_serial, latest_action, is_open_stream, created_at_ms, updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            self.tables.version_messages
+        );
+        sqlx::query(sqlx::AssertSqlSafe(insert_message.as_str()))
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(record.message_serial().as_str())
+            .bind(record.history_serial() as i64)
+            .bind(record.original_client_id.as_deref())
+            .bind(record.version_serial().as_str())
+            .bind(delivery_serial as i64)
+            .bind(record.message.action.as_str())
+            .bind(record.is_open_ai_stream())
+            .bind(now_ms)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to insert version message: {e}")))?;
+        let update_stream = format!(
+            "UPDATE `{}` SET next_delivery_serial = ?, oldest_available_delivery_serial = IFNULL(oldest_available_delivery_serial, ?), newest_available_delivery_serial = ?, updated_at_ms = ? WHERE app_id = ? AND channel = ?",
+            self.tables.version_streams
+        );
+        sqlx::query(sqlx::AssertSqlSafe(update_stream.as_str()))
+            .bind((delivery_serial + 1) as i64)
+            .bind(delivery_serial as i64)
+            .bind(delivery_serial as i64)
+            .bind(now_ms)
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to commit version stream: {e}")))?;
+        tx.commit().await.map_err(|e| {
+            Error::Internal(format!("Failed to commit version create transaction: {e}"))
+        })?;
+        Ok(VersionCreateResult::Applied { record, stream_id })
+    }
+
+    async fn compare_and_apply(
+        &self,
+        request: VersionMutationRequest,
+    ) -> Result<VersionMutationResult> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            Error::Internal(format!("Failed to begin version mutation transaction: {e}"))
+        })?;
+        let stream_id = format!("{}/{}", request.app_id, request.channel);
+        let lock_stream = format!(
+            "SELECT next_delivery_serial FROM `{}` WHERE app_id = ? AND channel = ? FOR UPDATE",
+            self.tables.version_streams
+        );
+        let Some(stream) = sqlx::query(sqlx::AssertSqlSafe(lock_stream.as_str()))
+            .bind(&request.app_id)
+            .bind(&request.channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to lock version stream: {e}")))?
+        else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+        if let Some(operation) = request.idempotency.as_ref() {
+            let operation_sql = format!(
+                "SELECT payload_bytes, operation_fingerprint FROM `{}` WHERE app_id = ? AND channel = ? AND operation_key = ? LIMIT 1",
+                self.tables.version_entries
+            );
+            if let Some(row) = sqlx::query(sqlx::AssertSqlSafe(operation_sql.as_str()))
+                .bind(&request.app_id)
+                .bind(&request.channel)
+                .bind(&operation.cache_key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to read mutation receipt: {e}")))?
+            {
+                let fingerprint: Option<String> = row.get("operation_fingerprint");
+                if fingerprint.as_deref() != Some(operation.payload_fingerprint.as_str()) {
+                    return Err(Error::IdempotencyConflict);
+                }
+                let payload: Vec<u8> = row.get("payload_bytes");
+                let record = sonic_rs::from_slice(&payload).map_err(|e| {
+                    Error::Internal(format!("Failed to decode mutation receipt: {e}"))
+                })?;
+                return Ok(VersionMutationResult::Duplicate { record, stream_id });
+            }
+        }
+        let latest_sql = format!(
+            "SELECT payload_bytes FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? ORDER BY version_serial DESC LIMIT 1",
+            self.tables.version_entries
+        );
+        let Some(row) = sqlx::query(sqlx::AssertSqlSafe(latest_sql.as_str()))
+            .bind(&request.app_id)
+            .bind(&request.channel)
+            .bind(request.message_serial.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read mutation predecessor: {e}")))?
+        else {
+            return Ok(VersionMutationResult::Conflict { current: None });
+        };
+        let payload: Vec<u8> = row.get("payload_bytes");
+        let current: StoredVersionRecord = sonic_rs::from_slice(&payload)
+            .map_err(|e| Error::Internal(format!("Failed to decode mutation predecessor: {e}")))?;
+        let append_count_sql = format!(
+            "SELECT COUNT(*) AS count FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? AND action = 'message.append'",
+            self.tables.version_entries
+        );
+        let append_count = sqlx::query(sqlx::AssertSqlSafe(append_count_sql.as_str()))
+            .bind(&request.app_id)
+            .bind(&request.channel)
+            .bind(request.message_serial.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to count message appends: {e}")))?
+            .get::<i64, _>("count") as usize;
+        let delivery_serial = (stream.get::<i64, _>("next_delivery_serial") as u64)
+            .max(current.delivery_serial().saturating_add(1));
+        let outcome = request.apply_to(&current, &stream_id, delivery_serial, append_count)?;
+        let VersionMutationResult::Applied { record, .. } = outcome else {
+            return Ok(outcome);
+        };
+        if !current.is_open_ai_stream()
+            && record.is_open_ai_stream()
+            && let Some(limit) = request.limits.max_open_streaming_messages_per_channel
+        {
+            let count_sql = format!(
+                "SELECT COUNT(*) AS count FROM `{}` WHERE app_id = ? AND channel = ? AND is_open_stream = TRUE",
+                self.tables.version_messages
+            );
+            let count = sqlx::query(sqlx::AssertSqlSafe(count_sql.as_str()))
+                .bind(&request.app_id)
+                .bind(&request.channel)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to count open streams: {e}")))?
+                .get::<i64, _>("count") as usize;
+            if count >= limit {
+                return Ok(VersionMutationResult::Rejected(
+                    sockudo_core::version_store::VersionMutationRejection::OpenStreamingMessages {
+                        limit,
+                    },
+                ));
+            }
+        }
+        let payload = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
+        let operation_key = request
+            .idempotency
+            .as_ref()
+            .map(|value| value.cache_key.as_str());
+        let operation_fingerprint = request
+            .idempotency
+            .as_ref()
+            .map(|value| value.payload_fingerprint.as_str());
+        let now_ms = sockudo_core::history::now_ms();
+        let insert_entry = format!(
+            "INSERT INTO `{}` (app_id, channel, message_serial, version_serial, delivery_serial, history_serial, action, client_id, description, event_name, payload_bytes, payload_size_bytes, version_timestamp_ms, created_at_ms, operation_key, operation_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            self.tables.version_entries
+        );
+        sqlx::query(sqlx::AssertSqlSafe(insert_entry.as_str()))
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(record.message_serial().as_str())
+            .bind(record.version_serial().as_str())
+            .bind(delivery_serial as i64)
+            .bind(record.history_serial() as i64)
+            .bind(record.message.action.as_str())
+            .bind(record.message.version.client_id.as_deref())
+            .bind(record.message.version.description.as_deref())
+            .bind(record.message.name.as_deref())
+            .bind(payload.as_slice())
+            .bind(payload.len() as i64)
+            .bind(record.message.version.timestamp_ms)
+            .bind(now_ms)
+            .bind(operation_key)
+            .bind(operation_fingerprint)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to insert mutation version: {e}")))?;
+        let update_message = format!(
+            "UPDATE `{}` SET latest_version_serial = ?, latest_delivery_serial = ?, latest_action = ?, is_open_stream = ?, updated_at_ms = ? WHERE app_id = ? AND channel = ? AND message_serial = ?",
+            self.tables.version_messages
+        );
+        sqlx::query(sqlx::AssertSqlSafe(update_message.as_str()))
+            .bind(record.version_serial().as_str())
+            .bind(delivery_serial as i64)
+            .bind(record.message.action.as_str())
+            .bind(record.is_open_ai_stream())
+            .bind(now_ms)
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(record.message_serial().as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to advance version message: {e}")))?;
+        let update_stream = format!(
+            "UPDATE `{}` SET next_delivery_serial = ?, oldest_available_delivery_serial = IFNULL(oldest_available_delivery_serial, ?), newest_available_delivery_serial = GREATEST(IFNULL(newest_available_delivery_serial, ?), ?), updated_at_ms = ? WHERE app_id = ? AND channel = ?",
+            self.tables.version_streams
+        );
+        sqlx::query(sqlx::AssertSqlSafe(update_stream.as_str()))
+            .bind((delivery_serial + 1) as i64)
+            .bind(delivery_serial as i64)
+            .bind(delivery_serial as i64)
+            .bind(delivery_serial as i64)
+            .bind(now_ms)
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to advance version stream: {e}")))?;
+        tx.commit().await.map_err(|e| {
+            Error::Internal(format!(
+                "Failed to commit version mutation transaction: {e}"
+            ))
+        })?;
+        Ok(VersionMutationResult::Applied { record, stream_id })
+    }
+
     async fn get_latest(
         &self,
         app_id: &str,

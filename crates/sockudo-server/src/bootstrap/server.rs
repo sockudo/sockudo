@@ -7,15 +7,12 @@ use crate::cleanup::CleanupSender;
 use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
 use crate::history::create_history_store;
 #[cfg(feature = "versioned-messages")]
-use crate::history::create_version_store;
-#[cfg(feature = "ably-compat")]
-use crate::http_handler::global_ably_hub;
+use crate::history::{create_annotation_store, create_version_store};
 use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::factory::AdapterFactory;
 use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
-use sockudo_cache::MemoryCacheManager;
 use sockudo_core::auth::AuthValidator;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{AdapterDriver, DeltaCoordinationBackend, QueueDriver, ServerOptions};
@@ -49,19 +46,8 @@ impl SockudoServer {
             debug_enabled
         );
 
-        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
-            .await
-            .unwrap_or_else(|e| {
-                warn!(
-                    "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
-                    e
-                );
-                let fallback_cache_options = config.cache.memory.clone();
-                Arc::new(MemoryCacheManager::new(
-                    "fallback_cache".to_string(),
-                    fallback_cache_options,
-                ))
-            });
+        let cache_manager =
+            CacheManagerFactory::create(&config.cache, &config.database.redis).await?;
         info!(
             "CacheManager initialized with driver: {:?}",
             config.cache.driver
@@ -510,6 +496,70 @@ impl SockudoServer {
         )
         .await;
 
+        #[cfg(feature = "versioned-messages")]
+        let annotation_store: Arc<
+            dyn sockudo_core::annotations::AnnotationStore + Send + Sync,
+        > = if config.annotations.enabled {
+            create_annotation_store(
+                &config.versioned_messages,
+                &config.history,
+                &config.database,
+                &config.database_pooling,
+            )
+            .await?
+        } else {
+            Arc::new(sockudo_core::annotations::NoopAnnotationStore)
+        };
+        #[cfg(feature = "versioned-messages")]
+        if config.annotations.enabled && config.versioned_messages.retention_window_seconds > 0 {
+            let purge_store = Arc::clone(&annotation_store);
+            let retention_ms =
+                (config.versioned_messages.retention_window_seconds as i64).saturating_mul(1_000);
+            let interval = std::time::Duration::from_secs(
+                config.versioned_messages.purge_interval_seconds.max(10),
+            );
+            let batch_size = config.versioned_messages.purge_batch_size.max(1);
+            let max_per_tick = config.versioned_messages.max_purge_per_tick;
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    let cutoff = sockudo_core::history::now_ms().saturating_sub(retention_ms);
+                    let mut total = 0_u64;
+                    let mut cleanup_backlog = false;
+                    loop {
+                        match purge_store.purge_before(cutoff, batch_size).await {
+                            Ok((deleted, has_more)) => {
+                                total = total.saturating_add(deleted);
+                                cleanup_backlog = has_more;
+                                if !has_more || total >= max_per_tick as u64 {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "annotation store purge failed"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    if total > 0 {
+                        tracing::debug!(deleted = total, "annotation store purge tick complete");
+                    }
+                    if cleanup_backlog {
+                        tracing::warn!(
+                            deleted = total,
+                            max_per_tick,
+                            "annotation cleanup backlog remains after the bounded purge tick"
+                        );
+                    }
+                }
+            });
+        }
+
         // Initialize cleanup queue if enabled
         let cleanup_config = config.cleanup.clone();
 
@@ -735,6 +785,22 @@ impl SockudoServer {
             push_worker_handles,
         };
 
+        #[cfg(feature = "ably-compat")]
+        let ably_presence_registry =
+            Arc::new(sockudo_core::presence_registry::PresenceRegistry::default());
+
+        #[cfg(feature = "ably-compat")]
+        let ably_compat = Arc::new(sockudo_ably_compat::AblyCompatRuntime::new(
+            sockudo_ably_compat::AblyCompatDependencies {
+                config: config.ably_compat.clone(),
+                cache: Some(state.cache_manager.clone()),
+                presence_registry: Arc::clone(&ably_presence_registry),
+                push_store: Some(state.push_store.clone()),
+                push_queue: Some(state.push_queue.clone()),
+                push_admission: Some(state.push_admission.clone()),
+            },
+        ));
+
         let mut builder = ConnectionHandler::builder(
             state.app_manager.clone(),
             state.connection_manager.clone(),
@@ -866,6 +932,14 @@ impl SockudoServer {
             builder = builder.version_store(version_store);
         }
         builder = builder.presence_history_store(presence_history_store);
+        #[cfg(feature = "versioned-messages")]
+        {
+            builder = builder.annotation_store(annotation_store);
+        }
+        #[cfg(feature = "ably-compat")]
+        {
+            builder = builder.presence_registry(ably_presence_registry);
+        }
 
         if let Some(adapter) = state.local_adapter.clone() {
             builder = builder.local_adapter(adapter);
@@ -878,7 +952,7 @@ impl SockudoServer {
         }
         #[cfg(feature = "ably-compat")]
         {
-            builder = builder.realtime_egress_tap(global_ably_hub());
+            builder = builder.realtime_egress_tap(ably_compat.egress_tap());
         }
 
         #[cfg(feature = "delta")]
@@ -888,6 +962,9 @@ impl SockudoServer {
 
         builder = builder.running(Arc::clone(&state.running));
         let handler = Arc::new(builder.build());
+
+        #[cfg(feature = "ably-compat")]
+        ably_compat.bind_handler(&handler);
 
         // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
         if let Some(event_receiver) = dead_node_event_receiver {
@@ -973,6 +1050,8 @@ impl SockudoServer {
             config,
             state,
             handler,
+            #[cfg(feature = "ably-compat")]
+            ably_compat,
         })
     }
 
@@ -991,7 +1070,7 @@ impl SockudoServer {
             );
             let apps_to_register = self.config.app_manager.array.apps.clone();
             for app in apps_to_register {
-                info!("Attempting to register app: id={}, key={}", app.id, app.key);
+                info!(app_id = %app.id, "Attempting to register app");
                 match self.state.app_manager.find_by_id(&app.id).await {
                     Ok(Some(_existing_app)) => {
                         info!("App {} already exists, attempting to update.", app.id);
@@ -1024,10 +1103,7 @@ impl SockudoServer {
             Ok(apps) => {
                 info!("Server has {} registered apps:", apps.len());
                 for app in apps {
-                    info!(
-                        "- App: id={}, key={}, enabled={}",
-                        app.id, app.key, app.enabled
-                    );
+                    info!(app_id = %app.id, enabled = app.enabled, "Registered app");
                 }
             }
             Err(e) => warn!("Failed to retrieve registered apps: {}", e),

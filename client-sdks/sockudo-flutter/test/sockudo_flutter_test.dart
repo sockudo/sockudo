@@ -743,6 +743,105 @@ void main() {
     expect(decoded.conflationKey, 'room');
   });
 
+  test('round trips native binary data', () {
+    final data = Uint8List.fromList(<int>[0, 1, 2, 255]);
+
+    for (final wireFormat in <SockudoWireFormat>[
+      SockudoWireFormat.messagepack,
+      SockudoWireFormat.protobuf,
+    ]) {
+      final payload = SockudoProtocolCodec.encodeEnvelope(<String, Object?>{
+        'event': 'sockudo:binary',
+        'channel': 'binary:room-1',
+        'data': data,
+      }, wireFormat);
+
+      final decoded = SockudoProtocolCodec.decodeEvent(payload, wireFormat);
+
+      expect(decoded.data, orderedEquals(data));
+      expect(decoded.data, isA<Uint8List>());
+    }
+  });
+
+  test('subscription expressions preserve both wire variants', () {
+    expect(
+      const SubscriptionExpression('data.total >= `100`').toSubscriptionValue(),
+      'data.total >= `100`',
+    );
+    expect(
+      const SubscriptionExpression.descriptor(
+        source: 'headers.priority == `"high"`',
+      ).toSubscriptionValue(),
+      <String, String>{
+        'language': 'jmespath',
+        'source': 'headers.priority == `"high"`',
+      },
+    );
+  });
+
+  test('resume success applies authoritative channel position', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close(force: true);
+    });
+
+    unawaited(() async {
+      final request = await server.first;
+      final socket = await WebSocketTransformer.upgrade(request);
+      socket.add(
+        jsonEncode(<String, Object?>{
+          'event': 'sockudo:connection_established',
+          'data': <String, Object?>{'socket_id': '1.1'},
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      socket.add(
+        jsonEncode(<String, Object?>{
+          'event': 'sockudo:resume_success',
+          'data': <String, Object?>{
+            'recovered': <Object?>[
+              <String, Object?>{
+                'channel': 'orders',
+                'source': 'durable',
+                'replayed': 0,
+                'position': <String, Object?>{
+                  'stream_id': 'stream-2',
+                  'serial': 42,
+                  'last_message_id': 'message-42',
+                },
+              },
+            ],
+            'failed': <Object?>[],
+          },
+        }),
+      );
+    }());
+
+    final client = SockudoClient(
+      'app-key',
+      SockudoOptions(
+        cluster: 'local',
+        forceTls: false,
+        protocolVersion: 2,
+        connectionRecovery: true,
+        enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+        wsHost: '127.0.0.1',
+        wsPort: server.port,
+        wssPort: server.port,
+      ),
+    );
+    addTearDown(client.close);
+
+    client.connect();
+    final position = await _waitForValue(
+      () => client.getRecoveryPosition('orders'),
+    );
+
+    expect(position.serial, 42);
+    expect(position.streamId, 'stream-2');
+    expect(position.lastMessageId, 'message-42');
+  });
+
   test('preserves forward-compatible extras and serials while decoding', () {
     final futureFrame = SockudoProtocolCodec.decodeEvent(
       _forwardCompatFixture('future-v2-frame.json'),

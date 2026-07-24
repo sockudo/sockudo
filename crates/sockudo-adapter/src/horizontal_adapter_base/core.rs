@@ -38,6 +38,7 @@ where
             #[cfg(feature = "delta")]
             app_manager: None,
             cache_manager: Arc::new(OnceLock::new()),
+            realtime_egress_tap: Arc::new(OnceLock::new()),
             idempotency_ttl: AtomicU64::new(120),
             is_running: Arc::new(AtomicBool::new(true)),
         })
@@ -434,6 +435,7 @@ where
         let response_horizontal = horizontal_arc.clone();
         let transport_for_request = self.transport.clone();
         let broadcast_cache_manager = self.cache_manager.clone();
+        let broadcast_realtime_egress_tap = self.realtime_egress_tap.clone();
         let broadcast_idempotency_ttl = self
             .idempotency_ttl
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -443,11 +445,30 @@ where
             on_broadcast: Arc::new(move |broadcast| {
                 let horizontal_clone = broadcast_horizontal.clone();
                 let cache_manager_clone = broadcast_cache_manager.clone();
+                let realtime_egress_tap = broadcast_realtime_egress_tap.clone();
                 let idempotency_ttl = broadcast_idempotency_ttl;
                 Box::pin(async move {
                     let node_id = horizontal_clone.node_id.clone();
 
                     if broadcast.node_id == node_id {
+                        return;
+                    }
+
+                    if let Some(replication) = broadcast.presence_replication.as_ref() {
+                        if let Some(tap) = realtime_egress_tap.get()
+                            && let Err(error) = tap.replicate_presence(
+                                &broadcast.app_id,
+                                &broadcast.channel,
+                                replication,
+                            )
+                        {
+                            tracing::warn!(
+                                app_id = %broadcast.app_id,
+                                channel = %broadcast.channel,
+                                error = %error,
+                                "remote presence replication failed"
+                            );
+                        }
                         return;
                     }
 
@@ -463,6 +484,23 @@ where
                     }
 
                     if let Ok(message) = sonic_rs::from_str::<PusherMessage>(&broadcast.message) {
+                        if let Some(tap) = realtime_egress_tap.get()
+                            && tap.has_subscribers(&broadcast.app_id, &broadcast.channel)
+                            && let Some(envelope) = broadcast.envelope.as_ref()
+                            && let Err(error) = tap.deliver(
+                                &broadcast.app_id,
+                                &broadcast.channel,
+                                &message,
+                                envelope,
+                            )
+                        {
+                            tracing::warn!(
+                                app_id = %broadcast.app_id,
+                                channel = %broadcast.channel,
+                                error = %error,
+                                "remote realtime egress tap failed"
+                            );
+                        }
                         // Very hot path under fanout load; keep detailed per-message
                         // diagnostics behind TRACE.
                         tracing::trace!(
@@ -554,6 +592,7 @@ where
                                         crate::connection_manager::CompressionParams {
                                             delta_compression,
                                             channel_settings: channel_settings.as_ref(),
+                                            envelope: broadcast.envelope.clone(),
                                         },
                                     )
                                     .await;
