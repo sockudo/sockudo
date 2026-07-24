@@ -43,6 +43,7 @@ class SockudoClient(
     private var activityJob: Job? = null
     private var unavailableJob: Job? = null
     private var retryJob: Job? = null
+    private var reconnectAttempts: Int = 0
     private var authRefreshJob: Job? = null
     private var currentTransport: SockudoTransport? = null
     private var attemptedFallback: Boolean = false
@@ -142,6 +143,7 @@ class SockudoClient(
         }
         manuallyDisconnected = false
         attemptedFallback = false
+        reconnectAttempts = 0
         updateState(ConnectionState.CONNECTING)
         if (options.protocolVersion >= 2 && options.authTokenProvider != null) {
             scope.launch {
@@ -166,6 +168,7 @@ class SockudoClient(
 
     fun disconnect() {
         manuallyDisconnected = true
+        reconnectAttempts = 0
         invalidateTimers()
         webSocket?.close(1000, null)
         webSocket = null
@@ -640,6 +643,7 @@ class SockudoClient(
                         minOf(config.activityTimeout.inWholeMilliseconds.toDouble(), negotiatedTimeout).toLong()
                             .milliseconds()
                     clearUnavailableTimer()
+                    reconnectAttempts = 0
                     updateState(ConnectionState.CONNECTED, mapOf("socket_id" to newSocketId))
                     subscribeAll()
                     if (options.connectionRecovery && channelPositions.isNotEmpty()) {
@@ -776,17 +780,18 @@ class SockudoClient(
         webSocket = null
         channels.values.forEach { it.disconnect() }
 
-        when (closeAction(code)) {
+        val action = closeAction(code)
+        when (action) {
             CloseAction.TlsOnly -> {
                 config.useTls = true
-                scheduleRetry(Duration.ZERO)
+                scheduleRetry(reconnectDelay(action))
             }
 
-            CloseAction.Backoff -> scheduleRetry(1.seconds)
-            CloseAction.Retry -> scheduleRetry(Duration.ZERO)
+            CloseAction.Backoff -> scheduleRetry(reconnectDelay(action))
+            CloseAction.Retry -> scheduleRetry(reconnectDelay(action))
             CloseAction.Refused -> updateState(ConnectionState.DISCONNECTED)
             null -> if (!manuallyDisconnected) {
-                scheduleRetry(1.seconds)
+                scheduleRetry(reconnectDelay(null))
             }
         }
 
@@ -937,17 +942,33 @@ class SockudoClient(
         unavailableJob = null
     }
 
+    private fun reconnectDelay(action: CloseAction?): Duration {
+        if (action == CloseAction.Retry) return Duration.ZERO
+        if (action == CloseAction.TlsOnly) return Duration.ZERO
+        val intervalSeconds = (reconnectAttempts * reconnectAttempts).toDouble()
+        val cappedSeconds = minOf(intervalSeconds, options.maxReconnectGapInSeconds)
+        return cappedSeconds.seconds
+    }
+
     private fun scheduleRetry(after: Duration) {
         if (manuallyDisconnected) {
             return
         }
+
+        val maxAttempts = options.maxReconnectAttempts
+        if (maxAttempts != null && reconnectAttempts >= maxAttempts) {
+            updateState(ConnectionState.DISCONNECTED)
+            return
+        }
+        reconnectAttempts++
+
         retryJob?.cancel()
         retryJob =
             scope.launch {
                 delay(after)
                 webSocket?.cancel()
                 webSocket = null
-                updateState(ConnectionState.CONNECTING)
+                updateState(ConnectionState.RECONNECTING)
                 val transports = transportSequence()
                 if (currentTransport == SockudoTransport.ws && !attemptedFallback && transports.contains(
                         SockudoTransport.wss
