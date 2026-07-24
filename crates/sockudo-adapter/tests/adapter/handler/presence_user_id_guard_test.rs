@@ -141,6 +141,8 @@ fn presence_request(
         channel_data: Some(channel_data),
         #[cfg(feature = "tag-filtering")]
         tags_filter: None,
+        #[cfg(feature = "tag-filtering")]
+        predicate: None,
         #[cfg(feature = "delta")]
         delta: None,
         rewind: None,
