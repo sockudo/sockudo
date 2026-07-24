@@ -930,3 +930,133 @@ async fn test_shutdown_token_cancels_receiver() {
         "shutdown() must cancel the CancellationToken so the receiver task exits"
     );
 }
+
+#[tokio::test]
+async fn close_frame_delivered_before_cancellation() {
+    use sockudo_ws::Message;
+
+    let socket_id = SocketId::new();
+    let (writer, mut client) = create_server_writer_with_client().await;
+    let ws = WebSocket::new(socket_id, writer);
+    let ws_ref = WebSocketRef::new(ws);
+    let token = ws_ref.cancellation_token();
+
+    assert!(
+        !token.is_cancelled(),
+        "precondition: shutdown token must not be pre-cancelled"
+    );
+
+    let close_result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ws_ref.close(4009, "user connection terminated".to_string()),
+    )
+    .await
+    .expect("close() must complete within 2 s");
+
+    assert!(
+        close_result.is_ok(),
+        "close() returned Err — the close frame was not enqueued before cancellation \
+         (channel was already disconnected, meaning token fired before enqueue): {close_result:?}"
+    );
+
+    assert!(
+        token.is_cancelled(),
+        "shutdown token must be cancelled by the time close() returns"
+    );
+
+    let close_frame_received = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match client.next().await {
+                Some(Ok(Message::Close(Some(frame)))) => {
+                    assert_eq!(frame.code, 4009);
+                    assert_eq!(frame.reason.as_str(), "user connection terminated");
+                    return true;
+                }
+                Some(Ok(Message::Close(None))) => {
+                    panic!("close frame must include the requested code and reason")
+                }
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => panic!("client read error: {e}"),
+                None => return false,
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for close frame at client");
+
+    assert!(
+        close_frame_received,
+        "client stream ended without delivering a close frame"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_wait_returns_error_when_writer_is_cancelled_before_flush() {
+    let socket_id = SocketId::new();
+    let (writer, _client) = create_server_writer_with_client().await;
+    let ws = WebSocket::new(socket_id, writer);
+    let ws_ref = WebSocketRef::new(ws);
+
+    ws_ref.shutdown();
+
+    let close_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        ws_ref
+            .inner
+            .lock()
+            .await
+            .message_sender
+            .send_close(4009, "user connection terminated")
+            .await
+    })
+    .await
+    .expect("send_close() must not wait forever after writer cancellation");
+
+    assert!(
+        matches!(close_result, Err(crate::error::Error::ConnectionClosed(_))),
+        "cancelled writer must report that the close frame was not flushed: {close_result:?}"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_cancels_task_while_handle_retained() {
+    use sockudo_ws::Message;
+
+    let socket_id = SocketId::new();
+    let (writer, client) = create_server_writer_with_client().await;
+    let ws = WebSocket::new(socket_id, writer);
+    let ws_ref = WebSocketRef::new(ws);
+
+    let _retained_sender = ws_ref.message_sender.clone();
+
+    ws_ref.shutdown();
+
+    assert!(
+        ws_ref.cancellation_token().is_cancelled(),
+        "shutdown() must cancel the token synchronously"
+    );
+
+    let (task_done_tx, task_done_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let mut client = client;
+        loop {
+            match client.next().await {
+                Some(Ok(Message::Close(_))) => {
+                    let _ = task_done_tx.send(());
+                    break;
+                }
+                Some(Ok(_)) => continue,
+                _ => break,
+            }
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), task_done_rx)
+        .await
+        .expect(
+            "writer task did not terminate within 2 s — \
+             cancellation must drive task exit even with retained sender handle",
+        )
+        .expect("completion oneshot closed without firing");
+
+    drop(_retained_sender);
+}
