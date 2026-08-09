@@ -483,13 +483,6 @@ fn start_ai_stream_orphan_worker(
 }
 
 impl ConnectionHandler {
-    fn remove_socket_limiters(&self, socket_id: &SocketId) {
-        self.client_event_limiters.remove(socket_id);
-        self.message_limiters.remove(socket_id);
-        self.presence_update_limiters.remove(socket_id);
-        self.history_request_limits.remove(socket_id);
-    }
-
     /// Stop AI background workers and wait for the bounded rollup shutdown drain.
     pub async fn shutdown_ai_workers(&self) {
         #[cfg(feature = "ai-transport")]
@@ -1209,7 +1202,10 @@ impl ConnectionHandler {
     }
 
     async fn cleanup_socket(&self, socket_id: &SocketId, app_config: &App) {
-        self.remove_socket_limiters(socket_id);
+        // Remove rate limiters
+        self.client_event_limiters.remove(socket_id);
+        self.message_limiters.remove(socket_id);
+        self.history_request_limits.remove(socket_id);
 
         // MEMORY LEAK FIX: Clean up delta compression state for this socket
         #[cfg(feature = "delta")]
