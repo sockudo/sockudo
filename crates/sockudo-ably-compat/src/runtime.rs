@@ -704,24 +704,33 @@ struct AblyRecoveryTailMessage {
     bytes: usize,
 }
 
-#[derive(Default)]
 struct AblyRecoveryTail {
     messages: VecDeque<AblyRecoveryTailMessage>,
     bytes: usize,
     sequence: u64,
 }
 
+impl Default for AblyRecoveryTail {
+    fn default() -> Self {
+        Self {
+            // The common one-subscriber path records its first recovery
+            // message without allocating in the delivery hot path.
+            messages: VecDeque::with_capacity(1),
+            bytes: 0,
+            sequence: 0,
+        }
+    }
+}
+
 impl AblyRecoveryTail {
-    fn push(
+    fn push_with_size(
         &mut self,
         message: AblyProtocolMessage,
         publisher_connection_id: Option<&str>,
         echo_override: Option<bool>,
+        message_bytes: usize,
     ) {
         self.sequence = self.sequence.saturating_add(1);
-        let message_bytes = sonic_rs::to_vec(&message)
-            .map(|bytes| bytes.len())
-            .unwrap_or(ABLY_ATTACH_GATE_MAX_BYTES.saturating_add(1));
         if message_bytes > ABLY_ATTACH_GATE_MAX_BYTES {
             self.messages.clear();
             self.bytes = 0;
@@ -3094,7 +3103,7 @@ impl AblyCompatHub {
         let mut delivered_messages = 0u64;
         let mut delivered_bytes = 0u64;
         let state = self.channel_state(app_id, channel);
-        let subscribers = {
+        let mut subscribers = {
             let mut state = lock_channel_state(&state);
             if let Some(position) = message
                 .channel_serial
@@ -3123,12 +3132,6 @@ impl AblyCompatHub {
                 ACTION_ANNOTATION => Some(ABLY_MODE_ANNOTATION_SUBSCRIBE),
                 _ => None,
             };
-            let shared_recovery_enabled = state.subscribers.len() > 1;
-            if message.action == ACTION_MESSAGE && shared_recovery_enabled {
-                state
-                    .recovery_tail
-                    .push(message.clone(), publisher_connection_id, echo_override);
-            }
             let message_bytes = state
                 .subscribers
                 .values()
@@ -3163,8 +3166,7 @@ impl AblyCompatHub {
                         gate.messages.push(message.clone());
                     }
                 } else {
-                    let shared_recovery = shared_recovery_enabled
-                        && subscriber.direct_recovery_gate.messages.is_empty()
+                    let shared_recovery = subscriber.direct_recovery_gate.messages.is_empty()
                         && !subscriber.direct_recovery_gate.overflowed
                         && subscriber_uses_shared_recovery(key, subscriber, channel);
                     ready.push((key.clone(), subscriber.delivery_snapshot(shared_recovery)));
@@ -3172,7 +3174,64 @@ impl AblyCompatHub {
             }
             ready
         };
+
+        if subscribers.len() == 1 {
+            let (subscriber_key, subscriber) = &subscribers[0];
+            let plain_single_subscriber = subscriber_key.requested_channel.as_ref() == channel
+                && subscriber.filter.is_none()
+                && subscriber.shared_recovery
+                && !subscriber.recoverable;
+            #[cfg(feature = "delta")]
+            let plain_single_subscriber = plain_single_subscriber && subscriber.delta.is_none();
+            if plain_single_subscriber {
+                let (subscriber_key, subscriber) = subscribers
+                    .pop()
+                    .expect("single subscriber length was checked");
+                let encoded = match encode_protocol_bytes(&message, subscriber.sender.format()) {
+                    Ok(bytes) => Arc::new(bytes),
+                    Err(error) => {
+                        warn!(protocol = "ably", app_id = %app_id, channel = %channel, error = %error, "compatibility delivery encode failed");
+                        return;
+                    }
+                };
+                self.metrics.data_encoded.fetch_add(1, Ordering::Relaxed);
+                self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
+                let recovery_bytes = encoded.len();
+                let encoded_bytes = u64::try_from(recovery_bytes).unwrap_or(u64::MAX);
+                if subscriber.sender.send_data(encoded).is_err() {
+                    let mut state = lock_channel_state(&state);
+                    state.subscribers.remove(&subscriber_key);
+                    state.recovery_gates.remove(&subscriber_key);
+                    return;
+                }
+
+                self.metrics.fanout.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut state = lock_channel_state(&state);
+                    state.recovery_tail.push_with_size(
+                        message,
+                        publisher_connection_id,
+                        echo_override,
+                        recovery_bytes,
+                    );
+                }
+                if let Ok(observation) = StatsObservation::messages(
+                    app_id,
+                    now,
+                    "outbound",
+                    "realtime",
+                    1,
+                    encoded_bytes,
+                ) && let Err(error) = self.stats.try_record(observation)
+                {
+                    debug!(protocol = "ably", app_id = %app_id, error = %error, "outbound stats observation not queued");
+                }
+                return;
+            }
+        }
+
         let mut recovery_updates = Vec::new();
+        let mut shared_recovery_bytes: Option<usize> = None;
         #[cfg(feature = "delta")]
         let (delta_subscribers, subscribers): (Vec<_>, Vec<_>) =
             subscribers.into_iter().partition(|(_, subscriber)| {
@@ -3314,6 +3373,15 @@ impl AblyCompatHub {
             self.metrics.data_encoded.fetch_add(1, Ordering::Relaxed);
             self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
             let recovery_bytes = encoded.len();
+            if projected.action == ACTION_MESSAGE
+                && subscribers
+                    .iter()
+                    .any(|(_, subscriber)| subscriber.shared_recovery)
+            {
+                shared_recovery_bytes = Some(
+                    shared_recovery_bytes.map_or(recovery_bytes, |bytes| bytes.max(recovery_bytes)),
+                );
+            }
             let encoded_bytes = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
             for (subscriber_key, subscriber) in subscribers {
                 if subscriber.sender.send_data(Arc::clone(&encoded)).is_err() {
@@ -3370,8 +3438,16 @@ impl AblyCompatHub {
             }
         }
 
-        if !recovery_updates.is_empty() {
+        if shared_recovery_bytes.is_some() || !recovery_updates.is_empty() {
             let mut state = lock_channel_state(&state);
+            if let Some(recovery_bytes) = shared_recovery_bytes {
+                state.recovery_tail.push_with_size(
+                    message.clone(),
+                    publisher_connection_id,
+                    echo_override,
+                    recovery_bytes,
+                );
+            }
             for (key, delivered, direct_recovery, recovery_bytes) in recovery_updates {
                 if direct_recovery
                     && let Some(subscriber) = state.subscribers.get_mut(&key)
