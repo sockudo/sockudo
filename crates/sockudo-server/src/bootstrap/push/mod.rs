@@ -19,8 +19,20 @@ use std::sync::Arc;
 use tracing::warn;
 
 #[cfg(feature = "push")]
+fn any_push_provider_enabled(config: &ServerOptions) -> bool {
+    config.push.fcm_enabled
+        || config.push.apns_enabled
+        || config.push.webpush_enabled
+        || config.push.hms_enabled
+        || config.push.wns_enabled
+}
+
+#[cfg(feature = "push")]
 fn production_memory_drivers_allowed(config: &ServerOptions) -> bool {
-    !config.mode.eq_ignore_ascii_case("production") || config.push.allow_memory_drivers
+    // Node-local memory push drivers are only unsafe when push is actually in use
+    !config.mode.eq_ignore_ascii_case("production")
+        || config.push.allow_memory_drivers
+        || !any_push_provider_enabled(config)
 }
 
 #[cfg(feature = "push")]
@@ -106,6 +118,8 @@ mod tests {
         };
         config.push.storage_driver = PushStorageDriver::Memory;
         config.push.allow_memory_drivers = false;
+        // A provider must be enabled for the memory-driver check to apply.
+        config.push.fcm_enabled = true;
 
         let error = match create_push_store(&config).await {
             Ok(_) => panic!("memory push store should be rejected in production"),
@@ -116,6 +130,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_memory_push_store_allowed_when_no_provider_enabled() {
+        let mut config = ServerOptions {
+            mode: "production".to_owned(),
+            ..Default::default()
+        };
+        config.push.storage_driver = PushStorageDriver::Memory;
+        config.push.allow_memory_drivers = false;
+        // No push provider enabled: push is effectively unused, so memory drivers are fine.
+
+        create_push_store(&config)
+            .await
+            .expect("memory push store should be allowed when no provider is enabled");
+    }
+
+    #[tokio::test]
     async fn production_memory_push_queue_requires_explicit_allow() {
         let mut config = ServerOptions {
             mode: "production".to_owned(),
@@ -123,6 +152,8 @@ mod tests {
         };
         config.push.queue_driver = PushQueueDriver::Memory;
         config.push.allow_memory_drivers = false;
+        // A provider must be enabled for the memory-driver check to apply.
+        config.push.fcm_enabled = true;
 
         let store: sockudo_push::DynPushStore = Arc::new(sockudo_push::MemoryPushStore::new());
         let admission = PushAdmissionSnapshot::from_config(&config, &store).await;
