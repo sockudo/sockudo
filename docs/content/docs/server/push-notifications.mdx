@@ -58,9 +58,11 @@ provider worker without scanning large channel subscription sets during admissio
 publishes also require a local shard worker. The planner still resolves exact devices
 asynchronously.
 
-In `mode = "production"`, `storage_driver = "memory"` and `queue_driver = "memory"` are rejected
-unless `allow_memory_drivers = true` or `PUSH_ALLOW_MEMORY_DRIVERS=true` is set explicitly. Memory
-drivers are node-local and lose state on restart or dead-node loss.
+In `mode = "production"` with a push provider enabled, `storage_driver = "memory"` and
+`queue_driver = "memory"` are rejected unless `allow_memory_drivers = true` or
+`PUSH_ALLOW_MEMORY_DRIVERS=true` is set explicitly. When no push provider is enabled, push is unused
+and memory drivers are accepted without the flag. Memory drivers are node-local and lose state on
+restart or dead-node loss.
 
 Readiness failures return `503`. Queue pressure returns `429` with `Retry-After`. Quota rejection
 persists a terminal `quota_exceeded` publish status and idempotency record without appending publish

@@ -406,7 +406,9 @@ include_remaining_fields = true
 external key refs default to unset and are omitted from the checked block.
 
 `storage_driver = "memory"` and `queue_driver = "memory"` are node-local development drivers. In
-`mode = "production"`, Sockudo rejects them unless `allow_memory_drivers = true` is set explicitly.
+`mode = "production"`, when a push provider is enabled, Sockudo rejects them unless
+`allow_memory_drivers = true` is set explicitly. When no push provider is enabled, push is unused
+and memory drivers are accepted without the flag.
 Push publish admission also requires a healthy queue, a safe store, local pipeline workers, and
 local provider-worker capability. Raw provider-specific recipients require the matching provider
 worker before the request is accepted; shard-path publishes also require a local shard worker.
