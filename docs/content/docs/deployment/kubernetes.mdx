@@ -82,10 +82,10 @@ config:
     enabled: true
     apiMaxRequests: 1000
     apiWindowSeconds: 60
-    apiTrustHops: 1
+    apiTrustHops: 2
     wsMaxRequests: 100
     wsWindowSeconds: 60
-    wsTrustHops: 1
+    wsTrustHops: 2
   metrics:
     enabled: true
 
@@ -180,6 +180,22 @@ ingress:
 Adapt the topology label selector when the release name or chart labels differ. If application
 records must change dynamically, select a durable app manager instead of `memory` and configure its
 database credentials from a Secret.
+
+`apiTrustHops` and `wsTrustHops` are an **offset from the right-hand end** of `X-Forwarded-For`,
+not a count of proxies. `1` selects the last entry in the chain, which is the proxy itself. A
+single load balancer that appends the client address - producing
+`X-Forwarded-For: <client>, <lb>` - therefore needs `2`, which is why the example above uses it.
+
+Getting this wrong is quiet rather than loud. When the offset selects an entry that is not a valid
+address, extraction falls through to `x-real-ip` and then to the socket peer, and behind a load
+balancer the socket peer is the load balancer - so every client on the internet shares one
+rate-limit bucket. With the default `wsMaxRequests` that is a single allowance of WebSocket
+upgrades per window for all clients combined, and any reconnect storm will exhaust it. Sockudo logs
+a warning the first time the configured offset yields nothing usable.
+
+The default is `0`, which skips `X-Forwarded-For` entirely and goes straight to the socket peer.
+Behind any L7 load balancer that is the shared-bucket case above, so set these explicitly whenever
+the rate limiter is enabled.
 
 Create the one-app Secret without placing values in the shell history or a checked-in manifest.
 The required keys are:

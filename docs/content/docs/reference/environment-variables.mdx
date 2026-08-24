@@ -299,10 +299,10 @@ See [Logging](/docs/reference/logging) for level policy, stable lifecycle fields
 | `RATE_LIMITER_ENABLED` | Enables HTTP and WebSocket rate limiting. |
 | `RATE_LIMITER_API_MAX_REQUESTS` | API requests allowed per rate limit window. |
 | `RATE_LIMITER_API_WINDOW_SECONDS` | API rate limit window length. |
-| `RATE_LIMITER_API_TRUST_HOPS` | Trusted proxy hops for API client IP extraction. |
+| `RATE_LIMITER_API_TRUST_HOPS` | Offset from the right of `X-Forwarded-For` for API client IP extraction. `1` selects the last entry, so one proxy that appends the client address needs `2`. `0` ignores the header. |
 | `RATE_LIMITER_WS_MAX_REQUESTS` | WebSocket upgrade attempts allowed per window. |
 | `RATE_LIMITER_WS_WINDOW_SECONDS` | WebSocket rate limit window length. |
-| `RATE_LIMITER_WS_TRUST_HOPS` | Trusted proxy hops for WebSocket client IP extraction. |
+| `RATE_LIMITER_WS_TRUST_HOPS` | Offset from the right of `X-Forwarded-For` for WebSocket client IP extraction. `1` selects the last entry, so one proxy that appends the client address needs `2`. `0` ignores the header. |
 | `RATE_LIMITER_REDIS_PREFIX` | Redis key prefix for rate limiter state. |
 
 ## Queue backends
