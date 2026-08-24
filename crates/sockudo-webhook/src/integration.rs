@@ -11,7 +11,7 @@ use sonic_rs::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 const WEBHOOK_QUEUE_NAME: &str = "webhooks";
 
@@ -184,30 +184,70 @@ impl WebhookIntegration {
             let mut interval = interval(Duration::from_millis(batch_duration));
             loop {
                 interval.tick().await;
-                let jobs_to_process = {
-                    let mut batched = batched_webhooks_clone.lock();
-                    std::mem::take(&mut *batched)
-                };
-
-                if jobs_to_process.is_empty() {
-                    continue;
-                }
-                debug!(
-                    job_count = jobs_to_process.len(),
-                    "processing batched webhook jobs"
-                );
-
-                if let Some(qm) = &queue_manager_clone {
-                    let batches = Self::merge_jobs_for_queue(jobs_to_process, batch_size);
-                    if let Err(e) = qm.add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches).await {
-                        error!(
-                            error = %e,
-                            "failed to enqueue batched webhook jobs"
-                        );
-                    }
-                }
+                Self::drain_batched_webhooks(
+                    &batched_webhooks_clone,
+                    &queue_manager_clone,
+                    batch_size,
+                )
+                .await;
             }
         });
+    }
+
+    /// Moves everything currently buffered into the queue, returning how many jobs were
+    /// enqueued.
+    async fn drain_batched_webhooks(
+        batched_webhooks: &Arc<Mutex<Vec<JobData>>>,
+        queue_manager: &Option<Arc<QueueManager>>,
+        batch_size: usize,
+    ) -> usize {
+        let jobs_to_process = {
+            let mut batched = batched_webhooks.lock();
+            std::mem::take(&mut *batched)
+        };
+
+        if jobs_to_process.is_empty() {
+            return 0;
+        }
+        let job_count = jobs_to_process.len();
+        debug!(job_count, "processing batched webhook jobs");
+
+        if let Some(qm) = queue_manager {
+            let batches = Self::merge_jobs_for_queue(jobs_to_process, batch_size);
+            if let Err(e) = qm.add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches).await {
+                error!(
+                    error = %e,
+                    "failed to enqueue batched webhook jobs"
+                );
+                return 0;
+            }
+        }
+
+        job_count
+    }
+
+    /// Drains the batching buffer immediately instead of waiting for the next interval tick.
+    ///
+    /// The buffer is process-local, so anything still in it when the queue manager is
+    /// disconnected is lost. Shutdown closes every connection first, which produces a burst of
+    /// `member_removed` events, and those land in this buffer with no guarantee that a tick
+    /// follows before the queue goes away.
+    ///
+    /// Returns the number of jobs handed to the queue, which is zero if the buffer was empty or
+    /// the enqueue failed.
+    pub async fn flush_batched_webhooks(&self) -> usize {
+        let flushed = Self::drain_batched_webhooks(
+            &self.batched_webhooks,
+            &self.queue_manager,
+            self.config.batching.size.max(1),
+        )
+        .await;
+
+        if flushed > 0 {
+            info!(job_count = flushed, "flushed buffered webhook jobs");
+        }
+
+        flushed
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -918,6 +958,64 @@ mod tests {
             .await
             .unwrap();
         assert!(integration.batched_webhooks.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_drains_buffered_webhooks_into_the_queue() {
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["member_removed".to_string()],
+            ..Webhook::default()
+        }]);
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let queue_manager = create_test_queue_manager();
+        let integration = WebhookIntegration::new(
+            WebhookConfig {
+                batching: BatchingConfig {
+                    enabled: true,
+                    // Long enough that no interval tick can fire while the test runs, so the
+                    // explicit flush is the only thing that can move the job.
+                    duration: 60_000,
+                    size: 100,
+                },
+                ..WebhookConfig::default()
+            },
+            app_manager,
+            Some(queue_manager),
+        )
+        .await
+        .unwrap();
+
+        integration
+            .send_member_removed(&app, "presence-room", "user-1")
+            .await
+            .unwrap();
+        assert_eq!(integration.batched_webhooks.lock().len(), 1);
+
+        assert_eq!(integration.flush_batched_webhooks().await, 1);
+        assert!(integration.batched_webhooks.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_is_a_noop_when_nothing_is_buffered() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let queue_manager = create_test_queue_manager();
+        let integration = WebhookIntegration::new(
+            WebhookConfig {
+                batching: BatchingConfig {
+                    enabled: true,
+                    duration: 60_000,
+                    size: 100,
+                },
+                ..WebhookConfig::default()
+            },
+            app_manager,
+            Some(queue_manager),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(integration.flush_batched_webhooks().await, 0);
     }
 
     #[tokio::test]
