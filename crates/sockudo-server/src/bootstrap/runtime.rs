@@ -549,6 +549,20 @@ impl SockudoServer {
         #[cfg(feature = "delta")]
         self.state.delta_compression.stop_cleanup_task().await;
 
+        // Closing every connection above produced the last presence events. They sit in the
+        // webhook batching buffer until an interval tick, so flush them before the queue
+        // manager is disconnected, then spend the grace period letting the workers deliver
+        // them. Disconnecting the backends first would discard the buffer.
+        if let Some(webhook_integration) = self.handler.webhook_integration() {
+            webhook_integration.flush_batched_webhooks().await;
+        }
+
+        info!(
+            grace_period_s = self.config.shutdown_grace_period,
+            "waiting for shutdown grace period"
+        );
+        tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
+
         // Disconnect from backend services
         if let Err(e) = self.state.cache_manager.disconnect().await {
             warn!(error = %e, "error disconnecting cache manager");
@@ -576,11 +590,6 @@ impl SockudoServer {
             }
         }
 
-        info!(
-            grace_period_s = self.config.shutdown_grace_period,
-            "waiting for shutdown grace period"
-        );
-        tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         info!("Server stopped");
         Ok(())
     }
