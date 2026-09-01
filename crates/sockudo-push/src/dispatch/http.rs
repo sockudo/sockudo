@@ -195,11 +195,15 @@ impl ProviderHttpClient for ReqwestProviderHttpClient {
             ProviderHttpMethod::Post => reqwest::Method::POST,
         };
         let mut builder = self.client.request(method, &request.url);
-        let mut headers = request.headers;
+        let headers = request.headers;
         #[cfg(feature = "opentelemetry")]
-        global::get_text_map_propagator(|propagator| {
-            propagator.inject_context(&span.context(), &mut PushHeaderInjector(&mut headers));
-        });
+        let headers = {
+            let mut headers = headers;
+            global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(&span.context(), &mut PushHeaderInjector(&mut headers));
+            });
+            headers
+        };
         for (name, value) in headers {
             builder = builder.header(name, value);
         }
