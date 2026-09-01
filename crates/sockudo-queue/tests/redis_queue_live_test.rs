@@ -177,6 +177,7 @@ fn job(signature: &str) -> JobData {
         app_key: "key".to_string(),
         app_id: "app".to_string(),
         app_secret: "secret".to_string(),
+        trace_context: Default::default(),
         payload: JobPayload {
             time_ms: 0,
             events: Vec::new(),

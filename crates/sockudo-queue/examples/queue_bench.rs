@@ -175,6 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app_key: "bench".to_string(),
                 app_id: "bench".to_string(),
                 app_secret: "not-a-secret".to_string(),
+                trace_context: Default::default(),
                 payload: JobPayload {
                     time_ms: i64::try_from(now_ms()).unwrap_or(i64::MAX),
                     events: Vec::new(),

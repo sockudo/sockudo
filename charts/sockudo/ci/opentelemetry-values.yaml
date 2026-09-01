@@ -1,0 +1,20 @@
+config:
+  openTelemetry:
+    enabled: true
+    tracesEnabled: true
+    metricsEnabled: true
+    logsEnabled: true
+    serviceName: sockudo
+    serviceNamespace: realtime
+    deploymentEnvironment: ci
+    endpoint: http://otel-collector.observability.svc:4317
+    resourceAttributes:
+      k8s.cluster.name: chart-ci
+
+extraEnv:
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    value: grpc
+
+extraEnvFrom:
+  - secretRef:
+      name: sockudo-otel-exporter

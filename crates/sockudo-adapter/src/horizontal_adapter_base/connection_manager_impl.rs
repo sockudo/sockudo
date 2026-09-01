@@ -158,6 +158,7 @@ where
             compression_metadata: None,
             idempotency_key,
             ephemeral,
+            trace_context: crate::telemetry::current_context(),
         };
 
         // Skip broadcasting to other nodes if we're in single-node mode
@@ -209,6 +210,7 @@ where
             compression_metadata: None,
             idempotency_key,
             ephemeral,
+            trace_context: crate::telemetry::current_context(),
         };
         if !self.should_skip_horizontal_communication().await {
             self.transport.publish_broadcast(&broadcast).await?;
@@ -238,6 +240,7 @@ where
                 compression_metadata: None,
                 idempotency_key: None,
                 ephemeral: true,
+                trace_context: crate::telemetry::current_context(),
             })
             .await
     }
@@ -388,6 +391,7 @@ where
             }),
             idempotency_key,
             ephemeral,
+            trace_context: crate::telemetry::current_context(),
         };
 
         // Skip broadcasting to other nodes if we're in single-node mode
@@ -661,6 +665,7 @@ where
             dead_node_id: None,
             target_node_id: None,
             reply_to: None,
+            trace_context: crate::telemetry::current_context(),
             channels: Some(channels.iter().map(|c| c.to_string()).collect()),
         };
 
@@ -973,6 +978,7 @@ where
             dead_node_id: Some(self.node_id.clone()),
             target_node_id: None,
             reply_to: None,
+            trace_context: crate::telemetry::current_context(),
             channels: None,
         };
 

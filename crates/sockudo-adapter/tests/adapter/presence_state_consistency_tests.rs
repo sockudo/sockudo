@@ -114,6 +114,7 @@ async fn test_presence_state_with_clock_skew() {
         dead_node_id: None,
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     };
 
@@ -130,6 +131,7 @@ async fn test_presence_state_with_clock_skew() {
         dead_node_id: None,
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     };
 

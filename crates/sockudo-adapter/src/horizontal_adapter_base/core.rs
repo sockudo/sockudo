@@ -430,6 +430,7 @@ where
             dead_node_id: None,
             target_node_id: None,
             reply_to: None,
+            trace_context: crate::telemetry::current_context(),
             channels: None,
         };
         self.send_request_with_body(request).await
@@ -459,6 +460,7 @@ where
         let handlers = TransportHandlers {
             node_id: self.node_id.clone(),
             on_broadcast: Arc::new(move |broadcast| {
+                let consumer_span = crate::telemetry::broadcast_consumer_span(&broadcast);
                 let horizontal_clone = broadcast_horizontal.clone();
                 let cache_manager_clone = broadcast_cache_manager.clone();
                 let realtime_egress_tap = broadcast_realtime_egress_tap.clone();
@@ -678,9 +680,10 @@ where
                         )
                         .await;
                     }
-                })
+                }.instrument(consumer_span))
             }),
             on_request: Arc::new(move |request| {
+                let consumer_span = crate::telemetry::request_consumer_span(&request);
                 let horizontal_clone = request_horizontal.clone();
                 let transport_clone = transport_for_request.clone();
                 Box::pin(async move {
@@ -724,7 +727,7 @@ where
                             {
                                 error!(node_id = %new_node_id, error = %e, "failed to sync presence state to new node");
                             }
-                        });
+                        }.in_current_span());
                     }
 
                     // No peer is waiting for a response, skip publishing.
@@ -733,7 +736,7 @@ where
                     }
 
                     Ok(response)
-                })
+                }.instrument(consumer_span))
             }),
             on_response: Arc::new(move |response| {
                 let horizontal_clone = response_horizontal.clone();
@@ -867,6 +870,7 @@ where
                             dead_node_id: None,
                             target_node_id: None,
                             reply_to: None,
+                            trace_context: crate::telemetry::current_context(),
                             channels: None,
                         };
                         let _ = transport.publish_request(&request).await;
@@ -906,6 +910,7 @@ where
                     dead_node_id: None,
                     target_node_id: None,
                     reply_to: None,
+                    trace_context: crate::telemetry::current_context(),
                     channels: None,
                 };
 
@@ -1049,6 +1054,7 @@ where
                                     dead_node_id: Some(dead_node_id.clone()),
                                     target_node_id: None,
                                     reply_to: None,
+                                    trace_context: crate::telemetry::current_context(),
                                     channels: None,
                                 };
 

@@ -29,6 +29,7 @@ fn test_job(signature: &str) -> JobData {
         app_key: "test-key".to_string(),
         app_id: "test-app".to_string(),
         app_secret: "test-secret".to_string(),
+        trace_context: Default::default(),
         payload: JobPayload {
             time_ms: chrono::Utc::now().timestamp_millis(),
             events: vec![sonic_rs::json!({

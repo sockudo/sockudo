@@ -671,6 +671,7 @@ impl HorizontalAdapter {
             dead_node_id: None,
             target_node_id: None,
             reply_to: None,
+            trace_context: crate::telemetry::current_context(),
             channels: None,
         };
 

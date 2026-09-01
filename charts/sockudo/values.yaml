@@ -120,6 +120,27 @@ config:
     driver: prometheus
     prefix: "sockudo_"
 
+  # -- OpenTelemetry OTLP export. Disabled by default and additive to Prometheus
+  # and local logging. Use extraEnv for standard non-secret OTEL_* exporter
+  # settings and extraEnvFrom for exporter headers or credentials.
+  openTelemetry:
+    enabled: false
+    tracesEnabled: true
+    metricsEnabled: true
+    logsEnabled: true
+    serviceName: sockudo
+    serviceNamespace: ""
+    deploymentEnvironment: ""
+    resourceAttributes: {}
+    endpoint: ""
+    exportTimeoutMs: 10000
+    batchScheduledDelayMs: 5000
+    batchMaxQueueSize: 2048
+    batchMaxExportBatchSize: 512
+    metricExportIntervalMs: 60000
+    propagationTraceContext: true
+    propagationBaggage: true
+
   # -- SSL/TLS settings (typically terminated at ingress)
   ssl:
     enabled: false
@@ -146,6 +167,9 @@ config:
       - Content-Type
       - X-Requested-With
       - Accept
+      - traceparent
+      - tracestate
+      - baggage
 
 # -- Full Sockudo config content (JSON). If set, mounted as /app/config/config.json.
 # Takes precedence over individual config.* values above and is the preferred

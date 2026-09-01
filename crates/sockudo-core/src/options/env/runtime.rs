@@ -1,5 +1,44 @@
 use super::*;
 
+fn optional_string_env(name: &str) -> Option<Option<String>> {
+    std::env::var(name).ok().map(|value| {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
+}
+
+fn apply_opentelemetry_resource_attributes(options: &mut ServerOptions) {
+    let Ok(value) = std::env::var("SOCKUDO_OTEL_RESOURCE_ATTRIBUTES") else {
+        return;
+    };
+
+    let mut attributes = std::collections::BTreeMap::new();
+    let mut invalid_count = 0_u64;
+    for entry in value.split(',') {
+        let Some((key, value)) = entry.split_once('=') else {
+            invalid_count += 1;
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            invalid_count += 1;
+            continue;
+        }
+        attributes.insert(key.to_string(), value.trim().to_string());
+    }
+
+    if invalid_count > 0 {
+        warn!(
+            env_var = "SOCKUDO_OTEL_RESOURCE_ATTRIBUTES",
+            invalid_count, "env config contains invalid resource attributes"
+        );
+    }
+    options.opentelemetry.resource_attributes = attributes;
+}
+
 pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::error::Error>> {
     // --- SSL Configuration ---
     options.ssl.enabled = parse_bool_env("SSL_ENABLED", options.ssl.enabled);
@@ -75,6 +114,63 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     if let Some(buffer_size) = parse_env_optional::<usize>("METRICS_TCP_EXPORTER_BUFFER_SIZE") {
         options.metrics.tcp_exporter.buffer_size = Some(buffer_size);
     }
+
+    // --- OpenTelemetry ---
+    options.opentelemetry.enabled =
+        parse_bool_env("SOCKUDO_OTEL_ENABLED", options.opentelemetry.enabled);
+    options.opentelemetry.traces_enabled = parse_bool_env(
+        "SOCKUDO_OTEL_TRACES_ENABLED",
+        options.opentelemetry.traces_enabled,
+    );
+    options.opentelemetry.metrics_enabled = parse_bool_env(
+        "SOCKUDO_OTEL_METRICS_ENABLED",
+        options.opentelemetry.metrics_enabled,
+    );
+    options.opentelemetry.logs_enabled = parse_bool_env(
+        "SOCKUDO_OTEL_LOGS_ENABLED",
+        options.opentelemetry.logs_enabled,
+    );
+    if let Ok(value) = std::env::var("SOCKUDO_OTEL_SERVICE_NAME") {
+        options.opentelemetry.service_name = value;
+    }
+    if let Some(value) = optional_string_env("SOCKUDO_OTEL_SERVICE_NAMESPACE") {
+        options.opentelemetry.service_namespace = value;
+    }
+    if let Some(value) = optional_string_env("SOCKUDO_OTEL_DEPLOYMENT_ENVIRONMENT") {
+        options.opentelemetry.deployment_environment = value;
+    }
+    apply_opentelemetry_resource_attributes(options);
+    if let Some(value) = optional_string_env("SOCKUDO_OTEL_ENDPOINT") {
+        options.opentelemetry.endpoint = value;
+    }
+    options.opentelemetry.export_timeout_ms = parse_env::<u64>(
+        "SOCKUDO_OTEL_EXPORT_TIMEOUT_MS",
+        options.opentelemetry.export_timeout_ms,
+    );
+    options.opentelemetry.batch_scheduled_delay_ms = parse_env::<u64>(
+        "SOCKUDO_OTEL_BATCH_SCHEDULED_DELAY_MS",
+        options.opentelemetry.batch_scheduled_delay_ms,
+    );
+    options.opentelemetry.batch_max_queue_size = parse_env::<usize>(
+        "SOCKUDO_OTEL_BATCH_MAX_QUEUE_SIZE",
+        options.opentelemetry.batch_max_queue_size,
+    );
+    options.opentelemetry.batch_max_export_batch_size = parse_env::<usize>(
+        "SOCKUDO_OTEL_BATCH_MAX_EXPORT_BATCH_SIZE",
+        options.opentelemetry.batch_max_export_batch_size,
+    );
+    options.opentelemetry.metric_export_interval_ms = parse_env::<u64>(
+        "SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS",
+        options.opentelemetry.metric_export_interval_ms,
+    );
+    options.opentelemetry.propagation_trace_context = parse_bool_env(
+        "SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT",
+        options.opentelemetry.propagation_trace_context,
+    );
+    options.opentelemetry.propagation_baggage = parse_bool_env(
+        "SOCKUDO_OTEL_PROPAGATION_BAGGAGE",
+        options.opentelemetry.propagation_baggage,
+    );
 
     // --- HTTP API ---
     options.http_api.usage_enabled =
