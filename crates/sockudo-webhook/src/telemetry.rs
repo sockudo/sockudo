@@ -13,16 +13,18 @@ use tracing::info_span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub(crate) fn capture(job: &mut JobData) {
-    if !job.trace_context.is_empty() {
-        return;
-    }
     #[cfg(feature = "opentelemetry")]
-    global::get_text_map_propagator(|propagator| {
-        propagator.inject_context(
-            &Span::current().context(),
-            &mut TraceCarrier(&mut job.trace_context),
-        );
-    });
+    if job.trace_context.is_empty() {
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &Span::current().context(),
+                &mut TraceCarrier(&mut job.trace_context),
+            );
+        });
+    }
+
+    #[cfg(not(feature = "opentelemetry"))]
+    let _ = job;
 }
 
 pub(crate) fn consumer_span(job: &JobData) -> Span {
