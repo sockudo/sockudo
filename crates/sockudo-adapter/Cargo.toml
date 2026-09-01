@@ -15,7 +15,8 @@ v2 = ["delta", "tag-filtering", "recovery"]
 delta = ["dep:sockudo-delta"]
 tag-filtering = ["dep:sockudo-filter"]
 recovery = []
-full = ["redis", "redis-cluster", "nats", "pulsar", "rabbitmq", "google-pubsub", "kafka", "iggy", "v2"]
+opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
+full = ["redis", "redis-cluster", "nats", "pulsar", "rabbitmq", "google-pubsub", "kafka", "iggy", "v2", "opentelemetry"]
 redis = ["sockudo-core/redis", "dep:redis"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
 nats = ["sockudo-core/nats", "dep:async-nats"]
@@ -50,6 +51,7 @@ lapin = { workspace = true, optional = true }
 mockall = { workspace = true }
 moka = { workspace = true }
 num_cpus = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pulsar = { workspace = true, optional = true }
 rand = { workspace = true }
@@ -63,6 +65,7 @@ sonic-rs = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

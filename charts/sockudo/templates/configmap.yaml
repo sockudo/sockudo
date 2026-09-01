@@ -54,6 +54,24 @@ data:
           "prefix": {{ .Values.config.metrics.prefix | quote }}
         }
       },
+      "opentelemetry": {
+        "enabled": {{ .Values.config.openTelemetry.enabled }},
+        "traces_enabled": {{ .Values.config.openTelemetry.tracesEnabled }},
+        "metrics_enabled": {{ .Values.config.openTelemetry.metricsEnabled }},
+        "logs_enabled": {{ .Values.config.openTelemetry.logsEnabled }},
+        "service_name": {{ .Values.config.openTelemetry.serviceName | quote }},
+        "service_namespace": {{ if .Values.config.openTelemetry.serviceNamespace }}{{ .Values.config.openTelemetry.serviceNamespace | quote }}{{ else }}null{{ end }},
+        "deployment_environment": {{ if .Values.config.openTelemetry.deploymentEnvironment }}{{ .Values.config.openTelemetry.deploymentEnvironment | quote }}{{ else }}null{{ end }},
+        "resource_attributes": {{ .Values.config.openTelemetry.resourceAttributes | toJson }},
+        "endpoint": {{ if .Values.config.openTelemetry.endpoint }}{{ .Values.config.openTelemetry.endpoint | quote }}{{ else }}null{{ end }},
+        "export_timeout_ms": {{ .Values.config.openTelemetry.exportTimeoutMs | int64 }},
+        "batch_scheduled_delay_ms": {{ .Values.config.openTelemetry.batchScheduledDelayMs | int64 }},
+        "batch_max_queue_size": {{ .Values.config.openTelemetry.batchMaxQueueSize | int64 }},
+        "batch_max_export_batch_size": {{ .Values.config.openTelemetry.batchMaxExportBatchSize | int64 }},
+        "metric_export_interval_ms": {{ .Values.config.openTelemetry.metricExportIntervalMs | int64 }},
+        "propagation_trace_context": {{ .Values.config.openTelemetry.propagationTraceContext }},
+        "propagation_baggage": {{ .Values.config.openTelemetry.propagationBaggage }}
+      },
       "websocket": {
         "max_payload_kb": {{ .Values.config.websocket.maxPayloadKb | int64 }},
         "max_messages": {{ .Values.config.websocket.maxMessages | int64 }},

@@ -40,6 +40,28 @@ With `LOG_OUTPUT_FORMAT=json`, each line is a JSON object. Application event att
 }
 ```
 
+## OpenTelemetry export
+
+When `[opentelemetry].enabled` and `logs_enabled` are true, the same structured tracing events are
+also emitted as OpenTelemetry log records. OTLP export does not replace stdout/stderr logging and
+does not change `LOG_OUTPUT_FORMAT`. Log records created inside a sampled trace carry its trace and
+span context, allowing an OpenTelemetry backend to correlate logs with request, WebSocket,
+horizontal-fanout, webhook, and queue spans.
+
+Explicit `sockudo_telemetry` instrumentation spans remain enabled while trace export is active,
+independently of the local `RUST_LOG` verbosity. This preserves distributed trace continuity
+without enabling debug or trace log events on stdout/stderr.
+
+Sockudo supports the stable OpenTelemetry traces, metrics, and logs signals over OTLP gRPC,
+HTTP/protobuf, and HTTP/JSON. W3C `traceparent`/`tracestate` propagation and baggage are enabled by
+default when telemetry is active. OpenTelemetry profiles are not supported.
+
+Export is asynchronous, bounded, and fail-open. Collector connection failures, exporter timeouts,
+or a full telemetry queue never make `/live` or `/up` fail and do not block normal request handling.
+Sockudo attempts a bounded flush during graceful shutdown. Configure collectors, protocols,
+sampling, and credentials with the
+[OpenTelemetry environment variables](/docs/reference/environment-variables#opentelemetry).
+
 ## Severity levels
 
 | Level | Meaning | Monitoring guidance |
@@ -84,4 +106,6 @@ Logs may contain operational IDs, channel names, user IDs, and event names. Logs
 keys or secrets, signatures, tokens, authorization data, request or response bodies, message
 payloads, raw queries, webhook URLs, provider credentials, device tokens, or private keys. This
 applies at every level: enabling `debug` or `trace` never permits payload, credential, or token
-logging.
+logging. The same rule applies to OpenTelemetry logs, span attributes, events, resource attributes,
+baggage, and exporter diagnostics. Store OTLP headers and client private keys outside the config
+file, and do not put secrets or user payloads in `OTEL_RESOURCE_ATTRIBUTES` or baggage.

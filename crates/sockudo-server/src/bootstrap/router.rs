@@ -85,6 +85,23 @@ impl SockudoServer {
     }
 
     pub(crate) fn configure_http_routes(&self) -> Router {
+        let mut allowed_headers = self
+            .config
+            .cors
+            .allowed_headers
+            .iter()
+            .map(|s| HeaderName::from_str(s).expect("Failed to parse CORS header"))
+            .collect::<Vec<_>>();
+        if self.config.opentelemetry.enabled {
+            allowed_headers.extend([
+                HeaderName::from_static("traceparent"),
+                HeaderName::from_static("tracestate"),
+            ]);
+            if self.config.opentelemetry.propagation_baggage {
+                allowed_headers.push(HeaderName::from_static("baggage"));
+            }
+        }
+
         let mut cors_builder = CorsLayer::new()
             .allow_methods(
                 self.config
@@ -94,14 +111,7 @@ impl SockudoServer {
                     .map(|s| Method::from_str(s).expect("Failed to parse CORS method"))
                     .collect::<Vec<_>>(),
             )
-            .allow_headers(
-                self.config
-                    .cors
-                    .allowed_headers
-                    .iter()
-                    .map(|s| HeaderName::from_str(s).expect("Failed to parse CORS header"))
-                    .collect::<Vec<_>>(),
-            );
+            .allow_headers(allowed_headers);
 
         let use_allow_origin_any = self
             .config
@@ -667,6 +677,13 @@ impl SockudoServer {
         // Return plain text 404 for unmatched routes.
         // Without this, Axum returns an empty-body 404 which nginx may serve as a file download.
         router = router.fallback(fallback_404);
+
+        #[cfg(feature = "opentelemetry")]
+        if self.config.opentelemetry.enabled && self.config.opentelemetry.traces_enabled {
+            router = router.layer(axum_middleware::from_fn(
+                crate::telemetry::trace_http_request,
+            ));
+        }
 
         router.with_state(self.handler.clone())
     }

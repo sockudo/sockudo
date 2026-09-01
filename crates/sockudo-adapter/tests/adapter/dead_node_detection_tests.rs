@@ -37,6 +37,7 @@ async fn test_heartbeat_tracking_updates_node_registry() {
         dead_node_id: None,
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     };
 
@@ -424,6 +425,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
         dead_node_id: Some(dead_node_id.to_string()),
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     };
 

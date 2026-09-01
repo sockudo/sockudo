@@ -28,13 +28,15 @@ impl MetricsFactory {
         port: u16,
         prefix: Option<&str>,
         tcp_exporter: Option<sockudo_metrics::TcpExporterOptions>,
+        export_to_opentelemetry: bool,
     ) -> Option<Arc<dyn MetricsInterface + Send + Sync>> {
         match driver_type.to_lowercase().as_str() {
             "prometheus" => {
-                let driver = sockudo_metrics::PrometheusMetricsDriver::with_tcp_exporter(
+                let driver = sockudo_metrics::PrometheusMetricsDriver::with_exporters(
                     port,
                     prefix,
                     tcp_exporter,
+                    export_to_opentelemetry,
                 )
                 .await;
                 Some(Arc::new(driver))

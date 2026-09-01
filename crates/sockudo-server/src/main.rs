@@ -11,6 +11,8 @@ mod middleware;
 mod presence_history;
 #[cfg(feature = "push")]
 mod push_http;
+#[cfg(feature = "opentelemetry")]
+mod telemetry;
 mod ws_handler;
 
 pub use bootstrap::MetricsFactory;
@@ -36,8 +38,6 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-
-    let logging_handles = logging::init().map_err(Error::Internal)?;
 
     // Initialize crypto provider at the very beginning for any TLS usage
     rustls::crypto::ring::default_provider()
@@ -85,6 +85,33 @@ async fn main() -> Result<()> {
         }
     }
 
+    if let Err(e) = config.validate() {
+        return Err(Error::ConfigFile(format!(
+            "Configuration validation failed: {}",
+            e
+        )));
+    }
+
+    #[cfg(not(feature = "opentelemetry"))]
+    if config.opentelemetry.enabled {
+        return Err(Error::ConfigFile(
+            "OpenTelemetry is enabled in configuration, but this binary was built without the opentelemetry feature"
+                .to_string(),
+        ));
+    }
+
+    #[cfg(feature = "opentelemetry")]
+    let telemetry =
+        telemetry::Telemetry::initialize(&config.opentelemetry, &config.instance.process_id)
+            .map_err(|error| {
+                Error::Internal(format!("OpenTelemetry initialization failed: {error}"))
+            })?;
+
+    #[cfg(feature = "opentelemetry")]
+    let logging_handles = logging::init(&config, &telemetry).map_err(Error::Internal)?;
+    #[cfg(not(feature = "opentelemetry"))]
+    let logging_handles = logging::init(&config).map_err(Error::Internal)?;
+
     let resolved_logging = logging::reload(&logging_handles, &config).map_err(Error::Internal)?;
     info!(
         output_format = resolved_logging.output_format,
@@ -93,22 +120,34 @@ async fn main() -> Result<()> {
         include_target = resolved_logging.include_target,
         colors_enabled = resolved_logging.colors_enabled,
         source_location = resolved_logging.source_location,
-        "Logging reloaded with resolved configuration"
+        "logging initialized with resolved configuration"
     );
     if config.logging.is_some() {
-        info!("Custom logging configuration applied");
+        info!("custom logging configuration applied");
     }
 
-    if let Err(e) = config.validate() {
-        error!(error = %e, "configuration validation failed");
-        return Err(Error::ConfigFile(format!(
-            "Configuration validation failed: {}",
-            e
-        )));
+    #[cfg(feature = "opentelemetry")]
+    {
+        let (traces_enabled, metrics_enabled, logs_enabled) = telemetry.enabled_signals();
+        info!(
+            enabled = config.opentelemetry.enabled,
+            traces_enabled, metrics_enabled, logs_enabled, "opentelemetry initialized"
+        );
     }
 
     info!(debug = config.debug, "configuration loading complete");
 
+    let result = run_server(config).await;
+
+    #[cfg(feature = "opentelemetry")]
+    if let Err(error) = telemetry.shutdown().await {
+        error!(error = %error, "opentelemetry shutdown failed");
+    }
+
+    result
+}
+
+async fn run_server(config: ServerOptions) -> Result<()> {
     info!("Starting Sockudo server initialization process with resolved configuration...");
 
     let server = match SockudoServer::new(config).await {

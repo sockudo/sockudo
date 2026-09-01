@@ -48,6 +48,7 @@ pub(super) struct ResolvedTcpExporterOptions {
 pub(super) fn install_prometheus_recorder(
     prefix: &str,
     tcp_exporter: Option<ResolvedTcpExporterOptions>,
+    export_to_opentelemetry: bool,
 ) -> PrometheusHandle {
     PROMETHEUS_HANDLE
         .get_or_init(|| {
@@ -90,6 +91,17 @@ pub(super) fn install_prometheus_recorder(
 
             let prometheus_recorder = builder.build_recorder();
             let handle = prometheus_recorder.handle();
+            let fanout = FanoutBuilder::default().add_recorder(prometheus_recorder);
+
+            #[cfg(feature = "opentelemetry")]
+            let fanout = if export_to_opentelemetry {
+                fanout.add_recorder(crate::opentelemetry::OpenTelemetryRecorder::new())
+            } else {
+                fanout
+            };
+
+            #[cfg(not(feature = "opentelemetry"))]
+            let _ = export_to_opentelemetry;
 
             if let Some(tcp_exporter) = tcp_exporter {
                 let tcp_recorder = TcpBuilder::new()
@@ -99,11 +111,7 @@ pub(super) fn install_prometheus_recorder(
 
                 match tcp_recorder {
                     Ok(tcp_recorder) => {
-                        let fanout = FanoutBuilder::default()
-                            .add_recorder(prometheus_recorder)
-                            .add_recorder(tcp_recorder)
-                            .build();
-                        metrics::set_global_recorder(fanout)
+                        metrics::set_global_recorder(fanout.add_recorder(tcp_recorder).build())
                             .expect("failed to install metrics-rs fanout recorder");
                     }
                     Err(error) => {
@@ -112,13 +120,13 @@ pub(super) fn install_prometheus_recorder(
                             error = %error,
                             "failed to start metrics tcp exporter, continuing with prometheus only"
                         );
-                        metrics::set_global_recorder(prometheus_recorder)
-                            .expect("failed to install metrics-rs Prometheus recorder");
+                        metrics::set_global_recorder(fanout.build())
+                            .expect("failed to install metrics-rs fanout recorder");
                     }
                 }
             } else {
-                metrics::set_global_recorder(prometheus_recorder)
-                    .expect("failed to install metrics-rs Prometheus recorder");
+                metrics::set_global_recorder(fanout.build())
+                    .expect("failed to install metrics-rs fanout recorder");
             }
 
             handle

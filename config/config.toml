@@ -389,6 +389,28 @@ host = "127.0.0.1"
 port = 5000
 buffer_size = 1024
 
+# OpenTelemetry is additive to the local logs and Prometheus endpoint above.
+# It is disabled by default. When enabled, traces, metrics, and logs are
+# exported with OTLP; collector outages do not affect request handling or
+# health/readiness checks.
+[opentelemetry]
+enabled = false
+traces_enabled = true
+metrics_enabled = true
+logs_enabled = true
+service_name = "sockudo"
+# service_namespace = "realtime"
+# deployment_environment = "production"
+resource_attributes = {}
+# endpoint = "http://127.0.0.1:4317"
+export_timeout_ms = 10000
+batch_scheduled_delay_ms = 5000
+batch_max_queue_size = 2048
+batch_max_export_batch_size = 512
+metric_export_interval_ms = 60000
+propagation_trace_context = true
+propagation_baggage = true
+
 [ssl]
 enabled = false
 
@@ -419,6 +441,9 @@ allowed_headers = [
   "X-Sockudo-Push-Capability",
   "X-Sockudo-Device-Identity-Token",
   "X-Sockudo-Rotate-Device-Identity-Token",
+  "traceparent",
+  "tracestate",
+  "baggage",
 ]
 
 [channel_limits]

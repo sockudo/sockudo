@@ -78,22 +78,44 @@ mod tests {
         "SOCKUDO_SKIP_INLINE_APPS",
         "APP_MANAGER_REGISTER_INLINE_APPS",
     ];
+    const OPENTELEMETRY_ENV_KEYS: &[&str] = &[
+        "SOCKUDO_OTEL_ENABLED",
+        "SOCKUDO_OTEL_TRACES_ENABLED",
+        "SOCKUDO_OTEL_METRICS_ENABLED",
+        "SOCKUDO_OTEL_LOGS_ENABLED",
+        "SOCKUDO_OTEL_SERVICE_NAME",
+        "SOCKUDO_OTEL_SERVICE_NAMESPACE",
+        "SOCKUDO_OTEL_DEPLOYMENT_ENVIRONMENT",
+        "SOCKUDO_OTEL_RESOURCE_ATTRIBUTES",
+        "SOCKUDO_OTEL_ENDPOINT",
+        "SOCKUDO_OTEL_EXPORT_TIMEOUT_MS",
+        "SOCKUDO_OTEL_BATCH_SCHEDULED_DELAY_MS",
+        "SOCKUDO_OTEL_BATCH_MAX_QUEUE_SIZE",
+        "SOCKUDO_OTEL_BATCH_MAX_EXPORT_BATCH_SIZE",
+        "SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS",
+        "SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT",
+        "SOCKUDO_OTEL_PROPAGATION_BAGGAGE",
+        "OTEL_SERVICE_NAME",
+    ];
 
     struct EnvGuard {
         previous: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
-        fn app_bootstrap(overrides: &[(&'static str, &'static str)]) -> Self {
-            let previous = APP_BOOTSTRAP_ENV_KEYS
+        fn isolated(
+            keys: &'static [&'static str],
+            overrides: &[(&'static str, &'static str)],
+        ) -> Self {
+            let previous = keys
                 .iter()
                 .map(|key| (*key, std::env::var(key).ok()))
                 .collect();
 
-            // SAFETY: These tests isolate the app-bootstrap environment keys
+            // SAFETY: These tests isolate the selected environment keys
             // before applying per-test overrides and restore them in Drop.
             unsafe {
-                for key in APP_BOOTSTRAP_ENV_KEYS {
+                for key in keys {
                     std::env::remove_var(key);
                 }
                 for (key, value) in overrides {
@@ -102,6 +124,10 @@ mod tests {
             }
 
             Self { previous }
+        }
+
+        fn app_bootstrap(overrides: &[(&'static str, &'static str)]) -> Self {
+            Self::isolated(APP_BOOTSTRAP_ENV_KEYS, overrides)
         }
     }
 
@@ -207,5 +233,78 @@ mod tests {
             options.rate_limiter.websocket_rate_limit.trust_hops,
             Some(2)
         );
+    }
+
+    #[tokio::test]
+    async fn opentelemetry_env_overrides_are_sockudo_scoped() {
+        {
+            let _env = EnvGuard::isolated(
+                OPENTELEMETRY_ENV_KEYS,
+                &[("OTEL_SERVICE_NAME", "sdk-owned-service")],
+            );
+            let mut options = ServerOptions::default();
+
+            options.override_from_env().await.unwrap();
+
+            assert_eq!(options.opentelemetry.service_name, "sockudo");
+        }
+
+        {
+            let _env = EnvGuard::isolated(
+                OPENTELEMETRY_ENV_KEYS,
+                &[
+                    ("SOCKUDO_OTEL_ENABLED", "true"),
+                    ("SOCKUDO_OTEL_TRACES_ENABLED", "false"),
+                    ("SOCKUDO_OTEL_METRICS_ENABLED", "false"),
+                    ("SOCKUDO_OTEL_LOGS_ENABLED", "false"),
+                    ("SOCKUDO_OTEL_SERVICE_NAME", "realtime-server"),
+                    ("SOCKUDO_OTEL_SERVICE_NAMESPACE", "sockudo-cloud"),
+                    ("SOCKUDO_OTEL_DEPLOYMENT_ENVIRONMENT", "staging"),
+                    (
+                        "SOCKUDO_OTEL_RESOURCE_ATTRIBUTES",
+                        "region=eu-central-1,instance.type=api",
+                    ),
+                    ("SOCKUDO_OTEL_ENDPOINT", "http://collector:4317"),
+                    ("SOCKUDO_OTEL_EXPORT_TIMEOUT_MS", "11000"),
+                    ("SOCKUDO_OTEL_BATCH_SCHEDULED_DELAY_MS", "6000"),
+                    ("SOCKUDO_OTEL_BATCH_MAX_QUEUE_SIZE", "4096"),
+                    ("SOCKUDO_OTEL_BATCH_MAX_EXPORT_BATCH_SIZE", "1024"),
+                    ("SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS", "61000"),
+                    ("SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT", "false"),
+                    ("SOCKUDO_OTEL_PROPAGATION_BAGGAGE", "false"),
+                ],
+            );
+            let mut options = ServerOptions::default();
+
+            options.override_from_env().await.unwrap();
+
+            let config = options.opentelemetry;
+            assert!(config.enabled);
+            assert!(!config.traces_enabled);
+            assert!(!config.metrics_enabled);
+            assert!(!config.logs_enabled);
+            assert_eq!(config.service_name, "realtime-server");
+            assert_eq!(config.service_namespace.as_deref(), Some("sockudo-cloud"));
+            assert_eq!(config.deployment_environment.as_deref(), Some("staging"));
+            assert_eq!(
+                config.resource_attributes.get("region").map(String::as_str),
+                Some("eu-central-1")
+            );
+            assert_eq!(
+                config
+                    .resource_attributes
+                    .get("instance.type")
+                    .map(String::as_str),
+                Some("api")
+            );
+            assert_eq!(config.endpoint.as_deref(), Some("http://collector:4317"));
+            assert_eq!(config.export_timeout_ms, 11_000);
+            assert_eq!(config.batch_scheduled_delay_ms, 6_000);
+            assert_eq!(config.batch_max_queue_size, 4_096);
+            assert_eq!(config.batch_max_export_batch_size, 1_024);
+            assert_eq!(config.metric_export_interval_ms, 61_000);
+            assert!(!config.propagation_trace_context);
+            assert!(!config.propagation_baggage);
+        }
     }
 }

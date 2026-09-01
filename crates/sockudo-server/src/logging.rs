@@ -3,6 +3,14 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry, fmt, layer::SubscriberExt, reload, util::SubscriberInitExt,
 };
 
+#[cfg(feature = "opentelemetry")]
+use tracing_subscriber::filter::filter_fn;
+
+#[cfg(feature = "opentelemetry")]
+use crate::telemetry::Telemetry;
+#[cfg(feature = "opentelemetry")]
+use opentelemetry_appender_tracing::layer::{OpenTelemetryTracingBridge, TracingSpanAttributes};
+
 const DEBUG_FILTER: &str = "info,sockudo=debug,tower_http=debug";
 const PRODUCTION_FILTER: &str = "info";
 
@@ -40,24 +48,83 @@ pub(crate) struct LoggingReloadHandles {
     format_handle: reload::Handle<FormatLayer, FilteredRegistry>,
 }
 
-pub(crate) fn init() -> Result<LoggingReloadHandles, String> {
-    let mut config = ServerOptions {
-        debug: bootstrap_debug(),
-        ..Default::default()
-    };
-    let logging = config.logging.get_or_insert_default();
-    logging.include_target = bool_env("LOG_INCLUDE_TARGET", logging.include_target);
-    logging.colors_enabled = bool_env("LOG_COLORS_ENABLED", logging.colors_enabled);
+#[cfg(feature = "opentelemetry")]
+pub(crate) fn init(
+    config: &ServerOptions,
+    telemetry: &Telemetry,
+) -> Result<LoggingReloadHandles, String> {
+    init_inner(config, Some(telemetry))
+}
 
+#[cfg(not(feature = "opentelemetry"))]
+pub(crate) fn init(config: &ServerOptions) -> Result<LoggingReloadHandles, String> {
+    init_inner(config)
+}
+
+fn init_inner(
+    config: &ServerOptions,
+    #[cfg(feature = "opentelemetry")] telemetry: Option<&Telemetry>,
+) -> Result<LoggingReloadHandles, String> {
     let output_format = output_format(std::env::var("LOG_OUTPUT_FORMAT").ok().as_deref());
-    let resolved = resolve(&config, output_format);
+    let resolved = resolve(config, output_format);
     let filter = EnvFilter::new(&resolved.filter);
     let (filter_layer, filter_handle) = reload::Layer::new(filter);
     let (format_layer, format_handle) = reload::Layer::new(format_layer(output_format, &resolved));
-
-    tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(filter_layer)
-        .with(format_layer)
+        .with(format_layer);
+
+    #[cfg(feature = "opentelemetry")]
+    match (
+        telemetry.and_then(Telemetry::tracer),
+        telemetry.and_then(Telemetry::logger_provider),
+    ) {
+        (Some(tracer), Some(logger_provider)) => subscriber
+            .with(
+                tracing_opentelemetry::layer()
+                    .with_tracer(tracer)
+                    .with_filter(filter_fn(exportable_target)),
+            )
+            .with(
+                OpenTelemetryTracingBridge::builder(logger_provider)
+                    .with_tracing_span_attributes(TracingSpanAttributes::allowlist([
+                        "app_id",
+                        "socket_id",
+                        "channel",
+                        "user_id",
+                        "worker_id",
+                    ]))
+                    .build()
+                    .with_filter(filter_fn(exportable_target)),
+            )
+            .try_init(),
+        (Some(tracer), None) => subscriber
+            .with(
+                tracing_opentelemetry::layer()
+                    .with_tracer(tracer)
+                    .with_filter(filter_fn(exportable_target)),
+            )
+            .try_init(),
+        (None, Some(logger_provider)) => subscriber
+            .with(
+                OpenTelemetryTracingBridge::builder(logger_provider)
+                    .with_tracing_span_attributes(TracingSpanAttributes::allowlist([
+                        "app_id",
+                        "socket_id",
+                        "channel",
+                        "user_id",
+                        "worker_id",
+                    ]))
+                    .build()
+                    .with_filter(filter_fn(exportable_target)),
+            )
+            .try_init(),
+        (None, None) => subscriber.try_init(),
+    }
+    .map_err(|error| format!("failed to install global logging subscriber: {error}"))?;
+
+    #[cfg(not(feature = "opentelemetry"))]
+    subscriber
         .try_init()
         .map_err(|error| format!("failed to install global logging subscriber: {error}"))?;
 
@@ -66,6 +133,18 @@ pub(crate) fn init() -> Result<LoggingReloadHandles, String> {
         filter_handle,
         format_handle,
     })
+}
+
+#[cfg(feature = "opentelemetry")]
+fn exportable_target(metadata: &tracing::Metadata<'_>) -> bool {
+    !matches!(
+        metadata.target(),
+        target if target.starts_with("opentelemetry")
+            || target.starts_with("hyper")
+            || target.starts_with("h2")
+            || target.starts_with("tonic")
+            || target.starts_with("reqwest")
+    )
 }
 
 pub(crate) fn reload(
@@ -102,11 +181,15 @@ fn format_layer(output_format: OutputFormat, resolved: &ResolvedLogging) -> Form
 }
 
 fn resolve(config: &ServerOptions, output_format: OutputFormat) -> ResolvedLogging {
-    let filter = resolved_filter(
+    let mut filter = resolved_filter(
         config.debug,
         std::env::var("RUST_LOG").ok(),
         std::env::var("SOCKUDO_LOG_DEBUG").ok(),
         std::env::var("SOCKUDO_LOG_PROD").ok(),
+    );
+    filter = with_telemetry_span_filter(
+        filter,
+        config.opentelemetry.enabled && config.opentelemetry.traces_enabled,
     );
     let include_target = config
         .logging
@@ -148,6 +231,15 @@ fn resolved_filter(
     })
 }
 
+fn with_telemetry_span_filter(mut filter: String, telemetry_traces_enabled: bool) -> String {
+    if telemetry_traces_enabled {
+        // Keep explicit instrumentation spans independent from local log verbosity. The formatter
+        // does not emit span lifecycle events, so this does not turn trace-level logs on.
+        filter.push_str(",sockudo_telemetry=trace");
+    }
+    filter
+}
+
 fn bootstrap_debug() -> bool {
     if std::env::var_os("DEBUG").is_some() {
         bool_env("DEBUG", false)
@@ -187,6 +279,18 @@ mod tests {
         );
         assert_eq!(resolved_filter(false, None, None, None), PRODUCTION_FILTER);
         assert_eq!(resolved_filter(true, None, None, None), DEBUG_FILTER);
+    }
+
+    #[test]
+    fn telemetry_spans_are_independent_from_local_log_verbosity() {
+        assert_eq!(
+            with_telemetry_span_filter("warn".to_string(), true),
+            "warn,sockudo_telemetry=trace"
+        );
+        assert_eq!(
+            with_telemetry_span_filter("warn".to_string(), false),
+            "warn"
+        );
     }
 
     #[test]

@@ -755,6 +755,8 @@ impl ConnectionHandler {
 
         // Initialize socket with atomic quota check
         let socket_id = SocketId::new();
+        tracing::Span::current().record("app_id", app_config.id.as_str());
+        tracing::Span::current().record("socket_id", socket_id.to_string());
         self.initialize_socket_with_quota_check(
             socket_id,
             socket_tx,
@@ -1029,6 +1031,19 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "websocket.message",
+        target = "sockudo_telemetry",
+        level = "trace",
+        skip_all,
+        fields(
+            otel.kind = "consumer",
+            messaging.operation.name = "process",
+            network.protocol.name = "websocket",
+            app_id = %app_config.id,
+            socket_id = %socket_id,
+        )
+    )]
     async fn handle_message(
         &self,
         message: Message,

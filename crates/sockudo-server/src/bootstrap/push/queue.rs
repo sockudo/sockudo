@@ -4,6 +4,8 @@ use sonic_rs::JsonValueTrait;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(all(feature = "push", feature = "opentelemetry"))]
+use tracing::Instrument;
 
 #[cfg(feature = "push")]
 const LOCAL_READY_CAP_PER_STAGE: usize = 4_096;
@@ -252,7 +254,9 @@ impl QueueManagerPushQueue {
         envelope: PushQueueEnvelope,
     ) -> sockudo_push::PushQueueResult<()> {
         let queue_name = envelope.stage.logical_topic();
-        let job = push_queue_job_data(&envelope)?;
+        let mut job = push_queue_job_data(&envelope)?;
+        #[cfg(feature = "opentelemetry")]
+        crate::telemetry::capture_job_context(&mut job);
         let delay_ms = envelope
             .not_before_ms
             .map(|not_before| not_before.saturating_sub(push_queue_now_ms()))
@@ -295,6 +299,8 @@ impl QueueManagerPushQueue {
         }
 
         let queue_name = stage.logical_topic();
+        #[cfg(feature = "opentelemetry")]
+        let telemetry_queue_name = queue_name.clone();
         let queue = self.clone();
         match self
             .manager
@@ -302,12 +308,19 @@ impl QueueManagerPushQueue {
                 &queue_name,
                 Box::new(move |job| {
                     let queue = queue.clone();
-                    Box::pin(async move {
+                    #[cfg(feature = "opentelemetry")]
+                    let consumer_span =
+                        crate::telemetry::push_job_consumer_span(&job, &telemetry_queue_name);
+                    let future = async move {
                         queue
                             .handle_queue_job(job)
                             .await
                             .map_err(|error| Error::Internal(error.to_string()))
-                    })
+                    };
+                    #[cfg(feature = "opentelemetry")]
+                    return Box::pin(future.instrument(consumer_span));
+                    #[cfg(not(feature = "opentelemetry"))]
+                    Box::pin(future)
                 }),
             )
             .await
@@ -858,6 +871,7 @@ fn push_queue_job_data(
         app_key: String::new(),
         app_id: push_queue_payload_app_id(&envelope.payload),
         app_secret: String::new(),
+        trace_context: Default::default(),
         payload: sockudo_core::webhook_types::JobPayload {
             time_ms: push_queue_now_ms().min(i64::MAX as u64) as i64,
             events: vec![push_queue_envelope_value(envelope)?],

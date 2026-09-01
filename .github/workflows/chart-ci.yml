@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fixture: [default, ingress, dashboard, ha, external-config]
+        fixture: [default, ingress, dashboard, ha, external-config, opentelemetry]
         kubernetes-version: ["1.29.0", "1.33.0"]
 
     steps:
