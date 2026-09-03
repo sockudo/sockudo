@@ -138,10 +138,9 @@ TLS-upgrade close codes reconnect immediately. The default retry limit is six;
 set `maxReconnectAttempts: null` for unlimited retries.
 
 Because that delay is the same for every client, clients dropped by a single
-event — a broker restart, a rolling deploy, a load balancer blip — retry in
-lockstep. Set `reconnectJitter` to randomize each delay by that fraction and
-spread the retries out: `0.5` picks uniformly from 50–100% of the delay, `1`
-from 0–100%. It defaults to `0`, which keeps the delays exact.
+event retry in lockstep. Set `reconnectJitter` to randomize each delay by that
+fraction and spread the retries out: `0.5` picks uniformly from 50–100% of
+the delay, `1` from 0–100%. It defaults to `0`, which keeps the delays exact.
 
 ```ts
 const client = new Sockudo("app-key", {
