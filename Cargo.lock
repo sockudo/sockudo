@@ -5396,6 +5396,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "omq-proto"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6420a63f80eac3235364674f61f3b4a00dbb283354402192406cd22a96b31cd1"
+dependencies = [
+ "bytes",
+ "patricia_tree",
+ "rand 0.10.2",
+ "smallvec",
+ "socket2 0.6.5",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "omq-tokio"
+version = "0.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "448ae8e795f28e2f6ca624ff883ab1ebb3054c10aa8f46a72542e7f6b3b1f721"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "concurrent-queue",
+ "futures",
+ "libc",
+ "omq-proto",
+ "parking_lot",
+ "rand 0.10.2",
+ "rustc-hash",
+ "smallvec",
+ "socket2 0.6.5",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "yring",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5726,6 +5763,12 @@ name = "path-clean"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
+
+[[package]]
+name = "patricia_tree"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4df0e43512f12f23a6b08c7b893192b7d6ec937b95ee03af040847907fe5cef7"
 
 [[package]]
 name = "pbkdf2"
@@ -8103,6 +8146,7 @@ dependencies = [
  "mockall",
  "moka",
  "num_cpus",
+ "omq-tokio",
  "opentelemetry",
  "papaya",
  "parking_lot",
@@ -10614,6 +10658,15 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "synstructure",
+]
+
+[[package]]
+name = "yring"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5955ee60ab48843f30e961ec82771716a733c8ecb6387f2d6fe9de9545ec9cb8"
+dependencies = [
+ "loom",
 ]
 
 [[package]]

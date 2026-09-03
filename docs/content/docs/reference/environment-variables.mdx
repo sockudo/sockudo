@@ -413,7 +413,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `QUEUE_SNS_TOPIC_ARN` | SNS topic ARN. |
 | `QUEUE_SNS_ENDPOINT_URL` | SNS custom endpoint URL. |
 
-## NATS, Pulsar, RabbitMQ, Pub/Sub, Kafka, and Iggy
+## NATS, Pulsar, RabbitMQ, Pub/Sub, Kafka, Iggy, and OMQ
 
 | Variable | Purpose |
 | --- | --- |
@@ -468,6 +468,14 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `IGGY_POLL_BATCH_SIZE` | Apache Iggy poll batch size. |
 | `IGGY_PARTITIONS_COUNT` | Shared Apache Iggy partition count. |
 | `ADAPTER_IGGY_PARTITIONS_COUNT` | Adapter-specific Apache Iggy partition count. |
+| `OMQ_BIND_ENDPOINT` | OMQ subscriber bind endpoint for this node. |
+| `OMQ_CONNECT_ENDPOINTS` | Comma-separated OMQ peer subscriber endpoints. |
+| `OMQ_PREFIX` | OMQ transport topic prefix. |
+| `OMQ_REQUEST_TIMEOUT_MS` | OMQ request timeout. |
+| `OMQ_NODES_NUMBER` | Expected OMQ node count. Defaults to peer endpoint count plus this node. |
+| `OMQ_IO_THREADS` | OMQ data-plane IO threads. |
+| `OMQ_SEND_HWM` | OMQ publisher high-water mark in messages. |
+| `OMQ_RECV_HWM` | OMQ subscriber high-water mark in messages. |
 | `QUEUE_IGGY_PARTITIONS_COUNT` | Queue-specific Apache Iggy partition count. |
 | `IGGY_PARTITION_ID` | Shared Apache Iggy partition ID. |
 | `ADAPTER_IGGY_PARTITION_ID` | Adapter-specific Apache Iggy partition ID. |

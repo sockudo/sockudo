@@ -16,7 +16,7 @@ delta = ["dep:sockudo-delta"]
 tag-filtering = ["dep:sockudo-filter"]
 recovery = []
 opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
-full = ["redis", "redis-cluster", "nats", "pulsar", "rabbitmq", "google-pubsub", "kafka", "iggy", "v2", "opentelemetry"]
+full = ["redis", "redis-cluster", "nats", "pulsar", "rabbitmq", "google-pubsub", "kafka", "iggy", "omq", "v2", "opentelemetry"]
 redis = ["sockudo-core/redis", "dep:redis"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
 nats = ["sockudo-core/nats", "dep:async-nats"]
@@ -25,6 +25,7 @@ rabbitmq = ["sockudo-core/rabbitmq", "dep:lapin"]
 google-pubsub = ["sockudo-core/google-pubsub", "dep:google-cloud-auth", "dep:google-cloud-pubsub"]
 kafka = ["sockudo-core/kafka", "dep:rdkafka"]
 iggy = ["sockudo-core/iggy", "dep:iggy"]
+omq = ["sockudo-core/omq", "dep:omq-tokio"]
 
 [dependencies]
 sockudo-core = { workspace = true }
@@ -58,6 +59,7 @@ rand = { workspace = true }
 redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }
 iggy = { workspace = true, optional = true }
+omq-tokio = { workspace = true, optional = true }
 regex = { workspace = true }
 serde = { workspace = true }
 sockudo-ws = { workspace = true }

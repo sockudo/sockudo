@@ -314,6 +314,7 @@ Common server features:
 | `push` | Push notification runtime and HTTP APIs |
 | `redis`, `redis-cluster` | Redis-backed adapter/cache/queue/rate limit paths |
 | `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy` | Horizontal adapter and queue integrations |
+| `omq` | Brokerless horizontal adapter integration |
 | `mysql`, `postgres`, `dynamodb`, `surrealdb`, `scylladb` | App, history, version-store, and push storage backends |
 | `sqs`, `sns`, `lambda` | AWS queue, notification, and webhook integrations |
 | `full` | All production integrations wired by the server |
