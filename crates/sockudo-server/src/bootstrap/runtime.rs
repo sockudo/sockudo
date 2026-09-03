@@ -217,6 +217,52 @@ impl SockudoServer {
 
         let http_router = self.configure_http_routes();
 
+        // Embedded MCP surface drives this same router in-process, so it is
+        // built from (and optionally merged into) the finished API router.
+        #[cfg(feature = "mcp")]
+        let http_router = match self.build_mcp(&http_router)? {
+            Some(mcp) => match mcp.dedicated {
+                Some((host, port)) => {
+                    let addr =
+                        sockudo_core::utils::resolve_socket_addr(&host, port, "MCP server").await;
+                    match TcpListener::bind(addr).await {
+                        Ok(listener) => {
+                            info!(listen_addr = %addr, path = %self.config.mcp.path, "mcp server listening");
+                            let mcp_router = mcp.router;
+                            tokio::spawn(async move {
+                                if let Err(e) = axum::serve(
+                                    listener,
+                                    mcp_router.into_make_service_with_connect_info::<SocketAddr>(),
+                                )
+                                .await
+                                {
+                                    error!(error = %e, "mcp server error");
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            return Err(Error::Internal(format!(
+                                "failed to bind MCP listener on {addr}: {e}"
+                            )));
+                        }
+                    }
+                    http_router
+                }
+                None => {
+                    info!(path = %self.config.mcp.path, "mcp served on the main http listener");
+                    http_router.merge(mcp.router)
+                }
+            },
+            None => http_router,
+        };
+
+        #[cfg(not(feature = "mcp"))]
+        if self.config.mcp.enabled {
+            warn!(
+                "mcp.enabled is set but this binary was built without the `mcp` Cargo feature; rebuild with --features mcp to serve MCP"
+            );
+        }
+
         // Choose between Unix socket OR HTTP/HTTPS for main server
         #[cfg(unix)]
         if self.config.unix_socket.enabled {

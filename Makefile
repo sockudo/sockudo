@@ -547,6 +547,14 @@ ably-ai-demo: ## Run headless Ably AI Transport demos against Sockudo built with
 	@cd tests/ably-compat && npm ci --silent && npm run demo:chat && npm run demo:recovery-history
 
 .PHONY: push-benchmark
+mcp-smoke: ## Build sockudo (mcp feature) and sockudo-mcp, then run tests/mcp smoke scripts against a scratch server
+	cargo build -p sockudo --features mcp
+	cargo build -p sockudo-mcp --features cli
+	@./target/debug/sockudo --config tests/mcp/config.toml > /tmp/sockudo-mcp-smoke.log 2>&1 & \
+	PID=$$!; trap 'kill $$PID 2>/dev/null' EXIT; \
+	for i in $$(seq 1 60); do curl -sf http://127.0.0.1:6011/live >/dev/null 2>&1 && break; sleep 0.5; done; \
+	python3 tests/mcp/smoke_http.py && python3 tests/mcp/smoke_stdio.py
+
 push-benchmark: ## Run push notification admission benchmark (override ARGS="--mode all --devices 10000")
 	@node scripts/push-benchmark.mjs $(ARGS)
 

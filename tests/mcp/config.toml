@@ -1,0 +1,54 @@
+debug = false
+host = "127.0.0.1"
+port = 6011
+mode = "development"
+
+[adapter]
+driver = "local"
+
+[cache]
+driver = "memory"
+
+[queue]
+driver = "memory"
+
+[rate_limiter]
+driver = "memory"
+
+[metrics]
+enabled = true
+host = "127.0.0.1"
+port = 9611
+
+[http_api]
+usage_enabled = true
+
+[history]
+enabled = true
+backend = "memory"
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "smoke-app"
+key = "smoke-key"
+secret = "smoke-secret"
+enabled = true
+
+[mcp]
+enabled = true
+path = "/mcp"
+
+[[mcp.tokens]]
+name = "ops"
+token = "ops-token-0123456789abcdef"
+scopes = ["read", "write", "admin"]
+apps = ["*"]
+
+[[mcp.tokens]]
+name = "viewer"
+token = "viewer-token-0123456789abcdef"
+scopes = ["read"]
+apps = ["smoke-app"]

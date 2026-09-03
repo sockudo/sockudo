@@ -156,6 +156,10 @@ pub struct PrometheusMetricsDriver {
     pub(super) ai_active_streams: GaugeVec,
     pub(super) ai_stream_duration_seconds: HistogramVec,
     pub(super) ai_stream_bytes_total: CounterVec,
+    // MCP metrics
+    pub(super) mcp_requests_total: CounterVec,
+    pub(super) mcp_tool_calls_total: CounterVec,
+    pub(super) mcp_tool_latency_ms: HistogramVec,
     pub(super) appends_received_total: CounterVec,
     pub(super) appends_delivered_total: CounterVec,
     pub(super) rollup_ratio: HistogramVec,
@@ -615,6 +619,34 @@ impl PrometheusMetricsDriver {
                 "Total number of ephemeral messages delivered (V2 only)"
             ),
             &["app_id", "port"]
+        )
+        .unwrap();
+
+        let mcp_requests_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}mcp_requests_total"),
+                "Total MCP protocol requests by outcome"
+            ),
+            &["port", "outcome"]
+        )
+        .unwrap();
+
+        let mcp_tool_calls_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}mcp_tool_calls_total"),
+                "Total MCP tool calls by tool and outcome"
+            ),
+            &["port", "tool", "outcome"]
+        )
+        .unwrap();
+
+        let mcp_tool_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}mcp_tool_latency_ms"),
+                "MCP tool execution latency in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
+            &["port", "tool"]
         )
         .unwrap();
 
@@ -1221,6 +1253,9 @@ impl PrometheusMetricsDriver {
             idempotency_publish_total,
             idempotency_duplicates_total,
             ephemeral_messages_total,
+            mcp_requests_total,
+            mcp_tool_calls_total,
+            mcp_tool_latency_ms,
             ai_messages_validated_total,
             ai_messages_rejected_total,
             ai_messages_unparseable_total,

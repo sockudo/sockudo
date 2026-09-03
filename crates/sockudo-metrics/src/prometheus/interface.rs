@@ -304,6 +304,24 @@ impl MetricsInterface for PrometheusMetricsDriver {
         debug!(app_id, "metrics: idempotency duplicate recorded");
     }
 
+    fn mark_mcp_request(&self, outcome: &str) {
+        self.mcp_requests_total
+            .with_label_values(&[&self.port.to_string(), outcome])
+            .inc();
+    }
+
+    fn mark_mcp_tool_call(&self, tool: &str, outcome: &str) {
+        self.mcp_tool_calls_total
+            .with_label_values(&[&self.port.to_string(), tool, outcome])
+            .inc();
+    }
+
+    fn track_mcp_tool_latency(&self, tool: &str, latency_ms: f64) {
+        self.mcp_tool_latency_ms
+            .with_label_values(&[&self.port.to_string(), tool])
+            .observe(latency_ms);
+    }
+
     fn mark_ai_transport_validated(&self, app_id: &str, event: &str) {
         self.ai_messages_validated_total
             .with_label_values(&[app_id, &self.port.to_string(), event])

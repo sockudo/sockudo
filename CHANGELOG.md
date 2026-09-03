@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- Model Context Protocol server. The new `sockudo-mcp` crate (built on the official `rmcp` SDK)
+  exposes scoped tools, `sockudo://` resources, prompts, and argument completion for channels,
+  publishing, durable history, versioned messages, annotations, presence history, push, and
+  operations. The `sockudo` binary embeds it behind the `mcp` Cargo feature and `[mcp]` config
+  (Streamable HTTP on `/mcp` or a dedicated port, bearer tokens with `read`/`write`/`admin`
+  scopes and app allow-lists, per-token rate limits, audit logs, `mcp_*` Prometheus metrics),
+  driving its own API router in-process. The standalone `sockudo-mcp` binary serves stdio or HTTP
+  against a remote deployment.
+
 ## [5.0.1] - 2026-08-21
 
 ### Fixed

@@ -253,6 +253,8 @@ client_key_path = "/etc/sockudo/tls/client.key"
 | `[ai_transport]` | AI Transport validation and session-channel matching. |
 | `[ai_transport.rollup]` | Append rollup egress coalescing and orphan tracking. |
 | `[[ai_transport.channels]]` | Channel prefixes where AI Transport validation applies. |
+| `[mcp]` | Embedded Model Context Protocol server: path or dedicated port, host/origin allow-lists, rate limits, tool hiding. Requires the `mcp` Cargo feature. |
+| `[[mcp.tokens]]` | Bearer tokens with `read` / `write` / `admin` scopes and app allow-lists. See [MCP server](/docs/server/mcp). |
 
 Annotations, including the optional Ably projection, require both global
 `[annotations].enabled = true` and app/channel policy opt-in. Set
@@ -424,6 +426,26 @@ title_field = "title"
 body_field = "body"
 template_data_field = "data"
 include_remaining_fields = true
+
+[mcp]
+enabled = false
+path = "/mcp"
+# port = 6100
+allowed_hosts = []
+allowed_origins = []
+allow_anonymous = false
+anonymous_scopes = ["read"]
+request_timeout_ms = 30000
+max_body_bytes = 1048576
+session_ttl_seconds = 1800
+rate_limit_per_minute = 600
+disabled_tools = []
+
+# [[mcp.tokens]]
+# name = "ops-agent"
+# token = "${SOCKUDO_MCP_OPS_TOKEN}"
+# scopes = ["read", "write"]
+# apps = ["*"]
 ```
 
 `max_messages_per_channel`, `max_bytes_per_channel`, `max_events_per_channel`, credential refs, and
