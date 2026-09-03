@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
@@ -17,6 +18,15 @@ import 'protocol_prefix.dart';
 import 'support.dart';
 
 int _nextGeneratedMessageId = 0;
+
+final math.Random _random = math.Random();
+
+double _clampJitter(double jitter) {
+  if (!jitter.isFinite || jitter <= 0) {
+    return 0.0;
+  }
+  return jitter < 1.0 ? jitter : 1.0;
+}
 
 String _generatedMessageId() {
   final next = ++_nextGeneratedMessageId;
@@ -88,6 +98,7 @@ class SockudoOptions {
     this.appendRollupWindow,
     this.maxReconnectAttempts = 6,
     this.maxReconnectGapInSeconds = 120.0,
+    this.reconnectJitter = 0.0,
     this.channelAuthorization = const ChannelAuthorizationOptions(),
     this.userAuthentication = const UserAuthenticationOptions(),
     this.presenceHistory,
@@ -125,6 +136,9 @@ class SockudoOptions {
   final int? appendRollupWindow;
   final int? maxReconnectAttempts;
   final double maxReconnectGapInSeconds;
+
+  /// Fraction of the reconnect delay to randomize, 0 (off) to 1 (full jitter).
+  final double reconnectJitter;
   final ChannelAuthorizationOptions channelAuthorization;
   final UserAuthenticationOptions userAuthentication;
   final PresenceHistoryOptions? presenceHistory;
@@ -855,8 +869,13 @@ class SockudoClient {
     final cappedSeconds = intervalSeconds < _config.maxReconnectGapInSeconds
         ? intervalSeconds
         : _config.maxReconnectGapInSeconds;
+    // Spread retries so clients dropped by one event do not return in lockstep.
+    final jitter = _config.reconnectJitter;
+    final seconds = jitter <= 0 || cappedSeconds <= 0
+        ? cappedSeconds
+        : cappedSeconds - _random.nextDouble() * cappedSeconds * jitter;
     return Duration(
-      microseconds: (cappedSeconds * Duration.microsecondsPerSecond).round(),
+      microseconds: (seconds * Duration.microsecondsPerSecond).round(),
     );
   }
 
@@ -1704,6 +1723,7 @@ class ResolvedConfiguration {
       unavailableTimeout = options.unavailableTimeout,
       maxReconnectAttempts = options.maxReconnectAttempts,
       maxReconnectGapInSeconds = options.maxReconnectGapInSeconds,
+      reconnectJitter = _clampJitter(options.reconnectJitter),
       enableStats = options.enableStats,
       statsHost = options.statsHost,
       timelineParams = options.timelineParams,
@@ -1727,6 +1747,7 @@ class ResolvedConfiguration {
   final Duration unavailableTimeout;
   final int? maxReconnectAttempts;
   final double maxReconnectGapInSeconds;
+  final double reconnectJitter;
   final bool enableStats;
   final String statsHost;
   final Map<String, AuthValue> timelineParams;

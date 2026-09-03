@@ -1739,6 +1739,62 @@ struct ReconnectBackoffTests {
     #expect(client.reconnectDelay(for: .backoff) == 10)
   }
 
+  @Test func delaysAreExactWhenJitterIsNotConfigured() throws {
+    let client = try SockudoClient(
+      "app-key",
+      options: .init(cluster: "local", maxReconnectAttempts: nil)
+    )
+    client.reconnectAttempts = 3
+    #expect(client.reconnectDelay(for: .backoff) == 9)
+  }
+
+  @Test func jitterKeepsDelayWithinTheConfiguredFraction() throws {
+    let client = try SockudoClient(
+      "app-key",
+      options: .init(cluster: "local", maxReconnectAttempts: nil, reconnectJitter: 0.5)
+    )
+    client.reconnectAttempts = 3
+
+    // Half of the 9s delay is randomized away, so it lands in [4.5, 9].
+    var sawVariation = false
+    var first: Double?
+    for _ in 0..<200 {
+      let delay = client.reconnectDelay(for: .backoff)
+      #expect(delay >= 4.5)
+      #expect(delay <= 9)
+      if let first { sawVariation = sawVariation || delay != first } else { first = delay }
+    }
+    #expect(sawVariation)
+  }
+
+  @Test func fullJitterNeverExceedsCapOrGoesNegative() throws {
+    let client = try SockudoClient(
+      "app-key",
+      options: .init(cluster: "local", maxReconnectGapInSeconds: 5, reconnectJitter: 1)
+    )
+    client.reconnectAttempts = 20
+    for _ in 0..<200 {
+      let delay = client.reconnectDelay(for: .backoff)
+      #expect(delay >= 0)
+      #expect(delay <= 5)
+    }
+  }
+
+  @Test func jitterIsClampedAndImmediateRetriesStayZero() throws {
+    #expect(clampJitter(5) == 1)
+    #expect(clampJitter(-1) == 0)
+    #expect(clampJitter(.nan) == 0)
+    #expect(clampJitter(0.25) == 0.25)
+
+    let client = try SockudoClient(
+      "app-key",
+      options: .init(cluster: "local", reconnectJitter: 1)
+    )
+    client.reconnectAttempts = 10
+    #expect(client.reconnectDelay(for: .retry) == 0)
+    #expect(client.reconnectDelay(for: .tlsOnly) == 0)
+  }
+
   @Test func maxAttemptsReachedTransitionsToDisconnected() throws {
     let client = try SockudoClient(
       "app-key",

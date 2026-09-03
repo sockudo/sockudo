@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 import pytest
 
+import sockudo_python.client as client_module
 from sockudo_python.client import (
     AppendMode,
     ChannelHistoryOptions,
@@ -28,6 +29,7 @@ from sockudo_python.client import (
     TokenAuthData,
     VersionedMessageAck,
     VersionedMessageOptions,
+    _CloseAction,
 )
 
 
@@ -218,6 +220,7 @@ def test_reconnection_options_and_state_defaults() -> None:
     assert ConnectionState.RECONNECTING.value == "reconnecting"
     assert options.max_reconnect_attempts == 6
     assert options.max_reconnect_gap_in_seconds == 120.0
+    assert options.reconnect_jitter == 0.0
 
 
 @pytest.mark.asyncio
@@ -281,6 +284,62 @@ async def test_close_actions_use_quadratic_capped_delay() -> None:
     assert delays == [5.0, 0.0, 0.0]
     assert client.config.use_tls is True
     await client.config.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_jitter_randomizes_delay_downwards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster="local",
+            force_tls=False,
+            max_reconnect_attempts=None,
+            reconnect_jitter=0.5,
+        ),
+    )
+    client._reconnect_attempts = 3
+
+    # Half of the 9s delay is randomized away, so it lands in [4.5, 9.0].
+    monkeypatch.setattr(client_module.random, "uniform", lambda low, high: high)
+    assert client._reconnect_delay(None) == pytest.approx(4.5)
+
+    monkeypatch.setattr(client_module.random, "uniform", lambda low, high: low)
+    assert client._reconnect_delay(None) == pytest.approx(9.0)
+
+    await client.config.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_jitter_stays_within_cap_and_skips_immediate_retries() -> None:
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster="local",
+            force_tls=False,
+            max_reconnect_attempts=None,
+            max_reconnect_gap_in_seconds=5.0,
+            reconnect_jitter=1.0,
+        ),
+    )
+    client._reconnect_attempts = 10
+
+    for _ in range(50):
+        delay = client._reconnect_delay(None)
+        assert 0.0 <= delay <= 5.0
+
+    assert client._reconnect_delay(_CloseAction.RETRY) == 0.0
+    assert client._reconnect_delay(_CloseAction.TLS_ONLY) == 0.0
+
+    await client.config.close()
+
+
+def test_reconnect_jitter_is_clamped() -> None:
+    assert client_module._clamp_jitter(5.0) == 1.0
+    assert client_module._clamp_jitter(-1.0) == 0.0
+    assert client_module._clamp_jitter(float("nan")) == 0.0
+    assert client_module._clamp_jitter(0.25) == 0.25
 
 
 @pytest.mark.asyncio

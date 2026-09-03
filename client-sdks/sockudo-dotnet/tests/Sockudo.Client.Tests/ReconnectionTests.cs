@@ -16,6 +16,7 @@ public sealed class ReconnectionTests
         Assert.Equal("reconnecting", ConnectionState.Reconnecting.ToString().ToLowerInvariant());
         Assert.Equal(6, options.MaxReconnectAttempts);
         Assert.Equal(120.0, options.MaxReconnectGapInSeconds);
+        Assert.Equal(0.0, options.ReconnectJitter);
         Assert.Null(unlimited.MaxReconnectAttempts);
     }
 
@@ -76,9 +77,61 @@ public sealed class ReconnectionTests
         Assert.Equal(0, GetReconnectAttempts(client));
     }
 
+    [Fact]
+    public void JitterRandomizesDelayWithinConfiguredFraction()
+    {
+        var client = TestClient(maxReconnectAttempts: null, reconnectJitter: 0.5);
+        SetReconnectAttempts(client, 3);
+
+        // Half of the 9s delay is randomized away, so it lands in [4.5, 9].
+        var seen = new HashSet<double>();
+        for (var i = 0; i < 200; i++)
+        {
+            var delay = InvokeReconnectDelay(client, null).TotalSeconds;
+            Assert.InRange(delay, 4.5, 9.0);
+            seen.Add(delay);
+        }
+
+        Assert.True(seen.Count > 1, "expected jittered delays to vary");
+    }
+
+    [Fact]
+    public void FullJitterStaysWithinCapAndSkipsImmediateRetries()
+    {
+        var client = TestClient(maxReconnectAttempts: null, maxReconnectGapInSeconds: 5.0, reconnectJitter: 1.0);
+        SetReconnectAttempts(client, 20);
+
+        for (var i = 0; i < 200; i++)
+        {
+            Assert.InRange(InvokeReconnectDelay(client, null).TotalSeconds, 0.0, 5.0);
+        }
+
+        Assert.Equal(TimeSpan.Zero, InvokeReconnectDelay(client, InvokeCloseAction(4200)));
+        Assert.Equal(TimeSpan.Zero, InvokeReconnectDelay(client, InvokeCloseAction(4000)));
+    }
+
+    [Fact]
+    public void DelaysStayExactWhenJitterIsNotConfigured()
+    {
+        var client = TestClient(maxReconnectAttempts: null);
+        SetReconnectAttempts(client, 3);
+
+        Assert.Equal(TimeSpan.FromSeconds(9), InvokeReconnectDelay(client, null));
+    }
+
+    [Fact]
+    public void JitterIsClamped()
+    {
+        Assert.Equal(1.0, new SockudoOptions(Cluster: "local", ReconnectJitter: 5.0).EffectiveReconnectJitter);
+        Assert.Equal(0.0, new SockudoOptions(Cluster: "local", ReconnectJitter: -1.0).EffectiveReconnectJitter);
+        Assert.Equal(0.0, new SockudoOptions(Cluster: "local", ReconnectJitter: double.NaN).EffectiveReconnectJitter);
+        Assert.Equal(0.25, new SockudoOptions(Cluster: "local", ReconnectJitter: 0.25).EffectiveReconnectJitter);
+    }
+
     private static SockudoClient TestClient(
         int? maxReconnectAttempts = 6,
-        double maxReconnectGapInSeconds = 120.0
+        double maxReconnectGapInSeconds = 120.0,
+        double reconnectJitter = 0.0
     ) => new(
         "app-key",
         new SockudoOptions(
@@ -88,7 +141,8 @@ public sealed class ReconnectionTests
             WsHost: "127.0.0.1",
             WsPort: 1,
             MaxReconnectAttempts: maxReconnectAttempts,
-            MaxReconnectGapInSeconds: maxReconnectGapInSeconds
+            MaxReconnectGapInSeconds: maxReconnectGapInSeconds,
+            ReconnectJitter: reconnectJitter
         )
     );
 

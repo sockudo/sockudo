@@ -361,6 +361,7 @@ val client =
             cluster = "local",
             maxReconnectAttempts = 10,
             maxReconnectGapInSeconds = 60.0,
+            reconnectJitter = 0.5,
         ),
     )
 
@@ -369,6 +370,11 @@ client.bind("reconnecting") { _, _ -> println("reconnecting") }
 
 The attempt counter resets after a successful connection and on explicit
 `connect()` or `disconnect()` calls.
+
+Because that delay is identical for every client, clients dropped by a single
+event retry in lockstep. Set `reconnectJitter` to randomize each delay by that
+fraction and spread the retries out — `0.5` picks uniformly from 50-100% of the
+delay, `1.0` from 0-100%. It defaults to `0.0`, which keeps the delays exact.
 
 ### Encrypted Channels
 

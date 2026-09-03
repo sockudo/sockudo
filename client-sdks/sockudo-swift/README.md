@@ -448,6 +448,8 @@ On disconnect, the client reconnects automatically using quadratic backoff:
 - Maximum delay: 120 seconds (configurable via `Options.maxReconnectGapInSeconds`)
 - Maximum attempts: 6 (configurable via `Options.maxReconnectAttempts`, `nil` = unlimited)
 - Counter resets on a successful connection and on explicit `connect()` or `disconnect()` calls
+- Jitter: none by default; set `Options.reconnectJitter` (0 to 1) to randomize each
+  delay by that fraction so clients dropped by one event do not retry in lockstep
 
 ```swift
 let client = try SockudoClient(
@@ -455,7 +457,8 @@ let client = try SockudoClient(
     options: .init(
         cluster: "local",
         maxReconnectAttempts: 10,
-        maxReconnectGapInSeconds: 60
+        maxReconnectGapInSeconds: 60,
+        reconnectJitter: 0.5
     )
 )
 ```

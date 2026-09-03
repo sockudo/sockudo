@@ -93,14 +93,57 @@ describe("connection manager reconnection", () => {
 
     expect(reasons).toEqual(["initial", "reconnect"]);
   });
-
   it("keeps delays exact when jitter is not configured", () => {
     const { manager, timeline } = createManager({ maxReconnectAttempts: null });
     const internals = manager as unknown as { reconnectAttempts: number };
     internals.reconnectAttempts = 3;
+
     manager.errorCallbacks.backoff({ action: "backoff" });
 
     expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 9000 });
+  });
+
+  it("randomizes the delay downwards within the configured fraction", () => {
+    const randomInt = vi.spyOn(Runtime, "randomInt");
+    const { manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      reconnectJitter: 0.5,
+    });
+    const internals = manager as unknown as { reconnectAttempts: number };
+
+    const delays: number[] = [];
+    for (const value of [0, 2500, 4500]) {
+      randomInt.mockReturnValueOnce(value);
+      internals.reconnectAttempts = 3;
+      manager.errorCallbacks.backoff({ action: "backoff" });
+      delays.push(lastRetryDelay(timeline));
+    }
+
+    // Half of 9000 is randomized away, so delays land in [4500, 9000].
+    expect(randomInt).toHaveBeenCalledWith(4501);
+    expect(delays).toEqual([9000, 6500, 4500]);
+    randomInt.mockRestore();
+  });
+
+  it("never jitters past the cap or below zero at full jitter", () => {
+    const randomInt = vi.spyOn(Runtime, "randomInt");
+    const { manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      maxReconnectGapInSeconds: 5,
+      reconnectJitter: 1,
+    });
+    const internals = manager as unknown as { reconnectAttempts: number };
+
+    for (const value of [0, 5000]) {
+      randomInt.mockReturnValueOnce(value);
+      internals.reconnectAttempts = 10;
+      manager.errorCallbacks.backoff({ action: "backoff" });
+      const delay = lastRetryDelay(timeline);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThanOrEqual(5000);
+    }
+
+    randomInt.mockRestore();
   });
 
   it("clamps out-of-range jitter values", () => {

@@ -423,7 +423,8 @@ var client = new SockudoClient(
     new SockudoOptions(
         Cluster: "local",
         MaxReconnectAttempts: 10,
-        MaxReconnectGapInSeconds: 60
+        MaxReconnectGapInSeconds: 60,
+        ReconnectJitter: 0.5
     )
 );
 
@@ -442,6 +443,11 @@ Unexpected disconnects retry with a quadratic delay of 0s, 1s, 4s, 9s, up to
 immediately. The default limit is six attempts; set `MaxReconnectAttempts` to
 `null` for unlimited retries. The counter resets after a successful connection
 and on explicit connect or disconnect calls.
+
+Because that delay is identical for every client, clients dropped by a single
+event retry in lockstep. Set `ReconnectJitter` to randomize each delay by that
+fraction and spread the retries out - `0.5` picks uniformly from 50-100% of the
+delay, `1.0` from 0-100%. It defaults to `0.0`, which keeps the delays exact.
 
 ### Protocol V2
 
