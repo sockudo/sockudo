@@ -6,6 +6,8 @@ pub mod iggy_transport;
 pub mod kafka_transport;
 #[cfg(feature = "nats")]
 pub mod nats_transport;
+#[cfg(feature = "omq")]
+pub mod omq_transport;
 #[cfg(feature = "pulsar")]
 pub mod pulsar_transport;
 #[cfg(feature = "rabbitmq")]
@@ -27,6 +29,8 @@ pub use iggy_transport::IggyTransport;
 pub use kafka_transport::KafkaTransport;
 #[cfg(feature = "nats")]
 pub use nats_transport::NatsTransport;
+#[cfg(feature = "omq")]
+pub use omq_transport::OmqTransport;
 #[cfg(feature = "pulsar")]
 pub use pulsar_transport::PulsarTransport;
 #[cfg(feature = "rabbitmq")]

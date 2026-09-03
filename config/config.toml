@@ -60,6 +60,15 @@ partition_id = 0
 auto_create = true
 start_from_latest = true
 
+[adapter.omq]
+bind_endpoint = "tcp://127.0.0.1:5556"
+connect_endpoints = []
+prefix = "sockudo_adapter"
+request_timeout_ms = 5000
+io_threads = 1
+send_hwm = 100000
+recv_hwm = 100000
+
 [adapter.cluster]
 nodes = []
 prefix = "sockudo_adapter:"
