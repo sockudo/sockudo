@@ -85,6 +85,8 @@ export interface Options {
   connectionRecovery?: boolean;
   maxReconnectAttempts?: number | null;
   maxReconnectGapInSeconds?: number;
+  /** Fraction of the reconnect delay to randomize, 0 (off) to 1 (full jitter). */
+  reconnectJitter?: number;
   echoMessages?: boolean;
   enableStats?: boolean;
   disableStats?: boolean;

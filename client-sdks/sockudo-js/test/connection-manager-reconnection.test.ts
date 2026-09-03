@@ -4,6 +4,7 @@ import ConnectionManager from "../src/core/connection/connection_manager";
 import EventsDispatcher from "../src/core/events/dispatcher";
 import type Strategy from "../src/core/strategies/strategy";
 import type Timeline from "../src/core/timeline/timeline";
+import Runtime from "runtime";
 
 describe("connection manager reconnection", () => {
   afterEach(() => {
@@ -16,6 +17,7 @@ describe("connection manager reconnection", () => {
 
     expect(defaults.maxReconnectAttempts).toBe(6);
     expect(defaults.maxReconnectGapInSeconds).toBe(120);
+    expect(defaults.reconnectJitter).toBe(0);
     expect(unlimited.maxReconnectAttempts).toBeNull();
   });
 
@@ -91,12 +93,51 @@ describe("connection manager reconnection", () => {
 
     expect(reasons).toEqual(["initial", "reconnect"]);
   });
+
+  it("keeps delays exact when jitter is not configured", () => {
+    const { manager, timeline } = createManager({ maxReconnectAttempts: null });
+    const internals = manager as unknown as { reconnectAttempts: number };
+    internals.reconnectAttempts = 3;
+    manager.errorCallbacks.backoff({ action: "backoff" });
+
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 9000 });
+  });
+
+  it("clamps out-of-range jitter values", () => {
+    expect(getConfig({ cluster: "local", reconnectJitter: 5 }, {}).reconnectJitter).toBe(1);
+    expect(getConfig({ cluster: "local", reconnectJitter: -1 }, {}).reconnectJitter).toBe(0);
+    expect(getConfig({ cluster: "local", reconnectJitter: NaN }, {}).reconnectJitter).toBe(0);
+  });
+
+  it("leaves immediate retry and TLS-upgrade paths un-jittered", () => {
+    const randomInt = vi.spyOn(Runtime, "randomInt");
+    const { manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      reconnectJitter: 1,
+    });
+
+    manager.errorCallbacks.retry({ action: "retry" });
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 0 });
+
+    manager.errorCallbacks.tls_only({ action: "tls_only" });
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 0 });
+
+    expect(randomInt).not.toHaveBeenCalled();
+    randomInt.mockRestore();
+  });
 });
+
+function lastRetryDelay(timeline: { info: ReturnType<typeof vi.fn> }): number {
+  const lastCall = timeline.info.mock.lastCall;
+  expect(lastCall).toBeDefined();
+  return (lastCall as [{ delay: number }])[0].delay;
+}
 
 function createManager(
   overrides: Partial<{
     maxReconnectAttempts: number | null;
     maxReconnectGapInSeconds: number;
+    reconnectJitter: number;
     beforeConnect: (reason: "initial" | "reconnect") => Promise<void>;
   }> = {},
 ) {
@@ -122,6 +163,7 @@ function createManager(
     maxReconnectAttempts:
       overrides.maxReconnectAttempts === undefined ? 6 : overrides.maxReconnectAttempts,
     maxReconnectGapInSeconds: overrides.maxReconnectGapInSeconds ?? 120,
+    reconnectJitter: overrides.reconnectJitter ?? 0,
     beforeConnect: overrides.beforeConnect,
   });
 

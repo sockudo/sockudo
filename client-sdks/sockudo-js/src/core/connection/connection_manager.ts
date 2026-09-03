@@ -39,6 +39,7 @@ import { prefixedEvent } from "../protocol_prefix";
  * - pongTimeout - time for server to respond with pong before reconnecting
  * - maxReconnectAttempts - maximum retries before disconnecting; null is unlimited
  * - maxReconnectGapInSeconds - cap for quadratic reconnect delay
+ * - reconnectJitter - fraction of the delay to randomize, 0 (off) to 1 (full jitter)
  *
  * @param {String} key application key
  * @param {Object} options
@@ -276,7 +277,13 @@ export default class ConnectionManager extends EventsDispatcher {
       return 0;
     }
     const intervalSeconds = this.reconnectAttempts * this.reconnectAttempts;
-    return Math.min(intervalSeconds, this.options.maxReconnectGapInSeconds) * 1000;
+    const delay = Math.min(intervalSeconds, this.options.maxReconnectGapInSeconds) * 1000;
+    // Spread retries so clients dropped by one event do not return in lockstep.
+    const jitter = this.options.reconnectJitter;
+    if (!jitter || delay <= 0) {
+      return delay;
+    }
+    return delay - Runtime.randomInt(Math.round(delay * jitter) + 1);
   }
 
   private clearRetryTimer() {

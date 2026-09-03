@@ -18,6 +18,7 @@ export interface DefaultConfig {
     unavailableTimeout: number;
     maxReconnectAttempts: number;
     maxReconnectGapInSeconds: number;
+    reconnectJitter: number;
     userAuthentication: UserAuthenticationOptions;
     channelAuthorization: ChannelAuthorizationOptions;
     cdn_http?: string;
