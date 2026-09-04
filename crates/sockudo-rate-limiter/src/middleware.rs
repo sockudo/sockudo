@@ -12,6 +12,7 @@ use std::{
     fmt,
     net::SocketAddr,
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
 use tower_layer::Layer;
@@ -264,11 +265,15 @@ pub trait KeyExtractor: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct IpKeyExtractor {
     trust_hops: usize,
+    warned_unusable_forwarded_for: Arc<AtomicBool>,
 }
 
 impl IpKeyExtractor {
     pub fn new(trust_hops: usize) -> Self {
-        Self { trust_hops }
+        Self {
+            trust_hops,
+            warned_unusable_forwarded_for: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     fn get_ip<B>(&self, req: &HyperRequest<B>) -> Option<String> {
@@ -277,16 +282,15 @@ impl IpKeyExtractor {
             && let Ok(forwarded_str) = value.to_str()
         {
             let ips: Vec<&str> = forwarded_str.split(',').map(str::trim).collect();
+            // trust_hops is an offset from the right-hand end of the chain, where 1 selects the
+            // last entry. A single proxy that appends the client address therefore needs 2.
             let client_ip_index = ips.len().saturating_sub(self.trust_hops);
-            if let Some(ip_str) = ips.get(client_ip_index) {
-                if ip_str.parse::<std::net::IpAddr>().is_ok() {
-                    return Some(ip_str.to_string());
-                }
-            } else if let Some(ip_str) = ips.first()
+            if let Some(ip_str) = ips.get(client_ip_index)
                 && ip_str.parse::<std::net::IpAddr>().is_ok()
             {
                 return Some(ip_str.to_string());
             }
+            self.warn_unusable_forwarded_for(forwarded_str, client_ip_index);
         }
 
         if let Some(value) = req.headers().get("x-real-ip")
@@ -301,6 +305,29 @@ impl IpKeyExtractor {
         req.extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ConnectInfo(addr)| addr.ip().to_string())
+    }
+
+    /// Reports a configured `trust_hops` that does not match the actual proxy chain.
+    ///
+    /// Falling through to `x-real-ip` or the socket peer puts every client behind the same proxy
+    /// into one rate-limit bucket, which is otherwise silent. Logged once per extractor: clients
+    /// can set `X-Forwarded-For` themselves, so a per-request log would be a flooding primitive.
+    fn warn_unusable_forwarded_for(&self, forwarded_for: &str, selected_index: usize) {
+        if self
+            .warned_unusable_forwarded_for
+            .swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+
+        warn!(
+            trust_hops = self.trust_hops,
+            selected_index,
+            forwarded_for,
+            "no usable address at the configured trust_hops offset in X-Forwarded-For; falling \
+             back to x-real-ip or the socket peer, which shares one rate-limit bucket across every \
+             client behind the proxy"
+        );
     }
 }
 
@@ -386,6 +413,83 @@ fn add_rate_limit_headers(
         warn!(
             value = result.reset_after,
             "Failed to convert rate limit reset_after value for header X-RateLimit-Reset/Retry-After"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(headers: &[(&str, &str)]) -> HyperRequest<()> {
+        let mut builder = HyperRequest::builder();
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(()).unwrap()
+    }
+
+    #[test]
+    fn trust_hops_counts_from_the_right_so_one_proxy_needs_two() {
+        let chain = [("x-forwarded-for", "203.0.113.7, 198.51.100.1")];
+
+        assert_eq!(
+            IpKeyExtractor::new(2).get_ip(&request(&chain)),
+            Some("203.0.113.7".to_string()),
+            "2 selects the client for a single proxy that appends its own address"
+        );
+        assert_eq!(
+            IpKeyExtractor::new(1).get_ip(&request(&chain)),
+            Some("198.51.100.1".to_string()),
+            "1 selects the last entry, which is the proxy rather than the client"
+        );
+    }
+
+    #[test]
+    fn client_supplied_entries_cannot_reach_the_selected_offset() {
+        let ip = IpKeyExtractor::new(2).get_ip(&request(&[(
+            "x-forwarded-for",
+            "192.0.2.9, 203.0.113.7, 198.51.100.1",
+        )]));
+
+        assert_eq!(
+            ip,
+            Some("203.0.113.7".to_string()),
+            "a prepended entry shifts the offset away from the client, it cannot be selected"
+        );
+    }
+
+    #[test]
+    fn zero_trust_hops_ignores_forwarded_for() {
+        let ip = IpKeyExtractor::new(0).get_ip(&request(&[
+            ("x-forwarded-for", "203.0.113.7, 198.51.100.1"),
+            ("x-real-ip", "192.0.2.44"),
+        ]));
+
+        assert_eq!(ip, Some("192.0.2.44".to_string()));
+    }
+
+    #[test]
+    fn unusable_entry_at_the_offset_falls_back_instead_of_picking_another() {
+        let ip = IpKeyExtractor::new(2).get_ip(&request(&[
+            ("x-forwarded-for", "not-an-ip, 198.51.100.1"),
+            ("x-real-ip", "192.0.2.44"),
+        ]));
+
+        assert_eq!(ip, Some("192.0.2.44".to_string()));
+    }
+
+    #[test]
+    fn a_shorter_chain_than_the_offset_selects_the_first_entry() {
+        let ip = IpKeyExtractor::new(5).get_ip(&request(&[(
+            "x-forwarded-for",
+            "203.0.113.7, 198.51.100.1",
+        )]));
+
+        assert_eq!(
+            ip,
+            Some("203.0.113.7".to_string()),
+            "saturating_sub clamps the offset to the start of the chain"
         );
     }
 }
