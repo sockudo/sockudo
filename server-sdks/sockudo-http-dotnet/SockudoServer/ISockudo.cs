@@ -218,6 +218,10 @@ namespace SockudoServer
         Task<IGetResult<T>> ListPushCredentialsAsync<T>(object parameters = null);
         Task<IGetResult<T>> PutPushCredentialAsync<T>(string provider, object credential);
         Task<IGetResult<T>> PublishPushAsync<T>(object request);
+        Task<IGetResult<T>> CreateApnsLiveActivityChannelAsync<T>(string storagePolicy = "noStorage");
+        Task<IGetResult<T>> GetApnsLiveActivityChannelAsync<T>(string channelId);
+        Task<IGetResult<T>> ListApnsLiveActivityChannelsAsync<T>();
+        Task<IGetResult<T>> DeleteApnsLiveActivityChannelAsync<T>(string channelId);
         Task<IGetResult<T>> PublishPushDirectAsync<T>(object request);
         Task<IGetResult<T>> PublishPushBatchAsync<T>(object[] requests);
         Task<IGetResult<T>> SchedulePushAsync<T>(object request);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ApnsLiveActivityPublishRequest } from "../types/core/push";
 
 import { SockudoPushRegistration } from "../src/core/push";
 
@@ -66,6 +67,88 @@ describe("SockudoPushRegistration", () => {
     expect(requests[0].url).toBe("https://api.example.test/push/deviceRegistrations");
     expect(requests[0].init.headers).toMatchObject({
       "X-Sockudo-Device-Identity-Token": "identity",
+    });
+  });
+
+  it("publishes typed direct and broadcast Live Activity requests", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const client = new SockudoPushRegistration({
+      endpoint: "https://api.example.test/push",
+      fetch: (async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(init.body as string));
+        return new Response(JSON.stringify({ publish_id: "live_123" }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as typeof fetch,
+    });
+
+    const directRequest: ApnsLiveActivityPublishRequest = {
+      publishId: "ride-42-start",
+      recipients: [
+        {
+          type: "recipient",
+          recipient: {
+            transportType: "apnsLiveActivity",
+            activityToken: "push-to-start-token",
+          },
+        },
+      ],
+      liveActivity: {
+        event: "start",
+        timestamp: 1725000000,
+        contentState: { status: "assigned" },
+        attributesType: "RideAttributes",
+        attributes: { rideId: "ride-42" },
+        alert: { title: "Driver assigned" },
+        inputPushToken: true,
+        priority: "immediate",
+      },
+    };
+    await client.publishLiveActivity(directRequest);
+    await client.publishLiveActivity({
+      recipients: [
+        {
+          type: "recipient",
+          recipient: {
+            transportType: "apnsLiveActivityBroadcast",
+            channelId: "dHN0LWNoYW5uZWw=",
+            storagePolicy: "mostRecent",
+          },
+        },
+      ],
+      liveActivity: {
+        event: "update",
+        timestamp: 1725000001,
+        contentState: { home: 2, away: 1 },
+        priority: "lowPower",
+      },
+      expiresAtMs: 1725003600000,
+    });
+
+    expect(bodies[0]).toMatchObject({
+      sync: false,
+      payload: {},
+      recipients: [
+        {
+          type: "recipient",
+          recipient: { transportType: "apnsLiveActivity" },
+        },
+      ],
+      liveActivity: { event: "start", inputPushToken: true },
+    });
+    expect(bodies[1]).toMatchObject({
+      sync: false,
+      recipients: [
+        {
+          type: "recipient",
+          recipient: {
+            transportType: "apnsLiveActivityBroadcast",
+            storagePolicy: "mostRecent",
+          },
+        },
+      ],
+      liveActivity: { event: "update", priority: "lowPower" },
     });
   });
 

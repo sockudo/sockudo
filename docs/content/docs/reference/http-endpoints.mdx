@@ -212,6 +212,10 @@ queue stages.
 | `DELETE` | `/apps/{appId}/push/channelSubscriptions` | Signed app API, push admin or subscribe | Delete subscriptions by channel or device. |
 | `GET` | `/apps/{appId}/push/channelSubscriptions/channels` | Signed app API, push admin | List channels with push subscriptions. |
 | `POST` | `/apps/{appId}/push/publish` | Signed app API, push admin | Admit one push publish request. |
+| `POST` | `/apps/{appId}/push/liveActivities/channels` | Signed app API, push admin | Create an APNs Live Activity broadcast channel. |
+| `GET` | `/apps/{appId}/push/liveActivities/channels` | Signed app API, push admin | List every APNs broadcast channel for the configured bundle. |
+| `GET` | `/apps/{appId}/push/liveActivities/channels/{channelId}` | Signed app API, push admin | Read an APNs broadcast channel and storage policy. |
+| `DELETE` | `/apps/{appId}/push/liveActivities/channels/{channelId}` | Signed app API, push admin | Delete an APNs broadcast channel. |
 | `POST` | `/apps/{appId}/push/batch/publish` | Signed app API, push admin | Admit multiple push publish requests. |
 | `GET` | `/apps/{appId}/push/publish/{publishId}/status` | Signed app API, push admin | Read aggregate push publish status. |
 | `GET` | `/apps/{appId}/push/deadLetters` | Signed app API, push admin | List safe queue-native dead-letter metadata with optional `provider`, `sinceMs`, `untilMs`, `limit`, and `cursor` filters. |

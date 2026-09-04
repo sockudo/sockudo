@@ -272,6 +272,37 @@ await http.post(
 
 The backend registers the device with Sockudo and enforces user ownership.
 
+### Apple Live Activities
+
+ActivityKit runs in the iOS host and Widget Extension because its APIs use the application's custom
+`ActivityAttributes`. `sockudo_flutter` therefore integrates with any native bridge instead of
+forcing one plugin version. A current option is the
+[`live_activities` Flutter plugin](https://pub.dev/packages/live_activities), which exposes activity
+token and push-to-start token streams. Upload every rotation to your authenticated backend:
+
+```dart
+liveActivities.pushToStartTokenUpdateStream.listen((token) async {
+  await backend.replaceLiveActivityToken(
+    ApnsLiveActivityTokenUpdate.pushToStart(token).toJson(),
+  );
+});
+
+final update = ApnsLiveActivityTokenUpdate.activity(
+  activityId: activityId,
+  token: activityToken,
+);
+await backend.replaceLiveActivityToken(update.toJson());
+```
+
+For an application proxy that authorizes the current user and activity, construct a validated direct
+or broadcast request with `ApnsLiveActivityPublishRequest`, `ApnsLiveActivityPayload`, and either
+`ApnsLiveActivityTokenRecipient` or `ApnsLiveActivityBroadcastRecipient`. The helper rejects invalid
+start fields, direct priority `lowPower`, and broadcast start requests before network I/O.
+
+Do not ship Sockudo app secrets, APNs provider keys, or unrestricted push-admin capabilities in the
+Flutter bundle. See [Apple Live Activities](/docs/server/apple-live-activities) for channel setup,
+broadcast delivery, and the complete payload contract.
+
 ## Production checklist
 
 - Scope the client above individual widgets and avoid reconnecting on rebuild.

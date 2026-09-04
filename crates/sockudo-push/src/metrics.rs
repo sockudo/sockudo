@@ -81,6 +81,10 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
     PushMetricSpec::gauge("sockudo_push_quota_consumed_delivery", &["app"]),
     PushMetricSpec::counter("sockudo_push_channel_publish_total", &[]),
     PushMetricSpec::counter(
+        "sockudo_push_apns_live_activity_requests_total",
+        &["mode", "event", "status", "app"],
+    ),
+    PushMetricSpec::counter(
         "sockudo_push_circuit_breaker_deferred_total",
         &["provider", "app"],
     ),

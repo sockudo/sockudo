@@ -440,6 +440,14 @@ sockudo.forceReconnectUser(userId: "user-123") { result in
 }
 ```
 
+## Apple Live Activities
+
+`ApnsLiveActivity` builds direct recipients, broadcast recipients, and event/priority payloads.
+Manage iOS 18 APNs broadcast channels with
+`create/get/list/deleteApnsLiveActivityChannel`; opaque identifiers are safely path-encoded. Reuse
+`publishId` for safe retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## License
 
 The library is completely open source and released under the MIT license.

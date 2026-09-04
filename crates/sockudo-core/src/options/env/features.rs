@@ -32,6 +32,78 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     );
     options.push.fcm_enabled = parse_bool_env("PUSH_FCM_ENABLED", options.push.fcm_enabled);
     options.push.apns_enabled = parse_bool_env("PUSH_APNS_ENABLED", options.push.apns_enabled);
+    options.push.apns.live_activities_enabled = parse_bool_env(
+        "PUSH_APNS_LIVE_ACTIVITIES_ENABLED",
+        options.push.apns.live_activities_enabled,
+    );
+    options.push.apns.broadcast_enabled = parse_bool_env(
+        "PUSH_APNS_BROADCAST_ENABLED",
+        options.push.apns.broadcast_enabled,
+    );
+    for (name, target) in [
+        ("PUSH_APNS_TOPIC", &mut options.push.apns.topic),
+        ("PUSH_APNS_ENDPOINT", &mut options.push.apns.endpoint),
+        (
+            "PUSH_APNS_LIVE_ACTIVITY_TOPIC",
+            &mut options.push.apns.live_activity_topic,
+        ),
+        ("PUSH_APNS_BUNDLE_ID", &mut options.push.apns.bundle_id),
+        (
+            "PUSH_APNS_BROADCAST_ENDPOINT",
+            &mut options.push.apns.broadcast_endpoint,
+        ),
+        (
+            "PUSH_APNS_MANAGEMENT_ENDPOINT",
+            &mut options.push.apns.management_endpoint,
+        ),
+    ] {
+        if let Some(value) = parse_env_optional::<String>(name) {
+            *target = value;
+        }
+    }
+    // Keep the original APNS_* deployment variables as lower-precedence aliases.
+    if options.push.apns.topic.trim().is_empty()
+        && let Ok(value) = std::env::var("APNS_TOPIC")
+    {
+        options.push.apns.topic = value;
+    }
+    if std::env::var("PUSH_APNS_ENDPOINT").is_err()
+        && let Ok(value) = std::env::var("APNS_ENDPOINT")
+    {
+        options.push.apns.endpoint = value;
+    }
+    options.push.apns.default_broadcast_expiration_secs = parse_env::<u64>(
+        "PUSH_APNS_DEFAULT_BROADCAST_EXPIRATION_SECS",
+        options.push.apns.default_broadcast_expiration_secs,
+    );
+    options.push.apns.connect_timeout_ms = parse_env::<u64>(
+        "PUSH_APNS_CONNECT_TIMEOUT_MS",
+        options.push.apns.connect_timeout_ms,
+    );
+    options.push.apns.request_timeout_ms = parse_env::<u64>(
+        "PUSH_APNS_REQUEST_TIMEOUT_MS",
+        options.push.apns.request_timeout_ms,
+    );
+    options.push.apns.pool_idle_timeout_secs = parse_env::<u64>(
+        "PUSH_APNS_POOL_IDLE_TIMEOUT_SECS",
+        options.push.apns.pool_idle_timeout_secs,
+    );
+    options.push.apns.max_idle_connections_per_host = parse_env::<usize>(
+        "PUSH_APNS_MAX_IDLE_CONNECTIONS_PER_HOST",
+        options.push.apns.max_idle_connections_per_host,
+    );
+    options.push.apns.tcp_keepalive_secs = parse_env::<u64>(
+        "PUSH_APNS_TCP_KEEPALIVE_SECS",
+        options.push.apns.tcp_keepalive_secs,
+    );
+    options.push.apns.http2_keepalive_interval_secs = parse_env::<u64>(
+        "PUSH_APNS_HTTP2_KEEPALIVE_INTERVAL_SECS",
+        options.push.apns.http2_keepalive_interval_secs,
+    );
+    options.push.apns.http2_keepalive_timeout_secs = parse_env::<u64>(
+        "PUSH_APNS_HTTP2_KEEPALIVE_TIMEOUT_SECS",
+        options.push.apns.http2_keepalive_timeout_secs,
+    );
     options.push.webpush_enabled =
         parse_bool_env("PUSH_WEBPUSH_ENABLED", options.push.webpush_enabled);
     options.push.hms_enabled = parse_bool_env("PUSH_HMS_ENABLED", options.push.hms_enabled);

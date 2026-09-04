@@ -691,6 +691,20 @@ The standalone `sockudo-mcp` binary reads `SOCKUDO_URL`, `SOCKUDO_MCP_APPS`, `SO
 | `PUSH_APNS_PRIVATE_KEY` | APNs private key content alias. |
 | `APNS_PRIVATE_KEY_PATH` | Filesystem path to APNs token-auth private key. |
 | `PUSH_APNS_PRIVATE_KEY_PATH` | APNs private key path alias. |
+| `PUSH_APNS_LIVE_ACTIVITIES_ENABLED` | Enables typed ActivityKit start, update, and end delivery. |
+| `PUSH_APNS_LIVE_ACTIVITY_TOPIC` | Live Activity topic; defaults to `<bundle-id>.push-type.liveactivity`. |
+| `PUSH_APNS_BUNDLE_ID` | Bundle ID used by APNs broadcast and channel-management requests. |
+| `PUSH_APNS_BROADCAST_ENABLED` | Enables iOS 18 Live Activity broadcast delivery and channel management. |
+| `PUSH_APNS_BROADCAST_ENDPOINT` | Broadcast endpoint; use the sandbox host for sandbox channels. |
+| `PUSH_APNS_MANAGEMENT_ENDPOINT` | Broadcast channel-management endpoint: production uses port `2196`, sandbox uses `2195`. |
+| `PUSH_APNS_DEFAULT_BROADCAST_EXPIRATION_SECS` | Default retained-broadcast lifetime, from 1 to 28800 seconds. |
+| `PUSH_APNS_CONNECT_TIMEOUT_MS` | APNs connection timeout. |
+| `PUSH_APNS_REQUEST_TIMEOUT_MS` | Per-request APNs timeout. |
+| `PUSH_APNS_POOL_IDLE_TIMEOUT_SECS` | APNs pooled HTTP/2 idle timeout. |
+| `PUSH_APNS_MAX_IDLE_CONNECTIONS_PER_HOST` | Maximum idle APNs connections retained per host. |
+| `PUSH_APNS_TCP_KEEPALIVE_SECS` | APNs TCP keepalive interval. |
+| `PUSH_APNS_HTTP2_KEEPALIVE_INTERVAL_SECS` | HTTP/2 keepalive ping interval. |
+| `PUSH_APNS_HTTP2_KEEPALIVE_TIMEOUT_SECS` | HTTP/2 keepalive acknowledgement timeout. |
 | `PUSH_WEBPUSH_ENABLED` | Enables Web Push dispatch. |
 | `VAPID_PRIVATE_KEY` | Web Push VAPID private key. |
 | `PUSH_WEBPUSH_VAPID_PRIVATE_KEY` | Web Push VAPID private key alias. |

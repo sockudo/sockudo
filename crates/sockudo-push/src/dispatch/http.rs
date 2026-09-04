@@ -61,6 +61,7 @@ use crate::domain::{ProviderError, ProviderFailureClass, SecretString};
 pub enum ProviderHttpMethod {
     Get,
     Post,
+    Delete,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -109,6 +110,46 @@ pub trait ProviderHttpClient: Send + Sync {
 #[derive(Clone)]
 pub struct ReqwestProviderHttpClient {
     client: reqwest::Client,
+    validate_each_destination: bool,
+}
+
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderHttpClientOptions {
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub pool_idle_timeout_secs: u64,
+    pub max_idle_connections_per_host: usize,
+    pub tcp_keepalive_secs: u64,
+    pub http2_keepalive_interval_secs: u64,
+    pub http2_keepalive_timeout_secs: u64,
+}
+
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
+impl Default for ProviderHttpClientOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: 5_000,
+            request_timeout_ms: 10_000,
+            pool_idle_timeout_secs: 90,
+            max_idle_connections_per_host: 128,
+            tcp_keepalive_secs: 60,
+            http2_keepalive_interval_secs: 30,
+            http2_keepalive_timeout_secs: 10,
+        }
+    }
 }
 
 #[cfg(any(
@@ -120,42 +161,98 @@ pub struct ReqwestProviderHttpClient {
 ))]
 impl ReqwestProviderHttpClient {
     pub fn new() -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .use_rustls_tls()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|error| error.to_string())?;
-        Ok(Self { client })
+        Self::build_rustls(ProviderHttpClientOptions::default(), true, None)
+    }
+
+    /// Builds a pooled client for provider URLs derived exclusively from trusted server config.
+    /// This avoids a DNS lookup on every delivery while retaining request-level validation for
+    /// user-controlled Web Push and WNS destinations.
+    pub fn new_for_trusted_provider(options: ProviderHttpClientOptions) -> Result<Self, String> {
+        Self::build_rustls(options, false, None)
     }
 
     #[cfg(feature = "push-apns")]
     pub fn new_with_pem_identity(pem: &str) -> Result<Self, String> {
+        Self::new_with_pem_identity_and_options(pem, ProviderHttpClientOptions::default())
+    }
+
+    #[cfg(feature = "push-apns")]
+    pub fn new_with_pem_identity_and_options(
+        pem: &str,
+        options: ProviderHttpClientOptions,
+    ) -> Result<Self, String> {
         let identity = reqwest::Identity::from_pem(pem.as_bytes())
             .map_err(|error| format!("invalid APNs PEM identity: {error}"))?;
-        let client = reqwest::Client::builder()
-            .use_rustls_tls()
-            .identity(identity)
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|error| error.to_string())?;
-        Ok(Self { client })
+        Self::build_rustls(options, false, Some(identity))
     }
 
     #[cfg(feature = "push-apns")]
     pub fn new_with_pkcs12_identity(der: &[u8], password: &str) -> Result<Self, String> {
+        Self::new_with_pkcs12_identity_and_options(
+            der,
+            password,
+            ProviderHttpClientOptions::default(),
+        )
+    }
+
+    #[cfg(feature = "push-apns")]
+    pub fn new_with_pkcs12_identity_and_options(
+        der: &[u8],
+        password: &str,
+        options: ProviderHttpClientOptions,
+    ) -> Result<Self, String> {
         let identity = reqwest::Identity::from_pkcs12_der(der, password)
             .map_err(|error| format!("invalid APNs PKCS#12 identity: {error}"))?;
-        let client = reqwest::Client::builder()
+        let client = configured_builder(&options)
             .use_native_tls()
             .identity(identity)
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
             .build()
             .map_err(|error| error.to_string())?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            validate_each_destination: false,
+        })
     }
+
+    fn build_rustls(
+        options: ProviderHttpClientOptions,
+        validate_each_destination: bool,
+        identity: Option<reqwest::Identity>,
+    ) -> Result<Self, String> {
+        let mut builder = configured_builder(&options).use_rustls_tls();
+        if let Some(identity) = identity {
+            builder = builder.identity(identity);
+        }
+        let client = builder.build().map_err(|error| error.to_string())?;
+        Ok(Self {
+            client,
+            validate_each_destination,
+        })
+    }
+}
+
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
+fn configured_builder(options: &ProviderHttpClientOptions) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(options.connect_timeout_ms.max(1)))
+        .timeout(Duration::from_millis(options.request_timeout_ms.max(1)))
+        .pool_idle_timeout(Duration::from_secs(options.pool_idle_timeout_secs.max(1)))
+        .pool_max_idle_per_host(options.max_idle_connections_per_host.max(1))
+        .tcp_keepalive(Duration::from_secs(options.tcp_keepalive_secs.max(1)))
+        .http2_adaptive_window(true)
+        .http2_keep_alive_interval(Duration::from_secs(
+            options.http2_keepalive_interval_secs.max(1),
+        ))
+        .http2_keep_alive_timeout(Duration::from_secs(
+            options.http2_keepalive_timeout_secs.max(1),
+        ))
+        .http2_keep_alive_while_idle(true)
 }
 
 #[cfg(any(
@@ -168,7 +265,9 @@ impl ReqwestProviderHttpClient {
 #[async_trait]
 impl ProviderHttpClient for ReqwestProviderHttpClient {
     async fn send(&self, request: ProviderHttpRequest) -> Result<ProviderHttpResponse, String> {
-        validate_delivery_destination(&request.url).await?;
+        if self.validate_each_destination {
+            validate_delivery_destination(&request.url).await?;
+        }
         #[cfg(feature = "opentelemetry")]
         let server_address = Url::parse(&request.url)
             .ok()
@@ -178,6 +277,7 @@ impl ProviderHttpClient for ReqwestProviderHttpClient {
         let method_name = match request.method {
             ProviderHttpMethod::Get => "GET",
             ProviderHttpMethod::Post => "POST",
+            ProviderHttpMethod::Delete => "DELETE",
         };
         #[cfg(feature = "opentelemetry")]
         let span = info_span!(
@@ -193,6 +293,7 @@ impl ProviderHttpClient for ReqwestProviderHttpClient {
         let method = match request.method {
             ProviderHttpMethod::Get => reqwest::Method::GET,
             ProviderHttpMethod::Post => reqwest::Method::POST,
+            ProviderHttpMethod::Delete => reqwest::Method::DELETE,
         };
         let mut builder = self.client.request(method, &request.url);
         let headers = request.headers;
@@ -468,7 +569,11 @@ fn redacted_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, Stri
             let lower = name.to_ascii_lowercase();
             if matches!(
                 lower.as_str(),
-                "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+                "authorization"
+                    | "proxy-authorization"
+                    | "cookie"
+                    | "set-cookie"
+                    | "apns-channel-id"
             ) {
                 (name.clone(), "[REDACTED]".to_owned())
             } else {

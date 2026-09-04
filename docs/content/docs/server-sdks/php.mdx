@@ -202,13 +202,18 @@ $accepted = $sockudo->publishPush([
         'title' => 'Order updated',
         'body' => 'Order ord_123 is packed',
     ],
-    'idempotency_key' => 'push-order-ord_123-packed',
+    'publishId' => 'push-order-ord_123-packed',
 ]);
 
 $status = $sockudo->getPublishStatus($accepted->publish_id);
 ```
 
 Push publishing is asynchronous by default. Use status APIs and provider callbacks for delivery diagnostics.
+
+Use `createApnsLiveActivityChannel`, `getApnsLiveActivityChannel`,
+`listApnsLiveActivityChannels`, and `deleteApnsLiveActivityChannel` for iOS 18 broadcast
+channels. Direct and broadcast publish bodies remain ordinary PHP arrays. See
+[Apple Live Activities](/docs/server/apple-live-activities) for the complete payload contract.
 
 ## Logging, errors, and retries
 

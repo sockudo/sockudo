@@ -672,6 +672,21 @@ pub(super) fn ably_push_recipient_value(recipient: &PushRecipient) -> Value {
             "transportType": "apns",
             "deviceToken": device_token.expose_secret()
         }),
+        PushRecipient::ApnsLiveActivity { activity_token } => json!({
+            "transportType": "apnsLiveActivity",
+            "activityToken": activity_token.expose_secret()
+        }),
+        PushRecipient::ApnsLiveActivityBroadcast {
+            channel_id,
+            storage_policy,
+        } => json!({
+            "transportType": "apnsLiveActivityBroadcast",
+            "channelId": channel_id.expose_secret(),
+            "storagePolicy": match storage_policy {
+                sockudo_push::ApnsChannelStoragePolicy::NoStorage => "noStorage",
+                sockudo_push::ApnsChannelStoragePolicy::MostRecent => "mostRecent",
+            }
+        }),
         PushRecipient::Web {
             endpoint,
             p256dh,

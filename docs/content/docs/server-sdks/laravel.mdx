@@ -128,13 +128,19 @@ Sockudo::publishAnnotation('orders', $messageSerial, [
 $publish = Sockudo::publishPush([
     'recipients' => [['type' => 'channel', 'channel' => 'orders']],
     'payload' => ['title' => 'Order updated'],
-    'idempotency_key' => 'order-updated:ord-123:v4',
+    'publishId' => 'order-updated:ord-123:v4',
 ]);
 ```
 
 Inject `Sockudo\SockudoInterface` when constructor injection is preferable. The
 binding resolves the connection named by `SOCKUDO_CONNECTION`, which defaults
 to `sockudo`.
+
+The facade also forwards `createApnsLiveActivityChannel`,
+`getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, and
+`deleteApnsLiveActivityChannel` for iOS 18 broadcast delivery. See
+[Apple Live Activities](/docs/server/apple-live-activities) for request shapes and operational
+guidance.
 
 ## Multiple Sockudo apps
 

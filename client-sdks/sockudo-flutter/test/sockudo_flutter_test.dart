@@ -225,6 +225,105 @@ void main() {
     },
   );
 
+  test('serializes validated direct and broadcast Live Activity requests', () {
+    final direct = ApnsLiveActivityPublishRequest(
+      publishId: 'ride-42-start',
+      recipient: const ApnsLiveActivityTokenRecipient('push-to-start-token'),
+      liveActivity: const ApnsLiveActivityPayload(
+        event: ApnsLiveActivityEvent.start,
+        timestamp: 1725000000,
+        contentState: <String, Object?>{'status': 'assigned'},
+        attributesType: 'RideAttributes',
+        attributes: <String, Object?>{'rideId': 'ride-42'},
+        alert: <String, Object?>{'title': 'Driver assigned'},
+        inputPushToken: true,
+        priority: ApnsLiveActivityPriority.immediate,
+      ),
+    ).toJson();
+
+    expect(direct['publishId'], 'ride-42-start');
+    expect((direct['recipients'] as List<Object?>).first, <String, Object?>{
+      'type': 'recipient',
+      'recipient': <String, Object?>{
+        'transportType': 'apnsLiveActivity',
+        'activityToken': 'push-to-start-token',
+      },
+    });
+    expect(direct['liveActivity'], containsPair('priority', 'immediate'));
+
+    final broadcast = ApnsLiveActivityPublishRequest(
+      publishId: 'game-7-score-2',
+      recipient: const ApnsLiveActivityBroadcastRecipient(
+        channelId: 'dHN0LWNoYW5uZWw=',
+        storagePolicy: ApnsChannelStoragePolicy.mostRecent,
+      ),
+      expiresAtMs: 1725003600000,
+      liveActivity: const ApnsLiveActivityPayload(
+        event: ApnsLiveActivityEvent.update,
+        timestamp: 1725000000,
+        contentState: <String, Object?>{'home': 2, 'away': 1},
+        priority: ApnsLiveActivityPriority.lowPower,
+      ),
+    ).toJson();
+
+    expect(
+      ((broadcast['recipients'] as List<Object?>).first
+          as Map<String, Object?>)['recipient'],
+      containsPair('storagePolicy', 'mostRecent'),
+    );
+    expect(broadcast['liveActivity'], containsPair('priority', 'lowPower'));
+  });
+
+  test('rejects invalid Live Activity combinations before proxy upload', () {
+    const broadcast = ApnsLiveActivityBroadcastRecipient(channelId: 'channel');
+    const start = ApnsLiveActivityPayload(
+      event: ApnsLiveActivityEvent.start,
+      timestamp: 1,
+      contentState: <String, Object?>{},
+      attributesType: 'Attributes',
+      attributes: <String, Object?>{},
+      alert: <String, Object?>{},
+    );
+    const directLowPower = ApnsLiveActivityPayload(
+      event: ApnsLiveActivityEvent.update,
+      timestamp: 1,
+      contentState: <String, Object?>{},
+      priority: ApnsLiveActivityPriority.lowPower,
+    );
+
+    expect(
+      () => const ApnsLiveActivityPublishRequest(
+        recipient: broadcast,
+        liveActivity: start,
+      ).toJson(),
+      throwsArgumentError,
+    );
+    expect(
+      () => const ApnsLiveActivityPublishRequest(
+        recipient: ApnsLiveActivityTokenRecipient('token'),
+        liveActivity: directLowPower,
+      ).toJson(),
+      throwsArgumentError,
+    );
+  });
+
+  test(
+    'normalizes ActivityKit token rotations without exposing them in text',
+    () {
+      final update = ApnsLiveActivityTokenUpdate.activity(
+        activityId: 'ride-42',
+        token: ApnsLiveActivityTokenUpdate.encodeHex(<int>[0, 15, 255]),
+      );
+
+      expect(update.toJson(), <String, Object?>{
+        'kind': 'update',
+        'token': '000fff',
+        'activityId': 'ride-42',
+      });
+      expect('$update', isNot(contains('000fff')));
+    },
+  );
+
   test(
     'versioned message proxy helpers send actions and decode acks',
     () async {

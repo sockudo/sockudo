@@ -1126,6 +1126,76 @@ class Sockudo implements LoggerAwareInterface, SockudoInterface
     }
 
     /**
+     * Create an APNs broadcast channel for Live Activity updates.
+     */
+    public function createApnsLiveActivityChannel(string $storagePolicy = 'noStorage'): object
+    {
+        if (!in_array($storagePolicy, ['noStorage', 'mostRecent'], true)) {
+            throw new SockudoException('storagePolicy must be noStorage or mostRecent');
+        }
+
+        return $this->requestWithAcceptedStatuses(
+            'POST',
+            $this->pushPath('/liveActivities/channels'),
+            $this->encodeJsonBody(['storagePolicy' => $storagePolicy]),
+            [],
+            $this->pushHeaders('push-admin'),
+            [200, 201]
+        );
+    }
+
+    /**
+     * Read one APNs Live Activity broadcast channel.
+     */
+    public function getApnsLiveActivityChannel(string $channelId): object
+    {
+        if ($channelId === '') {
+            throw new SockudoException('channelId must not be empty');
+        }
+
+        return $this->requestWithAcceptedStatuses(
+            'GET',
+            $this->pushPath('/liveActivities/channels/' . rawurlencode($channelId)),
+            null,
+            [],
+            $this->pushHeaders('push-admin')
+        );
+    }
+
+    /**
+     * List APNs Live Activity broadcast channel identifiers.
+     */
+    public function listApnsLiveActivityChannels(): object
+    {
+        return $this->requestWithAcceptedStatuses(
+            'GET',
+            $this->pushPath('/liveActivities/channels'),
+            null,
+            [],
+            $this->pushHeaders('push-admin')
+        );
+    }
+
+    /**
+     * Delete one APNs Live Activity broadcast channel.
+     */
+    public function deleteApnsLiveActivityChannel(string $channelId): object
+    {
+        if ($channelId === '') {
+            throw new SockudoException('channelId must not be empty');
+        }
+
+        return $this->requestWithAcceptedStatuses(
+            'DELETE',
+            $this->pushPath('/liveActivities/channels/' . rawurlencode($channelId)),
+            null,
+            [],
+            $this->pushHeaders('push-admin'),
+            [200, 202, 204]
+        );
+    }
+
+    /**
      * Alias of publishPush.
      */
     public function publishPushDirect(array $request): object

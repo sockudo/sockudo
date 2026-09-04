@@ -544,6 +544,14 @@ async fn fetch_history(sockudo: &Sockudo) -> Result<(), sockudo_http::SockudoErr
 }
 ```
 
+## Apple Live Activities
+
+The SDK exports typed ActivityKit payload, event, priority, storage-policy, and channel response
+types. Manage iOS 18 APNs broadcast channels with
+`create/get/list/delete_apns_live_activity_channel`, and publish direct or broadcast requests with
+`publish_push`. Reuse `publishId` for safe retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## Error Handling
 
 All fallible methods return `Result<T, SockudoError>`. The `SockudoError` enum variants:

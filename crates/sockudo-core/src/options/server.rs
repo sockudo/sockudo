@@ -179,6 +179,10 @@ impl ServerOptions {
         self.opentelemetry
             .validate()
             .map_err(|error| format!("opentelemetry: {error}"))?;
+        self.push.apns.validate(self.push.apns_enabled)?;
+        if self.push.dispatch_max_outbound_requests == 0 {
+            return Err("push.dispatch_max_outbound_requests must be greater than 0".to_owned());
+        }
         if self.ai_transport.enabled {
             self.ai_transport.validate_deployment_matrix(
                 &self.adapter,

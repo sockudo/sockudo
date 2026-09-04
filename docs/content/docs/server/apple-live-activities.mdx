@@ -1,0 +1,238 @@
+---
+title: Apple Live Activities
+description: Run ActivityKit start, update, end, and iOS 18 broadcast delivery through Sockudo's durable push pipeline.
+---
+
+# Apple Live Activities
+
+Sockudo supports the complete server-side ActivityKit lifecycle:
+
+- token-based push-to-start, update, and end notifications
+- automatic `<bundle-id>.push-type.liveactivity` topics
+- direct priority 5 (`conservePower`) and 10 (`immediate`), plus broadcast-only priority 1 (`lowPower`)
+- `stale-date`, `dismissal-date`, relevance score, alerts, and iOS 18 input push token/channel fields
+- iOS 18 broadcast channel create, inspect, delete, update, and end
+- durable admission, scheduling, idempotency, retry, dead letters, status, metrics, and backpressure from the normal push pipeline
+
+Sockudo builds and validates the APNs wire payload. Callers use camel-case typed fields and never
+need to construct hyphenated `aps` keys or APNs headers themselves. The implementation follows
+Apple's [ActivityKit remote update contract](https://developer.apple.com/documentation/ActivityKit/starting-and-updating-live-activities-with-activitykit-push-notifications),
+[APNs request contract](https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns),
+[broadcast request contract](https://developer.apple.com/documentation/usernotifications/sending-broadcast-push-notification-requests-to-apns),
+and [channel management contract](https://developer.apple.com/documentation/usernotifications/sending-channel-management-requests-to-apns).
+
+## Apple app setup
+
+Enable Push Notifications and Live Activities for the application and widget extension. Add
+`NSSupportsLiveActivities` to the app's Info.plist. If the product needs higher-frequency updates,
+also add `NSSupportsLiveActivitiesFrequentUpdates`; users can still disable frequent updates, so
+the app should observe ActivityKit authorization changes and tolerate coalescing.
+
+Every activity update token and push-to-start token can rotate. Observe the async token sequences
+for the entire activity lifetime, upload every new value to your backend, and stop using the old
+value immediately. The Sockudo Swift client includes cancellable observers for both sequences.
+
+## Server configuration
+
+Build the server with `push-apns`. Add `monolith` when the same process should run the durable
+planner, dispatcher, APNs delivery, feedback, repair, and cleanup workers:
+
+```bash
+cargo build -p sockudo --release --features "push-apns,monolith"
+```
+
+Without `monolith`, run the push worker roles separately; the HTTP API and broadcast-channel
+management surface remain available in the server process.
+
+```toml
+[push]
+apns_enabled = true
+dispatch_worker_count = 8
+dispatch_max_outbound_requests = 256
+
+[push.apns]
+topic = "com.example.rides"
+live_activities_enabled = true
+bundle_id = "com.example.rides"
+live_activity_topic = "" # derives com.example.rides.push-type.liveactivity
+broadcast_enabled = true
+endpoint = "https://api.push.apple.com"
+broadcast_endpoint = "https://api-broadcast.push.apple.com"
+management_endpoint = "https://api-manage-broadcast.push.apple.com:2196"
+default_broadcast_expiration_secs = 3600
+connect_timeout_ms = 5000
+request_timeout_ms = 10000
+pool_idle_timeout_secs = 90
+max_idle_connections_per_host = 256
+tcp_keepalive_secs = 60
+http2_keepalive_interval_secs = 30
+http2_keepalive_timeout_secs = 10
+```
+
+Use all three sandbox hosts for sandbox tokens and channels:
+
+- `https://api.sandbox.push.apple.com`
+- `https://api-broadcast.sandbox.push.apple.com`
+- `https://api-manage-broadcast.sandbox.push.apple.com:2195`
+
+Broadcast channel management supports the same APNs token or mTLS credential stored for dispatch.
+For token authentication, configure `teamId`, `keyId`, and a `.p8` private key, or a short-lived
+provider token. APNs provider JWTs are cached for 55 minutes
+and invalidated once on `ExpiredProviderToken`; Sockudo does not regenerate them more frequently
+than Apple's recommended interval. Secrets remain in the existing encrypted credential store or
+secret environment variables.
+
+`lowPower` maps to APNs priority 1 and is valid only for broadcast requests. Direct token delivery
+uses `conservePower` (5) or `immediate` (10).
+
+## Start from a push-to-start token
+
+Broadcast notifications cannot start an activity. Send a start request to a push-to-start token:
+
+```json
+{
+  "publishId": "ride-184-start-v1",
+  "recipients": [{
+    "type": "recipient",
+    "recipient": {
+      "transportType": "apnsLiveActivity",
+      "activityToken": "PUSH_TO_START_TOKEN"
+    }
+  }],
+  "payload": {},
+  "liveActivity": {
+    "event": "start",
+    "timestamp": 1725000000,
+    "contentState": { "status": "driverAssigned", "etaMinutes": 4 },
+    "attributesType": "RideAttributes",
+    "attributes": { "rideID": "ride-184" },
+    "alert": { "title": "Driver assigned", "body": "Arriving in 4 minutes" },
+    "inputPushToken": true,
+    "priority": "immediate"
+  }
+}
+```
+
+On iOS 18, use either `inputPushToken: true` or `inputPushChannel: "CHANNEL_ID"`, never both.
+The channel form lets the newly started activity subscribe directly to a broadcast channel.
+
+## Update or end one activity
+
+Use the activity's current update token with `transportType: "apnsLiveActivity"`. An update may
+set `staleDate`; an end may set `dismissalDate`. Keep `timestamp` current and monotonically ordered
+for a given activity.
+
+```json
+{
+  "publishId": "ride-184-update-42",
+  "recipients": [{
+    "type": "recipient",
+    "recipient": {
+      "transportType": "apnsLiveActivity",
+      "activityToken": "CURRENT_ACTIVITY_UPDATE_TOKEN"
+    }
+  }],
+  "payload": {},
+  "liveActivity": {
+    "event": "update",
+    "timestamp": 1725000042,
+    "contentState": { "status": "arriving", "etaMinutes": 1 },
+    "staleDate": 1725000162,
+    "relevanceScore": 0.9,
+    "priority": "conservePower"
+  }
+}
+```
+
+## Broadcast at large scale
+
+Create a channel through the signed, push-admin API:
+
+```http
+POST /apps/{appId}/push/liveActivities/channels
+Content-Type: application/json
+
+{"storagePolicy":"mostRecent"}
+```
+
+Apple permits up to 10,000 channels per app in each environment. `GET` the collection endpoint to
+reconcile the APNs inventory with your event registry. `noStorage` maximizes the broadcast budget
+and always sends `apns-expiration: 0`. `mostRecent`
+lets APNs retain only the latest notification for offline devices, for at most eight hours. The
+policy is immutable: include the returned `storagePolicy` in every publish target so Sockudo can
+apply the matching expiration rules.
+
+```json
+{
+  "publishId": "match-90-score-3-1",
+  "recipients": [{
+    "type": "recipient",
+    "recipient": {
+      "transportType": "apnsLiveActivityBroadcast",
+      "channelId": "CHANNEL_ID",
+      "storagePolicy": "mostRecent"
+    }
+  }],
+  "payload": {},
+  "expiresAtMs": 1725003600000,
+  "liveActivity": {
+    "event": "update",
+    "timestamp": 1725000000,
+    "contentState": { "home": 3, "away": 1 },
+    "priority": "conservePower"
+  }
+}
+```
+
+A broadcast target is one provider request regardless of subscriber count. Consequently,
+`expectedRecipients` is `1`; delivery status means APNs accepted the broadcast, not that every
+device displayed it. Use Apple's Push Notifications Console and delivery metrics for downstream
+visibility. Delete retired channels promptly:
+
+```http
+DELETE /apps/{appId}/push/liveActivities/channels/{channelId}
+```
+
+Deletion is irreversible, although APNs may still deliver an already stored message after channel
+deletion. Never reuse or publish to a deleted ID.
+
+## Swift token observation
+
+```swift
+let updateTask = SockudoLiveActivityTokens.observePushTokens(for: activity) {
+  activityID, token in
+  await backend.replaceLiveActivityToken(activityID: activityID, token: token)
+}
+
+if #available(iOS 17.2, *) {
+  let startTask = SockudoLiveActivityTokens.observePushToStartTokens(
+    for: RideAttributes.self
+  ) { token in
+    await backend.replacePushToStartToken(token)
+  }
+}
+```
+
+Keep the returned task for as long as tokens are needed and cancel it when ownership ends. Mobile
+apps should send tokens only to their authenticated backend. That backend calls Sockudo; app
+secrets and push-admin capability headers must never ship in the application.
+
+## Capacity and failure handling
+
+Sockudo reuses long-lived HTTP/2 connections, enables adaptive flow-control windows, and bounds
+each worker's concurrent outbound requests. Direct-token fanout remains O(number of activities);
+use broadcast channels for audiences that share content. Increase worker count and outbound
+concurrency gradually while watching APNs 429 responses, queue lag, retry age, circuit state, and
+provider latency. More sockets do not guarantee more APNs throughput.
+
+The APNs device payload limit is 4096 bytes and the broadcast limit is 5120 bytes. Sockudo checks
+the final serialized body for the actual destination. APNs 429 and 5xx responses are retried with
+jitter and `Retry-After`; 5xx retries are held for Apple's required 15-minute delay. Invalid
+tokens, invalid channels, configuration failures, and caller
+payload errors are terminal and observable without leaking tokens. Reusing `publishId` makes
+application retries deterministic. Sockudo supplies a deterministic `apns-id` for direct attempts
+and `apns-request-id` for broadcast attempts.
+
+The dedicated `sockudo_push_apns_live_activity_requests_total{mode,event,status,app}` counter
+separates direct and broadcast outcomes while the common push queue, retry, provider-failure, and
+latency metrics retain the full operational picture.

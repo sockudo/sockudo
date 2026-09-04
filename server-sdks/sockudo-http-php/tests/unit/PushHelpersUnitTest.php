@@ -87,6 +87,41 @@ class PushHelpersUnitTest extends TestCase
         self::assertEquals('identity', $request->getHeaderLine('X-Sockudo-Device-Identity-Token'));
     }
 
+    public function testApnsLiveActivityChannelLifecycleUsesAdminEndpoints(): void
+    {
+        $sockudo = $this->mockSockudo([
+            new Response(201, [], '{"channelId":"channel-1","storagePolicy":"mostRecent"}'),
+            new Response(200, [], '{"channelId":"a/b+c=","storagePolicy":"mostRecent"}'),
+            new Response(200, [], '{"channels":["channel-1"]}'),
+            new Response(200, [], '{}'),
+        ]);
+
+        $created = $sockudo->createApnsLiveActivityChannel('mostRecent');
+        $sockudo->getApnsLiveActivityChannel('a/b+c=');
+        $listed = $sockudo->listApnsLiveActivityChannels();
+        $sockudo->deleteApnsLiveActivityChannel('a/b+c=');
+
+        self::assertEquals('channel-1', $created->channelId);
+        self::assertEquals(['channel-1'], $listed->channels);
+        self::assertCount(4, $this->request_history);
+        self::assertEquals('/apps/appid/push/liveActivities/channels', $this->request_history[0]['request']->getUri()->getPath());
+        self::assertEquals('{"storagePolicy":"mostRecent"}', (string) $this->request_history[0]['request']->getBody());
+        self::assertEquals('/apps/appid/push/liveActivities/channels/a%2Fb%2Bc%3D', $this->request_history[1]['request']->getUri()->getPath());
+        self::assertEquals('DELETE', $this->request_history[3]['request']->getMethod());
+        foreach ($this->request_history as $transaction) {
+            self::assertEquals('push-admin', $transaction['request']->getHeaderLine('X-Sockudo-Push-Capability'));
+        }
+    }
+
+    public function testApnsLiveActivityChannelPolicyIsValidated(): void
+    {
+        $sockudo = $this->mockSockudo([]);
+        $this->expectException(SockudoException::class);
+        $this->expectExceptionMessage('storagePolicy must be noStorage or mostRecent');
+
+        $sockudo->createApnsLiveActivityChannel('forever');
+    }
+
     public function testSchedulePushRequiresNotBeforeMs(): void
     {
         $sockudo = $this->mockSockudo([]);

@@ -200,3 +200,11 @@ The signing format matches Sockudo/Pusher REST auth: `auth_key`, `auth_timestamp
 ```python
 sockudo = Sockudo.from_url("http://app-key:app-secret@127.0.0.1:6001/apps/app-id")
 ```
+
+## Apple Live Activities
+
+Use `ApnsLiveActivityPayload` and the direct/broadcast recipient helpers to build ActivityKit
+publishes. Both clients expose `create`, `get`, `list`, and
+`delete_apns_live_activity_channel`; async methods use the same names. Reuse `publishId` for safe
+publish retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).

@@ -345,6 +345,14 @@ Async variant:
 CompletableFuture<Result> future = sockudoAsync.forceReconnectUser("user-123");
 ```
 
+## Apple Live Activities
+
+Use `publishPush` with nested maps for direct-token and broadcast ActivityKit notifications.
+Manage iOS 18 APNs broadcast channels with `createApnsLiveActivityChannel`,
+`getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, and
+`deleteApnsLiveActivityChannel`. Reuse `publishId` for safe retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## License
 
 This code is free to use under the terms of the MIT license.

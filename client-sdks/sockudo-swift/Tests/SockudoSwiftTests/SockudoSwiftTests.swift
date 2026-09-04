@@ -474,7 +474,10 @@ func pushProxyHelpersUseBackendEndpointAndAsyncPublishDefaults() async throws {
     let path = request.url?.path ?? ""
     let payload: [String: Any]
     let status: Int
-    if path.hasSuffix("/publish") {
+    if path.hasSuffix("/liveActivities/channels") {
+      payload = ["channelId": "channel_123", "storagePolicy": "mostRecent"]
+      status = 201
+    } else if path.hasSuffix("/publish") {
       payload = ["publish_id": "pub_123"]
       status = 202
     } else {
@@ -533,12 +536,36 @@ func pushProxyHelpersUseBackendEndpointAndAsyncPublishDefaults() async throws {
   }
   let page = try await waitForValue { pageBox.value }.get()
 
+  let channelBox = Box<Result<[String: Any], Error>>()
+  client.createLiveActivityBroadcastChannel(storagePolicy: .mostRecent) { result in
+    channelBox.value = result
+  }
+  let liveChannel = try await waitForValue { channelBox.value }.get()
+
+  let livePublishBox = Box<Result<[String: Any], Error>>()
+  client.publishLiveActivityBroadcast(
+    channelID: "channel_123",
+    storagePolicy: .mostRecent,
+    payload: .init(
+      event: .update,
+      timestamp: 1_725_000_000,
+      contentState: ["eta": 4],
+      staleDate: 1_725_000_300
+    )
+  ) { result in
+    livePublishBox.value = result
+  }
+  _ = try await waitForValue { livePublishBox.value }.get()
+
   #expect(publish["publish_id"] as? String == "pub_123")
   #expect((page["items"] as? [Any])?.isEmpty == true)
+  #expect(liveChannel["channelId"] as? String == "channel_123")
 
   let publishRequest = try #require(requests.value?[0])
   let updateRequest = try #require(requests.value?[1])
   let listRequest = try #require(requests.value?[2])
+  let createChannelRequest = try #require(requests.value?[3])
+  let livePublishRequest = try #require(requests.value?[4])
 
   #expect(publishRequest.url?.absoluteString == "https://api.example.test/push/publish")
   #expect(publishRequest.httpMethod == "POST")
@@ -554,6 +581,15 @@ func pushProxyHelpersUseBackendEndpointAndAsyncPublishDefaults() async throws {
     listRequest.url?.absoluteString
       == "https://api.example.test/push/channelSubscriptions?deviceId=device-1&limit=10&cursor=c1"
   )
+  #expect(
+    createChannelRequest.url?.absoluteString
+      == "https://api.example.test/push/liveActivities/channels"
+  )
+  let livePublishBody = try #require(requestBodyData(livePublishRequest))
+  let livePublishJSON = try #require(try JSON.decode(livePublishBody) as? [String: Any])
+  let liveActivity = try #require(livePublishJSON["liveActivity"] as? [String: Any])
+  #expect(liveActivity["event"] as? String == "update")
+  #expect((liveActivity["contentState"] as? [String: Any])?["eta"] as? Int == 4)
 }
 
 @Test @SockudoActor

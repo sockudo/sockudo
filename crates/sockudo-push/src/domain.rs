@@ -10,8 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sonic_rs::Value;
 use sonic_rs::prelude::*;
+use sonic_rs::{Object, Value, json};
 use thiserror::Error;
 use url::{Host, Url};
 use zeroize::Zeroize;
@@ -27,6 +27,7 @@ pub const MAX_PUSH_TITLE_BYTES: usize = 256;
 pub const MAX_PUSH_BODY_BYTES: usize = 4096;
 pub const MAX_PUSH_ICON_BYTES: usize = 2048;
 pub const MAX_APNS_PAYLOAD_BYTES: usize = 4096;
+pub const MAX_APNS_BROADCAST_PAYLOAD_BYTES: usize = 5120;
 pub const MAX_FCM_PAYLOAD_BYTES: usize = 4096;
 pub const MAX_WEB_PUSH_PAYLOAD_BYTES: usize = 4096;
 pub const MAX_HMS_PAYLOAD_BYTES: usize = 4096;
@@ -259,6 +260,19 @@ pub enum PushRecipient {
         #[serde(rename = "deviceToken")]
         device_token: SecretString,
     },
+    #[serde(rename = "apnsLiveActivity")]
+    ApnsLiveActivity {
+        #[serde(rename = "activityToken")]
+        activity_token: SecretString,
+    },
+    #[serde(rename = "apnsLiveActivityBroadcast")]
+    ApnsLiveActivityBroadcast {
+        #[serde(rename = "channelId")]
+        channel_id: SecretString,
+        /// Must match the immutable storage policy used when the APNs channel was created.
+        #[serde(default)]
+        storage_policy: ApnsChannelStoragePolicy,
+    },
     #[serde(rename = "web")]
     Web {
         endpoint: SecretString,
@@ -283,7 +297,9 @@ impl PushRecipient {
     pub fn provider(&self) -> PushProviderKind {
         match self {
             Self::Fcm { .. } => PushProviderKind::Fcm,
-            Self::Apns { .. } => PushProviderKind::Apns,
+            Self::Apns { .. }
+            | Self::ApnsLiveActivity { .. }
+            | Self::ApnsLiveActivityBroadcast { .. } => PushProviderKind::Apns,
             Self::Web { .. } => PushProviderKind::WebPush,
             Self::Hms { .. } => PushProviderKind::Hms,
             Self::Wns { .. } => PushProviderKind::Wns,
@@ -297,6 +313,8 @@ impl PushRecipient {
                 registration_token.stable_hash()
             }
             Self::Apns { device_token } => device_token.stable_hash(),
+            Self::ApnsLiveActivity { activity_token } => activity_token.stable_hash(),
+            Self::ApnsLiveActivityBroadcast { channel_id, .. } => channel_id.stable_hash(),
             Self::Web { endpoint, .. } => endpoint.stable_hash(),
             Self::Wns { channel_uri } => channel_uri.stable_hash(),
             Self::Realtime { channel } => stable_hash(channel.as_bytes()),
@@ -309,6 +327,12 @@ impl PushRecipient {
                 require_secret("registrationToken", registration_token)
             }
             Self::Apns { device_token } => require_secret("deviceToken", device_token),
+            Self::ApnsLiveActivity { activity_token } => {
+                require_secret("activityToken", activity_token)
+            }
+            Self::ApnsLiveActivityBroadcast { channel_id, .. } => {
+                require_secret("channelId", channel_id)
+            }
             Self::Web {
                 endpoint,
                 p256dh,
@@ -325,6 +349,265 @@ impl PushRecipient {
             }
             Self::Realtime { channel } => require_non_empty("channel", channel),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApnsChannelStoragePolicy {
+    /// APNs does not retain a notification for devices that are temporarily offline.
+    #[default]
+    NoStorage,
+    /// APNs retains only the most recent notification, for at most eight hours.
+    MostRecent,
+}
+
+impl ApnsChannelStoragePolicy {
+    pub const fn wire_value(self) -> u8 {
+        match self {
+            Self::NoStorage => 0,
+            Self::MostRecent => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApnsLiveActivityPriority {
+    /// Broadcast-only delivery that prioritizes device power usage.
+    LowPower,
+    #[default]
+    ConservePower,
+    Immediate,
+}
+
+impl ApnsLiveActivityPriority {
+    pub const fn header_value(self) -> &'static str {
+        match self {
+            Self::LowPower => "1",
+            Self::ConservePower => "5",
+            Self::Immediate => "10",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApnsLiveActivityEvent {
+    Start,
+    Update,
+    End,
+}
+
+impl ApnsLiveActivityEvent {
+    pub const fn wire_value(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Update => "update",
+            Self::End => "end",
+        }
+    }
+}
+
+/// A validated ActivityKit remote notification payload.
+///
+/// Dates are UNIX timestamps in seconds, matching the APNs ActivityKit contract.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApnsLiveActivityPayload {
+    pub event: ApnsLiveActivityEvent,
+    pub timestamp: u64,
+    pub content_state: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attributes_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_date: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dismissal_date: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance_score: Option<f64>,
+    #[serde(default)]
+    pub input_push_token: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_push_channel: Option<String>,
+    #[serde(default)]
+    pub priority: ApnsLiveActivityPriority,
+}
+
+impl ApnsLiveActivityPayload {
+    pub fn validate(&self, broadcast: bool) -> Result<(), PushDomainError> {
+        if self.timestamp == 0 {
+            return Err(PushDomainError::InvalidField {
+                field: "liveActivity.timestamp",
+                reason: "must be a positive UNIX timestamp in seconds",
+            });
+        }
+        if !self.content_state.is_object() {
+            return Err(PushDomainError::InvalidField {
+                field: "liveActivity.contentState",
+                reason: "must be a JSON object matching Activity.ContentState",
+            });
+        }
+        if self
+            .relevance_score
+            .is_some_and(|score| !score.is_finite() || score.is_sign_negative())
+        {
+            return Err(PushDomainError::InvalidField {
+                field: "liveActivity.relevanceScore",
+                reason: "must be a finite nonnegative number",
+            });
+        }
+        if self
+            .input_push_channel
+            .as_deref()
+            .is_some_and(|channel| channel.trim().is_empty())
+        {
+            return Err(PushDomainError::EmptyField {
+                field: "liveActivity.inputPushChannel",
+            });
+        }
+        if self.input_push_token && self.input_push_channel.is_some() {
+            return Err(PushDomainError::InvalidField {
+                field: "liveActivity",
+                reason: "inputPushToken and inputPushChannel are mutually exclusive",
+            });
+        }
+        if self.priority == ApnsLiveActivityPriority::LowPower && !broadcast {
+            return Err(PushDomainError::DisallowedField {
+                field: "liveActivity.priority",
+                reason: "lowPower priority is supported only for broadcast delivery",
+            });
+        }
+
+        match self.event {
+            ApnsLiveActivityEvent::Start => {
+                if broadcast {
+                    return Err(PushDomainError::DisallowedField {
+                        field: "liveActivity.event",
+                        reason: "broadcast notifications cannot start a Live Activity",
+                    });
+                }
+                require_non_empty(
+                    "liveActivity.attributesType",
+                    self.attributes_type.as_deref().unwrap_or_default(),
+                )?;
+                if !self.attributes.as_ref().is_some_and(Value::is_object) {
+                    return Err(PushDomainError::InvalidField {
+                        field: "liveActivity.attributes",
+                        reason: "must be a JSON object for start events",
+                    });
+                }
+                if !self.alert.as_ref().is_some_and(Value::is_object) {
+                    return Err(PushDomainError::InvalidField {
+                        field: "liveActivity.alert",
+                        reason: "must be a JSON object for start events",
+                    });
+                }
+                if self.stale_date.is_some() || self.dismissal_date.is_some() {
+                    return Err(PushDomainError::DisallowedField {
+                        field: "liveActivity",
+                        reason: "start events cannot set staleDate or dismissalDate",
+                    });
+                }
+            }
+            ApnsLiveActivityEvent::Update => {
+                if self.attributes_type.is_some()
+                    || self.attributes.is_some()
+                    || self.dismissal_date.is_some()
+                    || self.input_push_token
+                    || self.input_push_channel.is_some()
+                {
+                    return Err(PushDomainError::DisallowedField {
+                        field: "liveActivity",
+                        reason: "update events cannot set start or dismissal fields",
+                    });
+                }
+            }
+            ApnsLiveActivityEvent::End => {
+                if self.attributes_type.is_some()
+                    || self.attributes.is_some()
+                    || self.stale_date.is_some()
+                    || self.input_push_token
+                    || self.input_push_channel.is_some()
+                {
+                    return Err(PushDomainError::DisallowedField {
+                        field: "liveActivity",
+                        reason: "end events cannot set start or stale fields",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn provider_override(&self) -> ProviderOverridePayload {
+        let mut aps = Object::new();
+        aps.insert("timestamp", self.timestamp);
+        aps.insert("event", self.event.wire_value());
+        aps.insert("content-state", self.content_state.clone());
+        if let Some(value) = &self.attributes_type {
+            aps.insert("attributes-type", value.as_str());
+        }
+        if let Some(value) = &self.attributes {
+            aps.insert("attributes", value.clone());
+        }
+        if let Some(value) = &self.alert {
+            aps.insert("alert", value.clone());
+        }
+        if let Some(value) = self.stale_date {
+            aps.insert("stale-date", value);
+        }
+        if let Some(value) = self.dismissal_date {
+            aps.insert("dismissal-date", value);
+        }
+        if let Some(value) = self.relevance_score {
+            aps.insert("relevance-score", json!(value));
+        }
+        if self.input_push_token {
+            aps.insert("input-push-token", 1);
+        }
+        if let Some(value) = &self.input_push_channel {
+            aps.insert("input-push-channel", value.as_str());
+        }
+        ProviderOverridePayload {
+            provider: PushProviderKind::Apns,
+            payload: json!({
+                "headers": {
+                    "apns-push-type": "liveactivity",
+                    "apns-priority": self.priority.header_value()
+                },
+                "aps": aps
+            }),
+        }
+    }
+}
+
+impl fmt::Debug for ApnsLiveActivityPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApnsLiveActivityPayload")
+            .field("event", &self.event)
+            .field("timestamp", &self.timestamp)
+            .field("content_state", &"[REDACTED]")
+            .field("attributes_type", &self.attributes_type)
+            .field(
+                "attributes",
+                &self.attributes.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("alert", &self.alert.as_ref().map(|_| "[REDACTED]"))
+            .field("stale_date", &self.stale_date)
+            .field("dismissal_date", &self.dismissal_date)
+            .field("relevance_score", &self.relevance_score)
+            .field("input_push_token", &self.input_push_token)
+            .field(
+                "input_push_channel",
+                &self.input_push_channel.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("priority", &self.priority)
+            .finish()
     }
 }
 
@@ -840,7 +1123,12 @@ pub struct ProviderOverridePayload {
 
 impl ProviderOverridePayload {
     pub fn validate(&self) -> Result<(), PushDomainError> {
-        require_json_bound("payload", &self.payload, MAX_PROVIDER_OVERRIDE_BYTES)
+        let max_bytes = if self.provider == PushProviderKind::Apns {
+            MAX_APNS_BROADCAST_PAYLOAD_BYTES
+        } else {
+            MAX_PROVIDER_OVERRIDE_BYTES
+        };
+        require_json_bound("payload", &self.payload, max_bytes)
     }
 }
 

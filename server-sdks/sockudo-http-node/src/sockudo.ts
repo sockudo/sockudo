@@ -8,6 +8,9 @@ import SockudoConfig = require("./sockudo_config");
 import Token = require("./token");
 import WebHook = require("./webhook");
 import type {
+  ApnsBroadcastChannel,
+  ApnsBroadcastChannelList,
+  ApnsChannelStoragePolicy,
   BatchEvent,
   AnnotationEventsParams,
   AnnotationEventsResponse,
@@ -472,6 +475,37 @@ class Sockudo {
       body: { ...request, sync: false },
       headers: this.pushHeaders("push-admin"),
     }).then((response) => response.json() as Promise<PushPublishAcceptedResponse>);
+  }
+
+  createApnsLiveActivityChannel(
+    storagePolicy: ApnsChannelStoragePolicy = "noStorage",
+  ): Promise<ApnsBroadcastChannel> {
+    return this.post({
+      path: "/push/liveActivities/channels",
+      body: { storagePolicy },
+      headers: this.pushHeaders("push-admin"),
+    }).then((response) => response.json() as Promise<ApnsBroadcastChannel>);
+  }
+
+  getApnsLiveActivityChannel(channelId: string): Promise<ApnsBroadcastChannel> {
+    return this.get({
+      path: `/push/liveActivities/channels/${encodeURIComponent(channelId)}`,
+      headers: this.pushHeaders("push-admin"),
+    }).then((response) => response.json() as Promise<ApnsBroadcastChannel>);
+  }
+
+  listApnsLiveActivityChannels(): Promise<ApnsBroadcastChannelList> {
+    return this.get({
+      path: "/push/liveActivities/channels",
+      headers: this.pushHeaders("push-admin"),
+    }).then((response) => response.json() as Promise<ApnsBroadcastChannelList>);
+  }
+
+  deleteApnsLiveActivityChannel(channelId: string): Promise<ResponseWithIdempotency> {
+    return this.delete({
+      path: `/push/liveActivities/channels/${encodeURIComponent(channelId)}`,
+      headers: this.pushHeaders("push-admin"),
+    });
   }
 
   publishPushDirect(request: PushPublishRequest): Promise<PushPublishAcceptedResponse> {

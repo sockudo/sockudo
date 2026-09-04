@@ -59,7 +59,11 @@ pub use presence_history::{
     PresenceHistoryBounds, PresenceHistoryContinuity, PresenceHistoryItem, PresenceHistoryPage,
     PresenceHistoryParams, PresenceSnapshot, PresenceSnapshotMember, PresenceSnapshotParams,
 };
-pub use push::{PushCursorParams, PushSubscriptionParams};
+pub use push::{
+    ApnsBroadcastChannel, ApnsBroadcastChannelList, ApnsChannelStoragePolicy,
+    ApnsLiveActivityEvent, ApnsLiveActivityPayload, ApnsLiveActivityPriority, PushCursorParams,
+    PushSubscriptionParams,
+};
 
 /// Check if encryption support is available at compile time
 pub const ENCRYPTION_AVAILABLE: bool = cfg!(feature = "encryption");

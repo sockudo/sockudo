@@ -6,6 +6,9 @@ icon: BellRing
 
 Push notifications are a core part of Sockudo. WebSockets deliver realtime messages to connected clients; push notifications reach devices that are offline, backgrounded, rate-limited by the OS, or outside the active channel session.
 
+For ActivityKit start, update, end, push-token rotation, and iOS 18 broadcast channels, see
+[Apple Live Activities](/docs/server/apple-live-activities).
+
 ```mermaid
 flowchart LR
   D[Mobile/browser device] -->|provider token| B[Your backend]
@@ -205,6 +208,10 @@ cleanup_max_deleted_per_tick = 100000
 # PUSH_APNS_TOPIC=com.example.app
 # PUSH_APNS_PRIVATE_KEY_PATH=/run/secrets/AuthKey_KEYID12345.p8
 ```
+
+APNs connection pooling, Live Activity topics, broadcast and channel-management endpoints, and
+timeouts are configured under `[push.apns]`. Broadcast delivery uses one APNs request per channel,
+instead of expanding the audience into device-token jobs.
 
 ## Register devices
 

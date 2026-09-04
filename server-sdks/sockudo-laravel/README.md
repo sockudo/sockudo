@@ -126,9 +126,15 @@ Sockudo::publishAnnotation('orders', $messageSerial, [
 $publish = Sockudo::publishPush([
     'recipients' => [['type' => 'channel', 'channel' => 'orders']],
     'payload' => ['title' => 'Order updated'],
-    'idempotency_key' => 'order-updated:ord-123:v4',
+    'publishId' => 'order-updated:ord-123:v4',
 ]);
 ```
+
+Apple Live Activity broadcast channels are available through
+`createApnsLiveActivityChannel`, `getApnsLiveActivityChannel`,
+`listApnsLiveActivityChannels`, and `deleteApnsLiveActivityChannel`. Publish direct or broadcast
+ActivityKit updates with `publishPush`; see the monorepo's
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
 
 Dependency injection is also available:
 
