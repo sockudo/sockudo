@@ -13,6 +13,7 @@ use sockudo_core::websocket::SocketId;
 use sonic_rs::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -158,9 +159,25 @@ pub struct MockTransport {
     published_responses: Arc<Mutex<Vec<ResponseBody>>>,
     healthy: Arc<Mutex<bool>>,
     node_count: Arc<Mutex<usize>>,
+    /// When set, a NodeDead publish never resolves. Reproduces the defect where an unbounded
+    /// `.await` on that publish stalled the dead-node cleanup loop: the future stays PENDING,
+    /// so no error path is taken and nothing is logged.
+    ///
+    /// A field on the transport rather than on MockConfig on purpose - MockConfig is built with
+    /// explicit struct literals in several test files, so a new field there is a compile error in
+    /// all of them for a flag only one test needs.
+    hang_node_dead_publish: Arc<AtomicBool>,
 }
 
 impl MockTransport {
+    /// Make every subsequent NodeDead publish hang forever instead of completing.
+    ///
+    /// Reproduces the defect this guards: an unbounded `.await` on that publish stalled the
+    /// dead-node cleanup loop, and because a pending future is not an error, nothing was logged.
+    pub fn hang_node_dead_publish(&self) {
+        self.hang_node_dead_publish.store(true, Ordering::SeqCst);
+    }
+
     /// Create a new MockTransport with shared state for multi-node simulation
     pub fn new_with_shared_state(
         config: MockConfig,
@@ -174,6 +191,7 @@ impl MockTransport {
             published_responses: Arc::new(Mutex::new(Vec::new())),
             healthy: Arc::new(Mutex::new(true)),
             node_count: Arc::new(Mutex::new(1)),
+            hang_node_dead_publish: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -471,6 +489,7 @@ impl HorizontalTransport for MockTransport {
             healthy: Arc::new(Mutex::new(config.healthy)),
             // Match production semantics: node count includes the local node.
             node_count: Arc::new(Mutex::new(config.node_states.len() + 1)),
+            hang_node_dead_publish: Arc::new(AtomicBool::new(false)),
             config,
             handlers: Arc::new(Mutex::new(None)),
             published_broadcasts: Arc::new(Mutex::new(Vec::new())),
@@ -509,6 +528,14 @@ impl HorizontalTransport for MockTransport {
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
         if self.config.simulate_failures && request.app_id == "fail_request" {
             return Err(Error::Internal("Simulated request failure".to_string()));
+        }
+
+        // Never resolves. Reproduces a NodeDead broadcast that hangs rather than failing -
+        // the shape that stalled dead-node cleanup, because a pending future is not an error.
+        if request.request_type == RequestType::NodeDead
+            && self.hang_node_dead_publish.load(Ordering::SeqCst)
+        {
+            std::future::pending::<()>().await;
         }
 
         self.published_requests.lock().await.push(request.clone());
@@ -553,6 +580,7 @@ impl HorizontalTransport for MockTransport {
                         published_responses: Arc::new(Mutex::new(Vec::new())),
                         healthy: Arc::new(Mutex::new(true)),
                         node_count: Arc::new(Mutex::new(1)),
+                        hang_node_dead_publish: Arc::new(AtomicBool::new(false)),
                     };
 
                     let response = dummy_transport.create_realistic_response(&node_state, &request);

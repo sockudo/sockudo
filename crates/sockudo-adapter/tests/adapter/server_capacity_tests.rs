@@ -75,7 +75,7 @@ impl MetricsInterface for CountingMetrics {
     fn mark_ws_messages_sent_batch(&self, _: &str, _: usize, _: usize) {}
     fn mark_ws_message_received(&self, _: &str, _: usize) {}
     fn track_horizontal_adapter_resolve_time(&self, _: &str, _: f64) {}
-    fn track_horizontal_adapter_resolved_promises(&self, _: &str, _: bool) {}
+    fn track_horizontal_adapter_resolved_promises(&self, _: &str, _: bool, _: &str) {}
     fn mark_horizontal_adapter_request_sent(&self, _: &str) {}
     fn mark_horizontal_adapter_request_received(&self, _: &str) {}
     fn mark_horizontal_adapter_response_received(&self, _: &str) {}

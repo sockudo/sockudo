@@ -18,6 +18,7 @@ import okhttp3.WebSocketListener
 import okhttp3.MediaType.Companion.toMediaType
 import okio.ByteString.Companion.toByteString
 import java.net.URI
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -38,6 +39,8 @@ class SockudoClient(
     internal val p = ProtocolPrefix(options.protocolVersion)
     internal val config = ResolvedConfiguration(options, httpClient)
     private val dispatcher = EventDispatcher()
+    private val connectionStateListeners =
+        CopyOnWriteArrayList<Pair<EventBindingToken, SockudoConnectionEventListener>>()
     private val channels = linkedMapOf<String, SockudoChannel>()
     private var webSocket: WebSocket? = null
     private var activityJob: Job? = null
@@ -85,6 +88,16 @@ class SockudoClient(
 
     fun bindGlobal(callback: (String, Any?) -> Unit): EventBindingToken = onGlobal(callback)
 
+    fun bindConnectionListener(listener: SockudoConnectionEventListener): EventBindingToken {
+        val token = EventBindingToken()
+        connectionStateListeners += token to listener
+        return token
+    }
+
+    fun unbindConnectionListener(token: EventBindingToken) {
+        connectionStateListeners.removeIf { it.first == token }
+    }
+
     fun off(eventName: String? = null, token: EventBindingToken? = null) {
         dispatcher.unbind(eventName, token)
     }
@@ -92,7 +105,7 @@ class SockudoClient(
     fun unbind(eventName: String? = null, token: EventBindingToken? = null) = off(eventName, token)
 
     fun unbindAll() {
-        dispatcher.unbind()
+        off()
     }
 
     fun channel(name: String): SockudoChannel? = channels[name]
@@ -156,7 +169,7 @@ class SockudoClient(
                     openWebSocket(transports.first())
                     setUnavailableTimer()
                 }.onFailure { error ->
-                    dispatcher.emit("error", error)
+                    reportError(error)
                     updateState(ConnectionState.FAILED)
                 }
             }
@@ -512,7 +525,7 @@ class SockudoClient(
         scope.launch {
             runCatching {
                 refreshAuthToken(reason, sendRefreshFrame = true)
-            }.onFailure { dispatcher.emit("error", it) }
+            }.onFailure { reportError(it) }
         }
     }
 
@@ -550,7 +563,7 @@ class SockudoClient(
                 }
                 runCatching {
                     refreshAuthToken(ClientAuthTokenReason.REFRESH, sendRefreshFrame = true)
-                }.onFailure { dispatcher.emit("error", it) }
+                }.onFailure { reportError(it) }
             }
     }
 
@@ -595,7 +608,7 @@ class SockudoClient(
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        dispatcher.emit("error", t)
+                        reportError(t)
                         handleSocketClosed(1006, t.message)
                     }
 
@@ -669,7 +682,7 @@ class SockudoClient(
                     if (isTokenExpiredPayload(event.data)) {
                         launchAuthRefresh(ClientAuthTokenReason.EXPIRED)
                     }
-                    dispatcher.emit("error", event.data)
+                    reportError(event.data)
                 }
                 eventName == p.event("auth_success") -> dispatcher.emit(eventName, event.data)
                 eventName == p.event("token_expired") -> {
@@ -752,7 +765,7 @@ class SockudoClient(
                 }
             }
         } catch (error: Throwable) {
-            dispatcher.emit("error", error)
+            reportError(error)
         }
     }
 
@@ -793,7 +806,7 @@ class SockudoClient(
         }
 
         if (!reason.isNullOrBlank()) {
-            dispatcher.emit("error", SockudoException.ConnectionUnavailable)
+            reportError(SockudoException.ConnectionUnavailable)
             SockudoLogger.warn("Socket closed", code, reason)
         }
     }
@@ -985,7 +998,7 @@ class SockudoClient(
                             setUnavailableTimer()
                         }
                     }.onFailure {
-                        dispatcher.emit("error", it)
+                        reportError(it)
                         updateState(ConnectionState.FAILED)
                     }
                 } else {
@@ -1009,13 +1022,38 @@ class SockudoClient(
     }
 
     private fun updateState(state: ConnectionState, metadata: Map<String, Any?>? = null) {
-        val previous = connectionState
+        val change = ConnectionStateChange(
+            previous = connectionState,
+            current = state,
+        )
         connectionState = state
+        connectionStateListeners.forEach { (_, listener) -> listener.onConnectionStateChange(change) }
         dispatcher.emit(
             "state_change",
-            mapOf("previous" to previous.name.lowercase(), "current" to state.name.lowercase())
+            mapOf(
+                "previous" to change.previous.name.lowercase(),
+                "current" to change.current.name.lowercase(),
+            ),
         )
         dispatcher.emit(state.name.lowercase(), metadata)
+    }
+
+    private fun reportError(raw: Any?) {
+        val error = when (raw) {
+            is SockudoError -> raw
+            is Throwable -> SockudoError(message = raw.message ?: raw.toString(), cause = raw)
+            is Map<*, *> -> {
+                val code =
+                    parseSockudoLong(raw["code"] ?: raw["status"] ?: raw["error_code"])?.toString()
+                        ?: (raw["code"] ?: raw["status"] ?: raw["error_code"])?.toString()
+                val message = (raw["message"] ?: raw["error"])?.toString() ?: raw.toString()
+                SockudoError(message = message, code = code)
+            }
+
+            else -> SockudoError(message = raw?.toString() ?: "Unknown error")
+        }
+        dispatcher.emit("error", raw)
+        connectionStateListeners.forEach { (_, listener) -> listener.onError(error) }
     }
 
     class UserFacade {

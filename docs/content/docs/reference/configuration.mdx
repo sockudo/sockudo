@@ -476,8 +476,63 @@ metadata is inspected through `/apps/{appId}/push/deadLetters`. Cleanup is bound
 | `[metrics]` | Enables metrics and configures the Prometheus scrape endpoint. |
 | `[metrics.prometheus]` | Prometheus metric naming options. |
 | `[metrics.tcp_exporter]` | Optional metrics-rs TCP event exporter for live clients and sidecars. |
+| `[opentelemetry]` | Optional OTLP traces, metrics, logs, resource identity, batching, and propagation. |
 | `[logging]` | Controls ANSI colors and tracing-target inclusion for text/JSON output. |
 | [logging environment](/docs/reference/logging) | Runtime filters, structured output, lifecycle fields, and data-safety policy. |
+
+OpenTelemetry is disabled by default and is additive to Prometheus and local logs:
+
+```toml
+[opentelemetry]
+enabled = true
+traces_enabled = true
+metrics_enabled = true
+logs_enabled = true
+service_name = "sockudo"
+service_namespace = "realtime"
+deployment_environment = "production"
+resource_attributes = { "cloud.region" = "eu-central-1" }
+endpoint = "http://otel-collector:4317"
+export_timeout_ms = 10000
+batch_scheduled_delay_ms = 5000
+batch_max_queue_size = 2048
+batch_max_export_batch_size = 512
+metric_export_interval_ms = 60000
+propagation_trace_context = true
+propagation_baggage = true
+```
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `enabled` | `false` | Initializes OpenTelemetry and enables the selected signals. |
+| `traces_enabled` | `true` | Exports spans when OpenTelemetry is enabled. |
+| `metrics_enabled` | `true` | Exports Sockudo metrics through OTLP independently of the Prometheus listener. |
+| `logs_enabled` | `true` | Exports structured log records while retaining local output. |
+| `service_name` | `sockudo` | OpenTelemetry `service.name`. Must not be empty when enabled. |
+| `service_namespace` | unset | Optional `service.namespace`. |
+| `deployment_environment` | unset | Optional `deployment.environment.name`. |
+| `resource_attributes` | `{}` | Additional string-valued resource attributes. Never store secrets here. |
+| `endpoint` | unset | Optional common OTLP endpoint. When unset, standard SDK/exporter configuration applies. |
+| `export_timeout_ms` | `10000` | Timeout for one exporter request. |
+| `batch_scheduled_delay_ms` | `5000` | Maximum span/log batching delay. |
+| `batch_max_queue_size` | `2048` | Bounded batch processor queue capacity. |
+| `batch_max_export_batch_size` | `512` | Maximum export batch size; cannot exceed the queue capacity. |
+| `metric_export_interval_ms` | `60000` | Periodic metric export interval. |
+| `propagation_trace_context` | `true` | Extracts and injects W3C `traceparent` and `tracestate`. |
+| `propagation_baggage` | `true` | Extracts and injects W3C baggage. Do not place secrets in baggage. |
+
+Use standard `OTEL_*` environment variables for the OTLP protocol (`grpc`, `http/protobuf`, or
+`http/json`), signal-specific endpoints, headers, compression, sampling, and SDK limits.
+The complete mapping is in the
+[environment variable reference](/docs/reference/environment-variables#opentelemetry).
+HTTPS exporters use platform/web PKI roots; custom CA bundles and mTLS exporter configuration are
+not supported by the current Rust SDK integration.
+The shipped CORS configuration allows `traceparent`, `tracestate`, and `baggage`; retain those
+headers in a custom allowlist when browser clients participate in distributed traces.
+
+Collector failures are fail-open: export uses bounded queues and does not change request handling,
+`/live`, or `/up`. Invalid static settings are still rejected during startup. Stable traces,
+metrics, and logs are supported; OpenTelemetry profiles are not.
 
 ## Example production skeleton
 

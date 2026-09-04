@@ -10,7 +10,7 @@ use serde::Deserialize;
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::WebSocketUpgrade;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{Instrument, error, field, info_span};
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectionQuery {
@@ -107,36 +107,52 @@ pub async fn handle_ws_upgrade(
     };
     let ws_cfg = websocket_config_for_protocol(server_options, protocol_version);
 
+    let connection_span = info_span!(
+        target: "sockudo_telemetry",
+        "websocket.connection",
+        otel.kind = "server",
+        otel.name = "websocket connection",
+        network.protocol.name = "websocket",
+        sockudo.protocol.version = protocol_version as u8,
+        app_id = field::Empty,
+        socket_id = field::Empty,
+        otel.status_code = field::Empty,
+    );
+
     ws.config(ws_cfg)
-        .on_upgrade(move |socket| async move {
-            if let Err(e) = handler
-                .handle_socket(
-                    socket,
-                    app_key.clone(),
-                    origin,
-                    protocol_version,
-                    wire_format,
-                    echo_messages,
-                    append_mode,
-                    params.token,
-                )
-                .await
-            {
-                error!(error = %e, "socket handling failed");
-                if let Some(metrics) = handler.metrics() {
-                    match &e {
-                        sockudo_core::error::Error::ApplicationNotFound
-                        | sockudo_core::error::Error::ApplicationDisabled
-                        | sockudo_core::error::Error::OriginNotAllowed
-                        | sockudo_core::error::Error::Auth(_)
-                        | sockudo_core::error::Error::InvalidMessageFormat(_)
-                        | sockudo_core::error::Error::InvalidEventName(_) => {}
-                        _ => {
-                            metrics.mark_connection_error(&app_key, "socket_handling_failed");
+        .on_upgrade(move |socket| {
+            async move {
+                if let Err(e) = handler
+                    .handle_socket(
+                        socket,
+                        app_key.clone(),
+                        origin,
+                        protocol_version,
+                        wire_format,
+                        echo_messages,
+                        append_mode,
+                        params.token,
+                    )
+                    .await
+                {
+                    error!(error = %e, "socket handling failed");
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    if let Some(metrics) = handler.metrics() {
+                        match &e {
+                            sockudo_core::error::Error::ApplicationNotFound
+                            | sockudo_core::error::Error::ApplicationDisabled
+                            | sockudo_core::error::Error::OriginNotAllowed
+                            | sockudo_core::error::Error::Auth(_)
+                            | sockudo_core::error::Error::InvalidMessageFormat(_)
+                            | sockudo_core::error::Error::InvalidEventName(_) => {}
+                            _ => {
+                                metrics.mark_connection_error(&app_key, "socket_handling_failed");
+                            }
                         }
                     }
                 }
             }
+            .instrument(connection_span)
         })
         .into_response()
 }

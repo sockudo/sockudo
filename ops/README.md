@@ -7,8 +7,18 @@ Current contents:
 
 - `grafana/` for dashboards and Grafana provisioning
 - `monitoring/` for Prometheus config and alert rules
+- `opentelemetry/` for the local OTLP collector example
 - `nginx/` for reverse-proxy configs and SSL assets
 - `migrations/` for canonical fresh-schema files and backend bootstrap notes
+
+Run the local OpenTelemetry example with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.opentelemetry.yml up --build
+```
+
+The example accepts OTLP gRPC on `4317` and OTLP HTTP on `4318`, then prints basic trace, metric,
+and log summaries from the collector. The debug exporter is for development only.
 
 Possible future contents:
 

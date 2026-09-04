@@ -583,6 +583,7 @@ mod tests {
             app_key: "test-key".to_string(),
             app_id: "test-id".to_string(),
             app_secret: "test-secret".to_string(),
+            trace_context: Default::default(),
             payload: JobPayload::default(),
             original_signature: "signature".to_string(),
         }

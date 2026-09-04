@@ -133,6 +133,10 @@ pub(super) struct CounterWithLabels {
 }
 
 impl CounterWithLabels {
+    pub(super) fn init(&self) {
+        counter!(self.name.clone(), &self.labels).increment(0);
+    }
+
     pub(super) fn inc(&self) {
         counter!(self.name.clone(), &self.labels).increment(1);
     }

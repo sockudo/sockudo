@@ -60,6 +60,7 @@ pub struct ServerOptions {
     pub logging: Option<LoggingConfig>,
     pub max_connections: u32,
     pub metrics: MetricsConfig,
+    pub opentelemetry: OpenTelemetryConfig,
     pub mode: String,
     pub server_role: ServerRole,
     pub port: u16,
@@ -118,6 +119,7 @@ impl Default for ServerOptions {
             logging: None,
             max_connections: 0,
             metrics: MetricsConfig::default(),
+            opentelemetry: OpenTelemetryConfig::default(),
             mode: "production".to_string(),
             server_role: ServerRole::default(),
             port: 6001,
@@ -174,6 +176,9 @@ impl ServerOptions {
             .accept_traffic
             .validate()
             .map_err(|error| format!("http_api.accept_traffic: {error}"))?;
+        self.opentelemetry
+            .validate()
+            .map_err(|error| format!("opentelemetry: {error}"))?;
         if self.ai_transport.enabled {
             self.ai_transport.validate_deployment_matrix(
                 &self.adapter,
@@ -459,6 +464,120 @@ mod tests {
     #[test]
     fn default_health_check_timeout_leaves_probe_headroom() {
         assert_eq!(ServerOptions::default().health_check_timeout_ms, 2000);
+    }
+
+    #[test]
+    fn opentelemetry_defaults_are_backward_compatible() {
+        let options: ServerOptions = toml::from_str("").unwrap();
+        let legacy_json: ServerOptions = sonic_rs::from_str("{}").unwrap();
+        let config = options.opentelemetry;
+
+        assert_eq!(legacy_json.opentelemetry, config);
+
+        assert!(!config.enabled);
+        assert!(config.traces_enabled);
+        assert!(config.metrics_enabled);
+        assert!(config.logs_enabled);
+        assert_eq!(config.service_name, "sockudo");
+        assert_eq!(config.service_namespace, None);
+        assert_eq!(config.deployment_environment, None);
+        assert!(config.resource_attributes.is_empty());
+        assert_eq!(config.endpoint, None);
+        assert_eq!(config.export_timeout_ms, 10_000);
+        assert_eq!(config.batch_scheduled_delay_ms, 5_000);
+        assert_eq!(config.batch_max_queue_size, 2_048);
+        assert_eq!(config.batch_max_export_batch_size, 512);
+        assert_eq!(config.metric_export_interval_ms, 60_000);
+        assert!(config.propagation_trace_context);
+        assert!(config.propagation_baggage);
+    }
+
+    #[test]
+    fn opentelemetry_partial_configuration_uses_field_defaults() {
+        let options: ServerOptions = toml::from_str(
+            r#"
+            [opentelemetry]
+            enabled = true
+            service_namespace = "realtime"
+            "#,
+        )
+        .unwrap();
+
+        assert!(options.opentelemetry.enabled);
+        assert_eq!(
+            options.opentelemetry.service_namespace.as_deref(),
+            Some("realtime")
+        );
+        assert_eq!(options.opentelemetry.service_name, "sockudo");
+        assert_eq!(options.opentelemetry.batch_max_queue_size, 2_048);
+    }
+
+    #[test]
+    fn opentelemetry_configuration_is_validated() {
+        let mut options = ServerOptions::default();
+        options.opentelemetry.service_name = "  ".to_string();
+        options.validate().unwrap();
+
+        options.opentelemetry.enabled = true;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "opentelemetry: service_name must not be empty when enabled"
+        );
+
+        options.opentelemetry = OpenTelemetryConfig::default();
+        options.opentelemetry.export_timeout_ms = 0;
+        assert!(
+            options
+                .validate()
+                .unwrap_err()
+                .contains("export_timeout_ms")
+        );
+
+        options.opentelemetry = OpenTelemetryConfig::default();
+        options.opentelemetry.batch_scheduled_delay_ms = 0;
+        assert!(
+            options
+                .validate()
+                .unwrap_err()
+                .contains("batch_scheduled_delay_ms")
+        );
+
+        options.opentelemetry = OpenTelemetryConfig::default();
+        options.opentelemetry.batch_max_queue_size = 0;
+        assert!(
+            options
+                .validate()
+                .unwrap_err()
+                .contains("batch_max_queue_size")
+        );
+
+        options.opentelemetry = OpenTelemetryConfig::default();
+        options.opentelemetry.batch_max_export_batch_size = 0;
+        assert!(
+            options
+                .validate()
+                .unwrap_err()
+                .contains("batch_max_export_batch_size")
+        );
+
+        options.opentelemetry = OpenTelemetryConfig::default();
+        options.opentelemetry.metric_export_interval_ms = 0;
+        assert!(
+            options
+                .validate()
+                .unwrap_err()
+                .contains("metric_export_interval_ms")
+        );
+
+        options.opentelemetry = OpenTelemetryConfig::default();
+        options.opentelemetry.batch_max_queue_size = 100;
+        options.opentelemetry.batch_max_export_batch_size = 101;
+        assert!(
+            options
+                .validate()
+                .unwrap_err()
+                .contains("must not exceed batch_max_queue_size")
+        );
     }
 
     #[test]

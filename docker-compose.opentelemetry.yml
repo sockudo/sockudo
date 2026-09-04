@@ -1,0 +1,23 @@
+# Development overlay for inspecting Sockudo traces, metrics, and logs locally.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.opentelemetry.yml up --build
+services:
+  sockudo:
+    environment:
+      SOCKUDO_OTEL_ENABLED: "true"
+      SOCKUDO_OTEL_ENDPOINT: "http://otel-collector:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+      OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name=compose"
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.159.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./ops/opentelemetry/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - sockudo-network

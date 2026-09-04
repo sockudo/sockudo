@@ -17,7 +17,7 @@ use sonic_rs::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::{debug, error, warn};
+use tracing::{Instrument, debug, error, field, info_span, warn};
 
 const MAX_CONCURRENT_WEBHOOKS: usize = 20;
 
@@ -289,22 +289,25 @@ impl WebhookSender {
             .map(|h| h.headers.clone())
             .unwrap_or_default();
 
-        tokio::spawn(async move {
-            let _permit = params.permit;
-            let _ = send_pusher_webhook(
-                &client,
-                PusherWebhookRequest {
-                    url: url_str,
-                    app_key: params.app_key,
-                    signature: params.signature,
-                    json_body: params.body_to_send,
-                    custom_headers,
-                    request_timeout_ms,
-                    retry_config: retry_policy,
-                },
-            )
-            .await;
-        })
+        tokio::spawn(
+            async move {
+                let _permit = params.permit;
+                let _ = send_pusher_webhook(
+                    &client,
+                    PusherWebhookRequest {
+                        url: url_str,
+                        app_key: params.app_key,
+                        signature: params.signature,
+                        json_body: params.body_to_send,
+                        custom_headers,
+                        request_timeout_ms,
+                        retry_config: retry_policy,
+                    },
+                )
+                .await;
+            }
+            .in_current_span(),
+        )
     }
 
     #[cfg(feature = "lambda")]
@@ -319,26 +322,29 @@ impl WebhookSender {
         let webhook_clone = webhook_config.clone();
         let payload_for_lambda: Value = sonic_rs::from_str(&body_to_send).unwrap_or(json!({}));
 
-        tokio::spawn(async move {
-            let _permit = permit;
-            if let Err(e) = lambda_sender
-                .invoke_lambda(&webhook_clone, "batch_events", &app_id, payload_for_lambda)
-                .await
-            {
-                error!(
-                    delivery_method = "lambda",
-                    app_id = %app_id,
-                    error = %e,
-                    "lambda webhook invocation failed"
-                );
-            } else {
-                debug!(
-                    delivery_method = "lambda",
-                    app_id = %app_id,
-                    "lambda webhook invoked successfully"
-                );
+        tokio::spawn(
+            async move {
+                let _permit = permit;
+                if let Err(e) = lambda_sender
+                    .invoke_lambda(&webhook_clone, "batch_events", &app_id, payload_for_lambda)
+                    .await
+                {
+                    error!(
+                        delivery_method = "lambda",
+                        app_id = %app_id,
+                        error = %e,
+                        "lambda webhook invocation failed"
+                    );
+                } else {
+                    debug!(
+                        delivery_method = "lambda",
+                        app_id = %app_id,
+                        "lambda webhook invoked successfully"
+                    );
+                }
             }
-        })
+            .in_current_span(),
+        )
     }
 }
 
@@ -477,6 +483,20 @@ async fn send_pusher_webhook_once(
     custom_headers_config: &AHashMap<String, String>,
     request_timeout: Duration,
 ) -> Result<()> {
+    let server_address = url::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".to_string());
+    let span = info_span!(
+        target: "sockudo_telemetry",
+        "http.client.request",
+        otel.kind = "client",
+        otel.name = "POST webhook",
+        http.request.method = "POST",
+        server.address = %server_address,
+        http.response.status_code = field::Empty,
+        otel.status_code = field::Empty,
+    );
     let mut request_builder = client
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
@@ -488,9 +508,19 @@ async fn send_pusher_webhook_once(
         request_builder = request_builder.header(key, value);
     }
 
-    match request_builder.body(json_body.to_string()).send().await {
+    let mut propagation_headers = header::HeaderMap::new();
+    crate::telemetry::inject_http_headers(&span, &mut propagation_headers);
+    request_builder = request_builder.headers(propagation_headers);
+
+    match request_builder
+        .body(json_body.to_string())
+        .send()
+        .instrument(span.clone())
+        .await
+    {
         Ok(response) => {
             let status = response.status();
+            span.record("http.response.status_code", status.as_u16());
             if status.is_success() {
                 debug!(
                     delivery_method = "http",
@@ -499,6 +529,7 @@ async fn send_pusher_webhook_once(
                 );
                 Ok(())
             } else {
+                span.record("otel.status_code", "ERROR");
                 let _ = response.text().await;
                 if should_retry_status(status) {
                     debug!(
@@ -522,6 +553,7 @@ async fn send_pusher_webhook_once(
             }
         }
         Err(e) => {
+            span.record("otel.status_code", "ERROR");
             let ec = request_error_class(&e);
             debug!(
                 delivery_method = "http",
@@ -616,6 +648,7 @@ mod tests {
             app_id: "test_app".to_string(),
             app_key: "test_key".to_string(),
             app_secret: "test_secret".to_string(),
+            trace_context: Default::default(),
             payload: JobPayload {
                 time_ms: 1234567890,
                 events: vec![],
@@ -640,6 +673,7 @@ mod tests {
             app_id: "test_app".to_string(),
             app_key: "test_key".to_string(),
             app_secret: "test_secret".to_string(),
+            trace_context: Default::default(),
             payload: JobPayload {
                 time_ms: 1234567890,
                 events: vec![sonic_rs::json!({
@@ -665,6 +699,7 @@ mod tests {
             app_id: "non_existent_app".to_string(),
             app_key: "test_key".to_string(),
             app_secret: "test_secret".to_string(),
+            trace_context: Default::default(),
             payload: JobPayload {
                 time_ms: 1234567890,
                 events: vec![],
@@ -695,6 +730,7 @@ mod tests {
                 app_id: "test_app".to_string(),
                 app_key: "test_key".to_string(),
                 app_secret: "test_secret".to_string(),
+                trace_context: Default::default(),
                 payload: JobPayload {
                     time_ms: 1234567890 + i,
                     events: vec![sonic_rs::json!({

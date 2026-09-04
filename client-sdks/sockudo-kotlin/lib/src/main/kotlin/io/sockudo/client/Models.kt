@@ -31,6 +31,34 @@ enum class ConnectionState {
     FAILED,
 }
 
+data class ConnectionStateChange(
+    val previous: ConnectionState,
+    val current: ConnectionState,
+)
+
+data class SockudoError(
+    val message: String,
+    val code: String? = null,
+    val cause: Throwable? = null,
+)
+
+data class SockudoAuthError(
+    val message: String,
+    val cause: Throwable? = null,
+)
+
+interface SockudoConnectionEventListener {
+    fun onConnectionStateChange(change: ConnectionStateChange) = Unit
+    fun onError(error: SockudoError) = Unit
+}
+
+interface SockudoChannelEventListener {
+    fun onSubscriptionSucceeded(channel: SockudoChannel) = Unit
+    fun onAuthenticationFailure(channel: SockudoChannel, error: SockudoAuthError) = Unit
+    fun onError(channel: SockudoChannel, error: SockudoError) = Unit
+    fun onEvent(channel: SockudoChannel, event: SockudoEvent) = Unit
+}
+
 enum class DeltaAlgorithm { fossil, xdelta3 }
 
 sealed class AuthValue {

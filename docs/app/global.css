@@ -703,9 +703,15 @@ body {
 }
 
 .home-card-icon {
+  display: inline-flex;
   width: 2.5rem;
   height: 2.5rem;
-  flex-shrink: 0;
+  flex: 0 0 2.5rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--app-radius-pill);
+  background: color-mix(in srgb, var(--app-primary) 11%, var(--app-surface));
+  color: var(--app-primary);
 }
 
 .home-card-meta {

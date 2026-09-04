@@ -29,6 +29,26 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-webhook/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-core/benches" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-server/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/benches/ai/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-ably-compat/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-ably-compat/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-adapter/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-ai-transport/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-ai-transport/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-ai-transport/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-core/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-protocol/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-push/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-push/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-push/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-push/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-queue/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-queue/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-rate-limiter/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-simulator/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-simulator/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-simulator/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-webhook/benches" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/benchmark/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/xdelta3/target" />

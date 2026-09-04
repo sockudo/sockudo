@@ -1415,6 +1415,7 @@ mod tests {
             compression_metadata: None,
             idempotency_key: None,
             ephemeral: true,
+            trace_context: Default::default(),
         };
         assert!(broadcast.ephemeral);
 
@@ -1439,6 +1440,7 @@ mod tests {
             compression_metadata: None,
             idempotency_key: None,
             ephemeral: false,
+            trace_context: Default::default(),
         };
 
         // Verify serialization omits ephemeral when false (skip_serializing_if)
@@ -1468,6 +1470,7 @@ mod tests {
             compression_metadata: None,
             idempotency_key: None,
             ephemeral: false,
+            trace_context: Default::default(),
         };
 
         let encoded = sonic_rs::to_string(&broadcast).unwrap();

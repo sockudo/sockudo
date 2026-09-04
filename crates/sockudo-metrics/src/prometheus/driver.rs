@@ -215,7 +215,7 @@ pub struct PrometheusMetricsDriver {
 impl PrometheusMetricsDriver {
     /// Creates a new Prometheus metrics driver
     pub async fn new(port: u16, prefix_opt: Option<&str>) -> Self {
-        Self::with_tcp_exporter(port, prefix_opt, None).await
+        Self::with_exporters(port, prefix_opt, None, false).await
     }
 
     /// Creates a new Prometheus metrics driver with an optional TCP exporter fanout.
@@ -223,6 +223,16 @@ impl PrometheusMetricsDriver {
         port: u16,
         prefix_opt: Option<&str>,
         tcp_exporter: Option<TcpExporterOptions>,
+    ) -> Self {
+        Self::with_exporters(port, prefix_opt, tcp_exporter, false).await
+    }
+
+    /// Creates a metrics driver that can fan out to Prometheus, TCP, and OpenTelemetry.
+    pub async fn with_exporters(
+        port: u16,
+        prefix_opt: Option<&str>,
+        tcp_exporter: Option<TcpExporterOptions>,
+        export_to_opentelemetry: bool,
     ) -> Self {
         let prefix = prefix_opt.unwrap_or("sockudo_").to_string();
         let tcp_exporter = if let Some(options) = tcp_exporter {
@@ -235,7 +245,7 @@ impl PrometheusMetricsDriver {
         } else {
             None
         };
-        let handle = install_prometheus_recorder(&prefix, tcp_exporter);
+        let handle = install_prometheus_recorder(&prefix, tcp_exporter, export_to_opentelemetry);
 
         // Initialize process metrics (standard Prometheus naming, no prefix)
         let process_resident_memory_bytes = register_gauge!(Opts::new(
@@ -462,7 +472,7 @@ impl PrometheusMetricsDriver {
                 format!("{prefix}horizontal_adapter_uncomplete_promises"),
                 "The total amount of promises that were not fulfilled entirely by other nodes"
             ),
-            &["app_id", "port"]
+            &["app_id", "port", "request_type"]
         )
         .unwrap();
 

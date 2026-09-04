@@ -125,6 +125,75 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 
 See [Logging](/docs/reference/logging) for level policy, stable lifecycle fields, and data-safety requirements.
 
+## OpenTelemetry
+
+OpenTelemetry is disabled unless `[opentelemetry].enabled` or `SOCKUDO_OTEL_ENABLED` is true.
+When enabled, Sockudo can export the stable OpenTelemetry traces, metrics, and logs signals over
+OTLP. Export is additive to local logs and the Prometheus `/metrics` endpoint. OpenTelemetry
+profiles are not supported.
+
+### Sockudo controls
+
+These variables map directly to the `[opentelemetry]` configuration block:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SOCKUDO_OTEL_ENABLED` | `false` | Enables OpenTelemetry initialization and export. |
+| `SOCKUDO_OTEL_TRACES_ENABLED` | `true` | Enables trace export while OpenTelemetry is enabled. |
+| `SOCKUDO_OTEL_METRICS_ENABLED` | `true` | Enables OTLP metric export while preserving Prometheus independently. |
+| `SOCKUDO_OTEL_LOGS_ENABLED` | `true` | Enables OTLP log export while preserving local log output. |
+| `SOCKUDO_OTEL_SERVICE_NAME` | `sockudo` | Sets the `service.name` resource attribute. |
+| `SOCKUDO_OTEL_SERVICE_NAMESPACE` | unset | Sets `service.namespace`. An empty value clears it. |
+| `SOCKUDO_OTEL_DEPLOYMENT_ENVIRONMENT` | unset | Sets `deployment.environment.name`. An empty value clears it. |
+| `SOCKUDO_OTEL_RESOURCE_ATTRIBUTES` | unset | Comma-separated `key=value` resource attributes. Invalid entries are ignored with a warning. |
+| `SOCKUDO_OTEL_ENDPOINT` | SDK default | Common OTLP collector endpoint used by enabled signals. |
+| `SOCKUDO_OTEL_EXPORT_TIMEOUT_MS` | `10000` | Request timeout for an OTLP export attempt. |
+| `SOCKUDO_OTEL_BATCH_SCHEDULED_DELAY_MS` | `5000` | Maximum trace/log batching delay. |
+| `SOCKUDO_OTEL_BATCH_MAX_QUEUE_SIZE` | `2048` | Bounded trace/log export queue capacity. |
+| `SOCKUDO_OTEL_BATCH_MAX_EXPORT_BATCH_SIZE` | `512` | Maximum trace/log records per export batch; cannot exceed queue capacity. |
+| `SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS` | `60000` | Periodic metric export interval. |
+| `SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT` | `true` | Enables W3C `traceparent` and `tracestate` extraction and injection. |
+| `SOCKUDO_OTEL_PROPAGATION_BAGGAGE` | `true` | Enables W3C baggage extraction and injection. |
+
+### Standard OpenTelemetry SDK and OTLP variables
+
+Sockudo also honors the standard `OTEL_*` SDK and exporter variables implemented by the bundled
+Rust SDK. Use these for protocol, sampling, per-signal endpoints, compression, and authenticated
+collector headers. A
+signal-specific exporter value is more specific than its common OTLP equivalent.
+
+| Variable or family | Purpose |
+| --- | --- |
+| `OTEL_SDK_DISABLED` | Hard-disables the OpenTelemetry SDK when true. |
+| `OTEL_SERVICE_NAME` | Standard `service.name` resource setting. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Standard comma-separated resource attributes. |
+| `OTEL_PROPAGATORS` | Comma-separated `tracecontext` and `baggage` propagators. Other propagator names are ignored. |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | Selects `otlp` or disables an individual signal with `none`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Common OTLP endpoint. For HTTP it is a base URL and the SDK appends `/v1/traces`, `/v1/metrics`, or `/v1/logs`. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc`, `http/protobuf`, or `http/json`. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Comma-separated exporter headers. Treat the complete value as a secret. |
+| `OTEL_EXPORTER_OTLP_COMPRESSION` | Export compression: `gzip` or `zstd`. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | Common exporter timeout in milliseconds. |
+| `OTEL_EXPORTER_OTLP_TRACES_*` | Trace-specific endpoint, protocol, headers, compression, and timeout. |
+| `OTEL_EXPORTER_OTLP_METRICS_*` | Metric-specific endpoint, protocol, headers, compression, timeout, and temporality preference. |
+| `OTEL_EXPORTER_OTLP_LOGS_*` | Log-specific endpoint, protocol, headers, compression, and timeout. |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Head sampler and its argument; for example `parentbased_traceidratio` and `0.10`. |
+| `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | Batch span processor settings. The delay is in milliseconds. |
+| `OTEL_BLRP_SCHEDULE_DELAY`, `OTEL_BLRP_MAX_QUEUE_SIZE`, `OTEL_BLRP_MAX_EXPORT_BATCH_SIZE` | Batch log-record processor settings. The delay is in milliseconds. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | Periodic metric reader interval in milliseconds. |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | Metric temporality preference. |
+| `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`, `OTEL_SPAN_EVENT_COUNT_LIMIT`, `OTEL_SPAN_LINK_COUNT_LIMIT` | Trace span limits implemented by the bundled SDK. |
+
+The standard signal-specific endpoint is used exactly as supplied. With HTTP, include its final
+signal path when setting a signal-specific endpoint. Keep `OTEL_EXPORTER_OTLP_HEADERS` and private
+API tokens in a secret store rather than a configuration file or command line. HTTPS exporters use
+the bundled platform/web PKI roots. Custom CA bundles, client certificates, and mTLS exporter
+configuration are not supported by the current Rust SDK integration.
+
+Exporter connection failures, timeouts, and bounded-queue drops do not fail requests and do not
+change `/live` or `/up`. Invalid Sockudo configuration still fails validation at startup. See
+[Logging](/docs/reference/logging#opentelemetry-export) for log correlation and data-safety details.
+
 ## Driver selection
 
 | Variable | Purpose |

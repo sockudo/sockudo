@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sockudo_protocol::constants::PONG_TIMEOUT;
+use std::collections::BTreeMap;
 
 use super::{CacheDriver, MetricsDriver, RedisConfig};
 
@@ -95,6 +96,27 @@ pub struct MetricsTcpExporterConfig {
 pub struct LoggingConfig {
     pub colors_enabled: bool,
     pub include_target: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OpenTelemetryConfig {
+    pub enabled: bool,
+    pub traces_enabled: bool,
+    pub metrics_enabled: bool,
+    pub logs_enabled: bool,
+    pub service_name: String,
+    pub service_namespace: Option<String>,
+    pub deployment_environment: Option<String>,
+    pub resource_attributes: BTreeMap<String, String>,
+    pub endpoint: Option<String>,
+    pub export_timeout_ms: u64,
+    pub batch_scheduled_delay_ms: u64,
+    pub batch_max_queue_size: usize,
+    pub batch_max_export_batch_size: usize,
+    pub metric_export_interval_ms: u64,
+    pub propagation_trace_context: bool,
+    pub propagation_baggage: bool,
 }
 
 /// WebSocket connection buffer configuration
@@ -480,6 +502,59 @@ impl Default for LoggingConfig {
             colors_enabled: true,
             include_target: true,
         }
+    }
+}
+
+impl Default for OpenTelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            traces_enabled: true,
+            metrics_enabled: true,
+            logs_enabled: true,
+            service_name: "sockudo".to_string(),
+            service_namespace: None,
+            deployment_environment: None,
+            resource_attributes: BTreeMap::new(),
+            endpoint: None,
+            export_timeout_ms: 10_000,
+            batch_scheduled_delay_ms: 5_000,
+            batch_max_queue_size: 2_048,
+            batch_max_export_batch_size: 512,
+            metric_export_interval_ms: 60_000,
+            propagation_trace_context: true,
+            propagation_baggage: true,
+        }
+    }
+}
+
+impl OpenTelemetryConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled && self.service_name.trim().is_empty() {
+            return Err("service_name must not be empty when enabled".to_string());
+        }
+        if self.export_timeout_ms == 0 {
+            return Err("export_timeout_ms must be greater than 0".to_string());
+        }
+        if self.batch_scheduled_delay_ms == 0 {
+            return Err("batch_scheduled_delay_ms must be greater than 0".to_string());
+        }
+        if self.batch_max_queue_size == 0 {
+            return Err("batch_max_queue_size must be greater than 0".to_string());
+        }
+        if self.batch_max_export_batch_size == 0 {
+            return Err("batch_max_export_batch_size must be greater than 0".to_string());
+        }
+        if self.metric_export_interval_ms == 0 {
+            return Err("metric_export_interval_ms must be greater than 0".to_string());
+        }
+        if self.batch_max_export_batch_size > self.batch_max_queue_size {
+            return Err(
+                "batch_max_export_batch_size must not exceed batch_max_queue_size".to_string(),
+            );
+        }
+
+        Ok(())
     }
 }
 

@@ -206,23 +206,36 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
         debug!(app_id, "metrics: horizontal adapter resolve time recorded");
     }
-
-    fn track_horizontal_adapter_resolved_promises(&self, app_id: &str, resolved: bool) {
+    fn track_horizontal_adapter_resolved_promises(
+        &self,
+        app_id: &str,
+        resolved: bool,
+        request_type: &str,
+    ) {
         let tags = self.get_tags(app_id);
+        let resolved_promises = self
+            .horizontal_adapter_resolved_promises
+            .with_label_values(&tags);
+        let mut uncomplete_tags = tags.clone();
+        uncomplete_tags.push(request_type.to_string());
+        let uncomplete_promises = self
+            .horizontal_adapter_uncomplete_promises
+            .with_label_values(&uncomplete_tags);
+
+        // Register both sides of the outcome before incrementing either one so
+        // alerts can compare an explicit zero against the non-zero series.
+        resolved_promises.init();
+        uncomplete_promises.init();
 
         if resolved {
-            self.horizontal_adapter_resolved_promises
-                .with_label_values(&tags)
-                .inc();
+            resolved_promises.inc();
         } else {
-            self.horizontal_adapter_uncomplete_promises
-                .with_label_values(&tags)
-                .inc();
+            uncomplete_promises.inc();
         }
 
         debug!(
             app_id,
-            resolved, "metrics: horizontal adapter promise recorded"
+            resolved, request_type, "metrics: horizontal adapter promise recorded"
         );
     }
 
@@ -803,5 +816,25 @@ impl MetricsInterface for PrometheusMetricsDriver {
         // Reset individual metrics counters - not fully supported by Prometheus Rust client
         // So we'll just log a message
         debug!("metrics cleared: prometheus metrics cannot be fully reset");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn promise_outcome_tracking_registers_both_counter_series() {
+        let metrics = PrometheusMetricsDriver::new(0, Some("promise_test_")).await;
+
+        metrics.track_horizontal_adapter_resolved_promises("test-app", false, "SocketsCount");
+        let output = metrics.get_metrics_as_plaintext().await;
+
+        assert!(output.contains(
+            "promise_test_horizontal_adapter_resolved_promises{app_id=\"test-app\",port=\"0\"} 0"
+        ));
+        assert!(output.contains(
+            "promise_test_horizontal_adapter_uncomplete_promises{app_id=\"test-app\",port=\"0\",request_type=\"SocketsCount\"} 1"
+        ));
     }
 }

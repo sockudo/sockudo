@@ -4,6 +4,42 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::time::{Duration, sleep, timeout};
 
+#[test]
+fn legacy_horizontal_payloads_default_to_empty_trace_context() {
+    let request: RequestBody = sonic_rs::from_str(
+        r#"{
+            "request_id":"request-1",
+            "node_id":"node-1",
+            "app_id":"app-1",
+            "request_type":"Heartbeat",
+            "channel":null,
+            "socket_id":null,
+            "user_id":null,
+            "user_info":null,
+            "timestamp":1,
+            "dead_node_id":null,
+            "target_node_id":null
+        }"#,
+    )
+    .expect("legacy horizontal request should deserialize");
+    assert!(request.trace_context.is_empty());
+
+    let broadcast: BroadcastMessage = sonic_rs::from_str(
+        r#"{
+            "node_id":"node-1",
+            "app_id":"app-1",
+            "channel":"channel-1",
+            "message":"{}",
+            "except_socket_id":null
+        }"#,
+    )
+    .expect("legacy horizontal broadcast should deserialize");
+    assert!(broadcast.trace_context.is_empty());
+
+    let encoded = sonic_rs::to_string(&broadcast).expect("broadcast should serialize");
+    assert!(!encoded.contains("trace_context"));
+}
+
 #[tokio::test]
 async fn request_cleanup_operates_on_live_pending_requests() {
     let adapter = HorizontalAdapter::new();

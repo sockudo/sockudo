@@ -37,6 +37,7 @@ async fn test_heartbeat_tracking_updates_node_registry() {
         dead_node_id: None,
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     };
 
@@ -424,6 +425,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
         dead_node_id: Some(dead_node_id.to_string()),
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     };
 
@@ -455,4 +457,80 @@ async fn test_follower_cleanup_only_removes_registry_data() {
             "Dead node should be removed from presence registry"
         );
     }
+}
+
+/// A NodeDead broadcast that never resolves must not stop nodes expiring dead peers locally.
+///
+/// REGRESSION. The cleanup loop used to remove a node from local heartbeat tracking INSIDE the
+/// `is_leader` branch, one node per iteration, and then `.await` the NodeDead publish with no
+/// timeout. Two ways that left `node_count` permanently too high:
+///
+///   1. A follower never expired anything locally at all - it waited for the leader's broadcast.
+///   2. A leader expired one entry, then hung on the publish, so the loop never reached the rest.
+///      Because a pending future is not an error, nothing was logged.
+///
+/// Observed in production as `expected=2, responses_received=1` on every cross-pod request for
+/// 36 minutes against a 30-second node timeout, with the pod otherwise healthy: one decrement,
+/// then frozen.
+///
+/// Local expiry is a purely local fact - the heartbeat is older than node_timeout_ms - so it must
+/// not depend on leader election or on any network call completing.
+#[tokio::test]
+async fn test_dead_nodes_expire_locally_when_node_dead_publish_hangs() {
+    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(MockConfig::default())
+        .await
+        .unwrap();
+
+    // Every NodeDead publish from here on hangs instead of completing.
+    adapter.transport.hang_node_dead_publish();
+
+    // Short intervals so the cleanup round runs well inside the test, but they MUST satisfy
+    // ClusterHealthConfig::validate: heartbeat_interval_ms <= node_timeout_ms / 3 and
+    // cleanup_interval_ms <= node_timeout_ms. A config that fails validation is not rejected -
+    // set_cluster_health logs a warning and returns Ok(()) while keeping the previous settings -
+    // so an invalid config here silently leaves node_timeout_ms at its 30s default and the test
+    // waits for something that cannot happen in time.
+    let cluster_config = ClusterHealthConfig {
+        enabled: true,
+        heartbeat_interval_ms: 100,
+        node_timeout_ms: 300,
+        cleanup_interval_ms: 100,
+    };
+    adapter.set_cluster_health(&cluster_config).await.unwrap();
+
+    // TWO stale peers, deliberately. With one, a loop that removes an entry and then hangs is
+    // indistinguishable from a loop that works; the second entry is what proves the round
+    // completed rather than stalling after the first removal.
+    {
+        let horizontal = adapter.horizontal.clone();
+        horizontal
+            .add_discovered_node_for_test("stale-node-a".to_string())
+            .await;
+        horizontal
+            .add_discovered_node_for_test("stale-node-b".to_string())
+            .await;
+    }
+
+    adapter.start_listeners().await.unwrap();
+
+    // Past node_timeout_ms plus several cleanup intervals. Generous on purpose: the assertion is
+    // about whether expiry happens at all, not about how promptly.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let horizontal = adapter.horizontal.clone();
+    let heartbeats = horizontal.node_heartbeats.read().await;
+    assert!(
+        heartbeats.is_empty(),
+        "both stale peers should have expired locally even though the NodeDead publish never \
+         resolves; still tracked: {:?}",
+        heartbeats.keys().collect::<Vec<_>>()
+    );
+
+    // And the count the request path actually reads must be back to just this node.
+    drop(heartbeats);
+    assert_eq!(
+        horizontal.get_effective_node_count().await,
+        1,
+        "node_count must converge to 1 (ourselves) with no reachable peers"
+    );
 }

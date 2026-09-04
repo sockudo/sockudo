@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -142,6 +143,10 @@ pub struct JobData {
     pub app_key: String,
     pub app_id: String,
     pub app_secret: String,
+    /// W3C propagation fields carried through durable queues. These are never
+    /// included in the user-facing webhook body.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub trace_context: BTreeMap<String, String>,
     pub payload: JobPayload,
     pub original_signature: String,
 }
@@ -179,6 +184,7 @@ mod tests {
         let legacy = r#"{"app_key":"key","app_id":"app","app_secret":"secret","payload":{"time_ms":1,"events":[]},"original_signature":"signature"}"#;
         let job: JobData = sonic_rs::from_str(legacy).expect("legacy job data should deserialize");
         assert_eq!(job.job_id, None);
+        assert!(job.trace_context.is_empty());
     }
 
     fn empty_filter() -> WebhookFilter {

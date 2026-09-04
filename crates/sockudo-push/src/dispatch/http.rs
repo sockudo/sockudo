@@ -21,9 +21,43 @@ use std::time::Duration;
 use async_trait::async_trait;
 use url::{Host, Url};
 
+#[cfg(all(
+    feature = "opentelemetry",
+    any(
+        feature = "push-fcm",
+        feature = "push-apns",
+        feature = "push-webpush",
+        feature = "push-hms",
+        feature = "push-wns"
+    )
+))]
+use opentelemetry::{global, propagation::Injector};
+#[cfg(all(
+    feature = "opentelemetry",
+    any(
+        feature = "push-fcm",
+        feature = "push-apns",
+        feature = "push-webpush",
+        feature = "push-hms",
+        feature = "push-wns"
+    )
+))]
+use tracing::{Instrument, field, info_span};
+#[cfg(all(
+    feature = "opentelemetry",
+    any(
+        feature = "push-fcm",
+        feature = "push-apns",
+        feature = "push-webpush",
+        feature = "push-hms",
+        feature = "push-wns"
+    )
+))]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
 use crate::domain::{ProviderError, ProviderFailureClass, SecretString};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderHttpMethod {
     Get,
     Post,
@@ -135,23 +169,65 @@ impl ReqwestProviderHttpClient {
 impl ProviderHttpClient for ReqwestProviderHttpClient {
     async fn send(&self, request: ProviderHttpRequest) -> Result<ProviderHttpResponse, String> {
         validate_delivery_destination(&request.url).await?;
+        #[cfg(feature = "opentelemetry")]
+        let server_address = Url::parse(&request.url)
+            .ok()
+            .and_then(|url| url.host_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| "unknown".to_string());
+        #[cfg(feature = "opentelemetry")]
+        let method_name = match request.method {
+            ProviderHttpMethod::Get => "GET",
+            ProviderHttpMethod::Post => "POST",
+        };
+        #[cfg(feature = "opentelemetry")]
+        let span = info_span!(
+            target: "sockudo_telemetry",
+            "http.client.request",
+            otel.kind = "client",
+            otel.name = %format!("{method_name} push provider"),
+            http.request.method = method_name,
+            server.address = %server_address,
+            http.response.status_code = field::Empty,
+            otel.status_code = field::Empty,
+        );
         let method = match request.method {
             ProviderHttpMethod::Get => reqwest::Method::GET,
             ProviderHttpMethod::Post => reqwest::Method::POST,
         };
         let mut builder = self.client.request(method, &request.url);
-        for (name, value) in request.headers {
+        let headers = request.headers;
+        #[cfg(feature = "opentelemetry")]
+        let headers = {
+            let mut headers = headers;
+            global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(&span.context(), &mut PushHeaderInjector(&mut headers));
+            });
+            headers
+        };
+        for (name, value) in headers {
             builder = builder.header(name, value);
         }
         if let Some(authorization) = request.authorization {
             builder = builder.header("authorization", authorization.expose_secret());
         }
-        let response = builder
-            .body(request.body)
-            .send()
-            .await
-            .map_err(reqwest_error_chain)?;
+        let response = builder.body(request.body).send();
+        #[cfg(feature = "opentelemetry")]
+        let response = response.instrument(span.clone()).await;
+        #[cfg(not(feature = "opentelemetry"))]
+        let response = response.await;
+        let response = response.map_err(|error| {
+            #[cfg(feature = "opentelemetry")]
+            span.record("otel.status_code", "ERROR");
+            reqwest_error_chain(error)
+        })?;
         let status = response.status().as_u16();
+        #[cfg(feature = "opentelemetry")]
+        {
+            span.record("http.response.status_code", status);
+            if status >= 400 {
+                span.record("otel.status_code", "ERROR");
+            }
+        }
         let headers = response
             .headers()
             .iter()
@@ -168,6 +244,34 @@ impl ProviderHttpClient for ReqwestProviderHttpClient {
             headers,
             body: body.to_vec(),
         })
+    }
+}
+
+#[cfg(all(
+    feature = "opentelemetry",
+    any(
+        feature = "push-fcm",
+        feature = "push-apns",
+        feature = "push-webpush",
+        feature = "push-hms",
+        feature = "push-wns"
+    )
+))]
+struct PushHeaderInjector<'a>(&'a mut BTreeMap<String, String>);
+
+#[cfg(all(
+    feature = "opentelemetry",
+    any(
+        feature = "push-fcm",
+        feature = "push-apns",
+        feature = "push-webpush",
+        feature = "push-hms",
+        feature = "push-wns"
+    )
+))]
+impl Injector for PushHeaderInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
     }
 }
 

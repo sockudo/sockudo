@@ -78,7 +78,12 @@ pub trait MetricsInterface: Send + Sync {
     fn track_horizontal_adapter_resolve_time(&self, app_id: &str, time_ms: f64);
 
     /// Track the fulfillings in which horizontal adapter resolves requests from other nodes
-    fn track_horizontal_adapter_resolved_promises(&self, app_id: &str, resolved: bool);
+    fn track_horizontal_adapter_resolved_promises(
+        &self,
+        app_id: &str,
+        resolved: bool,
+        request_type: &str,
+    );
 
     /// Handle a new horizontal adapter request sent
     fn mark_horizontal_adapter_request_sent(&self, app_id: &str);

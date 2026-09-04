@@ -34,7 +34,7 @@ use sockudo_core::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use tokio::sync::Notify;
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument, debug, error, info, warn};
 use uuid::Uuid;
 
 /// Maximum hash-based spread (ms) when staggering presence-state sync on new-node detection

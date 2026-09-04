@@ -49,16 +49,19 @@ COPY crates/sockudo-push/Cargo.toml crates/sockudo-push/Cargo.toml
 COPY crates/sockudo-ai-transport/Cargo.toml crates/sockudo-ai-transport/Cargo.toml
 COPY crates/sockudo-ably-compat/Cargo.toml crates/sockudo-ably-compat/Cargo.toml
 COPY crates/sockudo-adapter/Cargo.toml crates/sockudo-adapter/Cargo.toml
+COPY crates/sockudo-mcp/Cargo.toml crates/sockudo-mcp/Cargo.toml
 COPY crates/sockudo-server/Cargo.toml crates/sockudo-server/Cargo.toml
 COPY crates/sockudo-simulator/Cargo.toml crates/sockudo-simulator/Cargo.toml
 COPY benches/ai/Cargo.toml benches/ai/Cargo.toml
 
 # Create dummy lib.rs / main.rs for each crate so cargo can resolve the workspace
 # and build dependencies without the real source code
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter; do \
+RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter mcp; do \
         mkdir -p crates/sockudo-$dir/src && \
         echo "// dummy" > crates/sockudo-$dir/src/lib.rs; \
     done && \
+    mkdir -p crates/sockudo-mcp/src/bin && \
+    echo "fn main() {}" > crates/sockudo-mcp/src/bin/sockudo-mcp.rs && \
     mkdir -p crates/sockudo-push/examples && \
     echo "fn main() {}" > crates/sockudo-push/examples/webpush_send.rs && \
     mkdir -p crates/sockudo-queue/examples && \
@@ -98,7 +101,7 @@ ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 # Build dependencies only (this layer is cached unless Cargo.toml files change)
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
 # Clean up dummy sources but keep compiled deps
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter server simulator; do \
+RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter mcp server simulator; do \
         rm -rf crates/sockudo-$dir/src; \
     done && \
     rm -rf crates/sockudo-push/examples crates/sockudo-queue/examples && \

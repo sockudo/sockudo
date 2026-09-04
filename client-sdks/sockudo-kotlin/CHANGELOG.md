@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added Pusher-style connection/error listeners (`SockudoConnectionEventListener`, `SockudoError`) while preserving the raw Pusher-compatible `state_change` event.
+- Added typed channel event and auth listeners (`SockudoChannelEventListener.onEvent`, `onSubscriptionSucceeded`, `onAuthenticationFailure`, `onError`) while preserving the raw `bind`/`on` event API.
+
 ## 2.2.0 - 2026-08-17
 
 - Added `RECONNECTING`, bounded reconnect attempts, configurable retry gaps, and quadratic backoff

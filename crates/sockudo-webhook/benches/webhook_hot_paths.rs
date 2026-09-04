@@ -92,6 +92,7 @@ fn sample_job(index: usize) -> JobData {
         app_key: "bench-key".to_string(),
         app_id: "bench-app".to_string(),
         app_secret: "bench-secret".to_string(),
+        trace_context: Default::default(),
         payload: JobPayload {
             time_ms: index as i64,
             events: vec![sonic_rs::json!({

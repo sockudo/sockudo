@@ -23,6 +23,73 @@ class ReconnectionTest {
     }
 
     @Test
+    fun `connectionState exposes the latest state`() {
+        val client = testClient()
+        assertEquals(ConnectionState.INITIALIZED, client.connectionState)
+
+        client.disconnect()
+
+        assertEquals(ConnectionState.DISCONNECTED, client.connectionState)
+    }
+
+    @Test
+    fun `channel listener receives app events on channel handle`() {
+        val client = testClient()
+        val channel = client.subscribe("private-test")
+        val received = mutableListOf<SockudoEvent>()
+
+        channel.bindChannelListener(
+            object : SockudoChannelEventListener {
+                override fun onEvent(channel: SockudoChannel, event: SockudoEvent) {
+                    received += event
+                }
+            },
+        )
+
+        val event = SockudoEvent(
+            event = "call-started",
+            channel = "private-test",
+            data = mapOf("id" to 42),
+            rawMessage = """{"event":"call-started","channel":"private-test","data":{"id":42}}""",
+        )
+        channel.handle(event)
+
+        assertEquals(listOf(event), received)
+    }
+
+    @Test
+    fun `connection state listener receives previous and current state`() {
+        val client = testClient()
+        val changes = mutableListOf<ConnectionStateChange>()
+        client.bindConnectionListener(
+            object : SockudoConnectionEventListener {
+                override fun onConnectionStateChange(change: ConnectionStateChange) {
+                    changes += change
+                }
+            },
+        )
+
+        client.disconnect()
+
+        assertEquals(
+            listOf(ConnectionStateChange(ConnectionState.INITIALIZED, ConnectionState.DISCONNECTED)),
+            changes,
+        )
+    }
+
+    @Test
+    fun `connection state listener preserves raw state_change event`() {
+        val client = testClient()
+        var rawChange: Map<*, *>? = null
+        client.bind("state_change") { data, _ -> rawChange = data as? Map<*, *> }
+
+        client.disconnect()
+
+        assertEquals("initialized", rawChange?.get("previous"))
+        assertEquals("disconnected", rawChange?.get("current"))
+    }
+
+    @Test
     fun `SockudoOptions maxReconnectAttempts defaults to 6`() {
         val options = SockudoOptions(cluster = "test")
         assertEquals(6, options.maxReconnectAttempts)

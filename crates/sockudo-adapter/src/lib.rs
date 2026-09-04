@@ -32,6 +32,7 @@ pub mod redis_cluster_adapter;
 #[cfg(feature = "recovery")]
 pub mod replay_buffer;
 pub mod services;
+mod telemetry;
 pub mod transports;
 pub(crate) mod v2_broadcast;
 pub mod watchlist;
