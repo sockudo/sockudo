@@ -366,7 +366,7 @@ async fn provider_status(
 
     match provider {
         PushProviderKind::Fcm => fcm_status(store).await,
-        PushProviderKind::Apns => apns_status(store).await,
+        PushProviderKind::Apns => apns_status(config, store).await,
         PushProviderKind::WebPush => webpush_status(),
         PushProviderKind::Hms => hms_status(),
         PushProviderKind::Wns => wns_status(),
@@ -478,13 +478,10 @@ fn fcm_stored_credential_status(
     }
 }
 
-async fn apns_status(store: &DynPushStore) -> PushProviderStatus {
-    if let Err(reason) = env_present(&["APNS_TOPIC", "PUSH_APNS_TOPIC"]) {
-        return PushProviderStatus::MissingCredentials(reason);
-    }
-    if !matches!(env_present(&["APNS_TOPIC", "PUSH_APNS_TOPIC"]), Ok(true)) {
+async fn apns_status(config: &ServerOptions, store: &DynPushStore) -> PushProviderStatus {
+    if config.push.apns.topic.trim().is_empty() {
         return PushProviderStatus::MissingCredentials(
-            "APNS_TOPIC/PUSH_APNS_TOPIC is required".to_owned(),
+            "push.apns.topic or PUSH_APNS_TOPIC is required".to_owned(),
         );
     }
 

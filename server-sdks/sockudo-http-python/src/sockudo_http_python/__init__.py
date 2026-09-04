@@ -1,5 +1,9 @@
 from .client import (
     AnnotationEventsParams,
+    ApnsChannelStoragePolicy,
+    ApnsLiveActivityEvent,
+    ApnsLiveActivityPayload,
+    ApnsLiveActivityPriority,
     AsyncSockudo,
     AuthData,
     Config,
@@ -25,12 +29,18 @@ from .client import (
     Validity,
     Webhook,
     WebhookEvent,
+    apns_live_activity_broadcast_recipient,
+    apns_live_activity_recipient,
     body_md5,
     sign,
 )
 
 __all__ = [
     "AnnotationEventsParams",
+    "ApnsChannelStoragePolicy",
+    "ApnsLiveActivityEvent",
+    "ApnsLiveActivityPayload",
+    "ApnsLiveActivityPriority",
     "AsyncSockudo",
     "AuthData",
     "Config",
@@ -56,6 +66,8 @@ __all__ = [
     "Validity",
     "Webhook",
     "WebhookEvent",
+    "apns_live_activity_broadcast_recipient",
+    "apns_live_activity_recipient",
     "body_md5",
     "sign",
 ]

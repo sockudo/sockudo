@@ -75,6 +75,7 @@ pub struct PushConfig {
     pub allow_memory_drivers: bool,
     pub fcm_enabled: bool,
     pub apns_enabled: bool,
+    pub apns: PushApnsConfig,
     pub webpush_enabled: bool,
     pub hms_enabled: bool,
     pub wns_enabled: bool,
@@ -231,6 +232,7 @@ impl Default for PushConfig {
             allow_memory_drivers: false,
             fcm_enabled: false,
             apns_enabled: false,
+            apns: PushApnsConfig::default(),
             webpush_enabled: false,
             hms_enabled: false,
             wns_enabled: false,
@@ -271,6 +273,162 @@ impl Default for PushConfig {
             cleanup_interval_secs: 300,
             cleanup_batch_size: 1_000,
             cleanup_max_deleted_per_tick: 100_000,
+        }
+    }
+}
+
+/// APNs and ActivityKit delivery tuning. Credentials remain in the credential store or
+/// `PUSH_APNS_*` secret environment variables; this structure contains no secrets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PushApnsConfig {
+    pub topic: String,
+    pub endpoint: String,
+    pub live_activities_enabled: bool,
+    pub live_activity_topic: String,
+    pub bundle_id: String,
+    pub broadcast_enabled: bool,
+    pub broadcast_endpoint: String,
+    pub management_endpoint: String,
+    pub default_broadcast_expiration_secs: u64,
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub pool_idle_timeout_secs: u64,
+    pub max_idle_connections_per_host: usize,
+    pub tcp_keepalive_secs: u64,
+    pub http2_keepalive_interval_secs: u64,
+    pub http2_keepalive_timeout_secs: u64,
+}
+
+impl Default for PushApnsConfig {
+    fn default() -> Self {
+        Self {
+            topic: String::new(),
+            endpoint: "https://api.push.apple.com".to_owned(),
+            live_activities_enabled: false,
+            live_activity_topic: String::new(),
+            bundle_id: String::new(),
+            broadcast_enabled: false,
+            broadcast_endpoint: "https://api-broadcast.push.apple.com".to_owned(),
+            management_endpoint: "https://api-manage-broadcast.push.apple.com:2196".to_owned(),
+            default_broadcast_expiration_secs: 3_600,
+            connect_timeout_ms: 5_000,
+            request_timeout_ms: 10_000,
+            pool_idle_timeout_secs: 90,
+            max_idle_connections_per_host: 128,
+            tcp_keepalive_secs: 60,
+            http2_keepalive_interval_secs: 30,
+            http2_keepalive_timeout_secs: 10,
+        }
+    }
+}
+
+impl PushApnsConfig {
+    pub(super) fn validate(&self, apns_enabled: bool) -> Result<(), String> {
+        if self.live_activities_enabled && !apns_enabled {
+            return Err("push.apns.live_activities_enabled requires push.apns_enabled".to_owned());
+        }
+        if self.broadcast_enabled && !self.live_activities_enabled {
+            return Err(
+                "push.apns.broadcast_enabled requires push.apns.live_activities_enabled".to_owned(),
+            );
+        }
+        if apns_enabled && self.topic.trim().is_empty() {
+            return Err("push.apns.topic must not be empty when APNs is enabled".to_owned());
+        }
+        if self.broadcast_enabled && self.resolved_bundle_id().is_empty() {
+            return Err("push.apns.bundle_id must not be empty for broadcast delivery".to_owned());
+        }
+        let live_activity_topic = self.resolved_live_activity_topic();
+        for (name, value) in [
+            ("topic", self.topic.trim()),
+            ("bundle_id", self.resolved_bundle_id()),
+            ("live_activity_topic", live_activity_topic.as_str()),
+        ] {
+            if !value.is_empty()
+                && (value.len() > 255
+                    || !value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
+                    }))
+            {
+                return Err(format!("push.apns.{name} has an invalid format"));
+            }
+        }
+        if self.live_activities_enabled
+            && live_activity_topic
+                != format!("{}.push-type.liveactivity", self.resolved_bundle_id())
+        {
+            return Err(
+                "push.apns.live_activity_topic must equal <bundle_id>.push-type.liveactivity"
+                    .to_owned(),
+            );
+        }
+        if self.default_broadcast_expiration_secs == 0
+            || self.default_broadcast_expiration_secs > 8 * 60 * 60
+        {
+            return Err(
+                "push.apns.default_broadcast_expiration_secs must be between 1 and 28800"
+                    .to_owned(),
+            );
+        }
+        for (name, value) in [
+            ("endpoint", self.endpoint.as_str()),
+            ("broadcast_endpoint", self.broadcast_endpoint.as_str()),
+            ("management_endpoint", self.management_endpoint.as_str()),
+        ] {
+            let parsed = url::Url::parse(value)
+                .map_err(|_| format!("push.apns.{name} must be a valid URL"))?;
+            if parsed.scheme() != "https"
+                || parsed.host_str().is_none()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                return Err(format!(
+                    "push.apns.{name} must be an HTTPS URL without user information"
+                ));
+            }
+        }
+        for (name, value) in [
+            ("connect_timeout_ms", self.connect_timeout_ms),
+            ("request_timeout_ms", self.request_timeout_ms),
+            ("pool_idle_timeout_secs", self.pool_idle_timeout_secs),
+            ("tcp_keepalive_secs", self.tcp_keepalive_secs),
+            (
+                "http2_keepalive_interval_secs",
+                self.http2_keepalive_interval_secs,
+            ),
+            (
+                "http2_keepalive_timeout_secs",
+                self.http2_keepalive_timeout_secs,
+            ),
+        ] {
+            if value == 0 {
+                return Err(format!("push.apns.{name} must be greater than 0"));
+            }
+        }
+        if self.max_idle_connections_per_host == 0 {
+            return Err(
+                "push.apns.max_idle_connections_per_host must be greater than 0".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn resolved_bundle_id(&self) -> &str {
+        if self.bundle_id.trim().is_empty() {
+            self.topic.trim()
+        } else {
+            self.bundle_id.trim()
+        }
+    }
+
+    pub fn resolved_live_activity_topic(&self) -> String {
+        if self.live_activity_topic.trim().is_empty() {
+            format!("{}.push-type.liveactivity", self.resolved_bundle_id())
+        } else {
+            self.live_activity_topic.trim().to_owned()
         }
     }
 }
@@ -361,7 +519,7 @@ impl Default for PushPayloadRedactionConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{PushQueueDriver, PushRuleConfig, PushStorageDriver};
+    use super::{PushApnsConfig, PushQueueDriver, PushRuleConfig, PushStorageDriver};
     use crate::options::ServerOptions;
 
     #[tokio::test]
@@ -430,6 +588,76 @@ mod tests {
     }
 
     #[test]
+    fn apns_live_activity_configuration_fails_closed() {
+        let defaults = PushApnsConfig::default();
+        assert!(defaults.validate(false).is_ok());
+
+        let mut config = defaults.clone();
+        config.live_activities_enabled = true;
+        assert_eq!(
+            config.validate(false).unwrap_err(),
+            "push.apns.live_activities_enabled requires push.apns_enabled"
+        );
+
+        config.topic = "com.example.app".to_owned();
+        config.broadcast_enabled = true;
+        assert!(config.validate(true).is_ok());
+        assert_eq!(config.resolved_bundle_id(), "com.example.app");
+        assert_eq!(
+            config.resolved_live_activity_topic(),
+            "com.example.app.push-type.liveactivity"
+        );
+
+        config.live_activity_topic = "com.example.wrong".to_owned();
+        assert!(
+            config
+                .validate(true)
+                .unwrap_err()
+                .contains("must equal <bundle_id>.push-type.liveactivity")
+        );
+        config.live_activity_topic.clear();
+
+        config.management_endpoint = "http://localhost:2195".to_owned();
+        assert!(
+            config
+                .validate(true)
+                .unwrap_err()
+                .contains("management_endpoint must be an HTTPS URL")
+        );
+    }
+
+    #[test]
+    fn apns_broadcast_requires_live_activities_and_valid_tuning() {
+        let mut config = PushApnsConfig {
+            topic: "com.example.app".to_owned(),
+            broadcast_enabled: true,
+            ..PushApnsConfig::default()
+        };
+        assert_eq!(
+            config.validate(true).unwrap_err(),
+            "push.apns.broadcast_enabled requires push.apns.live_activities_enabled"
+        );
+
+        config.live_activities_enabled = true;
+        config.default_broadcast_expiration_secs = 8 * 60 * 60 + 1;
+        assert!(
+            config
+                .validate(true)
+                .unwrap_err()
+                .contains("default_broadcast_expiration_secs")
+        );
+
+        config.default_broadcast_expiration_secs = 3_600;
+        config.max_idle_connections_per_host = 0;
+        assert!(
+            config
+                .validate(true)
+                .unwrap_err()
+                .contains("max_idle_connections_per_host")
+        );
+    }
+
+    #[test]
     fn push_rules_default_off_and_validate_startup_shape() {
         let mut options = ServerOptions::default();
         options.push.allow_memory_drivers = true;
@@ -452,6 +680,22 @@ mod tests {
         let keys = [
             "PUSH_FCM_ENABLED",
             "PUSH_APNS_ENABLED",
+            "PUSH_APNS_TOPIC",
+            "PUSH_APNS_ENDPOINT",
+            "PUSH_APNS_LIVE_ACTIVITIES_ENABLED",
+            "PUSH_APNS_LIVE_ACTIVITY_TOPIC",
+            "PUSH_APNS_BUNDLE_ID",
+            "PUSH_APNS_BROADCAST_ENABLED",
+            "PUSH_APNS_BROADCAST_ENDPOINT",
+            "PUSH_APNS_MANAGEMENT_ENDPOINT",
+            "PUSH_APNS_DEFAULT_BROADCAST_EXPIRATION_SECS",
+            "PUSH_APNS_CONNECT_TIMEOUT_MS",
+            "PUSH_APNS_REQUEST_TIMEOUT_MS",
+            "PUSH_APNS_POOL_IDLE_TIMEOUT_SECS",
+            "PUSH_APNS_MAX_IDLE_CONNECTIONS_PER_HOST",
+            "PUSH_APNS_TCP_KEEPALIVE_SECS",
+            "PUSH_APNS_HTTP2_KEEPALIVE_INTERVAL_SECS",
+            "PUSH_APNS_HTTP2_KEEPALIVE_TIMEOUT_SECS",
             "PUSH_WEBPUSH_ENABLED",
             "PUSH_HMS_ENABLED",
             "PUSH_WNS_ENABLED",
@@ -488,6 +732,31 @@ mod tests {
         unsafe {
             std::env::set_var("PUSH_FCM_ENABLED", "true");
             std::env::set_var("PUSH_APNS_ENABLED", "true");
+            std::env::set_var("PUSH_APNS_TOPIC", "com.example.app");
+            std::env::set_var("PUSH_APNS_ENDPOINT", "https://api.sandbox.push.apple.com");
+            std::env::set_var("PUSH_APNS_LIVE_ACTIVITIES_ENABLED", "true");
+            std::env::set_var(
+                "PUSH_APNS_LIVE_ACTIVITY_TOPIC",
+                "com.example.app.push-type.liveactivity",
+            );
+            std::env::set_var("PUSH_APNS_BUNDLE_ID", "com.example.app");
+            std::env::set_var("PUSH_APNS_BROADCAST_ENABLED", "true");
+            std::env::set_var(
+                "PUSH_APNS_BROADCAST_ENDPOINT",
+                "https://api-broadcast.sandbox.push.apple.com",
+            );
+            std::env::set_var(
+                "PUSH_APNS_MANAGEMENT_ENDPOINT",
+                "https://api-manage-broadcast.sandbox.push.apple.com:2195",
+            );
+            std::env::set_var("PUSH_APNS_DEFAULT_BROADCAST_EXPIRATION_SECS", "7200");
+            std::env::set_var("PUSH_APNS_CONNECT_TIMEOUT_MS", "4000");
+            std::env::set_var("PUSH_APNS_REQUEST_TIMEOUT_MS", "9000");
+            std::env::set_var("PUSH_APNS_POOL_IDLE_TIMEOUT_SECS", "80");
+            std::env::set_var("PUSH_APNS_MAX_IDLE_CONNECTIONS_PER_HOST", "96");
+            std::env::set_var("PUSH_APNS_TCP_KEEPALIVE_SECS", "50");
+            std::env::set_var("PUSH_APNS_HTTP2_KEEPALIVE_INTERVAL_SECS", "25");
+            std::env::set_var("PUSH_APNS_HTTP2_KEEPALIVE_TIMEOUT_SECS", "8");
             std::env::set_var("PUSH_WEBPUSH_ENABLED", "true");
             std::env::set_var("PUSH_HMS_ENABLED", "true");
             std::env::set_var("PUSH_WNS_ENABLED", "true");
@@ -532,6 +801,34 @@ mod tests {
 
         assert!(options.push.fcm_enabled);
         assert!(options.push.apns_enabled);
+        assert_eq!(options.push.apns.topic, "com.example.app");
+        assert_eq!(
+            options.push.apns.endpoint,
+            "https://api.sandbox.push.apple.com"
+        );
+        assert!(options.push.apns.live_activities_enabled);
+        assert_eq!(
+            options.push.apns.live_activity_topic,
+            "com.example.app.push-type.liveactivity"
+        );
+        assert_eq!(options.push.apns.bundle_id, "com.example.app");
+        assert!(options.push.apns.broadcast_enabled);
+        assert_eq!(
+            options.push.apns.broadcast_endpoint,
+            "https://api-broadcast.sandbox.push.apple.com"
+        );
+        assert_eq!(
+            options.push.apns.management_endpoint,
+            "https://api-manage-broadcast.sandbox.push.apple.com:2195"
+        );
+        assert_eq!(options.push.apns.default_broadcast_expiration_secs, 7_200);
+        assert_eq!(options.push.apns.connect_timeout_ms, 4_000);
+        assert_eq!(options.push.apns.request_timeout_ms, 9_000);
+        assert_eq!(options.push.apns.pool_idle_timeout_secs, 80);
+        assert_eq!(options.push.apns.max_idle_connections_per_host, 96);
+        assert_eq!(options.push.apns.tcp_keepalive_secs, 50);
+        assert_eq!(options.push.apns.http2_keepalive_interval_secs, 25);
+        assert_eq!(options.push.apns.http2_keepalive_timeout_secs, 8);
         assert!(options.push.webpush_enabled);
         assert!(options.push.hms_enabled);
         assert!(options.push.wns_enabled);

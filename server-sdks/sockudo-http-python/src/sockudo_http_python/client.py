@@ -62,6 +62,76 @@ class Validity(str, Enum):
     SIGNED_WITH_WRONG_KEY = "signed_with_wrong_key"
 
 
+class ApnsChannelStoragePolicy(str, Enum):
+    NO_STORAGE = "noStorage"
+    MOST_RECENT = "mostRecent"
+
+
+class ApnsLiveActivityEvent(str, Enum):
+    START = "start"
+    UPDATE = "update"
+    END = "end"
+
+
+class ApnsLiveActivityPriority(str, Enum):
+    LOW_POWER = "lowPower"
+    CONSERVE_POWER = "conservePower"
+    IMMEDIATE = "immediate"
+
+
+@dataclass
+class ApnsLiveActivityPayload:
+    """ActivityKit payload; all date values are UNIX timestamps in seconds."""
+
+    event: ApnsLiveActivityEvent
+    timestamp: int
+    content_state: Mapping[str, Any]
+    attributes_type: Optional[str] = None
+    attributes: Optional[Mapping[str, Any]] = None
+    alert: Optional[Mapping[str, Any]] = None
+    stale_date: Optional[int] = None
+    dismissal_date: Optional[int] = None
+    relevance_score: Optional[float] = None
+    input_push_token: bool = False
+    input_push_channel: Optional[str] = None
+    priority: ApnsLiveActivityPriority = ApnsLiveActivityPriority.CONSERVE_POWER
+
+    def to_payload(self) -> JsonDict:
+        return _clean_raw(
+            {
+                "event": self.event.value,
+                "timestamp": self.timestamp,
+                "contentState": dict(self.content_state),
+                "attributesType": self.attributes_type,
+                "attributes": dict(self.attributes)
+                if self.attributes is not None
+                else None,
+                "alert": dict(self.alert) if self.alert is not None else None,
+                "staleDate": self.stale_date,
+                "dismissalDate": self.dismissal_date,
+                "relevanceScore": self.relevance_score,
+                "inputPushToken": self.input_push_token or None,
+                "inputPushChannel": self.input_push_channel,
+                "priority": self.priority.value,
+            }
+        )
+
+
+def apns_live_activity_recipient(activity_token: str) -> JsonDict:
+    return {"transportType": "apnsLiveActivity", "activityToken": activity_token}
+
+
+def apns_live_activity_broadcast_recipient(
+    channel_id: str,
+    storage_policy: ApnsChannelStoragePolicy = ApnsChannelStoragePolicy.NO_STORAGE,
+) -> JsonDict:
+    return {
+        "transportType": "apnsLiveActivityBroadcast",
+        "channelId": channel_id,
+        "storagePolicy": storage_policy.value,
+    }
+
+
 @dataclass(frozen=True)
 class Result:
     status: Status
@@ -1156,6 +1226,40 @@ class Sockudo(_BaseSockudo):
             headers=self._push_headers("push-admin"),
         )
 
+    def create_apns_live_activity_channel(
+        self,
+        storage_policy: ApnsChannelStoragePolicy = ApnsChannelStoragePolicy.NO_STORAGE,
+    ) -> Result:
+        return self._post(
+            self._push_path("/liveActivities/channels"),
+            {"storagePolicy": storage_policy.value},
+            headers=self._push_headers("push-admin"),
+        )
+
+    def get_apns_live_activity_channel(self, channel_id: str) -> Result:
+        return self._request(
+            "GET",
+            self._push_path(f"/liveActivities/channels/{quote(channel_id, safe='')}"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
+
+    def list_apns_live_activity_channels(self) -> Result:
+        return self._request(
+            "GET",
+            self._push_path("/liveActivities/channels"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
+
+    def delete_apns_live_activity_channel(self, channel_id: str) -> Result:
+        return self._request(
+            "DELETE",
+            self._push_path(f"/liveActivities/channels/{quote(channel_id, safe='')}"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
+
     def publish_push_direct(self, request: Mapping[str, Any]) -> Result:
         return self.publish_push(request)
 
@@ -1640,6 +1744,40 @@ class AsyncSockudo(_BaseSockudo):
         return await self._post(
             self._push_path("/publish"),
             payload,
+            headers=self._push_headers("push-admin"),
+        )
+
+    async def create_apns_live_activity_channel(
+        self,
+        storage_policy: ApnsChannelStoragePolicy = ApnsChannelStoragePolicy.NO_STORAGE,
+    ) -> Result:
+        return await self._post(
+            self._push_path("/liveActivities/channels"),
+            {"storagePolicy": storage_policy.value},
+            headers=self._push_headers("push-admin"),
+        )
+
+    async def get_apns_live_activity_channel(self, channel_id: str) -> Result:
+        return await self._request(
+            "GET",
+            self._push_path(f"/liveActivities/channels/{quote(channel_id, safe='')}"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
+
+    async def list_apns_live_activity_channels(self) -> Result:
+        return await self._request(
+            "GET",
+            self._push_path("/liveActivities/channels"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
+
+    async def delete_apns_live_activity_channel(self, channel_id: str) -> Result:
+        return await self._request(
+            "DELETE",
+            self._push_path(f"/liveActivities/channels/{quote(channel_id, safe='')}"),
+            None,
             headers=self._push_headers("push-admin"),
         )
 

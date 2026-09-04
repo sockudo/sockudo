@@ -73,6 +73,86 @@ public struct PushSubscriptionParams: Sendable, Equatable {
   }
 }
 
+public enum ApnsChannelStoragePolicy: String, Sendable {
+  case noStorage
+  case mostRecent
+}
+
+public enum ApnsLiveActivityEvent: String, Sendable {
+  case start
+  case update
+  case end
+}
+
+public enum ApnsLiveActivityPriority: String, Sendable {
+  /// Broadcast-only priority that minimizes device power impact.
+  case lowPower
+  case conservePower
+  case immediate
+}
+
+/// Typed ActivityKit payload accepted by Sockudo's push proxy.
+public struct ApnsLiveActivityPayload: @unchecked Sendable {
+  public let event: ApnsLiveActivityEvent
+  public let timestamp: UInt64
+  public let contentState: [String: Any]
+  public let attributesType: String?
+  public let attributes: [String: Any]?
+  public let alert: [String: Any]?
+  public let staleDate: UInt64?
+  public let dismissalDate: UInt64?
+  public let relevanceScore: Double?
+  public let inputPushToken: Bool
+  public let inputPushChannel: String?
+  public let priority: ApnsLiveActivityPriority
+
+  public init(
+    event: ApnsLiveActivityEvent,
+    timestamp: UInt64 = UInt64(Date().timeIntervalSince1970),
+    contentState: [String: Any],
+    attributesType: String? = nil,
+    attributes: [String: Any]? = nil,
+    alert: [String: Any]? = nil,
+    staleDate: UInt64? = nil,
+    dismissalDate: UInt64? = nil,
+    relevanceScore: Double? = nil,
+    inputPushToken: Bool = false,
+    inputPushChannel: String? = nil,
+    priority: ApnsLiveActivityPriority = .conservePower
+  ) {
+    self.event = event
+    self.timestamp = timestamp
+    self.contentState = contentState
+    self.attributesType = attributesType
+    self.attributes = attributes
+    self.alert = alert
+    self.staleDate = staleDate
+    self.dismissalDate = dismissalDate
+    self.relevanceScore = relevanceScore
+    self.inputPushToken = inputPushToken
+    self.inputPushChannel = inputPushChannel
+    self.priority = priority
+  }
+
+  public var dictionary: [String: Any] {
+    var value: [String: Any] = [
+      "event": event.rawValue,
+      "timestamp": timestamp,
+      "contentState": contentState,
+      "inputPushToken": inputPushToken,
+      "priority": priority.rawValue,
+    ]
+    value["attributesType"] = attributesType
+    value["attributes"] = attributes
+    value["alert"] = alert
+    value["staleDate"] = staleDate
+    value["dismissalDate"] = dismissalDate
+    value["relevanceScore"] = relevanceScore
+    value["inputPushChannel"] = inputPushChannel
+    return value
+  }
+}
+
 public final class SockudoPushRegistration: Sendable {
   private let endpoint: String
   private let headers: [String: String]
@@ -183,6 +263,98 @@ public final class SockudoPushRegistration: Sendable {
     var payload = request
     payload["sync"] = false
     requestObject(method: "POST", path: "/publish", body: payload, completion: completion)
+  }
+
+  public func publishLiveActivity(
+    activityToken: String,
+    payload: ApnsLiveActivityPayload,
+    publishID: String? = nil,
+    expiresAtMilliseconds: UInt64? = nil,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    var request: [String: Any] = [
+      "recipients": [[
+        "type": "recipient",
+        "recipient": [
+          "transportType": "apnsLiveActivity",
+          "activityToken": activityToken,
+        ],
+      ]],
+      "payload": [String: Any](),
+      "liveActivity": payload.dictionary,
+    ]
+    request["publishId"] = publishID
+    request["expiresAtMs"] = expiresAtMilliseconds
+    publish(request, completion: completion)
+  }
+
+  public func publishLiveActivityBroadcast(
+    channelID: String,
+    storagePolicy: ApnsChannelStoragePolicy = .noStorage,
+    payload: ApnsLiveActivityPayload,
+    publishID: String? = nil,
+    expiresAtMilliseconds: UInt64? = nil,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    var request: [String: Any] = [
+      "recipients": [[
+        "type": "recipient",
+        "recipient": [
+          "transportType": "apnsLiveActivityBroadcast",
+          "channelId": channelID,
+          "storagePolicy": storagePolicy.rawValue,
+        ],
+      ]],
+      "payload": [String: Any](),
+      "liveActivity": payload.dictionary,
+    ]
+    request["publishId"] = publishID
+    request["expiresAtMs"] = expiresAtMilliseconds
+    publish(request, completion: completion)
+  }
+
+  public func createLiveActivityBroadcastChannel(
+    storagePolicy: ApnsChannelStoragePolicy = .noStorage,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    requestObject(
+      method: "POST",
+      path: "/liveActivities/channels",
+      body: ["storagePolicy": storagePolicy.rawValue],
+      completion: completion
+    )
+  }
+
+  public func getLiveActivityBroadcastChannel(
+    channelID: String,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    requestObject(
+      method: "GET",
+      path: "/liveActivities/channels/\(encodePath(channelID))",
+      completion: completion
+    )
+  }
+
+  public func listLiveActivityBroadcastChannels(
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    requestObject(
+      method: "GET",
+      path: "/liveActivities/channels",
+      completion: completion
+    )
+  }
+
+  public func deleteLiveActivityBroadcastChannel(
+    channelID: String,
+    completion: @escaping @Sendable (Result<Void, Error>) -> Void
+  ) {
+    requestVoid(
+      method: "DELETE",
+      path: "/liveActivities/channels/\(encodePath(channelID))",
+      completion: completion
+    )
   }
 
   public func publishBatch(
@@ -340,6 +512,8 @@ public final class SockudoPushRegistration: Sendable {
   }
 
   private func encodePath(_ value: String) -> String {
-    value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+    var allowed = CharacterSet.alphanumerics
+    allowed.insert(charactersIn: "-._~")
+    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
   }
 }

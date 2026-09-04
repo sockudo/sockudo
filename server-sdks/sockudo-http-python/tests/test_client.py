@@ -373,6 +373,62 @@ def test_push_subscribe_helpers_pass_device_identity_token():
     sockudo.close()
 
 
+def test_apns_live_activity_helpers_use_wire_contract_and_admin_endpoints():
+    from sockudo_http_python import (
+        ApnsChannelStoragePolicy,
+        ApnsLiveActivityEvent,
+        ApnsLiveActivityPayload,
+        ApnsLiveActivityPriority,
+        apns_live_activity_broadcast_recipient,
+    )
+
+    seen = []
+
+    def handler(request):
+        seen.append(
+            (
+                request.method,
+                request.url.raw_path.decode().split("?", 1)[0],
+                json.loads(request.content.decode() or "{}"),
+                dict(request.headers),
+            )
+        )
+        return httpx.Response(200, json={"channels": []})
+
+    sockudo = make_client(handler)
+    sockudo.create_apns_live_activity_channel(ApnsChannelStoragePolicy.MOST_RECENT)
+    sockudo.get_apns_live_activity_channel("a/b+c=")
+    sockudo.list_apns_live_activity_channels()
+    sockudo.delete_apns_live_activity_channel("a/b+c=")
+
+    payload = ApnsLiveActivityPayload(
+        event=ApnsLiveActivityEvent.UPDATE,
+        timestamp=1725000000,
+        content_state={"eta": 4},
+        priority=ApnsLiveActivityPriority.CONSERVE_POWER,
+    ).to_payload()
+    recipient = apns_live_activity_broadcast_recipient(
+        "channel-1", ApnsChannelStoragePolicy.NO_STORAGE
+    )
+
+    assert seen[0][2] == {"storagePolicy": "mostRecent"}
+    assert seen[1][1].endswith("/liveActivities/channels/a%2Fb%2Bc%3D")
+    assert seen[3][0] == "DELETE"
+    assert all(item[3]["x-sockudo-push-capability"] == "push-admin" for item in seen)
+    assert recipient == {
+        "transportType": "apnsLiveActivityBroadcast",
+        "channelId": "channel-1",
+        "storagePolicy": "noStorage",
+    }
+    assert payload == {
+        "event": "update",
+        "timestamp": 1725000000,
+        "contentState": {"eta": 4},
+        "priority": "conservePower",
+    }
+    sockudo.close()
+
+
 def test_authenticate_and_webhook_validation():
     sockudo = Sockudo("app-id", "key", "secret", options=SockudoOptions())
     auth = json.loads(

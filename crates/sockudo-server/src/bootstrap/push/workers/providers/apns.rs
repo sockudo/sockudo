@@ -8,7 +8,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::ServerOptions;
 use std::{env, fs, sync::Arc};
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
 pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
@@ -16,21 +16,13 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
     store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
 ) -> Vec<tokio::task::JoinHandle<()>> {
-    let topic = env::var("APNS_TOPIC").or_else(|_| env::var("PUSH_APNS_TOPIC"));
-    let Ok(topic) = topic else {
-        warn!(
-            "push.apns_enabled is true but APNS_TOPIC/PUSH_APNS_TOPIC is not set; APNs dispatch worker not started"
-        );
-        return Vec::new();
-    };
+    let topic = config.push.apns.topic.clone();
     if topic.trim().is_empty() {
-        warn!("apns topic env var is empty; apns dispatch worker not started");
+        warn!("apns topic is empty; apns dispatch worker not started");
         return Vec::new();
     }
 
-    let endpoint = env::var("APNS_ENDPOINT")
-        .or_else(|_| env::var("PUSH_APNS_ENDPOINT"))
-        .unwrap_or_else(|_| "https://api.push.apple.com".to_owned());
+    let endpoint = config.push.apns.endpoint.clone();
     let stored_app_id = env::var("APNS_APP_ID").or_else(|_| env::var("PUSH_APNS_APP_ID"));
     let stored_credential_id = env::var("APNS_CREDENTIAL_ID")
         .or_else(|_| env::var("PUSH_APNS_CREDENTIAL_ID"))
@@ -50,6 +42,7 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
             let endpoint = endpoint.clone();
             let app_id = stored_app_id.clone();
             let credential_id = stored_credential_id.clone();
+            let apns_config = config.push.apns.clone();
             handles.push(spawn_supervised_worker(
                 "provider",
                 format!("sockudo-monolith-apns-{worker_index}"),
@@ -60,6 +53,7 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
                     let endpoint = endpoint.clone();
                     let app_id = app_id.clone();
                     let credential_id = credential_id.clone();
+                    let apns_config = apns_config.clone();
                     async move {
                         let dispatcher = match create_stored_apns_dispatcher(
                             &store,
@@ -67,12 +61,13 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
                             &credential_id,
                             &topic,
                             &endpoint,
+                            &apns_config,
                         )
                         .await
                         {
                             Ok(dispatcher) => dispatcher,
                             Err(error) => {
-                                warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, error = %error, "APNs dispatch worker not started");
+                                warn!(worker_id = %group, app_id = %app_id, credential_id = %credential_id, error = %error, "apns dispatch worker not started");
                                 return;
                             }
                         };
@@ -82,15 +77,15 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
                             Arc::new(dispatcher),
                         )
                         .with_max_outbound_requests(max_outbound);
-                        warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, "APNs dispatch worker started with stored credential");
+                        info!(worker_id = %group, app_id = %app_id, credential_id = %credential_id, "apns dispatch worker started with stored credential");
                         loop {
                             match worker.run_once(&group).await {
                                 Ok(processed) if processed > 0 => {
-                                    warn!(worker = %group, processed, "APNs dispatch worker processed messages");
+                                    debug!(worker_id = %group, processed_count = processed, "apns dispatch worker processed messages");
                                 }
                                 Ok(_) => {}
                                 Err(error) => {
-                                    warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
+                                    warn!(worker_id = %group, error = %error, "apns dispatch worker tick failed");
                                 }
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -105,7 +100,7 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
     let token_provider = match create_apns_token_provider() {
         Ok(provider) => provider,
         Err(error) => {
-            warn!(error = %error, "APNs dispatch worker not started");
+            warn!(error = %error, "apns dispatch worker not started");
             return Vec::new();
         }
     };
@@ -113,16 +108,19 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
     let mut handles = Vec::new();
     let max_outbound = config.push.dispatch_max_outbound_requests;
     for worker_index in 0..config.push.dispatch_worker_count {
-        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new_for_trusted_provider(
+            apns_http_options(&config.push.apns),
+        ) {
             Ok(http) => Arc::new(http),
             Err(error) => {
-                warn!(error = %error, "failed to create APNs HTTP client");
+                warn!(error = %error, "failed to create apns http client");
                 continue;
             }
         };
         let dispatcher =
             sockudo_push::ApnsDispatcher::new(topic.clone(), token_provider.clone(), http)
-                .with_base_url(endpoint.clone());
+                .with_base_url(endpoint.clone())
+                .with_live_activities(live_activity_dispatch_config(&config.push.apns));
         handles.push(spawn_supervised_worker(
             "provider",
             format!("sockudo-monolith-apns-{worker_index}"),
@@ -138,15 +136,15 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
                             Arc::new(dispatcher),
                         )
                         .with_max_outbound_requests(max_outbound);
-                        warn!(worker = %group, "APNs dispatch worker started");
+                        info!(worker_id = %group, "apns dispatch worker started");
                         loop {
                             match worker.run_once(&group).await {
                                 Ok(processed) if processed > 0 => {
-                                    warn!(worker = %group, processed, "APNs dispatch worker processed messages");
+                                    debug!(worker_id = %group, processed_count = processed, "apns dispatch worker processed messages");
                                 }
                                 Ok(_) => {}
                                 Err(error) => {
-                                    warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
+                                    warn!(worker_id = %group, error = %error, "apns dispatch worker tick failed");
                                 }
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -166,6 +164,7 @@ async fn create_stored_apns_dispatcher(
     credential_id: &str,
     topic: &str,
     endpoint: &str,
+    apns_config: &sockudo_core::options::PushApnsConfig,
 ) -> Result<sockudo_push::ApnsDispatcher> {
     let credential = store
         .get_credential(app_id, credential_id)
@@ -207,13 +206,17 @@ async fn create_stored_apns_dispatcher(
             ApnsJwtTokenSource::new(team_id, key_id, private_key)?,
         ));
         let http = Arc::new(
-            sockudo_push::ReqwestProviderHttpClient::new().map_err(|error| {
+            sockudo_push::ReqwestProviderHttpClient::new_for_trusted_provider(apns_http_options(
+                apns_config,
+            ))
+            .map_err(|error| {
                 Error::Internal(format!("failed to create APNs HTTP client: {error}"))
             })?,
         );
         return Ok(
             sockudo_push::ApnsDispatcher::new(topic.to_owned(), token_provider, http)
-                .with_base_url(endpoint.to_owned()),
+                .with_base_url(endpoint.to_owned())
+                .with_live_activities(live_activity_dispatch_config(apns_config)),
         );
     }
 
@@ -221,13 +224,18 @@ async fn create_stored_apns_dispatcher(
         let pem = decrypt_credential_secret(&pem)
             .map_err(|error| Error::Internal(format!("failed to decrypt APNs PEM: {error}")))?;
         let http = Arc::new(
-            sockudo_push::ReqwestProviderHttpClient::new_with_pem_identity(&pem).map_err(
-                |error| Error::Internal(format!("failed to create APNs PEM HTTP client: {error}")),
-            )?,
+            sockudo_push::ReqwestProviderHttpClient::new_with_pem_identity_and_options(
+                &pem,
+                apns_http_options(apns_config),
+            )
+            .map_err(|error| {
+                Error::Internal(format!("failed to create APNs PEM HTTP client: {error}"))
+            })?,
         );
         return Ok(
             sockudo_push::ApnsDispatcher::new_with_tls_identity(topic.to_owned(), http)
-                .with_base_url(endpoint.to_owned()),
+                .with_base_url(endpoint.to_owned())
+                .with_live_activities(live_activity_dispatch_config(apns_config)),
         );
     }
 
@@ -244,22 +252,56 @@ async fn create_stored_apns_dispatcher(
             .unwrap_or_default();
         let der = decode_apns_p12(&p12)?;
         let http = Arc::new(
-            sockudo_push::ReqwestProviderHttpClient::new_with_pkcs12_identity(&der, &p12_password)
-                .map_err(|error| {
-                    Error::Internal(format!(
-                        "failed to create APNs PKCS#12 HTTP client: {error}"
-                    ))
-                })?,
+            sockudo_push::ReqwestProviderHttpClient::new_with_pkcs12_identity_and_options(
+                &der,
+                &p12_password,
+                apns_http_options(apns_config),
+            )
+            .map_err(|error| {
+                Error::Internal(format!(
+                    "failed to create APNs PKCS#12 HTTP client: {error}"
+                ))
+            })?,
         );
         return Ok(
             sockudo_push::ApnsDispatcher::new_with_tls_identity(topic.to_owned(), http)
-                .with_base_url(endpoint.to_owned()),
+                .with_base_url(endpoint.to_owned())
+                .with_live_activities(live_activity_dispatch_config(apns_config)),
         );
     }
 
     Err(Error::Internal(
         "APNs credential requires p12, pem, or teamId/keyId/privateKey material".to_owned(),
     ))
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+fn live_activity_dispatch_config(
+    config: &sockudo_core::options::PushApnsConfig,
+) -> sockudo_push::ApnsLiveActivityDispatchConfig {
+    sockudo_push::ApnsLiveActivityDispatchConfig {
+        enabled: config.live_activities_enabled,
+        broadcast_enabled: config.broadcast_enabled,
+        topic: config.resolved_live_activity_topic(),
+        bundle_id: config.resolved_bundle_id().to_owned(),
+        broadcast_base_url: config.broadcast_endpoint.clone(),
+        default_expiration_secs: config.default_broadcast_expiration_secs,
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+fn apns_http_options(
+    config: &sockudo_core::options::PushApnsConfig,
+) -> sockudo_push::ProviderHttpClientOptions {
+    sockudo_push::ProviderHttpClientOptions {
+        connect_timeout_ms: config.connect_timeout_ms,
+        request_timeout_ms: config.request_timeout_ms,
+        pool_idle_timeout_secs: config.pool_idle_timeout_secs,
+        max_idle_connections_per_host: config.max_idle_connections_per_host,
+        tcp_keepalive_secs: config.tcp_keepalive_secs,
+        http2_keepalive_interval_secs: config.http2_keepalive_interval_secs,
+        http2_keepalive_timeout_secs: config.http2_keepalive_timeout_secs,
+    }
 }
 
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]

@@ -3,7 +3,83 @@ package sockudo
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
+
+type ApnsChannelStoragePolicy string
+
+const (
+	ApnsChannelNoStorage  ApnsChannelStoragePolicy = "noStorage"
+	ApnsChannelMostRecent ApnsChannelStoragePolicy = "mostRecent"
+)
+
+type ApnsLiveActivityEvent string
+
+const (
+	ApnsLiveActivityStart  ApnsLiveActivityEvent = "start"
+	ApnsLiveActivityUpdate ApnsLiveActivityEvent = "update"
+	ApnsLiveActivityEnd    ApnsLiveActivityEvent = "end"
+)
+
+type ApnsLiveActivityPriority string
+
+const (
+	ApnsLiveActivityLowPower      ApnsLiveActivityPriority = "lowPower"
+	ApnsLiveActivityConservePower ApnsLiveActivityPriority = "conservePower"
+	ApnsLiveActivityImmediate     ApnsLiveActivityPriority = "immediate"
+)
+
+// ApnsLiveActivityPayload is rendered by Sockudo into Apple's ActivityKit
+// wire format. All date fields are UNIX timestamps in seconds.
+type ApnsLiveActivityPayload struct {
+	Event            ApnsLiveActivityEvent    `json:"event"`
+	Timestamp        uint64                   `json:"timestamp"`
+	ContentState     map[string]interface{}   `json:"contentState"`
+	AttributesType   string                   `json:"attributesType,omitempty"`
+	Attributes       map[string]interface{}   `json:"attributes,omitempty"`
+	Alert            map[string]interface{}   `json:"alert,omitempty"`
+	StaleDate        *uint64                  `json:"staleDate,omitempty"`
+	DismissalDate    *uint64                  `json:"dismissalDate,omitempty"`
+	RelevanceScore   *float64                 `json:"relevanceScore,omitempty"`
+	InputPushToken   bool                     `json:"inputPushToken,omitempty"`
+	InputPushChannel string                   `json:"inputPushChannel,omitempty"`
+	Priority         ApnsLiveActivityPriority `json:"priority,omitempty"`
+}
+
+type ApnsLiveActivityRecipient struct {
+	TransportType string `json:"transportType"`
+	ActivityToken string `json:"activityToken"`
+}
+
+func NewApnsLiveActivityRecipient(activityToken string) ApnsLiveActivityRecipient {
+	return ApnsLiveActivityRecipient{
+		TransportType: "apnsLiveActivity",
+		ActivityToken: activityToken,
+	}
+}
+
+type ApnsLiveActivityBroadcastRecipient struct {
+	TransportType string                   `json:"transportType"`
+	ChannelID     string                   `json:"channelId"`
+	StoragePolicy ApnsChannelStoragePolicy `json:"storagePolicy"`
+}
+
+func NewApnsLiveActivityBroadcastRecipient(channelID string, storagePolicy ApnsChannelStoragePolicy) ApnsLiveActivityBroadcastRecipient {
+	return ApnsLiveActivityBroadcastRecipient{
+		TransportType: "apnsLiveActivityBroadcast",
+		ChannelID:     channelID,
+		StoragePolicy: storagePolicy,
+	}
+}
+
+type ApnsBroadcastChannel struct {
+	ChannelID     string                   `json:"channelId"`
+	StoragePolicy ApnsChannelStoragePolicy `json:"storagePolicy"`
+}
+
+type ApnsBroadcastChannelList struct {
+	Channels []string `json:"channels"`
+}
 
 type PushCursorParams struct {
 	Limit  *int
@@ -148,6 +224,29 @@ func (c *Client) PutPushCredential(provider string, credential map[string]interf
 func (c *Client) PublishPush(request PushPublishRequest) ([]byte, error) {
 	request["sync"] = false
 	return c.pushRequest("POST", "/publish", request, nil, pushHeaders("push-admin", ""))
+}
+
+// CreateApnsLiveActivityChannel creates an APNs broadcast channel through Sockudo.
+func (c *Client) CreateApnsLiveActivityChannel(storagePolicy ApnsChannelStoragePolicy) ([]byte, error) {
+	return c.pushRequest(
+		"POST",
+		"/liveActivities/channels",
+		map[string]interface{}{"storagePolicy": storagePolicy},
+		nil,
+		pushHeaders("push-admin", ""),
+	)
+}
+
+func (c *Client) GetApnsLiveActivityChannel(channelID string) ([]byte, error) {
+	return c.pushRequest("GET", "/liveActivities/channels/"+url.PathEscape(channelID), nil, nil, pushHeaders("push-admin", ""))
+}
+
+func (c *Client) ListApnsLiveActivityChannels() ([]byte, error) {
+	return c.pushRequest("GET", "/liveActivities/channels", nil, nil, pushHeaders("push-admin", ""))
+}
+
+func (c *Client) DeleteApnsLiveActivityChannel(channelID string) ([]byte, error) {
+	return c.pushRequest("DELETE", "/liveActivities/channels/"+url.PathEscape(channelID), nil, nil, pushHeaders("push-admin", ""))
 }
 
 func (c *Client) PublishPushDirect(request PushPublishRequest) ([]byte, error) {

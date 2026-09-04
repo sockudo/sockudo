@@ -344,6 +344,37 @@ const batch: BatchEvent[] = [
 await sockudo.triggerBatch(batch)
 ```
 
+## Apple Live Activities
+
+The push API supports ActivityKit start, update, end, and iOS 18 broadcast channels. Broadcast
+publishing remains one APNs request regardless of channel subscriber count.
+
+```typescript
+const channel = await sockudo.createApnsLiveActivityChannel("mostRecent")
+
+await sockudo.publishPush({
+  publishId: "match-90-score-3-1",
+  recipients: [{
+    type: "recipient",
+    recipient: {
+      transportType: "apnsLiveActivityBroadcast",
+      channelId: channel.channelId,
+      storagePolicy: channel.storagePolicy,
+    },
+  }],
+  payload: {},
+  liveActivity: {
+    event: "update",
+    timestamp: Math.floor(Date.now() / 1000),
+    contentState: { home: 3, away: 1 },
+    priority: "conservePower",
+  },
+})
+```
+
+Use `apnsLiveActivity` with an `activityToken` for direct push-to-start and per-activity updates.
+Delete channels with `deleteApnsLiveActivityChannel` when their audience is retired.
+
 ## Testing
 
 ```bash

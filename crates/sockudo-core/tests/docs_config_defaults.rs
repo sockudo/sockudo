@@ -6,6 +6,15 @@ use std::fs;
 use std::path::PathBuf;
 use toml::Value;
 
+#[tokio::test]
+async fn shipped_config_loads_through_environment_substitution() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/config.toml");
+    let options = ServerOptions::load_from_file(path.to_str().unwrap())
+        .await
+        .expect("shipped configuration must load through the production loader");
+    assert_eq!(options.port, 6001);
+}
+
 #[test]
 fn documented_ai_transport_related_defaults_match_code() {
     let docs = load_documented_defaults();

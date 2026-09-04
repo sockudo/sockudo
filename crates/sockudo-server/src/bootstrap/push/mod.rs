@@ -1,3 +1,5 @@
+#[cfg(feature = "push-apns")]
+mod apns_channels;
 mod capability;
 mod queue;
 mod stores;
@@ -9,6 +11,8 @@ use self::stores::{
     create_dynamodb_push_store, create_mysql_push_store, create_postgres_push_store,
     create_scylladb_push_store, create_surrealdb_push_store,
 };
+#[cfg(feature = "push-apns")]
+pub(crate) use apns_channels::create_apns_channel_manager;
 pub(crate) use capability::{PushAdmissionRejection, PushAdmissionSnapshot};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::ServerOptions;

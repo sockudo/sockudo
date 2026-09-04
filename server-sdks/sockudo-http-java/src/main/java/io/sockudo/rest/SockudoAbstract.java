@@ -10,6 +10,7 @@ import io.sockudo.rest.marshaller.DefaultDataMarshaller;
 import io.sockudo.rest.util.Prerequisites;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -968,6 +969,50 @@ public abstract class SockudoAbstract<T> {
         );
     }
 
+    /** Creates an APNs broadcast channel for Live Activity updates. */
+    public T createApnsLiveActivityChannel(final String storagePolicy) {
+        if (!"noStorage".equals(storagePolicy) && !"mostRecent".equals(storagePolicy)) {
+            throw new IllegalArgumentException("storagePolicy must be noStorage or mostRecent");
+        }
+        return post(
+                pushPath("/liveActivities/channels"),
+                BODY_SERIALISER.toJson(Collections.singletonMap("storagePolicy", storagePolicy)),
+                pushHeaders(PUSH_ADMIN_CAPABILITY, null)
+        );
+    }
+
+    /** Creates a no-storage APNs broadcast channel for Live Activity updates. */
+    public T createApnsLiveActivityChannel() {
+        return createApnsLiveActivityChannel("noStorage");
+    }
+
+    /** Reads one APNs Live Activity broadcast channel. */
+    public T getApnsLiveActivityChannel(final String channelId) {
+        Prerequisites.nonEmpty("channelId", channelId);
+        return getEncodedPath(
+                pushPath("/liveActivities/channels/" + encodePathSegment(channelId)),
+                pushHeaders(PUSH_ADMIN_CAPABILITY, null)
+        );
+    }
+
+    /** Lists APNs Live Activity broadcast channel identifiers. */
+    public T listApnsLiveActivityChannels() {
+        return get(
+                pushPath("/liveActivities/channels"),
+                Collections.<String, String>emptyMap(),
+                pushHeaders(PUSH_ADMIN_CAPABILITY, null)
+        );
+    }
+
+    /** Deletes one APNs Live Activity broadcast channel. */
+    public T deleteApnsLiveActivityChannel(final String channelId) {
+        Prerequisites.nonEmpty("channelId", channelId);
+        return deleteEncodedPath(
+                pushPath("/liveActivities/channels/" + encodePathSegment(channelId)),
+                pushHeaders(PUSH_ADMIN_CAPABILITY, null)
+        );
+    }
+
     public T publishPushDirect(final Map<String, Object> request) {
         return publishPush(request);
     }
@@ -1033,6 +1078,28 @@ public abstract class SockudoAbstract<T> {
 
     private String pushPath(final String suffix) {
         return "/push" + suffix;
+    }
+
+    private String encodePathSegment(final String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    private T getEncodedPath(final String path, final Map<String, String> headers) {
+        final String fullPath = "/apps/" + appId + path;
+        final URI uri = SignatureUtil.uriWithEncodedPath(
+                "GET", scheme, host, fullPath, null, key, secret,
+                Collections.<String, String>emptyMap()
+        );
+        return doGet(uri, headers);
+    }
+
+    private T deleteEncodedPath(final String path, final Map<String, String> headers) {
+        final String fullPath = "/apps/" + appId + path;
+        final URI uri = SignatureUtil.uriWithEncodedPath(
+                "DELETE", scheme, host, fullPath, null, key, secret,
+                Collections.<String, String>emptyMap()
+        );
+        return doDelete(uri, headers);
     }
 
     /**

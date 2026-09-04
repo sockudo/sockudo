@@ -113,7 +113,7 @@ wns_enabled = false
 # HMS/WNS monolith dispatch workers require provider-specific feature flags,
 # the matching push.*_enabled setting, and pre-generated provider bearer tokens:
 # PUSH_HMS_APP_ID + PUSH_HMS_PROVIDER_TOKEN, or PUSH_WNS_PROVIDER_TOKEN.
-# APNs monolith dispatch workers require PUSH_APNS_TOPIC. Set PUSH_APNS_APP_ID
+# APNs monolith dispatch workers use [push.apns].topic or PUSH_APNS_TOPIC. Set PUSH_APNS_APP_ID
 # to load a stored push/credentials/apns credential, optionally with
 # PUSH_APNS_CREDENTIAL_ID (defaults to apns). Without PUSH_APNS_APP_ID the
 # worker falls back to env token auth via PUSH_APNS_TEAM_ID, PUSH_APNS_KEY_ID,
@@ -155,6 +155,31 @@ repair_batch_size = 100
 cleanup_interval_secs = 300
 cleanup_batch_size = 1000
 cleanup_max_deleted_per_tick = 100000
+
+[push.apns]
+# The ordinary APNs app topic. Override all three endpoints with their sandbox
+# equivalents when testing sandbox tokens and channels.
+topic = "com.example.app"
+endpoint = "https://api.push.apple.com"
+live_activities_enabled = false
+# Empty derives <bundle_id>.push-type.liveactivity.
+live_activity_topic = ""
+# Empty derives the ordinary APNs topic.
+bundle_id = ""
+broadcast_enabled = false
+broadcast_endpoint = "https://api-broadcast.push.apple.com"
+management_endpoint = "https://api-manage-broadcast.push.apple.com:2196"
+# Apple stores the most recent broadcast for at most eight hours.
+default_broadcast_expiration_secs = 3600
+# Long-lived HTTP/2 pool tuning. Scale dispatch_worker_count and
+# dispatch_max_outbound_requests against observed APNs throttling.
+connect_timeout_ms = 5000
+request_timeout_ms = 10000
+pool_idle_timeout_secs = 90
+max_idle_connections_per_host = 128
+tcp_keepalive_secs = 60
+http2_keepalive_interval_secs = 30
+http2_keepalive_timeout_secs = 10
 
 [push.retry]
 max_attempts = 5
@@ -563,7 +588,7 @@ wheel_tick_ms = 5
 shards = 64
 
 # Embedded Model Context Protocol server for AI agents (requires the `mcp`
-# Cargo feature). Tokens must be at least 16 characters; prefer `${ENV}`
+# Cargo feature). Tokens must be at least 16 characters; prefer environment variable
 # interpolation over literals. See docs/content/docs/server/mcp.mdx.
 [mcp]
 enabled = false

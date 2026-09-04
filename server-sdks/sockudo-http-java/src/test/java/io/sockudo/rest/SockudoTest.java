@@ -296,6 +296,33 @@ public class SockudoTest {
     }
 
     @Test
+    public void apnsLiveActivityChannelHelpersUseAdminEndpoints() throws Exception {
+        context.checking(new Expectations() {{
+            oneOf(httpClient).execute(with(allOf(
+                    path("/apps/" + APP_ID + "/push/liveActivities/channels"),
+                    fieldAndHeader("storagePolicy", "mostRecent", "X-Sockudo-Push-Capability", "push-admin")
+            )));
+            oneOf(httpClient).execute(with(allOf(
+                    rawPath("/apps/" + APP_ID + "/push/liveActivities/channels/a%2Fb%2Bc%3D"),
+                    requestHeader("X-Sockudo-Push-Capability", "push-admin")
+            )));
+            oneOf(httpClient).execute(with(allOf(
+                    path("/apps/" + APP_ID + "/push/liveActivities/channels"),
+                    requestHeader("X-Sockudo-Push-Capability", "push-admin")
+            )));
+            oneOf(httpClient).execute(with(allOf(
+                    rawPath("/apps/" + APP_ID + "/push/liveActivities/channels/a%2Fb%2Bc%3D"),
+                    requestHeader("X-Sockudo-Push-Capability", "push-admin")
+            )));
+        }});
+
+        p.createApnsLiveActivityChannel("mostRecent");
+        p.getApnsLiveActivityChannel("a/b+c=");
+        p.listApnsLiveActivityChannels();
+        p.deleteApnsLiveActivityChannel("a/b+c=");
+    }
+
+    @Test
     public void schedulePushRequiresNotBeforeMs() {
         Assertions.assertThrows(IllegalArgumentException.class, () -> p.schedulePush(Collections.<String, Object>emptyMap()));
     }

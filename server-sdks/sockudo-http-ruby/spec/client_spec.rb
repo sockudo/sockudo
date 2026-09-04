@@ -505,6 +505,39 @@ describe Sockudo do
         end
       end
 
+      describe '#apns_live_activity_channels' do
+        it 'manages broadcast channels with encoded identifiers and admin capability' do
+          collection_path = %r{/apps/20/push/liveActivities/channels(?:\?|$)}
+          member_path = %r{/apps/20/push/liveActivities/channels/a%2Fb\+c=}
+          stub_request(:post, collection_path).to_return(
+            status: 201,
+            body: MultiJson.dump(channelId: 'channel-1', storagePolicy: 'mostRecent')
+          )
+          stub_request(:get, collection_path).to_return(status: 200, body: MultiJson.dump(channels: []))
+          stub_request(:get, member_path).to_return(status: 200, body: MultiJson.dump(channelId: 'a/b+c='))
+          stub_request(:delete, member_path).to_return(status: 200, body: MultiJson.dump({}))
+
+          expect(@client.create_apns_live_activity_channel('mostRecent')).to include(channelId: 'channel-1')
+          @client.get_apns_live_activity_channel('a/b+c=')
+          @client.list_apns_live_activity_channels
+          @client.delete_apns_live_activity_channel('a/b+c=')
+
+          expect(WebMock).to(have_requested(:post, collection_path).with do |req|
+            MultiJson.load(req.body)['storagePolicy'] == 'mostRecent' &&
+              req.headers['X-Sockudo-Push-Capability'] == 'push-admin'
+          end)
+          expect(WebMock).to(have_requested(:delete, member_path).with do |req|
+            req.headers['X-Sockudo-Push-Capability'] == 'push-admin'
+          end)
+        end
+
+        it 'validates the storage policy' do
+          expect do
+            @client.create_apns_live_activity_channel('forever')
+          end.to raise_error(Sockudo::Error, 'storage_policy must be noStorage or mostRecent')
+        end
+      end
+
       describe '#schedule_push' do
         it 'requires notBeforeMs' do
           expect do

@@ -24,6 +24,13 @@ test('renders all fixture keys onto one isolated app', () => {
   assert.match(rendered, /capability = "\{\\"chat:\*\\":\[\\"publish\\"\]\}"/);
   assert.match(rendered, /revocable_tokens = true/);
   assert.match(rendered, /stats_fixture_ingest_enabled = true/);
+  const push = rendered.split('[push]')[1].split('[push.retry]')[0];
+  assert.match(push, /storage_driver = "memory"/);
+  assert.match(push, /queue_driver = "memory"/);
+  assert.match(push, /allow_memory_drivers = true/);
+  for (const provider of ['fcm', 'apns', 'webpush', 'hms', 'wns']) {
+    assert.match(push, new RegExp(`${provider}_enabled = false`));
+  }
 });
 
 test('uses a full-capability response when a fixture omits capability', () => {

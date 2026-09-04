@@ -193,6 +193,17 @@ export function renderConfig(template, port, definition) {
     appManagerConfig(definition),
   );
   config = replaceSection(config, '[ably_compat]', '[cache]', compatibilityConfig(definition));
+  // Each fixture runs locally without external push services or provider credentials.
+  config = replaceSection(config, '[push]', '[push.retry]', `
+storage_driver = "memory"
+queue_driver = "memory"
+allow_memory_drivers = true
+fcm_enabled = false
+apns_enabled = false
+webpush_enabled = false
+hms_enabled = false
+wns_enabled = false
+`);
   return config.replace(/^enabled\s*=\s*true\s*\n(driver\s*=\s*"prometheus")/m, 'enabled = false\n$1');
 }
 

@@ -11,6 +11,7 @@ const LIMIT_SOURCE_UNAVAILABLE: u8 = 0;
 const LIMIT_SOURCE_CONFIGURED: u8 = 1;
 const LIMIT_SOURCE_CGROUP_V2: u8 = 2;
 const LIMIT_SOURCE_CGROUP_V1: u8 = 3;
+#[cfg(any(target_os = "linux", test))]
 const CGROUP_V1_UNLIMITED_FLOOR: u64 = 1 << 60;
 
 /// Callback notified whenever the current shedding state is sampled.
@@ -252,6 +253,7 @@ fn read_linux_cgroup_limit() -> io::Result<(u64, u8)> {
     Err(error)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_linux_resident_memory_bytes(status: &str) -> Option<u64> {
     let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
     let mut fields = line["VmRSS:".len()..].split_whitespace();
@@ -263,6 +265,7 @@ fn parse_linux_resident_memory_bytes(status: &str) -> Option<u64> {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_cgroup_limit(value: &str, is_v1: bool) -> Option<u64> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("max") {

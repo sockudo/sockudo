@@ -418,6 +418,24 @@ cleanup_interval_secs = 300
 cleanup_batch_size = 1000
 cleanup_max_deleted_per_tick = 100000
 
+[push.apns]
+topic = "com.example.app"
+endpoint = "https://api.push.apple.com"
+live_activities_enabled = false
+live_activity_topic = "" # derives <bundle_id>.push-type.liveactivity
+bundle_id = "" # derives topic
+broadcast_enabled = false
+broadcast_endpoint = "https://api-broadcast.push.apple.com"
+management_endpoint = "https://api-manage-broadcast.push.apple.com:2196"
+default_broadcast_expiration_secs = 3600 # maximum 28800
+connect_timeout_ms = 5000
+request_timeout_ms = 10000
+pool_idle_timeout_secs = 90
+max_idle_connections_per_host = 128
+tcp_keepalive_secs = 60
+http2_keepalive_interval_secs = 30
+http2_keepalive_timeout_secs = 10
+
 [push.retry]
 max_attempts = 5
 initial_backoff_ms = 1000

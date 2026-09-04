@@ -54,6 +54,8 @@ module Sockudo
                    :list_channel_push_subscriptions, :delete_channel_push_subscriptions,
                    :list_channel_push_subscription_channels, :list_push_credentials,
                    :put_push_credential, :publish_push, :publish_push_direct, :publish_push_batch,
+                   :create_apns_live_activity_channel, :get_apns_live_activity_channel,
+                   :list_apns_live_activity_channels, :delete_apns_live_activity_channel,
                    :schedule_push, :get_publish_status, :cancel_scheduled_push,
                    :post_push_delivery_status
     def_delegators :default_client, :trigger, :trigger_batch, :trigger_async, :trigger_batch_async

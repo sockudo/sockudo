@@ -72,6 +72,12 @@ export type PushProviderKind = "fcm" | "apns" | "webPush" | "hms" | "wns";
 export type PushRecipient =
   | { transportType: "gcm"; registrationToken: string }
   | { transportType: "apns"; deviceToken: string }
+  | { transportType: "apnsLiveActivity"; activityToken: string }
+  | {
+      transportType: "apnsLiveActivityBroadcast";
+      channelId: string;
+      storagePolicy?: ApnsChannelStoragePolicy;
+    }
   | { transportType: "web"; endpoint: string; p256dh: string; auth: string }
   | { transportType: "hms"; registrationToken: string }
   | { transportType: "wns"; channelUri: string };
@@ -142,11 +148,40 @@ export interface PushProviderOverridePayload {
   payload: Record<string, unknown>;
 }
 
+export type ApnsChannelStoragePolicy = "noStorage" | "mostRecent";
+export type ApnsLiveActivityEvent = "start" | "update" | "end";
+export type ApnsLiveActivityPriority = "lowPower" | "conservePower" | "immediate";
+
+export interface ApnsLiveActivityPayload {
+  event: ApnsLiveActivityEvent;
+  timestamp: number;
+  contentState: Record<string, unknown>;
+  attributesType?: string;
+  attributes?: Record<string, unknown>;
+  alert?: Record<string, unknown>;
+  staleDate?: number;
+  dismissalDate?: number;
+  relevanceScore?: number;
+  inputPushToken?: boolean;
+  inputPushChannel?: string;
+  priority?: ApnsLiveActivityPriority;
+}
+
+export interface ApnsBroadcastChannel {
+  channelId: string;
+  storagePolicy: ApnsChannelStoragePolicy;
+}
+
+export interface ApnsBroadcastChannelList {
+  channels: string[];
+}
+
 export interface PushPublishRequest {
   publishId?: string;
   recipients: PushPublishTarget[];
   payload: PushPayload;
   providerOverrides?: PushProviderOverridePayload[];
+  liveActivity?: ApnsLiveActivityPayload;
   sync?: false;
   notBeforeMs?: number;
   expiresAtMs?: number;

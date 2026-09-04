@@ -221,13 +221,18 @@ accepted = sockudo.publish_push({
         "body": "Order ord_123 is packed",
         "data": {"order_id": "ord_123"},
     },
-    "idempotency_key": "push-order-ord_123-packed",
+    "publishId": "push-order-ord_123-packed",
 })
 
 sockudo.list_channel_push_subscriptions(PushSubscriptionParams(device_id="android-device-1"))
 ```
 
 Push helper methods force `sync = False` and return the API result for status inspection.
+
+For Apple Live Activities, the SDK exports typed event, priority, storage-policy, payload, and
+recipient helpers, plus sync and async `create/get/list/delete_apns_live_activity_channel`
+methods. See [Apple Live Activities](/docs/server/apple-live-activities) for direct-token and
+iOS 18 broadcast examples. Reuse the same `publishId` when retrying an ambiguous publish.
 
 ## Errors and production guidance
 

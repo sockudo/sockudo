@@ -12,7 +12,6 @@ use crate::pipeline::now_ms;
 use crate::transform::render_provider_payload;
 
 pub(super) type ProviderClassification = (DeliveryOutcome, Option<ProviderError>, Option<String>);
-pub(super) type ProviderResponseClassifier = fn(&ProviderHttpResponse) -> ProviderClassification;
 
 pub(super) fn render_payload_json(
     provider: PushProviderKind,
@@ -79,17 +78,22 @@ pub(super) fn recipient_token(recipient: &PushRecipient) -> Option<&str> {
             Some(registration_token.expose_secret())
         }
         PushRecipient::Apns { device_token } => Some(device_token.expose_secret()),
+        PushRecipient::ApnsLiveActivity { activity_token } => Some(activity_token.expose_secret()),
+        PushRecipient::ApnsLiveActivityBroadcast { .. } => None,
         PushRecipient::Web { endpoint, .. } => Some(endpoint.expose_secret()),
         PushRecipient::Wns { channel_uri } => Some(channel_uri.expose_secret()),
         PushRecipient::Realtime { .. } => None,
     }
 }
 
-pub(super) fn classify_http_result(
+pub(super) fn classify_http_result<F>(
     job: DeliveryJob,
     response: Result<ProviderHttpResponse, String>,
-    classifier: ProviderResponseClassifier,
-) -> DeliveryResult {
+    classifier: F,
+) -> DeliveryResult
+where
+    F: FnOnce(&ProviderHttpResponse) -> ProviderClassification,
+{
     match response {
         Ok(response) => {
             let (outcome, error, provider_message_id) = classifier(&response);

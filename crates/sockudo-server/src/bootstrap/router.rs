@@ -19,6 +19,11 @@ use crate::push_http::{
     post_wns_credential, publish as push_publish, register_device, replay_dead_letter,
     upsert_channel_subscription,
 };
+#[cfg(all(feature = "push", feature = "push-apns"))]
+use crate::push_http::{
+    create_apns_live_activity_channel, delete_apns_live_activity_channel,
+    get_apns_live_activity_channel, list_apns_live_activity_channels,
+};
 use crate::ws_handler::handle_ws_upgrade;
 use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
@@ -564,6 +569,30 @@ impl SockudoServer {
                 .layer(axum::Extension(
                     self.state.push_acceptance_rate_limiter.clone(),
                 ));
+        }
+
+        #[cfg(all(feature = "push", feature = "push-apns"))]
+        {
+            api_router = api_router
+                .route(
+                    "/apps/{appId}/push/liveActivities/channels",
+                    post(create_apns_live_activity_channel)
+                        .get(list_apns_live_activity_channels)
+                        .route_layer(axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        )),
+                )
+                .route(
+                    "/apps/{appId}/push/liveActivities/channels/{channelId}",
+                    get(get_apns_live_activity_channel)
+                        .delete(delete_apns_live_activity_channel)
+                        .route_layer(axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        )),
+                )
+                .layer(axum::Extension(self.state.apns_channel_manager.clone()));
         }
 
         // Prevent idle HTTP connection buildup on API routes

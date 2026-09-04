@@ -285,6 +285,26 @@ interface SockudoInterface
     public function publishPush(array $request): object;
 
     /**
+     * Create an APNs broadcast channel for Live Activity updates.
+     */
+    public function createApnsLiveActivityChannel(string $storagePolicy = 'noStorage'): object;
+
+    /**
+     * Read one APNs Live Activity broadcast channel.
+     */
+    public function getApnsLiveActivityChannel(string $channelId): object;
+
+    /**
+     * List APNs Live Activity broadcast channel identifiers.
+     */
+    public function listApnsLiveActivityChannels(): object;
+
+    /**
+     * Delete one APNs Live Activity broadcast channel.
+     */
+    public function deleteApnsLiveActivityChannel(string $channelId): object;
+
+    /**
      * Alias of publishPush.
      */
     public function publishPushDirect(array $request): object;

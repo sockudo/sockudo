@@ -365,6 +365,14 @@ Close all active connections for a user with code `4200`, prompting clients to r
 var result = await sockudo.ForceReconnectUserAsync("user-123");
 ```
 
+## Apple Live Activities
+
+Use `PublishPushAsync<T>` with anonymous objects or records for direct-token and broadcast
+ActivityKit notifications. Manage iOS 18 APNs broadcast channels with the
+`Create/Get/List/DeleteApnsLiveActivityChannelAsync<T>` helpers. Reuse `publishId` for safe
+retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## License
 
 This code is free to use under the terms of the MIT license.
