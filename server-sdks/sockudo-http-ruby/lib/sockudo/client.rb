@@ -481,9 +481,7 @@ module Sockudo
 
     # Create an APNs broadcast channel for Live Activity updates
     def create_apns_live_activity_channel(storage_policy = 'noStorage')
-      unless %w[noStorage mostRecent].include?(storage_policy)
-        raise Sockudo::Error, 'storage_policy must be noStorage or mostRecent'
-      end
+      raise Sockudo::Error, 'storage_policy must be noStorage or mostRecent' unless %w[noStorage mostRecent].include?(storage_policy)
 
       post(
         push_path('/liveActivities/channels'),

@@ -588,7 +588,7 @@ wheel_tick_ms = 5
 shards = 64
 
 # Embedded Model Context Protocol server for AI agents (requires the `mcp`
-# Cargo feature). Tokens must be at least 16 characters; prefer `${ENV}`
+# Cargo feature). Tokens must be at least 16 characters; prefer environment variable
 # interpolation over literals. See docs/content/docs/server/mcp.mdx.
 [mcp]
 enabled = false
