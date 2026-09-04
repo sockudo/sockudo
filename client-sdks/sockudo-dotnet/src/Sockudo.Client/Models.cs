@@ -613,10 +613,17 @@ public sealed record SockudoOptions(
     int? AppendRollupWindow = null,
     int? MaxReconnectAttempts = 6,
     double MaxReconnectGapInSeconds = 120.0,
-    TokenAuthenticationOptions? TokenAuthentication = null
+    TokenAuthenticationOptions? TokenAuthentication = null,
+    double ReconnectJitter = 0.0
 )
 {
     private static readonly int[] AllowedAppendRollupWindows = { 0, 20, 40, 100, 500 };
+
+    /// <summary>
+    /// <see cref="ReconnectJitter"/> clamped to the 0 (off) through 1 (full jitter) range.
+    /// </summary>
+    public double EffectiveReconnectJitter =>
+        double.IsFinite(ReconnectJitter) && ReconnectJitter > 0 ? Math.Min(ReconnectJitter, 1.0) : 0.0;
 
     public TimeSpan EffectiveActivityTimeout => ActivityTimeout ?? TimeSpan.FromSeconds(120);
     public TimeSpan EffectivePongTimeout => PongTimeout ?? TimeSpan.FromSeconds(30);

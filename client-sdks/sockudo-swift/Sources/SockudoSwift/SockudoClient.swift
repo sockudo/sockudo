@@ -37,6 +37,8 @@ import Network
     public var appendRollupWindow: Int?
     public var maxReconnectAttempts: Int? = 6
     public var maxReconnectGapInSeconds: Double = 120
+    /// Fraction of the reconnect delay to randomize, 0 (off) to 1 (full jitter).
+    public var reconnectJitter: Double = 0
 
     public init(
       cluster: String,
@@ -72,7 +74,8 @@ import Network
       appendMode: SockudoAppendMode = .delta,
       appendRollupWindow: Int? = nil,
       maxReconnectAttempts: Int? = 6,
-      maxReconnectGapInSeconds: Double = 120
+      maxReconnectGapInSeconds: Double = 120,
+      reconnectJitter: Double = 0
     ) {
       self.cluster = cluster
       self.protocolVersion = protocolVersion
@@ -108,6 +111,7 @@ import Network
       self.appendRollupWindow = appendRollupWindow
       self.maxReconnectAttempts = maxReconnectAttempts
       self.maxReconnectGapInSeconds = maxReconnectGapInSeconds
+      self.reconnectJitter = reconnectJitter
     }
   }
 
@@ -805,7 +809,11 @@ import Network
     if action == .retry { return 0 }  // close codes 4200-4299: reconnect immediately
     if action == .tlsOnly { return 0 }  // TLS upgrade: reconnect immediately
     let interval = Double(reconnectAttempts * reconnectAttempts)
-    return min(interval, config.maxReconnectGapInSeconds)
+    let delay = min(interval, config.maxReconnectGapInSeconds)
+    // Spread retries so clients dropped by one event do not return in lockstep.
+    let jitter = config.reconnectJitter
+    if jitter <= 0 || delay <= 0 { return delay }
+    return delay - Double.random(in: 0...(delay * jitter))
   }
 
   private func closeAction(for code: URLSessionWebSocketTask.CloseCode) -> CloseAction? {
@@ -1130,6 +1138,11 @@ import Network
   }
 }
 
+func clampJitter(_ jitter: Double) -> Double {
+  guard jitter.isFinite, jitter > 0 else { return 0 }
+  return min(jitter, 1)
+}
+
 extension SockudoClient {
   fileprivate static func decodeCapabilityTokenAuthData(_ raw: Any?) -> CapabilityTokenAuthData {
     let payload = raw as? [String: Any] ?? [:]
@@ -1242,6 +1255,7 @@ extension SockudoClient {
     let connectionRecovery: Bool
     let maxReconnectAttempts: Int?
     let maxReconnectGapInSeconds: Double
+    let reconnectJitter: Double
 
     init(options: Options) {
       cluster = options.cluster
@@ -1275,6 +1289,7 @@ extension SockudoClient {
       connectionRecovery = options.connectionRecovery
       maxReconnectAttempts = options.maxReconnectAttempts
       maxReconnectGapInSeconds = options.maxReconnectGapInSeconds
+      reconnectJitter = clampJitter(options.reconnectJitter)
       channelAuthorizer =
         options.channelAuthorization.customHandler
         ?? Self.makeChannelAuthorizer(options.channelAuthorization)

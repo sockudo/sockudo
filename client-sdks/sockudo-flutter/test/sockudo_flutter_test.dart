@@ -493,6 +493,7 @@ void main() {
     expect(ConnectionState.reconnecting.name, 'reconnecting');
     expect(options.maxReconnectAttempts, 6);
     expect(options.maxReconnectGapInSeconds, 120.0);
+    expect(options.reconnectJitter, 0.0);
   });
 
   test('retries emit reconnecting and stop at the configured limit', () async {

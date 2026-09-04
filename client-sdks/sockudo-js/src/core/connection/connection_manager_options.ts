@@ -11,6 +11,7 @@ interface ConnectionManagerOptions {
   useTLS: boolean;
   maxReconnectAttempts: number | null;
   maxReconnectGapInSeconds: number;
+  reconnectJitter: number;
   beforeConnect?: (reason: "initial" | "reconnect") => void | Promise<void>;
 }
 

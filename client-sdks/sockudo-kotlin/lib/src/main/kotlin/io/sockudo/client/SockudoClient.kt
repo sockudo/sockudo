@@ -20,6 +20,7 @@ import okio.ByteString.Companion.toByteString
 import java.net.URI
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -957,7 +958,10 @@ class SockudoClient(
         if (action == CloseAction.TlsOnly) return Duration.ZERO
         val intervalSeconds = (reconnectAttempts * reconnectAttempts).toDouble()
         val cappedSeconds = minOf(intervalSeconds, options.maxReconnectGapInSeconds)
-        return cappedSeconds.seconds
+        // Spread retries so clients dropped by one event do not return in lockstep.
+        val jitter = options.effectiveReconnectJitter
+        if (jitter <= 0.0 || cappedSeconds <= 0.0) return cappedSeconds.seconds
+        return (cappedSeconds - Random.nextDouble(cappedSeconds * jitter)).seconds
     }
 
     private fun scheduleRetry(after: Duration) {

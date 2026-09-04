@@ -16,6 +16,7 @@ describe("connection manager reconnection", () => {
 
     expect(defaults.maxReconnectAttempts).toBe(6);
     expect(defaults.maxReconnectGapInSeconds).toBe(120);
+    expect(defaults.reconnectJitter).toBe(0);
     expect(unlimited.maxReconnectAttempts).toBeNull();
   });
 
@@ -91,12 +92,87 @@ describe("connection manager reconnection", () => {
 
     expect(reasons).toEqual(["initial", "reconnect"]);
   });
+
+  it("keeps delays exact when jitter is not configured", () => {
+    const { manager, timeline } = createManager({ maxReconnectAttempts: null });
+    const internals = manager as unknown as { reconnectAttempts: number };
+    internals.reconnectAttempts = 3;
+    manager.errorCallbacks.backoff({ action: "backoff" });
+
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 9000 });
+  });
+
+  it("randomizes the delay downwards within the configured fraction", () => {
+    const { manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      reconnectJitter: 0.5,
+    });
+    const internals = manager as unknown as { reconnectAttempts: number };
+
+    // Half of the 9s delay is randomized away, so delays land in [4500, 9000].
+    const delays = new Set<number>();
+    for (let i = 0; i < 200; i++) {
+      internals.reconnectAttempts = 3;
+      manager.errorCallbacks.backoff({ action: "backoff" });
+      const delay = lastRetryDelay(timeline);
+      expect(delay).toBeGreaterThanOrEqual(4500);
+      expect(delay).toBeLessThanOrEqual(9000);
+      delays.add(delay);
+    }
+
+    expect(delays.size).toBeGreaterThan(1);
+  });
+
+  it("never jitters past the cap or below zero at full jitter", () => {
+    const { manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      maxReconnectGapInSeconds: 5,
+      reconnectJitter: 1,
+    });
+    const internals = manager as unknown as { reconnectAttempts: number };
+
+    for (let i = 0; i < 200; i++) {
+      internals.reconnectAttempts = 10;
+      manager.errorCallbacks.backoff({ action: "backoff" });
+      const delay = lastRetryDelay(timeline);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThanOrEqual(5000);
+    }
+  });
+
+  it("clamps out-of-range jitter values", () => {
+    expect(getConfig({ cluster: "local", reconnectJitter: 5 }, {}).reconnectJitter).toBe(1);
+    expect(getConfig({ cluster: "local", reconnectJitter: -1 }, {}).reconnectJitter).toBe(0);
+    expect(getConfig({ cluster: "local", reconnectJitter: NaN }, {}).reconnectJitter).toBe(0);
+  });
+
+  it("leaves immediate retry and TLS-upgrade paths un-jittered", () => {
+    const { manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      reconnectJitter: 1,
+    });
+    const internals = manager as unknown as { reconnectAttempts: number };
+    internals.reconnectAttempts = 10;
+
+    manager.errorCallbacks.retry({ action: "retry" });
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 0 });
+
+    manager.errorCallbacks.tls_only({ action: "tls_only" });
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 0 });
+  });
 });
+
+function lastRetryDelay(timeline: { info: ReturnType<typeof vi.fn> }): number {
+  const lastCall = timeline.info.mock.lastCall;
+  expect(lastCall).toBeDefined();
+  return (lastCall as [{ delay: number }])[0].delay;
+}
 
 function createManager(
   overrides: Partial<{
     maxReconnectAttempts: number | null;
     maxReconnectGapInSeconds: number;
+    reconnectJitter: number;
     beforeConnect: (reason: "initial" | "reconnect") => Promise<void>;
   }> = {},
 ) {
@@ -122,6 +198,7 @@ function createManager(
     maxReconnectAttempts:
       overrides.maxReconnectAttempts === undefined ? 6 : overrides.maxReconnectAttempts,
     maxReconnectGapInSeconds: overrides.maxReconnectGapInSeconds ?? 120,
+    reconnectJitter: overrides.reconnectJitter ?? 0,
     beforeConnect: overrides.beforeConnect,
   });
 

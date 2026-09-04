@@ -524,9 +524,14 @@ data class SockudoOptions(
     val appendRollupWindow: Int? = null,
     val maxReconnectAttempts: Int? = 6,
     val maxReconnectGapInSeconds: Double = 120.0,
+    /** Fraction of the reconnect delay to randomize, 0 (off) to 1 (full jitter). */
+    val reconnectJitter: Double = 0.0,
     val authToken: String? = null,
     val authTokenProvider: ClientAuthTokenProvider? = null,
 ) {
+    internal val effectiveReconnectJitter: Double
+        get() = if (reconnectJitter.isFinite() && reconnectJitter > 0) minOf(reconnectJitter, 1.0) else 0.0
+
     init {
         if (protocolVersion < 2 && (authToken != null || authTokenProvider != null)) {
             throw SockudoException.InvalidOptions(

@@ -382,6 +382,11 @@ unlimited) and `max_reconnect_gap_in_seconds` in `SockudoOptions`. The attempt
 counter resets after a successful connection and on explicit connect or
 disconnect calls.
 
+Because that delay is identical for every client, clients dropped by a single
+event retry in lockstep. Set `reconnect_jitter` to randomize each delay by that
+fraction and spread the retries out — `0.5` picks uniformly from 50-100% of the
+delay, `1.0` from 0-100%. It defaults to `0.0`, which keeps the delays exact.
+
 ### Protocol V2
 
 V2 is the default. To explicitly request it or to downgrade to V1 for strict Pusher SDK compatibility:

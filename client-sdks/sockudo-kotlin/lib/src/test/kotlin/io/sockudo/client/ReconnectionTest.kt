@@ -102,6 +102,21 @@ class ReconnectionTest {
     }
 
     @Test
+    fun `SockudoOptions reconnectJitter defaults to 0`() {
+        val options = SockudoOptions(cluster = "test")
+        assertEquals(0.0, options.reconnectJitter)
+        assertEquals(0.0, options.effectiveReconnectJitter)
+    }
+
+    @Test
+    fun `SockudoOptions reconnectJitter is clamped to 0 through 1`() {
+        assertEquals(1.0, SockudoOptions(cluster = "test", reconnectJitter = 5.0).effectiveReconnectJitter)
+        assertEquals(0.0, SockudoOptions(cluster = "test", reconnectJitter = -1.0).effectiveReconnectJitter)
+        assertEquals(0.0, SockudoOptions(cluster = "test", reconnectJitter = Double.NaN).effectiveReconnectJitter)
+        assertEquals(0.25, SockudoOptions(cluster = "test", reconnectJitter = 0.25).effectiveReconnectJitter)
+    }
+
+    @Test
     fun `SockudoOptions maxReconnectAttempts accepts null for unlimited`() {
         val options = SockudoOptions(cluster = "test", maxReconnectAttempts = null)
         assertNull(options.maxReconnectAttempts)
