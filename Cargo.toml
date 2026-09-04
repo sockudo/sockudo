@@ -110,7 +110,7 @@ libc = "0.2"
 md5 = "0.8.0"
 memchr = "2.7"
 tikv-jemallocator = "0.7"
-mockall = "0.13.1"
+mockall = "0.15.0"
 moka = { version = "0.12.11", features = ["future", "sync"] }
 lapin = { version = "4.3.0", default-features = false, features = ["rustls", "tokio"] }
 omq-tokio = "0.21.4"
