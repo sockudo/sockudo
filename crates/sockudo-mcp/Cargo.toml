@@ -1,0 +1,59 @@
+[package]
+name = "sockudo-mcp"
+description = "Model Context Protocol (MCP) server for Sockudo realtime infrastructure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+readme = "README.md"
+
+[features]
+default = ["http"]
+# Streamable HTTP transport (rmcp tower service mounted on an axum router).
+http = ["rmcp/transport-streamable-http-server", "dep:axum", "dep:tower"]
+# Newline-delimited JSON over stdin/stdout for local MCP hosts.
+stdio = ["rmcp/transport-io"]
+# Remote Sockudo API transport over HTTP (reqwest) for the standalone binary.
+remote = ["dep:reqwest", "dep:url"]
+# Standalone `sockudo-mcp` binary.
+cli = ["http", "stdio", "remote", "dep:clap", "dep:tracing-subscriber", "dep:rustls"]
+
+[[bin]]
+name = "sockudo-mcp"
+path = "src/bin/sockudo-mcp.rs"
+required-features = ["cli"]
+
+[dependencies]
+sockudo-core = { workspace = true }
+
+async-trait = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+md5 = { workspace = true }
+rmcp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true, features = ["util"] }
+reqwest = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+clap = { workspace = true, optional = true, features = ["env"] }
+tracing-subscriber = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }

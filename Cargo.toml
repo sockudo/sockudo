@@ -14,6 +14,7 @@ members = [
   "crates/sockudo-ai-transport",
   "crates/sockudo-ably-compat",
   "crates/sockudo-adapter",
+  "crates/sockudo-mcp",
   "crates/sockudo-server",
   "crates/sockudo-simulator",
   "benches/ai",
@@ -47,6 +48,7 @@ sockudo-push = { version = "5.0.1", path = "crates/sockudo-push" }
 sockudo-ai-transport = { version = "5.0.1", path = "crates/sockudo-ai-transport" }
 sockudo-ably-compat = { version = "5.0.1", path = "crates/sockudo-ably-compat", default-features = false }
 sockudo-adapter = { version = "5.0.1", path = "crates/sockudo-adapter", default-features = false }
+sockudo-mcp = { version = "5.0.1", path = "crates/sockudo-mcp", default-features = false }
 
 # External dependencies (shared versions)
 async-trait = "0.1.89"
@@ -163,6 +165,7 @@ rdkafka = { version = "0.39.0", default-features = false, features = [
   "libz",
 ] }
 ring = "0.17.14"
+rmcp = { version = "3.2.0", default-features = false, features = ["server"] }
 rmp-serde = "1.3.0"
 iggy = "0.10.0"
 jsonwebtoken = { version = "=11.0.0", default-features = false, features = ["aws_lc_rs", "use_pem"] }

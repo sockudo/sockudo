@@ -92,6 +92,8 @@ pub struct ServerOptions {
     pub ai_transport: AiTransportConfig,
     pub push: PushConfig,
     pub push_rules: Vec<PushRuleConfig>,
+    /// Embedded Model Context Protocol server (requires the `mcp` Cargo feature).
+    pub mcp: McpConfig,
     /// Timeout in milliseconds for each subsystem check in the `/up` health endpoint.
     /// Applies to adapter, cache, queue, and app manager checks independently.
     pub health_check_timeout_ms: u64,
@@ -148,6 +150,7 @@ impl Default for ServerOptions {
             ai_transport: AiTransportConfig::default(),
             push: PushConfig::default(),
             push_rules: Vec::new(),
+            mcp: McpConfig::default(),
             health_check_timeout_ms: 2000,
         }
     }
@@ -404,6 +407,8 @@ impl ServerOptions {
         for (index, rule) in self.push_rules.iter().enumerate() {
             rule.validate(index)?;
         }
+        self.mcp
+            .validate(self.port, self.metrics.enabled, self.metrics.port)?;
         if self.adapter.nats.presence_sync_chunk_size == Some(0) {
             return Err("nats.presence_sync_chunk_size must be > 0 when set".to_string());
         }

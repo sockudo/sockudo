@@ -386,6 +386,43 @@ fn documented_ai_transport_related_defaults_match_code() {
     );
 }
 
+#[test]
+fn documented_mcp_defaults_match_code() {
+    let docs = load_documented_defaults();
+    let options = ServerOptions::default();
+
+    assert_bool(&docs, "mcp.enabled", options.mcp.enabled);
+    assert_str(&docs, "mcp.path", &options.mcp.path);
+    assert_bool(&docs, "mcp.allow_anonymous", options.mcp.allow_anonymous);
+    assert_u64(
+        &docs,
+        "mcp.request_timeout_ms",
+        options.mcp.request_timeout_ms,
+    );
+    assert_usize(&docs, "mcp.max_body_bytes", options.mcp.max_body_bytes);
+    assert_u64(
+        &docs,
+        "mcp.session_ttl_seconds",
+        options.mcp.session_ttl_seconds,
+    );
+    assert_u64(
+        &docs,
+        "mcp.rate_limit_per_minute",
+        options.mcp.rate_limit_per_minute,
+    );
+    let scopes: Vec<&str> = value(&docs, "mcp.anonymous_scopes")
+        .as_array()
+        .expect("mcp.anonymous_scopes is an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(scopes, options.mcp.anonymous_scopes);
+    assert!(
+        options.mcp.port.is_none() && options.mcp.tokens.is_empty(),
+        "mcp defaults share the main listener and ship no tokens"
+    );
+}
+
 fn load_documented_defaults() -> Value {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("../../docs/content/docs/reference/configuration.mdx");

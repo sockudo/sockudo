@@ -569,6 +569,38 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `VERSIONED_MESSAGES_MAX_PURGE_PER_TICK` | Maximum versioned-message rows purged per tick. |
 | `ANNOTATIONS_ENABLED` | Enables message annotations globally. |
 
+## MCP
+
+Embedded Model Context Protocol server (`[mcp]`, requires the `mcp` Cargo feature). See
+[MCP server](/docs/server/mcp).
+
+| Variable | Maps to | Notes |
+| --- | --- | --- |
+| `MCP_ENABLED` | `mcp.enabled` | Boolean. |
+| `MCP_PATH` | `mcp.path` | URL path, default `/mcp`. |
+| `MCP_PORT` | `mcp.port` | Dedicated listener port; unset shares the main HTTP listener. |
+| `MCP_HOST` | `mcp.host` | Bind host for the dedicated listener. |
+| `MCP_ALLOWED_HOSTS` | `mcp.allowed_hosts` | Comma-separated `Host` authorities. |
+| `MCP_ALLOWED_ORIGINS` | `mcp.allowed_origins` | Comma-separated browser origins. |
+| `MCP_ALLOW_ANONYMOUS` | `mcp.allow_anonymous` | Boolean; development only. |
+| `MCP_ANONYMOUS_SCOPES` | `mcp.anonymous_scopes` | Comma-separated scopes. |
+| `MCP_REQUEST_TIMEOUT_MS` | `mcp.request_timeout_ms` | Per-tool upstream timeout. |
+| `MCP_MAX_BODY_BYTES` | `mcp.max_body_bytes` | Maximum MCP POST body. |
+| `MCP_SESSION_TTL_SECONDS` | `mcp.session_ttl_seconds` | Idle session lifetime. |
+| `MCP_RATE_LIMIT_PER_MINUTE` | `mcp.rate_limit_per_minute` | Per-token budget; `0` disables. |
+| `MCP_DISABLED_TOOLS` | `mcp.disabled_tools` | Comma-separated tool names to hide. |
+| `MCP_INSTRUCTIONS` | `mcp.instructions` | Extra MCP instructions text. |
+| `MCP_TOKEN` | `[[mcp.tokens]]` entry | Adds or replaces one token principal from the environment. |
+| `MCP_TOKEN_NAME` | `mcp.tokens[].name` | Name for `MCP_TOKEN`, default `env`. |
+| `MCP_TOKEN_SCOPES` | `mcp.tokens[].scopes` | Comma-separated, default `read,write`. |
+| `MCP_TOKEN_APPS` | `mcp.tokens[].apps` | Comma-separated app ids, default `*`. |
+
+The standalone `sockudo-mcp` binary reads `SOCKUDO_URL`, `SOCKUDO_MCP_APPS`, `SOCKUDO_APP_ID`,
+`SOCKUDO_APP_KEY`, `SOCKUDO_APP_SECRET`, `SOCKUDO_MCP_TRANSPORT`, `SOCKUDO_MCP_LISTEN`,
+`SOCKUDO_MCP_PATH`, `SOCKUDO_MCP_TOKENS`, `SOCKUDO_MCP_SCOPES`, `SOCKUDO_MCP_ALLOW_ANONYMOUS`,
+`SOCKUDO_METRICS_URL`, `SOCKUDO_MCP_TIMEOUT_MS`, `SOCKUDO_MCP_ALLOWED_HOSTS`,
+`SOCKUDO_MCP_ALLOWED_ORIGINS`, `SOCKUDO_MCP_DISABLED_TOOLS`, and `SOCKUDO_MCP_INSTRUCTIONS`.
+
 ## Webhooks
 
 | Variable | Purpose |

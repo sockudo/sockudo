@@ -293,6 +293,7 @@ The Rust workspace is split by responsibility:
 | `sockudo-push` | Push domain, storage, queues, providers, feedback, scheduler |
 | `sockudo-ai-transport` | AI Transport validation, rollup, and conformance helpers |
 | `sockudo-adapter` | Connections, presence, fanout, replay, recovery |
+| `sockudo-mcp` | Model Context Protocol server (tools, resources, prompts) and `sockudo-mcp` binary |
 | `sockudo-server` | Binary, HTTP/WS routes, bootstrap, durable stores, push API |
 
 The Rust SDK at `server-sdks/sockudo-http-rust` is intentionally excluded from the root Cargo
@@ -312,6 +313,7 @@ Common server features:
 | `ai-transport` | AI Transport validation and rollup surfaces |
 | `ably-compat` | Opt-in reduced Ably Realtime/REST facade for AI Transport compatibility; implies `ai-transport` |
 | `push` | Push notification runtime and HTTP APIs |
+| `mcp` | Embedded Model Context Protocol server for AI agents (`/mcp`, scoped bearer tokens) |
 | `redis`, `redis-cluster` | Redis-backed adapter/cache/queue/rate limit paths |
 | `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy` | Horizontal adapter and queue integrations |
 | `omq` | Brokerless horizontal adapter integration |
@@ -419,6 +421,20 @@ Useful docs:
 - [AI Transport conventions](docs/content/docs/server/ai-transport-conventions.mdx)
 - [Token streaming rollup](docs/content/docs/server/token-streaming-rollup.mdx)
 - [Production checklist](docs/content/docs/server/ai-transport-production-checklist.mdx)
+
+## MCP for AI Agents
+
+Sockudo exposes a Model Context Protocol (MCP) server so agents can inspect channels, read history
+and presence, publish events, mutate versioned messages, manage push, and triage incidents through
+scoped, audited tools. Build with `--features mcp` and enable `[mcp]` with bearer tokens, or run the
+standalone `sockudo-mcp` binary over stdio against any deployment:
+
+```bash
+cargo install --path crates/sockudo-mcp --features cli
+claude mcp add sockudo -- sockudo-mcp --url https://rt.example.com --app app-1:key:secret
+```
+
+See [MCP server](docs/content/docs/server/mcp.mdx).
 
 ## Development
 

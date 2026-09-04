@@ -7,6 +7,8 @@ pub mod cleanup;
 mod history;
 mod http_handler;
 mod logging;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod middleware;
 mod presence_history;
 #[cfg(feature = "push")]

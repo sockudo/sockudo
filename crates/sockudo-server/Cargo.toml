@@ -32,6 +32,7 @@ push-webpush = ["push", "sockudo-push/push-webpush"]
 push-hms = ["push", "sockudo-push/push-hms"]
 push-wns = ["push", "sockudo-push/push-wns"]
 monolith = ["push", "sockudo-push/monolith"]
+mcp = ["dep:sockudo-mcp"]
 full = [
   "opentelemetry",
   "v2",
@@ -44,6 +45,7 @@ full = [
   "push-webpush",
   "push-hms",
   "push-wns",
+  "mcp",
   "redis",
   "redis-cluster",
   "nats",
@@ -129,6 +131,7 @@ sockudo-delta = { workspace = true, optional = true }
 sockudo-adapter = { workspace = true }
 sockudo-push = { workspace = true, optional = true }
 sockudo-ably-compat = { workspace = true, optional = true }
+sockudo-mcp = { workspace = true, optional = true, features = ["http"] }
 
 aes-gcm = { workspace = true, optional = true }
 ahash = { workspace = true }
@@ -162,7 +165,7 @@ sysinfo = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true, optional = true }

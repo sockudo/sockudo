@@ -199,5 +199,88 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     options.annotations.enabled =
         parse_bool_env("ANNOTATIONS_ENABLED", options.annotations.enabled);
 
+    apply_mcp(options);
+
     Ok(())
+}
+
+fn csv(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn apply_mcp(options: &mut ServerOptions) {
+    options.mcp.enabled = parse_bool_env("MCP_ENABLED", options.mcp.enabled);
+    if let Ok(path) = std::env::var("MCP_PATH")
+        && !path.trim().is_empty()
+    {
+        options.mcp.path = path.trim().to_string();
+    }
+    if let Some(port) = parse_env_optional::<u16>("MCP_PORT") {
+        options.mcp.port = Some(port);
+    }
+    if let Ok(host) = std::env::var("MCP_HOST")
+        && !host.trim().is_empty()
+    {
+        options.mcp.host = Some(host.trim().to_string());
+    }
+    if let Ok(list) = std::env::var("MCP_ALLOWED_HOSTS") {
+        options.mcp.allowed_hosts = csv(&list);
+    }
+    if let Ok(list) = std::env::var("MCP_ALLOWED_ORIGINS") {
+        options.mcp.allowed_origins = csv(&list);
+    }
+    if let Ok(list) = std::env::var("MCP_DISABLED_TOOLS") {
+        options.mcp.disabled_tools = csv(&list);
+    }
+    if let Ok(list) = std::env::var("MCP_ANONYMOUS_SCOPES") {
+        options.mcp.anonymous_scopes = csv(&list);
+    }
+    options.mcp.allow_anonymous =
+        parse_bool_env("MCP_ALLOW_ANONYMOUS", options.mcp.allow_anonymous);
+    options.mcp.request_timeout_ms =
+        parse_env::<u64>("MCP_REQUEST_TIMEOUT_MS", options.mcp.request_timeout_ms);
+    options.mcp.max_body_bytes =
+        parse_env::<usize>("MCP_MAX_BODY_BYTES", options.mcp.max_body_bytes);
+    options.mcp.session_ttl_seconds =
+        parse_env::<u64>("MCP_SESSION_TTL_SECONDS", options.mcp.session_ttl_seconds);
+    options.mcp.rate_limit_per_minute = parse_env::<u32>(
+        "MCP_RATE_LIMIT_PER_MINUTE",
+        options.mcp.rate_limit_per_minute,
+    );
+    if let Ok(instructions) = std::env::var("MCP_INSTRUCTIONS")
+        && !instructions.trim().is_empty()
+    {
+        options.mcp.instructions = Some(instructions);
+    }
+    // A single token from the environment adds (or replaces) one principal so
+    // secrets never need to live in the config file.
+    if let Ok(token) = std::env::var("MCP_TOKEN")
+        && !token.is_empty()
+    {
+        let name = std::env::var("MCP_TOKEN_NAME")
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "env".to_string());
+        let scopes = std::env::var("MCP_TOKEN_SCOPES")
+            .ok()
+            .map(|raw| csv(&raw))
+            .filter(|scopes| !scopes.is_empty())
+            .unwrap_or_else(|| vec!["read".to_string(), "write".to_string()]);
+        let apps = std::env::var("MCP_TOKEN_APPS")
+            .ok()
+            .map(|raw| csv(&raw))
+            .filter(|apps| !apps.is_empty())
+            .unwrap_or_else(|| vec!["*".to_string()]);
+        options.mcp.tokens.retain(|entry| entry.name != name);
+        options.mcp.tokens.push(McpTokenConfig {
+            name,
+            token,
+            scopes,
+            apps,
+        });
+    }
 }
