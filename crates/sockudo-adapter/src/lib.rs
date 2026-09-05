@@ -20,6 +20,8 @@ pub mod memory_rate_limiter;
 pub(crate) mod message_predicate;
 #[cfg(feature = "nats")]
 pub mod nats_adapter;
+#[cfg(feature = "omq")]
+pub mod omq_adapter;
 pub mod presence;
 #[cfg(feature = "pulsar")]
 pub mod pulsar_adapter;
@@ -32,6 +34,7 @@ pub mod redis_cluster_adapter;
 #[cfg(feature = "recovery")]
 pub mod replay_buffer;
 pub mod services;
+mod telemetry;
 pub mod transports;
 pub(crate) mod v2_broadcast;
 pub mod watchlist;

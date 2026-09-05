@@ -31,6 +31,34 @@ enum class ConnectionState {
     FAILED,
 }
 
+data class ConnectionStateChange(
+    val previous: ConnectionState,
+    val current: ConnectionState,
+)
+
+data class SockudoError(
+    val message: String,
+    val code: String? = null,
+    val cause: Throwable? = null,
+)
+
+data class SockudoAuthError(
+    val message: String,
+    val cause: Throwable? = null,
+)
+
+interface SockudoConnectionEventListener {
+    fun onConnectionStateChange(change: ConnectionStateChange) = Unit
+    fun onError(error: SockudoError) = Unit
+}
+
+interface SockudoChannelEventListener {
+    fun onSubscriptionSucceeded(channel: SockudoChannel) = Unit
+    fun onAuthenticationFailure(channel: SockudoChannel, error: SockudoAuthError) = Unit
+    fun onError(channel: SockudoChannel, error: SockudoError) = Unit
+    fun onEvent(channel: SockudoChannel, event: SockudoEvent) = Unit
+}
+
 enum class DeltaAlgorithm { fossil, xdelta3 }
 
 sealed class AuthValue {
@@ -496,9 +524,14 @@ data class SockudoOptions(
     val appendRollupWindow: Int? = null,
     val maxReconnectAttempts: Int? = 6,
     val maxReconnectGapInSeconds: Double = 120.0,
+    /** Fraction of the reconnect delay to randomize, 0 (off) to 1 (full jitter). */
+    val reconnectJitter: Double = 0.0,
     val authToken: String? = null,
     val authTokenProvider: ClientAuthTokenProvider? = null,
 ) {
+    internal val effectiveReconnectJitter: Double
+        get() = if (reconnectJitter.isFinite() && reconnectJitter > 0) minOf(reconnectJitter, 1.0) else 0.0
+
     init {
         if (protocolVersion < 2 && (authToken != null || authTokenProvider != null)) {
             throw SockudoException.InvalidOptions(

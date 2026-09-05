@@ -227,5 +227,32 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.queue.iggy.nodes_number = Some(nodes);
     }
 
+    // --- OMQ Adapter ---
+    if let Ok(endpoint) = std::env::var("OMQ_BIND_ENDPOINT") {
+        options.adapter.omq.bind_endpoint = endpoint;
+    }
+    if let Ok(endpoints) = std::env::var("OMQ_CONNECT_ENDPOINTS") {
+        options.adapter.omq.connect_endpoints = endpoints
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+    }
+    if let Ok(prefix) = std::env::var("OMQ_PREFIX") {
+        options.adapter.omq.prefix = prefix;
+    }
+    options.adapter.omq.request_timeout_ms = parse_env::<u64>(
+        "OMQ_REQUEST_TIMEOUT_MS",
+        options.adapter.omq.request_timeout_ms,
+    );
+    if let Some(nodes) = parse_env_optional::<u32>("OMQ_NODES_NUMBER") {
+        options.adapter.omq.nodes_number = Some(nodes);
+    }
+    options.adapter.omq.io_threads =
+        parse_env::<usize>("OMQ_IO_THREADS", options.adapter.omq.io_threads);
+    options.adapter.omq.send_hwm = parse_env::<u32>("OMQ_SEND_HWM", options.adapter.omq.send_hwm);
+    options.adapter.omq.recv_hwm = parse_env::<u32>("OMQ_RECV_HWM", options.adapter.omq.recv_hwm);
+
     Ok(())
 }

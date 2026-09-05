@@ -3,7 +3,9 @@ import type { Metadata, Viewport } from 'next';
 import './global.css';
 import { Inter } from 'next/font/google';
 import { DatabuddyAnalytics } from '@/components/databuddy-analytics';
+import { TypeUIConsent } from '@/components/typeui-consent';
 import { siteUrl } from '@/lib/shared';
+import { typeUIInsightsSnippet } from '@/lib/typeui-insights';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -43,12 +45,19 @@ export const viewport: Viewport = {
 export default function Layout({ children }: LayoutProps<'/'>) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
+      <head>
+        <script
+          data-typeui-site-verification="tui_verify_YQzmN7rICAlhxMTswui_-BKCggnpYdX-"
+          dangerouslySetInnerHTML={{ __html: typeUIInsightsSnippet }}
+        />
+      </head>
       <body className="flex flex-col min-h-screen">
         <a className="skip-link" href="#main-content">
           Skip to main content
         </a>
         <RootProvider>{children}</RootProvider>
         <DatabuddyAnalytics />
+        <TypeUIConsent />
       </body>
     </html>
   );

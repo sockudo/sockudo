@@ -91,6 +91,61 @@ spec:
         key: SOCKUDO_CONFIG_FILE
 ```
 
+## OpenTelemetry
+
+OpenTelemetry export is disabled by default. Enable any combination of stable traces, metrics,
+and logs with `config.openTelemetry`. Export is additive: the Prometheus service and local logs
+continue to work as configured.
+
+```yaml
+config:
+  openTelemetry:
+    enabled: true
+    tracesEnabled: true
+    metricsEnabled: true
+    logsEnabled: true
+    serviceName: sockudo
+    serviceNamespace: realtime
+    deploymentEnvironment: production
+    endpoint: http://otel-collector.observability.svc:4317
+    resourceAttributes:
+      k8s.cluster.name: production-eu
+
+extraEnv:
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    value: grpc
+  - name: OTEL_TRACES_SAMPLER
+    value: parentbased_traceidratio
+  - name: OTEL_TRACES_SAMPLER_ARG
+    value: "0.10"
+```
+
+`OTEL_EXPORTER_OTLP_PROTOCOL` accepts `grpc`, `http/protobuf`, or `http/json`. For HTTP,
+configure the collector's port (normally `4318`) instead of the gRPC port (`4317`). A common
+`OTEL_EXPORTER_OTLP_ENDPOINT` is treated as a base endpoint; signal-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, and
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` are also supported.
+
+Do not place exporter headers or API keys in chart values.
+Expose them from a Secret with `extraEnvFrom`:
+
+```yaml
+extraEnvFrom:
+  - secretRef:
+      name: sockudo-otel-exporter
+```
+
+For example, that Secret can contain `OTEL_EXPORTER_OTLP_HEADERS`. HTTPS exporters use the bundled
+platform/web PKI roots; custom CA bundles and mTLS exporter configuration are not supported by the
+current Rust SDK integration. If a NetworkPolicy restricts egress, explicitly allow the collector
+address and port. Sockudo does not receive OTLP, so no collector port belongs in the Sockudo
+Service.
+
+Collector failures are fail-open: they do not change `/live`, `/up`, or request handling. Export
+queues are bounded, and graceful shutdown flushes them within the configured timeout. W3C
+`traceparent`/`tracestate` and baggage propagation are enabled by default when OpenTelemetry is
+enabled. OpenTelemetry profiles are not supported.
+
 ## Rollouts and autoscaling
 
 `strategy` is passed straight through to the Deployment. Left unset, Kubernetes applies its

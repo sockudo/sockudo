@@ -571,17 +571,30 @@ impl HorizontalTransport for RedisClusterTransport {
                                     if let Ok(response) = response_result
                                         && let Ok(response_json) = sonic_rs::to_string(&response)
                                     {
+                                        let direct_reply = reply_to.is_some();
                                         let target = reply_to.unwrap_or(response_channel_clone);
                                         // Clone connection (cheap, thread-safe per redis-rs docs)
                                         let mut conn = publish_conn.clone();
 
-                                        let result: redis::RedisResult<()> = if sharded {
+                                        let result: redis::RedisResult<i32> = if sharded {
                                             conn.spublish(&target, &response_json).await
                                         } else {
                                             conn.publish(&target, response_json).await
                                         };
-                                        if let Err(e) = result {
-                                            warn!(adapter = "redis_cluster", error = %e, "response publish failed");
+                                        match result {
+                                            Ok(subscriber_count) => {
+                                                trace!(
+                                                    adapter = "redis_cluster",
+                                                    request_id = %response.request_id,
+                                                    channel = %target,
+                                                    direct_reply,
+                                                    subscriber_count,
+                                                    "response published to transport"
+                                                );
+                                            }
+                                            Err(e) => {
+                                                warn!(adapter = "redis_cluster", error = %e, "response publish failed");
+                                            }
                                         }
                                     }
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -625,6 +638,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         ChannelKind::Reply => {
                             let response_handler = handlers.on_response.clone();
                             let metrics_clone = metrics.clone();
+                            let reply_channel_clone = reply_channel.clone();
 
                             let ingress_size = payload.len();
                             let ingress_key = routing_key(&payload);
@@ -636,6 +650,12 @@ impl HorizontalTransport for RedisClusterTransport {
                                     if let Ok(response) =
                                         sonic_rs::from_slice::<ResponseBody>(&payload)
                                     {
+                                        trace!(
+                                            adapter = "redis_cluster",
+                                            request_id = %response.request_id,
+                                            reply_channel = %reply_channel_clone,
+                                            "response received on dedicated reply channel"
+                                        );
                                         response_handler(response).await;
                                     } else if let Some(metrics) = metrics_clone.get() {
                                         metrics.mark_horizontal_transport_message_dropped(

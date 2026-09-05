@@ -130,6 +130,7 @@ pub(crate) async fn send_presence_state_to_node<T: HorizontalTransport>(
         timestamp: None,
         dead_node_id: None,
         reply_to: None,
+        trace_context: crate::telemetry::current_context(),
         channels: None,
     };
 

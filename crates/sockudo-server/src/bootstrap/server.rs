@@ -92,7 +92,10 @@ impl SockudoServer {
 
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
-        let metrics = if config.metrics.enabled {
+        let export_metrics_to_opentelemetry = cfg!(feature = "opentelemetry")
+            && config.opentelemetry.enabled
+            && config.opentelemetry.metrics_enabled;
+        let metrics = if config.metrics.enabled || export_metrics_to_opentelemetry {
             info!(metrics_driver = ?config.metrics.driver, "initializing metrics");
             match MetricsFactory::create(
                 config.metrics.driver.as_ref(),
@@ -107,6 +110,7 @@ impl SockudoServer {
                         port: config.metrics.tcp_exporter.port,
                         buffer_size: config.metrics.tcp_exporter.buffer_size,
                     }),
+                export_metrics_to_opentelemetry,
             )
             .await
             {

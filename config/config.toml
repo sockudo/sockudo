@@ -60,6 +60,15 @@ partition_id = 0
 auto_create = true
 start_from_latest = true
 
+[adapter.omq]
+bind_endpoint = "tcp://127.0.0.1:5556"
+connect_endpoints = []
+prefix = "sockudo_adapter"
+request_timeout_ms = 5000
+io_threads = 1
+send_hwm = 100000
+recv_hwm = 100000
+
 [adapter.cluster]
 nodes = []
 prefix = "sockudo_adapter:"
@@ -77,10 +86,10 @@ cleanup_interval_ms = 10000
 [push]
 # memory is node-local and loses push state on restart or dead-node loss.
 # Use a durable storage driver for production and clustered push.
-storage_driver = "memory"
+storage_driver = "mysql"
 # memory is node-local and cannot survive queue owner loss. Durable queue driver
 # values mirror [queue].driver.
-queue_driver = "memory"
+queue_driver = "redis"
 # Production mode rejects memory push storage/queues unless this is explicitly
 # set true for local/dev acknowledgment.
 allow_memory_drivers = false
@@ -389,6 +398,28 @@ host = "127.0.0.1"
 port = 5000
 buffer_size = 1024
 
+# OpenTelemetry is additive to the local logs and Prometheus endpoint above.
+# It is disabled by default. When enabled, traces, metrics, and logs are
+# exported with OTLP; collector outages do not affect request handling or
+# health/readiness checks.
+[opentelemetry]
+enabled = false
+traces_enabled = true
+metrics_enabled = true
+logs_enabled = true
+service_name = "sockudo"
+# service_namespace = "realtime"
+# deployment_environment = "production"
+resource_attributes = {}
+# endpoint = "http://127.0.0.1:4317"
+export_timeout_ms = 10000
+batch_scheduled_delay_ms = 5000
+batch_max_queue_size = 2048
+batch_max_export_batch_size = 512
+metric_export_interval_ms = 60000
+propagation_trace_context = true
+propagation_baggage = true
+
 [ssl]
 enabled = false
 
@@ -419,6 +450,9 @@ allowed_headers = [
   "X-Sockudo-Push-Capability",
   "X-Sockudo-Device-Identity-Token",
   "X-Sockudo-Rotate-Device-Identity-Token",
+  "traceparent",
+  "tracestate",
+  "baggage",
 ]
 
 [channel_limits]
@@ -527,6 +561,29 @@ max_window_ms = 500
 orphan_ttl_ms = 60000
 wheel_tick_ms = 5
 shards = 64
+
+# Embedded Model Context Protocol server for AI agents (requires the `mcp`
+# Cargo feature). Tokens must be at least 16 characters; prefer `${ENV}`
+# interpolation over literals. See docs/content/docs/server/mcp.mdx.
+[mcp]
+enabled = false
+path = "/mcp"
+# port = 6100
+allowed_hosts = []
+allowed_origins = []
+allow_anonymous = false
+anonymous_scopes = ["read"]
+request_timeout_ms = 30000
+max_body_bytes = 1048576
+session_ttl_seconds = 1800
+rate_limit_per_minute = 600
+disabled_tools = []
+
+[[mcp.tokens]]
+name = "ops-agent"
+token = "pulameadasdsdsasdsadsdasdad"
+scopes = ["read", "write"]
+apps = ["*"]
 
 [idempotency]
 enabled = true

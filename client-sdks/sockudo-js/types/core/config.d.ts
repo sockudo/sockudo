@@ -15,6 +15,7 @@ export interface Config {
     unavailableTimeout: number;
     maxReconnectAttempts: number | null;
     maxReconnectGapInSeconds: number;
+    reconnectJitter: number;
     useTLS: boolean;
     wsHost: string;
     wsPath: string;

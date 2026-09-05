@@ -14,6 +14,7 @@ pub struct AdapterConfig {
     pub google_pubsub: GooglePubSubAdapterConfig,
     pub kafka: KafkaAdapterConfig,
     pub iggy: IggyConfig,
+    pub omq: OmqAdapterConfig,
     #[serde(default = "default_buffer_multiplier_per_cpu")]
     pub buffer_multiplier_per_cpu: usize,
     pub cluster_health: ClusterHealthConfig,
@@ -66,6 +67,7 @@ impl Default for AdapterConfig {
             google_pubsub: GooglePubSubAdapterConfig::default(),
             kafka: KafkaAdapterConfig::default(),
             iggy: IggyConfig::default(),
+            omq: OmqAdapterConfig::default(),
             buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
             cluster_health: ClusterHealthConfig::default(),
             enable_socket_counting: default_enable_socket_counting(),
@@ -187,6 +189,19 @@ pub struct IggyConfig {
     pub nodes_number: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OmqAdapterConfig {
+    pub bind_endpoint: String,
+    pub connect_endpoints: Vec<String>,
+    pub prefix: String,
+    pub request_timeout_ms: u64,
+    pub nodes_number: Option<u32>,
+    pub io_threads: usize,
+    pub send_hwm: u32,
+    pub recv_hwm: u32,
+}
+
 impl Default for RedisAdapterConfig {
     fn default() -> Self {
         Self {
@@ -306,6 +321,21 @@ impl Default for IggyConfig {
             auto_create: true,
             start_from_latest: true,
             nodes_number: None,
+        }
+    }
+}
+
+impl Default for OmqAdapterConfig {
+    fn default() -> Self {
+        Self {
+            bind_endpoint: "tcp://127.0.0.1:5556".to_string(),
+            connect_endpoints: Vec::new(),
+            prefix: "sockudo_adapter".to_string(),
+            request_timeout_ms: 5000,
+            nodes_number: None,
+            io_threads: 1,
+            send_hwm: 100_000,
+            recv_hwm: 100_000,
         }
     }
 }

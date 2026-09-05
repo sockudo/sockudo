@@ -1,0 +1,181 @@
+---
+title: MCP server
+description: Let AI agents operate Sockudo through the Model Context Protocol with scoped tokens, audited tools, resources, and prompts.
+icon: Bot
+---
+
+Sockudo ships a Model Context Protocol (MCP) server so agents such as Claude can inspect and
+operate a deployment through a typed, permissioned tool surface instead of raw HTTP calls. The
+protocol layer is the official [`rmcp`](https://crates.io/crates/rmcp) SDK; Sockudo adds signed
+API access, scopes, tools, resources, and prompts.
+
+Two deployment shapes share the same code:
+
+| Shape | Transport to Sockudo | MCP transport | Use when |
+| --- | --- | --- | --- |
+| Embedded (`sockudo` binary, `mcp` feature) | In-process: the server drives its own API router with self-signed requests | Streamable HTTP on `/mcp` (shared or dedicated port) | Hosted agents, shared team access, production |
+| Standalone (`sockudo-mcp` binary) | Signed HTTP to a remote deployment | stdio or Streamable HTTP | Claude Desktop, Claude Code, local IDEs |
+
+Every tool call passes through the same validation, idempotency, rate limits, metrics, feature
+gates, and role restrictions as an external HTTP API caller. Tool results are the documented HTTP
+API response shapes, so anything learned from the [HTTP API](/docs/server/http-api) applies.
+
+## Enable the embedded server
+
+Build with the feature and configure `[mcp]`:
+
+```bash
+cargo build -p sockudo --release --features "v2,mcp,redis,postgres"
+```
+
+```toml
+[mcp]
+enabled = true
+path = "/mcp"
+# port = 6100                 # optional dedicated listener (host defaults to the server host)
+allowed_hosts = []            # empty = accept any Host (fine behind a trusted proxy)
+allowed_origins = []          # browser origins; empty disables Origin checks
+rate_limit_per_minute = 600   # per token; 0 disables
+request_timeout_ms = 30000
+session_ttl_seconds = 1800
+
+[[mcp.tokens]]
+name = "ops-agent"
+token = "${SOCKUDO_MCP_OPS_TOKEN}"   # >= 16 chars; use env interpolation
+scopes = ["read", "write"]
+apps = ["*"]
+
+[[mcp.tokens]]
+name = "readonly-dashboard"
+token = "${SOCKUDO_MCP_RO_TOKEN}"
+scopes = ["read"]
+apps = ["app-1"]
+```
+
+Validation refuses to start when `enabled = true` without tokens unless `allow_anonymous = true`
+(development only). `MCP_TOKEN`, `MCP_TOKEN_NAME`, `MCP_TOKEN_SCOPES`, and `MCP_TOKEN_APPS` add a
+token from the environment without touching the file; see
+[Environment variables](/docs/reference/environment-variables#mcp).
+
+Clients connect with a bearer token:
+
+```bash
+curl -sS http://127.0.0.1:6001/mcp \
+  -H "Authorization: Bearer $SOCKUDO_MCP_OPS_TOKEN" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+```
+
+Claude Code:
+
+```bash
+claude mcp add --transport http sockudo https://rt.example.com/mcp \
+  --header "Authorization: Bearer $SOCKUDO_MCP_OPS_TOKEN"
+```
+
+Claude API (MCP connector):
+
+```json
+{
+  "mcp_servers": [{ "type": "url", "url": "https://rt.example.com/mcp", "name": "sockudo",
+                    "authorization_token": "<token>" }],
+  "tools": [{ "type": "mcp_toolset", "mcp_server_name": "sockudo" }]
+}
+```
+
+## Standalone binary
+
+```bash
+cargo install --path crates/sockudo-mcp --features cli
+# stdio for Claude Desktop / Claude Code
+sockudo-mcp --url https://rt.example.com --app app-1:key:secret --scopes read,write
+claude mcp add sockudo -- sockudo-mcp --url https://rt.example.com --app app-1:key:secret
+# Streamable HTTP with tokens
+sockudo-mcp --transport http --listen 127.0.0.1:6100 \
+  --token 'ops/read+write=<32+ char token>' --url https://rt.example.com --app app-1:key:secret \
+  --metrics-url http://rt.example.com:9601/metrics
+```
+
+Credentials may also come from `SOCKUDO_URL`, `SOCKUDO_MCP_APPS` (`id:key:secret,...`), or
+`SOCKUDO_APP_ID` / `SOCKUDO_APP_KEY` / `SOCKUDO_APP_SECRET`. Logs go to stderr; stdout is the
+protocol channel.
+
+## Scopes and safety
+
+| Scope | Grants | Examples |
+| --- | --- | --- |
+| `read` | Inspection | `sockudo_list_channels`, `sockudo_get_history`, `sockudo_server_stats`, `sockudo_server_metrics` |
+| `write` | Publishing and mutation (implies `read`) | `sockudo_trigger_event`, `sockudo_update_message`, `sockudo_publish_annotation`, `sockudo_push_publish`, `sockudo_sign_channel_auth` |
+| `admin` | Destructive and connection-affecting operations (implies `write`) | `sockudo_terminate_user_connections`, `sockudo_reset_history`, `sockudo_purge_history`, `sockudo_revoke_capability_tokens`, `sockudo_replay_push_dead_letter` |
+
+- `tools/list` only returns tools the token may call; calling a hidden tool returns JSON-RPC
+  `-32003`.
+- Destructive tools require `confirm: true` and a `reason`, which the server records.
+- Tokens carry an app allow-list; requests for other apps fail with `-32003`.
+- App secrets never leave the server. `sockudo_list_apps` and `sockudo_get_app` return keys and
+  sanitized policy only; webhook headers are redacted.
+- Every call emits an audit log line on target `sockudo_mcp::audit` with principal, tool, app,
+  channel, outcome, and latency.
+- Upstream API errors are returned as `isError` results carrying the server's JSON error body so
+  the agent can read `code` and `error` and recover.
+
+## Tools
+
+| Area | Tools |
+| --- | --- |
+| Discovery and server | `sockudo_list_apps`, `sockudo_get_app`, `sockudo_server_info`, `sockudo_server_health`, `sockudo_server_accept_traffic`, `sockudo_server_stats`, `sockudo_server_usage`, `sockudo_server_metrics` |
+| Channels | `sockudo_list_channels`, `sockudo_get_channel`, `sockudo_get_presence_users` |
+| Publish | `sockudo_trigger_event`, `sockudo_trigger_batch_events` |
+| Durable history | `sockudo_get_history`, `sockudo_get_history_state`, `sockudo_reset_history`, `sockudo_purge_history` |
+| Versioned messages | `sockudo_get_message`, `sockudo_list_message_versions`, `sockudo_update_message`, `sockudo_delete_message`, `sockudo_append_message` |
+| Annotations | `sockudo_list_annotations`, `sockudo_publish_annotation`, `sockudo_delete_annotation` |
+| Presence history | `sockudo_get_presence_history`, `sockudo_get_presence_history_state`, `sockudo_get_presence_snapshot`, `sockudo_reset_presence_history` |
+| Connections and tokens | `sockudo_terminate_user_connections`, `sockudo_force_reconnect_user`, `sockudo_revoke_capability_tokens` |
+| Push | `sockudo_push_publish`, `sockudo_push_batch_publish`, `sockudo_push_publish_status`, `sockudo_list_push_devices`, `sockudo_get_push_device`, `sockudo_list_push_channel_subscriptions`, `sockudo_list_push_subscription_channels`, `sockudo_list_push_dead_letters`, `sockudo_replay_push_dead_letter`, `sockudo_delete_push_scheduled_job`, `sockudo_list_push_credentials`, `sockudo_list_push_templates`, `sockudo_get_push_template` |
+| Auth helpers | `sockudo_sign_channel_auth`, `sockudo_sign_user_auth`, `sockudo_verify_webhook_signature` |
+
+Hide tools with `disabled_tools = ["sockudo_purge_history"]`. Tools that hit a feature the server
+does not enable (for example push without the `push` feature) return the server's
+`feature_disabled` or `404` error rather than failing at startup.
+
+## Resources and prompts
+
+Resources use the `sockudo://` scheme: `server/info`, `server/health`, `server/stats`, `apps`,
+`apps/{app_id}`, `apps/{app_id}/channels[/{channel}[/history|/presence|/messages/{serial}]]`,
+plus embedded references `docs/http-api`, `docs/channels`, and `docs/operations`. Prompts
+`sockudo_debug_channel`, `sockudo_incident_triage`, `sockudo_design_realtime_feature`, and
+`sockudo_audit_app_security` walk an agent through common workflows. Argument completion is
+available for `app_id` and `channel`.
+
+## Observability
+
+Prometheus families (with the configured prefix):
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `mcp_requests_total` | `port`, `outcome` | Protocol requests by outcome (`tools_call`, `resources_read`, `rate_limited`, `unauthorized`, ...). |
+| `mcp_tool_calls_total` | `port`, `tool`, `outcome` | Tool calls by tool and outcome (`ok`, `upstream_4xx`, `forbidden_scope`, `timeout`, ...). |
+| `mcp_tool_latency_ms` | `port`, `tool` | Tool execution latency. |
+
+## Testing
+
+- `cargo test -p sockudo-mcp --all-features` runs protocol, signing, catalog, and Streamable HTTP
+  transport tests; `cargo test -p sockudo --features mcp mcp::` drives the in-process transport
+  through the real API middleware.
+- `make mcp-smoke` builds both binaries, starts a scratch server from `tests/mcp/config.toml`, and
+  runs `tests/mcp/smoke_http.py` (embedded endpoint, admin and read-only tokens) and
+  `tests/mcp/smoke_stdio.py` (standalone binary over stdio).
+- For interactive checks use `npx @modelcontextprotocol/inspector` against `/mcp` with the
+  `Authorization: Bearer` header, or register the endpoint in Claude Code and call
+  `sockudo_server_info`.
+
+## Performance notes
+
+- The embedded transport never touches a socket: requests are signed and dispatched to the router
+  with `tower::Service::oneshot`. Cost per call is one HMAC-SHA256, one MD5 for POST bodies, and the
+  normal handler work.
+- `tools/list` responses are prebuilt once per scope combination and served as an `Arc` clone.
+- Responses are passed through as the server's JSON bytes; only object bodies are parsed once more
+  to populate `structuredContent`.
+- Sessions are managed by `rmcp` with idle expiry (`session_ttl_seconds`); the `2026-07-28`
+  protocol revision is served statelessly.

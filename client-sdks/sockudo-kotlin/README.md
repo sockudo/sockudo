@@ -62,12 +62,37 @@ val client =
     )
 
 val channel = client.subscribe("public-updates")
-channel.bind("price-updated") { data, _ ->
-    println(data)
-}
+channel.bindChannelListener(
+    object : SockudoChannelEventListener {
+        override fun onEvent(channel: SockudoChannel, event: SockudoEvent) {
+            println("${event.event}: ${event.data}")
+        }
+    },
+)
 
 client.connect()
 ```
+
+Connection state exposes the current value directly, plus a Pusher-style listener API for transitions and errors.
+Listeners run synchronously on the thread performing the transition — an OkHttp callback or background coroutine
+thread — so UI consumers must switch context when needed.
+
+```kotlin
+client.bindConnectionListener(object : SockudoConnectionEventListener {
+    override fun onConnectionStateChange(change: ConnectionStateChange) {
+        println("${change.previous} -> ${change.current}")
+    }
+
+    override fun onError(error: SockudoError) {
+        println("connection error: ${error.message}")
+    }
+})
+
+val current = client.connectionState
+```
+
+Remove listeners with `unbindConnectionListener(token)`. The Pusher-compatible `bind("state_change", ...)` event remains
+available for consumers that need the raw event API.
 
 Protocol V2 heartbeat behavior:
 
@@ -336,6 +361,7 @@ val client =
             cluster = "local",
             maxReconnectAttempts = 10,
             maxReconnectGapInSeconds = 60.0,
+            reconnectJitter = 0.5,
         ),
     )
 
@@ -344,6 +370,11 @@ client.bind("reconnecting") { _, _ -> println("reconnecting") }
 
 The attempt counter resets after a successful connection and on explicit
 `connect()` or `disconnect()` calls.
+
+Because that delay is identical for every client, clients dropped by a single
+event retry in lockstep. Set `reconnectJitter` to randomize each delay by that
+fraction and spread the retries out — `0.5` picks uniformly from 50-100% of the
+delay, `1.0` from 0-100%. It defaults to `0.0`, which keeps the delays exact.
 
 ### Encrypted Channels
 

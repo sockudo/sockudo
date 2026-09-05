@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 const TOPOLOGY_REFRESH_INTERVAL_SECS: u64 = 30;
 const TOPOLOGY_REFRESH_FAILURE_THRESHOLD: u64 = 3;
+const FAN_IN_CAPACITY: usize = 10_000;
 
 pub struct BoundedPush {
     message: redis::PushInfo,
@@ -75,13 +76,22 @@ impl NodeAddr {
         }
     }
 
-    pub(crate) fn to_url(&self, scheme: &str, password: Option<&str>) -> String {
-        match password {
-            Some(pw) => format!(
+    pub(crate) fn to_url(
+        &self,
+        scheme: &str,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> String {
+        match (username, password) {
+            (Some(user), Some(pw)) => format!(
+                "{}://{}:{}@{}:{}/?protocol=resp3",
+                scheme, user, pw, self.host, self.port
+            ),
+            (None, Some(pw)) => format!(
                 "{}://:{}@{}:{}/?protocol=resp3",
                 scheme, pw, self.host, self.port
             ),
-            None => format!("{}://{}:{}/?protocol=resp3", scheme, self.host, self.port),
+            _ => format!("{}://{}:{}/?protocol=resp3", scheme, self.host, self.port),
         }
     }
 }
@@ -715,7 +725,7 @@ impl ShardedSubscriber {
         );
 
         let (fan_tx, fan_rx): (ShardedPushSender, ShardedPushReceiver) =
-            mpsc::bounded_async(10_000);
+            mpsc::bounded_async(FAN_IN_CAPACITY);
 
         let byte_budget = Arc::new(tokio::sync::Semaphore::new(64 * 1024 * 1024));
         let scheme = if self.seed_urls.iter().any(|u| u.starts_with("rediss://")) {
@@ -728,6 +738,11 @@ impl ShardedSubscriber {
             .first()
             .and_then(|u| redis::IntoConnectionInfo::into_connection_info(u.as_str()).ok())
             .and_then(|ci| ci.redis_settings().password().map(str::to_owned));
+        let username: Option<String> = self
+            .seed_urls
+            .first()
+            .and_then(|u| redis::IntoConnectionInfo::into_connection_info(u.as_str()).ok())
+            .and_then(|ci| ci.redis_settings().username().map(str::to_owned));
 
         // Clone fan_tx for the refresh task BEFORE the drop at the end.
         let refresh_gap_handler = Arc::clone(&self.on_ingress_gap);
@@ -754,7 +769,7 @@ impl ShardedSubscriber {
                 if shard_channels.is_empty() {
                     continue;
                 }
-                let url = shard_addr.to_url(scheme, password.as_deref());
+                let url = shard_addr.to_url(scheme, username.as_deref(), password.as_deref());
                 let shard_addr_str = format!("{}:{}", shard_addr.host, shard_addr.port);
                 let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
                 let params = ShardListenerParams {
@@ -772,18 +787,32 @@ impl ShardedSubscriber {
                     refresh_notify: self.refresh_notify.clone(),
                     tls: self.tls.clone(),
                 };
-                shard_map.insert(shard_addr_str, tokio::spawn(shard_listener_loop(params)));
-                ready_receivers.push(ready_rx);
+                let readiness_channels = params.channels.clone();
+                shard_map.insert(
+                    shard_addr_str.clone(),
+                    tokio::spawn(shard_listener_loop(params)),
+                );
+                ready_receivers.push((shard_addr_str, readiness_channels, ready_rx));
             }
             drop(shard_map);
 
-            let readiness = ready_receivers
-                .into_iter()
-                .map(|ready_rx| tokio::time::timeout(Duration::from_secs(5), ready_rx));
-            for result in futures::future::join_all(readiness).await {
+            let readiness =
+                ready_receivers
+                    .into_iter()
+                    .map(|(shard, channels, ready_rx)| async move {
+                        (
+                            shard,
+                            channels,
+                            tokio::time::timeout(Duration::from_secs(5), ready_rx).await,
+                        )
+                    });
+            for (shard, channels, result) in futures::future::join_all(readiness).await {
                 if !matches!(result, Ok(Ok(()))) {
                     warn!(
                         adapter = "redis_cluster",
+                        shard = %shard,
+                        channel_count = channels.len(),
+                        channels = ?channels,
                         "sharded subscriber initial subscription timed out"
                     );
                 }
@@ -799,6 +828,7 @@ impl ShardedSubscriber {
         let metrics_clone = self.metrics.clone();
         let scheme_clone = scheme.to_owned();
         let password_clone = password.clone();
+        let username_clone = username.clone();
         let mode = self.mode;
         let tls = self.tls.clone();
 
@@ -860,7 +890,11 @@ impl ShardedSubscriber {
 
                 for (new_str, channels) in new_shard_channels {
                     let new_shard_addr = new_topo.shard_for(&channels[0]).clone();
-                    let url = new_shard_addr.to_url(&scheme_clone, password_clone.as_deref());
+                    let url = new_shard_addr.to_url(
+                        &scheme_clone,
+                        username_clone.as_deref(),
+                        password_clone.as_deref(),
+                    );
                     let params = ShardListenerParams {
                         url,
                         channels,
@@ -906,7 +940,7 @@ mod tests {
     fn node_addr_to_url_no_password() {
         let addr = NodeAddr::new("127.0.0.1", 6379);
         assert_eq!(
-            addr.to_url("redis", None),
+            addr.to_url("redis", None, None),
             "redis://127.0.0.1:6379/?protocol=resp3"
         );
     }
@@ -915,8 +949,26 @@ mod tests {
     fn node_addr_to_url_with_password() {
         let addr = NodeAddr::new("127.0.0.1", 6380);
         assert_eq!(
-            addr.to_url("rediss", Some("secret")),
+            addr.to_url("rediss", None, Some("secret")),
             "rediss://:secret@127.0.0.1:6380/?protocol=resp3"
+        );
+    }
+
+    #[test]
+    fn node_addr_to_url_with_username_and_password() {
+        let addr = NodeAddr::new("cache.example.com", 6379);
+        assert_eq!(
+            addr.to_url("rediss", Some("myuser"), Some("mypass")),
+            "rediss://myuser:mypass@cache.example.com:6379/?protocol=resp3"
+        );
+    }
+
+    #[test]
+    fn node_addr_to_url_with_username_only() {
+        let addr = NodeAddr::new("cache.example.com", 6379);
+        assert_eq!(
+            addr.to_url("rediss", Some("myuser"), None),
+            "rediss://cache.example.com:6379/?protocol=resp3"
         );
     }
 
@@ -1080,7 +1132,7 @@ mod tests {
     fn node_addr_to_url_tls_scheme_no_password() {
         let addr = NodeAddr::new("10.0.0.1", 6380);
         assert_eq!(
-            addr.to_url("rediss", None),
+            addr.to_url("rediss", None, None),
             "rediss://10.0.0.1:6380/?protocol=resp3",
         );
     }

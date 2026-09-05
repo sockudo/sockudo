@@ -809,7 +809,16 @@ public sealed class SockudoClient : IAsyncDisposable
         }
 
         var intervalSeconds = (double)_reconnectAttempts * _reconnectAttempts;
-        return TimeSpan.FromSeconds(Math.Min(intervalSeconds, Options.MaxReconnectGapInSeconds));
+        var seconds = Math.Min(intervalSeconds, Options.MaxReconnectGapInSeconds);
+
+        // Spread retries so clients dropped by one event do not return in lockstep.
+        var jitter = Options.EffectiveReconnectJitter;
+        if (jitter <= 0 || seconds <= 0)
+        {
+            return TimeSpan.FromSeconds(seconds);
+        }
+
+        return TimeSpan.FromSeconds(seconds - Random.Shared.NextDouble() * seconds * jitter);
     }
 
     private Task ScheduleRetryAsync(TimeSpan delay)

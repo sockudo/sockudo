@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::interval;
-use tracing::{debug, error, warn};
+use tracing::{Instrument, debug, error, warn};
 
 const WEBHOOK_QUEUE_NAME: &str = "webhooks";
 const MAX_BATCHED_JOBS: usize = 2048;
@@ -185,16 +185,20 @@ impl WebhookIntegration {
         let sender_clone = webhook_sender.clone();
 
         let processor: JobProcessorFnAsync = Box::new(move |job_data| {
+            let consumer_span = crate::telemetry::consumer_span(&job_data);
             let sender_for_task = sender_clone.clone();
-            Box::pin(async move {
-                debug!(
-                    app_id = %job_data.app_id,
-                    webhook_job_id = job_data.job_id.as_deref().unwrap_or("legacy"),
-                    event_count = job_data.payload.events.len(),
-                    "webhook job processing started"
-                );
-                sender_for_task.process_webhook_job(job_data).await
-            })
+            Box::pin(
+                async move {
+                    debug!(
+                        app_id = %job_data.app_id,
+                        webhook_job_id = job_data.job_id.as_deref().unwrap_or("legacy"),
+                        event_count = job_data.payload.events.len(),
+                        "webhook job processing started"
+                    );
+                    sender_for_task.process_webhook_job(job_data).await
+                }
+                .instrument(consumer_span),
+            )
         });
 
         queue_manager
@@ -289,6 +293,7 @@ impl WebhookIntegration {
         if !self.accepting.load(Ordering::Acquire) {
             return Err(Error::Queue("webhook integration is shutting down".into()));
         }
+        crate::telemetry::capture(&mut job_data);
         if self.config.batching.enabled {
             let record = Arc::clone(&self.batch_records)
                 .try_acquire_owned()
@@ -333,13 +338,14 @@ impl WebhookIntegration {
     ///
     /// AI lifecycle traffic bypasses the optional in-process batching vector so
     /// producer backpressure and queue retry policy remain authoritative.
-    async fn add_bounded_webhook(&self, job_data: JobData) -> Result<()> {
+    async fn add_bounded_webhook(&self, mut job_data: JobData) -> Result<()> {
         if !self.is_enabled() {
             return Ok(());
         }
         if !self.accepting.load(Ordering::Acquire) {
             return Err(Error::Queue("webhook integration is shutting down".into()));
         }
+        crate::telemetry::capture(&mut job_data);
         let Some(queue_manager) = &self.queue_manager else {
             return Err(Error::Internal(
                 "Queue manager not initialized for webhooks".to_string(),
@@ -362,6 +368,7 @@ impl WebhookIntegration {
                         if existing.app_id == chunk.app_id
                             && existing.app_key == chunk.app_key
                             && existing.app_secret == chunk.app_secret
+                            && existing.trace_context == chunk.trace_context
                             && existing.payload.events.len() + chunk.payload.events.len()
                                 <= batch_size =>
                     {
@@ -402,6 +409,7 @@ impl WebhookIntegration {
             app_key,
             app_id,
             app_secret,
+            trace_context,
             payload,
             original_signature,
         } = job;
@@ -417,6 +425,7 @@ impl WebhookIntegration {
                 app_key: app_key.clone(),
                 app_id: app_id.clone(),
                 app_secret: app_secret.clone(),
+                trace_context: trace_context.clone(),
                 payload: JobPayload {
                     time_ms,
                     events: events.by_ref().take(batch_size).collect(),
@@ -443,6 +452,7 @@ impl WebhookIntegration {
             app_key: app.key.clone(),
             app_id: app.id.clone(),
             app_secret: app.secret.clone(),
+            trace_context: Default::default(),
             payload: job_payload,
             original_signature: original_signature_for_queue.to_string(),
         }
@@ -1468,6 +1478,7 @@ mod tests {
                 app_key: "key-a".to_string(),
                 app_id: "app-a".to_string(),
                 app_secret: "secret-a".to_string(),
+                trace_context: Default::default(),
                 payload: JobPayload {
                     time_ms: 10,
                     events: vec![json!({"name": "channel_occupied", "channel": "one"})],
@@ -1479,6 +1490,7 @@ mod tests {
                 app_key: "key-a".to_string(),
                 app_id: "app-a".to_string(),
                 app_secret: "secret-a".to_string(),
+                trace_context: Default::default(),
                 payload: JobPayload {
                     time_ms: 20,
                     events: vec![json!({"name": "channel_vacated", "channel": "two"})],
@@ -1490,6 +1502,7 @@ mod tests {
                 app_key: "key-b".to_string(),
                 app_id: "app-b".to_string(),
                 app_secret: "secret-b".to_string(),
+                trace_context: Default::default(),
                 payload: JobPayload {
                     time_ms: 30,
                     events: vec![json!({"name": "channel_occupied", "channel": "three"})],
@@ -1671,6 +1684,7 @@ mod tests {
             app_key: "key-a".to_string(),
             app_id: "app-a".to_string(),
             app_secret: "secret-a".to_string(),
+            trace_context: Default::default(),
             payload: JobPayload {
                 time_ms: 10,
                 events: vec![

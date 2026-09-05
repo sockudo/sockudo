@@ -43,6 +43,12 @@ Supported query parameters:
 | `echo_messages` | Protocol V2 | Overrides per-connection echo behavior when echo control is enabled. |
 | `token` | Protocol V2 | Capability-token JWT alternative to unauthenticated app-key connect. The JWT header `kid` must match `{appKey}`. |
 
+## MCP
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` / `GET` / `DELETE` | `/mcp` (configurable; optionally a dedicated port) | `Authorization: Bearer <mcp token>` | Model Context Protocol Streamable HTTP endpoint. Requires the `mcp` Cargo feature and `[mcp].enabled`. Tools are scope-gated (`read`, `write`, `admin`) and call the routes below in-process. See [MCP server](/docs/server/mcp). |
+
 ## Publish
 
 | Method | Path | Auth | Purpose |

@@ -170,6 +170,7 @@ export default class Sockudo {
       useTLS: Boolean(this.config.useTLS),
       maxReconnectAttempts: this.config.maxReconnectAttempts,
       maxReconnectGapInSeconds: this.config.maxReconnectGapInSeconds,
+      reconnectJitter: this.config.reconnectJitter,
       beforeConnect:
         options.authCallback || options.authUrl
           ? (reason) => this.prepareCapabilityToken(reason)

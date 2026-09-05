@@ -144,6 +144,10 @@ impl CounterVec {
 }
 pub(super) struct CounterWithLabels(Arc<Key>);
 impl CounterWithLabels {
+    pub(super) fn init(&self) {
+        metrics::with_recorder(|r| r.register_counter(&self.0, &METADATA).increment(0));
+    }
+
     pub(super) fn inc(&self) {
         metrics::with_recorder(|r| r.register_counter(&self.0, &METADATA).increment(1));
     }

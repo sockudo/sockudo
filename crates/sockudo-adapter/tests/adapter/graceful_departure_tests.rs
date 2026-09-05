@@ -67,6 +67,7 @@ async fn test_receiving_node_dead_prunes_peer_heartbeat() {
         dead_node_id: Some("peer-node".to_string()),
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     };
 

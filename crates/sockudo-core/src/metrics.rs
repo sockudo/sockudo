@@ -78,7 +78,12 @@ pub trait MetricsInterface: Send + Sync {
     fn track_horizontal_adapter_resolve_time(&self, app_id: &str, time_ms: f64);
 
     /// Track the fulfillings in which horizontal adapter resolves requests from other nodes
-    fn track_horizontal_adapter_resolved_promises(&self, app_id: &str, resolved: bool);
+    fn track_horizontal_adapter_resolved_promises(
+        &self,
+        app_id: &str,
+        resolved: bool,
+        request_type: &str,
+    );
 
     /// Handle a new horizontal adapter request sent
     fn mark_horizontal_adapter_request_sent(&self, app_id: &str);
@@ -304,6 +309,16 @@ pub trait MetricsInterface: Send + Sync {
 
     /// Update the number of reset-required presence-history channels for an app.
     fn update_presence_history_reset_required_channels(&self, _app_id: &str, _count: usize) {}
+
+    /// Track an MCP protocol request by outcome label (`tools_call`,
+    /// `resources_read`, `rate_limited`, `unauthorized`, ...).
+    fn mark_mcp_request(&self, _outcome: &str) {}
+
+    /// Track an MCP tool call by tool name and outcome label.
+    fn mark_mcp_tool_call(&self, _tool: &str, _outcome: &str) {}
+
+    /// Track MCP tool execution latency in milliseconds.
+    fn track_mcp_tool_latency(&self, _tool: &str, _latency_ms: f64) {}
 
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;

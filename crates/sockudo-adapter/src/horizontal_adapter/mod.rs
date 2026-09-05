@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::websocket::SocketId;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -103,6 +103,9 @@ pub struct RequestBody {
     // Inbox channel for targeted response routing, falls back to global channel
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// W3C propagation fields for horizontal request/reply continuity.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub trace_context: BTreeMap<String, String>,
 }
 
 /// Response body for horizontal requests
@@ -157,6 +160,10 @@ pub struct BroadcastMessage {
     /// in the recovery replay buffer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
+    /// W3C propagation fields for cross-node trace continuity. This is never
+    /// exposed on the Pusher/Sockudo client wire protocol.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub trace_context: BTreeMap<String, String>,
 }
 
 /// Metadata for delta compression in broadcasts

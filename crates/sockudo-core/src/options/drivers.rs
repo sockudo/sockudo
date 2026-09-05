@@ -18,6 +18,7 @@ pub enum AdapterDriver {
     GooglePubSub,
     Kafka,
     Iggy,
+    Omq,
 }
 
 impl FromStr for AdapterDriver {
@@ -33,6 +34,7 @@ impl FromStr for AdapterDriver {
             "google-pubsub" | "gcp-pubsub" | "pubsub" => Ok(AdapterDriver::GooglePubSub),
             "kafka" => Ok(AdapterDriver::Kafka),
             "iggy" | "apache-iggy" | "apache_iggy" => Ok(AdapterDriver::Iggy),
+            "omq" | "zeromq" | "zero-mq" | "zmq" => Ok(AdapterDriver::Omq),
             _ => Err(format!("Unknown adapter driver: {s}")),
         }
     }

@@ -7,6 +7,10 @@ rust-version.workspace = true
 repository.workspace = true
 license-file.workspace = true
 
+[features]
+default = []
+opentelemetry = ["dep:opentelemetry"]
+
 [dependencies]
 sockudo-core = { workspace = true }
 
@@ -16,6 +20,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 metrics-exporter-tcp = { workspace = true }
 metrics-util = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

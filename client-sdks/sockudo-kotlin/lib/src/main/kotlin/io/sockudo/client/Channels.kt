@@ -2,6 +2,7 @@ package io.sockudo.client
 
 import com.iwebpp.crypto.TweetNaclFast
 import java.util.Base64
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -12,6 +13,8 @@ open class SockudoChannel internal constructor(
     internal val dispatcher = EventDispatcher { event, _ ->
         SockudoLogger.debug("No callbacks on $name for $event")
     }
+    internal val listeners =
+        CopyOnWriteArrayList<Pair<EventBindingToken, SockudoChannelEventListener>>()
 
     var isSubscribed: Boolean = false
         internal set
@@ -38,6 +41,16 @@ open class SockudoChannel internal constructor(
     fun onGlobal(callback: (String, Any?) -> Unit): EventBindingToken = dispatcher.bindGlobal(callback)
 
     fun bindGlobal(callback: (String, Any?) -> Unit): EventBindingToken = onGlobal(callback)
+
+    fun bindChannelListener(listener: SockudoChannelEventListener): EventBindingToken {
+        val token = EventBindingToken()
+        listeners += token to listener
+        return token
+    }
+
+    fun unbindChannelListener(token: EventBindingToken) {
+        listeners.removeIf { it.first == token }
+    }
 
     fun off(eventName: String? = null, token: EventBindingToken? = null) {
         dispatcher.unbind(eventName, token)
@@ -103,13 +116,17 @@ open class SockudoChannel internal constructor(
             client.sendEvent(client.p.event("subscribe"), payload, null)
         } catch (error: Throwable) {
             subscriptionPending = false
+            val message = error.message ?: "Unknown auth error"
             dispatcher.emit(
                 client.p.event("subscription_error"),
                 mapOf(
                     "type" to "AuthError",
-                    "error" to (error.message ?: "Unknown auth error"),
+                    "error" to message,
                 ),
             )
+            listeners.forEach { (_, listener) ->
+                listener.onAuthenticationFailure(this, SockudoAuthError(message = message, cause = error))
+            }
         }
     }
 
@@ -263,6 +280,7 @@ open class SockudoChannel internal constructor(
                 } else {
                     attachSerial = parseAttachSerial(event.data)
                     dispatcher.emit(p.event("subscription_succeeded"), event.data)
+                    listeners.forEach { (_, listener) -> listener.onSubscriptionSucceeded(this) }
                 }
             }
 
@@ -288,6 +306,7 @@ open class SockudoChannel internal constructor(
 
             else -> {
                 dispatcher.emit(event.event, event.data, EventMetadata(userId = event.userId))
+                listeners.forEach { (_, listener) -> listener.onEvent(this, event) }
             }
         }
     }
@@ -416,6 +435,7 @@ class PresenceChannel internal constructor(
                     attachSerial = parseAttachSerial(payload)
                     members.applySubscriptionData(payload)
                     dispatcher.emit(p.event("subscription_succeeded"), members)
+                    listeners.forEach { (_, listener) -> listener.onSubscriptionSucceeded(this) }
                 }
             }
 

@@ -222,7 +222,12 @@ impl MetricsInterface for MockMetricsInterface {
     }
     fn mark_ws_message_received(&self, _app_id: &str, _message_size: usize) {}
     fn track_horizontal_adapter_resolve_time(&self, _app_id: &str, _time_ms: f64) {}
-    fn track_horizontal_adapter_resolved_promises(&self, _app_id: &str, resolved: bool) {
+    fn track_horizontal_adapter_resolved_promises(
+        &self,
+        _app_id: &str,
+        resolved: bool,
+        _request_type: &str,
+    ) {
         if resolved {
             self.horizontal_resolved_promises
                 .fetch_add(1, Ordering::Relaxed);

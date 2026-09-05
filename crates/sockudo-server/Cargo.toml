@@ -8,7 +8,7 @@ repository.workspace = true
 license-file.workspace = true
 
 [features]
-default = ["local", "v2"]
+default = ["local", "v2", "opentelemetry"]
 versioned-messages = []
 ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "sockudo-adapter/ai-transport", "versioned-messages"]
 ably-compat = [
@@ -32,7 +32,9 @@ push-webpush = ["push", "sockudo-push/push-webpush"]
 push-hms = ["push", "sockudo-push/push-hms"]
 push-wns = ["push", "sockudo-push/push-wns"]
 monolith = ["push", "sockudo-push/monolith"]
+mcp = ["dep:sockudo-mcp"]
 full = [
+  "opentelemetry",
   "v2",
   "versioned-messages",
   "ai-transport",
@@ -43,6 +45,7 @@ full = [
   "push-webpush",
   "push-hms",
   "push-wns",
+  "mcp",
   "redis",
   "redis-cluster",
   "nats",
@@ -51,6 +54,7 @@ full = [
   "google-pubsub",
   "kafka",
   "iggy",
+  "omq",
   "mysql",
   "postgres",
   "dynamodb",
@@ -59,6 +63,20 @@ full = [
   "sqs",
   "sns",
   "lambda",
+]
+
+opentelemetry = [
+  "dep:opentelemetry",
+  "dep:opentelemetry-appender-tracing",
+  "dep:opentelemetry-http",
+  "dep:opentelemetry-otlp",
+  "dep:opentelemetry-semantic-conventions",
+  "dep:opentelemetry_sdk",
+  "dep:tracing-opentelemetry",
+  "sockudo-adapter/opentelemetry",
+  "sockudo-metrics/opentelemetry",
+  "sockudo-push?/opentelemetry",
+  "sockudo-webhook/opentelemetry",
 ]
 
 redis = [
@@ -85,6 +103,7 @@ rabbitmq = ["sockudo-core/rabbitmq", "sockudo-adapter/rabbitmq", "sockudo-queue/
 google-pubsub = ["sockudo-core/google-pubsub", "sockudo-adapter/google-pubsub", "sockudo-queue/google-pubsub", "sockudo-push?/google-pubsub"]
 kafka = ["sockudo-core/kafka", "sockudo-adapter/kafka", "sockudo-queue/kafka", "sockudo-push?/kafka"]
 iggy = ["sockudo-core/iggy", "sockudo-adapter/iggy", "sockudo-queue/iggy", "sockudo-push?/iggy"]
+omq = ["sockudo-core/omq", "sockudo-adapter/omq"]
 mysql = ["sockudo-core/mysql", "sockudo-app/mysql", "dep:sqlx", "dep:urlencoding", "sockudo-push?/mysql"]
 postgres = ["sockudo-core/postgres", "sockudo-app/postgres", "dep:sqlx", "dep:urlencoding", "sockudo-push?/postgres"]
 dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb", "dep:aws-config", "dep:aws-sdk-dynamodb", "sockudo-push?/dynamodb"]
@@ -112,6 +131,7 @@ sockudo-delta = { workspace = true, optional = true }
 sockudo-adapter = { workspace = true }
 sockudo-push = { workspace = true, optional = true }
 sockudo-ably-compat = { workspace = true, optional = true }
+sockudo-mcp = { workspace = true, optional = true, features = ["http"] }
 
 aes-gcm = { workspace = true, optional = true }
 ahash = { workspace = true }
@@ -128,6 +148,13 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 num_cpus = { workspace = true }
+metrics = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-appender-tracing = { workspace = true, optional = true }
+opentelemetry-http = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry-semantic-conventions = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
 rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -138,9 +165,10 @@ sysinfo = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true, optional = true }

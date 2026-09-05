@@ -12,6 +12,7 @@ default = ["local"]
 local = []
 full = ["lambda"]
 lambda = ["sockudo-core/lambda", "dep:aws-config", "dep:aws-sdk-lambda", "dep:dashmap"]
+opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 
 [dependencies]
 sockudo-core = { workspace = true }
@@ -24,6 +25,7 @@ chrono = { workspace = true }
 dashmap = { workspace = true, optional = true }
 hex = { workspace = true }
 hmac = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -32,6 +34,7 @@ sonic-rs = { workspace = true }
 parking_lot = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 url = { workspace = true }
 uuid = { workspace = true }
 

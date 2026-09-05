@@ -28,6 +28,7 @@ export interface Config {
   unavailableTimeout: number;
   maxReconnectAttempts: number | null;
   maxReconnectGapInSeconds: number;
+  reconnectJitter: number;
   useTLS: boolean;
   wsHost: string;
   wsPath: string;
@@ -69,6 +70,7 @@ export function getConfig(opts: Options, sockudo): Config {
         ? Defaults.maxReconnectAttempts
         : opts.maxReconnectAttempts,
     maxReconnectGapInSeconds: opts.maxReconnectGapInSeconds ?? Defaults.maxReconnectGapInSeconds,
+    reconnectJitter: clampJitter(opts.reconnectJitter ?? Defaults.reconnectJitter),
     wsPath: opts.wsPath || Defaults.wsPath,
     wsPort: opts.wsPort || Defaults.wsPort,
     wssPort: opts.wssPort || Defaults.wssPort,
@@ -101,6 +103,13 @@ export function getConfig(opts: Options, sockudo): Config {
   }
 
   return config;
+}
+
+function clampJitter(jitter: number): number {
+  if (!Number.isFinite(jitter) || jitter <= 0) {
+    return 0;
+  }
+  return Math.min(jitter, 1);
 }
 
 function getHttpHost(opts: Options): string {

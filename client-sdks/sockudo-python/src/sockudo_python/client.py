@@ -5,6 +5,8 @@ import base64
 import binascii
 import inspect
 import json
+import math
+import random
 import struct
 import time
 import urllib.parse
@@ -498,6 +500,8 @@ class SockudoOptions:
     append_rollup_window: Optional[int] = None
     max_reconnect_attempts: Optional[int] = 6
     max_reconnect_gap_in_seconds: float = 120.0
+    """Fraction of the reconnect delay to randomize, 0 (off) to 1 (full jitter)."""
+    reconnect_jitter: float = 0.0
     token: Optional[str] = None
     auth_callback: Optional[TokenAuthCallback] = None
     auth_refresh_leeway_seconds: float = 30.0
@@ -1938,6 +1942,7 @@ class _ResolvedConfiguration:
         self.unavailable_timeout = options.unavailable_timeout
         self.max_reconnect_attempts = options.max_reconnect_attempts
         self.max_reconnect_gap_in_seconds = options.max_reconnect_gap_in_seconds
+        self.reconnect_jitter = _clamp_jitter(options.reconnect_jitter)
         self.enabled_transports = options.enabled_transports
         self.disabled_transports = options.disabled_transports
         self.channel_options = options.channel_authorization
@@ -2828,7 +2833,12 @@ class SockudoClient:
         if action in {_CloseAction.RETRY, _CloseAction.TLS_ONLY}:
             return 0.0
         interval_seconds = float(self._reconnect_attempts**2)
-        return min(interval_seconds, self.config.max_reconnect_gap_in_seconds)
+        delay = min(interval_seconds, self.config.max_reconnect_gap_in_seconds)
+        # Spread retries so clients dropped by one event do not return in lockstep.
+        jitter = self.config.reconnect_jitter
+        if not jitter or delay <= 0:
+            return delay
+        return delay - random.uniform(0.0, delay * jitter)
 
     async def _schedule_retry(self, after_seconds: float) -> None:
         if self._manually_disconnected:
@@ -3260,6 +3270,12 @@ class SockudoClient:
 
 
 _MAX_SAFE_FLOAT_INT = 2**53 - 1
+
+
+def _clamp_jitter(jitter: float) -> float:
+    if not math.isfinite(jitter) or jitter <= 0:
+        return 0.0
+    return min(jitter, 1.0)
 
 
 def _coerce_int(value: Any) -> Optional[int]:

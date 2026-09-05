@@ -142,6 +142,45 @@ spec:
             - name: METRICS_PROMETHEUS_PREFIX
               value: {{ .Values.config.metrics.prefix | quote }}
             {{- end }}
+            # OpenTelemetry
+            {{- if .Values.config.openTelemetry.enabled }}
+            - name: SOCKUDO_OTEL_ENABLED
+              value: "true"
+            - name: SOCKUDO_OTEL_TRACES_ENABLED
+              value: {{ .Values.config.openTelemetry.tracesEnabled | quote }}
+            - name: SOCKUDO_OTEL_METRICS_ENABLED
+              value: {{ .Values.config.openTelemetry.metricsEnabled | quote }}
+            - name: SOCKUDO_OTEL_LOGS_ENABLED
+              value: {{ .Values.config.openTelemetry.logsEnabled | quote }}
+            - name: SOCKUDO_OTEL_SERVICE_NAME
+              value: {{ .Values.config.openTelemetry.serviceName | quote }}
+            {{- with .Values.config.openTelemetry.serviceNamespace }}
+            - name: SOCKUDO_OTEL_SERVICE_NAMESPACE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.openTelemetry.deploymentEnvironment }}
+            - name: SOCKUDO_OTEL_DEPLOYMENT_ENVIRONMENT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.openTelemetry.endpoint }}
+            - name: SOCKUDO_OTEL_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SOCKUDO_OTEL_EXPORT_TIMEOUT_MS
+              value: {{ .Values.config.openTelemetry.exportTimeoutMs | quote }}
+            - name: SOCKUDO_OTEL_BATCH_SCHEDULED_DELAY_MS
+              value: {{ .Values.config.openTelemetry.batchScheduledDelayMs | quote }}
+            - name: SOCKUDO_OTEL_BATCH_MAX_QUEUE_SIZE
+              value: {{ .Values.config.openTelemetry.batchMaxQueueSize | quote }}
+            - name: SOCKUDO_OTEL_BATCH_MAX_EXPORT_BATCH_SIZE
+              value: {{ .Values.config.openTelemetry.batchMaxExportBatchSize | quote }}
+            - name: SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS
+              value: {{ .Values.config.openTelemetry.metricExportIntervalMs | quote }}
+            - name: SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT
+              value: {{ .Values.config.openTelemetry.propagationTraceContext | quote }}
+            - name: SOCKUDO_OTEL_PROPAGATION_BAGGAGE
+              value: {{ .Values.config.openTelemetry.propagationBaggage | quote }}
+            {{- end }}
             # Redis
             {{- if .Values.redis.host }}
             - name: DATABASE_REDIS_HOST

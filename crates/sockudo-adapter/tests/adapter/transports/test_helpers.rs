@@ -82,6 +82,7 @@ pub fn create_test_broadcast(event: &str) -> BroadcastMessage {
         compression_metadata: None,
         idempotency_key: None,
         ephemeral: false,
+        trace_context: Default::default(),
     }
 }
 
@@ -100,6 +101,7 @@ pub fn create_test_request() -> RequestBody {
         dead_node_id: None,
         target_node_id: None,
         reply_to: None,
+        trace_context: Default::default(),
         channels: None,
     }
 }

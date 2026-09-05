@@ -8,6 +8,8 @@ use crate::kafka_adapter::KafkaAdapter;
 use crate::local_adapter::LocalAdapter;
 #[cfg(feature = "nats")]
 use crate::nats_adapter::NatsAdapter;
+#[cfg(feature = "omq")]
+use crate::omq_adapter::OmqAdapter;
 #[cfg(feature = "pulsar")]
 use crate::pulsar_adapter::PulsarAdapter;
 #[cfg(feature = "rabbitmq")]
@@ -25,6 +27,8 @@ use sockudo_core::options::GooglePubSubAdapterConfig;
 use sockudo_core::options::IggyConfig;
 #[cfg(feature = "nats")]
 use sockudo_core::options::NatsAdapterConfig;
+#[cfg(feature = "omq")]
+use sockudo_core::options::OmqAdapterConfig;
 #[cfg(feature = "pulsar")]
 use sockudo_core::options::PulsarAdapterConfig;
 #[cfg(feature = "rabbitmq")]
@@ -47,6 +51,8 @@ pub enum TypedAdapter {
     RedisCluster(Arc<RedisClusterAdapter>),
     #[cfg(feature = "nats")]
     Nats(Arc<NatsAdapter>),
+    #[cfg(feature = "omq")]
+    Omq(Arc<OmqAdapter>),
     #[cfg(feature = "pulsar")]
     Pulsar(Arc<PulsarAdapter>),
     #[cfg(feature = "google-pubsub")]
@@ -70,6 +76,8 @@ impl TypedAdapter {
             TypedAdapter::RedisCluster(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "nats")]
             TypedAdapter::Nats(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "omq")]
+            TypedAdapter::Omq(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "pulsar")]
             TypedAdapter::Pulsar(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "google-pubsub")]
@@ -131,6 +139,10 @@ impl TypedAdapter {
             TypedAdapter::Nats(adapter) => {
                 adapter.set_cache_manager(cache_manager, idempotency_ttl);
             }
+            #[cfg(feature = "omq")]
+            TypedAdapter::Omq(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
             #[cfg(feature = "pulsar")]
             TypedAdapter::Pulsar(adapter) => {
                 adapter.set_cache_manager(cache_manager, idempotency_ttl);
@@ -172,6 +184,8 @@ impl TypedAdapter {
             TypedAdapter::RedisCluster(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "nats")]
             TypedAdapter::Nats(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "omq")]
+            TypedAdapter::Omq(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "pulsar")]
             TypedAdapter::Pulsar(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "google-pubsub")]
@@ -368,6 +382,39 @@ impl AdapterFactory {
                             return Err(e);
                         }
                         warn!(adapter = "nats", error = %e, "failed to initialize adapter, falling back to local");
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
+                    }
+                }
+            }
+            #[cfg(feature = "omq")]
+            AdapterDriver::Omq => {
+                let omq_cfg = OmqAdapterConfig {
+                    bind_endpoint: config.omq.bind_endpoint.clone(),
+                    connect_endpoints: config.omq.connect_endpoints.clone(),
+                    prefix: config.omq.prefix.clone(),
+                    request_timeout_ms: config.omq.request_timeout_ms,
+                    nodes_number: config.omq.nodes_number,
+                    io_threads: config.omq.io_threads,
+                    send_hwm: config.omq.send_hwm,
+                    recv_hwm: config.omq.recv_hwm,
+                };
+                match OmqAdapter::new(omq_cfg).await {
+                    Ok(mut adapter) => {
+                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::Omq(adapter.clone());
+                        Ok((adapter, typed))
+                    }
+                    Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!(adapter = "omq", error = %e, "failed to initialize adapter");
+                            return Err(e);
+                        }
+                        warn!(adapter = "omq", error = %e, "failed to initialize adapter, falling back to local");
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
                         ));
@@ -585,6 +632,23 @@ impl AdapterFactory {
                 }
                 warn!(
                     adapter = "nats",
+                    "adapter requested but not compiled in, falling back to local"
+                );
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
+            }
+            #[cfg(not(feature = "omq"))]
+            AdapterDriver::Omq => {
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "OMQ adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features omq or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
+                warn!(
+                    adapter = "omq",
                     "adapter requested but not compiled in, falling back to local"
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
