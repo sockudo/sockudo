@@ -531,6 +531,33 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .observe(latency_ms);
     }
 
+    fn mark_webhook_batch_admission(&self, outcome: &str) {
+        self.webhook_batch_admissions_total
+            .with_label_values(&[outcome, self.port_label.as_str()])
+            .inc();
+    }
+
+    fn mark_webhook_batch_transfer_failure(&self) {
+        self.webhook_batch_transfer_failures_total
+            .with_label_values(&[self.port_label.as_str()])
+            .inc();
+    }
+
+    fn mark_webhook_batch_jobs_lost(&self, reason: &str, count: u64) {
+        self.webhook_batch_jobs_lost_total
+            .with_label_values(&[reason, self.port_label.as_str()])
+            .inc_by(count as f64);
+    }
+
+    fn set_webhook_batch_pending(&self, jobs: usize, bytes: usize) {
+        self.webhook_batch_pending_jobs
+            .with_label_values(&[self.port_label.as_str()])
+            .set(jobs as f64);
+        self.webhook_batch_pending_bytes
+            .with_label_values(&[self.port_label.as_str()])
+            .set(bytes as f64);
+    }
+
     fn mark_annotation_published(&self, channel: &str, annotation_type: &str) {
         self.annotations_published_total
             .with_label_values(&[

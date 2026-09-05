@@ -1,6 +1,7 @@
 use sockudo_core::app::App;
 use sockudo_core::app::AppManager;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::queue::QueueInterface;
 use sockudo_core::webhook_types::{JobData, JobPayload, JobProcessorFnAsync};
 
@@ -10,20 +11,117 @@ use serde::{Deserialize, Serialize};
 use sonic_rs::{Value, json};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
-use tokio::time::interval;
-use tracing::{Instrument, debug, error, warn};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError};
+use tokio::time::{Instant, interval};
+use tracing::{Instrument, debug, error, info, warn};
 
 const WEBHOOK_QUEUE_NAME: &str = "webhooks";
+/// Upper bound on webhook jobs accepted into the in-process batch buffer.
 const MAX_BATCHED_JOBS: usize = 2048;
+/// Upper bound on encoded bytes (plus per-record overhead) held by the buffer.
 const MAX_BATCHED_BYTES: usize = 16 * 1024 * 1024;
+/// A producer waits for buffer capacity for this many batch intervals before
+/// its webhook is rejected explicitly. The bound is clamped so very short or
+/// very long intervals still give the queue a fair chance without stalling
+/// producers indefinitely; the minimum covers the first two transfer retries.
+const ADMISSION_WAIT_INTERVALS: u64 = 20;
+const MIN_ADMISSION_WAIT: Duration = Duration::from_millis(250);
+const MAX_ADMISSION_WAIT: Duration = Duration::from_secs(2);
+/// Failed batch transfers retry with exponential backoff in this range while
+/// the accepted batch and its stable job IDs stay retained.
+const TRANSFER_RETRY_MIN: Duration = Duration::from_millis(50);
+const TRANSFER_RETRY_MAX: Duration = Duration::from_secs(2);
+/// Graceful shutdown drains accepted batches for at most this long. Jobs that
+/// still have not reached the queue are counted and logged as lost.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct BufferedWebhook {
     job: JobData,
     _record: OwnedSemaphorePermit,
     _bytes: OwnedSemaphorePermit,
+}
+
+/// Counters describing batch admission and transfer since startup.
+///
+/// `rejected_*` counts are webhooks the producer never handed over; callers
+/// receive an explicit error for each one. `lost_at_shutdown` counts accepted
+/// jobs the drain deadline abandoned. Everything else is bounded, retained work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BatchAdmissionSnapshot {
+    pub accepted: u64,
+    pub waited: u64,
+    pub rejected_timeout: u64,
+    pub rejected_oversized: u64,
+    pub rejected_shutdown: u64,
+    pub transfer_failures: u64,
+    pub lost_at_shutdown: u64,
+}
+
+#[derive(Default)]
+struct BatchAdmissionStats {
+    accepted: AtomicU64,
+    waited: AtomicU64,
+    rejected_timeout: AtomicU64,
+    rejected_oversized: AtomicU64,
+    rejected_shutdown: AtomicU64,
+    transfer_failures: AtomicU64,
+    lost_at_shutdown: AtomicU64,
+    saturated: AtomicBool,
+}
+
+impl BatchAdmissionStats {
+    fn snapshot(&self) -> BatchAdmissionSnapshot {
+        BatchAdmissionSnapshot {
+            accepted: self.accepted.load(Ordering::Relaxed),
+            waited: self.waited.load(Ordering::Relaxed),
+            rejected_timeout: self.rejected_timeout.load(Ordering::Relaxed),
+            rejected_oversized: self.rejected_oversized.load(Ordering::Relaxed),
+            rejected_shutdown: self.rejected_shutdown.load(Ordering::Relaxed),
+            transfer_failures: self.transfer_failures.load(Ordering::Relaxed),
+            lost_at_shutdown: self.lost_at_shutdown.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// State shared between admission, the batch task and shutdown.
+struct BatchShared {
+    buffer: Mutex<VecDeque<BufferedWebhook>>,
+    records: Arc<Semaphore>,
+    bytes: Arc<Semaphore>,
+    notify: Notify,
+    accepting: AtomicBool,
+    /// Jobs removed from the buffer whose batch transfer has not succeeded yet.
+    in_flight_jobs: AtomicUsize,
+    stats: BatchAdmissionStats,
+    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+}
+
+impl BatchShared {
+    fn pending(&self) -> (usize, usize) {
+        (
+            MAX_BATCHED_JOBS.saturating_sub(self.records.available_permits()),
+            MAX_BATCHED_BYTES.saturating_sub(self.bytes.available_permits()),
+        )
+    }
+
+    fn publish_pending(&self) {
+        if let Some(metrics) = &self.metrics {
+            let (jobs, bytes) = self.pending();
+            metrics.set_webhook_batch_pending(jobs, bytes);
+        }
+    }
+
+    fn mark_admission(&self, outcome: &str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.mark_webhook_batch_admission(outcome);
+        }
+    }
+
+    fn shutting_down_error() -> Error {
+        Error::Queue("webhook integration is shutting down".into())
+    }
 }
 
 #[derive(Default)]
@@ -132,11 +230,9 @@ impl QueueManager {
 /// Webhook integration for processing events
 pub struct WebhookIntegration {
     config: WebhookConfig,
-    batched_webhooks: Arc<Mutex<VecDeque<BufferedWebhook>>>,
-    batch_records: Arc<Semaphore>,
-    batch_bytes: Arc<Semaphore>,
-    batch_notify: Arc<Notify>,
-    accepting: Arc<AtomicBool>,
+    batch: Arc<BatchShared>,
+    admission_wait: Duration,
+    shutdown_drain_timeout: Duration,
     batch_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     queue_manager: Option<Arc<QueueManager>>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -148,13 +244,39 @@ impl WebhookIntegration {
         app_manager: Arc<dyn AppManager + Send + Sync>,
         queue_manager: Option<Arc<QueueManager>>,
     ) -> Result<Self> {
+        Self::new_with_metrics(config, app_manager, queue_manager, None).await
+    }
+
+    /// Like [`Self::new`], additionally reporting batch admission, transfer and
+    /// pending-depth metrics through `metrics`.
+    pub async fn new_with_metrics(
+        config: WebhookConfig,
+        app_manager: Arc<dyn AppManager + Send + Sync>,
+        queue_manager: Option<Arc<QueueManager>>,
+        metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+    ) -> Result<Self> {
+        let admission_wait = Duration::from_millis(
+            config
+                .batching
+                .duration
+                .max(1)
+                .saturating_mul(ADMISSION_WAIT_INTERVALS),
+        )
+        .clamp(MIN_ADMISSION_WAIT, MAX_ADMISSION_WAIT);
         let mut integration = Self {
             config,
-            batched_webhooks: Arc::new(Mutex::new(VecDeque::new())),
-            batch_records: Arc::new(Semaphore::new(MAX_BATCHED_JOBS)),
-            batch_bytes: Arc::new(Semaphore::new(MAX_BATCHED_BYTES)),
-            batch_notify: Arc::new(Notify::new()),
-            accepting: Arc::new(AtomicBool::new(true)),
+            batch: Arc::new(BatchShared {
+                buffer: Mutex::new(VecDeque::new()),
+                records: Arc::new(Semaphore::new(MAX_BATCHED_JOBS)),
+                bytes: Arc::new(Semaphore::new(MAX_BATCHED_BYTES)),
+                notify: Notify::new(),
+                accepting: AtomicBool::new(true),
+                in_flight_jobs: AtomicUsize::new(0),
+                stats: BatchAdmissionStats::default(),
+                metrics,
+            }),
+            admission_wait,
+            shutdown_drain_timeout: SHUTDOWN_DRAIN_TIMEOUT,
             batch_task: Mutex::new(None),
             queue_manager: None,
             app_manager,
@@ -213,24 +335,27 @@ impl WebhookIntegration {
             return;
         }
         let queue_manager = self.queue_manager.clone();
-        let buffer = Arc::clone(&self.batched_webhooks);
-        let notify = Arc::clone(&self.batch_notify);
-        let accepting = Arc::clone(&self.accepting);
+        let shared = Arc::clone(&self.batch);
         let batch_duration = self.config.batching.duration.max(1);
         let batch_size = self.config.batching.size.clamp(1, MAX_BATCHED_JOBS);
         let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(batch_duration));
             loop {
-                tokio::select! { _ = interval.tick() => {}, _ = notify.notified() => {} }
+                tokio::select! { _ = interval.tick() => {}, _ = shared.notify.notified() => {} }
                 loop {
+                    // Transfer everything buffered in one queue call. The buffer
+                    // itself is bounded, so the call is too; merging then splits
+                    // the jobs into batches of at most `batch_size` events.
                     let drained = {
-                        let mut buffer = buffer.lock();
-                        let count = buffer.len().min(batch_size);
-                        buffer.drain(..count).collect::<Vec<_>>()
+                        let mut buffer = shared.buffer.lock();
+                        buffer.drain(..).collect::<Vec<_>>()
                     };
                     if drained.is_empty() {
                         break;
                     }
+                    shared
+                        .in_flight_jobs
+                        .store(drained.len(), Ordering::Release);
                     let mut permits = Vec::with_capacity(drained.len());
                     let jobs = drained
                         .into_iter()
@@ -241,6 +366,8 @@ impl WebhookIntegration {
                         .collect();
                     let batches = Self::merge_jobs_for_queue(jobs, batch_size);
                     if let Some(queue_manager) = &queue_manager {
+                        let mut backoff = TRANSFER_RETRY_MIN;
+                        let mut attempt: u64 = 0;
                         loop {
                             match queue_manager
                                 .add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches.clone())
@@ -248,18 +375,38 @@ impl WebhookIntegration {
                             {
                                 Ok(()) => break,
                                 Err(error) => {
-                                    error!(error = %error, job_count = batches.len(), "batched webhook enqueue failed; retained for retry");
-                                    tokio::time::sleep(Duration::from_millis(250)).await;
+                                    attempt += 1;
+                                    shared
+                                        .stats
+                                        .transfer_failures
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    if let Some(metrics) = &shared.metrics {
+                                        metrics.mark_webhook_batch_transfer_failure();
+                                    }
+                                    error!(
+                                        error = %error,
+                                        batch_count = batches.len(),
+                                        job_count = permits.len(),
+                                        attempt,
+                                        retry_in_ms = backoff.as_millis() as u64,
+                                        "batched webhook enqueue failed; batch retained for retry"
+                                    );
+                                    tokio::time::sleep(backoff).await;
+                                    backoff = (backoff * 2).min(TRANSFER_RETRY_MAX);
                                 }
                             }
                         }
                     }
+                    shared.in_flight_jobs.store(0, Ordering::Release);
                     drop(permits);
-                    if accepting.load(Ordering::Acquire) && buffer.lock().len() < batch_size {
+                    shared.publish_pending();
+                    if shared.accepting.load(Ordering::Acquire)
+                        && shared.buffer.lock().len() < batch_size
+                    {
                         break;
                     }
                 }
-                if !accepting.load(Ordering::Acquire) && buffer.lock().is_empty() {
+                if !shared.accepting.load(Ordering::Acquire) && shared.buffer.lock().is_empty() {
                     break;
                 }
             }
@@ -267,19 +414,61 @@ impl WebhookIntegration {
         *self.batch_task.lock() = Some(handle);
     }
 
-    /// Stop admission and finish transferring every accepted batch to the queue.
-    /// Call before disconnecting the queue. A failed dependency keeps bounded
-    /// accepted work pending, allowing the caller's shutdown deadline to decide.
+    /// Stop admission, wake producers waiting for capacity with an explicit
+    /// error, and transfer every accepted batch to the queue. Call before
+    /// disconnecting the queue. Draining is bounded by a deadline: if the queue
+    /// stays unavailable, the remaining accepted jobs are counted and logged as
+    /// lost and an error is returned, so a dead dependency cannot hang shutdown
+    /// or hide the loss.
     pub async fn shutdown(&self) -> Result<()> {
-        self.accepting.store(false, Ordering::Release);
-        self.batch_notify.notify_one();
+        self.batch.accepting.store(false, Ordering::Release);
+        self.batch.records.close();
+        self.batch.bytes.close();
+        self.batch.notify.notify_one();
         let handle = self.batch_task.lock().take();
-        if let Some(handle) = handle {
-            handle
-                .await
-                .map_err(|error| Error::Queue(format!("webhook batch task failed: {error}")))?;
+        let Some(mut handle) = handle else {
+            return Ok(());
+        };
+        match tokio::time::timeout(self.shutdown_drain_timeout, &mut handle).await {
+            Ok(Ok(())) => {
+                self.batch.publish_pending();
+                Ok(())
+            }
+            Ok(Err(error)) => Err(Error::Queue(format!("webhook batch task failed: {error}"))),
+            Err(_) => {
+                handle.abort();
+                let _ = handle.await;
+                let lost = self.batch.buffer.lock().len()
+                    + self.batch.in_flight_jobs.load(Ordering::Acquire);
+                self.batch
+                    .stats
+                    .lost_at_shutdown
+                    .fetch_add(lost as u64, Ordering::Relaxed);
+                if let Some(metrics) = &self.batch.metrics {
+                    metrics.mark_webhook_batch_jobs_lost("shutdown_timeout", lost as u64);
+                }
+                self.batch.publish_pending();
+                error!(
+                    lost_jobs = lost,
+                    timeout_ms = self.shutdown_drain_timeout.as_millis() as u64,
+                    "webhook batch drain deadline reached; accepted jobs never reached the queue"
+                );
+                Err(Error::Queue(format!(
+                    "webhook batch drain timed out with {lost} accepted jobs undelivered"
+                )))
+            }
         }
-        Ok(())
+    }
+
+    /// Admission and transfer counters for the in-process batch buffer.
+    pub fn batch_admission_snapshot(&self) -> BatchAdmissionSnapshot {
+        self.batch.stats.snapshot()
+    }
+
+    /// Jobs and charged bytes currently accepted but not yet in the queue.
+    pub fn batch_pending(&self) -> (usize, usize) {
+        let (jobs, bytes) = self.batch.pending();
+        (jobs, bytes)
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -290,30 +479,77 @@ impl WebhookIntegration {
         if !self.is_enabled() {
             return Ok(());
         }
-        if !self.accepting.load(Ordering::Acquire) {
-            return Err(Error::Queue("webhook integration is shutting down".into()));
+        if !self.batch.accepting.load(Ordering::Acquire) {
+            return Err(BatchShared::shutting_down_error());
         }
         crate::telemetry::capture(&mut job_data);
         if self.config.batching.enabled {
-            let record = Arc::clone(&self.batch_records)
-                .try_acquire_owned()
-                .map_err(|_| Error::BufferFull("webhook batch record capacity reached".into()))?;
-            let mut size = SerializedSize::default();
-            sonic_rs::to_writer(sonic_rs::writer::BufferedWriter::new(&mut size), &job_data)?;
-            let charged_bytes = size
-                .0
-                .saturating_add(std::mem::size_of::<BufferedWebhook>());
-            if charged_bytes > MAX_BATCHED_BYTES {
-                return Err(Error::BufferFull(
-                    "webhook exceeds batch byte budget".into(),
-                ));
+            self.admit_batched(job_data).await
+        } else if let Some(qm) = &self.queue_manager {
+            job_data.job_id = Some(uuid::Uuid::new_v4().simple().to_string());
+            qm.add_to_queue(WEBHOOK_QUEUE_NAME, job_data).await
+        } else {
+            Err(Error::Internal(
+                "Queue manager not initialized for webhooks".to_string(),
+            ))
+        }
+    }
+
+    /// Admit one job into the bounded batch buffer.
+    ///
+    /// Capacity is enforced with backpressure, not immediate rejection: when the
+    /// record or byte budget is exhausted the producer waits, bounded by
+    /// `admission_wait`, for the batch task to transfer earlier work into the
+    /// queue. Only if the queue makes no room within that window is the job
+    /// rejected with [`Error::BufferFull`]; the rejection is counted, and the
+    /// caller receives the error. Shutdown wakes waiting producers with an
+    /// explicit error instead of leaving them blocked.
+    async fn admit_batched(&self, job_data: JobData) -> Result<()> {
+        let shared = &self.batch;
+        let deadline = Instant::now() + self.admission_wait;
+        let mut waited = false;
+        let record = match Arc::clone(&shared.records).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(TryAcquireError::Closed) => {
+                return Err(self.reject_shutdown());
             }
-            let bytes = Arc::clone(&self.batch_bytes)
-                .try_acquire_many_owned(charged_bytes as u32)
-                .map_err(|_| Error::BufferFull("webhook batch byte capacity reached".into()))?;
-            let mut buffer = self.batched_webhooks.lock();
-            if !self.accepting.load(Ordering::Acquire) {
-                return Err(Error::Queue("webhook integration is shutting down".into()));
+            Err(TryAcquireError::NoPermits) => {
+                waited = true;
+                self.wait_for_permits(&shared.records, 1, deadline).await?
+            }
+        };
+        let mut size = SerializedSize::default();
+        sonic_rs::to_writer(sonic_rs::writer::BufferedWriter::new(&mut size), &job_data)?;
+        let charged_bytes = size
+            .0
+            .saturating_add(std::mem::size_of::<BufferedWebhook>());
+        if charged_bytes > MAX_BATCHED_BYTES {
+            shared
+                .stats
+                .rejected_oversized
+                .fetch_add(1, Ordering::Relaxed);
+            shared.mark_admission("rejected_oversized");
+            return Err(Error::BufferFull(format!(
+                "webhook of {charged_bytes} bytes exceeds the {MAX_BATCHED_BYTES}-byte batch budget"
+            )));
+        }
+        let charged = charged_bytes as u32;
+        let bytes = match Arc::clone(&shared.bytes).try_acquire_many_owned(charged) {
+            Ok(permit) => permit,
+            Err(TryAcquireError::Closed) => {
+                return Err(self.reject_shutdown());
+            }
+            Err(TryAcquireError::NoPermits) => {
+                waited = true;
+                self.wait_for_permits(&shared.bytes, charged, deadline)
+                    .await?
+            }
+        };
+        {
+            let mut buffer = shared.buffer.lock();
+            if !shared.accepting.load(Ordering::Acquire) {
+                drop(buffer);
+                return Err(self.reject_shutdown());
             }
             buffer.push_back(BufferedWebhook {
                 job: job_data,
@@ -321,17 +557,77 @@ impl WebhookIntegration {
                 _bytes: bytes,
             });
             if buffer.len() >= self.config.batching.size.max(1) {
-                self.batch_notify.notify_one();
+                shared.notify.notify_one();
             }
-        } else if let Some(qm) = &self.queue_manager {
-            job_data.job_id = Some(uuid::Uuid::new_v4().simple().to_string());
-            qm.add_to_queue(WEBHOOK_QUEUE_NAME, job_data).await?;
+        }
+        shared.stats.accepted.fetch_add(1, Ordering::Relaxed);
+        if waited {
+            shared.stats.waited.fetch_add(1, Ordering::Relaxed);
+            shared.mark_admission("waited");
         } else {
-            return Err(Error::Internal(
-                "Queue manager not initialized for webhooks".to_string(),
-            ));
+            shared.mark_admission("accepted");
+        }
+        if shared.stats.saturated.swap(false, Ordering::AcqRel) {
+            let snapshot = shared.stats.snapshot();
+            info!(
+                rejected_timeout = snapshot.rejected_timeout,
+                accepted = snapshot.accepted,
+                "webhook batch buffer accepting again after saturation"
+            );
         }
         Ok(())
+    }
+
+    async fn wait_for_permits(
+        &self,
+        semaphore: &Arc<Semaphore>,
+        permits: u32,
+        deadline: Instant,
+    ) -> Result<OwnedSemaphorePermit> {
+        match tokio::time::timeout_at(deadline, Arc::clone(semaphore).acquire_many_owned(permits))
+            .await
+        {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_closed)) => Err(self.reject_shutdown()),
+            Err(_elapsed) => {
+                let shared = &self.batch;
+                shared
+                    .stats
+                    .rejected_timeout
+                    .fetch_add(1, Ordering::Relaxed);
+                shared.mark_admission("rejected_timeout");
+                let (pending_jobs, pending_bytes) = shared.pending();
+                if !shared.stats.saturated.swap(true, Ordering::AcqRel) {
+                    let snapshot = shared.stats.snapshot();
+                    warn!(
+                        wait_ms = self.admission_wait.as_millis() as u64,
+                        pending_jobs,
+                        pending_bytes,
+                        rejected_timeout = snapshot.rejected_timeout,
+                        transfer_failures = snapshot.transfer_failures,
+                        "webhook batch buffer saturated; rejecting webhooks until the queue drains"
+                    );
+                } else {
+                    debug!(
+                        pending_jobs,
+                        pending_bytes, "webhook rejected: batch buffer still saturated"
+                    );
+                }
+                Err(Error::BufferFull(format!(
+                    "webhook batch buffer saturated for {} ms ({pending_jobs} jobs, {pending_bytes} bytes pending)",
+                    self.admission_wait.as_millis()
+                )))
+            }
+        }
+    }
+
+    fn reject_shutdown(&self) -> Error {
+        self.batch
+            .stats
+            .rejected_shutdown
+            .fetch_add(1, Ordering::Relaxed);
+        self.batch.mark_admission("rejected_shutdown");
+        BatchShared::shutting_down_error()
     }
 
     /// Enqueue latency-sensitive work directly into the bounded queue.
@@ -342,8 +638,8 @@ impl WebhookIntegration {
         if !self.is_enabled() {
             return Ok(());
         }
-        if !self.accepting.load(Ordering::Acquire) {
-            return Err(Error::Queue("webhook integration is shutting down".into()));
+        if !self.batch.accepting.load(Ordering::Acquire) {
+            return Err(BatchShared::shutting_down_error());
         }
         crate::telemetry::capture(&mut job_data);
         let Some(queue_manager) = &self.queue_manager else {
@@ -929,8 +1225,10 @@ impl WebhookIntegration {
 
 impl Drop for WebhookIntegration {
     fn drop(&mut self) {
-        self.accepting.store(false, Ordering::Release);
-        self.batch_notify.notify_one();
+        self.batch.accepting.store(false, Ordering::Release);
+        self.batch.records.close();
+        self.batch.bytes.close();
+        self.batch.notify.notify_one();
     }
 }
 
@@ -984,15 +1282,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn batched_admission_bounds_pending_and_drained_jobs_then_recovers_without_loss() {
-        let queue = FaultQueue {
+    fn blocked_fault_queue() -> FaultQueue {
+        FaultQueue {
             open: Arc::new(AtomicBool::new(false)),
             attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             accepted: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             ids: Arc::new(Mutex::new(Vec::new())),
-        };
-        let integration = WebhookIntegration::new(
+        }
+    }
+
+    async fn batching_integration(queue: &FaultQueue) -> WebhookIntegration {
+        WebhookIntegration::new(
             WebhookConfig {
                 batching: BatchingConfig {
                     enabled: true,
@@ -1005,29 +1305,51 @@ mod tests {
             Some(Arc::new(QueueManager::new(Box::new(queue.clone())))),
         )
         .await
-        .unwrap();
-        let app = test_app();
+        .unwrap()
+    }
+
+    fn member_added(integration: &WebhookIntegration, app: &App, n: usize) -> JobData {
+        integration.create_job_data(
+            app,
+            vec![json!({"name":"member_added", "user_id":n})],
+            "synthetic",
+        )
+    }
+
+    async fn fill_batch_buffer(integration: &WebhookIntegration, app: &App) {
         for n in 0..MAX_BATCHED_JOBS {
             integration
-                .add_webhook(integration.create_job_data(
-                    &app,
-                    vec![json!({"name":"member_added", "user_id":n})],
-                    "synthetic",
-                ))
+                .add_webhook(member_added(integration, app, n))
                 .await
                 .unwrap();
         }
+        assert_eq!(integration.batch.records.available_permits(), 0);
+    }
+
+    #[tokio::test]
+    async fn saturated_buffer_applies_bounded_backpressure_then_rejects_and_recovers_without_loss()
+    {
+        let queue = blocked_fault_queue();
+        let integration = batching_integration(&queue).await;
+        assert_eq!(integration.admission_wait, MIN_ADMISSION_WAIT);
+        let app = test_app();
+        fill_batch_buffer(&integration, &app).await;
+
+        // The queue never drains, so the producer waits the bounded window and
+        // then receives an explicit, counted rejection instead of a silent drop.
+        let started = Instant::now();
         assert!(matches!(
             integration
-                .add_webhook(integration.create_job_data(
-                    &app,
-                    vec![json!({"name":"member_added"})],
-                    "synthetic"
-                ))
+                .add_webhook(member_added(&integration, &app, MAX_BATCHED_JOBS))
                 .await,
             Err(Error::BufferFull(_))
         ));
-        assert_eq!(integration.batch_records.available_permits(), 0);
+        assert!(started.elapsed() >= MIN_ADMISSION_WAIT);
+        let snapshot = integration.batch_admission_snapshot();
+        assert_eq!(snapshot.accepted, MAX_BATCHED_JOBS as u64);
+        assert_eq!(snapshot.rejected_timeout, 1);
+        assert_eq!(integration.batch_pending().0, MAX_BATCHED_JOBS);
+
         queue.open.store(true, Ordering::Release);
         tokio::time::timeout(Duration::from_secs(3), integration.shutdown())
             .await
@@ -1035,18 +1357,132 @@ mod tests {
             .unwrap();
         assert_eq!(queue.accepted.load(Ordering::SeqCst), MAX_BATCHED_JOBS);
         assert_eq!(
-            integration.batch_records.available_permits(),
+            integration.batch.records.available_permits(),
             MAX_BATCHED_JOBS
         );
         assert_eq!(
-            integration.batch_bytes.available_permits(),
+            integration.batch.bytes.available_permits(),
             MAX_BATCHED_BYTES
         );
+        assert_eq!(integration.batch_pending(), (0, 0));
+        let snapshot = integration.batch_admission_snapshot();
+        assert_eq!(snapshot.transfer_failures, 1);
+        assert_eq!(snapshot.lost_at_shutdown, 0);
         let ids = queue.ids.lock();
         assert_eq!(
             ids[0], ids[1],
             "failed accepted batch must retain stable identities"
         );
+    }
+
+    #[tokio::test]
+    async fn waiting_producer_is_admitted_once_the_queue_drains() {
+        let queue = blocked_fault_queue();
+        let integration = Arc::new(batching_integration(&queue).await);
+        let app = test_app();
+        fill_batch_buffer(&integration, &app).await;
+
+        let producer = {
+            let integration = Arc::clone(&integration);
+            let app = app.clone();
+            tokio::spawn(async move {
+                integration
+                    .add_webhook(member_added(&integration, &app, MAX_BATCHED_JOBS))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!producer.is_finished(), "producer must wait for capacity");
+        queue.open.store(true, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(3), producer)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(3), integration.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = integration.batch_admission_snapshot();
+        assert_eq!(snapshot.accepted, MAX_BATCHED_JOBS as u64 + 1);
+        assert_eq!(snapshot.waited, 1);
+        assert_eq!(snapshot.rejected_timeout, 0);
+        assert_eq!(
+            queue.accepted.load(Ordering::SeqCst),
+            MAX_BATCHED_JOBS + 1,
+            "every accepted job is delivered exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_wakes_waiting_producers_and_drains_accepted_jobs() {
+        let queue = blocked_fault_queue();
+        let integration = Arc::new(batching_integration(&queue).await);
+        let app = test_app();
+        fill_batch_buffer(&integration, &app).await;
+
+        let producer = {
+            let integration = Arc::clone(&integration);
+            let app = app.clone();
+            tokio::spawn(async move {
+                integration
+                    .add_webhook(member_added(&integration, &app, MAX_BATCHED_JOBS))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let opener = {
+            let queue = queue.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                queue.open.store(true, Ordering::Release);
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(3), integration.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        opener.await.unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(1), producer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(outcome, Err(Error::Queue(_))),
+            "waiting producer must be woken with a shutdown error, got {outcome:?}"
+        );
+        let snapshot = integration.batch_admission_snapshot();
+        assert_eq!(snapshot.rejected_shutdown, 1);
+        assert_eq!(snapshot.lost_at_shutdown, 0);
+        assert_eq!(queue.accepted.load(Ordering::SeqCst), MAX_BATCHED_JOBS);
+        assert!(matches!(
+            integration
+                .add_webhook(member_added(&integration, &app, 0))
+                .await,
+            Err(Error::Queue(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_deadline_reports_undelivered_jobs_instead_of_hanging() {
+        let queue = blocked_fault_queue();
+        let mut integration = batching_integration(&queue).await;
+        integration.shutdown_drain_timeout = Duration::from_millis(50);
+        let app = test_app();
+        for n in 0..25 {
+            integration
+                .add_webhook(member_added(&integration, &app, n))
+                .await
+                .unwrap();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(3), integration.shutdown())
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(Error::Queue(_))), "got {result:?}");
+        let snapshot = integration.batch_admission_snapshot();
+        assert_eq!(snapshot.lost_at_shutdown, 25);
+        assert_eq!(queue.accepted.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -1075,9 +1511,10 @@ mod tests {
             Err(Error::BufferFull(_))
         ));
         assert_eq!(
-            integration.batch_records.available_permits(),
+            integration.batch.records.available_permits(),
             MAX_BATCHED_JOBS
         );
+        assert_eq!(integration.batch_admission_snapshot().rejected_oversized, 1);
         integration.shutdown().await.unwrap();
     }
 
@@ -1174,7 +1611,7 @@ mod tests {
             .send_ai_run_started(&app, "ai-chat", Some("run-1"), Some("client-1"))
             .await
             .unwrap();
-        assert!(integration.batched_webhooks.lock().is_empty());
+        assert!(integration.batch.buffer.lock().is_empty());
     }
 
     #[tokio::test]

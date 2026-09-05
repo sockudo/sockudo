@@ -132,13 +132,32 @@ its active request slot during jittered backoff. Unused error response bodies
 are discarded. These limits bound an outage without changing request bodies or
 signature validation.
 
-Optional in-process batching admits at most 2,048 jobs and 16 MiB of encoded
-jobs plus charged record overhead. A full buffer returns a capacity error to
-the producer. Batches flush on size or time; a failed queue transfer retains
-the accepted batch and its stable job IDs for retry. Graceful shutdown stops
-admission and drains these batches before disconnecting the queue. A dependency
-outage may keep draining pending until the server's shutdown deadline; forced
-process termination can still lose work that has not reached a durable queue.
+Optional in-process batching holds at most 2,048 jobs and 16 MiB of encoded
+jobs plus charged record overhead before they reach the queue. Capacity is
+enforced with backpressure rather than immediate rejection: when the buffer is
+full, the producer waits for the batch task to transfer earlier jobs into the
+queue. The wait is bounded to 20 batch intervals, clamped between 250 ms and
+2 s (1 s at the default 50 ms interval). Only when the queue makes no room
+within that window is the webhook rejected with a capacity error to the
+producer, which logs it; the rejection is counted, and a warning is logged when
+the buffer first saturates and when it recovers. A single job larger than the
+16 MiB budget is rejected immediately.
+
+Batches flush on size or time. A failed queue transfer retains the accepted
+batch and its stable job IDs and retries with backoff from 50 ms to 2 s, so a
+transient queue outage delays webhooks instead of dropping them. Graceful
+shutdown stops admission, wakes waiting producers with an error, and drains
+accepted batches before disconnecting the queue, for at most 30 s. If the queue
+is still unavailable at that deadline, the undelivered accepted jobs are counted
+and logged as lost and shutdown continues. Forced process termination can still
+lose work that has not reached a durable queue.
+
+Prometheus exposes `webhook_batch_admissions_total{outcome}` (`accepted`,
+`waited`, `rejected_timeout`, `rejected_oversized`, `rejected_shutdown`),
+`webhook_batch_transfer_failures_total`, `webhook_batch_jobs_lost_total{reason}`,
+and the gauges `webhook_batch_pending_jobs` and `webhook_batch_pending_bytes`.
+A non-zero `rejected_timeout` or `jobs_lost` value means webhooks were not
+delivered and the queue needs attention.
 
 ## Security
 

@@ -233,6 +233,23 @@ pub trait MetricsInterface: Send + Sync {
     /// Track history substitution and anomaly outcomes for versioned messages.
     fn mark_versioned_history_substitution(&self, _app_id: &str, _result: &str) {}
 
+    /// Track an in-process webhook batch admission outcome.
+    ///
+    /// Outcomes: `accepted`, `waited` (accepted after waiting for capacity),
+    /// `rejected_timeout`, `rejected_oversized`, `rejected_shutdown`.
+    fn mark_webhook_batch_admission(&self, _outcome: &str) {}
+
+    /// Track a failed transfer of an accepted webhook batch to the queue. The
+    /// batch is retained and retried; this counts attempts, not lost jobs.
+    fn mark_webhook_batch_transfer_failure(&self) {}
+
+    /// Track accepted webhook jobs that never reached the queue, with the reason
+    /// (`shutdown_timeout`). Any non-zero value is lost work.
+    fn mark_webhook_batch_jobs_lost(&self, _reason: &str, _count: u64) {}
+
+    /// Set the current buffered webhook batch depth in jobs and charged bytes.
+    fn set_webhook_batch_pending(&self, _jobs: usize, _bytes: usize) {}
+
     /// Track a successful annotation publish.
     fn mark_annotation_published(&self, _channel: &str, _annotation_type: &str) {}
 

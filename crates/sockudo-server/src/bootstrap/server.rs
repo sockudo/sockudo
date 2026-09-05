@@ -472,10 +472,11 @@ impl SockudoServer {
             debug: config.debug,
         };
 
-        let webhook_integration = match WebhookIntegration::new(
+        let webhook_integration = match WebhookIntegration::new_with_metrics(
             webhook_config_for_integration,
             app_manager.clone(),
             queue_manager_opt.clone(),
+            metrics.clone(),
         )
         .await
         {

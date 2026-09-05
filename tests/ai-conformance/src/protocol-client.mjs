@@ -28,7 +28,13 @@ export class AitProtocolClient {
       this.timeoutMs,
       "connection_established",
     );
-    return new AitWsSession(socket, transcript, this.timeoutMs);
+    const established = transcript.find((frame) => frame.event === "sockudo:connection_established");
+    const socketId = established?.data?.socket_id;
+    return new AitWsSession(socket, transcript, this.timeoutMs, {
+      key: this.key,
+      secret: this.secret,
+      socketId,
+    });
   }
 
   async publish({ name, channel, data, extras, messageId, idempotencyKey }) {
@@ -114,10 +120,22 @@ export class AitProtocolClient {
 }
 
 export class AitWsSession {
-  constructor(socket, transcript, timeoutMs) {
+  constructor(socket, transcript, timeoutMs, auth = {}) {
     this.socket = socket;
     this.transcript = transcript;
     this.timeoutMs = timeoutMs;
+    this.auth = auth;
+  }
+
+  // Private and presence channels require the standard Pusher channel
+  // signature: HMAC-SHA256(secret, `${socket_id}:${channel}`), sent as `key:hex`.
+  channelAuth(channel) {
+    const { key, secret, socketId } = this.auth;
+    if (!socketId || !secret || !(channel.startsWith("private-") || channel.startsWith("presence-"))) {
+      return undefined;
+    }
+    const signature = crypto.createHmac("sha256", secret).update(`${socketId}:${channel}`).digest("hex");
+    return `${key}:${signature}`;
   }
 
   send(event, data, channel) {
@@ -125,7 +143,8 @@ export class AitWsSession {
   }
 
   subscribe(channel, extra = {}) {
-    this.send("pusher:subscribe", { channel, ...extra });
+    const auth = extra.auth ?? this.channelAuth(channel);
+    this.send("pusher:subscribe", auth ? { channel, auth, ...extra } : { channel, ...extra });
   }
 
   async waitForEvent(predicate, label) {

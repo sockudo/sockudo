@@ -199,6 +199,11 @@ pub struct PrometheusMetricsDriver {
     pub(super) presence_history_queue_depth: GaugeVec,
     pub(super) presence_history_degraded_channels: GaugeVec,
     pub(super) presence_history_reset_required_channels: GaugeVec,
+    pub(super) webhook_batch_admissions_total: CounterVec,
+    pub(super) webhook_batch_transfer_failures_total: CounterVec,
+    pub(super) webhook_batch_jobs_lost_total: CounterVec,
+    pub(super) webhook_batch_pending_jobs: GaugeVec,
+    pub(super) webhook_batch_pending_bytes: GaugeVec,
     pub(super) annotations_published_total: CounterVec,
     pub(super) annotations_deleted_total: CounterVec,
     pub(super) annotation_summary_deliveries_total: CounterVec,
@@ -1056,6 +1061,51 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let webhook_batch_admissions_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}webhook_batch_admissions_total"),
+                "Webhook batch admission outcomes: accepted, waited, rejected_timeout, rejected_oversized, rejected_shutdown"
+            ),
+            &["outcome", "port"]
+        )
+        .unwrap();
+
+        let webhook_batch_transfer_failures_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}webhook_batch_transfer_failures_total"),
+                "Failed transfers of accepted webhook batches to the queue; batches are retained and retried"
+            ),
+            &["port"]
+        )
+        .unwrap();
+
+        let webhook_batch_jobs_lost_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}webhook_batch_jobs_lost_total"),
+                "Accepted webhook jobs that never reached the queue, by reason"
+            ),
+            &["reason", "port"]
+        )
+        .unwrap();
+
+        let webhook_batch_pending_jobs = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}webhook_batch_pending_jobs"),
+                "Webhook jobs accepted into the in-process batch buffer and not yet transferred to the queue"
+            ),
+            &["port"]
+        )
+        .unwrap();
+
+        let webhook_batch_pending_bytes = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}webhook_batch_pending_bytes"),
+                "Charged bytes held by the in-process webhook batch buffer"
+            ),
+            &["port"]
+        )
+        .unwrap();
+
         let annotations_published_total = register_counter_vec!(
             Opts::new(
                 format!("{prefix}annotations_published_total"),
@@ -1314,6 +1364,11 @@ impl PrometheusMetricsDriver {
             presence_history_queue_depth,
             presence_history_degraded_channels,
             presence_history_reset_required_channels,
+            webhook_batch_admissions_total,
+            webhook_batch_transfer_failures_total,
+            webhook_batch_jobs_lost_total,
+            webhook_batch_pending_jobs,
+            webhook_batch_pending_bytes,
             annotations_published_total,
             annotations_deleted_total,
             annotation_summary_deliveries_total,

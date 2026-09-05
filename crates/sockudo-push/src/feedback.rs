@@ -1,5 +1,6 @@
 use crate::domain::DevicePushState;
 use futures_util::StreamExt;
+use std::collections::BTreeSet;
 
 use crate::domain::{
     DeadLetter, DeliveryEvent, DeliveryFeedback, DeliveryOutcome, DeliveryResult, ProviderError,
@@ -169,8 +170,9 @@ impl PushFeedbackProcessor {
                 Err(error) => warn_feedback_retry(&error),
             }
         }
-        self.commit_feedback_status(&app_id, &publish_id, &prepared)
+        self.commit_feedback_status(&app_id, &publish_id, &prepared, &BTreeSet::new())
             .await?;
+        let completed_ids: BTreeSet<String> = prepared.iter().map(|item| item.id.clone()).collect();
         let completions = futures_util::stream::iter(
             prepared
                 .into_iter()
@@ -183,8 +185,10 @@ impl PushFeedbackProcessor {
             completed?;
         }
         // The canonical status receipt is removed only after its durable complete
-        // outcome marker. Replays can therefore never apply a counter twice.
-        self.commit_feedback_status(&app_id, &publish_id, &[])
+        // outcome marker. Replays can therefore never apply a counter twice. The
+        // markers this batch just wrote are known complete, so the release pass
+        // does not read them back.
+        self.commit_feedback_status(&app_id, &publish_id, &[], &completed_ids)
             .await?;
         if let Some(error) = first_error {
             return Err(error);
@@ -225,17 +229,16 @@ impl PushFeedbackProcessor {
         let id = feedback_receipt_id(&feedback);
         let event_id = result_event_id(&feedback);
         // Honor old complete markers during rolling upgrades. New pending markers
-        // are intentionally a different namespace and never suppress work.
-        let complete = self
-            .store
-            .get_idempotency_record(&result.app_id, &format!("delivery-result:{id}"))
-            .await?
-            .is_some()
-            || self
-                .store
-                .get_idempotency_record(&result.app_id, &format!("delivery-result:{event_id}"))
-                .await?
-                .is_some();
+        // are intentionally a different namespace and never suppress work. Both
+        // reads are independent, so they run concurrently.
+        let (current_marker, legacy_marker) = futures_util::future::try_join(
+            self.store
+                .get_idempotency_record(&result.app_id, &format!("delivery-result:{id}")),
+            self.store
+                .get_idempotency_record(&result.app_id, &format!("delivery-result:{event_id}")),
+        )
+        .await?;
+        let complete = current_marker.is_some() || legacy_marker.is_some();
         if complete {
             if let Some(device_id) = result.device_id.as_deref() {
                 self.store
@@ -366,11 +369,16 @@ impl PushFeedbackProcessor {
         Ok(())
     }
 
+    /// Apply prepared feedback to the publish status and release completed
+    /// receipts in one compare-and-swap. `known_completed` lists receipt IDs whose
+    /// durable complete markers this worker wrote itself; they are released
+    /// without reading the marker back.
     async fn commit_feedback_status(
         &self,
         app_id: &str,
         publish_id: &str,
         prepared: &[PreparedFeedback],
+        known_completed: &BTreeSet<String>,
     ) -> PushPipelineResult<()> {
         for attempt in 0..8 {
             let Some(expected) = self
@@ -387,6 +395,7 @@ impl PushFeedbackProcessor {
                 .keys()
                 .cloned()
                 .chain(prepared.iter().map(|item| item.id.clone()))
+                .filter(|id| !known_completed.contains(id))
                 .collect::<std::collections::BTreeSet<_>>();
             let completed = futures_util::stream::iter(ids.into_iter().map(|id| async move {
                 let done = self
@@ -400,6 +409,11 @@ impl PushFeedbackProcessor {
             .collect::<Vec<_>>()
             .await;
             let mut completed_ids = std::collections::BTreeSet::new();
+            for id in known_completed {
+                if pending.remove(id).is_some() || prepared.iter().any(|item| &item.id == id) {
+                    completed_ids.insert(id.clone());
+                }
+            }
             for result in completed {
                 let (id, done) = result?;
                 if done {
@@ -842,6 +856,7 @@ mod tests {
                             "app-1",
                             "publish-1",
                             std::slice::from_ref(&prepared),
+                            &BTreeSet::new(),
                         )
                         .await
                         .unwrap();

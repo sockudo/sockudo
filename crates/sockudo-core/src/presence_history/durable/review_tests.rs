@@ -392,3 +392,177 @@ async fn steady_new_members_do_not_replay_history_beyond_metadata_capacity() {
         1
     );
 }
+
+#[test]
+fn positional_index_locates_user_rows_and_disables_for_merged_or_wide_ranges() {
+    let mut cache = DurablePresenceTransitionCache::default();
+    for serial in 1..=300_u64 {
+        cache.insert(
+            format!("dedupe-{serial}"),
+            format!("user-{}", serial % 150),
+            PresenceHistoryEventKind::MemberAdded,
+            serial,
+        );
+    }
+    assert_eq!(cache.membership.len(), 2);
+    let first = &cache.membership[0];
+    assert!(first.positional && first.width() <= TRANSITION_MEMBERSHIP_RANGE_ROWS);
+    // user-10 appears at serials 10 and 160 inside the first range (1..=256).
+    let positions = first.user_positions("user-10").unwrap();
+    assert!(
+        positions.contains(&10) && positions.contains(&160),
+        "{positions:?}"
+    );
+    assert_eq!(positions.first(), Some(&160), "candidates are newest first");
+    assert!(
+        positions.len() <= 4,
+        "tag collisions must stay rare: {positions:?}"
+    );
+    assert!(
+        first.user_positions("user-never").unwrap().is_empty(),
+        "an unseen user has no candidates"
+    );
+    // Inserting the same identity twice is idempotent.
+    let occupied = first.positions.iter().filter(|slot| **slot != 0).count();
+    cache.insert(
+        "dedupe-10".into(),
+        "user-10".into(),
+        PresenceHistoryEventKind::MemberAdded,
+        10,
+    );
+    assert_eq!(
+        cache.membership[0]
+            .positions
+            .iter()
+            .filter(|slot| **slot != 0)
+            .count(),
+        occupied
+    );
+    // A range widened past 256 rows can no longer answer positionally.
+    let mut wide = TransitionMembershipRange::new(1_000, 1_000);
+    wide.add_position("user-a", 1_000);
+    wide.last = 1_300;
+    wide.add_position("user-b", 1_300);
+    assert!(!wide.positional && wide.user_positions("user-a").is_none());
+    // Merging fills all slots and drops positional evidence.
+    let mut merged = DurablePresenceTransitionCache::default();
+    for serial in 1..40_000_u64 {
+        merged.insert(
+            format!("dedupe-{serial}"),
+            format!("user-{serial}"),
+            PresenceHistoryEventKind::MemberAdded,
+            serial,
+        );
+    }
+    assert!(merged.membership.iter().any(|range| !range.positional));
+    for range in &merged.membership {
+        if range.width() > TRANSITION_MEMBERSHIP_RANGE_ROWS {
+            assert!(!range.positional);
+        }
+    }
+    assert!(merged.accounted_bytes <= TRANSITION_CACHE_BYTES);
+}
+
+struct RowCountingHistory {
+    inner: Arc<MemoryHistoryStore>,
+    pages: AtomicUsize,
+    rows: AtomicUsize,
+}
+#[async_trait]
+impl HistoryStore for RowCountingHistory {
+    async fn reserve_publish_position(&self, a: &str, c: &str) -> Result<HistoryWriteReservation> {
+        self.inner.reserve_publish_position(a, c).await
+    }
+    async fn append(&self, r: HistoryAppendRecord) -> Result<()> {
+        self.inner.append(r).await
+    }
+    async fn stream_inspection(&self, a: &str, c: &str) -> Result<HistoryStreamInspection> {
+        self.inner.stream_inspection(a, c).await
+    }
+    async fn read_page(&self, r: HistoryReadRequest) -> Result<HistoryPage> {
+        let page = self.inner.read_page(r).await?;
+        self.pages.fetch_add(1, Ordering::SeqCst);
+        self.rows.fetch_add(page.items.len(), Ordering::SeqCst);
+        Ok(page)
+    }
+}
+
+#[tokio::test]
+async fn cold_distinct_user_lookups_read_single_rows_instead_of_ranges() {
+    let inner = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+    let history = Arc::new(RowCountingHistory {
+        inner: inner.clone(),
+        pages: AtomicUsize::new(0),
+        rows: AtomicUsize::new(0),
+    });
+    let store = DurablePresenceHistoryStore::new(history.clone(), None);
+    for serial in 0..3000 {
+        let mut record = transition(
+            now_ms(),
+            &format!("join-{serial}"),
+            PresenceHistoryEventKind::MemberAdded,
+            &format!("user-{serial}"),
+        );
+        record.retention.max_events_per_channel = Some(10_000);
+        store.record_transition(record).await.unwrap();
+    }
+    let before_rows = history.rows.load(Ordering::SeqCst);
+    let before_pages = history.pages.load(Ordering::SeqCst);
+    // 100 distinct old users, each already a member: the transition is
+    // suppressed as a duplicate state, and each lookup reads its own row plus
+    // the one fresh tail row the previous call appended (none here).
+    for user in 0..100 {
+        let mut record = transition(
+            now_ms(),
+            &format!("cold-{user}"),
+            PresenceHistoryEventKind::MemberAdded,
+            &format!("user-{}", user * 17),
+        );
+        record.retention.max_events_per_channel = Some(10_000);
+        store.record_transition(record).await.unwrap();
+    }
+    let rows = history.rows.load(Ordering::SeqCst) - before_rows;
+    let pages = history.pages.load(Ordering::SeqCst) - before_pages;
+    assert!(
+        rows <= 150,
+        "100 cold users must read about one row each, read {rows} rows over {pages} pages"
+    );
+    assert_eq!(
+        inner
+            .stream_inspection("app", "[presence-history]presence-room")
+            .await
+            .unwrap()
+            .retained
+            .retained_messages,
+        3000,
+        "already-present users do not append duplicate transitions"
+    );
+    // A member that really left is found positionally and re-added.
+    let mut leave = transition(
+        now_ms(),
+        "leave-42",
+        PresenceHistoryEventKind::MemberRemoved,
+        "user-42",
+    );
+    leave.retention.max_events_per_channel = Some(10_000);
+    store.record_transition(leave).await.unwrap();
+    let before_rows = history.rows.load(Ordering::SeqCst);
+    let mut rejoin = transition(
+        now_ms(),
+        "rejoin-42",
+        PresenceHistoryEventKind::MemberAdded,
+        "user-42",
+    );
+    rejoin.retention.max_events_per_channel = Some(10_000);
+    store.record_transition(rejoin).await.unwrap();
+    assert!(history.rows.load(Ordering::SeqCst) - before_rows <= 3);
+    assert_eq!(
+        inner
+            .stream_inspection("app", "[presence-history]presence-room")
+            .await
+            .unwrap()
+            .retained
+            .retained_messages,
+        3002
+    );
+}

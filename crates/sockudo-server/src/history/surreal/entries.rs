@@ -149,6 +149,41 @@ impl SurrealHistoryStore {
         })
     }
 
+    /// Retained rows with `from_serial <= serial < from_serial + width`, sorted
+    /// ascending in memory. The serial range keeps the database on an index
+    /// range scan instead of sorting every payload-bearing document in the
+    /// channel, which is what `retention_prefix` costs.
+    pub(super) async fn retention_window(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: &str,
+        from_serial: i64,
+        width: i64,
+    ) -> Result<Vec<EntryKeyRecord>> {
+        let sql = format!(
+            "SELECT serial,published_at_ms,payload_size_bytes FROM {} WHERE app_id=$app AND channel=$channel AND stream_id=$stream AND serial >= $from AND serial < $to",
+            self.tables.entries
+        );
+        let mut response = self
+            .db
+            .query(sql)
+            .bind(("app", app_id.to_string()))
+            .bind(("channel", channel.to_string()))
+            .bind(("stream", stream_id.to_string()))
+            .bind(("from", from_serial))
+            .bind(("to", from_serial.saturating_add(width.max(1))))
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to read SurrealDB retention window: {e}"))
+            })?;
+        let mut rows: Vec<EntryKeyRecord> = response.take(0usize).map_err(|e| {
+            Error::Internal(format!("Failed to decode SurrealDB retention window: {e}"))
+        })?;
+        rows.sort_by_key(|row| row.serial);
+        Ok(rows)
+    }
+
     async fn commit_retention(
         &self,
         current: &StoredStreamRecord,
@@ -163,7 +198,8 @@ impl SurrealHistoryStore {
             );
         }
         for index in 0..delete.len() {
-            sql.push_str(&format!(" LET $removed_{index}=DELETE type::record($entry_table,$delete_ids[{index}]) RETURN BEFORE; IF array::len($removed_{index}) = 0 {{ THROW 'history_conflict'; }};"));
+            // Return only the serial: the vanish check needs a row, not the payload.
+            sql.push_str(&format!(" LET $removed_{index}=DELETE type::record($entry_table,$delete_ids[{index}]) RETURN serial; IF array::len($removed_{index}) = 0 {{ THROW 'history_conflict'; }};"));
         }
         sql.push_str(" COMMIT TRANSACTION;");
         let mut query = self
@@ -396,6 +432,12 @@ impl SurrealHistoryStore {
             payload_bytes: record.payload_bytes.to_vec(),
             payload_size_bytes: record.payload_bytes.len() as i64,
         };
+        // The stream record we committed, when known, saves a reload for the
+        // retention pass. A legacy stream (no retention revision yet) needs one
+        // full bounds refresh after this append; afterwards bounds are kept
+        // current by every commit.
+        let mut committed: Option<StoredStreamRecord> = None;
+        let mut legacy = false;
         let mut inserted = false;
         for attempt in 0..64 {
             let current = self
@@ -407,17 +449,34 @@ impl SurrealHistoryStore {
                     "History append stream changed".into(),
                 ));
             }
+            legacy = current.retention_revision.is_none();
             let mut next = self.accounted_state(&current).await?;
-
             next.retained_messages += 1;
             next.retained_bytes += stored.payload_size_bytes;
             next.next_serial = next.next_serial.max(record.serial.saturating_add(1) as i64);
             next.updated_at_ms = record.published_at_ms;
+            next.retention_revision = Some(current.retention_revision.unwrap_or(0) + 1);
+            // The appended row itself moves the bounds; no read is required.
+            if next
+                .newest_available_serial
+                .is_none_or(|serial| stored.serial > serial)
+            {
+                next.newest_available_serial = Some(stored.serial);
+                next.newest_available_published_at_ms = Some(stored.published_at_ms);
+            }
+            if next
+                .oldest_available_serial
+                .is_none_or(|serial| stored.serial < serial)
+            {
+                next.oldest_available_serial = Some(stored.serial);
+                next.oldest_available_published_at_ms = Some(stored.published_at_ms);
+            }
             if self
                 .commit_retention(&current, &next, Some(&stored), &[])
                 .await?
             {
                 inserted = true;
+                committed = Some(next);
                 break;
             }
             let existing: Option<StoredEntryRecord> = self
@@ -464,19 +523,52 @@ impl SurrealHistoryStore {
         let mut evicted_messages = 0u64;
         let mut evicted_bytes = 0u64;
         let mut conflicts = 0;
+        // Set when a commit could not name the surviving oldest row; the bounds
+        // are then recomputed once after the loop instead of being guessed.
+        let mut bounds_stale = legacy;
         loop {
-            let current = self
-                .load_stream_raw(&record.app_id, &record.channel)
-                .await?
-                .ok_or_else(|| Error::Internal("Missing SurrealDB history stream".into()))?;
+            let current = match committed.take() {
+                Some(current) => current,
+                None => self
+                    .load_stream_raw(&record.app_id, &record.channel)
+                    .await?
+                    .ok_or_else(|| Error::Internal("Missing SurrealDB history stream".into()))?,
+            };
             if current.stream_id != record.stream_id {
                 return Err(Error::InvalidMessageFormat(
                     "History stream changed during retention".into(),
                 ));
             }
-            let rows = self
-                .retention_prefix(&record.app_id, &record.channel, &record.stream_id, false)
+            let over_messages = record
+                .retention
+                .max_messages_per_channel
+                .is_some_and(|limit| current.retained_messages > limit as i64);
+            let over_bytes = record
+                .retention
+                .max_bytes_per_channel
+                .is_some_and(|limit| current.retained_bytes > limit as i64);
+            let bounds_known = current.retained_messages <= 0
+                || (current.oldest_available_serial.is_some()
+                    && current.oldest_available_published_at_ms.is_some());
+            let aged = current
+                .oldest_available_published_at_ms
+                .is_some_and(|oldest| oldest < cutoff);
+            if !legacy && bounds_known && !over_messages && !over_bytes && !aged {
+                // Nothing can be evicted; skip every retention read.
+                committed = Some(current);
+                break;
+            }
+            let from = current.oldest_available_serial.unwrap_or(0);
+            let mut rows = self
+                .retention_window(&record.app_id, &record.channel, &record.stream_id, from, 64)
                 .await?;
+            if rows.is_empty() && current.retained_messages > 0 {
+                // Stale or missing oldest bound: fall back to the sorted prefix.
+                rows = self
+                    .retention_prefix(&record.app_id, &record.channel, &record.stream_id, false)
+                    .await?;
+                bounds_stale = true;
+            }
             let mut next = self.accounted_state(&current).await?;
             let mut remove = 0;
             let mut next_age_prefix_complete = age_prefix_complete;
@@ -501,8 +593,24 @@ impl SurrealHistoryStore {
                 remove += 1;
             }
             if remove == 0 {
+                committed = Some(current);
                 break;
             }
+            let survivor = rows.get(remove);
+            match survivor {
+                Some(survivor) => {
+                    next.oldest_available_serial = Some(survivor.serial);
+                    next.oldest_available_published_at_ms = Some(survivor.published_at_ms);
+                }
+                None if next.retained_messages <= 0 => {
+                    next.oldest_available_serial = None;
+                    next.oldest_available_published_at_ms = None;
+                    next.newest_available_serial = None;
+                    next.newest_available_published_at_ms = None;
+                }
+                None => bounds_stale = true,
+            }
+            next.retention_revision = Some(current.retention_revision.unwrap_or(0) + 1);
             if self
                 .commit_retention(&current, &next, None, &rows[..remove])
                 .await?
@@ -514,6 +622,12 @@ impl SurrealHistoryStore {
                     .map(|row| row.payload_size_bytes.max(0) as u64)
                     .sum::<u64>();
                 conflicts = 0;
+                committed = Some(next);
+                if survivor.is_some() {
+                    // The survivor satisfied every retention predicate, so no
+                    // older row remains to evict.
+                    break;
+                }
             } else {
                 conflicts += 1;
                 if conflicts >= 64 {
@@ -524,9 +638,13 @@ impl SurrealHistoryStore {
                 tokio::time::sleep(retention_conflict_delay(conflicts)).await;
             }
         }
-        let retained = self
-            .refresh_retention_bounds(&record.app_id, &record.channel, &record.stream_id)
-            .await?;
+        let retained = match committed {
+            Some(state) if !bounds_stale => super::state::retained_from_stream_record(&state),
+            _ => {
+                self.refresh_retention_bounds(&record.app_id, &record.channel, &record.stream_id)
+                    .await?
+            }
+        };
         if let Some(metrics) = self.metrics.as_ref() {
             metrics.update_history_retained(
                 &record.app_id,

@@ -35,10 +35,15 @@ struct DurablePresenceHistoryPayload {
 }
 
 const TRANSITION_CACHE_CHANNELS: usize = 64;
-const TRANSITION_CACHE_BYTES: usize = 256 * 1024;
+// 256 KiB of range summaries (64 × 4 KiB) plus 64 KiB of queried-user outcomes
+// plus about 64 KiB of exact recent identities.
+const TRANSITION_CACHE_BYTES: usize = 384 * 1024;
 const TRANSITION_MEMBERSHIP_RANGES: usize = 64;
 const TRANSITION_MEMBERSHIP_WORDS: usize = 254;
 const TRANSITION_MEMBERSHIP_RANGE_ROWS: u64 = 256;
+// Open-addressed positional slots per range: at most one user identity per row
+// keeps a 256-row range at or below 50% load.
+const TRANSITION_POSITION_SLOTS: usize = 512;
 const TRANSITION_QUERIED_USER_BYTES: usize = 64 * 1024;
 const TRANSITION_LOCK_STRIPES: usize = 128;
 
@@ -65,18 +70,97 @@ struct DurablePresenceTransitionCache {
     latest_event_by_user: BTreeMap<String, (PresenceHistoryEventKind, u64)>,
 }
 
-// Exactly2KiB per range, including bounds. Merging adjacent filters with OR
+// About 4 KiB per range: a 2 KiB summary filter over both identity kinds plus a
+// 2 KiB positional index of user identities. Merging adjacent filters with OR
 // never loses an observed identity; it only increases false-positive reads.
 struct TransitionMembershipRange {
     first: u64,
     last: u64,
     words: [u64; TRANSITION_MEMBERSHIP_WORDS],
+    /// `(24-bit user tag << 8) | serial % 256` for every user identity observed
+    /// in the range; `0` is an empty slot. A negative lookup is only sound while
+    /// the index is complete, so it is disabled once the range grows wider than
+    /// `TRANSITION_MEMBERSHIP_RANGE_ROWS` or is produced by merging.
+    positions: [u32; TRANSITION_POSITION_SLOTS],
+    positional: bool,
 }
 
 impl TransitionMembershipRange {
+    fn new(first: u64, last: u64) -> Self {
+        Self {
+            first,
+            last,
+            words: [0; TRANSITION_MEMBERSHIP_WORDS],
+            positions: [0; TRANSITION_POSITION_SLOTS],
+            positional: true,
+        }
+    }
+
     fn may_contain(&self, bits: [usize; 5]) -> bool {
         bits.iter()
             .all(|bit| self.words[bit / 64] & (1 << (bit % 64)) != 0)
+    }
+
+    fn width(&self) -> u64 {
+        self.last.saturating_sub(self.first).saturating_add(1)
+    }
+
+    fn position_tag(user: &str) -> (u32, usize) {
+        let mut hash = std::hash::DefaultHasher::new();
+        (2_u8, user).hash(&mut hash);
+        let hash = hash.finish();
+        let tag = (((hash >> 40) as u32) & 0x00FF_FFFF).max(1);
+        (tag, hash as usize % TRANSITION_POSITION_SLOTS)
+    }
+
+    fn add_position(&mut self, user: &str, serial: u64) {
+        if !self.positional {
+            return;
+        }
+        if self.width() > TRANSITION_MEMBERSHIP_RANGE_ROWS {
+            self.positional = false;
+            return;
+        }
+        let (tag, start) = Self::position_tag(user);
+        let entry = (tag << 8) | (serial % 256) as u32;
+        for probe in 0..TRANSITION_POSITION_SLOTS {
+            let slot = &mut self.positions[(start + probe) % TRANSITION_POSITION_SLOTS];
+            if *slot == 0 {
+                *slot = entry;
+                return;
+            }
+            if *slot == entry {
+                return;
+            }
+        }
+        self.positional = false;
+    }
+
+    /// Serials in this range whose stored user tag matches `user`, newest first.
+    /// Rows must still be read and verified exactly; a tag match is only a
+    /// candidate. `None` means the index cannot answer and the range must be
+    /// read in full.
+    fn user_positions(&self, user: &str) -> Option<Vec<u64>> {
+        if !self.positional || self.width() > TRANSITION_MEMBERSHIP_RANGE_ROWS {
+            return None;
+        }
+        let (tag, start) = Self::position_tag(user);
+        let mut serials = Vec::new();
+        for probe in 0..TRANSITION_POSITION_SLOTS {
+            let slot = self.positions[(start + probe) % TRANSITION_POSITION_SLOTS];
+            if slot == 0 {
+                break;
+            }
+            if slot >> 8 == tag {
+                let residue = u64::from(slot & 0xFF);
+                let serial = self.first + (residue + 256 - self.first % 256) % 256;
+                if serial <= self.last {
+                    serials.push(serial);
+                }
+            }
+        }
+        serials.sort_unstable_by(|a, b| b.cmp(a));
+        Some(serials)
     }
 }
 
@@ -143,12 +227,11 @@ impl DurablePresenceTransitionCache {
                 for (word, next_word) in previous.words.iter_mut().zip(next.words) {
                     *word |= next_word;
                 }
+                // Merged summaries no longer know each row's position.
+                previous.positional = false;
             }
-            self.membership.push(TransitionMembershipRange {
-                first: serial,
-                last: serial,
-                words: [0; TRANSITION_MEMBERSHIP_WORDS],
-            });
+            self.membership
+                .push(TransitionMembershipRange::new(serial, serial));
             self.membership.len() - 1
         };
         let range = &mut self.membership[index];
@@ -159,6 +242,7 @@ impl DurablePresenceTransitionCache {
         {
             range.words[bit / 64] |= 1 << (bit % 64);
         }
+        range.add_position(user, serial);
     }
     fn insert(
         &mut self,
@@ -683,7 +767,7 @@ impl DurablePresenceHistoryStore {
                 .filter_map(|(index, range)| {
                     let first = range.first.max(retained.oldest_serial?);
                     let last = range.last.min(retained.newest_serial?);
-                    (first <= last).then_some((index, first, last))
+                    (first <= last).then_some((index, first, last, range.may_contain(dedupe_bits)))
                 })
                 .collect();
             match self
@@ -728,13 +812,35 @@ impl DurablePresenceHistoryStore {
         &self,
         record: &PresenceHistoryTransitionRecord,
         inspection: &crate::history::HistoryStreamInspection,
-        ranges: &[(usize, u64, u64)],
+        ranges: &[(usize, u64, u64, bool)],
         mut latest_user: Option<(PresenceHistoryEventKind, u64)>,
         cache: &mut DurablePresenceTransitionCache,
     ) -> Result<(bool, Option<(PresenceHistoryEventKind, u64)>)> {
         let mut found_dedupe = false;
-        for &(index, first, last) in ranges {
-            let mut words = [0_u64; TRANSITION_MEMBERSHIP_WORDS];
+        // Newest first: the newest verified row for the user is its latest
+        // transition, so older user-only candidates need no read at all.
+        for &(index, first, last, dedupe_candidate) in ranges.iter().rev() {
+            if !dedupe_candidate {
+                if latest_user.is_some() {
+                    continue;
+                }
+                if let Some(serials) = cache.membership[index].user_positions(&record.user_id) {
+                    for serial in serials
+                        .into_iter()
+                        .filter(|serial| (first..=last).contains(serial))
+                    {
+                        let payload = self.read_transition_row(record, inspection, serial).await?;
+                        found_dedupe |= payload.dedupe_key == record.dedupe_key;
+                        if payload.user_id == record.user_id
+                            && latest_user.is_none_or(|(_, latest)| serial > latest)
+                        {
+                            latest_user = Some((payload.event, serial));
+                        }
+                    }
+                    continue;
+                }
+            }
+            let mut refined = TransitionMembershipRange::new(first, last);
             let mut request = HistoryReadRequest {
                 app_id: record.app_id.clone(),
                 channel: Self::durable_channel_name(&record.channel),
@@ -778,8 +884,9 @@ impl DurablePresenceHistoryStore {
                                 &payload.user_id,
                             ))
                     {
-                        words[bit / 64] |= 1 << (bit % 64);
+                        refined.words[bit / 64] |= 1 << (bit % 64);
                     }
+                    refined.add_position(&payload.user_id, item.serial);
                     found_dedupe |= payload.dedupe_key == record.dedupe_key;
                     if payload.user_id == record.user_id
                         && latest_user.is_none_or(|(_, serial)| item.serial > serial)
@@ -814,10 +921,58 @@ impl DurablePresenceHistoryStore {
                 ));
             }
             // Exact complete retained coverage safely refines false positives,
-            // including bits left behind by partial interval expiration.
-            cache.membership[index] = TransitionMembershipRange { first, last, words };
+            // including bits left behind by partial interval expiration, and
+            // rebuilds the positional index for ranges up to 256 rows wide.
+            cache.membership[index] = refined;
         }
         Ok((found_dedupe, latest_user))
+    }
+
+    /// Read and verify exactly one retained row for a positional candidate.
+    async fn read_transition_row(
+        &self,
+        record: &PresenceHistoryTransitionRecord,
+        inspection: &crate::history::HistoryStreamInspection,
+        serial: u64,
+    ) -> Result<DurablePresenceHistoryPayload> {
+        let page = self
+            .history_store
+            .read_page(HistoryReadRequest {
+                app_id: record.app_id.clone(),
+                channel: Self::durable_channel_name(&record.channel),
+                direction: HistoryDirection::OldestFirst,
+                limit: 1,
+                cursor: None,
+                bounds: HistoryQueryBounds {
+                    start_serial: Some(serial),
+                    end_serial: Some(serial),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        if (!page.complete && !page.has_more)
+            || page.truncated_by_retention
+            || page.retained != inspection.retained
+        {
+            return Err(Error::Internal(
+                "presence history row changed or was incomplete during transition lookup".into(),
+            ));
+        }
+        let mut items = page.items.into_iter();
+        let item = match (items.next(), items.next()) {
+            (Some(item), None)
+                if item.serial == serial
+                    && Some(item.stream_id.as_str()) == inspection.stream_id.as_deref() =>
+            {
+                item
+            }
+            _ => {
+                return Err(Error::Internal(
+                    "presence history row lookup returned invalid serial coverage".into(),
+                ));
+            }
+        };
+        Self::decode_payload(&item.payload_bytes)
     }
 }
 
