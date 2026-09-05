@@ -1,5 +1,0 @@
-error: no matching package named `crypto_secretbox` found
-location searched: crates.io index
-required by package `sockudo-http v2.2.0 (/home/radud/Desktop/Code/Rust/sockudo/server-sdks/sockudo-http-rust)`
-note: offline mode (via `--offline`) can sometimes cause surprising resolution failures
-help: if this error is too confusing you may wish to retry without `--offline`

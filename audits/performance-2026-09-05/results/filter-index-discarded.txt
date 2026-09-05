@@ -1,4 +1,0 @@
-probe=current_source_filter_index; profile=rustc-opt3; subscribers_per_channel=1; tracing=no_subscriber
-historical_values=100 retained_eq_entries=100 retained_sockets=0 removal_ns_min=2578 median=2634 max=2650
-historical_values=1000 retained_eq_entries=1000 retained_sockets=0 removal_ns_min=15679 median=16077 max=19545
-historical_values=10000 retained_eq_entries=10000 retained_sockets=0 removal_ns_min=261872 median=267193 max=327884

@@ -1,4 +1,0 @@
-   Compiling ably-recovery-audit-baseline v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-recovery-bench-baseline)
-    Finished `release` profile [optimized] target(s) in 4.75s
-   Compiling ably-recovery-audit-a4 v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-recovery-bench-a4)
-    Finished `release` profile [optimized] target(s) in 6.97s

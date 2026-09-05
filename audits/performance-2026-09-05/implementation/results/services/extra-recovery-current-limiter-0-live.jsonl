@@ -1,5 +1,0 @@
-{"verified":{"accepted":128,"new_connections":2,"repeat":0},"elapsed_us":84415,"allocations":3162,"case":"S11_reconnect","allocated_bytes":1316080}
-{"allocated_bytes":1300397,"allocations":3123,"verified":{"accepted":128,"new_connections":2,"repeat":1},"case":"S11_reconnect","elapsed_us":83446}
-{"verified":{"repeat":2,"new_connections":2,"accepted":128},"allocated_bytes":1300385,"elapsed_us":84314,"allocations":3123,"case":"S11_reconnect"}
-{"verified":{"repeat":3,"new_connections":2,"accepted":128},"elapsed_us":83458,"allocations":3085,"case":"S11_reconnect","allocated_bytes":1294918}
-{"case":"S11_reconnect","elapsed_us":84519,"allocated_bytes":1294367,"verified":{"accepted":128,"repeat":4,"new_connections":2},"allocations":3103}

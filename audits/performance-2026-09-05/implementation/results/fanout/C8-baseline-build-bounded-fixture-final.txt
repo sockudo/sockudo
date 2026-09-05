@@ -1,3 +1,0 @@
-   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/c8-baseline-instrumented/crates/sockudo-server)
-    Finished `release` profile [optimized] target(s) in 1m 41s
-  Executable unittests src/main.rs (target/release/deps/sockudo-8012b7f42d107d92)

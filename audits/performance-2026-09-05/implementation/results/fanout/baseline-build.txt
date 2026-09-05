@@ -1,2 +1,0 @@
-   Compiling sockudo-fanout-probes v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/fanout-baseline-probes)
-    Finished `release` profile [optimized] target(s) in 8.23s

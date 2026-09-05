@@ -1,2 +1,0 @@
-hash,samples=21,min_ns=8706039,median_ns=8822910,max_ns=8989615
-verify,samples=21,min_ns=8737548,median_ns=8785439,max_ns=8807250

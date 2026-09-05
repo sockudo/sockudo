@@ -1,2 +1,0 @@
-building f2-rabbit-baseline
-building f2-rabbit

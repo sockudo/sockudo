@@ -1,5 +1,0 @@
-   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/c7/crates/sockudo-server)
-    Finished `release` profile [optimized] target(s) in 5m 30s
-  Executable unittests src/main.rs (audits/performance-2026-09-05/implementation/target-durable-baseline/release/deps/sockudo-26866ec1cc67b2f2)
-  Executable tests/clustered_durable_history_redis_test.rs (audits/performance-2026-09-05/implementation/target-durable-baseline/release/deps/clustered_durable_history_redis_test-2e9909052edf7b04)
-  Executable tests/native_v2_heartbeat_test.rs (audits/performance-2026-09-05/implementation/target-durable-baseline/release/deps/native_v2_heartbeat_test-b3bf605a4e465219)

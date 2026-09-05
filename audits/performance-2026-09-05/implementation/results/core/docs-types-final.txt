@@ -1,8 +1,0 @@
-
-> docs-fumadocs@0.0.0 types:check
-> fumadocs-mdx && next typegen && tsc --noEmit
-
-[MDX] generated files in 6.826117000000011ms
-Generating route types...
-[MDX] generated files in 16.149181ms
-✓ Types generated successfully

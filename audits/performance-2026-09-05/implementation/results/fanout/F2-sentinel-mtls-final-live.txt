@@ -1,9 +1,0 @@
-
-running 4 tests
-test direct_transport_connects_with_private_ca ... ok
-test sentinel_resp3_delivers_authenticated_frames_and_control_replies ... ok
-test sentinel_transport_connects_and_pings ... ok
-test sentinel_transport_reports_node_count ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
-

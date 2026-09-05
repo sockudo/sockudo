@@ -1,4 +1,0 @@
-scenario,offered,completed,rejected,elapsed_us,timer_p50_us,timer_p95_us,timer_max_us
-device_verify,8,8,0,9528,1057,1383,1383
-device_verify,64,64,0,76964,1056,1857,1874
-device_verify,192,64,128,78547,1056,1452,1701

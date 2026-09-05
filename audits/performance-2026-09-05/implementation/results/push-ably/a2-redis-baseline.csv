@@ -1,7 +1,0 @@
-a2,rep=0,count=100,us=1127705,p50_us=11251,p95_us=11452,p99_us=12367,allocations=7290,allocated_bytes=1353277,cache_calls=200,read_bytes=35637
-a2,rep=1,count=100,us=1125622,p50_us=11268,p95_us=11346,p99_us=11421,allocations=7305,allocated_bytes=1353860,cache_calls=200,read_bytes=36300
-a2,rep=2,count=100,us=1125156,p50_us=11236,p95_us=11330,p99_us=12823,allocations=7305,allocated_bytes=1353860,cache_calls=200,read_bytes=36300
-a2,rep=3,count=100,us=1129578,p50_us=11242,p95_us=11419,p99_us=12996,allocations=7305,allocated_bytes=1353992,cache_calls=200,read_bytes=36318
-a2,rep=4,count=100,us=1126061,p50_us=11252,p95_us=11364,p99_us=12536,allocations=7304,allocated_bytes=1355228,cache_calls=200,read_bytes=36500
-a2,rep=5,count=100,us=1127898,p50_us=11292,p95_us=11385,p99_us=11436,allocations=7305,allocated_bytes=1355260,cache_calls=200,read_bytes=36500
-a2,rep=6,count=100,us=1127009,p50_us=11282,p95_us=11366,p99_us=11446,allocations=7305,allocated_bytes=1355260,cache_calls=200,read_bytes=36500

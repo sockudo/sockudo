@@ -1,3 +1,0 @@
-{"case":"S9_kafka","elapsed_us":1169274,"apps":16,"peak_callbacks":4,"topic_partitions":4,"delivered":160,"ordered_per_app":true,"repeat":0}
-{"peak_callbacks":4,"topic_partitions":4,"elapsed_us":1306541,"apps":16,"case":"S9_kafka","ordered_per_app":true,"delivered":160,"repeat":1}
-{"delivered":160,"peak_callbacks":4,"case":"S9_kafka","apps":16,"repeat":2,"topic_partitions":4,"elapsed_us":1307016,"ordered_per_app":true}

@@ -1,7 +1,0 @@
-a1page,rep=0,records=1024,pages=5,us=1760,max_page_us=482
-a1page,rep=1,records=1024,pages=5,us=1641,max_page_us=344
-a1page,rep=2,records=1024,pages=5,us=1517,max_page_us=345
-a1page,rep=3,records=1024,pages=5,us=1481,max_page_us=313
-a1page,rep=4,records=1024,pages=5,us=1666,max_page_us=344
-a1page,rep=5,records=1024,pages=5,us=1600,max_page_us=345
-a1page,rep=6,records=1024,pages=5,us=1530,max_page_us=326

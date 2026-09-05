@@ -1,8 +1,0 @@
-    Blocking waiting for file lock on build directory
-    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
-    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
-    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
-    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
-    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
-    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 08s

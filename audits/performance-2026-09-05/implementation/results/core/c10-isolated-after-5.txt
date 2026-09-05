@@ -1,3 +1,0 @@
-channels,payload_bytes,retained_before,retained_after,purge_calls,deleted,cleanup_us,rss_before_kib,rss_seeded_kib,rss_after_kib
-1000,16384,1000,0,8,1000,612,2936,20604,20608
-10000,16384,10000,0,79,10000,5864,20608,179048,179048

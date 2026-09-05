@@ -1,6 +1,0 @@
-
-running 1 test
-test adapter::transports::nats_transport_test::test_nats_publish_request_to_node_delivers_to_target_only ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 399 filtered out; finished in 0.23s
-

@@ -1,6 +1,0 @@
-c3 postgres 0 baseline 1: 0
-c3 postgres 0 after 1: 0
-c3 postgres 0 after 2: 0
-c3 postgres 0 baseline 2: 0
-c3 postgres 0 baseline 3: 0
-c3 postgres 0 after 3: 0

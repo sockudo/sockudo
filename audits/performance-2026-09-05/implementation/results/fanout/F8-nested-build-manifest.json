@@ -1,5 +1,0 @@
-{
-  "command": "CARGO_TARGET_DIR=target cargo build --release --manifest-path audits/performance-2026-09-05/implementation/fanout-probes/Cargo.toml",
-  "binary_sha256": "b63c1f99ccfa015d57aadb5347b9e6fb88c0e1798edd21518901d7f2d82148b0",
-  "protocol_sha256": "c42878556df6ad60ed666f7141459ec1f81c49c38ac4f5dd49a1e2793b52cfc7"
-}

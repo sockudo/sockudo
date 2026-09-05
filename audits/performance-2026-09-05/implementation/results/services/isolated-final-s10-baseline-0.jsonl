@@ -1,5 +1,0 @@
-{"repeat":0,"retry_span_us":529,"case":"S10_rabbit","elapsed_us":2631,"attempts":4,"delivered":1}
-{"elapsed_us":2748,"delivered":1,"attempts":4,"repeat":1,"case":"S10_rabbit","retry_span_us":411}
-{"retry_span_us":477,"repeat":2,"attempts":4,"elapsed_us":2781,"delivered":1,"case":"S10_rabbit"}
-{"delivered":1,"case":"S10_rabbit","repeat":3,"elapsed_us":2882,"attempts":4,"retry_span_us":481}
-{"case":"S10_rabbit","elapsed_us":2825,"repeat":4,"attempts":4,"delivered":1,"retry_span_us":470}

@@ -1,4 +1,0 @@
-     Locking 154 packages to latest Rust 1.98.1 compatible versions
-      Adding base64 v0.22.1 (available: v0.23.1)
-   Compiling ably-auth-audit-a1-mget v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-a1-mget)
-    Finished `release` profile [optimized] target(s) in 1.38s

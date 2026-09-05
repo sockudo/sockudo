@@ -1,4 +1,0 @@
-CODEC_CSV,appends,stored_entry_bytes,snapshot_bytes,latest_bytes,cumulative_snapshot_write_bytes,cumulative_latest_write_bytes,encode_us,replay_us,verified
-CODEC_CSV,128,586778,0,8647,0,586412,852,273,129
-CODEC_CSV,512,8638106,0,33223,0,8637740,6508,2208,513
-CODEC_CSV,2000,128976158,0,128457,0,128975792,60399,24216,2001

@@ -1,3 +1,0 @@
-{"processed":256,"queue_batch_limit":64,"case":"P5_P6_postgres_feedback","elapsed_us":123211,"repeat":0,"group":1,"status_revision_increases":256}
-{"repeat":1,"group":1,"elapsed_us":127586,"queue_batch_limit":64,"status_revision_increases":256,"processed":256,"case":"P5_P6_postgres_feedback"}
-{"elapsed_us":118335,"status_revision_increases":256,"processed":256,"queue_batch_limit":64,"repeat":2,"case":"P5_P6_postgres_feedback","group":1}

@@ -1,6 +1,0 @@
-    Blocking waiting for file lock on build directory
-   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
-  Executable unittests src/main.rs (target/debug/deps/sockudo-0e05229a4aa9e033)
-  Executable tests/clustered_durable_history_redis_test.rs (target/debug/deps/clustered_durable_history_redis_test-a446de4a5af5cd07)
-  Executable tests/native_v2_heartbeat_test.rs (target/debug/deps/native_v2_heartbeat_test-5882e6f8901c6f6a)

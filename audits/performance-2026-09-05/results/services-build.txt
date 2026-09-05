@@ -1,2 +1,0 @@
-   Compiling sockudo-performance-audit v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/diagnostics)
-    Finished `release` profile [optimized] target(s) in 12.46s

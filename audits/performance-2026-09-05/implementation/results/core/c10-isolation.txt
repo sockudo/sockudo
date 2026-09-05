@@ -1,1 +1,0 @@
-C10 variant: unchanged baseline + expiry schedule fields, schedule helper/calls and bounded purge method only. Existing global channel lock retained; C5 cursor/index/lock changes excluded. Scheduler/purge code matches current production, with only baseline channel-lock access adapted.

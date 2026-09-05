@@ -1,5 +1,0 @@
-{"verified":{"repeat":0,"healthy":1,"failed_jobs":20},"elapsed_us":500198,"allocations":2008,"allocated_bytes":1297474,"case":"S13_healthy_during_retry"}
-{"allocated_bytes":1297506,"verified":{"healthy":1,"failed_jobs":20,"repeat":1},"elapsed_us":498994,"case":"S13_healthy_during_retry","allocations":2008}
-{"case":"S13_healthy_during_retry","elapsed_us":498978,"verified":{"healthy":1,"repeat":2,"failed_jobs":20},"allocations":2008,"allocated_bytes":1297506}
-{"allocated_bytes":1297570,"allocations":2010,"elapsed_us":499088,"verified":{"healthy":1,"repeat":3,"failed_jobs":20},"case":"S13_healthy_during_retry"}
-{"case":"S13_healthy_during_retry","verified":{"failed_jobs":20,"repeat":4,"healthy":1},"elapsed_us":500038,"allocations":2008,"allocated_bytes":1297278}

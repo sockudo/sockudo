@@ -1,6 +1,0 @@
-{"case":"P5_P6_postgres_feedback","processed":256,"queue_batch_limit":64,"repeat":0,"group":1,"status_revision_increases":512,"elapsed_us":216947,"run_calls":4}
-{"status_revision_increases":512,"repeat":1,"run_calls":4,"processed":256,"group":1,"elapsed_us":215161,"case":"P5_P6_postgres_feedback","queue_batch_limit":64}
-{"case":"P5_P6_postgres_feedback","status_revision_increases":512,"run_calls":4,"repeat":2,"elapsed_us":215103,"group":1,"processed":256,"queue_batch_limit":64}
-{"elapsed_us":445620,"repeat":0,"queue_batch_limit":4,"processed":256,"status_revision_increases":128,"case":"P5_P6_postgres_feedback","run_calls":64,"group":64}
-{"run_calls":64,"group":64,"case":"P5_P6_postgres_feedback","elapsed_us":446227,"status_revision_increases":128,"repeat":1,"processed":256,"queue_batch_limit":4}
-{"group":64,"run_calls":64,"case":"P5_P6_postgres_feedback","processed":256,"repeat":2,"status_revision_increases":128,"queue_batch_limit":4,"elapsed_us":437577}

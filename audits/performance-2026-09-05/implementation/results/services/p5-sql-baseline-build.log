@@ -1,9 +1,0 @@
-error: failed to select a version for `sqlx`.
-    ... required by package `feedback-sql-audit v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/feedback-sql-bench-baseline)`
-versions that meet the requirements `^0.9` are: 0.9.0
-
-package `feedback-sql-audit` depends on `sqlx` with feature `runtime-tokio-rustls` but `sqlx` does not have that feature.
-help: available features: _rt-async-global-executor, _rt-async-std, _rt-smol, _rt-tokio, _sqlite, _unstable-all-types, _unstable-docs, all-databases, any, bigdecimal, bit-vec, bstr, chrono, default, derive, ipnet, ipnetwork, json, mac_address, macros, migrate, mysql, mysql-rsa, postgres, regexp, runtime-async-global-executor, runtime-async-std, runtime-smol, runtime-tokio, rust_decimal, sqlite, sqlite-bundled, sqlite-deserialize, sqlite-load-extension, sqlite-preupdate-hook, sqlite-unbundled, sqlite-unlock-notify, sqlx-macros, sqlx-mysql, sqlx-postgres, sqlx-sqlite, sqlx-toml, time, tls-native-tls, tls-none, tls-rustls, tls-rustls-aws-lc-rs, tls-rustls-ring, tls-rustls-ring-native-roots, tls-rustls-ring-webpki, uuid
-
-
-failed to select a version for `sqlx` which could resolve this conflict

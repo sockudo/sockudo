@@ -1,7 +1,0 @@
-    Blocking waiting for file lock on build directory
-    Checking tikv-jemalloc-sys v0.7.1+5.3.1-0-g81034ce1f1373e37dc865038e1bc8eeecf559ce8
-    Checking sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
-    Checking sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
-    Checking tikv-jemallocator v0.7.0
-    Checking sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 36s

@@ -1,4 +1,0 @@
-   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.32s
-  Executable tests/broker_fanout_live.rs (target/debug/deps/broker_fanout_live-a89bb9466b0f3de9)
-  Executable tests/redis_sentinel_live.rs (target/debug/deps/redis_sentinel_live-0027ceefc9791fde)

@@ -1,2 +1,0 @@
-{"case":"S7_blocked_admission","allocations":1401519,"allocated_bytes":154436234,"verified":{"rejected":0,"accepted":100000,"delivered":0},"elapsed_us":75026}
-{"case":"S7_recovered","accepted":100000,"delivered":100000}

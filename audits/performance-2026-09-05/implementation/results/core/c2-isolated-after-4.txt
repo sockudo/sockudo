@@ -1,4 +1,0 @@
-appends,fragment_bytes,retained_alloc_bytes,requested_alloc_bytes,append_us,verified_versions,public_data_bytes
-128,64,230566,4007299,823,129,528384
-512,64,909078,56014259,10219,513,8404992
-2000,64,3530726,822208019,167311,2001,128064000
