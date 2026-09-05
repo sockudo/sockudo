@@ -1,0 +1,21 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.71s
+     Running unittests src/main.rs (target/debug/deps/sockudo-1ce900ee46723fc4)
+
+running 3 tests
+test history::surreal::tests::surreal_history_store_conformance_serial_and_stream_continuity ... ok
+test history::surreal::tests::surreal_history_store_time_bounded_pagination_uses_time_ordering ... ok
+test history::surreal::tests::surreal_history_store_conformance_pagination_and_reset_semantics ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 111 filtered out; finished in 0.32s
+

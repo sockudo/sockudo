@@ -1,0 +1,46 @@
+     Locking 42 packages to latest Rust 1.98.1 compatible versions
+      Adding allocator-api2 v0.2.21
+      Adding atoi v2.0.0
+      Adding byteorder v1.5.0
+      Adding crc v3.4.0
+      Adding crc-catalog v2.5.0
+      Adding crossbeam-queue v0.3.13
+      Adding dotenvy v0.15.7
+      Adding etcetera v0.11.0
+      Adding flume v0.12.0
+    Updating futures-core v0.3.33 -> v0.3.34
+      Adding futures-executor v0.3.34
+      Adding futures-intrusive v0.5.0
+      Adding futures-io v0.3.34
+    Updating futures-macro v0.3.33 -> v0.3.34
+    Updating futures-sink v0.3.33 -> v0.3.34
+    Updating futures-task v0.3.33 -> v0.3.34
+    Updating futures-util v0.3.33 -> v0.3.34
+      Adding hashlink v0.11.1
+      Adding hkdf v0.13.0
+    Updating js-sys v0.3.103 -> v0.3.104
+      Adding libsqlite3-sys v0.37.0
+      Adding md-5 v0.11.0
+    Updating sha1 v0.10.7 -> v0.11.0
+      Adding sha2 v0.10.9
+      Adding spin v0.9.9
+      Adding sqlx v0.9.0
+      Adding sqlx-core v0.9.0
+      Adding sqlx-macros v0.9.0
+      Adding sqlx-macros-core v0.9.0
+      Adding sqlx-mysql v0.9.0
+      Adding sqlx-postgres v0.9.0
+      Adding sqlx-sqlite v0.9.0
+      Adding stringprep v0.1.5
+      Adding tokio-stream v0.1.19
+      Adding unicode-bidi v0.3.18
+      Adding unicode-normalization v0.1.25
+      Adding unicode-properties v0.1.4
+    Updating wasm-bindgen v0.2.126 -> v0.2.127
+    Updating wasm-bindgen-macro v0.2.126 -> v0.2.127
+    Updating wasm-bindgen-macro-support v0.2.126 -> v0.2.127
+    Updating wasm-bindgen-shared v0.2.126 -> v0.2.127
+      Adding whoami v2.1.3
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling feedback-sql-audit v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/feedback-sql-bench-current)
+    Finished `release` profile [optimized] target(s) in 42.75s

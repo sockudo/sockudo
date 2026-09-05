@@ -1,0 +1,43 @@
+{
+  "target": "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-final-workspace",
+  "started": "2026-09-05T11:28:56.472814+00:00",
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--workspace"
+      ],
+      "exit_code": 0,
+      "log": "final-workspace-tests.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 101,
+      "log": "final-workspace-clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "build",
+        "--offline",
+        "-p",
+        "sockudo",
+        "--features",
+        "full"
+      ],
+      "exit_code": 0,
+      "log": "final-full-build.txt"
+    }
+  ]
+}

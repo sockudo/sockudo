@@ -3,7 +3,7 @@ use super::time::now_ms;
 use super::types::*;
 use crate::error::{Error, Result};
 use async_trait::async_trait;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -31,6 +31,9 @@ pub(super) struct MemoryHistoryChannel {
     next_serial: u64,
     retained_bytes: u64,
     records: VecDeque<HistoryAppendRecord>,
+    // Imports may be out of order. Seek only while this invariant is proven.
+    serials_ordered: bool,
+    scheduled_expiry: Option<i64>,
     retention: Option<HistoryRetentionPolicy>,
 }
 
@@ -41,6 +44,8 @@ impl Default for MemoryHistoryChannel {
             next_serial: 1,
             retained_bytes: 0,
             records: VecDeque::new(),
+            serials_ordered: true,
+            scheduled_expiry: None,
             retention: None,
         }
     }
@@ -48,8 +53,9 @@ impl Default for MemoryHistoryChannel {
 
 #[derive(Clone, Default)]
 pub struct MemoryHistoryStore {
-    pub(super) channels: Arc<RwLock<BTreeMap<String, MemoryHistoryChannel>>>,
+    pub(super) channels: Arc<RwLock<BTreeMap<String, Arc<RwLock<MemoryHistoryChannel>>>>>,
     config: MemoryHistoryStoreConfig,
+    expiries: Arc<parking_lot::Mutex<BTreeSet<(i64, String)>>>,
 }
 
 impl MemoryHistoryStore {
@@ -57,11 +63,24 @@ impl MemoryHistoryStore {
         Self {
             channels: Arc::new(RwLock::new(BTreeMap::new())),
             config,
+            expiries: Arc::default(),
         }
     }
 
     fn channel_key(app_id: &str, channel: &str) -> String {
         format!("{app_id}\0{channel}")
+    }
+
+    async fn channel(&self, key: &str) -> Arc<RwLock<MemoryHistoryChannel>> {
+        if let Some(channel) = self.channels.read().await.get(key).cloned() {
+            return channel;
+        }
+        self.channels
+            .write()
+            .await
+            .entry(key.to_owned())
+            .or_default()
+            .clone()
     }
 
     fn default_retention(config: &MemoryHistoryStoreConfig) -> HistoryRetentionPolicy {
@@ -109,6 +128,36 @@ impl MemoryHistoryStore {
         }
     }
 
+    fn schedule_expiry(&self, key: &str, channel: &mut MemoryHistoryChannel) {
+        let retention = channel
+            .retention
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Self::default_retention(&self.config));
+        let deadline = channel.records.front().map(|record| {
+            record
+                .published_at_ms
+                .saturating_add(
+                    retention
+                        .retention_window_seconds
+                        .saturating_mul(1000)
+                        .min(i64::MAX as u64) as i64,
+                )
+                .saturating_add(1)
+        });
+        if deadline == channel.scheduled_expiry {
+            return;
+        }
+        let mut expiries = self.expiries.lock();
+        if let Some(previous) = channel.scheduled_expiry {
+            expiries.remove(&(previous, key.to_owned()));
+        }
+        if let Some(deadline) = deadline {
+            expiries.insert((deadline, key.to_owned()));
+        }
+        channel.scheduled_expiry = deadline;
+    }
+
     fn retained_from_channel(channel_state: &MemoryHistoryChannel) -> HistoryRetentionStats {
         HistoryRetentionStats {
             stream_id: Some(channel_state.stream_id.clone()),
@@ -136,8 +185,9 @@ impl HistoryStore for MemoryHistoryStore {
         channel: &str,
     ) -> Result<HistoryWriteReservation> {
         let key = Self::channel_key(app_id, channel);
-        let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_handle = self.channel(&key).await;
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
         let reservation = HistoryWriteReservation {
             stream_id: channel_state.stream_id.clone(),
             serial: channel_state.next_serial,
@@ -148,8 +198,9 @@ impl HistoryStore for MemoryHistoryStore {
 
     async fn append(&self, record: HistoryAppendRecord) -> Result<()> {
         let key = Self::channel_key(&record.app_id, &record.channel);
-        let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_handle = self.channel(&key).await;
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
         if channel_state.stream_id != record.stream_id {
             channel_state.stream_id.clone_from(&record.stream_id);
         }
@@ -160,20 +211,25 @@ impl HistoryStore for MemoryHistoryStore {
         channel_state.retained_bytes = channel_state
             .retained_bytes
             .saturating_add(record.payload_bytes.len() as u64);
+        channel_state.serials_ordered &= channel_state
+            .records
+            .back()
+            .is_none_or(|last| last.serial < record.serial && last.stream_id == record.stream_id);
         channel_state.records.push_back(record);
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| Self::default_retention(&self.config));
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
         Ok(())
     }
 
     async fn read_page(&self, request: HistoryReadRequest) -> Result<HistoryPage> {
         request.validate()?;
         let key = Self::channel_key(&request.app_id, &request.channel);
-        let mut channels = self.channels.write().await;
-        let Some(channel_state) = channels.get_mut(&key) else {
+        let channel_handle = self.channels.read().await.get(&key).cloned();
+        let Some(channel_handle) = channel_handle else {
             return Ok(HistoryPage {
                 items: Vec::new(),
                 next_cursor: None,
@@ -191,11 +247,14 @@ impl HistoryStore for MemoryHistoryStore {
                 truncated_by_retention: false,
             });
         };
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| Self::default_retention(&self.config));
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
 
         let retained = Self::retained_from_channel(channel_state);
 
@@ -244,17 +303,46 @@ impl HistoryStore for MemoryHistoryStore {
                     })
         };
 
+        // Serial bounds are monotonic even when timestamps skew. On arbitrary
+        // imports preserve the original scan and insertion-order behavior.
+        let (start, end) = if channel_state.serials_ordered {
+            let start = channel_state.records.partition_point(|record| {
+                request
+                    .bounds
+                    .start_serial
+                    .is_some_and(|start| record.serial < start)
+                    || (request.direction == HistoryDirection::OldestFirst
+                        && request
+                            .cursor
+                            .as_ref()
+                            .is_some_and(|cursor| record.serial <= cursor.serial))
+            });
+            let end = channel_state.records.partition_point(|record| {
+                request
+                    .bounds
+                    .end_serial
+                    .is_none_or(|end| record.serial <= end)
+                    && (request.direction != HistoryDirection::NewestFirst
+                        || request
+                            .cursor
+                            .as_ref()
+                            .is_none_or(|cursor| record.serial < cursor.serial))
+            });
+            (start.min(end), end)
+        } else {
+            (0, channel_state.records.len())
+        };
         let collected: Vec<&HistoryAppendRecord> = match request.direction {
             HistoryDirection::NewestFirst => channel_state
                 .records
-                .iter()
+                .range(start..end)
                 .rev()
                 .filter(matcher)
                 .take(request.limit + 1)
                 .collect(),
             HistoryDirection::OldestFirst => channel_state
                 .records
-                .iter()
+                .range(start..end)
                 .filter(matcher)
                 .take(request.limit + 1)
                 .collect(),
@@ -304,16 +392,84 @@ impl HistoryStore for MemoryHistoryStore {
 
     async fn channel_head(&self, app_id: &str, channel: &str) -> Result<HistoryRetentionStats> {
         let key = Self::channel_key(app_id, channel);
-        let mut channels = self.channels.write().await;
-        let Some(channel_state) = channels.get_mut(&key) else {
+        let channel_handle = self.channels.read().await.get(&key).cloned();
+        let Some(channel_handle) = channel_handle else {
             return Ok(HistoryRetentionStats::default());
         };
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| Self::default_retention(&self.config));
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
         Ok(Self::retained_from_channel(channel_state))
+    }
+
+    async fn purge_before(&self, _before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
+        // Memory deadlines honor each channel's retention override. Operator
+        // time-based deletion is provided by purge_stream, independently.
+        let now = now_ms();
+        let mut deleted = 0;
+        for _ in 0..batch_size {
+            if deleted >= batch_size {
+                break;
+            }
+            let due = {
+                let mut expiries = self.expiries.lock();
+                if expiries
+                    .first()
+                    .is_some_and(|(deadline, _)| *deadline <= now)
+                {
+                    expiries.pop_first()
+                } else {
+                    None
+                }
+            };
+            let Some((deadline, key)) = due else {
+                break;
+            };
+            let Some(channel_handle) = self.channels.read().await.get(&key).cloned() else {
+                continue;
+            };
+            let mut channel = channel_handle.write().await;
+            if channel.scheduled_expiry != Some(deadline) {
+                continue;
+            }
+            channel.scheduled_expiry = None;
+            let retention = channel
+                .retention
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| Self::default_retention(&self.config));
+            let cutoff = now.saturating_sub(
+                retention
+                    .retention_window_seconds
+                    .saturating_mul(1000)
+                    .min(i64::MAX as u64) as i64,
+            );
+            while deleted < batch_size
+                && channel
+                    .records
+                    .front()
+                    .is_some_and(|record| record.published_at_ms < cutoff)
+            {
+                if let Some(record) = channel.records.pop_front() {
+                    channel.retained_bytes = channel
+                        .retained_bytes
+                        .saturating_sub(record.payload_bytes.len() as u64);
+                    deleted += 1;
+                }
+            }
+            self.schedule_expiry(&key, &mut channel);
+        }
+        let has_more = self
+            .expiries
+            .lock()
+            .first()
+            .is_some_and(|(deadline, _)| *deadline <= now);
+        Ok((deleted as u64, has_more))
     }
 
     async fn runtime_status(&self) -> Result<HistoryRuntimeStatus> {
@@ -333,13 +489,15 @@ impl HistoryStore for MemoryHistoryStore {
         channel: &str,
     ) -> Result<HistoryStreamRuntimeState> {
         let key = Self::channel_key(app_id, channel);
-        let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_handle = self.channel(&key).await;
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| Self::default_retention(&self.config));
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
 
         Ok(HistoryStreamRuntimeState::healthy(
             app_id,
@@ -355,13 +513,15 @@ impl HistoryStore for MemoryHistoryStore {
         channel: &str,
     ) -> Result<HistoryStreamInspection> {
         let key = Self::channel_key(app_id, channel);
-        let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_handle = self.channel(&key).await;
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| Self::default_retention(&self.config));
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
 
         Ok(HistoryStreamInspection {
             app_id: app_id.to_string(),
@@ -386,16 +546,18 @@ impl HistoryStore for MemoryHistoryStore {
         _requested_by: Option<&str>,
     ) -> Result<HistoryResetResult> {
         let key = Self::channel_key(app_id, channel);
-        let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_handle = self.channel(&key).await;
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
         let previous_stream_id = Some(channel_state.stream_id.clone());
         let purged_messages = channel_state.records.len() as u64;
         let purged_bytes = channel_state.retained_bytes;
         channel_state.records.clear();
+        channel_state.serials_ordered = true;
         channel_state.retained_bytes = 0;
         channel_state.next_serial = 1;
         channel_state.stream_id = uuid::Uuid::new_v4().to_string();
-
+        self.schedule_expiry(&key, channel_state);
         let inspection = HistoryStreamInspection {
             app_id: app_id.to_string(),
             channel: channel.to_string(),
@@ -429,8 +591,9 @@ impl HistoryStore for MemoryHistoryStore {
     ) -> Result<HistoryPurgeResult> {
         request.validate()?;
         let key = Self::channel_key(app_id, channel);
-        let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_handle = self.channel(&key).await;
+        let mut guard = channel_handle.write().await;
+        let channel_state = &mut *guard;
 
         let previous_records = channel_state.records.len();
         let previous_bytes = channel_state.retained_bytes;
@@ -458,6 +621,7 @@ impl HistoryStore for MemoryHistoryStore {
             .map(|record| record.payload_bytes.len() as u64)
             .sum();
 
+        self.schedule_expiry(&key, channel_state);
         let inspection = HistoryStreamInspection {
             app_id: app_id.to_string(),
             channel: channel.to_string(),

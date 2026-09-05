@@ -7,6 +7,7 @@ use tracing::warn;
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-wns"))]
 pub(in crate::bootstrap::push::workers) fn start_wns_provider_workers(
     config: &ServerOptions,
+    store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let token_provider =
@@ -34,8 +35,10 @@ pub(in crate::bootstrap::push::workers) fn start_wns_provider_workers(
             "provider",
             format!("sockudo-monolith-wns-{worker_index}"),
             {
+                let store = store.clone();
                 let queue = queue.clone();
                 move |group| {
+                    let store = store.clone();
                     let queue = queue.clone();
                     let dispatcher = dispatcher.clone();
                     async move {
@@ -44,6 +47,7 @@ pub(in crate::bootstrap::push::workers) fn start_wns_provider_workers(
                             queue,
                             Arc::new(dispatcher),
                         )
+                        .with_store(store.clone())
                         .with_max_outbound_requests(max_outbound);
                         warn!(worker = %group, "WNS dispatch worker started");
                         loop {

@@ -6,13 +6,39 @@ use moka::{
 use sockudo_core::cache::{CacheManager, CacheScanPage};
 use sockudo_core::error::Result;
 use sockudo_core::options::MemoryCacheOptions;
+use std::collections::BTreeMap;
+use std::ops::Bound::{Excluded, Included, Unbounded};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
+
+type KeyIndex = RwLock<BTreeMap<String, u64>>;
+
+struct IndexedValue {
+    text: String,
+    key: String,
+    generation: u64,
+    index: Weak<KeyIndex>,
+}
+
+impl Drop for IndexedValue {
+    fn drop(&mut self) {
+        if let Some(index) = self.index.upgrade() {
+            let mut index = index.write().unwrap_or_else(|e| e.into_inner());
+            if index.get(&self.key) == Some(&self.generation) {
+                index.remove(&self.key);
+            }
+        }
+    }
+}
 
 /// A Memory-based implementation of the CacheManager trait using Moka.
 #[derive(Clone)]
 pub struct MemoryCacheManager {
     /// Moka async cache for storing entries. Key and Value are Strings.
-    cache: Cache<String, String, ahash::RandomState>,
+    cache: Cache<String, Arc<IndexedValue>, ahash::RandomState>,
+    index: Arc<KeyIndex>,
+    generation: Arc<AtomicU64>,
     /// Configuration options for this cache instance.
     options: MemoryCacheOptions,
     /// Prefix for all keys in this cache instance.
@@ -35,9 +61,25 @@ impl MemoryCacheManager {
 
         Self {
             cache,
+            index: Arc::new(RwLock::new(BTreeMap::new())),
+            generation: Arc::new(AtomicU64::new(0)),
             options,
             prefix,
         }
+    }
+
+    fn indexed_value(&self, key: &str, text: String) -> Arc<IndexedValue> {
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed);
+        self.index
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_owned(), generation);
+        Arc::new(IndexedValue {
+            text,
+            key: key.to_owned(),
+            generation,
+            index: Arc::downgrade(&self.index),
+        })
     }
 
     /// Get the prefixed key.
@@ -56,14 +98,23 @@ impl CacheManager for MemoryCacheManager {
 
     async fn get(&self, key: &str) -> Result<Option<String>> {
         let prefixed_key = self.prefixed_key(key);
-        Ok(self.cache.get(&prefixed_key).await)
+        Ok(self
+            .cache
+            .get(&prefixed_key)
+            .await
+            .map(|value| value.text.clone()))
     }
 
     async fn set(&self, key: &str, value: &str, _ttl_seconds: u64) -> Result<()> {
         let prefixed_key = self.prefixed_key(key);
         let value_string = value.to_string();
 
-        self.cache.insert(prefixed_key, value_string).await;
+        self.cache
+            .entry(prefixed_key.clone())
+            .and_compute_with(|_| {
+                std::future::ready(Op::Put(self.indexed_value(&prefixed_key, value_string)))
+            })
+            .await;
         Ok(())
     }
 
@@ -109,7 +160,7 @@ impl CacheManager for MemoryCacheManager {
             }
             let unprefixed_key = &key[prefix_len..];
             if unprefixed_key.starts_with(prefix) {
-                entries.push((unprefixed_key.to_string(), value.clone()));
+                entries.push((unprefixed_key.to_string(), value.text.clone()));
             }
         }
 
@@ -127,36 +178,41 @@ impl CacheManager for MemoryCacheManager {
         }
 
         let cache_prefix = format!("{}:", self.prefix);
-        let prefix_len = cache_prefix.len();
-        let mut matching = self
-            .cache
-            .iter()
-            .filter_map(|(key, value)| {
-                if !key.starts_with(&cache_prefix) {
-                    return None;
-                }
-                let unprefixed_key = key[prefix_len..].to_string();
-                if unprefixed_key.starts_with(prefix) {
-                    Some((unprefixed_key, value))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        matching.sort_by(|left, right| left.0.cmp(&right.0));
-
-        let start = cursor
-            .as_deref()
-            .and_then(|cursor| matching.iter().position(|(key, _)| key.as_str() > cursor))
-            .unwrap_or(0);
-        let end = start.saturating_add(limit).min(matching.len());
-        let entries = matching[start..end].to_vec();
-        let next_cursor = if end < matching.len() {
-            entries.last().map(|(key, _)| key.clone())
-        } else {
-            None
+        let matching_prefix = format!("{cache_prefix}{prefix}");
+        let start = cursor.map(|key| format!("{cache_prefix}{key}"));
+        let lower = start
+            .as_ref()
+            .filter(|key| *key >= &matching_prefix)
+            .map_or(Included(matching_prefix.clone()), |key| {
+                Excluded(key.clone())
+            });
+        // Copy only the bounded key page. Values stay in Moka until selected.
+        let (keys, has_more) = {
+            let index = self.index.read().unwrap_or_else(|e| e.into_inner());
+            let mut range = index
+                .range((lower, Unbounded))
+                .take_while(|(key, _)| key.starts_with(&matching_prefix));
+            let keys = range
+                .by_ref()
+                .take(limit)
+                .map(|(key, generation)| (key.clone(), *generation))
+                .collect::<Vec<_>>();
+            (keys, range.next().is_some())
         };
-
+        let next_cursor = has_more.then(|| {
+            keys.last().expect("nonempty page with continuation").0[cache_prefix.len()..].to_owned()
+        });
+        let mut entries = Vec::with_capacity(keys.len());
+        for (key, generation) in keys {
+            if let Some(value) = self.cache.get(&key).await {
+                entries.push((key[cache_prefix.len()..].to_owned(), value.text.clone()));
+            } else {
+                let mut index = self.index.write().unwrap_or_else(|e| e.into_inner());
+                if index.get(&key) == Some(&generation) {
+                    index.remove(&key);
+                }
+            }
+        }
         Ok(CacheScanPage {
             entries,
             next_cursor,
@@ -168,10 +224,10 @@ impl CacheManager for MemoryCacheManager {
         let value = value.to_string();
         let result = self
             .cache
-            .entry(prefixed_key)
+            .entry(prefixed_key.clone())
             .and_compute_with(|entry| {
                 let operation = if entry.is_none() {
-                    Op::Put(value)
+                    Op::Put(self.indexed_value(&prefixed_key, value))
                 } else {
                     Op::Nop
                 };
@@ -193,10 +249,12 @@ impl CacheManager for MemoryCacheManager {
         let value = value.to_string();
         let result = self
             .cache
-            .entry(prefixed_key)
+            .entry(prefixed_key.clone())
             .and_compute_with(|entry| {
                 let operation = match entry {
-                    Some(entry) if entry.value() == &expected => Op::Put(value),
+                    Some(entry) if entry.value().text == expected => {
+                        Op::Put(self.indexed_value(&prefixed_key, value))
+                    }
                     _ => Op::Nop,
                 };
                 std::future::ready(operation)
@@ -210,10 +268,10 @@ impl CacheManager for MemoryCacheManager {
         let expected = expected.to_string();
         let result = self
             .cache
-            .entry(prefixed_key)
+            .entry(prefixed_key.clone())
             .and_compute_with(|entry| {
                 let operation = match entry {
-                    Some(entry) if entry.value() == &expected => Op::Remove,
+                    Some(entry) if entry.value().text == expected => Op::Remove,
                     _ => Op::Nop,
                 };
                 std::future::ready(operation)
@@ -226,16 +284,16 @@ impl CacheManager for MemoryCacheManager {
         let prefixed_key = self.prefixed_key(key);
         let entry = self
             .cache
-            .entry(prefixed_key)
+            .entry(prefixed_key.clone())
             .and_upsert_with(|entry| {
                 let next = entry
-                    .and_then(|entry| entry.into_value().parse::<i64>().ok())
+                    .and_then(|entry| entry.into_value().text.parse::<i64>().ok())
                     .unwrap_or(0)
                     .saturating_add(delta);
-                std::future::ready(next.to_string())
+                std::future::ready(self.indexed_value(&prefixed_key, next.to_string()))
             })
             .await;
-        Ok(entry.into_value().parse::<i64>().unwrap_or(0))
+        Ok(entry.into_value().text.parse::<i64>().unwrap_or(0))
     }
 }
 
@@ -265,7 +323,12 @@ impl MemoryCacheManager {
         for (key, value) in pairs {
             let prefixed_key = self.prefixed_key(key);
             let value_string = value.to_string();
-            self.cache.insert(prefixed_key, value_string).await;
+            self.cache
+                .entry(prefixed_key.clone())
+                .and_compute_with(|_| {
+                    std::future::ready(Op::Put(self.indexed_value(&prefixed_key, value_string)))
+                })
+                .await;
         }
         Ok(())
     }
@@ -288,7 +351,7 @@ impl MemoryCacheManager {
                 } else {
                     None
                 };
-                entries.push((unprefixed_key, value.clone(), ttl));
+                entries.push((unprefixed_key, value.text.clone(), ttl));
             }
         }
 
@@ -310,6 +373,46 @@ mod tests {
                 max_capacity: 1_000,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn ordered_pages_do_not_restart_after_terminal_or_deleted_cursor() {
+        let cache = test_cache();
+        for key in ["item:a", "item:b", "item:c", "unrelated"] {
+            cache.set(key, key, 60).await.unwrap();
+        }
+        let first = cache.scan_prefix_page("item:", None, 1).await.unwrap();
+        assert_eq!(first.entries, vec![("item:a".into(), "item:a".into())]);
+        cache.remove("item:a").await.unwrap();
+        let second = cache
+            .scan_prefix_page("item:", first.next_cursor, 1)
+            .await
+            .unwrap();
+        assert_eq!(second.entries, vec![("item:b".into(), "item:b".into())]);
+        let last = cache
+            .scan_prefix_page("item:", second.next_cursor, 1)
+            .await
+            .unwrap();
+        assert_eq!(last.entries, vec![("item:c".into(), "item:c".into())]);
+        assert!(last.next_cursor.is_none());
+        let terminal = cache
+            .scan_prefix_page("item:", Some("item:z".into()), 1)
+            .await
+            .unwrap();
+        assert!(terminal.entries.is_empty());
+        assert!(terminal.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn replacing_value_keeps_new_generation_in_ordered_scan() {
+        let cache = test_cache();
+        cache.set("item", "old", 60).await.unwrap();
+        let old = cache.cache.get(&cache.prefixed_key("item")).await.unwrap();
+        cache.set("item", "new", 60).await.unwrap();
+        drop(old);
+        cache.cache.run_pending_tasks().await;
+        let page = cache.scan_prefix_page("", None, 10).await.unwrap();
+        assert_eq!(page.entries, vec![("item".into(), "new".into())]);
     }
 
     #[tokio::test]

@@ -1,0 +1,16 @@
+[package]
+name="feedback-sql-audit"
+version="0.0.0"
+edition="2024"
+[workspace]
+[[bin]]
+name="feedback-sql-audit"
+path="../services-bench/src/feedback_sql.rs"
+[dependencies]
+sockudo-push={path="../variants/p5-control-before/crates/sockudo-push",features=["postgres"]}
+sonic-rs="0.5"
+tokio={version="1",features=["full"]}
+sqlx={version="0.9",features=["postgres","runtime-tokio","tls-rustls-ring"]}
+[profile.release]
+lto=true
+codegen-units=1

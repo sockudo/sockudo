@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::error;
 
 use super::items::parse_history_durable_state;
-use super::{DynamoDbHistoryStore, HistoryDegradedState, HistoryTables, StoredStreamRecord};
+use super::{DynamoDbHistoryStore, HistoryDegradedState, HistoryTables};
 
 pub(super) fn degraded_channel_key(app_id: &str, channel: &str) -> String {
     format!("{app_id}\0{channel}")
@@ -116,23 +116,16 @@ pub(super) async fn mark_channel_degraded(
             if let Some(item) = output.item
                 && let Ok(stream) = DynamoDbHistoryStore::stream_from_item(item)
             {
-                let updated = StoredStreamRecord {
-                    durable_state: state.durable_state,
-                    durable_state_reason: Some(state.reason.clone()),
-                    durable_state_node_id: state.node_id.clone(),
-                    durable_state_changed_at_ms: Some(state.last_transition_at_ms),
-                    updated_at_ms: now_ms,
-                    ..stream
-                };
-                let put_result = client
-                    .put_item()
-                    .table_name(&tables.streams)
-                    .set_item(Some(DynamoDbHistoryStore::stream_item(
-                        &DynamoDbHistoryStore::stream_key(request.app_id, request.channel),
-                        &updated,
-                    )))
-                    .send()
-                    .await;
+                let put_result = client.update_item().table_name(&tables.streams)
+                    .key("stream_key", DynamoDbHistoryStore::attr_string(&DynamoDbHistoryStore::stream_key(request.app_id, request.channel)))
+                    .condition_expression("stream_id=:stream")
+                    .update_expression("SET durable_state=:state, durable_state_reason=:reason, durable_state_node_id=:node, durable_state_changed_at_ms=:changed, updated_at_ms=:changed")
+                    .expression_attribute_values(":stream", DynamoDbHistoryStore::attr_string(&stream.stream_id))
+                    .expression_attribute_values(":state", DynamoDbHistoryStore::attr_string(state.durable_state.as_str()))
+                    .expression_attribute_values(":reason", DynamoDbHistoryStore::attr_string(&state.reason))
+                    .expression_attribute_values(":changed", DynamoDbHistoryStore::attr_number(now_ms))
+                    .expression_attribute_values(":node",state.node_id.as_ref().map(|node|DynamoDbHistoryStore::attr_string(node)).unwrap_or(aws_sdk_dynamodb::types::AttributeValue::Null(true)))
+                    .send().await;
                 if let Err(err) = put_result {
                     error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to persist dynamodb history degraded state");
                 }

@@ -1,5 +1,4 @@
 use super::DynamoDbPushStore;
-use super::constants::*;
 use super::document::{DocumentBackend, StoredDocument};
 use super::helpers::*;
 use crate::storage::PushStorageResult;
@@ -300,25 +299,31 @@ impl DocumentBackend for DynamoDbDocumentBackend {
     ) -> PushStorageResult<Vec<StoredDocument>> {
         use aws_sdk_dynamodb::types::AttributeValue;
         let family_app = family_app(family, app_id);
-        let rows = self
+        let mut query = self
             .client
             .query()
             .table_name(&self.table)
             .key_condition_expression("family_app = :family_app")
-            .expression_attribute_values(":family_app", AttributeValue::S(family_app))
-            .send()
-            .await
-            .map_err(dynamodb_error)?
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(|mut item| {
-                let pk = take_dynamodb_string(&mut item, "pk")?;
-                let sk = take_dynamodb_string(&mut item, "sk")?;
-                let data = take_dynamodb_string(&mut item, "data")?;
-                Ok(StoredDocument { pk, sk, data })
-            })
-            .collect::<PushStorageResult<Vec<_>>>()?;
+            .expression_attribute_values(":family_app", AttributeValue::S(family_app));
+        let mut rows = Vec::new();
+        loop {
+            let result = query.clone().send().await.map_err(dynamodb_error)?;
+            for mut item in result.items.unwrap_or_default() {
+                rows.push(StoredDocument {
+                    pk: take_dynamodb_string(&mut item, "pk")?,
+                    sk: take_dynamodb_string(&mut item, "sk")?,
+                    data: take_dynamodb_string(&mut item, "data")?,
+                });
+            }
+            if result
+                .last_evaluated_key
+                .as_ref()
+                .is_none_or(|key| key.is_empty())
+            {
+                break;
+            }
+            query = query.set_exclusive_start_key(result.last_evaluated_key);
+        }
         Ok(rows)
     }
 
@@ -331,26 +336,32 @@ impl DocumentBackend for DynamoDbDocumentBackend {
         use aws_sdk_dynamodb::types::AttributeValue;
         let family_app = family_app(family, app_id);
         let prefix = format!("{pk}\0");
-        let rows = self
+        let mut query = self
             .client
             .query()
             .table_name(&self.table)
             .key_condition_expression("family_app = :family_app AND begins_with(doc_key, :prefix)")
             .expression_attribute_values(":family_app", AttributeValue::S(family_app))
-            .expression_attribute_values(":prefix", AttributeValue::S(prefix))
-            .send()
-            .await
-            .map_err(dynamodb_error)?
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(|mut item| {
-                let pk = take_dynamodb_string(&mut item, "pk")?;
-                let sk = take_dynamodb_string(&mut item, "sk")?;
-                let data = take_dynamodb_string(&mut item, "data")?;
-                Ok(StoredDocument { pk, sk, data })
-            })
-            .collect::<PushStorageResult<Vec<_>>>()?;
+            .expression_attribute_values(":prefix", AttributeValue::S(prefix));
+        let mut rows = Vec::new();
+        loop {
+            let result = query.clone().send().await.map_err(dynamodb_error)?;
+            for mut item in result.items.unwrap_or_default() {
+                rows.push(StoredDocument {
+                    pk: take_dynamodb_string(&mut item, "pk")?,
+                    sk: take_dynamodb_string(&mut item, "sk")?,
+                    data: take_dynamodb_string(&mut item, "data")?,
+                });
+            }
+            if result
+                .last_evaluated_key
+                .as_ref()
+                .is_none_or(|key| key.is_empty())
+            {
+                break;
+            }
+            query = query.set_exclusive_start_key(result.last_evaluated_key);
+        }
         Ok(rows)
     }
 
@@ -378,20 +389,37 @@ impl DocumentBackend for DynamoDbDocumentBackend {
                 .exclusive_start_key("family_app", AttributeValue::S(family_app))
                 .exclusive_start_key("doc_key", AttributeValue::S(document_key(pk, start_after)));
         }
-        let rows = query
-            .send()
-            .await
-            .map_err(dynamodb_error)?
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(|mut item| {
-                let pk = take_dynamodb_string(&mut item, "pk")?;
-                let sk = take_dynamodb_string(&mut item, "sk")?;
-                let data = take_dynamodb_string(&mut item, "data")?;
-                Ok(StoredDocument { pk, sk, data })
-            })
-            .collect::<PushStorageResult<Vec<_>>>()?;
+        let mut rows = Vec::new();
+        loop {
+            let result = query
+                .clone()
+                .limit(
+                    limit
+                        .max(1)
+                        .saturating_sub(rows.len())
+                        .min(i32::MAX as usize) as i32,
+                )
+                .send()
+                .await
+                .map_err(dynamodb_error)?;
+            for mut item in result.items.unwrap_or_default() {
+                rows.push(StoredDocument {
+                    pk: take_dynamodb_string(&mut item, "pk")?,
+                    sk: take_dynamodb_string(&mut item, "sk")?,
+                    data: take_dynamodb_string(&mut item, "data")?,
+                });
+            }
+            if rows.len() >= limit.max(1)
+                || result
+                    .last_evaluated_key
+                    .as_ref()
+                    .is_none_or(|key| key.is_empty())
+            {
+                break;
+            }
+            query = query.set_exclusive_start_key(result.last_evaluated_key);
+        }
+
         Ok(rows)
     }
 
@@ -412,27 +440,46 @@ impl DocumentBackend for DynamoDbDocumentBackend {
             .expression_attribute_values(":family_app", AttributeValue::S(family_app.clone()))
             .limit(limit.max(1) as i32);
         if let Some(start_after_pk) = start_after_pk {
+            // doc_key encodes pk + NUL + sk. The next delimiter sorts above every
+            // sk of this pk, while retaining all following primary keys.
             query = query
-                .exclusive_start_key("family_app", AttributeValue::S(family_app))
-                .exclusive_start_key(
-                    "doc_key",
-                    AttributeValue::S(document_key(start_after_pk, DEFAULT_SK)),
+                .key_condition_expression("family_app = :family_app AND doc_key > :after")
+                .expression_attribute_values(
+                    ":after",
+                    AttributeValue::S(format!("{start_after_pk}\u{1}")),
                 );
         }
-        let rows = query
-            .send()
-            .await
-            .map_err(dynamodb_error)?
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(|mut item| {
-                let pk = take_dynamodb_string(&mut item, "pk")?;
-                let sk = take_dynamodb_string(&mut item, "sk")?;
-                let data = take_dynamodb_string(&mut item, "data")?;
-                Ok(StoredDocument { pk, sk, data })
-            })
-            .collect::<PushStorageResult<Vec<_>>>()?;
+        let mut rows = Vec::new();
+        loop {
+            let result = query
+                .clone()
+                .limit(
+                    limit
+                        .max(1)
+                        .saturating_sub(rows.len())
+                        .min(i32::MAX as usize) as i32,
+                )
+                .send()
+                .await
+                .map_err(dynamodb_error)?;
+            for mut item in result.items.unwrap_or_default() {
+                rows.push(StoredDocument {
+                    pk: take_dynamodb_string(&mut item, "pk")?,
+                    sk: take_dynamodb_string(&mut item, "sk")?,
+                    data: take_dynamodb_string(&mut item, "data")?,
+                });
+            }
+            if rows.len() >= limit.max(1)
+                || result
+                    .last_evaluated_key
+                    .as_ref()
+                    .is_none_or(|key| key.is_empty())
+            {
+                break;
+            }
+            query = query.set_exclusive_start_key(result.last_evaluated_key);
+        }
+
         Ok(rows)
     }
 
@@ -458,12 +505,32 @@ impl DocumentBackend for DynamoDbDocumentBackend {
             if requests.is_empty() {
                 continue;
             }
-            self.client
-                .batch_write_item()
-                .request_items(self.table.clone(), requests)
-                .send()
-                .await
-                .map_err(dynamodb_error)?;
+            // Dynamo acknowledges the request even when throttled items remain.
+            // Retry only those items; never report them as deleted on exhaustion.
+            for attempt in 0..8 {
+                let result = self
+                    .client
+                    .batch_write_item()
+                    .request_items(self.table.clone(), requests)
+                    .send()
+                    .await
+                    .map_err(dynamodb_error)?;
+                requests = result
+                    .unprocessed_items
+                    .unwrap_or_default()
+                    .remove(&self.table)
+                    .unwrap_or_default();
+                if requests.is_empty() {
+                    break;
+                }
+                if attempt == 7 {
+                    return Err(crate::storage::PushStorageError::Backend(
+                        "dynamodb batch deletion remained throttled after bounded retries"
+                            .to_owned(),
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10_u64 << attempt)).await;
+            }
             deleted += chunk.len() as u64;
         }
         Ok(deleted)

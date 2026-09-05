@@ -8,12 +8,35 @@ use crate::sender::WebhookSender;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sonic_rs::{Value, json};
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::interval;
 use tracing::{debug, error, warn};
 
 const WEBHOOK_QUEUE_NAME: &str = "webhooks";
+const MAX_BATCHED_JOBS: usize = 2048;
+const MAX_BATCHED_BYTES: usize = 16 * 1024 * 1024;
+
+struct BufferedWebhook {
+    job: JobData,
+    _record: OwnedSemaphorePermit,
+    _bytes: OwnedSemaphorePermit,
+}
+
+#[derive(Default)]
+struct SerializedSize(usize);
+impl std::io::Write for SerializedSize {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Configuration for the webhook integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +132,12 @@ impl QueueManager {
 /// Webhook integration for processing events
 pub struct WebhookIntegration {
     config: WebhookConfig,
-    batched_webhooks: Arc<Mutex<Vec<JobData>>>,
+    batched_webhooks: Arc<Mutex<VecDeque<BufferedWebhook>>>,
+    batch_records: Arc<Semaphore>,
+    batch_bytes: Arc<Semaphore>,
+    batch_notify: Arc<Notify>,
+    accepting: Arc<AtomicBool>,
+    batch_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     queue_manager: Option<Arc<QueueManager>>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
 }
@@ -122,7 +150,12 @@ impl WebhookIntegration {
     ) -> Result<Self> {
         let mut integration = Self {
             config,
-            batched_webhooks: Arc::new(Mutex::new(Vec::new())),
+            batched_webhooks: Arc::new(Mutex::new(VecDeque::new())),
+            batch_records: Arc::new(Semaphore::new(MAX_BATCHED_JOBS)),
+            batch_bytes: Arc::new(Semaphore::new(MAX_BATCHED_BYTES)),
+            batch_notify: Arc::new(Notify::new()),
+            accepting: Arc::new(AtomicBool::new(true)),
+            batch_task: Mutex::new(None),
             queue_manager: None,
             app_manager,
         };
@@ -175,39 +208,74 @@ impl WebhookIntegration {
         if !self.config.batching.enabled {
             return;
         }
-        let queue_manager_clone = self.queue_manager.clone();
-        let batched_webhooks_clone = self.batched_webhooks.clone();
-        let batch_duration = self.config.batching.duration;
-        let batch_size = self.config.batching.size.max(1);
-
-        tokio::spawn(async move {
+        let queue_manager = self.queue_manager.clone();
+        let buffer = Arc::clone(&self.batched_webhooks);
+        let notify = Arc::clone(&self.batch_notify);
+        let accepting = Arc::clone(&self.accepting);
+        let batch_duration = self.config.batching.duration.max(1);
+        let batch_size = self.config.batching.size.clamp(1, MAX_BATCHED_JOBS);
+        let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(batch_duration));
             loop {
-                interval.tick().await;
-                let jobs_to_process = {
-                    let mut batched = batched_webhooks_clone.lock();
-                    std::mem::take(&mut *batched)
-                };
-
-                if jobs_to_process.is_empty() {
-                    continue;
-                }
-                debug!(
-                    job_count = jobs_to_process.len(),
-                    "processing batched webhook jobs"
-                );
-
-                if let Some(qm) = &queue_manager_clone {
-                    let batches = Self::merge_jobs_for_queue(jobs_to_process, batch_size);
-                    if let Err(e) = qm.add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches).await {
-                        error!(
-                            error = %e,
-                            "failed to enqueue batched webhook jobs"
-                        );
+                tokio::select! { _ = interval.tick() => {}, _ = notify.notified() => {} }
+                loop {
+                    let drained = {
+                        let mut buffer = buffer.lock();
+                        let count = buffer.len().min(batch_size);
+                        buffer.drain(..count).collect::<Vec<_>>()
+                    };
+                    if drained.is_empty() {
+                        break;
                     }
+                    let mut permits = Vec::with_capacity(drained.len());
+                    let jobs = drained
+                        .into_iter()
+                        .map(|item| {
+                            permits.push((item._record, item._bytes));
+                            item.job
+                        })
+                        .collect();
+                    let batches = Self::merge_jobs_for_queue(jobs, batch_size);
+                    if let Some(queue_manager) = &queue_manager {
+                        loop {
+                            match queue_manager
+                                .add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches.clone())
+                                .await
+                            {
+                                Ok(()) => break,
+                                Err(error) => {
+                                    error!(error = %error, job_count = batches.len(), "batched webhook enqueue failed; retained for retry");
+                                    tokio::time::sleep(Duration::from_millis(250)).await;
+                                }
+                            }
+                        }
+                    }
+                    drop(permits);
+                    if accepting.load(Ordering::Acquire) && buffer.lock().len() < batch_size {
+                        break;
+                    }
+                }
+                if !accepting.load(Ordering::Acquire) && buffer.lock().is_empty() {
+                    break;
                 }
             }
         });
+        *self.batch_task.lock() = Some(handle);
+    }
+
+    /// Stop admission and finish transferring every accepted batch to the queue.
+    /// Call before disconnecting the queue. A failed dependency keeps bounded
+    /// accepted work pending, allowing the caller's shutdown deadline to decide.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.accepting.store(false, Ordering::Release);
+        self.batch_notify.notify_one();
+        let handle = self.batch_task.lock().take();
+        if let Some(handle) = handle {
+            handle
+                .await
+                .map_err(|error| Error::Queue(format!("webhook batch task failed: {error}")))?;
+        }
+        Ok(())
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -218,8 +286,38 @@ impl WebhookIntegration {
         if !self.is_enabled() {
             return Ok(());
         }
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(Error::Queue("webhook integration is shutting down".into()));
+        }
         if self.config.batching.enabled {
-            self.batched_webhooks.lock().push(job_data);
+            let record = Arc::clone(&self.batch_records)
+                .try_acquire_owned()
+                .map_err(|_| Error::BufferFull("webhook batch record capacity reached".into()))?;
+            let mut size = SerializedSize::default();
+            sonic_rs::to_writer(sonic_rs::writer::BufferedWriter::new(&mut size), &job_data)?;
+            let charged_bytes = size
+                .0
+                .saturating_add(std::mem::size_of::<BufferedWebhook>());
+            if charged_bytes > MAX_BATCHED_BYTES {
+                return Err(Error::BufferFull(
+                    "webhook exceeds batch byte budget".into(),
+                ));
+            }
+            let bytes = Arc::clone(&self.batch_bytes)
+                .try_acquire_many_owned(charged_bytes as u32)
+                .map_err(|_| Error::BufferFull("webhook batch byte capacity reached".into()))?;
+            let mut buffer = self.batched_webhooks.lock();
+            if !self.accepting.load(Ordering::Acquire) {
+                return Err(Error::Queue("webhook integration is shutting down".into()));
+            }
+            buffer.push_back(BufferedWebhook {
+                job: job_data,
+                _record: record,
+                _bytes: bytes,
+            });
+            if buffer.len() >= self.config.batching.size.max(1) {
+                self.batch_notify.notify_one();
+            }
         } else if let Some(qm) = &self.queue_manager {
             job_data.job_id = Some(uuid::Uuid::new_v4().simple().to_string());
             qm.add_to_queue(WEBHOOK_QUEUE_NAME, job_data).await?;
@@ -238,6 +336,9 @@ impl WebhookIntegration {
     async fn add_bounded_webhook(&self, job_data: JobData) -> Result<()> {
         if !self.is_enabled() {
             return Ok(());
+        }
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(Error::Queue("webhook integration is shutting down".into()));
         }
         let Some(queue_manager) = &self.queue_manager else {
             return Err(Error::Internal(
@@ -816,6 +917,13 @@ impl WebhookIntegration {
     }
 }
 
+impl Drop for WebhookIntegration {
+    fn drop(&mut self) {
+        self.accepting.store(false, Ordering::Release);
+        self.batch_notify.notify_one();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,6 +931,145 @@ mod tests {
     use sockudo_core::app::{AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
     use sockudo_core::webhook_types::{JobData, JobPayload, Webhook, WebhookFilter};
     use sockudo_queue::MemoryQueueManager;
+
+    #[derive(Clone)]
+    struct FaultQueue {
+        open: Arc<AtomicBool>,
+        attempts: Arc<std::sync::atomic::AtomicUsize>,
+        accepted: Arc<std::sync::atomic::AtomicUsize>,
+        ids: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+    #[async_trait::async_trait]
+    impl QueueInterface for FaultQueue {
+        async fn add_to_queue(&self, name: &str, job: JobData) -> Result<()> {
+            self.add_batch_to_queue(name, vec![job]).await
+        }
+        async fn add_batch_to_queue(&self, _: &str, jobs: Vec<JobData>) -> Result<()> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            self.ids
+                .lock()
+                .push(jobs.iter().map(|job| job.job_id.clone().unwrap()).collect());
+            if attempt == 0 {
+                return Err(Error::Queue("injected enqueue failure".into()));
+            }
+            while !self.open.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            self.accepted.fetch_add(
+                jobs.iter()
+                    .map(|job| job.payload.events.len())
+                    .sum::<usize>(),
+                Ordering::SeqCst,
+            );
+            Ok(())
+        }
+        async fn process_queue(&self, _: &str, _: JobProcessorFnAsync) -> Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn check_health(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn batched_admission_bounds_pending_and_drained_jobs_then_recovers_without_loss() {
+        let queue = FaultQueue {
+            open: Arc::new(AtomicBool::new(false)),
+            attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            accepted: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            ids: Arc::new(Mutex::new(Vec::new())),
+        };
+        let integration = WebhookIntegration::new(
+            WebhookConfig {
+                batching: BatchingConfig {
+                    enabled: true,
+                    duration: 1,
+                    size: 10,
+                },
+                ..Default::default()
+            },
+            Arc::new(MemoryAppManager::new()),
+            Some(Arc::new(QueueManager::new(Box::new(queue.clone())))),
+        )
+        .await
+        .unwrap();
+        let app = test_app();
+        for n in 0..MAX_BATCHED_JOBS {
+            integration
+                .add_webhook(integration.create_job_data(
+                    &app,
+                    vec![json!({"name":"member_added", "user_id":n})],
+                    "synthetic",
+                ))
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            integration
+                .add_webhook(integration.create_job_data(
+                    &app,
+                    vec![json!({"name":"member_added"})],
+                    "synthetic"
+                ))
+                .await,
+            Err(Error::BufferFull(_))
+        ));
+        assert_eq!(integration.batch_records.available_permits(), 0);
+        queue.open.store(true, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(3), integration.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(queue.accepted.load(Ordering::SeqCst), MAX_BATCHED_JOBS);
+        assert_eq!(
+            integration.batch_records.available_permits(),
+            MAX_BATCHED_JOBS
+        );
+        assert_eq!(
+            integration.batch_bytes.available_permits(),
+            MAX_BATCHED_BYTES
+        );
+        let ids = queue.ids.lock();
+        assert_eq!(
+            ids[0], ids[1],
+            "failed accepted batch must retain stable identities"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_byte_bound_rejects_a_single_oversized_job() {
+        let integration = WebhookIntegration::new(
+            WebhookConfig {
+                batching: BatchingConfig {
+                    enabled: true,
+                    duration: 1,
+                    size: 10,
+                },
+                ..Default::default()
+            },
+            Arc::new(MemoryAppManager::new()),
+            Some(create_test_queue_manager()),
+        )
+        .await
+        .unwrap();
+        let job = integration.create_job_data(
+            &test_app(),
+            vec![json!({"data":"x".repeat(MAX_BATCHED_BYTES)})],
+            "synthetic",
+        );
+        assert!(matches!(
+            integration.add_webhook(job).await,
+            Err(Error::BufferFull(_))
+        ));
+        assert_eq!(
+            integration.batch_records.available_permits(),
+            MAX_BATCHED_JOBS
+        );
+        integration.shutdown().await.unwrap();
+    }
 
     fn create_test_queue_manager() -> Arc<QueueManager> {
         let driver = MemoryQueueManager::new();

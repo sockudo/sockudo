@@ -72,6 +72,7 @@ pub(in crate::bootstrap::push::workers) fn start_fcm_provider_workers(
                             queue,
                             Arc::new(dispatcher),
                         )
+                        .with_store(store.clone())
                         .with_max_outbound_requests(max_outbound);
                         warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, "FCM dispatch worker started with stored credential");
                         loop {
@@ -129,8 +130,10 @@ pub(in crate::bootstrap::push::workers) fn start_fcm_provider_workers(
             "provider",
             format!("sockudo-monolith-fcm-{worker_index}"),
             {
+                let store = store.clone();
                 let queue = queue.clone();
                 move |group| {
+                    let store = store.clone();
                     let queue = queue.clone();
                     let dispatcher = dispatcher.clone();
                     async move {
@@ -139,6 +142,7 @@ pub(in crate::bootstrap::push::workers) fn start_fcm_provider_workers(
                             queue,
                             Arc::new(dispatcher),
                         )
+                        .with_store(store.clone())
                         .with_max_outbound_requests(max_outbound);
                         warn!(worker = %group, "FCM dispatch worker started");
                         loop {

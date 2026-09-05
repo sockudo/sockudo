@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-690969c8c439da9f)
+
+running 2 tests
+test websocket::tests::rejected_prepared_frame_never_advances_byte_admission ... ok
+test websocket::tests::prepared_broadcast_preserves_negotiated_frame_and_byte_accounting ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 363 filtered out; finished in 0.00s
+

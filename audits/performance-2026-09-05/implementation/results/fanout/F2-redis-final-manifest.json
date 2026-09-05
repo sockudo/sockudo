@@ -1,0 +1,41 @@
+{
+  "case": "F2-redis",
+  "baseline_commit": "5613bb291032b6b7660352974b03da9eb0646da0",
+  "profile": "release; compilation and fixture setup excluded",
+  "runs": [
+    {
+      "variant": "baseline",
+      "command": [
+        "/usr/bin/time",
+        "-v",
+        "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/binaries/f2-f5-baseline",
+        "benchmark_redis_ingress",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "environment": {},
+      "binary_sha256": "e2fd1368d945ba26a157df2f3d1594bd1d4f6e89055beac58482d916169ca580",
+      "exit_code": 0
+    },
+    {
+      "variant": "after",
+      "command": [
+        "/usr/bin/time",
+        "-v",
+        "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/binaries/f2-after",
+        "benchmark_redis_ingress",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "environment": {
+        "SOCKUDO_EXPECT_BOUNDED_INGRESS": "1"
+      },
+      "binary_sha256": "07c1646e1adf87f2dc53d076bd5c84f736fa6b5532ea2ba2d6e26151e7891989",
+      "exit_code": 0
+    }
+  ]
+}

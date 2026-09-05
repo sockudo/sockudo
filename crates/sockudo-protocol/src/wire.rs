@@ -41,16 +41,9 @@ pub fn serialize_message(message: &PusherMessage, format: WireFormat) -> Result<
         WireFormat::Json => {
             sonic_rs::to_vec(message).map_err(|e| format!("JSON serialization failed: {e}"))
         }
-        WireFormat::MessagePack => rmp_serde::to_vec(&MsgpackPusherMessage::from(message.clone()))
+        WireFormat::MessagePack => rmp_serde::to_vec(&MsgpackPusherView::from(message))
             .map_err(|e| format!("MessagePack serialization failed: {e}")),
-        WireFormat::Protobuf => {
-            let proto = ProtoPusherMessage::from(message.clone());
-            let mut buf = Vec::with_capacity(proto.encoded_len());
-            proto
-                .encode(&mut buf)
-                .map_err(|e| format!("Protobuf serialization failed: {e}"))?;
-            Ok(buf)
-        }
+        WireFormat::Protobuf => Ok(encode_proto_message(message, None)),
     }
 }
 
@@ -79,17 +72,18 @@ pub fn serialize_versioned_message(
         WireFormat::Json => {
             sonic_rs::to_vec(message).map_err(|e| format!("JSON serialization failed: {e}"))
         }
-        WireFormat::MessagePack => {
-            rmp_serde::to_vec(&MsgpackVersionedRealtimeMessage::from(message.clone()))
-                .map_err(|e| format!("MessagePack serialization failed: {e}"))
-        }
+        WireFormat::MessagePack => rmp_serde::to_vec(&MsgpackVersionedView::from(message))
+            .map_err(|e| format!("MessagePack serialization failed: {e}")),
         WireFormat::Protobuf => {
-            let proto = ProtoVersionedRealtimeMessage::from(message.clone());
-            let mut buf = Vec::with_capacity(proto.encoded_len());
-            proto
-                .encode(&mut buf)
-                .map_err(|e| format!("Protobuf serialization failed: {e}"))?;
-            Ok(buf)
+            let envelope = ProtoVersionedRealtimeMessage {
+                message: None,
+                action: message.action.as_str().into(),
+                message_serial: message.message_serial.clone(),
+                history_serial: message.history_serial,
+                delivery_serial: message.delivery_serial,
+                version: message.version.clone().map(Into::into),
+            };
+            Ok(encode_proto_message(&message.message, Some(&envelope)))
         }
     }
 }
@@ -128,6 +122,249 @@ where
         return Err("MessagePack deserialization failed: trailing bytes after value".to_string());
     }
     Ok(value)
+}
+
+// Encoder-only views borrow payloads. Decoder structs remain owned so their wire
+// schema and exact trailing-byte checks remain unchanged.
+#[derive(Serialize)]
+struct MsgpackPusherView<'a> {
+    event: &'a Option<String>,
+    channel: &'a Option<String>,
+    data: Option<MsgpackDataView<'a>>,
+    name: &'a Option<String>,
+    user_id: &'a Option<String>,
+    tags: &'a Option<BTreeMap<String, String>>,
+    sequence: Option<u64>,
+    conflation_key: &'a Option<String>,
+    message_id: &'a Option<String>,
+    stream_id: &'a Option<String>,
+    serial: Option<u64>,
+    idempotency_key: &'a Option<String>,
+    extras: Option<MsgpackMessageExtras>,
+    delta_sequence: Option<u64>,
+    delta_conflation_key: &'a Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum MsgpackDataView<'a> {
+    String(&'a str),
+    Binary(#[serde(with = "serde_bytes")] &'a [u8]),
+    Structured(MsgpackStructuredData),
+    Json(String),
+}
+
+impl<'a> From<&'a MessageData> for MsgpackDataView<'a> {
+    fn from(value: &'a MessageData) -> Self {
+        match value {
+            MessageData::String(value) => Self::String(value),
+            MessageData::Binary(value) => Self::Binary(value),
+            MessageData::Json(value) => {
+                Self::Json(sonic_rs::to_string(value).unwrap_or_else(|_| "null".into()))
+            }
+            value @ MessageData::Structured { .. } => {
+                let MsgpackMessageData::Structured(value) = MsgpackMessageData::from(value.clone())
+                else {
+                    unreachable!()
+                };
+                Self::Structured(value)
+            }
+        }
+    }
+}
+
+impl<'a> From<&'a PusherMessage> for MsgpackPusherView<'a> {
+    fn from(value: &'a PusherMessage) -> Self {
+        Self {
+            event: &value.event,
+            channel: &value.channel,
+            data: value.data.as_ref().map(Into::into),
+            name: &value.name,
+            user_id: &value.user_id,
+            tags: &value.tags,
+            sequence: value.sequence,
+            conflation_key: &value.conflation_key,
+            message_id: &value.message_id,
+            stream_id: &value.stream_id,
+            serial: value.serial,
+            idempotency_key: &value.idempotency_key,
+            extras: value.extras.clone().map(Into::into),
+            delta_sequence: value.delta_sequence,
+            delta_conflation_key: &value.delta_conflation_key,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct MsgpackVersionedView<'a> {
+    message: MsgpackPusherView<'a>,
+    action: MessageAction,
+    message_serial: &'a str,
+    history_serial: Option<u64>,
+    delivery_serial: Option<u64>,
+    version: Option<MsgpackMessageVersionMetadata>,
+}
+
+impl<'a> From<&'a VersionedRealtimeMessage> for MsgpackVersionedView<'a> {
+    fn from(value: &'a VersionedRealtimeMessage) -> Self {
+        Self {
+            message: (&value.message).into(),
+            action: value.action,
+            message_serial: &value.message_serial,
+            history_serial: value.history_serial,
+            delivery_serial: value.delivery_serial,
+            version: value.version.clone().map(Into::into),
+        }
+    }
+}
+
+fn encode_proto_message(
+    message: &PusherMessage,
+    envelope: Option<&ProtoVersionedRealtimeMessage>,
+) -> Vec<u8> {
+    use prost::encoding::{bytes, string, uint64};
+    // Only JSON/structured conversion needs owned encoded data. String and binary
+    // input is written straight into the final envelope with no payload clone.
+    let converted = message.data.as_ref().and_then(|data| match data {
+        MessageData::String(_) | MessageData::Binary(_) => None,
+        data => Some(ProtoMessageData::from(data.clone())),
+    });
+    let extras = message.extras.clone().map(ProtoMessageExtras::from);
+    let data_len = match message.data.as_ref() {
+        Some(MessageData::String(data)) => string::encoded_len(1, data),
+        Some(MessageData::Binary(data)) => bytes::encoded_len(4, data),
+        _ => converted.as_ref().map_or(0, Message::encoded_len),
+    };
+    let mut inner_len = [
+        (1, &message.event),
+        (2, &message.channel),
+        (4, &message.name),
+        (5, &message.user_id),
+        (8, &message.conflation_key),
+        (9, &message.message_id),
+        (10, &message.stream_id),
+        (12, &message.idempotency_key),
+        (15, &message.delta_conflation_key),
+    ]
+    .into_iter()
+    .map(|(tag, value)| {
+        value
+            .as_ref()
+            .map_or(0, |value| string::encoded_len(tag, value))
+    })
+    .sum::<usize>();
+    inner_len += [
+        (7, message.sequence),
+        (11, message.serial),
+        (14, message.delta_sequence),
+    ]
+    .into_iter()
+    .map(|(tag, value)| {
+        value
+            .as_ref()
+            .map_or(0, |value| uint64::encoded_len(tag, value))
+    })
+    .sum::<usize>();
+    if message.data.is_some() {
+        inner_len += 1 + prost::encoding::encoded_len_varint(data_len as u64) + data_len;
+    }
+    if let Some(tags) = &message.tags {
+        for (key, value) in tags {
+            let len = proto_tag_entry_len(key, value);
+            inner_len += 1 + prost::encoding::encoded_len_varint(len as u64) + len;
+        }
+    }
+    if let Some(extras) = &extras {
+        inner_len += prost::encoding::message::encoded_len(13, extras);
+    }
+    let envelope_len = envelope.map_or(0, |envelope| {
+        1 + prost::encoding::encoded_len_varint(inner_len as u64) + envelope.encoded_len()
+    });
+    // Write a nested message straight into its final envelope. Materializing an
+    // intermediate encoded Vec would copy the payload again for versioned sends.
+    let mut output = Vec::with_capacity(inner_len + envelope_len);
+    if envelope.is_some() {
+        prost::encoding::encode_key(1, prost::encoding::WireType::LengthDelimited, &mut output);
+        prost::encoding::encode_varint(inner_len as u64, &mut output);
+    }
+    if let Some(value) = &message.event {
+        string::encode(1, value, &mut output);
+    }
+    if let Some(value) = &message.channel {
+        string::encode(2, value, &mut output);
+    }
+    if let Some(data) = &message.data {
+        prost::encoding::encode_key(3, prost::encoding::WireType::LengthDelimited, &mut output);
+        prost::encoding::encode_varint(data_len as u64, &mut output);
+        match data {
+            MessageData::String(data) => string::encode(1, data, &mut output),
+            MessageData::Binary(data) => bytes::encode(4, data, &mut output),
+            _ => {
+                if let Some(data) = &converted {
+                    data.encode_raw(&mut output);
+                }
+            }
+        }
+    }
+    if let Some(value) = &message.name {
+        string::encode(4, value, &mut output);
+    }
+    if let Some(value) = &message.user_id {
+        string::encode(5, value, &mut output);
+    }
+    if let Some(tags) = &message.tags {
+        for (key, value) in tags {
+            let len = proto_tag_entry_len(key, value);
+            prost::encoding::encode_key(6, prost::encoding::WireType::LengthDelimited, &mut output);
+            prost::encoding::encode_varint(len as u64, &mut output);
+            if !key.is_empty() {
+                string::encode(1, key, &mut output);
+            }
+            if !value.is_empty() {
+                string::encode(2, value, &mut output);
+            }
+        }
+    }
+    if let Some(value) = &message.sequence {
+        uint64::encode(7, value, &mut output);
+    }
+    if let Some(value) = &message.conflation_key {
+        string::encode(8, value, &mut output);
+    }
+    if let Some(value) = &message.message_id {
+        string::encode(9, value, &mut output);
+    }
+    if let Some(value) = &message.stream_id {
+        string::encode(10, value, &mut output);
+    }
+    if let Some(value) = &message.serial {
+        uint64::encode(11, value, &mut output);
+    }
+    if let Some(value) = &message.idempotency_key {
+        string::encode(12, value, &mut output);
+    }
+    if let Some(value) = &extras {
+        prost::encoding::message::encode(13, value, &mut output);
+    }
+    if let Some(value) = &message.delta_sequence {
+        uint64::encode(14, value, &mut output);
+    }
+    if let Some(value) = &message.delta_conflation_key {
+        string::encode(15, value, &mut output);
+    }
+    if let Some(envelope) = envelope {
+        envelope.encode_raw(&mut output);
+    }
+    debug_assert_eq!(output.len(), inner_len + envelope_len);
+    output
+}
+
+fn proto_tag_entry_len(key: &str, value: &str) -> usize {
+    [key, value]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .map(|value| 1 + prost::encoding::encoded_len_varint(value.len() as u64) + value.len())
+        .sum()
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1071,5 +1308,95 @@ mod tests {
     #[test]
     fn parse_query_param_rejects_unknown_value() {
         assert!(WireFormat::parse_query_param(Some("avro")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowing_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_encoders_preserve_every_binary_field_and_owned_decoders() {
+        for data in [
+            MessageData::String("x".repeat(65_536)),
+            MessageData::Binary(vec![0, 255, 1, 128]),
+            MessageData::Json(
+                sonic_rs::json!({"large":u64::MAX,"negative":i64::MIN,"nested":[1,true,null]}),
+            ),
+            MessageData::Structured {
+                channel: Some("channel".into()),
+                channel_data: Some("data".into()),
+                user_data: Some("user".into()),
+                extra: AHashMap::from_iter([("number".into(), sonic_rs::json!(u64::MAX))]),
+            },
+        ] {
+            let mut message = PusherMessage::ping();
+            message.event = Some("sockudo:message.create".into());
+            message.channel = Some("private-channel".into());
+            message.data = Some(data);
+            message.name = Some("name".into());
+            message.user_id = Some("user".into());
+            message.tags = Some(BTreeMap::from([
+                ("tag".into(), "value".into()),
+                ("".into(), "".into()),
+            ]));
+            message.sequence = Some(0);
+            message.conflation_key = Some("key".into());
+            message.message_id = Some("id".into());
+            message.stream_id = Some("stream".into());
+            message.serial = Some(u64::MAX);
+            message.idempotency_key = Some("idem".into());
+            message.delta_sequence = Some(123);
+            message.delta_conflation_key = Some("delta-key".into());
+            message.extras = Some(MessageExtras {
+                headers: Some(HashMap::from([
+                    ("text".into(), ExtrasValue::String("header".into())),
+                    ("number".into(), ExtrasValue::Number(0.5)),
+                    ("bool".into(), ExtrasValue::Bool(false)),
+                ])),
+                ephemeral: Some(false),
+                echo: Some(true),
+                idempotency_key: Some("extras-id".into()),
+                ai: Some(AiExtras {
+                    transport: Some(HashMap::from([("status".into(), "complete".into())])),
+                    codec: Some(HashMap::from([("format".into(), "json".into())])),
+                }),
+                ..MessageExtras::default()
+            });
+            let encoded = serialize_message(&message, WireFormat::MessagePack).unwrap();
+            assert_eq!(
+                deserialize_msgpack_exact::<MsgpackPusherMessage>(&encoded).unwrap(),
+                MsgpackPusherMessage::from(message.clone())
+            );
+            let proto = serialize_message(&message, WireFormat::Protobuf).unwrap();
+            assert_eq!(
+                ProtoPusherMessage::decode(proto.as_slice()).unwrap(),
+                ProtoPusherMessage::from(message.clone())
+            );
+            let versioned = VersionedRealtimeMessage {
+                message,
+                action: MessageAction::Create,
+                message_serial: "m1".into(),
+                history_serial: Some(11),
+                delivery_serial: Some(12),
+                version: Some(MessageVersionMetadata {
+                    serial: "v1".into(),
+                    timestamp_ms: -1,
+                    client_id: Some("creator".into()),
+                    description: Some("created".into()),
+                    metadata: Some(sonic_rs::json!({"large":u64::MAX})),
+                }),
+            };
+            let encoded = serialize_versioned_message(&versioned, WireFormat::MessagePack).unwrap();
+            assert_eq!(
+                deserialize_msgpack_exact::<MsgpackVersionedRealtimeMessage>(&encoded).unwrap(),
+                MsgpackVersionedRealtimeMessage::from(versioned.clone())
+            );
+            let proto = serialize_versioned_message(&versioned, WireFormat::Protobuf).unwrap();
+            assert_eq!(
+                ProtoVersionedRealtimeMessage::decode(proto.as_slice()).unwrap(),
+                ProtoVersionedRealtimeMessage::from(versioned)
+            );
+        }
     }
 }

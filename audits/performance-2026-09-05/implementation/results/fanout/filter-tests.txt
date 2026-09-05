@@ -1,0 +1,9 @@
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_filter-d1d3ec01ac39da65)
+
+running 1 test
+test predicate::tests::equal_ids_do_not_prove_equivalent_predicates ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out; finished in 0.00s
+

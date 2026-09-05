@@ -1,0 +1,3 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/c4/crates/sockudo-core)
+   Compiling presence-audit v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/presence-bench-c4)
+    Finished `release` profile [optimized] target(s) in 25.59s

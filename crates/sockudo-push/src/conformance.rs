@@ -126,6 +126,62 @@ impl PushStoreConformance {
         Ok(())
     }
 
+    /// Check client-index continuation, reassignment, and scope against the same canonical rows.
+    pub async fn assert_indexed_client_pagination<S: PushDeviceStore + ?Sized>(
+        store: &S,
+    ) -> PushStorageResult<()> {
+        let app = format!("client-pages-{}", rand::random::<u64>());
+        let template = sample_device("template", 86_400_000);
+        let mut expected = std::collections::BTreeSet::new();
+        for index in 0..32 {
+            let mut device = template.clone();
+            device.app_id = app.clone();
+            device.id = format!("device-{index:03}");
+            let selected = index % 7 == 0;
+            device.client_id = Some(if selected { "selected" } else { "unrelated" }.to_owned());
+            if selected {
+                expected.insert(device.id.clone());
+            }
+            store.upsert_device(device).await?;
+        }
+        let mut cursor = None;
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            let page = store
+                .list_devices_by_client(&app, "selected", 2, cursor)
+                .await?;
+            assert!(page.items.len() <= 2);
+            for device in page.items {
+                assert_eq!(device.client_id.as_deref(), Some("selected"));
+                assert!(seen.insert(device.id));
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, expected);
+        let moved_id = expected.pop_first().unwrap();
+        let mut moved = store.get_device(&app, &moved_id).await?.unwrap();
+        moved.client_id = Some("moved".to_owned());
+        store.upsert_device(moved).await?;
+        let remaining = store
+            .list_devices_by_client(&app, "selected", 32, None)
+            .await?;
+        assert_eq!(
+            remaining
+                .items
+                .into_iter()
+                .map(|device| device.id)
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
+        let moved = store.list_devices_by_client(&app, "moved", 2, None).await?;
+        assert_eq!(moved.items.len(), 1);
+        assert_eq!(moved.items[0].id, moved_id);
+        Ok(())
+    }
+
     pub async fn assert_stale_cleanup_scans<S>(store: S) -> PushStorageResult<()>
     where
         S: PushDeviceStore,
@@ -227,6 +283,8 @@ impl PushStoreConformance {
         );
 
         let missing = VersionedPublishStatus {
+            pending_feedback: Default::default(),
+            pending_children: Default::default(),
             status: PublishStatus {
                 publish_id: "missing".to_owned(),
                 ..status.clone()

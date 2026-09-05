@@ -282,15 +282,15 @@ impl From<&App> for StoredApp {
 #[derive(Debug, Deserialize, SurrealValue)]
 struct SurrealAppRecord {
     id: RecordId,
-    #[serde(flatten)]
-    app: StoredApp,
+    key: String,
+    payload: String,
 }
 
 impl TryFrom<SurrealAppRecord> for App {
     type Error = Error;
 
     fn try_from(record: SurrealAppRecord) -> Result<Self> {
-        let mut app: App = sonic_rs::from_str(&record.app.payload).map_err(|e| {
+        let mut app: App = sonic_rs::from_str(&record.payload).map_err(|e| {
             Error::Internal(format!(
                 "Failed to decode Sockudo app payload from SurrealDB: {e}"
             ))
@@ -304,7 +304,7 @@ impl TryFrom<SurrealAppRecord> for App {
                 )));
             }
         };
-        app.key = record.app.key;
+        app.key = record.key;
         Ok(app)
     }
 }
@@ -325,6 +325,19 @@ impl AppManager for SurrealDbAppManager {
 
     async fn delete_app(&self, app_id: &str) -> Result<()> {
         self.delete_app(app_id).await
+    }
+
+    async fn has_apps(&self) -> Result<bool> {
+        let mut response = self
+            .db
+            .query("SELECT VALUE true FROM type::table($table) LIMIT 1")
+            .bind(("table", self.config.table_name.clone()))
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to check configured apps: {e}")))?;
+        let records: Vec<bool> = response
+            .take(0)
+            .map_err(|e| Error::Internal(format!("Failed to read app presence: {e}")))?;
+        Ok(!records.is_empty())
     }
 
     async fn get_apps(&self) -> Result<Vec<App>> {

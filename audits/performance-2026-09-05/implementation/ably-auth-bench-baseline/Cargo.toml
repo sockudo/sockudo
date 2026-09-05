@@ -1,0 +1,25 @@
+[package]
+name="ably-auth-audit-baseline"
+version="0.0.0"
+edition="2024"
+[workspace]
+[dependencies]
+async-trait="0.1.89"
+base64="0.22"
+chrono="^0.4.42"
+crossfire={version="3.1.5",features=["tokio"]}
+serde={version="^1",features=["derive", "rc"]}
+serde_json="1"
+thiserror="^2.0.17"
+dashmap="^6.1.0"
+tokio={version="^1",features=["full", "tracing"]}
+
+redis={version="1",features=["tokio-comp","connection-manager"]}
+
+sonic-rs="0.5.6"
+sha2="0.11.0-rc.3"
+tracing="0.1"
+
+[features]
+current=[]
+push=[]

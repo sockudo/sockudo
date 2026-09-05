@@ -1,0 +1,27 @@
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.00s
+     Running unittests src/main.rs (target/debug/deps/sockudo-1ce900ee46723fc4)
+
+running 5 tests
+test history::maintenance_tests::c6_dynamodb_accounting ... ok
+test history::maintenance_tests::c6_mysql_accounting ... ok
+test history::maintenance_tests::c6_postgres_accounting ... ok
+test history::maintenance_tests::c6_scylla_accounting ... 
+thread 'history::maintenance_tests::c6_scylla_accounting' (101806) panicked at crates/sockudo-server/src/history/maintenance_tests.rs:138:44:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to commit ScyllaDB history append: Database returned an error: Not enough nodes responded to the write request in time to satisfy required consistency level (consistency: LocalSerial, received: 0, required: 1, write_type: Cas), Error message: Operation timed out for c6_51ebadd459ba.c6_bdc34d8e9143_entries - received only 0 responses from 1 CL=LOCAL_SERIAL.")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test history::maintenance_tests::c6_surreal_accounting ... 
+thread 'history::maintenance_tests::c6_surreal_accounting' (102389) panicked at crates/sockudo-server/src/history/maintenance_tests.rs:138:44:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to commit SurrealDB history retention: Query not executed: Transaction conflict: Write conflict, retry the transaction. This transaction can be retried")
+FAILED
+
+failures:
+
+failures:
+    history::maintenance_tests::c6_scylla_accounting
+    history::maintenance_tests::c6_surreal_accounting
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 125 filtered out; finished in 14.12s
+
+error: test failed, to rerun pass `-p sockudo --bin sockudo`

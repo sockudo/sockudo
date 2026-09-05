@@ -114,172 +114,9 @@ impl VersionStore for ScyllaVersionStore {
     }
 
     async fn append_version(&self, record: StoredVersionRecord) -> Result<()> {
-        let now_ms = sockudo_core::history::now_ms();
-        let payload = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
-        let payload_size = payload.len() as i64;
-
-        // Write to both entry tables for the two query access patterns.
-        let insert_by_msg = format!(
-            "INSERT INTO {} (app_id, channel, message_serial, version_serial, delivery_serial, history_serial, action, client_id, description, event_name, payload_bytes, payload_size_bytes, version_timestamp_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS{}",
-            self.tables.version_entries_by_message_fq(),
-            self.ttl_suffix(),
-        );
-        self.session
-            .query_unpaged(
-                insert_by_msg.as_str(),
-                (
-                    &record.app_id,
-                    &record.channel,
-                    record.message_serial().as_str(),
-                    record.version_serial().as_str(),
-                    record.delivery_serial() as i64,
-                    record.history_serial() as i64,
-                    record.message.action.as_str(),
-                    record.original_client_id.as_deref(),
-                    record.message.version.description.as_deref(),
-                    record.message.name.as_deref(),
-                    payload.as_slice(),
-                    payload_size,
-                    record.message.version.timestamp_ms,
-                    now_ms,
-                ),
-            )
-            .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to insert version entry (by-message): {e}"))
-            })?;
-
-        let insert_by_delivery = format!(
-            "INSERT INTO {} (app_id, channel, delivery_serial, message_serial, version_serial, history_serial, action, client_id, description, event_name, payload_bytes, payload_size_bytes, version_timestamp_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS{}",
-            self.tables.version_entries_by_delivery_fq(),
-            self.ttl_suffix(),
-        );
-        self.session
-            .query_unpaged(
-                insert_by_delivery.as_str(),
-                (
-                    &record.app_id,
-                    &record.channel,
-                    record.delivery_serial() as i64,
-                    record.message_serial().as_str(),
-                    record.version_serial().as_str(),
-                    record.history_serial() as i64,
-                    record.message.action.as_str(),
-                    record.original_client_id.as_deref(),
-                    record.message.version.description.as_deref(),
-                    record.message.name.as_deref(),
-                    payload.as_slice(),
-                    payload_size,
-                    record.message.version.timestamp_ms,
-                    now_ms,
-                ),
-            )
-            .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to insert version entry (by-delivery): {e}"))
-            })?;
-
-        // Upsert version_messages. ScyllaDB has no conditional upsert like SQL; use a LWT
-        // to only advance if the new version_serial is greater than the stored one.
-        let select_msg_q = format!(
-            "SELECT latest_version_serial FROM {} WHERE app_id = ? AND channel = ? AND message_serial = ?",
-            self.tables.version_messages_fq()
-        );
-        let insert_msg_q = format!(
-            "INSERT INTO {} (app_id, channel, message_serial, history_serial, original_client_id, latest_version_serial, latest_delivery_serial, latest_action, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS{}",
-            self.tables.version_messages_fq(),
-            self.ttl_suffix(),
-        );
-        let update_msg_q = format!(
-            "UPDATE {} {}SET latest_version_serial = ?, latest_delivery_serial = ?, latest_action = ?, updated_at_ms = ? WHERE app_id = ? AND channel = ? AND message_serial = ? IF latest_version_serial < ?",
-            self.tables.version_messages_fq(),
-            self.update_ttl_clause(),
-        );
-
-        let existing = self
-            .session
-            .query_unpaged(
-                select_msg_q.as_str(),
-                (
-                    &record.app_id,
-                    &record.channel,
-                    record.message_serial().as_str(),
-                ),
-            )
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to read version message row: {e}")))?
-            .into_rows_result()
-            .map_err(|e| Error::Internal(format!("Failed to decode version message row: {e}")))?;
-
-        if let Some(row) = existing
-            .maybe_first_row::<(Option<String>,)>()
-            .map_err(|e| Error::Internal(format!("Failed to deserialize version message: {e}")))?
-        {
-            let current_serial = row.0.unwrap_or_default();
-            if record.version_serial().as_str() > current_serial.as_str() {
-                let mut stmt = Statement::new(update_msg_q.clone());
-                stmt.set_serial_consistency(Some(SerialConsistency::LocalSerial));
-                self.session
-                    .query_unpaged(
-                        stmt,
-                        (
-                            record.version_serial().as_str(),
-                            record.delivery_serial() as i64,
-                            record.message.action.as_str(),
-                            now_ms,
-                            &record.app_id,
-                            &record.channel,
-                            record.message_serial().as_str(),
-                            record.version_serial().as_str(),
-                        ),
-                    )
-                    .await
-                    .map_err(|e| {
-                        Error::Internal(format!("Failed to update version message: {e}"))
-                    })?;
-            }
-        } else {
-            let mut stmt = Statement::new(insert_msg_q.clone());
-            stmt.set_serial_consistency(Some(SerialConsistency::LocalSerial));
-            self.session
-                .query_unpaged(
-                    stmt,
-                    (
-                        &record.app_id,
-                        &record.channel,
-                        record.message_serial().as_str(),
-                        record.history_serial() as i64,
-                        record.original_client_id.as_deref(),
-                        record.version_serial().as_str(),
-                        record.delivery_serial() as i64,
-                        record.message.action.as_str(),
-                        now_ms,
-                        now_ms,
-                    ),
-                )
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to insert version message row: {e}"))
-                })?;
-        }
-
-        // Update stream delivery window (best-effort, non-LWT).
-        let update_stream = format!(
-            "UPDATE {} SET updated_at_ms = ? WHERE app_id = ? AND channel = ?",
-            self.tables.version_streams_fq()
-        );
-        self.session
-            .query_unpaged(
-                update_stream.as_str(),
-                (now_ms, &record.app_id, &record.channel),
-            )
-            .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to update version stream timestamp: {e}"))
-            })?;
-
-        Ok(())
+        let record = self.import_atomic_version(&record).await?.unwrap_or(record);
+        let payload = sonic_rs::to_vec(&record)?;
+        self.append_projection(&record, &payload).await
     }
 
     async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
@@ -353,9 +190,7 @@ impl VersionStore for ScyllaVersionStore {
             .maybe_first_row::<(Vec<u8>,)>()
             .map_err(|e| Error::Internal(format!("Failed to deserialize create target: {e}")))?
         {
-            let current = sonic_rs::from_slice(&payload).map_err(|e| {
-                Error::Internal(format!("Failed to decode existing version record: {e}"))
-            })?;
+            let current = self.decode_records(vec![payload]).await?.remove(0);
             return Ok(VersionCreateResult::Conflict {
                 current: Some(current),
             });
@@ -480,9 +315,7 @@ impl VersionStore for ScyllaVersionStore {
                 if fingerprint != operation.payload_fingerprint {
                     return Err(Error::IdempotencyConflict);
                 }
-                let record = sonic_rs::from_slice(&payload).map_err(|e| {
-                    Error::Internal(format!("Failed to decode mutation receipt payload: {e}"))
-                })?;
+                let record = self.decode_records(vec![payload]).await?.remove(0);
                 return Ok(VersionMutationResult::Duplicate {
                     record,
                     stream_id: format!("{}/{}", request.app_id, request.channel),
@@ -525,11 +358,9 @@ impl VersionStore for ScyllaVersionStore {
         else {
             return Ok(VersionMutationResult::Conflict { current: None });
         };
-        let current: StoredVersionRecord = sonic_rs::from_slice(&current_payload).map_err(|e| {
-            Error::Internal(format!(
-                "Failed to decode mutation predecessor payload: {e}"
-            ))
-        })?;
+        let current_encoding =
+            sockudo_core::version_store::EncodedVersionRecord::decode(&current_payload)?;
+        let current = self.decode_records(vec![current_payload]).await?.remove(0);
         let delivery_serial = (next_delivery as u64).max(current.delivery_serial() + 1);
         let stream_id = format!("{}/{}", request.app_id, request.channel);
         let outcome =
@@ -553,8 +384,11 @@ impl VersionStore for ScyllaVersionStore {
                 request.mutation,
                 sockudo_core::version_store::VersionMutation::Append(_)
             ));
-        let payload = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize mutation record: {e}")))?;
+        let plan = sockudo_core::version_store::EncodedVersionRecord::plan(
+            &record,
+            Some((&current, current_encoding.text.as_ref())),
+        )?;
+        let payload = &plan.entry_bytes;
         let version_key = version_commit_key(
             record.message_serial().as_str(),
             record.version_serial().as_str(),
@@ -567,7 +401,7 @@ impl VersionStore for ScyllaVersionStore {
             "UPDATE {commits} SET next_delivery_serial = ?, open_stream_count = ? WHERE app_id = ? AND channel = ? AND commit_key = 's' IF next_delivery_serial = ? AND open_stream_count = ?"
         )));
         batch.append_statement(Statement::new(format!(
-            "UPDATE {commits} SET payload_bytes = ?, latest_version_serial = ?, latest_delivery_serial = ?, action = ?, append_count = ?, is_open_stream = ?, created_at_ms = ? WHERE app_id = ? AND channel = ? AND commit_key = ? IF latest_version_serial = ? AND latest_delivery_serial = ?"
+            "UPDATE {commits} SET payload_bytes = ?, latest_version_serial = ?, latest_delivery_serial = ?, action = ?, append_count = ?, is_open_stream = ?, created_at_ms = ? WHERE app_id = ? AND channel = ? AND commit_key = ? IF latest_version_serial = ? AND latest_delivery_serial = ? AND append_count = ?"
         )));
         batch.append_statement(Statement::new(format!(
             "INSERT INTO {commits} (app_id, channel, commit_key, payload_bytes, latest_version_serial, latest_delivery_serial, history_serial, action, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS"
@@ -575,6 +409,11 @@ impl VersionStore for ScyllaVersionStore {
         batch.append_statement(Statement::new(format!(
             "INSERT INTO {commits} (app_id, channel, commit_key, payload_bytes, latest_version_serial, latest_delivery_serial, history_serial, action, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS"
         )));
+        if plan.snapshot.is_some() {
+            batch.append_statement(Statement::new(format!(
+                "INSERT INTO {commits} (app_id, channel, commit_key, payload_bytes, created_at_ms) VALUES (?, ?, ?, ?, ?)"
+            )));
+        }
         if request.idempotency.is_some() {
             batch.append_statement(Statement::new(format!(
                 "INSERT INTO {commits} (app_id, channel, commit_key, payload_bytes, latest_version_serial, created_at_ms) VALUES (?, ?, ?, ?, ?, ?) IF NOT EXISTS"
@@ -590,7 +429,7 @@ impl VersionStore for ScyllaVersionStore {
                 open_count,
             ),
             (
-                payload.as_slice(),
+                plan.latest_bytes.as_slice(),
                 record.version_serial().as_str(),
                 delivery_serial as i64,
                 record.message.action.as_str(),
@@ -602,6 +441,7 @@ impl VersionStore for ScyllaVersionStore {
                 &message_key,
                 expected_version.as_str(),
                 expected_delivery,
+                append_count,
             ),
             (
                 &record.app_id,
@@ -626,29 +466,86 @@ impl VersionStore for ScyllaVersionStore {
                 now_ms,
             ),
         );
-        let result = if let Some(operation) = request.idempotency.as_ref() {
-            let operation_key = operation_commit_key(&operation.cache_key);
-            self.session
-                .batch(
-                    &batch,
+        let snapshot_key = plan
+            .snapshot
+            .as_ref()
+            .map(|(reference, _)| Self::text_key(&reference.snapshot_key));
+        let snapshot_values =
+            plan.snapshot
+                .as_ref()
+                .zip(snapshot_key.as_ref())
+                .map(|((_, text), key)| {
                     (
-                        base_values.0,
-                        base_values.1,
-                        base_values.2,
-                        base_values.3,
-                        (
-                            &record.app_id,
-                            &record.channel,
-                            operation_key,
-                            payload.as_slice(),
-                            &operation.payload_fingerprint,
-                            now_ms,
-                        ),
-                    ),
+                        &record.app_id,
+                        &record.channel,
+                        key,
+                        text.as_bytes(),
+                        now_ms,
+                    )
+                });
+        let operation_key = request
+            .idempotency
+            .as_ref()
+            .map(|operation| operation_commit_key(&operation.cache_key));
+        let operation_values = request
+            .idempotency
+            .as_ref()
+            .zip(operation_key.as_ref())
+            .map(|(operation, key)| {
+                (
+                    &record.app_id,
+                    &record.channel,
+                    key,
+                    payload.as_slice(),
+                    &operation.payload_fingerprint,
+                    now_ms,
                 )
-                .await
-        } else {
-            self.session.batch(&batch, base_values).await
+            });
+        let result = match (snapshot_values, operation_values) {
+            (Some(snapshot), Some(operation)) => {
+                self.session
+                    .batch(
+                        &batch,
+                        (
+                            base_values.0,
+                            base_values.1,
+                            base_values.2,
+                            base_values.3,
+                            snapshot,
+                            operation,
+                        ),
+                    )
+                    .await
+            }
+            (Some(snapshot), None) => {
+                self.session
+                    .batch(
+                        &batch,
+                        (
+                            base_values.0,
+                            base_values.1,
+                            base_values.2,
+                            base_values.3,
+                            snapshot,
+                        ),
+                    )
+                    .await
+            }
+            (None, Some(operation)) => {
+                self.session
+                    .batch(
+                        &batch,
+                        (
+                            base_values.0,
+                            base_values.1,
+                            base_values.2,
+                            base_values.3,
+                            operation,
+                        ),
+                    )
+                    .await
+            }
+            (None, None) => self.session.batch(&batch, base_values).await,
         }
         .map_err(|e| map_scylla_lwt_error("commit atomic version mutation", e))?;
         if !version_batch_applied(result)? {
@@ -658,7 +555,7 @@ impl VersionStore for ScyllaVersionStore {
                     .await?,
             });
         }
-        if let Err(error) = self.append_version(record.clone()).await {
+        if let Err(error) = self.append_projection(&record, payload).await {
             tracing::warn!(error = %error, "failed to refresh ScyllaDB version mutation projections");
         }
         Ok(VersionMutationResult::Applied { record, stream_id })
@@ -688,9 +585,7 @@ impl VersionStore for ScyllaVersionStore {
             .maybe_first_row::<(Vec<u8>,)>()
             .map_err(|e| Error::Internal(format!("Failed to deserialize atomic latest: {e}")))?
         {
-            let record = sonic_rs::from_slice(&payload).map_err(|e| {
-                Error::Internal(format!("Failed to decode atomic latest payload: {e}"))
-            })?;
+            let record = self.decode_records(vec![payload]).await?.remove(0);
             return Ok(Some(record));
         }
         // version_entries_by_message is clustered by version_serial DESC — LIMIT 1 gives the latest.
@@ -713,9 +608,65 @@ impl VersionStore for ScyllaVersionStore {
             return Ok(None);
         };
 
-        let record: StoredVersionRecord = sonic_rs::from_slice(&row.0)
-            .map_err(|e| Error::Internal(format!("Failed to deserialize version record: {e}")))?;
+        let record = self.decode_records(vec![row.0]).await?.remove(0);
         Ok(Some(record))
+    }
+
+    async fn get_latest_batch(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serials: &[sockudo_core::versioned_messages::MessageSerial],
+    ) -> Result<
+        std::collections::BTreeMap<
+            sockudo_core::versioned_messages::MessageSerial,
+            StoredVersionRecord,
+        >,
+    > {
+        let requested: Vec<_> = message_serials
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut result = std::collections::BTreeMap::new();
+        for chunk in requested.chunks(100) {
+            let keys: Vec<_> = chunk
+                .iter()
+                .map(|serial| message_commit_key(serial.as_str()))
+                .collect();
+            let sql = format!(
+                "SELECT payload_bytes FROM {} WHERE app_id = ? AND channel = ? AND commit_key IN ?",
+                self.tables.version_commits_fq()
+            );
+            let rows = self
+                .session
+                .query_unpaged(sql, (app_id, channel, keys))
+                .await
+                .map_err(|e| Error::Internal(format!("failed to read atomic latest batch: {e}")))?
+                .into_rows_result()
+                .map_err(|e| {
+                    Error::Internal(format!("failed to decode atomic latest batch: {e}"))
+                })?;
+            for row in rows
+                .rows::<(Vec<u8>,)>()
+                .map_err(|e| Error::Internal(format!("failed to decode latest batch rows: {e}")))?
+            {
+                let (payload,) = row.map_err(|e| {
+                    Error::Internal(format!("failed to decode latest batch row: {e}"))
+                })?;
+                let record = self.decode_records(vec![payload]).await?.remove(0);
+                result.insert(record.message_serial().clone(), record);
+            }
+            // Legacy partitions remain readable during mixed-data migration.
+            for serial in chunk {
+                if !result.contains_key(*serial)
+                    && let Some(record) = self.get_latest(app_id, channel, serial).await?
+                {
+                    result.insert(record.message_serial().clone(), record);
+                }
+            }
+        }
+        Ok(result)
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {
@@ -768,15 +719,9 @@ impl VersionStore for ScyllaVersionStore {
             .map_err(|e| Error::Internal(format!("Failed to collect atomic versions: {e}")))?;
         if !atomic_payloads.is_empty() {
             let has_more = atomic_payloads.len() > request.limit;
-            let items = atomic_payloads
-                .into_iter()
-                .take(request.limit)
-                .map(|payload| {
-                    sonic_rs::from_slice(&payload).map_err(|e| {
-                        Error::Internal(format!("Failed to decode atomic version: {e}"))
-                    })
-                })
-                .collect::<Result<Vec<StoredVersionRecord>>>()?;
+            let items = self
+                .decode_records(atomic_payloads.into_iter().take(request.limit).collect())
+                .await?;
             let next_cursor = if has_more {
                 items.last().map(|item| VersionStoreCursor {
                     version: 1,
@@ -857,14 +802,9 @@ impl VersionStore for ScyllaVersionStore {
             .map_err(|e| Error::Internal(format!("Failed to collect version rows: {e}")))?;
 
         let has_more = raw.len() > request.limit;
-        let items: Vec<StoredVersionRecord> = raw
-            .into_iter()
-            .take(request.limit)
-            .map(|bytes| {
-                sonic_rs::from_slice(&bytes)
-                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let items = self
+            .decode_records(raw.into_iter().take(request.limit).collect())
+            .await?;
 
         let next_cursor = if has_more {
             items.last().map(|item| VersionStoreCursor {
@@ -910,18 +850,12 @@ impl VersionStore for ScyllaVersionStore {
             .map_err(|e| Error::Internal(format!("Failed to decode atomic replay: {e}")))?;
         let atomic = commit_rows
             .rows::<(Vec<u8>,)>()
-            .map_err(|e| Error::Internal(format!("Failed to stream atomic replay: {e}")))?
-            .map(|row| {
-                row.map_err(|e| Error::Internal(format!("Failed to read atomic replay: {e}")))
-                    .and_then(|(payload,)| {
-                        sonic_rs::from_slice(&payload).map_err(|e| {
-                            Error::Internal(format!("Failed to decode atomic replay item: {e}"))
-                        })
-                    })
-            })
-            .collect::<Result<Vec<StoredVersionRecord>>>()?;
+            .map_err(|e| Error::Internal(format!("failed to decode replay rows: {e}")))?
+            .map(|row| row.map(|(payload,)| payload))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Internal(format!("failed to collect replay rows: {e}")))?;
         if !atomic.is_empty() {
-            return Ok(atomic);
+            return self.decode_records(atomic).await;
         }
         let sql = format!(
             "SELECT payload_bytes FROM {} WHERE app_id = ? AND channel = ? AND delivery_serial > ? LIMIT ?",
@@ -943,17 +877,13 @@ impl VersionStore for ScyllaVersionStore {
             .into_rows_result()
             .map_err(|e| Error::Internal(format!("Failed to decode replay rows: {e}")))?;
 
-        rows.rows::<(Vec<u8>,)>()
-            .map_err(|e| Error::Internal(format!("Failed to stream replay rows: {e}")))?
-            .map(|r| {
-                r.map_err(|e| Error::Internal(format!("Failed to collect replay row: {e}")))
-                    .and_then(|(bytes,)| {
-                        sonic_rs::from_slice(&bytes).map_err(|e| {
-                            Error::Internal(format!("Failed to deserialize replay record: {e}"))
-                        })
-                    })
-            })
-            .collect()
+        let payloads = rows
+            .rows::<(Vec<u8>,)>()
+            .map_err(|e| Error::Internal(format!("failed to decode replay rows: {e}")))?
+            .map(|row| row.map(|(payload,)| payload))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Internal(format!("failed to collect replay rows: {e}")))?;
+        self.decode_records(payloads).await
     }
 
     async fn latest_by_history(
@@ -974,21 +904,14 @@ impl VersionStore for ScyllaVersionStore {
             .map_err(|e| Error::Internal(format!("Failed to decode atomic messages: {e}")))?;
         let mut atomic = commit_rows
             .rows::<(Vec<u8>, i64)>()
-            .map_err(|e| Error::Internal(format!("Failed to stream atomic messages: {e}")))?
-            .map(|row| {
-                row.map_err(|e| Error::Internal(format!("Failed to read atomic message: {e}")))
-                    .and_then(|(payload, history)| {
-                        sonic_rs::from_slice(&payload)
-                            .map(|record| (record, history))
-                            .map_err(|e| {
-                                Error::Internal(format!("Failed to decode atomic message: {e}"))
-                            })
-                    })
-            })
-            .collect::<Result<Vec<(StoredVersionRecord, i64)>>>()?;
+            .map_err(|e| Error::Internal(format!("failed to decode latest rows: {e}")))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Internal(format!("failed to collect latest rows: {e}")))?;
         if !atomic.is_empty() {
             atomic.sort_by_key(|value| value.1);
-            return Ok(atomic.into_iter().map(|value| value.0).collect());
+            return self
+                .decode_records(atomic.into_iter().map(|value| value.0).collect())
+                .await;
         }
         // Read version_messages ordered by history_serial, then fetch each entry individually.
         let msg_q = format!(
@@ -1038,13 +961,19 @@ impl VersionStore for ScyllaVersionStore {
                 .maybe_first_row::<(Vec<u8>,)>()
                 .map_err(|e| Error::Internal(format!("Failed to deserialize entry: {e}")))?
             {
-                let record: StoredVersionRecord = sonic_rs::from_slice(&bytes).map_err(|e| {
-                    Error::Internal(format!("Failed to deserialize version record: {e}"))
-                })?;
+                let record = self.decode_records(vec![bytes]).await?.remove(0);
                 result.push(record);
             }
         }
         Ok(result)
+    }
+
+    async fn message_count(&self, app_id: &str, channel: &str) -> Result<u64> {
+        Ok(self.metadata_counts(app_id, channel, false).await?.0)
+    }
+
+    async fn active_stream_count(&self, app_id: &str, channel: &str) -> Result<usize> {
+        Ok(self.metadata_counts(app_id, channel, true).await?.1)
     }
 
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {

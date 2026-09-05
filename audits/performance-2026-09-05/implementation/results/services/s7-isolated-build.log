@@ -1,0 +1,12 @@
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-protocol)
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-filter)
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-push)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-metrics)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-cache)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-app)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-queue)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-webhook)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s7/crates/sockudo-rate-limiter)
+   Compiling services-perf v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/services-bench-s7)
+    Finished `release` profile [optimized] target(s) in 1m 32s

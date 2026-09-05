@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-fanout-probes v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/fanout-probes)
+warning: variant `Cluster` is never constructed
+  --> src/bin/../../../../../../crates/sockudo-delta/src/coordination/redis_coordinator.rs:31:5
+   |
+29 | enum RedisCoordinationConnection {
+   |      --------------------------- variant in this enum
+30 |     Standard(redis::aio::ConnectionManager),
+31 |     Cluster(ClusterConnection),
+   |     ^^^^^^^
+   |
+   = note: `RedisCoordinationConnection` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated functions `new_cluster` and `new_cluster_with_tls` are never used
+   --> src/bin/../../../../../../crates/sockudo-delta/src/coordination/redis_coordinator.rs:107:18
+    |
+ 74 | impl RedisClusterCoordinator {
+    | ---------------------------- associated functions in this implementation
+...
+107 |     pub async fn new_cluster(nodes: Vec<String>, prefix: Option<&str>) -> Result<Self> {
+    |                  ^^^^^^^^^^^
+...
+112 |     pub async fn new_cluster_with_tls(
+    |                  ^^^^^^^^^^^^^^^^^^^^
+
+warning: `sockudo-fanout-probes` (bin "redis_coordination") generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 3m 25s

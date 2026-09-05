@@ -464,6 +464,20 @@ impl AppManager for DynamoDbAppManager {
         Ok(())
     }
 
+    async fn has_apps(&self) -> Result<bool> {
+        let response = self
+            .client
+            .scan()
+            .table_name(&self.config.table_name)
+            .projection_expression("id")
+            .limit(1)
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to check configured apps: {e}")))?;
+        Ok(!response.items().is_empty())
+    }
+
     async fn get_apps(&self) -> Result<Vec<App>> {
         let response = self
             .client

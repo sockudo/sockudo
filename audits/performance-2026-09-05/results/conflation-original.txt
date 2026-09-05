@@ -1,0 +1,19 @@
+probe=current_source_conflation_extraction_component; profile=rustc-opt3; samples=9; iterations=20; no_network
+payload_bytes=1062 subscribers=1 variant=repeated ns_min=215 median=219 max=983
+payload_bytes=1062 subscribers=1 variant=once ns_min=214 median=217 max=225
+payload_bytes=1062 subscribers=100 variant=repeated ns_min=21576 median=21737 max=22535
+payload_bytes=1062 subscribers=100 variant=once ns_min=254 median=258 max=264
+payload_bytes=1062 subscribers=1000 variant=repeated ns_min=218857 median=220976 max=223987
+payload_bytes=1062 subscribers=1000 variant=once ns_min=595 median=600 max=951
+payload_bytes=16422 subscribers=1 variant=repeated ns_min=1391 median=1395 max=2158
+payload_bytes=16422 subscribers=1 variant=once ns_min=1394 median=1395 max=1398
+payload_bytes=16422 subscribers=100 variant=repeated ns_min=138600 median=139493 max=140440
+payload_bytes=16422 subscribers=100 variant=once ns_min=1413 median=1418 max=1425
+payload_bytes=16422 subscribers=1000 variant=repeated ns_min=1389511 median=1403600 max=1408809
+payload_bytes=16422 subscribers=1000 variant=once ns_min=1765 median=1768 max=1780
+payload_bytes=65574 subscribers=1 variant=repeated ns_min=5322 median=5326 max=7300
+payload_bytes=65574 subscribers=1 variant=once ns_min=5319 median=5322 max=5533
+payload_bytes=65574 subscribers=100 variant=repeated ns_min=534370 median=534945 max=537082
+payload_bytes=65574 subscribers=100 variant=once ns_min=5356 median=5359 max=5508
+payload_bytes=65574 subscribers=1000 variant=repeated ns_min=5342967 median=5350019 max=5367550
+payload_bytes=65574 subscribers=1000 variant=once ns_min=5717 median=5723 max=5853

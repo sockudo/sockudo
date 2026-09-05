@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+mod lifecycle;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -31,17 +33,107 @@ pub struct MemoryPushStore {
 #[derive(Default)]
 struct MemoryPushState {
     devices_by_id: BTreeMap<(String, String), DeviceDetails>,
+    devices_by_client: BTreeMap<(String, String, String), ()>,
+    devices_by_day: BTreeSet<(String, String, u64, String)>,
     subscriptions: BTreeMap<(String, String, String), ChannelSubscription>,
+    subscription_positions: BTreeSet<(String, String, String, String)>,
+    subscriptions_by_device: BTreeSet<(String, String, String)>,
+    subscription_channels: BTreeMap<(String, String), usize>,
     credentials: BTreeMap<(String, String), ProviderCredential>,
     templates: BTreeMap<(String, String), NotificationTemplate>,
     publish_status: BTreeMap<(String, String), VersionedPublishStatus>,
     publish_log: BTreeMap<(String, u64, String), PublishLogEvent>,
+    publish_log_by_publish: BTreeSet<(String, String, u64, String)>,
+    lifecycle_scans: BTreeMap<(String, String), crate::lifecycle::LifecycleScan>,
+    lifecycle_tombstones: BTreeMap<(String, String), crate::lifecycle::PublishTombstone>,
+    lifecycle_cursor: Option<(String, String)>,
+    lifecycle_retired_cursor: Option<(String, String)>,
     fanout_shards: BTreeMap<(String, String, String), ShardJob>,
     scheduled_by_id: BTreeMap<(String, String), ScheduledPushJob>,
     delivery_events: BTreeMap<(String, String, u64, String), DeliveryEvent>,
     idempotency: BTreeMap<(String, String), IdempotencyRecord>,
     scheduler_locks: BTreeMap<(String, String), SchedulerLock>,
     operator_invalidations: BTreeMap<(String, u64, String), OperatorInvalidationEvent>,
+    status_cleanup_cursor: Option<(String, String)>,
+    event_cleanup_cursor: Option<(String, String, u64, String)>,
+    idempotency_cleanup_cursor: Option<(String, String)>,
+    lock_cleanup_cursor: Option<(String, String)>,
+    operator_cleanup_cursor: Option<(String, u64, String)>,
+}
+
+impl MemoryPushState {
+    fn remove_device(&mut self, app_id: &str, device_id: &str) -> Option<DeviceDetails> {
+        let device = self
+            .devices_by_id
+            .remove(&(app_id.to_owned(), device_id.to_owned()))?;
+        if let Some(client_id) = &device.client_id {
+            self.devices_by_client.remove(&(
+                device.app_id.clone(),
+                client_id.clone(),
+                device.id.clone(),
+            ));
+        }
+        self.devices_by_day.remove(&(
+            device.app_id.clone(),
+            day_bucket_for_ms(device.last_active_at_ms),
+            device.last_active_at_ms,
+            device.id.clone(),
+        ));
+        Some(device)
+    }
+
+    fn remove_subscription(&mut self, key: &(String, String, String)) -> bool {
+        if self.subscriptions.remove(key).is_none() {
+            return false;
+        }
+        self.subscription_positions.remove(&(
+            key.0.clone(),
+            format!("{}:{}", key.1, key.2),
+            key.1.clone(),
+            key.2.clone(),
+        ));
+        self.subscriptions_by_device
+            .remove(&(key.0.clone(), key.2.clone(), key.1.clone()));
+        let channel_key = (key.0.clone(), key.1.clone());
+        if let Some(count) = self.subscription_channels.get_mut(&channel_key) {
+            *count -= 1;
+            if *count == 0 {
+                self.subscription_channels.remove(&channel_key);
+            }
+        }
+        true
+    }
+
+    fn remove_device_subscriptions(&mut self, app_id: &str, device_id: &str) -> u64 {
+        let channels: Vec<_> = self
+            .subscriptions_by_device
+            .range((
+                Excluded((app_id.to_owned(), device_id.to_owned(), String::new())),
+                Unbounded,
+            ))
+            .take_while(|(app, device, _)| app == app_id && device == device_id)
+            .map(|(_, _, channel)| channel.clone())
+            .collect();
+        for channel in &channels {
+            self.remove_subscription(&(app_id.to_owned(), channel.clone(), device_id.to_owned()));
+        }
+        channels.len() as u64
+    }
+}
+
+fn time_cursor_bound(start: Option<&str>) -> PushStorageResult<(u64, String)> {
+    match start {
+        None => Ok((0, String::new())),
+        Some(position) => {
+            let (timestamp, id) = position
+                .split_once(':')
+                .ok_or(crate::domain::PushDomainError::CursorDecode)?;
+            let timestamp = timestamp
+                .parse()
+                .map_err(|_| crate::domain::PushDomainError::CursorDecode)?;
+            Ok((timestamp, id.to_owned()))
+        }
+    }
 }
 
 impl MemoryPushStore {
@@ -70,6 +162,63 @@ impl MemoryPushStore {
 
 #[async_trait]
 impl PushDeviceStore for MemoryPushStore {
+    async fn apply_device_feedback_once(
+        &self,
+        request: crate::storage::DeviceFeedbackRequest,
+    ) -> PushStorageResult<crate::storage::DeviceFeedbackApplied> {
+        use crate::storage::{
+            DeviceFeedbackApplied, DeviceFeedbackEffect, apply_device_feedback_effect,
+        };
+        let mut inner = self.inner.write().await;
+        let key = (
+            request.app_id.clone(),
+            format!("device-result:{}", request.receipt_id),
+        );
+        if inner
+            .idempotency
+            .get(&key)
+            .is_some_and(|r| r.expires_at_ms > crate::pipeline::now_ms())
+        {
+            return Ok(DeviceFeedbackApplied::default());
+        }
+        let mut result = DeviceFeedbackApplied::default();
+        if let Some(mut device) = inner.remove_device(&request.app_id, &request.device_id) {
+            result.applied = true;
+            result.previous = Some(device.push.state);
+            if matches!(request.effect, DeviceFeedbackEffect::Delete) {
+                inner.remove_device_subscriptions(&request.app_id, &request.device_id);
+            } else {
+                apply_device_feedback_effect(&mut device, &request);
+                result.next = Some(device.push.state);
+                if let Some(client) = &device.client_id {
+                    inner.devices_by_client.insert(
+                        (device.app_id.clone(), client.clone(), device.id.clone()),
+                        (),
+                    );
+                }
+                inner.devices_by_day.insert((
+                    device.app_id.clone(),
+                    day_bucket_for_ms(device.last_active_at_ms),
+                    device.last_active_at_ms,
+                    device.id.clone(),
+                ));
+                inner
+                    .devices_by_id
+                    .insert((device.app_id.clone(), device.id.clone()), device);
+            }
+        }
+        inner.idempotency.insert(
+            key.clone(),
+            IdempotencyRecord {
+                app_id: request.app_id,
+                key: key.1,
+                publish_id: request.publish_id,
+                expires_at_ms: request.expires_at_ms,
+            },
+        );
+        Ok(result)
+    }
+
     async fn upsert_device(
         &self,
         device: DeviceDetails,
@@ -83,6 +232,19 @@ impl PushDeviceStore for MemoryPushStore {
             Some(existing) if existing == &device => DeviceRegistrationChange::Unchanged,
             Some(_) => DeviceRegistrationChange::Updated,
         };
+        inner.remove_device(&device.app_id, &device.id);
+        inner.devices_by_day.insert((
+            device.app_id.clone(),
+            day_bucket_for_ms(device.last_active_at_ms),
+            device.last_active_at_ms,
+            device.id.clone(),
+        ));
+        if let Some(client_id) = &device.client_id {
+            inner.devices_by_client.insert(
+                (device.app_id.clone(), client_id.clone(), device.id.clone()),
+                (),
+            );
+        }
         inner.devices_by_id.insert(key, device);
         Ok(DeviceRegistrationOutcome { change, token_hash })
     }
@@ -107,15 +269,8 @@ impl PushDeviceStore for MemoryPushStore {
         device_id: &str,
     ) -> PushStorageResult<DeleteDeviceOutcome> {
         let mut inner = self.inner.write().await;
-        let removed = inner
-            .devices_by_id
-            .remove(&(app_id.to_owned(), device_id.to_owned()))
-            .is_some();
-        inner
-            .subscriptions
-            .retain(|(sub_app_id, _, sub_device_id), _| {
-                sub_app_id != app_id || sub_device_id != device_id
-            });
+        let removed = inner.remove_device(app_id, device_id).is_some();
+        inner.remove_device_subscriptions(app_id, device_id);
         Ok(if removed {
             DeleteDeviceOutcome::Deleted
         } else {
@@ -135,9 +290,51 @@ impl PushDeviceStore for MemoryPushStore {
             .read()
             .await
             .devices_by_id
-            .iter()
-            .filter(|((device_app_id, _), _)| device_app_id == app_id)
+            .range((
+                Excluded((app_id.to_owned(), start.clone().unwrap_or_default())),
+                Unbounded,
+            ))
+            .take_while(|((device_app_id, _), _)| device_app_id == app_id)
             .map(|((_, device_id), device)| (device_id.clone(), device.clone()))
+            .take(limit.max(1).saturating_add(1))
+            .collect();
+        Ok(page_from_rows(
+            app_id,
+            PushCursorKind::Device,
+            rows,
+            limit,
+            start,
+        ))
+    }
+
+    async fn list_devices_by_client(
+        &self,
+        app_id: &str,
+        client_id: &str,
+        limit: usize,
+        cursor: Option<PushCursor>,
+    ) -> PushStorageResult<Page<DeviceDetails>> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let start = cursor_position(cursor, app_id)?;
+        let inner = self.inner.read().await;
+        let rows = inner
+            .devices_by_client
+            .range((
+                Excluded((
+                    app_id.to_owned(),
+                    client_id.to_owned(),
+                    start.clone().unwrap_or_default(),
+                )),
+                Unbounded,
+            ))
+            .take_while(|((app, client, _), _)| app == app_id && client == client_id)
+            .filter_map(|((_, _, id), _)| {
+                inner
+                    .devices_by_id
+                    .get(&(app_id.to_owned(), id.clone()))
+                    .map(|device| (id.clone(), device.clone()))
+            })
+            .take(limit.max(1).saturating_add(1))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -154,24 +351,19 @@ impl PushDeviceStore for MemoryPushStore {
         client_id: &str,
     ) -> PushStorageResult<u64> {
         let mut inner = self.inner.write().await;
-        let device_ids = inner
-            .devices_by_id
-            .values()
-            .filter(|device| {
-                device.app_id == app_id && device.client_id.as_deref() == Some(client_id)
-            })
-            .map(|device| device.id.clone())
-            .collect::<Vec<_>>();
+        let device_ids: Vec<_> = inner
+            .devices_by_client
+            .range((
+                Excluded((app_id.to_owned(), client_id.to_owned(), String::new())),
+                Unbounded,
+            ))
+            .take_while(|((app, client, _), _)| app == app_id && client == client_id)
+            .map(|((_, _, id), _)| id.clone())
+            .collect();
         for device_id in &device_ids {
-            inner
-                .devices_by_id
-                .remove(&(app_id.to_owned(), device_id.clone()));
+            inner.remove_device(app_id, device_id);
+            inner.remove_device_subscriptions(app_id, device_id);
         }
-        inner
-            .subscriptions
-            .retain(|(sub_app_id, _, sub_device_id), _| {
-                sub_app_id != app_id || !device_ids.contains(sub_device_id)
-            });
         Ok(device_ids.len() as u64)
     }
 
@@ -183,23 +375,23 @@ impl PushDeviceStore for MemoryPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<DeviceDetails>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .inner
-            .read()
-            .await
-            .devices_by_id
-            .values()
-            .filter(|device| {
-                device.app_id == app_id && day_bucket_for_ms(device.last_active_at_ms) == day_bucket
+        let (timestamp, id) = time_cursor_bound(start.as_deref())?;
+        let inner = self.inner.read().await;
+        let rows = inner
+            .devices_by_day
+            .range((
+                Excluded((app_id.to_owned(), day_bucket.to_owned(), timestamp, id)),
+                Unbounded,
+            ))
+            .take_while(|(app, day, _, _)| app == app_id && day == day_bucket)
+            .take(limit.max(1).saturating_add(1))
+            .filter_map(|(_, _, timestamp, id)| {
+                inner
+                    .devices_by_id
+                    .get(&(app_id.to_owned(), id.clone()))
+                    .map(|device| (format!("{timestamp:020}:{id}"), device.clone()))
             })
-            .map(|device| {
-                (
-                    format!("{:020}:{}", device.last_active_at_ms, device.id),
-                    device.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
+            .collect();
         Ok(page_from_rows(
             app_id,
             PushCursorKind::Device,
@@ -217,7 +409,30 @@ impl PushSubscriptionStore for MemoryPushStore {
         subscription: ChannelSubscription,
     ) -> PushStorageResult<()> {
         subscription.validate()?;
-        self.inner.write().await.subscriptions.insert(
+        let mut inner = self.inner.write().await;
+        let key = (
+            subscription.app_id.clone(),
+            subscription.channel.clone(),
+            subscription.device_id.clone(),
+        );
+        if !inner.subscriptions.contains_key(&key) {
+            *inner
+                .subscription_channels
+                .entry((subscription.app_id.clone(), subscription.channel.clone()))
+                .or_default() += 1;
+            inner.subscriptions_by_device.insert((
+                subscription.app_id.clone(),
+                subscription.device_id.clone(),
+                subscription.channel.clone(),
+            ));
+        }
+        inner.subscription_positions.insert((
+            subscription.app_id.clone(),
+            format!("{}:{}", subscription.channel, subscription.device_id),
+            subscription.channel.clone(),
+            subscription.device_id.clone(),
+        ));
+        inner.subscriptions.insert(
             (
                 subscription.app_id.clone(),
                 subscription.channel.clone(),
@@ -234,13 +449,12 @@ impl PushSubscriptionStore for MemoryPushStore {
         channel: &str,
         device_id: &str,
     ) -> PushStorageResult<DeleteDeviceOutcome> {
-        let removed = self
-            .inner
-            .write()
-            .await
-            .subscriptions
-            .remove(&(app_id.to_owned(), channel.to_owned(), device_id.to_owned()))
-            .is_some();
+        let mut inner = self.inner.write().await;
+        let removed = inner.remove_subscription(&(
+            app_id.to_owned(),
+            channel.to_owned(),
+            device_id.to_owned(),
+        ));
         Ok(if removed {
             DeleteDeviceOutcome::Deleted
         } else {
@@ -261,11 +475,19 @@ impl PushSubscriptionStore for MemoryPushStore {
             .read()
             .await
             .subscriptions
-            .iter()
-            .filter(|((sub_app_id, sub_channel, _), _)| {
+            .range((
+                Excluded((
+                    app_id.to_owned(),
+                    channel.to_owned(),
+                    start.clone().unwrap_or_default(),
+                )),
+                Unbounded,
+            ))
+            .take_while(|((sub_app_id, sub_channel, _), _)| {
                 sub_app_id == app_id && sub_channel == channel
             })
             .map(|((_, _, device_id), subscription)| (device_id.clone(), subscription.clone()))
+            .take(limit.max(1).saturating_add(1))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -284,18 +506,26 @@ impl PushSubscriptionStore for MemoryPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<ChannelSubscription>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .inner
-            .read()
-            .await
-            .subscriptions
-            .iter()
-            .filter(|((sub_app_id, _, sub_device_id), _)| {
-                sub_app_id == app_id && sub_device_id == device_id
+        let inner = self.inner.read().await;
+        let rows = inner
+            .subscriptions_by_device
+            .range((
+                Excluded((
+                    app_id.to_owned(),
+                    device_id.to_owned(),
+                    start.clone().unwrap_or_default(),
+                )),
+                Unbounded,
+            ))
+            .take_while(|(app, device, _)| app == app_id && device == device_id)
+            .take(limit.max(1).saturating_add(1))
+            .filter_map(|(_, _, channel)| {
+                inner
+                    .subscriptions
+                    .get(&(app_id.to_owned(), channel.clone(), device_id.to_owned()))
+                    .map(|subscription| (channel.clone(), subscription.clone()))
             })
-            .map(|((_, channel, _), subscription)| (channel.clone(), subscription.clone()))
-            .collect::<Vec<_>>();
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
+            .collect();
         Ok(page_from_rows(
             app_id,
             PushCursorKind::ChannelSubscription,
@@ -312,15 +542,26 @@ impl PushSubscriptionStore for MemoryPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<ChannelSubscription>> {
         let start = cursor_position(cursor, app_id)?;
-        let rows = self
-            .inner
-            .read()
-            .await
-            .subscriptions
-            .iter()
-            .filter(|((sub_app_id, _, _), _)| sub_app_id == app_id)
-            .map(|((_, channel, device_id), subscription)| {
-                (format!("{channel}:{device_id}"), subscription.clone())
+        let inner = self.inner.read().await;
+        let rows = inner
+            .subscription_positions
+            .range((
+                Excluded((
+                    app_id.to_owned(),
+                    start.clone().unwrap_or_default(),
+                    String::new(),
+                    String::new(),
+                )),
+                Unbounded,
+            ))
+            .take_while(|(app, _, _, _)| app == app_id)
+            .filter(|(_, position, _, _)| start.as_ref().is_none_or(|start| position > start))
+            .take(limit.max(1).saturating_add(1))
+            .filter_map(|(_, position, channel, id)| {
+                inner
+                    .subscriptions
+                    .get(&(app_id.to_owned(), channel.clone(), id.clone()))
+                    .map(|subscription| (position.clone(), subscription.clone()))
             })
             .collect();
         Ok(page_from_rows(
@@ -339,20 +580,16 @@ impl PushSubscriptionStore for MemoryPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<String>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut channels = self
-            .inner
-            .read()
-            .await
-            .subscriptions
-            .keys()
-            .filter(|(sub_app_id, _, _)| sub_app_id == app_id)
-            .map(|(_, channel, _)| channel.clone())
-            .collect::<Vec<_>>();
-        channels.sort();
-        channels.dedup();
-        let rows = channels
-            .into_iter()
-            .map(|channel| (channel.clone(), channel))
+        let inner = self.inner.read().await;
+        let rows = inner
+            .subscription_channels
+            .range((
+                Excluded((app_id.to_owned(), start.clone().unwrap_or_default())),
+                Unbounded,
+            ))
+            .take_while(|((app, _), _)| app == app_id)
+            .take(limit.max(1).saturating_add(1))
+            .map(|((_, channel), _)| (channel.clone(), channel.clone()))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -369,13 +606,7 @@ impl PushSubscriptionStore for MemoryPushStore {
         device_id: &str,
     ) -> PushStorageResult<u64> {
         let mut inner = self.inner.write().await;
-        let before = inner.subscriptions.len();
-        inner
-            .subscriptions
-            .retain(|(sub_app_id, _, sub_device_id), _| {
-                sub_app_id != app_id || sub_device_id != device_id
-            });
-        Ok((before - inner.subscriptions.len()) as u64)
+        Ok(inner.remove_device_subscriptions(app_id, device_id))
     }
 
     async fn delete_subscriptions_by_channel(
@@ -384,13 +615,19 @@ impl PushSubscriptionStore for MemoryPushStore {
         channel: &str,
     ) -> PushStorageResult<u64> {
         let mut inner = self.inner.write().await;
-        let before = inner.subscriptions.len();
-        inner
+        let keys: Vec<_> = inner
             .subscriptions
-            .retain(|(sub_app_id, sub_channel, _), _| {
-                sub_app_id != app_id || sub_channel != channel
-            });
-        Ok((before - inner.subscriptions.len()) as u64)
+            .range((
+                Excluded((app_id.to_owned(), channel.to_owned(), String::new())),
+                Unbounded,
+            ))
+            .take_while(|((app, sub_channel, _), _)| app == app_id && sub_channel == channel)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &keys {
+            inner.remove_subscription(key);
+        }
+        Ok(keys.len() as u64)
     }
 }
 
@@ -431,9 +668,13 @@ impl PushCredentialStore for MemoryPushStore {
             .read()
             .await
             .credentials
-            .iter()
-            .filter(|((credential_app_id, _), _)| credential_app_id == app_id)
+            .range((
+                Excluded((app_id.to_owned(), start.clone().unwrap_or_default())),
+                Unbounded,
+            ))
+            .take_while(|((credential_app_id, _), _)| credential_app_id == app_id)
             .map(|((_, credential_id), credential)| (credential_id.clone(), credential.clone()))
+            .take(limit.max(1).saturating_add(1))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -482,9 +723,13 @@ impl PushTemplateStore for MemoryPushStore {
             .read()
             .await
             .templates
-            .iter()
-            .filter(|((template_app_id, _), _)| template_app_id == app_id)
+            .range((
+                Excluded((app_id.to_owned(), start.clone().unwrap_or_default())),
+                Unbounded,
+            ))
+            .take_while(|((template_app_id, _), _)| template_app_id == app_id)
             .map(|((_, template_id), template)| (template_id.clone(), template.clone()))
+            .take(limit.max(1).saturating_add(1))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -517,12 +762,24 @@ impl PushTemplateStore for MemoryPushStore {
 
 #[async_trait]
 impl PushPublishStatusStore for MemoryPushStore {
+    async fn is_publish_retired(&self, app_id: &str, publish_id: &str) -> PushStorageResult<bool> {
+        Ok(self
+            .inner
+            .read()
+            .await
+            .lifecycle_tombstones
+            .contains_key(&(app_id.to_owned(), publish_id.to_owned())))
+    }
+
     async fn create_publish_status_if_absent(
         &self,
         status: PublishStatus,
     ) -> PushStorageResult<PublishStatusCasOutcome> {
         let key = (status.app_id.clone(), status.publish_id.clone());
         let mut inner = self.inner.write().await;
+        if inner.lifecycle_tombstones.contains_key(&key) {
+            return Ok(PublishStatusCasOutcome::Conflict);
+        }
         if inner.publish_status.contains_key(&key) {
             return Ok(PublishStatusCasOutcome::Conflict);
         }
@@ -532,6 +789,8 @@ impl PushPublishStatusStore for MemoryPushStore {
                 status,
                 revision: 1,
                 updated_at_ms: crate::pipeline::now_ms(),
+                pending_feedback: Default::default(),
+                pending_children: Default::default(),
             },
         );
         Ok(PublishStatusCasOutcome::Inserted { revision: 1 })
@@ -556,6 +815,21 @@ impl PushPublishStatusStore for MemoryPushStore {
         expected: &VersionedPublishStatus,
         next: PublishStatus,
     ) -> PushStorageResult<PublishStatusCasOutcome> {
+        self.compare_and_swap_feedback_status(expected, next, expected.pending_feedback.clone())
+            .await
+    }
+
+    async fn compare_and_swap_feedback_status(
+        &self,
+        expected: &VersionedPublishStatus,
+        next: PublishStatus,
+        pending: std::collections::BTreeMap<String, crate::storage::FeedbackReceipt>,
+    ) -> PushStorageResult<PublishStatusCasOutcome> {
+        if pending.len() > crate::storage::MAX_PENDING_FEEDBACK {
+            return Err(PushStorageError::Backend(
+                "feedback receipt capacity reached".into(),
+            ));
+        }
         if expected.status.app_id != next.app_id
             || expected.status.publish_id != next.publish_id
             || expected.revision == 0
@@ -581,6 +855,8 @@ impl PushPublishStatusStore for MemoryPushStore {
             status: next,
             revision: next_revision,
             updated_at_ms,
+            pending_feedback: pending,
+            pending_children: current.pending_children.clone(),
         };
         Ok(PublishStatusCasOutcome::Updated {
             revision: next_revision,
@@ -591,7 +867,36 @@ impl PushPublishStatusStore for MemoryPushStore {
 #[async_trait]
 impl PushPublishLogStore for MemoryPushStore {
     async fn append_publish_log_event(&self, event: PublishLogEvent) -> PushStorageResult<()> {
-        self.inner.write().await.publish_log.insert(
+        let mut inner = self.inner.write().await;
+        if inner
+            .lifecycle_tombstones
+            .contains_key(&(event.app_id.clone(), event.publish_id.clone()))
+        {
+            return Err(PushStorageError::Backend(
+                "publish has been retired".to_owned(),
+            ));
+        }
+        if let Some(status) = inner
+            .publish_status
+            .get_mut(&(event.app_id.clone(), event.publish_id.clone()))
+        {
+            status.revision = status.revision.checked_add(1).ok_or_else(|| {
+                PushStorageError::Backend("publish status revision exhausted".to_owned())
+            })?;
+            status.updated_at_ms =
+                crate::pipeline::now_ms().max(status.updated_at_ms.saturating_add(1));
+        } else {
+            return Err(PushStorageError::Backend(
+                "publish status is missing; child write must retry after status repair".to_owned(),
+            ));
+        }
+        inner.publish_log_by_publish.insert((
+            event.app_id.clone(),
+            event.publish_id.clone(),
+            event.occurred_at_ms,
+            event.event_id.clone(),
+        ));
+        inner.publish_log.insert(
             (
                 event.app_id.clone(),
                 event.occurred_at_ms,
@@ -609,16 +914,21 @@ impl PushPublishLogStore for MemoryPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<PublishLogEvent>> {
         let start = cursor_position(cursor, app_id)?;
+        let (start_time, start_id) = time_cursor_bound(start.as_deref())?;
         let rows = self
             .inner
             .read()
             .await
             .publish_log
-            .iter()
-            .filter(|((event_app_id, _, _), _)| event_app_id == app_id)
+            .range((
+                Excluded((app_id.to_owned(), start_time, start_id)),
+                Unbounded,
+            ))
+            .take_while(|((event_app_id, _, _), _)| event_app_id == app_id)
             .map(|((_, occurred_at_ms, event_id), event)| {
                 (format!("{occurred_at_ms:020}:{event_id}"), event.clone())
             })
+            .take(limit.max(1).saturating_add(1))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -633,7 +943,30 @@ impl PushPublishLogStore for MemoryPushStore {
 #[async_trait]
 impl PushFanoutShardStore for MemoryPushStore {
     async fn put_fanout_shard(&self, shard: ShardJob) -> PushStorageResult<()> {
-        self.inner.write().await.fanout_shards.insert(
+        let mut inner = self.inner.write().await;
+        if inner
+            .lifecycle_tombstones
+            .contains_key(&(shard.app_id.clone(), shard.publish_id.clone()))
+        {
+            return Err(PushStorageError::Backend(
+                "publish has been retired".to_owned(),
+            ));
+        }
+        if let Some(status) = inner
+            .publish_status
+            .get_mut(&(shard.app_id.clone(), shard.publish_id.clone()))
+        {
+            status.revision = status.revision.checked_add(1).ok_or_else(|| {
+                PushStorageError::Backend("publish status revision exhausted".to_owned())
+            })?;
+            status.updated_at_ms =
+                crate::pipeline::now_ms().max(status.updated_at_ms.saturating_add(1));
+        } else {
+            return Err(PushStorageError::Backend(
+                "publish status is missing; child write must retry after status repair".to_owned(),
+            ));
+        }
+        inner.fanout_shards.insert(
             (
                 shard.app_id.clone(),
                 shard.publish_id.clone(),
@@ -930,16 +1263,21 @@ impl PushOperatorEventStore for MemoryPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<OperatorInvalidationEvent>> {
         let start = cursor_position(cursor, app_id)?;
+        let (start_time, start_id) = time_cursor_bound(start.as_deref())?;
         let rows = self
             .inner
             .read()
             .await
             .operator_invalidations
-            .iter()
-            .filter(|((event_app_id, _, _), _)| event_app_id == app_id)
+            .range((
+                Excluded((app_id.to_owned(), start_time, start_id)),
+                Unbounded,
+            ))
+            .take_while(|((event_app_id, _, _), _)| event_app_id == app_id)
             .map(|((_, occurred_at_ms, event_id), event)| {
                 (format!("{occurred_at_ms:020}:{event_id}"), event.clone())
             })
+            .take(limit.max(1).saturating_add(1))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -960,25 +1298,44 @@ impl PushCleanupStore for MemoryPushStore {
         let mut inner = self.inner.write().await;
         let mut report = PushCleanupReport::default();
         let mut remaining = request.policy.max_deleted_per_tick;
+        lifecycle::cleanup(&mut inner, &request, &mut report, &mut remaining)?;
 
         if remaining > 0
             && let Some(cutoff_ms) = request.publish_status_cutoff_ms()
         {
             let limit = request.limit_for(remaining);
-            let (counters, keys) = cleanup_status_keys(&inner, cutoff_ms, limit);
+            let (mut counters, mut keys, next) = cleanup_status_keys(&inner, cutoff_ms, limit);
+            inner.status_cleanup_cursor = next;
+            keys.retain(|key| {
+                !inner.fanout_shards.contains_key(&(
+                    key.0.clone(),
+                    key.1.clone(),
+                    crate::lifecycle::PLANNER_RECEIPT_ID.to_owned(),
+                ))
+            });
+            counters.deleted = keys.len() as u64;
             for key in keys {
                 inner.publish_status.remove(&key);
             }
             remaining = remaining.saturating_sub(counters.deleted as usize);
-            report.publish_statuses = counters;
+            report
+                .publish_statuses
+                .record(counters.scanned, counters.deleted);
         }
 
         if remaining > 0
             && let Some(cutoff_ms) = request.delivery_event_cutoff_ms()
         {
             let limit = request.limit_for(remaining);
-            let (counters, keys) = cleanup_keys(
-                inner.delivery_events.iter(),
+            let (counters, keys, next) = cleanup_keys(
+                inner.delivery_events.range((
+                    inner
+                        .event_cleanup_cursor
+                        .clone()
+                        .map(Excluded)
+                        .unwrap_or(Unbounded),
+                    Unbounded,
+                )),
                 limit,
                 |item| {
                     let ((_, _, occurred_at_ms, _), _) = *item;
@@ -986,6 +1343,7 @@ impl PushCleanupStore for MemoryPushStore {
                 },
                 |item| item.0.clone(),
             );
+            inner.event_cleanup_cursor = next;
             for key in keys {
                 inner.delivery_events.remove(&key);
             }
@@ -995,12 +1353,20 @@ impl PushCleanupStore for MemoryPushStore {
 
         if remaining > 0 {
             let limit = request.limit_for(remaining);
-            let (counters, keys) = cleanup_keys(
-                inner.idempotency.iter(),
+            let (counters, keys, next) = cleanup_keys(
+                inner.idempotency.range((
+                    inner
+                        .idempotency_cleanup_cursor
+                        .clone()
+                        .map(Excluded)
+                        .unwrap_or(Unbounded),
+                    Unbounded,
+                )),
                 limit,
                 |item| idempotency_record_expired(item.1, request.now_ms),
                 |item| item.0.clone(),
             );
+            inner.idempotency_cleanup_cursor = next;
             for key in keys {
                 inner.idempotency.remove(&key);
             }
@@ -1010,12 +1376,20 @@ impl PushCleanupStore for MemoryPushStore {
 
         if remaining > 0 {
             let limit = request.limit_for(remaining);
-            let (counters, keys) = cleanup_keys(
-                inner.scheduler_locks.iter(),
+            let (counters, keys, next) = cleanup_keys(
+                inner.scheduler_locks.range((
+                    inner
+                        .lock_cleanup_cursor
+                        .clone()
+                        .map(Excluded)
+                        .unwrap_or(Unbounded),
+                    Unbounded,
+                )),
                 limit,
                 |item| item.1.expires_at_ms <= request.now_ms,
                 |item| item.0.clone(),
             );
+            inner.lock_cleanup_cursor = next;
             for key in keys {
                 inner.scheduler_locks.remove(&key);
             }
@@ -1027,8 +1401,15 @@ impl PushCleanupStore for MemoryPushStore {
             && let Some(cutoff_ms) = request.operator_event_cutoff_ms()
         {
             let limit = request.limit_for(remaining);
-            let (counters, keys) = cleanup_keys(
-                inner.operator_invalidations.iter(),
+            let (counters, keys, next) = cleanup_keys(
+                inner.operator_invalidations.range((
+                    inner
+                        .operator_cleanup_cursor
+                        .clone()
+                        .map(Excluded)
+                        .unwrap_or(Unbounded),
+                    Unbounded,
+                )),
                 limit,
                 |item| {
                     let ((_, occurred_at_ms, _), _) = *item;
@@ -1036,6 +1417,7 @@ impl PushCleanupStore for MemoryPushStore {
                 },
                 |item| item.0.clone(),
             );
+            inner.operator_cleanup_cursor = next;
             for key in keys {
                 inner.operator_invalidations.remove(&key);
             }
@@ -1084,12 +1466,13 @@ fn page_from_rows<T: Clone>(
 
     let mut items = Vec::with_capacity(limit.min(filtered.len()));
     let mut last_position = None;
-    for (position, item) in filtered.iter().take(limit) {
-        last_position = Some(position.clone());
-        items.push(item.clone());
+    let has_more = filtered.len() > limit;
+    for (position, item) in filtered.into_iter().take(limit) {
+        last_position = Some(position);
+        items.push(item);
     }
 
-    let next_cursor = if filtered.len() > limit {
+    let next_cursor = if has_more {
         last_position.map(|position| PushCursor {
             app_id: app_id.to_owned(),
             kind,
@@ -1107,17 +1490,29 @@ fn day_bucket_for_ms(timestamp_ms: u64) -> String {
     (timestamp_ms / 86_400_000).to_string()
 }
 
+type CleanupBatch<K> = (PushCleanupCounters, Vec<K>, Option<K>);
+
 fn cleanup_status_keys(
     inner: &MemoryPushState,
     cutoff_ms: u64,
     limit: usize,
-) -> (PushCleanupCounters, Vec<(String, String)>) {
+) -> CleanupBatch<(String, String)> {
     cleanup_keys(
-        inner.publish_status.iter(),
+        inner.publish_status.range((
+            inner
+                .status_cleanup_cursor
+                .clone()
+                .map(Excluded)
+                .unwrap_or(Unbounded),
+            Unbounded,
+        )),
         limit,
         |item| {
             let (_, status) = *item;
-            terminal_publish_state(status.status.state) && status.updated_at_ms < cutoff_ms
+            terminal_publish_state(status.status.state)
+                && status.updated_at_ms < cutoff_ms
+                && status.pending_feedback.is_empty()
+                && status.pending_children.is_empty()
         },
         |item| item.0.clone(),
     )
@@ -1128,25 +1523,27 @@ fn cleanup_keys<I, T, K, F, M>(
     limit: usize,
     should_delete: F,
     map_key: M,
-) -> (PushCleanupCounters, Vec<K>)
+) -> CleanupBatch<K>
 where
     I: Iterator<Item = T>,
+    T: Copy,
+    K: Clone,
     F: Fn(&T) -> bool,
     M: Fn(T) -> K,
 {
     let mut counters = PushCleanupCounters::default();
     let mut keys = Vec::new();
-    for item in iter {
+    let mut next = None;
+    for item in iter.take(limit.max(1)) {
+        let key = map_key(item);
         counters.scanned = counters.scanned.saturating_add(1);
         if should_delete(&item) {
             counters.deleted = counters.deleted.saturating_add(1);
-            keys.push(map_key(item));
-            if keys.len() >= limit.max(1) {
-                break;
-            }
+            keys.push(key.clone());
         }
+        next = Some(key);
     }
-    (counters, keys)
+    (counters, keys, next)
 }
 
 fn idempotency_record_expired(record: &IdempotencyRecord, now_ms: u64) -> bool {

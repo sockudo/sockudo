@@ -453,6 +453,21 @@ impl AppManager for ScyllaDbAppManager {
         Ok(())
     }
 
+    async fn has_apps(&self) -> Result<bool> {
+        let query = format!(
+            "SELECT id FROM {}.{} LIMIT 1",
+            self.config.keyspace, self.config.table_name
+        );
+        let result = self
+            .session
+            .query_unpaged(query, &[])
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to check configured apps: {e}")))?
+            .into_rows_result()
+            .map_err(|e| Error::Internal(format!("Failed to read app presence: {e}")))?;
+        Ok(result.rows_num() > 0)
+    }
+
     async fn get_apps(&self) -> Result<Vec<App>> {
         let query = format!(
             r#"SELECT id, key, secret, enabled, policy, max_connections, enable_client_messages,

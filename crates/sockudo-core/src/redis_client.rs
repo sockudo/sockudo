@@ -208,6 +208,30 @@ impl RedisClient {
         matches!(self.inner.source, ClientSource::Sentinel(_))
     }
 
+    /// Open a fresh RESP3 subscription connection with caller-owned bounded
+    /// push admission. Re-resolve Sentinel on every reconnect and retain TLS,
+    /// authentication and database settings from the selected primary.
+    pub async fn pubsub_with_push_sender(
+        &self,
+        sender: impl redis::aio::AsyncPushSender,
+    ) -> Result<MultiplexedConnection> {
+        let client = self.master_client().await?;
+        let info = client.get_connection_info().clone();
+        let settings = info
+            .redis_settings()
+            .clone()
+            .set_protocol(redis::ProtocolVersion::RESP3);
+        let client = redis::Client::open(info.set_redis_settings(settings)).map_err(|error| {
+            Error::Redis(format!("failed to prepare Redis push connection: {error}"))
+        })?;
+        client
+            .get_multiplexed_async_connection_with_config(
+                &redis::AsyncConnectionConfig::new().set_push_sender(sender),
+            )
+            .await
+            .map_err(|error| Error::Redis(format!("failed to open Redis push connection: {error}")))
+    }
+
     pub async fn pubsub(&self) -> Result<PubSub> {
         self.master_client()
             .await?

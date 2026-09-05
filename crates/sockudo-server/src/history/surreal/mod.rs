@@ -195,9 +195,19 @@ mod annotation_store;
 #[allow(unused_imports)]
 pub(super) use annotation_store::create_surreal_annotation_store;
 
+#[cfg(feature = "versioned-messages")]
 mod version_store;
+#[cfg(feature = "versioned-messages")]
 #[allow(unused_imports)]
 pub(super) use version_store::create_surreal_version_store;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(super) async fn simulate_legacy_retention(db: &SurrealDbSettings, config: HistoryConfig) {
+    let store = SurrealHistoryStore::new(db, config, None, None)
+        .await
+        .unwrap();
+    store.db.query(format!("UPDATE {} SET retention_revision=NONE,retained_messages=777,retained_bytes=999 WHERE app_id='c6-app' AND channel='legacy'",store.tables.streams)).await.unwrap().check().unwrap();
+}

@@ -12,7 +12,7 @@ use crate::history::now_ms;
 use crate::metrics::MetricsInterface;
 use async_trait::async_trait;
 use bytes::Bytes;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -57,8 +57,9 @@ struct MemoryPresenceHistoryChannel {
     retained_bytes: u64,
     records: VecDeque<PresenceHistoryAppendRecord>,
     dedupe_keys: HashSet<String>,
-    latest_event_by_user: BTreeMap<String, PresenceHistoryEventKind>,
+    latest_event_by_user: BTreeMap<String, (PresenceHistoryEventKind, u64)>,
     retention: Option<PresenceHistoryRetentionPolicy>,
+    scheduled_expiry: Option<i64>,
 }
 
 impl Default for MemoryPresenceHistoryChannel {
@@ -71,6 +72,7 @@ impl Default for MemoryPresenceHistoryChannel {
             dedupe_keys: HashSet::new(),
             latest_event_by_user: BTreeMap::new(),
             retention: None,
+            scheduled_expiry: None,
         }
     }
 }
@@ -79,6 +81,7 @@ impl Default for MemoryPresenceHistoryChannel {
 pub struct MemoryPresenceHistoryStore {
     channels: Arc<RwLock<BTreeMap<String, MemoryPresenceHistoryChannel>>>,
     config: MemoryPresenceHistoryStoreConfig,
+    expiries: Arc<parking_lot::Mutex<BTreeSet<(i64, String)>>>,
 }
 
 impl MemoryPresenceHistoryStore {
@@ -86,6 +89,7 @@ impl MemoryPresenceHistoryStore {
         Self {
             channels: Arc::new(RwLock::new(BTreeMap::new())),
             config,
+            expiries: Arc::default(),
         }
     }
 
@@ -136,6 +140,7 @@ impl MemoryPresenceHistoryStore {
                     let removed_bytes = removed.payload_bytes.len() as u64;
                     channel.retained_bytes = channel.retained_bytes.saturating_sub(removed_bytes);
                     channel.dedupe_keys.remove(&removed.dedupe_key);
+                    Self::forget_evicted_user(channel, &removed);
                     evicted_events = evicted_events.saturating_add(1);
                     evicted_bytes = evicted_bytes.saturating_add(removed_bytes);
                 }
@@ -150,6 +155,7 @@ impl MemoryPresenceHistoryStore {
                     let removed_bytes = front.payload_bytes.len() as u64;
                     channel.retained_bytes = channel.retained_bytes.saturating_sub(removed_bytes);
                     channel.dedupe_keys.remove(&front.dedupe_key);
+                    Self::forget_evicted_user(channel, &front);
                     evicted_events = evicted_events.saturating_add(1);
                     evicted_bytes = evicted_bytes.saturating_add(removed_bytes);
                 }
@@ -162,6 +168,7 @@ impl MemoryPresenceHistoryStore {
                     let removed_bytes = front.payload_bytes.len() as u64;
                     channel.retained_bytes = channel.retained_bytes.saturating_sub(removed_bytes);
                     channel.dedupe_keys.remove(&front.dedupe_key);
+                    Self::forget_evicted_user(channel, &front);
                     evicted_events = evicted_events.saturating_add(1);
                     evicted_bytes = evicted_bytes.saturating_add(removed_bytes);
                 } else {
@@ -170,20 +177,51 @@ impl MemoryPresenceHistoryStore {
             }
         }
 
-        if evicted_events > 0 {
-            Self::rebuild_latest_event_by_user(channel);
-        }
-
         (evicted_events, evicted_bytes)
     }
 
-    fn rebuild_latest_event_by_user(channel: &mut MemoryPresenceHistoryChannel) {
-        channel.latest_event_by_user.clear();
-        for record in &channel.records {
-            channel
-                .latest_event_by_user
-                .insert(record.user_id.clone(), record.event);
+    fn forget_evicted_user(
+        channel: &mut MemoryPresenceHistoryChannel,
+        record: &PresenceHistoryAppendRecord,
+    ) {
+        // Eviction removes an arrival-order prefix. If this is the last retained
+        // event for its user, no older record can still survive in the deque.
+        if channel
+            .latest_event_by_user
+            .get(&record.user_id)
+            .is_some_and(|(_, serial)| *serial == record.serial)
+        {
+            channel.latest_event_by_user.remove(&record.user_id);
         }
+    }
+
+    fn schedule_expiry(&self, key: &str, channel: &mut MemoryPresenceHistoryChannel) {
+        let retention = channel
+            .retention
+            .clone()
+            .unwrap_or_else(|| self.retention());
+        let deadline = channel.records.front().map(|record| {
+            record
+                .published_at_ms
+                .saturating_add(
+                    retention
+                        .retention_window_seconds
+                        .saturating_mul(1000)
+                        .min(i64::MAX as u64) as i64,
+                )
+                .saturating_add(1)
+        });
+        if deadline == channel.scheduled_expiry {
+            return;
+        }
+        let mut expiries = self.expiries.lock();
+        if let Some(previous) = channel.scheduled_expiry {
+            expiries.remove(&(previous, key.to_owned()));
+        }
+        if let Some(deadline) = deadline {
+            expiries.insert((deadline, key.to_owned()));
+        }
+        channel.scheduled_expiry = deadline;
     }
 
     fn retained_from_channel(
@@ -203,16 +241,81 @@ impl MemoryPresenceHistoryStore {
 
 #[async_trait]
 impl PresenceHistoryStore for MemoryPresenceHistoryStore {
+    async fn purge_expired(&self, batch_size: usize) -> Result<(u64, bool)> {
+        let now = now_ms();
+        let mut deleted = 0;
+        for _ in 0..batch_size {
+            if deleted >= batch_size {
+                break;
+            }
+            let due = {
+                let mut expiries = self.expiries.lock();
+                if expiries
+                    .first()
+                    .is_some_and(|(deadline, _)| *deadline <= now)
+                {
+                    expiries.pop_first()
+                } else {
+                    None
+                }
+            };
+            let Some((deadline, key)) = due else {
+                break;
+            };
+            let mut channels = self.channels.write().await;
+            let Some(channel) = channels.get_mut(&key) else {
+                continue;
+            };
+            if channel.scheduled_expiry != Some(deadline) {
+                continue;
+            }
+            channel.scheduled_expiry = None;
+            let retention = channel
+                .retention
+                .clone()
+                .unwrap_or_else(|| self.retention());
+            let cutoff = now.saturating_sub(
+                retention
+                    .retention_window_seconds
+                    .saturating_mul(1000)
+                    .min(i64::MAX as u64) as i64,
+            );
+            while deleted < batch_size
+                && channel
+                    .records
+                    .front()
+                    .is_some_and(|record| record.published_at_ms < cutoff)
+            {
+                if let Some(record) = channel.records.pop_front() {
+                    channel.retained_bytes = channel
+                        .retained_bytes
+                        .saturating_sub(record.payload_bytes.len() as u64);
+                    channel.dedupe_keys.remove(&record.dedupe_key);
+                    Self::forget_evicted_user(channel, &record);
+                    deleted += 1;
+                }
+            }
+            self.schedule_expiry(&key, channel);
+        }
+        let more = self
+            .expiries
+            .lock()
+            .first()
+            .is_some_and(|(deadline, _)| *deadline <= now);
+        Ok((deleted as u64, more))
+    }
+
     async fn record_transition(&self, record: PresenceHistoryTransitionRecord) -> Result<()> {
         let started = Instant::now();
         let key = Self::channel_key(&record.app_id, &record.channel);
         let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_state = channels.entry(key.clone()).or_default();
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| self.retention());
         let mut evicted = Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
 
         if channel_state.dedupe_keys.contains(&record.dedupe_key) {
             if let Some(metrics) = self.config.metrics.as_ref() {
@@ -227,7 +330,11 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
         // Presence transitions are authoritative at the user+channel edge, not at the socket or
         // reporting-node edge. Once the retained state already says "joined" or "removed" for a
         // user, another report of the same edge is a duplicate distributed notification.
-        if channel_state.latest_event_by_user.get(&record.user_id) == Some(&record.event_kind) {
+        if channel_state
+            .latest_event_by_user
+            .get(&record.user_id)
+            .is_some_and(|(event, _)| *event == record.event_kind)
+        {
             if let Some(metrics) = self.config.metrics.as_ref() {
                 metrics.track_presence_history_write_latency(
                     &record.app_id,
@@ -250,7 +357,7 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
         channel_state.dedupe_keys.insert(record.dedupe_key.clone());
         channel_state
             .latest_event_by_user
-            .insert(user_id.clone(), event_kind);
+            .insert(user_id.clone(), (event_kind, serial));
         channel_state
             .records
             .push_back(PresenceHistoryAppendRecord {
@@ -270,6 +377,7 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
             .clone()
             .unwrap_or_else(|| self.retention());
         let after_eviction = Self::evict_channel(&applied_retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
         evicted.0 = evicted.0.saturating_add(after_eviction.0);
         evicted.1 = evicted.1.saturating_add(after_eviction.1);
 
@@ -329,6 +437,7 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
             .clone()
             .unwrap_or_else(|| self.retention());
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
         let retained = Self::retained_from_channel(channel_state);
 
         if let Some(cursor) = request.cursor.as_ref() {
@@ -456,12 +565,13 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
     ) -> Result<PresenceHistoryStreamRuntimeState> {
         let key = Self::channel_key(app_id, channel);
         let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_state = channels.entry(key.clone()).or_default();
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| self.retention());
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
 
         Ok(PresenceHistoryStreamRuntimeState::healthy(
             app_id,
@@ -478,12 +588,13 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
     ) -> Result<PresenceHistoryStreamInspection> {
         let key = Self::channel_key(app_id, channel);
         let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_state = channels.entry(key.clone()).or_default();
         let retention = channel_state
             .retention
             .clone()
             .unwrap_or_else(|| self.retention());
         Self::evict_channel(&retention, channel_state);
+        self.schedule_expiry(&key, channel_state);
 
         Ok(PresenceHistoryStreamInspection {
             app_id: app_id.to_string(),
@@ -509,13 +620,14 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
     ) -> Result<PresenceHistoryResetResult> {
         let key = Self::channel_key(app_id, channel);
         let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let channel_state = channels.entry(key.clone()).or_default();
         let previous_stream_id = Some(channel_state.stream_id.clone());
         let purged_events = channel_state.records.len() as u64;
         let purged_bytes = channel_state.retained_bytes;
         channel_state.records.clear();
         channel_state.dedupe_keys.clear();
         channel_state.latest_event_by_user.clear();
+        self.schedule_expiry(&key, channel_state);
         channel_state.retained_bytes = 0;
         channel_state.next_serial = 1;
         channel_state.stream_id = uuid::Uuid::new_v4().to_string();

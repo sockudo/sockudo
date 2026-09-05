@@ -1,3 +1,4 @@
+mod maintenance;
 #[cfg(feature = "push")]
 pub(crate) mod push;
 mod router;

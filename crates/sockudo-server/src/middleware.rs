@@ -1,6 +1,11 @@
 use crate::http_handler::{AppError, EventQuery};
 use axum::{
-    body::Body, extract::State, http::Request as HttpRequest, middleware::Next, response::Response,
+    RequestExt,
+    body::{Body, Bytes},
+    extract::State,
+    http::Request as HttpRequest,
+    middleware::Next,
+    response::Response,
 };
 use http_body_util::BodyExt;
 use sockudo_adapter::ConnectionHandler;
@@ -69,17 +74,7 @@ pub async fn pusher_api_auth_middleware(
     let all_query_params_for_sig_map = get_params_for_signature(query_str_option)?;
 
     // 3. Buffer the request body.
-    let (parts, body) = request.into_parts();
-    let body_bytes = match body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(err) => {
-            tracing::error!("auth request body buffering failed");
-            // TODO: HTTP response body disclosure
-            return Err(AppError::InternalError(format!(
-                "Failed to read request body: {err}"
-            )));
-        }
-    };
+    let (parts, body_bytes) = collect_auth_body(request).await?;
     tracing::debug!(body_bytes = body_bytes.len(), "request body buffered");
 
     // 4. Perform the authentication using AuthValidator.
@@ -104,6 +99,34 @@ pub async fn pusher_api_auth_middleware(
         Err(e) => {
             tracing::warn!(path = %path, error = %e, "pusher API authentication failed");
             Err(e.into())
+        }
+    }
+}
+
+// DefaultBodyLimit configures extractors through request extensions. Auth reads
+// the body directly, so explicitly apply that limit before polling any frames.
+async fn collect_auth_body(
+    request: HttpRequest<Body>,
+) -> Result<(axum::http::request::Parts, Bytes), AppError> {
+    let (parts, body) = request.with_limited_body().into_parts();
+    match body.collect().await {
+        Ok(collected) => Ok((parts, collected.to_bytes())),
+        Err(error) => {
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+            while let Some(current) = source {
+                if current.is::<http_body_util::LengthLimitError>() {
+                    tracing::warn!("auth request body limit exceeded");
+                    return Err(AppError::PayloadTooLarge(
+                        "request body exceeds configured limit".into(),
+                    ));
+                }
+                source = current.source();
+            }
+            // Transport errors can contain request data; do not log their text.
+            tracing::error!("auth request body buffering failed");
+            Err(AppError::InternalError(
+                "failed to read request body".into(),
+            ))
         }
     }
 }
@@ -155,5 +178,179 @@ mod tests {
                 "Expected error for invalid query: {query:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn auth_body_limit_preserves_bytes_and_stops_chunked_overflow() {
+        use axum::response::IntoResponse;
+        use axum::{Router, extract::DefaultBodyLimit, http::StatusCode, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tower::ServiceExt;
+        let app = Router::new()
+            .route(
+                "/",
+                post(|request: HttpRequest<Body>| async {
+                    match collect_auth_body(request).await {
+                        Ok((_, bytes)) => bytes.into_response(),
+                        Err(error) => error.into_response(),
+                    }
+                }),
+            )
+            .layer(DefaultBodyLimit::max(8));
+        for raw in [b"".as_slice(), b"  { } \n", b"12345678"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::post("/")
+                        .body(Body::from(raw.to_vec()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .as_ref(),
+                raw
+            );
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::post("/")
+                    .body(Body::from("123456789"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let polled = Arc::new(AtomicUsize::new(0));
+        let counter = polled.clone();
+        let stream = futures_util::stream::iter((0..100).map(move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok::<_, std::io::Error>(Bytes::from_static(b"1234"))
+        }));
+        // A dishonest Content-Length must not bypass the streaming limit.
+        let response = app
+            .oneshot(
+                HttpRequest::post("/")
+                    .header("content-length", "4")
+                    .body(Body::from_stream(stream))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(polled.load(Ordering::Relaxed), 3);
+    }
+}
+
+#[cfg(test)]
+mod signed_body_tests {
+    use super::*;
+    use axum::{
+        Router,
+        extract::{DefaultBodyLimit, Extension},
+        routing::post,
+    };
+    use sockudo_core::app::{App, AppManager};
+    use sockudo_core::options::{MemoryCacheOptions, ServerOptions};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn limited_auth_preserves_signed_whitespace_utf8_and_downstream_bytes() {
+        let app = App::from_policy(
+            "app-1".into(),
+            "key".into(),
+            "secret".into(),
+            true,
+            Default::default(),
+        );
+        let apps = Arc::new(sockudo_app::memory_app_manager::MemoryAppManager::new());
+        apps.create_app(app.clone()).await.unwrap();
+        let handler = Arc::new(
+            sockudo_adapter::ConnectionHandlerBuilder::new(
+                apps,
+                Arc::new(sockudo_adapter::local_adapter::LocalAdapter::new()),
+                Arc::new(
+                    sockudo_cache::memory_cache_manager::MemoryCacheManager::new(
+                        "auth-test".into(),
+                        MemoryCacheOptions::default(),
+                    ),
+                ),
+                ServerOptions::default(),
+            )
+            .build(),
+        );
+        let body = " {\"hello\":\"世界\"}\n".as_bytes();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let params = format!(
+            "auth_key=key&auth_timestamp={timestamp}&auth_version=1.0&body_md5=1c280c32c35a98ef80feedd13d39f02c"
+        );
+        let signature = sockudo_core::token::Token::new(app.key, app.secret)
+            .sign(&format!("POST\n/apps/app-1/events\n{params}"));
+        let uri = format!("/apps/app-1/events?{params}&auth_signature={signature}");
+        let router = Router::new()
+            .route(
+                "/apps/app-1/events",
+                post(|Extension(app): Extension<App>, bytes: Bytes| async move {
+                    assert_eq!(app.id, "app-1");
+                    bytes
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                handler,
+                pusher_api_auth_middleware,
+            ))
+            .layer(DefaultBodyLimit::max(body.len()));
+        let chunked = || {
+            Body::from_stream(futures_util::stream::iter(
+                body.chunks(3)
+                    .map(|chunk| Ok::<_, std::convert::Infallible>(Bytes::copy_from_slice(chunk)))
+                    .collect::<Vec<_>>(),
+            ))
+        };
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri(&uri)
+            .header("content-length", "1")
+            .body(chunked())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            body
+        );
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri(&uri)
+            .body(Body::from([body, b" "].concat()))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let wrong_signature = uri.replace(&signature, "invalid");
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri(wrong_signature)
+            .body(chunked())
+            .unwrap();
+        assert!(!router.oneshot(request).await.unwrap().status().is_success());
     }
 }

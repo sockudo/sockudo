@@ -150,6 +150,11 @@ macro_rules! impl_common_sql_traits {
 
         #[async_trait]
         impl PushPublishStatusStore for $store {
+            async fn is_publish_retired(&self, app_id: &str, publish_id: &str) -> PushStorageResult<bool> {
+                let q = sql_query("SELECT 1 FROM push_publish_status WHERE app_id=? AND publish_id=? AND state='retiredv1'".to_owned(), $postgres);
+                Ok(sqlx::query(sqlx::AssertSqlSafe(q.as_str())).bind(app_id).bind(publish_id).fetch_optional(&self.$pool).await.map_err(sql_error)?.is_some())
+            }
+
             async fn create_publish_status_if_absent(
                 &self,
                 status: PublishStatus,
@@ -186,7 +191,7 @@ macro_rules! impl_common_sql_traits {
                 publish_id: &str,
             ) -> PushStorageResult<Option<VersionedPublishStatus>> {
                 let q = sql_query(format!(
-                    "SELECT {1} AS counters_json, {2} AS revision, {3} AS updated_at_ms FROM push_publish_status WHERE app_id = {0} AND publish_id = {0}",
+                    "SELECT {1} AS counters_json, {2} AS revision, {3} AS updated_at_ms FROM push_publish_status WHERE state <> 'retiredv1' AND app_id = {0} AND publish_id = {0}",
                     $bind,
                     json_text_expr("counters_json", $json_text),
                     signed_i64_expr("revision", $postgres),
@@ -199,10 +204,11 @@ macro_rules! impl_common_sql_traits {
                     .await
                     .map_err(sql_error)?
                     .map(|row| {
-                        let status: PublishStatus = from_json_str(
+                        let payload: crate::storage::StoredStatusPayload = from_json_str(
                             &row.try_get::<String, _>("counters_json")
                                 .map_err(sql_error)?,
                         )?;
+                        let status = payload.status;
                         if status.app_id != app_id || status.publish_id != publish_id {
                             return Err(PushStorageError::Backend(
                                 "publish status row identity does not match stored payload"
@@ -211,6 +217,8 @@ macro_rules! impl_common_sql_traits {
                         }
                         Ok(VersionedPublishStatus {
                             status,
+                            pending_feedback: payload.pending_feedback,
+                            pending_children: payload.pending_children,
                             revision: positive_sql_u64(
                                 row.try_get::<i64, _>("revision").map_err(sql_error)?,
                                 "publish status revision",
@@ -229,6 +237,18 @@ macro_rules! impl_common_sql_traits {
                 expected: &VersionedPublishStatus,
                 next: PublishStatus,
             ) -> PushStorageResult<PublishStatusCasOutcome> {
+                self.compare_and_swap_feedback_status(expected, next, expected.pending_feedback.clone()).await
+            }
+
+            async fn compare_and_swap_feedback_status(
+                &self,
+                expected: &VersionedPublishStatus,
+                next: PublishStatus,
+                pending: std::collections::BTreeMap<String, crate::storage::FeedbackReceipt>,
+            ) -> PushStorageResult<PublishStatusCasOutcome> {
+                if pending.len() > crate::storage::MAX_PENDING_FEEDBACK {
+                    return Err(PushStorageError::Backend("feedback receipt capacity reached".into()));
+                }
                 if expected.status.app_id != next.app_id
                     || expected.status.publish_id != next.publish_id
                 {
@@ -250,12 +270,14 @@ macro_rules! impl_common_sql_traits {
                 let next_revision = sql_i64_revision(next_revision_u64)?;
                 let updated_at_ms = next_status_updated_at_ms(expected.updated_at_ms);
                 let q = sql_query(format!(
-                    "UPDATE push_publish_status SET state = {0}, counters_json = {1}, error_reason = {0}, updated_at_ms = {0}, revision = {0} WHERE app_id = {0} AND publish_id = {0} AND revision = {0} AND updated_at_ms = {0}",
+                    "UPDATE push_publish_status SET state = {0}, counters_json = {1}, error_reason = {0}, updated_at_ms = {0}, revision = {0} WHERE state <> 'retiredv1' AND app_id = {0} AND publish_id = {0} AND revision = {0} AND updated_at_ms = {0}",
                     $bind, $json_cast
                 ), $postgres);
                 let updated = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(format!("{:?}", next.state).to_ascii_lowercase())
-                    .bind(to_json_string(&next)?)
+                    .bind(to_json_string(&crate::storage::StoredStatusPayload {
+                        status: next.clone(), pending_feedback: pending, pending_children: expected.pending_children.clone(),
+                    })?)
                     .bind(&next.error_reason)
                     .bind(updated_at_ms)
                     .bind(next_revision)
@@ -281,7 +303,7 @@ macro_rules! impl_common_sql_traits {
 
                 let q = sql_query(
                     format!(
-                        "SELECT {1} AS revision FROM push_publish_status WHERE app_id = {0} AND publish_id = {0}",
+                        "SELECT {1} AS revision FROM push_publish_status WHERE state <> 'retiredv1' AND app_id = {0} AND publish_id = {0}",
                         $bind,
                         signed_i64_expr("revision", $postgres)
                     ),
@@ -305,6 +327,17 @@ macro_rules! impl_common_sql_traits {
         #[async_trait]
         impl PushPublishLogStore for $store {
             async fn append_publish_log_event(&self, event: PublishLogEvent) -> PushStorageResult<()> {
+                let mut transaction = self.$pool.begin().await.map_err(sql_error)?;
+                let lock_query = sql_query("SELECT state FROM push_publish_status WHERE app_id=? AND publish_id=? FOR UPDATE".to_owned(), $postgres);
+                if let Some(parent) = sqlx::query(sqlx::AssertSqlSafe(lock_query.as_str())).bind(&event.app_id).bind(&event.publish_id).fetch_optional(&mut *transaction).await.map_err(sql_error)? {
+                    if parent.try_get::<String, _>("state").map_err(sql_error)? == crate::lifecycle::RETIRED_SQL_STATE {
+                        return Err(PushStorageError::Backend("publish has been retired".to_owned()));
+                    }
+                    let touch = sql_query("UPDATE push_publish_status SET revision=revision+1,updated_at_ms=? WHERE app_id=? AND publish_id=?".to_owned(), $postgres);
+                    sqlx::query(sqlx::AssertSqlSafe(touch.as_str())).bind(now_ms_i64()).bind(&event.app_id).bind(&event.publish_id).execute(&mut *transaction).await.map_err(sql_error)?;
+                } else {
+                    return Err(PushStorageError::Backend("publish status is missing; child write must retry after status repair".to_owned()));
+                }
                 let q = sql_query(format!(
                     "INSERT INTO push_publish_log (app_id, publish_id, occurred_at_ms, event_id, event_json) VALUES ({0}, {0}, {0}, {0}, {1}) {2}",
                     $bind, $json_cast, upsert_publish_log_clause($postgres)
@@ -315,9 +348,10 @@ macro_rules! impl_common_sql_traits {
                     .bind(event.occurred_at_ms as i64)
                     .bind(&event.event_id)
                     .bind(to_json_string(&event)?)
-                    .execute(&self.$pool)
+                    .execute(&mut *transaction)
                     .await
                     .map_err(sql_error)?;
+                transaction.commit().await.map_err(sql_error)?;
                 Ok(())
             }
 
@@ -325,8 +359,8 @@ macro_rules! impl_common_sql_traits {
                 let start = cursor_position(cursor, app_id)?.unwrap_or_default();
                 let (cursor_ms, cursor_event_id) = parse_ts_id_cursor(&start);
                 let q = sql_query(format!(
-                    "SELECT occurred_at_ms, event_id, {1} AS event_json FROM push_publish_log WHERE app_id = {0} AND (occurred_at_ms, event_id) > ({0}, {0}) ORDER BY occurred_at_ms, event_id LIMIT {0}",
-                    $bind, json_text_expr("event_json", $json_text)
+                    "SELECT {2} AS occurred_at_ms, event_id, {1} AS event_json FROM push_publish_log WHERE app_id = {0} AND (occurred_at_ms, event_id) > ({0}, {0}) ORDER BY occurred_at_ms, event_id LIMIT {0}",
+                    $bind, json_text_expr("event_json", $json_text), signed_i64_expr("occurred_at_ms", $postgres)
                 ), $postgres);
                 let rows = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(app_id)
@@ -347,6 +381,17 @@ macro_rules! impl_common_sql_traits {
         #[async_trait]
         impl PushFanoutShardStore for $store {
             async fn put_fanout_shard(&self, shard: ShardJob) -> PushStorageResult<()> {
+                let mut transaction = self.$pool.begin().await.map_err(sql_error)?;
+                let lock_query = sql_query("SELECT state FROM push_publish_status WHERE app_id=? AND publish_id=? FOR UPDATE".to_owned(), $postgres);
+                if let Some(parent) = sqlx::query(sqlx::AssertSqlSafe(lock_query.as_str())).bind(&shard.app_id).bind(&shard.publish_id).fetch_optional(&mut *transaction).await.map_err(sql_error)? {
+                    if parent.try_get::<String, _>("state").map_err(sql_error)? == crate::lifecycle::RETIRED_SQL_STATE {
+                        return Err(PushStorageError::Backend("publish has been retired".to_owned()));
+                    }
+                    let touch = sql_query("UPDATE push_publish_status SET revision=revision+1,updated_at_ms=? WHERE app_id=? AND publish_id=?".to_owned(), $postgres);
+                    sqlx::query(sqlx::AssertSqlSafe(touch.as_str())).bind(now_ms_i64()).bind(&shard.app_id).bind(&shard.publish_id).execute(&mut *transaction).await.map_err(sql_error)?;
+                } else {
+                    return Err(PushStorageError::Backend("publish status is missing; child write must retry after status repair".to_owned()));
+                }
                 let q = sql_query(format!(
                     "INSERT INTO push_fanout_shards (app_id, publish_id, shard_id, shard_json, updated_at_ms) VALUES ({0}, {0}, {0}, {1}, {0}) {2}",
                     $bind, $json_cast, upsert_shard_clause($postgres)
@@ -357,9 +402,10 @@ macro_rules! impl_common_sql_traits {
                     .bind(&shard.shard_id)
                     .bind(to_json_string(&shard)?)
                     .bind(now_ms_i64())
-                    .execute(&self.$pool)
+                    .execute(&mut *transaction)
                     .await
                     .map_err(sql_error)?;
+                transaction.commit().await.map_err(sql_error)?;
                 Ok(())
             }
 
@@ -474,8 +520,8 @@ macro_rules! impl_common_sql_traits {
                 let start = cursor_position(cursor, app_id)?.unwrap_or_default();
                 let (cursor_ms, cursor_event_id) = parse_ts_id_cursor(&start);
                 let q = sql_query(format!(
-                    "SELECT occurred_at_ms, event_id, {1} AS result_json FROM push_delivery_events WHERE app_id = {0} AND publish_id = {0} AND (occurred_at_ms, event_id) > ({0}, {0}) ORDER BY occurred_at_ms, event_id LIMIT {0}",
-                    $bind, json_text_expr("result_json", $json_text)
+                    "SELECT {2} AS occurred_at_ms, event_id, {1} AS result_json FROM push_delivery_events WHERE app_id = {0} AND publish_id = {0} AND (occurred_at_ms, event_id) > ({0}, {0}) ORDER BY occurred_at_ms, event_id LIMIT {0}",
+                    $bind, json_text_expr("result_json", $json_text), signed_i64_expr("occurred_at_ms", $postgres)
                 ), $postgres);
                 let rows = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(app_id)
@@ -514,8 +560,8 @@ macro_rules! impl_common_sql_traits {
                     .await
                     .map_err(sql_error)?;
                 let q = sql_query(format!(
-                    "INSERT INTO push_idempotency (app_id, idempotency_key, publish_id, expires_at_ms, created_at_ms) VALUES ({0}, {0}, {0}, {0}, {0}) {1}",
-                    $bind, ignore_conflict_clause($postgres)
+                    "INSERT INTO push_idempotency (app_id, idempotency_key, publish_id, expires_at_ms, created_at_ms) VALUES ({0}, {0}, {0}, {0}, {0})",
+                    $bind
                 ), $postgres);
                 let result = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(&record.app_id)
@@ -524,13 +570,16 @@ macro_rules! impl_common_sql_traits {
                     .bind(record.expires_at_ms as i64)
                     .bind(now_ms_i64())
                     .execute(&self.$pool)
-                    .await
-                    .map_err(sql_error)?;
-                Ok(result.rows_affected() > 0)
+                    .await;
+                match result {
+                    Ok(_) => Ok(true),
+                    Err(error) if is_unique_violation(&error) => Ok(false),
+                    Err(error) => Err(sql_error(error)),
+                }
             }
 
             async fn get_idempotency_record(&self, app_id: &str, key: &str) -> PushStorageResult<Option<IdempotencyRecord>> {
-                let q = sql_query(format!("SELECT app_id, idempotency_key, publish_id, expires_at_ms FROM push_idempotency WHERE app_id = {0} AND idempotency_key = {0} AND (expires_at_ms < 1000000000000 OR expires_at_ms > {0})", $bind), $postgres);
+                let q = sql_query(format!("SELECT app_id, idempotency_key, publish_id, {1} AS expires_at_ms FROM push_idempotency WHERE app_id = {0} AND idempotency_key = {0} AND (expires_at_ms < 1000000000000 OR expires_at_ms > {0})", $bind, signed_i64_expr("expires_at_ms", $postgres)), $postgres);
                 sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                     .bind(app_id)
                     .bind(key)
@@ -665,11 +714,12 @@ macro_rules! impl_common_sql_traits {
             async fn cleanup_expired_push_data(&self, request: PushCleanupRequest) -> PushStorageResult<PushCleanupReport> {
                 let mut report = PushCleanupReport::default();
                 let mut remaining = request.policy.max_deleted_per_tick;
+                self.cleanup_lifecycle(&request, &mut report, &mut remaining).await?;
 
                 if remaining > 0 {
                     if let Some(cutoff_ms) = request.publish_status_cutoff_ms() {
                         let limit = request.limit_for(remaining) as i64;
-                        let raw = if $postgres {
+                        let mut raw = if $postgres {
                             "WITH doomed AS (
                                 SELECT app_id, publish_id, revision
                                 FROM push_publish_status
@@ -699,6 +749,15 @@ macro_rules! impl_common_sql_traits {
                                 AND doomed.revision = s.revision"
                                 .to_owned()
                         };
+                        let no_pending = if $postgres {
+                            "COALESCE(counters_json->'data'->'pendingFeedback', counters_json->'pendingFeedback', '{}'::jsonb) = '{}'::jsonb AND COALESCE(counters_json->'data'->'pendingChildren', counters_json->'pendingChildren', '[]'::jsonb) = '[]'::jsonb"
+                        } else {
+                            "COALESCE(JSON_LENGTH(COALESCE(JSON_EXTRACT(counters_json, '$.data.pendingFeedback'), JSON_EXTRACT(counters_json, '$.pendingFeedback'))), 0) = 0 AND COALESCE(JSON_LENGTH(COALESCE(JSON_EXTRACT(counters_json, '$.data.pendingChildren'), JSON_EXTRACT(counters_json, '$.pendingChildren'))), 0) = 0"
+                        };
+                        raw = raw.replace("WHERE updated_at_ms < ?", &format!("WHERE updated_at_ms < ? AND ({no_pending})"));
+                        {
+                            raw = raw.replace("WHERE updated_at_ms < ?", "WHERE updated_at_ms < ? AND NOT EXISTS (SELECT 1 FROM push_fanout_shards lifecycle_shard WHERE lifecycle_shard.app_id=push_publish_status.app_id AND lifecycle_shard.publish_id=push_publish_status.publish_id AND lifecycle_shard.shard_id='lifecycle-plan-v1')");
+                        }
                         let q = sql_query(raw, $postgres);
                         let deleted = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
                             .bind(cutoff_ms as i64)

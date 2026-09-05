@@ -1,0 +1,3 @@
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.37s
+  Executable tests/broker_fanout_live.rs (target/debug/deps/broker_fanout_live-26de91b73067ffdb)

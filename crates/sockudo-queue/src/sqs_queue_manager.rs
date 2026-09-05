@@ -287,6 +287,7 @@ impl SqsQueueManager {
         let shutdown = self.shutdown.clone();
         let queue_name = queue_name.to_string();
         let worker_prefetch = self.reliability.worker_prefetch;
+        let reliability = self.reliability.clone();
 
         tokio::spawn(async move {
             debug!(worker_id = %worker_id, queue = %queue_name, "starting sqs worker");
@@ -299,6 +300,9 @@ impl SqsQueueManager {
 
                 let result = client
                     .receive_message()
+                    .message_system_attribute_names(
+                        sqs::types::MessageSystemAttributeName::ApproximateReceiveCount,
+                    )
                     .queue_url(&queue_url)
                     .max_number_of_messages(config.max_messages)
                     .visibility_timeout(config.visibility_timeout)
@@ -325,6 +329,7 @@ impl SqsQueueManager {
                                         queue_url.clone(),
                                         queue_name.clone(),
                                         config.visibility_timeout,
+                                        reliability.clone(),
                                         processor.clone(),
                                         message,
                                     )
@@ -390,7 +395,6 @@ impl QueueInterface for SqsQueueManager {
 
     async fn process_queue(&self, queue_name: &str, callback: JobProcessorFnAsync) -> Result<()> {
         let queue_url = self.get_queue_url(queue_name).await?;
-
         let processor: ArcJobProcessorFn = Arc::from(callback);
 
         let mut worker_handles = Vec::new();
@@ -497,6 +501,7 @@ async fn process_sqs_message(
     queue_url: String,
     queue_name: String,
     visibility_timeout: i32,
+    reliability: QueueReliabilityConfig,
     processor: ArcJobProcessorFn,
     message: sqs::types::Message,
 ) {
@@ -554,14 +559,25 @@ async fn process_sqs_message(
                 );
             }
         }
-        Err(_) => {
-            warn!(queue = %queue_name, "sqs queue processor failed");
+        Err(error) => {
+            warn!(queue = %queue_name, error = %error, "sqs queue processor failed");
+            let attempt = message
+                .attributes()
+                .and_then(|attributes| {
+                    attributes.get(&sqs::types::MessageSystemAttributeName::ApproximateReceiveCount)
+                })
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(1);
+            let retry_seconds = crate::broker_retry_delay(&reliability, attempt)
+                .as_millis()
+                .div_ceil(1000)
+                .clamp(1, 43200) as i32;
             if let Some(receipt_handle) = message.receipt_handle()
                 && let Err(change_error) = client
                     .change_message_visibility()
                     .queue_url(&queue_url)
                     .receipt_handle(receipt_handle)
-                    .visibility_timeout(0)
+                    .visibility_timeout(retry_seconds)
                     .send()
                     .await
             {

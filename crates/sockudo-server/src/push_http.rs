@@ -29,9 +29,9 @@ use sockudo_push::{
     PublishLogEvent, PublishStatus, PublishStatusCasOutcome, PublishTarget, PushCursor,
     PushMetaEvent, PushMetrics, PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage,
     PushRecipient, PushRulePayloadMapping, RenderedProviderPayload, SecretString,
-    emit_push_meta_event, generate_device_identity_token, hash_device_identity_token,
+    emit_push_meta_event, generate_device_identity_token, hash_device_identity_token_async,
     publish_idempotency_key, render_all_provider_payloads, resolve_template_payload,
-    verify_device_identity_token,
+    verify_device_identity_token_async,
 };
 use sonic_rs::{Value, json};
 use tracing::{info, warn};
@@ -559,7 +559,9 @@ pub async fn register_device(
     if capability == PushCapability::Admin {
         if existing.is_none() || rotate {
             let token = generate_device_identity_token();
-            device.device_secret = hash_device_identity_token(&token);
+            device.device_secret = hash_device_identity_token_async(&token)
+                .await
+                .map_err(device_crypto_error)?;
             issued_token = Some(token.expose_secret().to_owned());
         } else if let Some(existing) = existing.as_ref() {
             device.device_secret = existing.device_secret.clone();
@@ -568,7 +570,7 @@ pub async fn register_device(
         let existing = existing.ok_or_else(|| {
             AppError::Forbidden("device token registration requires an existing device".to_owned())
         })?;
-        ensure_device_identity(&headers, &existing)?;
+        ensure_device_identity(&headers, &existing).await?;
         device.device_secret = existing.device_secret;
     }
 
@@ -600,7 +602,7 @@ pub async fn get_device(
         .map_err(push_error)?
         .ok_or_else(|| AppError::NotFound("device not found".to_owned()))?;
     if push_capability(&headers)? != PushCapability::Admin {
-        ensure_device_identity(&headers, &device)?;
+        ensure_device_identity(&headers, &device).await?;
     }
     Ok(Json(device_response(device)))
 }
@@ -641,7 +643,7 @@ pub async fn delete_device(
             .await
             .map_err(push_error)?
             .ok_or_else(|| AppError::NotFound("device not found".to_owned()))?;
-        ensure_device_identity(&headers, &device)?;
+        ensure_device_identity(&headers, &device).await?;
     }
     store
         .delete_device(&app_id, &device_id)
@@ -688,7 +690,7 @@ pub async fn upsert_channel_subscription(
             .await
             .map_err(push_error)?
             .ok_or_else(|| AppError::NotFound("device not found".to_owned()))?;
-        ensure_device_identity(&headers, &device)?;
+        ensure_device_identity(&headers, &device).await?;
     }
     store
         .upsert_subscription(subscription.clone())
@@ -716,7 +718,7 @@ pub async fn list_channel_subscriptions(
             .await
             .map_err(push_error)?
             .ok_or_else(|| AppError::NotFound("device not found".to_owned()))?;
-        ensure_device_identity(&headers, &device)?;
+        ensure_device_identity(&headers, &device).await?;
     }
     let cursor = decode_cursor(query.cursor, &app_id)?;
     let page = if let Some(channel) = query.channel {
@@ -775,7 +777,7 @@ pub async fn delete_channel_subscriptions(
             .await
             .map_err(push_error)?
             .ok_or_else(|| AppError::NotFound("device not found".to_owned()))?;
-        ensure_device_identity(&headers, &device)?;
+        ensure_device_identity(&headers, &device).await?;
     }
     let deleted = if let Some(channel) = query.channel {
         store
@@ -1594,14 +1596,28 @@ fn push_capability(headers: &HeaderMap) -> Result<PushCapability, AppError> {
     }
 }
 
-fn ensure_device_identity(headers: &HeaderMap, device: &DeviceDetails) -> Result<(), AppError> {
+async fn ensure_device_identity(
+    headers: &HeaderMap,
+    device: &DeviceDetails,
+) -> Result<(), AppError> {
     let token = device_identity_token(headers)?;
-    if verify_device_identity_token(token, &device.device_secret) {
+    if verify_device_identity_token_async(token, &device.device_secret)
+        .await
+        .map_err(device_crypto_error)?
+    {
         Ok(())
     } else {
         Err(AppError::ApiAuthFailed(
             "invalid deviceIdentityToken".to_owned(),
         ))
+    }
+}
+
+fn device_crypto_error(error: sockudo_push::DeviceIdentityCryptoError) -> AppError {
+    tracing::warn!(error = %error, "device identity cryptography unavailable");
+    AppError::Backpressure {
+        message: "device identity cryptography is busy".into(),
+        retry_after_seconds: 1,
     }
 }
 
@@ -2580,7 +2596,7 @@ mod tests {
     }
 
     fn hashed_token(raw: &str) -> SecretString {
-        hash_device_identity_token(&SecretString::new(raw).unwrap())
+        sockudo_push::hash_device_identity_token(&SecretString::new(raw).unwrap())
     }
 
     fn sample_device() -> DeviceDetails {
@@ -2774,8 +2790,8 @@ mod tests {
         assert!(is_json_content_type(&headers));
     }
 
-    #[test]
-    fn device_identity_header_verifies_hashed_device_secret() {
+    #[tokio::test]
+    async fn device_identity_header_verifies_hashed_device_secret() {
         let device = sample_device();
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2783,10 +2799,10 @@ mod tests {
             HeaderValue::from_static("device-token"),
         );
 
-        assert!(ensure_device_identity(&headers, &device).is_ok());
+        assert!(ensure_device_identity(&headers, &device).await.is_ok());
 
         headers.insert(DEVICE_TOKEN_HEADER, HeaderValue::from_static("wrong"));
-        assert!(ensure_device_identity(&headers, &device).is_err());
+        assert!(ensure_device_identity(&headers, &device).await.is_err());
     }
 
     #[test]

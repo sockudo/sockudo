@@ -1,0 +1,30 @@
+{
+  "baseline": {
+    "100": {
+      "samples": 45,
+      "median_us": 1113,
+      "min_us": 1009,
+      "max_us": 1433
+    },
+    "1000": {
+      "samples": 45,
+      "median_us": 1909,
+      "min_us": 1710,
+      "max_us": 2278
+    }
+  },
+  "after": {
+    "100": {
+      "samples": 45,
+      "median_us": 319,
+      "min_us": 276,
+      "max_us": 562
+    },
+    "1000": {
+      "samples": 45,
+      "median_us": 306,
+      "min_us": 250,
+      "max_us": 865
+    }
+  }
+}

@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.07s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-690969c8c439da9f)
+
+running 10 tests
+test presence_history::durable::tests::durable_presence_history_dedupes_and_suppresses_same_state ... ok
+test presence_history::durable::tests::durable_presence_history_reuses_cached_latest_state ... ok
+test presence_history::durable::tests::durable_presence_history_round_trips_over_history_store ... ok
+test presence_history::durable::tests::durable_presence_history_snapshot_and_reset_follow_presence_semantics ... ok
+test presence_history::durable::tests::durable_presence_same_node_concurrent_duplicates_append_once ... ok
+test presence_history::durable::tests::durable_presence_cache_observes_other_nodes_and_late_commits ... ok
+test presence_history::durable::review_tests::incomplete_empty_and_reset_races_never_prove_absence ... ok
+test presence_history::durable::review_tests::channel_churn_and_large_retention_bound_disposable_metadata ... ok
+test presence_history::durable::review_tests::membership_pruning_never_forgets_observed_identity ... ok
+
+thread 'presence_history::durable::review_tests::steady_new_members_do_not_replay_history_beyond_metadata_capacity' (300) panicked at crates/sockudo-core/src/presence_history/durable/review_tests.rs:212:79:
+called `Result::unwrap()` on an `Err` value: Configuration("Durable history reset is not supported by this store")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test presence_history::durable::review_tests::steady_new_members_do_not_replay_history_beyond_metadata_capacity ... FAILED
+
+failures:
+
+failures:
+    presence_history::durable::review_tests::steady_new_members_do_not_replay_history_beyond_metadata_capacity
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 363 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p sockudo-core --lib`

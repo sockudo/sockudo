@@ -1,0 +1,61 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-protocol)
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-filter)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-metrics)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-delta)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-webhook)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-queue)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-cache)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-app)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f5/crates/sockudo-adapter)
+warning: method `try_dispatch` is never used
+  --> crates/sockudo-adapter/src/transports/dispatch.rs:67:19
+   |
+23 | impl OrderedDispatcher {
+   | ---------------------- method in this implementation
+...
+67 |     pub(crate) fn try_dispatch(
+   |                   ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `routing_key` is never used
+   --> crates/sockudo-adapter/src/transports/dispatch.rs:107:15
+    |
+107 | pub(crate) fn routing_key(payload: &[u8]) -> u64 {
+    |               ^^^^^^^^^^^
+
+warning: function `ingress_scope` is never used
+   --> crates/sockudo-adapter/src/transports/dispatch.rs:194:15
+    |
+194 | pub(crate) fn ingress_scope(payload: &[u8]) -> (Option<String>, Option<String>) {
+    |               ^^^^^^^^^^^^^
+
+warning: function `report_ingress_gap` is never used
+   --> crates/sockudo-adapter/src/transports/dispatch.rs:206:15
+    |
+206 | pub(crate) fn report_ingress_gap(
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: struct `RedisPush` is never constructed
+   --> crates/sockudo-adapter/src/transports/dispatch.rs:225:19
+    |
+225 | pub(crate) struct RedisPush {
+    |                   ^^^^^^^^^
+
+warning: function `bounded_redis_pushes` is never used
+   --> crates/sockudo-adapter/src/transports/dispatch.rs:231:15
+    |
+231 | pub(crate) fn bounded_redis_pushes(
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `redis_value_bytes` is never used
+   --> crates/sockudo-adapter/src/transports/dispatch.rs:274:15
+    |
+274 | pub(crate) fn redis_value_bytes(value: &redis::Value) -> Option<&[u8]> {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: `sockudo-adapter` (lib) generated 7 warnings
+    Finished `release` profile [optimized] target(s) in 1m 54s
+  Executable tests/fanout_performance_live.rs (target/release/deps/fanout_performance_live-ec09f3613625ed66)

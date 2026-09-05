@@ -1,0 +1,14 @@
+a3,n=1000,rep=0,returned=2,us=3075,allocations=20489,allocated_bytes=2648991,cache_calls=4,read_bytes=253000
+a3,n=1000,rep=1,returned=2,us=3134,allocations=20490,allocated_bytes=2649023,cache_calls=4,read_bytes=253000
+a3,n=1000,rep=2,returned=2,us=3707,allocations=20489,allocated_bytes=2648991,cache_calls=4,read_bytes=253000
+a3,n=1000,rep=3,returned=2,us=3188,allocations=20490,allocated_bytes=2649023,cache_calls=4,read_bytes=253000
+a3,n=1000,rep=4,returned=2,us=3089,allocations=20489,allocated_bytes=2648991,cache_calls=4,read_bytes=253000
+a3,n=1000,rep=5,returned=2,us=3100,allocations=20490,allocated_bytes=2649023,cache_calls=4,read_bytes=253000
+a3,n=1000,rep=6,returned=2,us=3157,allocations=20489,allocated_bytes=2648991,cache_calls=4,read_bytes=253000
+a3,n=10000,rep=0,returned=2,us=785951,allocations=204271,allocated_bytes=27487797,cache_calls=43,read_bytes=2550000
+a3,n=10000,rep=1,returned=2,us=779725,allocations=204273,allocated_bytes=27487985,cache_calls=43,read_bytes=2550000
+a3,n=10000,rep=2,returned=2,us=788134,allocations=204284,allocated_bytes=27488585,cache_calls=43,read_bytes=2550000
+a3,n=10000,rep=3,returned=2,us=770409,allocations=204318,allocated_bytes=27490045,cache_calls=43,read_bytes=2550000
+a3,n=10000,rep=4,returned=2,us=775003,allocations=204299,allocated_bytes=27489189,cache_calls=43,read_bytes=2550000
+a3,n=10000,rep=5,returned=2,us=784193,allocations=204288,allocated_bytes=27488589,cache_calls=43,read_bytes=2550000
+a3,n=10000,rep=6,returned=2,us=785211,allocations=204278,allocated_bytes=27488393,cache_calls=43,read_bytes=2550000

@@ -6,6 +6,7 @@ use tracing::warn;
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-webpush"))]
 pub(in crate::bootstrap::push::workers) fn start_webpush_provider_workers(
     config: &ServerOptions,
+    store: sockudo_push::DynPushStore,
     queue: sockudo_push::DynPushQueue,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let vapid_private_key =
@@ -47,8 +48,10 @@ pub(in crate::bootstrap::push::workers) fn start_webpush_provider_workers(
             "provider",
             format!("sockudo-monolith-webpush-{worker_index}"),
             {
+                let store = store.clone();
                 let queue = queue.clone();
                 move |group| {
+                    let store = store.clone();
                     let queue = queue.clone();
                     let dispatcher = dispatcher.clone();
                     async move {
@@ -57,6 +60,7 @@ pub(in crate::bootstrap::push::workers) fn start_webpush_provider_workers(
                             queue,
                             Arc::new(dispatcher),
                         )
+                        .with_store(store.clone())
                         .with_max_outbound_requests(max_outbound);
                         warn!(worker = %group, "Web Push dispatch worker started");
                         loop {

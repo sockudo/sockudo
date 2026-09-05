@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use thiserror::Error;
 
 use crate::cleanup::{PushCleanupReport, PushCleanupRequest};
@@ -34,11 +34,36 @@ pub enum PushStorageError {
 ///
 /// The revision and update timestamp are storage-only fields. They are intentionally absent from
 /// the public publish-status wire representation.
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedbackReceipt {
+    pub occurred_at_ms: u64,
+    pub retry_at_ms: Option<u64>,
+    pub status_applied: bool,
+}
+
+pub const MAX_PENDING_FEEDBACK: usize = 64;
+
+/// Storage payload includes bounded receipts, never exposed in the public status.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StoredStatusPayload {
+    #[serde(flatten)]
+    pub status: PublishStatus,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_feedback: BTreeMap<String, FeedbackReceipt>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub pending_children: std::collections::BTreeSet<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VersionedPublishStatus {
     pub status: PublishStatus,
     pub revision: u64,
     pub updated_at_ms: u64,
+    pub pending_feedback: BTreeMap<String, FeedbackReceipt>,
+    pub pending_children: std::collections::BTreeSet<String>,
 }
 
 /// Result of an atomic publish-status create or compare-and-swap operation.
@@ -168,8 +193,69 @@ pub struct OperatorInvalidationEvent {
     pub occurred_at_ms: u64,
 }
 
+#[derive(Clone, Debug)]
+pub enum DeviceFeedbackEffect {
+    Success,
+    Failure { threshold: u32, reason: String },
+    Delete,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeviceFeedbackRequest {
+    pub app_id: String,
+    pub device_id: String,
+    pub publish_id: String,
+    pub receipt_id: String,
+    pub occurred_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub effect: DeviceFeedbackEffect,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct DeviceFeedbackApplied {
+    pub applied: bool,
+    pub previous: Option<crate::domain::DevicePushState>,
+    pub next: Option<crate::domain::DevicePushState>,
+}
+
+pub(crate) fn apply_device_feedback_effect(
+    device: &mut DeviceDetails,
+    request: &DeviceFeedbackRequest,
+) {
+    match &request.effect {
+        DeviceFeedbackEffect::Success => {
+            device.record_delivery_success();
+            device.last_active_at_ms = device.last_active_at_ms.max(request.occurred_at_ms);
+        }
+        DeviceFeedbackEffect::Failure { threshold, reason } => {
+            device.record_delivery_failure(*threshold, reason.clone());
+        }
+        DeviceFeedbackEffect::Delete => {}
+    }
+}
+
 #[async_trait]
 pub trait PushDeviceStore: Send + Sync {
+    /// Release a canonical device fence only after the complete outcome record is durable.
+    async fn complete_device_feedback_receipt(
+        &self,
+        _app_id: &str,
+        _device_id: &str,
+        _receipt_id: &str,
+    ) -> PushStorageResult<()> {
+        Ok(())
+    }
+
+    /// Atomically fence one device effect with its durable outcome receipt.
+    async fn apply_device_feedback_once(
+        &self,
+        _request: DeviceFeedbackRequest,
+    ) -> PushStorageResult<DeviceFeedbackApplied> {
+        Err(PushStorageError::Backend(
+            "atomic device feedback receipts are unsupported".into(),
+        ))
+    }
+
     async fn upsert_device(
         &self,
         device: DeviceDetails,
@@ -193,6 +279,26 @@ pub trait PushDeviceStore: Send + Sync {
         limit: usize,
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<DeviceDetails>>;
+
+    /// Page the devices assigned to one client. Implementations should use their
+    /// client index; this fallback preserves compatibility with external stores.
+    async fn list_devices_by_client(
+        &self,
+        app_id: &str,
+        client_id: &str,
+        limit: usize,
+        cursor: Option<PushCursor>,
+    ) -> PushStorageResult<Page<DeviceDetails>> {
+        let page = self.list_devices(app_id, limit, cursor).await?;
+        Ok(Page {
+            items: page
+                .items
+                .into_iter()
+                .filter(|device| device.client_id.as_deref() == Some(client_id))
+                .collect(),
+            next_cursor: page.next_cursor,
+        })
+    }
 
     async fn delete_devices_by_client(
         &self,
@@ -308,6 +414,16 @@ pub trait PushTemplateStore: Send + Sync {
 
 #[async_trait]
 pub trait PushPublishStatusStore: Send + Sync {
+    /// True only while canonical, versioned retirement evidence is retained.
+    /// Missing status is never proof that accepted delivery work has completed.
+    async fn is_publish_retired(
+        &self,
+        _app_id: &str,
+        _publish_id: &str,
+    ) -> PushStorageResult<bool> {
+        Ok(false)
+    }
+
     /// Create the initial status without replacing an existing publish.
     async fn create_publish_status_if_absent(
         &self,
@@ -327,6 +443,19 @@ pub trait PushPublishStatusStore: Send + Sync {
         expected: &VersionedPublishStatus,
         next: PublishStatus,
     ) -> PushStorageResult<PublishStatusCasOutcome>;
+
+    /// Atomically replace status and its bounded feedback receipts. Ordinary
+    /// writers must preserve the receipts through compare_and_swap_publish_status.
+    async fn compare_and_swap_feedback_status(
+        &self,
+        _expected: &VersionedPublishStatus,
+        _next: PublishStatus,
+        _pending: BTreeMap<String, FeedbackReceipt>,
+    ) -> PushStorageResult<PublishStatusCasOutcome> {
+        Err(PushStorageError::Backend(
+            "atomic feedback status receipts are unsupported".into(),
+        ))
+    }
 
     /// Unconditionally seed or replace a status using bounded conditional writes.
     ///

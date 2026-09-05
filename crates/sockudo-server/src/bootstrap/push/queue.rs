@@ -155,12 +155,18 @@ impl TryFrom<&PushQueueEnvelope> for PushQueueEnvelopeWire {
     type Error = sockudo_push::PushQueueError;
 
     fn try_from(envelope: &PushQueueEnvelope) -> Result<Self, Self::Error> {
+        Self::encode(envelope)
+    }
+}
+
+#[cfg(feature = "push")]
+impl PushQueueEnvelopeWire {
+    fn encode(envelope: &PushQueueEnvelope) -> sockudo_push::PushQueueResult<Self> {
         Ok(Self {
             message_id: envelope.message_id.clone(),
             stage: envelope.stage,
             key: envelope.key.clone(),
-            payload_json: sonic_rs::to_string(&envelope.payload)
-                .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?,
+            payload_json: sockudo_push::batch_wire::encode_queue_payload(&envelope.payload)?,
             attempt: envelope.attempt,
             enqueued_at_ms: Some(envelope.enqueued_at_ms),
             not_before_ms: envelope.not_before_ms,
@@ -870,7 +876,7 @@ fn push_queue_job_data(
 fn push_queue_envelope_value(
     envelope: &PushQueueEnvelope,
 ) -> sockudo_push::PushQueueResult<sonic_rs::Value> {
-    let wire = PushQueueEnvelopeWire::try_from(envelope)?;
+    let wire = PushQueueEnvelopeWire::encode(envelope)?;
     let json = serde_json::to_string(&wire)
         .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?;
     sonic_rs::to_value(&json)
@@ -917,49 +923,7 @@ fn push_queue_envelope_from_value(
 fn push_queue_payload_from_json(
     raw: &str,
 ) -> sockudo_push::PushQueueResult<sockudo_push::PushQueuePayload> {
-    let value: sonic_rs::Value = sonic_rs::from_str(raw)
-        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?;
-    let kind = value
-        .get("kind")
-        .and_then(sonic_rs::Value::as_str)
-        .ok_or_else(|| {
-            sockudo_push::PushQueueError::Backend("push queue payload missing kind".to_owned())
-        })?;
-    match kind {
-        "publishLog" => Ok(sockudo_push::PushQueuePayload::PublishLog(Box::new(
-            push_queue_payload_decode(raw)?,
-        ))),
-        "shardJob" => Ok(sockudo_push::PushQueuePayload::ShardJob(Box::new(
-            push_queue_payload_decode(raw)?,
-        ))),
-        "deliveryBatch" => Ok(sockudo_push::PushQueuePayload::DeliveryBatch(Box::new(
-            push_queue_payload_decode(raw)?,
-        ))),
-        "deliveryResult" => Ok(sockudo_push::PushQueuePayload::DeliveryResult(Box::new(
-            push_queue_payload_decode(raw)?,
-        ))),
-        "deliveryFeedback" => Ok(sockudo_push::PushQueuePayload::DeliveryFeedback(Box::new(
-            push_queue_payload_decode(raw)?,
-        ))),
-        "deadLetter" => Ok(sockudo_push::PushQueuePayload::DeadLetter(Box::new(
-            push_queue_payload_decode(raw)?,
-        ))),
-        "retrySchedule" => Ok(sockudo_push::PushQueuePayload::RetrySchedule(Box::new(
-            push_queue_payload_decode(raw)?,
-        ))),
-        _ => Err(sockudo_push::PushQueueError::Backend(format!(
-            "unsupported push queue payload kind {kind}"
-        ))),
-    }
-}
-
-#[cfg(feature = "push")]
-fn push_queue_payload_decode<T>(raw: &str) -> sockudo_push::PushQueueResult<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    sonic_rs::from_str(raw)
-        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))
+    sockudo_push::batch_wire::decode_queue_payload(raw)
 }
 
 #[cfg(feature = "push")]

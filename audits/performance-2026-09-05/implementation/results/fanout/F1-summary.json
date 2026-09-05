@@ -1,0 +1,510 @@
+{
+  "baseline": {
+    "count=8,payload=1024,mixed=false": {
+      "prepare_ns": {
+        "median": 43963,
+        "min": 43172,
+        "max": 55385,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 130136,
+        "min": 126630,
+        "max": 140566,
+        "samples": 9
+      }
+    },
+    "count=8,payload=1024,mixed=true": {
+      "prepare_ns": {
+        "median": 34946,
+        "min": 34705,
+        "max": 35508,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 114857,
+        "min": 113474,
+        "max": 119696,
+        "samples": 9
+      }
+    },
+    "count=8,payload=16384,mixed=false": {
+      "prepare_ns": {
+        "median": 114626,
+        "min": 112663,
+        "max": 921782,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 357595,
+        "min": 347617,
+        "max": 7693587,
+        "samples": 9
+      }
+    },
+    "count=8,payload=16384,mixed=true": {
+      "prepare_ns": {
+        "median": 94068,
+        "min": 92585,
+        "max": 98276,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 300578,
+        "min": 294306,
+        "max": 307531,
+        "samples": 9
+      }
+    },
+    "count=8,payload=65536,mixed=false": {
+      "prepare_ns": {
+        "median": 341746,
+        "min": 335314,
+        "max": 2822994,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 1058450,
+        "min": 1042881,
+        "max": 23775503,
+        "samples": 9
+      }
+    },
+    "count=8,payload=65536,mixed=true": {
+      "prepare_ns": {
+        "median": 290699,
+        "min": 287303,
+        "max": 3483722,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 931050,
+        "min": 917423,
+        "max": 23268885,
+        "samples": 9
+      }
+    },
+    "count=128,payload=1024,mixed=false": {
+      "prepare_ns": {
+        "median": 976414,
+        "min": 961817,
+        "max": 1075302,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 1955194,
+        "min": 1920159,
+        "max": 2036758,
+        "samples": 9
+      }
+    },
+    "count=128,payload=1024,mixed=true": {
+      "prepare_ns": {
+        "median": 724699,
+        "min": 719179,
+        "max": 814509,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 1756869,
+        "min": 1745028,
+        "max": 1859413,
+        "samples": 9
+      }
+    },
+    "count=128,payload=16384,mixed=false": {
+      "prepare_ns": {
+        "median": 2088706,
+        "min": 1977085,
+        "max": 2742572,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 5820989,
+        "min": 5542422,
+        "max": 109298735,
+        "samples": 9
+      }
+    },
+    "count=128,payload=16384,mixed=true": {
+      "prepare_ns": {
+        "median": 1431024,
+        "min": 1326767,
+        "max": 2036437,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 4641620,
+        "min": 4411755,
+        "max": 64384962,
+        "samples": 9
+      }
+    },
+    "count=128,payload=65536,mixed=false": {
+      "prepare_ns": {
+        "median": 4776746,
+        "min": 4565446,
+        "max": 7400563,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 16279459,
+        "min": 15820462,
+        "max": 379173111,
+        "samples": 9
+      }
+    },
+    "count=128,payload=65536,mixed=true": {
+      "prepare_ns": {
+        "median": 3570065,
+        "min": 3461681,
+        "max": 3769061,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 14270614,
+        "min": 13773655,
+        "max": 15136379,
+        "samples": 9
+      }
+    },
+    "count=512,payload=1024,mixed=false": {
+      "prepare_ns": {
+        "median": 4178255,
+        "min": 4120927,
+        "max": 4455418,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 9144558,
+        "min": 8988804,
+        "max": 9868766,
+        "samples": 9
+      }
+    },
+    "count=512,payload=1024,mixed=true": {
+      "prepare_ns": {
+        "median": 3461200,
+        "min": 3258246,
+        "max": 4085369,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 8994364,
+        "min": 8392016,
+        "max": 10160768,
+        "samples": 9
+      }
+    },
+    "count=512,payload=16384,mixed=false": {
+      "prepare_ns": {
+        "median": 8522093,
+        "min": 7941014,
+        "max": 9764780,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 24732110,
+        "min": 23360709,
+        "max": 407346352,
+        "samples": 9
+      }
+    },
+    "count=512,payload=16384,mixed=true": {
+      "prepare_ns": {
+        "median": 6954921,
+        "min": 6424488,
+        "max": 7660424,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 21633155,
+        "min": 21148719,
+        "max": 296570226,
+        "samples": 9
+      }
+    },
+    "count=512,payload=65536,mixed=false": {
+      "prepare_ns": {
+        "median": 20110767,
+        "min": 19779111,
+        "max": 20579353,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 68690325,
+        "min": 68275892,
+        "max": 69223693,
+        "samples": 9
+      }
+    },
+    "count=512,payload=65536,mixed=true": {
+      "prepare_ns": {
+        "median": 16437327,
+        "min": 16102765,
+        "max": 19041648,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 60224019,
+        "min": 59376146,
+        "max": 1046859033,
+        "samples": 9
+      }
+    }
+  },
+  "after": {
+    "count=8,payload=1024,mixed=false": {
+      "prepare_ns": {
+        "median": 29826,
+        "min": 29425,
+        "max": 46318,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 113986,
+        "min": 111440,
+        "max": 206731,
+        "samples": 9
+      }
+    },
+    "count=8,payload=1024,mixed=true": {
+      "prepare_ns": {
+        "median": 24917,
+        "min": 24547,
+        "max": 35317,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 103265,
+        "min": 101492,
+        "max": 182235,
+        "samples": 9
+      }
+    },
+    "count=8,payload=16384,mixed=false": {
+      "prepare_ns": {
+        "median": 57959,
+        "min": 51457,
+        "max": 665558,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 302612,
+        "min": 287574,
+        "max": 5958558,
+        "samples": 9
+      }
+    },
+    "count=8,payload=16384,mixed=true": {
+      "prepare_ns": {
+        "median": 50486,
+        "min": 47119,
+        "max": 669285,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 259611,
+        "min": 251825,
+        "max": 4611804,
+        "samples": 9
+      }
+    },
+    "count=8,payload=65536,mixed=false": {
+      "prepare_ns": {
+        "median": 141588,
+        "min": 128263,
+        "max": 165473,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 894770,
+        "min": 857180,
+        "max": 1000821,
+        "samples": 9
+      }
+    },
+    "count=8,payload=65536,mixed=true": {
+      "prepare_ns": {
+        "median": 121059,
+        "min": 117582,
+        "max": 2576308,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 740690,
+        "min": 723236,
+        "max": 18950345,
+        "samples": 9
+      }
+    },
+    "count=128,payload=1024,mixed=false": {
+      "prepare_ns": {
+        "median": 498271,
+        "min": 462163,
+        "max": 550851,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 1854344,
+        "min": 1792567,
+        "max": 2017011,
+        "samples": 9
+      }
+    },
+    "count=128,payload=1024,mixed=true": {
+      "prepare_ns": {
+        "median": 385007,
+        "min": 362906,
+        "max": 439150,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 1681657,
+        "min": 1626723,
+        "max": 1978378,
+        "samples": 9
+      }
+    },
+    "count=128,payload=16384,mixed=false": {
+      "prepare_ns": {
+        "median": 559046,
+        "min": 536173,
+        "max": 1186853,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 4536652,
+        "min": 4446201,
+        "max": 88028684,
+        "samples": 9
+      }
+    },
+    "count=128,payload=16384,mixed=true": {
+      "prepare_ns": {
+        "median": 447205,
+        "min": 435684,
+        "max": 553075,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 3923172,
+        "min": 3875241,
+        "max": 4158868,
+        "samples": 9
+      }
+    },
+    "count=128,payload=65536,mixed=false": {
+      "prepare_ns": {
+        "median": 742283,
+        "min": 675376,
+        "max": 834838,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 12926854,
+        "min": 12697691,
+        "max": 13210240,
+        "samples": 9
+      }
+    },
+    "count=128,payload=65536,mixed=true": {
+      "prepare_ns": {
+        "median": 613490,
+        "min": 580277,
+        "max": 817234,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 11624374,
+        "min": 11392375,
+        "max": 12577685,
+        "samples": 9
+      }
+    },
+    "count=512,payload=1024,mixed=false": {
+      "prepare_ns": {
+        "median": 2435802,
+        "min": 2318881,
+        "max": 2921590,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 8968375,
+        "min": 8489680,
+        "max": 10217094,
+        "samples": 9
+      }
+    },
+    "count=512,payload=1024,mixed=true": {
+      "prepare_ns": {
+        "median": 1741511,
+        "min": 1646992,
+        "max": 2533657,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 7484221,
+        "min": 7405552,
+        "max": 11186145,
+        "samples": 9
+      }
+    },
+    "count=512,payload=16384,mixed=false": {
+      "prepare_ns": {
+        "median": 2520873,
+        "min": 2367744,
+        "max": 3504040,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 18926210,
+        "min": 18468535,
+        "max": 347510415,
+        "samples": 9
+      }
+    },
+    "count=512,payload=16384,mixed=true": {
+      "prepare_ns": {
+        "median": 2082565,
+        "min": 1916010,
+        "max": 2766087,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 17941780,
+        "min": 16880925,
+        "max": 264910319,
+        "samples": 9
+      }
+    },
+    "count=512,payload=65536,mixed=false": {
+      "prepare_ns": {
+        "median": 2943812,
+        "min": 2743153,
+        "max": 3313420,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 53158599,
+        "min": 51980664,
+        "max": 54442335,
+        "samples": 9
+      }
+    },
+    "count=512,payload=65536,mixed=true": {
+      "prepare_ns": {
+        "median": 2311918,
+        "min": 2160382,
+        "max": 2560137,
+        "samples": 9
+      },
+      "verified_ns": {
+        "median": 45607422,
+        "min": 44309770,
+        "max": 49441266,
+        "samples": 9
+      }
+    }
+  }
+}

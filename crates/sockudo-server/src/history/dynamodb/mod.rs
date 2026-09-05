@@ -106,6 +106,7 @@ impl HistoryStreamRecord {
 
 #[derive(Debug, Clone)]
 struct StoredStreamRecord {
+    retention_revision: u64,
     app_id: String,
     channel: String,
     stream_id: String,
@@ -154,4 +155,29 @@ pub async fn create_dynamodb_history_store(
 ) -> Result<Arc<dyn HistoryStore + Send + Sync>> {
     let store = DynamoDbHistoryStore::new(db_config, config, metrics, cache_manager).await?;
     Ok(Arc::new(store))
+}
+
+#[cfg(test)]
+pub(super) async fn simulate_legacy_retention(db: &DynamoDbSettings, config: HistoryConfig) {
+    let store = DynamoDbHistoryStore::new(db, config, None, None)
+        .await
+        .unwrap();
+    store
+        .client
+        .update_item()
+        .table_name(&store.tables.streams)
+        .key(
+            "stream_key",
+            DynamoDbHistoryStore::attr_string(&DynamoDbHistoryStore::stream_key(
+                "c6-app", "legacy",
+            )),
+        )
+        .update_expression(
+            "SET retained_messages=:count,retained_bytes=:bytes REMOVE retention_revision",
+        )
+        .expression_attribute_values(":count", DynamoDbHistoryStore::attr_number(777))
+        .expression_attribute_values(":bytes", DynamoDbHistoryStore::attr_number(999))
+        .send()
+        .await
+        .unwrap();
 }

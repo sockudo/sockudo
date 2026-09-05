@@ -1,0 +1,12 @@
+[package]
+name="sockudo-idle-history-audit"
+version="0.0.0"
+edition="2024"
+[workspace]
+[dependencies]
+sockudo-core={path="/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/c10/crates/sockudo-core"}
+bytes="1"
+tokio={version="1",features=["full"]}
+[profile.release]
+lto=true
+codegen-units=1

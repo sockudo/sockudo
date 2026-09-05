@@ -1,3 +1,4 @@
+mod encoding;
 mod store_impl;
 
 use super::*;
@@ -181,9 +182,77 @@ impl MysqlVersionStore {
             &format!("VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NULL"),
         )
         .await?;
+        self.ensure_column(
+            &self.tables.version_messages,
+            "state_version_serial",
+            &format!("VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NULL"),
+        )
+        .await?;
         self.ensure_operation_index().await?;
+        self.ensure_column(&self.tables.version_messages, "append_count", "BIGINT NULL")
+            .await?;
+        self.ensure_append_count_triggers().await?;
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS `{}` (app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL, channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL, snapshot_key VARCHAR(260) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, text_data LONGTEXT NOT NULL, updated_at_ms BIGINT NOT NULL, PRIMARY KEY (app_id, channel, snapshot_key), INDEX (updated_at_ms)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            self.text_table()
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to initialize version text snapshots: {e}"))
+            })?;
+        self.ensure_column(
+            &self.tables.version_entries,
+            "text_snapshot_key",
+            &format!("VARCHAR(260) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL"),
+        )
+        .await?;
+        self.ensure_index(&self.tables.version_entries, "text_snapshot_key")
+            .await?;
 
         Ok(())
+    }
+
+    async fn ensure_append_count_triggers(&self) -> Result<()> {
+        // Serialize installation across nodes. Keep both triggers during a
+        // rollback: old writers and retention still maintain the new column.
+        let mut conn = self.pool.acquire().await.map_err(|e| {
+            Error::Internal(format!("Failed to acquire version schema connection: {e}"))
+        })?;
+        let lock: Option<i64> =
+            sqlx::query_scalar("SELECT GET_LOCK('sockudo_version_append_count_schema', 30)")
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to lock version counter schema: {e}"))
+                })?;
+        if lock != Some(1) {
+            return Err(Error::Internal(
+                "version counter schema lock timed out".into(),
+            ));
+        }
+        let result: Result<()> = async {
+            for (suffix, operation, row, adjustment) in [("insert", "INSERT", "NEW", "append_count + 1"), ("delete", "DELETE", "OLD", "GREATEST(append_count - 1, 0)")] {
+                let name = format!("{}_ac_{suffix}", self.tables.version_entries);
+                let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME = ?")
+                    .bind(&name).fetch_one(&mut *conn).await.map_err(|e| Error::Internal(format!("Failed to inspect version counter trigger: {e}")))?;
+                if exists == 0 {
+                    let sql = format!("CREATE TRIGGER `{name}` AFTER {operation} ON `{entries}` FOR EACH ROW BEGIN IF {row}.action = 'message.append' THEN UPDATE `{messages}` SET append_count = {adjustment} WHERE app_id = {row}.app_id AND channel = {row}.channel AND message_serial = {row}.message_serial AND append_count IS NOT NULL; END IF; END", entries = self.tables.version_entries, messages = self.tables.version_messages);
+                    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&mut *conn).await.map_err(|e| Error::Internal(format!("Failed to install version counter trigger: {e}")))?;
+                }
+            }
+            Ok(())
+        }.await;
+        sqlx::query("SELECT RELEASE_LOCK('sockudo_version_append_count_schema')")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to release version counter schema lock: {e}"
+                ))
+            })?;
+        result
     }
 
     async fn ensure_index(&self, table: &str, column: &str) -> Result<()> {
@@ -256,3 +325,6 @@ impl MysqlVersionStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

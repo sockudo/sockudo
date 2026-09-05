@@ -1,0 +1,12 @@
+    Checking sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Checking sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+    Checking sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+    Checking sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.52s

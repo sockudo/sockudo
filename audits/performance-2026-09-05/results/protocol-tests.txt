@@ -1,0 +1,84 @@
+   Compiling libc v0.2.189
+   Compiling getrandom v0.3.4
+   Compiling regex-syntax v0.8.11
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.229
+   Compiling num-traits v0.2.19
+   Compiling serde_json v1.0.151
+   Compiling once_cell v1.21.4
+   Compiling syn v3.0.3
+   Compiling syn v2.0.119
+   Compiling rmp v0.8.15
+   Compiling plotters v0.3.7
+   Compiling regex-automata v0.4.16
+   Compiling getrandom v0.4.3
+   Compiling rand v0.10.2
+   Compiling uuid v1.24.0
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.19
+   Compiling ref-cast-impl v1.0.26
+   Compiling ref-cast v1.0.26
+   Compiling serde_bytes v0.11.19
+   Compiling thiserror v2.0.19
+   Compiling regex v1.13.1
+   Compiling zerocopy-derive v0.8.55
+   Compiling prost-derive v0.14.4
+   Compiling serde v1.0.229
+   Compiling prost v0.14.4
+   Compiling zerocopy v0.8.55
+   Compiling tinytemplate v1.2.1
+   Compiling faststr v0.2.34
+   Compiling rmp-serde v1.3.1
+   Compiling half v2.7.1
+   Compiling ahash v0.8.12
+   Compiling sonic-rs v0.5.8
+   Compiling ciborium-ll v0.2.2
+   Compiling ciborium v0.2.2
+   Compiling criterion v0.7.0
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.72s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_protocol-cd04f4ac8d90d048)
+
+running 39 tests
+test messages::tests::info_query_parser_trims_and_matches_exactly ... ok
+test messages::tests::annotation_create_serializes_camel_case_contract ... ok
+test messages::tests::protocol_heartbeat_detection_matches_both_prefix_families ... ok
+test messages::tests::protocol_heartbeat_detection_ignores_regular_messages ... ok
+test messages::tests::message_summary_serializes_summary_envelope ... ok
+test protocol_version::tests::test_parse_any_protocol_event ... ok
+test protocol_version::tests::test_from_query_param ... ok
+test messages::tests::pusher_message_debug_redacts_payload_extras_and_idempotency ... ok
+test protocol_version::tests::test_parse_event_name ... ok
+test protocol_version::tests::test_rewrite_event_prefix ... ok
+test protocol_version::tests::test_v1_prefix ... ok
+test protocol_version::tests::test_v2_native_features ... ok
+test protocol_version::tests::test_v2_prefix ... ok
+test protocol_version::tests::test_wire_event ... ok
+test protocol_version::tests::test_wire_internal_event ... ok
+test versioned_messages::tests::append_request_allows_empty_terminal_data ... ok
+test versioned_messages::tests::append_request_rejects_empty_non_terminal_data ... ok
+test versioned_messages::tests::delete_request_deserializes_string_data_via_serde_json ... ok
+test versioned_messages::tests::delete_request_rejects_replace_and_clear_same_field ... ok
+test versioned_messages::tests::update_request_deserializes_string_data_via_serde_json ... ok
+test versioned_messages::tests::update_request_rejects_empty_body ... ok
+test versioned_messages::tests::update_request_deserializes_string_data_via_sonic ... ok
+test versioned_messages::tests::update_request_rejects_replace_and_clear_same_field ... ok
+test versioned_messages::tests::versioned_realtime_message_rejects_mismatched_event ... ok
+test versioned_messages::tests::update_request_preserves_large_json_number_across_serde_round_trip ... ok
+test versioned_messages::tests::versioned_realtime_message_requires_version_metadata ... ok
+test versioned_messages::tests::versioned_realtime_message_validates_v2_event_name ... ok
+test wire::tests::parse_query_param_accepts_known_values ... ok
+test wire::tests::parse_query_param_rejects_unknown_value ... ok
+test wire::tests::deserialize_versioned_message_rejects_invalid_action_event_pair ... ok
+test wire::tests::messagepack_rejects_trailing_values ... ok
+test wire::tests::round_trip_messagepack ... ok
+test wire::tests::round_trip_messagepack_binary_uses_native_bin_data ... ok
+test wire::tests::round_trip_protobuf_binary ... ok
+test wire::tests::round_trip_protobuf ... ok
+test wire::tests::round_trip_versioned_messagepack_binary ... ok
+test wire::tests::round_trip_versioned_messagepack ... ok
+test wire::tests::round_trip_versioned_protobuf ... ok
+test wire::tests::versioned_messagepack_rejects_trailing_values ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

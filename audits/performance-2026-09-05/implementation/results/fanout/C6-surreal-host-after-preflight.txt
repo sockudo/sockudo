@@ -1,0 +1,29 @@
+
+running 1 test
+test history::benchmark_tests::benchmark_history_surreal ... C6,cap=64,payload=128,sample=0,ns=124572047,verified=8
+C6,cap=64,payload=128,sample=1,ns=146410419,verified=8
+C6,cap=64,payload=128,sample=2,ns=149731444,verified=8
+C6,cap=64,payload=128,sample=3,ns=144064166,verified=8
+C6,cap=64,payload=128,sample=4,ns=116446745,verified=8
+C6,cap=64,payload=128,sample=5,ns=109055130,verified=8
+C6,cap=64,payload=128,sample=6,ns=122383593,verified=8
+C6,cap=64,payload=128,sample=7,ns=129895526,verified=8
+C6,cap=64,payload=128,sample=8,ns=124927328,verified=8
+C6,cap=64,payload=16384,sample=0,ns=5355910137,verified=8
+C6,cap=64,payload=16384,sample=1,ns=5241202488,verified=8
+C6,cap=64,payload=16384,sample=2,ns=5403253077,verified=8
+C6,cap=64,payload=16384,sample=3,ns=5467121400,verified=8
+C6,cap=64,payload=16384,sample=4,ns=5355231033,verified=8
+C6,cap=64,payload=16384,sample=5,ns=5171316835,verified=8
+C6,cap=64,payload=16384,sample=6,ns=5142397645,verified=8
+C6,cap=64,payload=16384,sample=7,ns=4978018897,verified=8
+C6,cap=64,payload=16384,sample=8,ns=4681692236,verified=8
+C6,cap=1024,payload=128,sample=0,ns=1278342358,verified=8
+C6,cap=1024,payload=128,sample=1,ns=1296370019,verified=8
+C6,cap=1024,payload=128,sample=2,ns=1341807429,verified=8
+C6,cap=1024,payload=128,sample=3,ns=1321013991,verified=8
+C6,cap=1024,payload=128,sample=4,ns=1348110388,verified=8
+C6,cap=1024,payload=128,sample=5,ns=1433478904,verified=8
+C6,cap=1024,payload=128,sample=6,ns=1443902037,verified=8
+C6,cap=1024,payload=128,sample=7,ns=1375459240,verified=8
+C6,cap=1024,payload=128,sample=8,ns=1543709303,verified=8

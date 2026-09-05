@@ -549,6 +549,11 @@ impl SockudoServer {
         #[cfg(feature = "delta")]
         self.state.delta_compression.stop_cleanup_task().await;
 
+        // Drain accepted webhook batches before disconnecting their queue.
+        if let Err(error) = self.state.webhooks_integration.shutdown().await {
+            warn!(error = %error, "webhook batch shutdown failed");
+        }
+
         // Disconnect from backend services
         if let Err(e) = self.state.cache_manager.disconnect().await {
             warn!(error = %e, "error disconnecting cache manager");

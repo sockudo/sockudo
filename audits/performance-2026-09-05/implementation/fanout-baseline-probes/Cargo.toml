@@ -1,0 +1,22 @@
+[package]
+name = "sockudo-fanout-probes"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+[dependencies]
+sockudo-protocol = {path = "../baseline/crates/sockudo-protocol"}
+bytes = "1"
+compact_str = "0.9"
+dashmap = "6"
+parking_lot = "0.12"
+ahash = "0.8"
+uuid = {version = "1", features = ["v4"]}
+sonic-rs = "0.5"
+sockudo-core = {path = "../baseline/crates/sockudo-core", features = ["redis"]}
+redis = {version = "1.4.1", features = ["aio", "tokio-comp", "connection-manager", "cluster-async"]}
+async-trait = "0.1"
+tracing = "0.1"
+tokio = {version = "1", features = ["full"]}
+[profile.release]
+codegen-units = 1
+lto = true

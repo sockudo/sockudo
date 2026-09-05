@@ -1,0 +1,7 @@
+a2,rep=0,count=100,us=6953,p50_us=66,p95_us=96,p99_us=118,allocations=7290,allocated_bytes=1353277,cache_calls=200,read_bytes=35637
+a2,rep=1,count=100,us=7221,p50_us=69,p95_us=97,p99_us=109,allocations=7305,allocated_bytes=1353860,cache_calls=200,read_bytes=36300
+a2,rep=2,count=100,us=6825,p50_us=67,p95_us=81,p99_us=120,allocations=7305,allocated_bytes=1353860,cache_calls=200,read_bytes=36300
+a2,rep=3,count=100,us=7062,p50_us=68,p95_us=88,p99_us=119,allocations=7305,allocated_bytes=1353992,cache_calls=200,read_bytes=36318
+a2,rep=4,count=100,us=7052,p50_us=67,p95_us=84,p99_us=254,allocations=7304,allocated_bytes=1355228,cache_calls=200,read_bytes=36500
+a2,rep=5,count=100,us=6946,p50_us=66,p95_us=79,p99_us=284,allocations=7305,allocated_bytes=1355260,cache_calls=200,read_bytes=36500
+a2,rep=6,count=100,us=7492,p50_us=68,p95_us=89,p99_us=499,allocations=7305,allocated_bytes=1355260,cache_calls=200,read_bytes=36500

@@ -1,0 +1,2 @@
+error: cannot update the lock file /home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/services-bench-baseline/Cargo.lock because --locked was passed to prevent this
+help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.

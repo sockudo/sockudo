@@ -415,14 +415,14 @@ pub async fn up(
     } else {
         debug!("General health check received (no app_id)");
 
-        let apps_check = timeout(timeout_duration, handler.app_manager().get_apps()).await;
+        let apps_check = timeout(timeout_duration, handler.app_manager().has_apps()).await;
 
         let app_status = match apps_check {
-            Ok(Ok(apps)) if !apps.is_empty() => {
-                debug!(apps_count = apps.len(), "found configured apps");
+            Ok(Ok(true)) => {
+                debug!("found configured apps");
                 check_system_health(&handler, timeout_duration).await
             }
-            Ok(Ok(_)) => HealthStatus::Error(vec!["No apps configured".to_string()]),
+            Ok(Ok(false)) => HealthStatus::Error(vec!["No apps configured".to_string()]),
             Ok(Err(e)) => HealthStatus::Error(vec![format!("App manager: {e}")]),
             Err(_) => HealthStatus::Error(vec![format!(
                 "App manager timeout (>{}ms)",

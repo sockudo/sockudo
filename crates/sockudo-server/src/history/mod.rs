@@ -1,3 +1,14 @@
+#[cfg(all(
+    feature = "versioned-messages",
+    any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "dynamodb",
+        feature = "scylladb",
+        feature = "surrealdb"
+    )
+))]
+mod annotation_cache;
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::Result;
 use sockudo_core::history::{HistoryStore, MemoryHistoryStore, MemoryHistoryStoreConfig};
@@ -365,3 +376,30 @@ pub async fn create_version_store(
         }
     }
 }
+
+#[cfg(all(
+    test,
+    any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "dynamodb",
+        feature = "surrealdb",
+        feature = "scylladb"
+    )
+))]
+mod maintenance_tests;
+
+#[cfg(all(
+    test,
+    any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "dynamodb",
+        feature = "surrealdb",
+        feature = "scylladb"
+    )
+))]
+mod presence_live_tests;
+
+#[cfg(all(test, feature = "versioned-messages"))]
+mod version_storage_tests;

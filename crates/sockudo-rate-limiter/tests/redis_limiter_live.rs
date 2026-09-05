@@ -212,3 +212,98 @@ async fn redis_limiter_retries_after_proxy_drops_idle_connections() {
     assert_eq!(result.remaining, 2);
     assert_eq!(count, 1);
 }
+
+#[tokio::test]
+#[ignore = "requires a live plaintext Redis-compatible server on REDIS_URL or localhost:6379"]
+async fn redis_limiter_coalesces_a_concurrent_reconnect_storm() {
+    let direct_client = redis::Client::open(redis_url()).expect("valid Redis URL");
+    let direct_info = direct_client.get_connection_info().clone();
+    let target = match direct_info.addr() {
+        redis::ConnectionAddr::Tcp(host, port) => format!("{host}:{port}"),
+        other => panic!("this live test requires plaintext TCP Redis, got {other:?}"),
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test proxy");
+    let proxy_addr = listener.local_addr().expect("proxy address");
+    let (drop_connections, _) = broadcast::channel::<()>(1);
+    let proxy_drop_connections = drop_connections.clone();
+    let accepted_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let proxy_accepted = accepted_connections.clone();
+    let proxy_task = tokio::spawn(async move {
+        loop {
+            let (mut incoming, _) = listener
+                .accept()
+                .await
+                .expect("accept proxied Redis client");
+            proxy_accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut upstream = TcpStream::connect(&target)
+                .await
+                .expect("connect proxy to Redis");
+            let mut drop_connection = proxy_drop_connections.subscribe();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = tokio::io::copy_bidirectional(&mut incoming, &mut upstream) => {}
+                    _ = drop_connection.recv() => {}
+                }
+            });
+        }
+    });
+
+    let proxy_info = direct_info.set_addr(redis::ConnectionAddr::Tcp(
+        proxy_addr.ip().to_string(),
+        proxy_addr.port(),
+    ));
+    let proxy_client = redis::Client::open(proxy_info).expect("proxied Redis client");
+    let prefix = unique_prefix("idle-drop-retry");
+    let redis_key = format!("{prefix}:rl:ip-1");
+    let limiter = RedisRateLimiter::new(proxy_client, prefix, 128, 60)
+        .await
+        .expect("Redis limiter should connect through proxy");
+
+    let mut direct_connection = direct_client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("direct Redis connection should connect");
+    let _: usize = direct_connection
+        .del(&redis_key)
+        .await
+        .expect("test key cleanup");
+
+    let limiter = Arc::new(limiter);
+    let before = accepted_connections.load(std::sync::atomic::Ordering::SeqCst);
+    drop_connections
+        .send(())
+        .expect("limiter should have active proxied connections");
+
+    let mut tasks = Vec::new();
+    let barrier = Arc::new(tokio::sync::Barrier::new(128));
+    for _ in 0..128 {
+        let limiter = limiter.clone();
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            limiter.increment("ip-1").await.unwrap()
+        }));
+    }
+    for task in tasks {
+        assert!(task.await.unwrap().allowed);
+    }
+    let count: usize = direct_connection
+        .zcard(&redis_key)
+        .await
+        .expect("read limiter zset size");
+    let _: usize = direct_connection
+        .del(&redis_key)
+        .await
+        .expect("test key cleanup");
+    proxy_task.abort();
+
+    assert_eq!(count, 128);
+    let reconnects = accepted_connections.load(std::sync::atomic::Ordering::SeqCst) - before;
+    assert!(
+        reconnects <= 4,
+        "reconnection must be shared, observed {reconnects} new TCP connections"
+    );
+}

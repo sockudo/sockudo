@@ -1,0 +1,47 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+warning: method `scan_json` is never used
+   --> crates/sockudo-push/src/nosql/document.rs:243:25
+    |
+190 | / impl<B> DocumentPushStore<B>
+191 | | where
+192 | |     B: DocumentBackend,
+    | |_______________________- method in this implementation
+...
+243 |       pub(super) async fn scan_json<T: DeserializeOwned>(
+    |                           ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+warning: `sockudo-push` (lib) generated 1 warning
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 03s
+     Running unittests src/main.rs (target/debug/deps/sockudo-65b37e0f9530dfba)
+
+running 1 test
+test middleware::signed_body_tests::limited_auth_preserves_signed_whitespace_utf8_and_downstream_bytes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.02s
+
+     Running tests/clustered_durable_history_redis_test.rs (target/debug/deps/clustered_durable_history_redis_test-aecd9219cb362aa3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_v2_heartbeat_test.rs (target/debug/deps/native_v2_heartbeat_test-9a43630e681dc630)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

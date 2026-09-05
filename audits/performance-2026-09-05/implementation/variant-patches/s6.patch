@@ -1,0 +1,719 @@
+--- /dev/null
++++ b/ISOLATION.txt
+@@ -0,0 +1 @@
++Immutable baseline5613bb291032b6b7660352974b03da9eb0646da0 plus: Only metric handles/borrowed labels and cached port label; baseline annotation methods restored.
+--- a/crates/sockudo-metrics/src/prometheus/driver.rs
++++ b/crates/sockudo-metrics/src/prometheus/driver.rs
+@@ -46,7 +46,7 @@
+         let opts = $opts;
+         describe_gauge!(opts.name.clone(), opts.help.clone());
+         Ok::<Gauge, MetricsRegistrationError>(Gauge {
+-            name: opts.name,
++            key: std::sync::Arc::new(metrics::Key::from_name(opts.name)),
+             value: AtomicU64::new(0),
+         })
+     }};
+@@ -59,6 +59,7 @@
+         Ok::<GaugeVec, MetricsRegistrationError>(GaugeVec {
+             name: opts.name,
+             label_names: $labels,
++            handles: Default::default(),
+         })
+     }};
+ }
+@@ -70,6 +71,7 @@
+         Ok::<CounterVec, MetricsRegistrationError>(CounterVec {
+             name: opts.name,
+             label_names: $labels,
++            handles: Default::default(),
+         })
+     }};
+ }
+@@ -81,6 +83,7 @@
+         Ok::<HistogramVec, MetricsRegistrationError>(HistogramVec {
+             name: opts.name,
+             label_names: $labels,
++            handles: Default::default(),
+         })
+     }};
+ }
+@@ -89,6 +92,7 @@
+ pub struct PrometheusMetricsDriver {
+     pub(super) prefix: String,
+     pub(super) port: u16,
++    pub(super) port_label: String,
+     pub(super) handle: PrometheusHandle,
+ 
+     // Process metrics (for memory leak detection)
+@@ -1174,6 +1178,7 @@
+         Self {
+             prefix,
+             port,
++            port_label: port.to_string(),
+             handle,
+             process_resident_memory_bytes,
+             process_virtual_memory_bytes,
+@@ -1448,7 +1453,7 @@
+     }
+ 
+     /// Get the tags for Prometheus
+-    pub(super) fn get_tags(&self, app_id: &str) -> Vec<String> {
+-        vec![app_id.to_string(), self.port.to_string()]
++    pub(super) fn get_tags<'a>(&'a self, app_id: &'a str) -> [&'a str; 2] {
++        [app_id, self.port_label.as_str()]
+     }
+ }
+--- a/crates/sockudo-metrics/src/prometheus/handles.rs
++++ b/crates/sockudo-metrics/src/prometheus/handles.rs
+@@ -1,69 +1,97 @@
+-use metrics::{counter, gauge, histogram};
++use metrics::{Key, Label, Level, Metadata};
++use std::sync::Arc;
++static METADATA: Metadata<'static> =
++    Metadata::new(module_path!(), Level::INFO, Some(module_path!()));
++use std::collections::HashMap;
++use std::hash::{DefaultHasher, Hash, Hasher};
++use std::sync::RwLock;
+ use std::sync::atomic::{AtomicU64, Ordering};
+ 
+ pub(super) trait MetricLabelValues {
+-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)>;
+-}
+-
+-fn labels_from_iter<'a>(
+-    label_names: &[&str],
+-    values: impl IntoIterator<Item = &'a str>,
+-) -> Vec<(String, String)> {
+-    let values = values.into_iter().collect::<Vec<_>>();
+-    debug_assert_eq!(
+-        label_names.len(),
+-        values.len(),
+-        "metric label/value count mismatch"
+-    );
+-
+-    label_names
+-        .iter()
+-        .zip(values)
+-        .map(|(name, value)| ((*name).to_owned(), value.to_owned()))
+-        .collect()
+-}
+-
+-impl<'a> MetricLabelValues for &'a [&'a str] {
+-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+-        labels_from_iter(label_names, self.iter().copied())
+-    }
+-}
+-
+-impl<'a, const N: usize> MetricLabelValues for &'a [&'a str; N] {
+-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+-        labels_from_iter(label_names, self.iter().copied())
+-    }
+-}
+-
+-impl<'a, const N: usize> MetricLabelValues for &'a [&'a String; N] {
+-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+-        labels_from_iter(label_names, self.iter().map(|value| value.as_str()))
+-    }
+-}
+-
+-impl<'a> MetricLabelValues for &'a [&'a String] {
+-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+-        labels_from_iter(label_names, self.iter().map(|value| value.as_str()))
+-    }
+-}
+-
+-impl MetricLabelValues for &Vec<String> {
+-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+-        labels_from_iter(label_names, self.iter().map(String::as_str))
++    fn values(&self) -> impl ExactSizeIterator<Item = &str>;
++}
++
++impl<T: AsRef<str>> MetricLabelValues for &[T] {
++    fn values(&self) -> impl ExactSizeIterator<Item = &str> {
++        self.iter().map(AsRef::as_ref)
++    }
++}
++impl<T: AsRef<str>, const N: usize> MetricLabelValues for &[T; N] {
++    fn values(&self) -> impl ExactSizeIterator<Item = &str> {
++        self.iter().map(AsRef::as_ref)
++    }
++}
++impl<T: AsRef<str>> MetricLabelValues for &Vec<T> {
++    fn values(&self) -> impl ExactSizeIterator<Item = &str> {
++        self.iter().map(AsRef::as_ref)
++    }
++}
++
++type CachedHandle<T> = (Box<[Box<str>]>, T);
++/// Cache only a bounded number of combinations. Overflow still records normally;
++/// hash collisions are compared against all labels and never merge distinct series.
++pub(super) struct HandleCache<T> {
++    entries: RwLock<HashMap<u64, CachedHandle<T>>>,
++}
++impl<T> Default for HandleCache<T> {
++    fn default() -> Self {
++        Self {
++            entries: RwLock::new(HashMap::new()),
++        }
++    }
++}
++impl<T: Clone> HandleCache<T> {
++    fn get(
++        &self,
++        values: impl MetricLabelValues,
++        names: &'static [&'static str],
++        register: impl FnOnce(Vec<Label>) -> T,
++    ) -> T {
++        debug_assert_eq!(values.values().len(), names.len());
++        let mut hasher = DefaultHasher::new();
++        for value in values.values() {
++            value.hash(&mut hasher);
++        }
++        let hash = hasher.finish();
++        {
++            let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
++            if let Some((labels, handle)) = entries.get(&hash)
++                && labels.iter().map(AsRef::as_ref).eq(values.values())
++            {
++                return handle.clone();
++            }
++        }
++        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
++        if let Some((labels, handle)) = entries.get(&hash)
++            && labels.iter().map(AsRef::as_ref).eq(values.values())
++        {
++            return handle.clone();
++        }
++        let labels = names
++            .iter()
++            .zip(values.values())
++            .map(|(name, value)| Label::new(*name, value.to_owned()))
++            .collect();
++        let handle = register(labels);
++        if entries.len() < 1024 && !entries.contains_key(&hash) {
++            entries.insert(
++                hash,
++                (values.values().map(Box::from).collect(), handle.clone()),
++            );
++        }
++        handle
+     }
+ }
+ 
+ pub(super) struct Gauge {
+-    pub(super) name: String,
++    pub(super) key: Arc<Key>,
+     pub(super) value: AtomicU64,
+ }
+-
+ impl Gauge {
+     pub(super) fn set(&self, value: f64) {
+         self.value.store(value.to_bits(), Ordering::Relaxed);
+-        gauge!(self.name.clone()).set(value);
+-    }
+-
++        metrics::with_recorder(|recorder| recorder.register_gauge(&self.key, &METADATA).set(value));
++    }
+     pub(super) fn get(&self) -> f64 {
+         f64::from_bits(self.value.load(Ordering::Relaxed))
+     }
+@@ -72,74 +100,59 @@
+ pub(super) struct GaugeVec {
+     pub(super) name: String,
+     pub(super) label_names: &'static [&'static str],
+-}
+-
++    pub(super) handles: HandleCache<Arc<Key>>,
++}
+ impl GaugeVec {
+     pub(super) fn with_label_values(&self, values: impl MetricLabelValues) -> GaugeWithLabels {
+-        GaugeWithLabels {
+-            name: self.name.clone(),
+-            labels: values.to_pairs(self.label_names),
+-        }
+-    }
+-
++        GaugeWithLabels(self.handles.get(values, self.label_names, |labels| {
++            Arc::new(Key::from_parts(self.name.clone(), labels))
++        }))
++    }
+     pub(super) fn reset(&self) {}
+ }
+-
+-pub(super) struct GaugeWithLabels {
+-    pub(super) name: String,
+-    pub(super) labels: Vec<(String, String)>,
+-}
+-
++pub(super) struct GaugeWithLabels(Arc<Key>);
+ impl GaugeWithLabels {
+     pub(super) fn add(&self, value: f64) {
+-        let gauge = gauge!(self.name.clone(), &self.labels);
+         if value.is_sign_negative() {
+-            gauge.decrement(value.abs());
++            metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).decrement(value.abs()));
+         } else {
+-            gauge.increment(value);
+-        }
+-    }
+-
++            metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).increment(value));
++        }
++    }
+     pub(super) fn inc(&self) {
+-        gauge!(self.name.clone(), &self.labels).increment(1.0);
+-    }
+-
++        metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).increment(1.0));
++    }
+     pub(super) fn dec(&self) {
+-        gauge!(self.name.clone(), &self.labels).decrement(1.0);
+-    }
+-
++        metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).decrement(1.0));
++    }
+     pub(super) fn set(&self, value: f64) {
+-        gauge!(self.name.clone(), &self.labels).set(value);
++        metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).set(value));
+     }
+ }
+ 
+ pub(super) struct CounterVec {
+     pub(super) name: String,
+     pub(super) label_names: &'static [&'static str],
+-}
+-
++    pub(super) handles: HandleCache<Arc<Key>>,
++}
+ impl CounterVec {
+     pub(super) fn with_label_values(&self, values: impl MetricLabelValues) -> CounterWithLabels {
+-        CounterWithLabels {
+-            name: self.name.clone(),
+-            labels: values.to_pairs(self.label_names),
+-        }
+-    }
+-}
+-
+-pub(super) struct CounterWithLabels {
+-    pub(super) name: String,
+-    pub(super) labels: Vec<(String, String)>,
+-}
+-
++        CounterWithLabels(self.handles.get(values, self.label_names, |labels| {
++            Arc::new(Key::from_parts(self.name.clone(), labels))
++        }))
++    }
++}
++pub(super) struct CounterWithLabels(Arc<Key>);
+ impl CounterWithLabels {
+     pub(super) fn inc(&self) {
+-        counter!(self.name.clone(), &self.labels).increment(1);
+-    }
+-
++        metrics::with_recorder(|r| r.register_counter(&self.0, &METADATA).increment(1));
++    }
+     pub(super) fn inc_by(&self, value: f64) {
+         if value.is_sign_positive() {
+-            counter!(self.name.clone(), &self.labels).increment(value as u64);
++            metrics::with_recorder(|r| {
++                r.register_counter(&self.0, &METADATA)
++                    .increment(value as u64)
++            });
+         }
+     }
+ }
+@@ -147,24 +160,58 @@
+ pub(super) struct HistogramVec {
+     pub(super) name: String,
+     pub(super) label_names: &'static [&'static str],
+-}
+-
++    pub(super) handles: HandleCache<Arc<Key>>,
++}
+ impl HistogramVec {
+     pub(super) fn with_label_values(&self, values: impl MetricLabelValues) -> HistogramWithLabels {
+-        HistogramWithLabels {
+-            name: self.name.clone(),
+-            labels: values.to_pairs(self.label_names),
+-        }
+-    }
+-}
+-
+-pub(super) struct HistogramWithLabels {
+-    pub(super) name: String,
+-    pub(super) labels: Vec<(String, String)>,
+-}
+-
++        HistogramWithLabels(self.handles.get(values, self.label_names, |labels| {
++            Arc::new(Key::from_parts(self.name.clone(), labels))
++        }))
++    }
++}
++pub(super) struct HistogramWithLabels(Arc<Key>);
+ impl HistogramWithLabels {
+     pub(super) fn observe(&self, value: f64) {
+-        histogram!(self.name.clone(), &self.labels).record(value);
+-    }
+-}
++        metrics::with_recorder(|r| r.register_histogram(&self.0, &METADATA).record(value));
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn cached_keys_follow_the_active_recorder_and_preserve_overflow_labels() {
++        let counter = CounterVec {
++            name: "services_scope_total".into(),
++            label_names: &["app_id"],
++            handles: Default::default(),
++        };
++        let first = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
++        let second = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
++        // A warm call before a recorder exists must not freeze a noop handle.
++        counter.with_label_values(&["same"]).inc();
++        metrics::with_local_recorder(&first, || counter.with_label_values(&["same"]).inc());
++        metrics::with_local_recorder(&second, || {
++            counter.with_label_values(&["same"]).inc();
++            for n in 0..2048 {
++                counter.with_label_values(&[format!("app-{n}")]).inc();
++            }
++        });
++        assert!(
++            first
++                .handle()
++                .render()
++                .contains("services_scope_total{app_id=\"same\"} 1")
++        );
++        let rendered = second.handle().render();
++        assert!(rendered.contains("services_scope_total{app_id=\"same\"} 1"));
++        assert_eq!(
++            rendered
++                .lines()
++                .filter(|line| line.starts_with("services_scope_total{"))
++                .count(),
++            2049
++        );
++        assert_eq!(counter.handles.entries.read().unwrap().len(), 1024);
++    }
++}
+--- a/crates/sockudo-metrics/src/prometheus/interface.rs
++++ b/crates/sockudo-metrics/src/prometheus/interface.rs
+@@ -32,11 +32,7 @@
+     }
+ 
+     fn mark_connection_error(&self, app_id: &str, error_type: &str) {
+-        let tags = vec![
+-            app_id.to_string(),
+-            self.port.to_string(),
+-            error_type.to_string(),
+-        ];
++        let tags = [app_id, self.port_label.as_str(), error_type];
+         self.connection_errors_total.with_label_values(&tags).inc();
+ 
+         debug!(app_id, error_type, "metrics: connection error");
+@@ -44,7 +40,7 @@
+ 
+     fn mark_memory_pressure_rejection(&self) {
+         self.memory_pressure_rejections_total
+-            .with_label_values(&[&self.port.to_string()])
++            .with_label_values(&[self.port_label.as_str()])
+             .inc();
+     }
+ 
+@@ -63,11 +59,11 @@
+         limiter_type: &str,
+         request_context: &str,
+     ) {
+-        let tags = vec![
+-            app_id.to_string(),
+-            self.port.to_string(),
+-            limiter_type.to_string(),
+-            request_context.to_string(),
++        let tags = [
++            app_id,
++            self.port_label.as_str(),
++            limiter_type,
++            request_context,
+         ];
+         self.rate_limit_checks_total.with_label_values(&tags).inc();
+ 
+@@ -87,11 +83,11 @@
+         limiter_type: &str,
+         request_context: &str,
+     ) {
+-        let tags = vec![
+-            app_id.to_string(),
+-            self.port.to_string(),
+-            limiter_type.to_string(),
+-            request_context.to_string(),
++        let tags = [
++            app_id,
++            self.port_label.as_str(),
++            limiter_type,
++            request_context,
+         ];
+         self.rate_limit_triggered_total
+             .with_label_values(&tags)
+@@ -104,11 +100,7 @@
+     }
+ 
+     fn mark_channel_subscription(&self, app_id: &str, channel_type: &str) {
+-        let tags = vec![
+-            app_id.to_string(),
+-            self.port.to_string(),
+-            channel_type.to_string(),
+-        ];
++        let tags = [app_id, self.port_label.as_str(), channel_type];
+         self.channel_subscriptions_total
+             .with_label_values(&tags)
+             .inc();
+@@ -117,11 +109,7 @@
+     }
+ 
+     fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str) {
+-        let tags = vec![
+-            app_id.to_string(),
+-            self.port.to_string(),
+-            channel_type.to_string(),
+-        ];
++        let tags = [app_id, self.port_label.as_str(), channel_type];
+         self.channel_unsubscriptions_total
+             .with_label_values(&tags)
+             .inc();
+@@ -130,16 +118,16 @@
+     }
+ 
+     fn mark_channel_activated(&self, app_id: &str, channel_type: &str) {
+-        let port = self.port.to_string();
++        let port = self.port_label.as_str();
+         self.active_channels
+-            .with_label_values(&[app_id, &port, channel_type])
++            .with_label_values(&[app_id, port, channel_type])
+             .inc();
+     }
+ 
+     fn mark_channel_deactivated(&self, app_id: &str, channel_type: &str) {
+-        let port = self.port.to_string();
++        let port = self.port_label.as_str();
+         self.active_channels
+-            .with_label_values(&[app_id, &port, channel_type])
++            .with_label_values(&[app_id, port, channel_type])
+             .dec();
+     }
+ 
+@@ -277,7 +265,7 @@
+         };
+ 
+         self.broadcast_latency_ms
+-            .with_label_values(&[app_id, &self.port.to_string(), channel_type, bucket])
++            .with_label_values(&[app_id, self.port_label.as_str(), channel_type, bucket])
+             .observe(latency_ms);
+ 
+         debug!(
+@@ -306,67 +294,67 @@
+ 
+     fn mark_ai_transport_validated(&self, app_id: &str, event: &str) {
+         self.ai_messages_validated_total
+-            .with_label_values(&[app_id, &self.port.to_string(), event])
++            .with_label_values(&[app_id, self.port_label.as_str(), event])
+             .inc();
+     }
+ 
+     fn mark_ai_transport_rejected(&self, app_id: &str, code: u32) {
+         self.ai_messages_rejected_total
+-            .with_label_values(&[app_id, &self.port.to_string(), &code.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str(), &code.to_string()])
+             .inc();
+     }
+ 
+     fn mark_ai_transport_unparseable(&self, app_id: &str) {
+         self.ai_messages_unparseable_total
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .inc();
+     }
+ 
+     fn mark_ai_run_started(&self, app_id: &str) {
+         self.ai_runs_started_total
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .inc();
+         self.ai_turns_started_total
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .inc();
+     }
+ 
+     fn mark_ai_run_ended(&self, app_id: &str, reason: &str) {
+         self.ai_runs_ended_total
+-            .with_label_values(&[app_id, &self.port.to_string(), reason])
++            .with_label_values(&[app_id, self.port_label.as_str(), reason])
+             .inc();
+         self.ai_turns_ended_total
+-            .with_label_values(&[app_id, &self.port.to_string(), reason])
++            .with_label_values(&[app_id, self.port_label.as_str(), reason])
+             .inc();
+     }
+ 
+     fn mark_ai_cancel_signal(&self, app_id: &str) {
+         self.ai_cancel_signals_total
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .inc();
+     }
+ 
+     fn update_ai_active_streams(&self, app_id: &str, streams: u64) {
+         self.ai_active_streams
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .set(streams as f64);
+     }
+ 
+     fn add_ai_active_streams(&self, app_id: &str, delta: i64) {
+         self.ai_active_streams
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .add(delta as f64);
+     }
+ 
+     fn observe_ai_stream_duration(&self, app_id: &str, duration_seconds: f64) {
+         self.ai_stream_duration_seconds
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .observe(duration_seconds);
+     }
+ 
+     fn mark_ai_stream_bytes(&self, app_id: &str, bytes: usize) {
+         self.ai_stream_bytes_total
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .inc_by(bytes as f64);
+     }
+ 
+@@ -449,67 +437,67 @@
+ 
+     fn mark_history_recovery_success(&self, app_id: &str, source: &str) {
+         self.history_recovery_success_total
+-            .with_label_values(&[app_id, &self.port.to_string(), source])
++            .with_label_values(&[app_id, self.port_label.as_str(), source])
+             .inc();
+     }
+ 
+     fn mark_history_recovery_failure(&self, app_id: &str, code: &str) {
+         self.history_recovery_failures_total
+-            .with_label_values(&[app_id, &self.port.to_string(), code])
++            .with_label_values(&[app_id, self.port_label.as_str(), code])
+             .inc();
+     }
+ 
+     fn mark_versioned_message_mutation(&self, app_id: &str, action: &str, result: &str) {
+         self.versioned_message_mutations_total
+-            .with_label_values(&[app_id, &self.port.to_string(), action, result])
++            .with_label_values(&[app_id, self.port_label.as_str(), action, result])
+             .inc();
+     }
+ 
+     fn mark_versioned_message_retrieval(&self, app_id: &str, surface: &str, result: &str) {
+         self.versioned_message_retrieval_total
+-            .with_label_values(&[app_id, &self.port.to_string(), surface, result])
++            .with_label_values(&[app_id, self.port_label.as_str(), surface, result])
+             .inc();
+     }
+ 
+     fn mark_versioned_history_substitution(&self, app_id: &str, result: &str) {
+         self.versioned_history_substitution_total
+-            .with_label_values(&[app_id, &self.port.to_string(), result])
++            .with_label_values(&[app_id, self.port_label.as_str(), result])
+             .inc();
+     }
+ 
+     fn mark_ai_rollup_append_received(&self, app_id: &str) {
+         self.appends_received_total
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .inc();
+     }
+ 
+     fn mark_ai_rollup_append_delivered(&self, app_id: &str) {
+         self.appends_delivered_total
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .inc();
+     }
+ 
+     fn observe_ai_rollup_ratio(&self, app_id: &str, ratio: f64) {
+         self.rollup_ratio
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .observe(ratio);
+     }
+ 
+     fn update_ai_rollup_active_streams(&self, app_id: &str, streams: u64) {
+         self.active_streams
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .set(streams as f64);
+     }
+ 
+     fn add_ai_rollup_active_streams(&self, app_id: &str, delta: i64) {
+         self.active_streams
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .add(delta as f64);
+     }
+ 
+     fn observe_ai_rollup_flush_latency(&self, app_id: &str, latency_ms: f64) {
+         self.flush_latency
+-            .with_label_values(&[app_id, &self.port.to_string()])
++            .with_label_values(&[app_id, self.port_label.as_str()])
+             .observe(latency_ms);
+     }
+ 
+@@ -735,7 +723,7 @@
+             // bounding cardinality by recording channel type instead of raw name.
+             let channel_type = ChannelType::from_name(channel_name).as_str();
+             self.horizontal_delta_compression_enabled
+-                .with_label_values(&[app_id, &self.port.to_string(), channel_type])
++                .with_label_values(&[app_id, self.port_label.as_str(), channel_type])
+                 .inc();
+ 
+             debug!(
+@@ -755,11 +743,11 @@
+         let saved_bytes = original_bytes.saturating_sub(compressed_bytes);
+ 
+         self.delta_compression_bandwidth_original
+-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
++            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
+             .inc_by(original_bytes as f64);
+ 
+         self.delta_compression_bandwidth_saved
+-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
++            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
+             .inc_by(saved_bytes as f64);
+ 
+         debug!(app_id, "metrics: delta compression bandwidth recorded");
+@@ -767,7 +755,7 @@
+ 
+     fn track_delta_compression_full_message(&self, app_id: &str, channel_name: &str) {
+         self.delta_compression_full_messages
+-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
++            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
+             .inc();
+ 
+         debug!(app_id, "metrics: delta compression full message recorded");
+@@ -775,7 +763,7 @@
+ 
+     fn track_delta_compression_delta_message(&self, app_id: &str, channel_name: &str) {
+         self.delta_compression_delta_messages
+-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
++            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
+             .inc();
+ 
+         debug!(app_id, "metrics: delta compression delta message recorded");
+@@ -787,3 +775,4 @@
+         debug!("metrics cleared: prometheus metrics cannot be fully reset");
+     }
+ }
++

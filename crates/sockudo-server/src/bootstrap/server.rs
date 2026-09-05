@@ -1,3 +1,4 @@
+use super::maintenance::purge_tick;
 #[cfg(all(feature = "push", feature = "monolith"))]
 use super::push::workers::start_push_monolith_workers;
 #[cfg(feature = "push")]
@@ -553,25 +554,14 @@ impl SockudoServer {
                 loop {
                     ticker.tick().await;
                     let cutoff = sockudo_core::history::now_ms().saturating_sub(retention_ms);
-                    let mut total = 0_u64;
-                    let mut cleanup_backlog = false;
-                    loop {
-                        match purge_store.purge_before(cutoff, batch_size).await {
-                            Ok((deleted, has_more)) => {
-                                total = total.saturating_add(deleted);
-                                cleanup_backlog = has_more;
-                                if !has_more || total >= max_per_tick as u64 {
-                                    break;
-                                }
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    error = %error,
-                                    "annotation store purge failed"
-                                );
-                                break;
-                            }
-                        }
+                    let outcome = purge_tick(cutoff, batch_size, max_per_tick, |cutoff, batch| {
+                        purge_store.purge_before(cutoff, batch)
+                    })
+                    .await;
+                    let total = outcome.deleted;
+                    let cleanup_backlog = outcome.has_more;
+                    if let Some(error) = outcome.error {
+                        tracing::warn!(error = %error, "annotation store purge failed");
                     }
                     if total > 0 {
                         tracing::debug!(deleted = total, "annotation store purge tick complete");
@@ -848,10 +838,12 @@ impl SockudoServer {
         )
         .webhook_integration(webhook_integration);
 
-        // Spawn the periodic history purge worker for backends without native TTL
-        // (PostgreSQL, MySQL, SurrealDB). DynamoDB and ScyllaDB use native TTL and
-        // inherit the trait's default `purge_before` which returns `(0, false)`.
-        if config.history.enabled && config.history.retention_window_seconds > 0 {
+        // Bounded retention maintenance also reclaims payloads in inactive
+        // memory channels; native-TTL stores maintain their own accounting.
+        if config.history.enabled
+            && (config.history.retention_window_seconds > 0
+                || config.history.backend == sockudo_core::options::HistoryBackend::Memory)
+        {
             let purge_store = history_store.clone();
             let retention_ms =
                 (config.history.retention_window_seconds as i64).saturating_mul(1000);
@@ -866,23 +858,13 @@ impl SockudoServer {
                 loop {
                     ticker.tick().await;
                     let cutoff = sockudo_core::history::now_ms().saturating_sub(retention_ms);
-                    let mut total: u64 = 0;
-                    loop {
-                        match purge_store.purge_before(cutoff, batch_size).await {
-                            Ok((deleted, has_more)) => {
-                                total = total.saturating_add(deleted);
-                                if !has_more || total >= max_per_tick as u64 {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "history store purge failed"
-                                );
-                                break;
-                            }
-                        }
+                    let outcome = purge_tick(cutoff, batch_size, max_per_tick, |cutoff, batch| {
+                        purge_store.purge_before(cutoff, batch)
+                    })
+                    .await;
+                    let total = outcome.deleted;
+                    if let Some(error) = outcome.error {
+                        tracing::warn!(error = %error, "history store purge failed");
                     }
                     if total > 0 {
                         tracing::debug!(deleted = total, "history store purge tick complete");
@@ -939,23 +921,14 @@ impl SockudoServer {
                     loop {
                         ticker.tick().await;
                         let cutoff = sockudo_core::history::now_ms().saturating_sub(retention_ms);
-                        let mut total: u64 = 0;
-                        loop {
-                            match purge_store.purge_before(cutoff, batch_size).await {
-                                Ok((deleted, has_more)) => {
-                                    total = total.saturating_add(deleted);
-                                    if !has_more || total >= max_per_tick as u64 {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "version store purge failed"
-                                    );
-                                    break;
-                                }
-                            }
+                        let outcome =
+                            purge_tick(cutoff, batch_size, max_per_tick, |cutoff, batch| {
+                                purge_store.purge_before(cutoff, batch)
+                            })
+                            .await;
+                        let total = outcome.deleted;
+                        if let Some(error) = outcome.error {
+                            tracing::warn!(error = %error, "version store purge failed");
                         }
                         if total > 0 {
                             tracing::debug!(deleted = total, "version store purge tick complete");
@@ -971,6 +944,24 @@ impl SockudoServer {
             }
 
             builder = builder.version_store(version_store);
+        }
+        if config.presence_history.enabled {
+            let purge_store = presence_history_store.clone();
+            let interval =
+                std::time::Duration::from_secs(config.history.purge_interval_seconds.max(10));
+            let batch_size = config.history.purge_batch_size.max(1);
+            // One bounded pass per tick; durable presence delegates retention
+            // to its history store's worker and uses this trait's no-op default.
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    if let Err(error) = purge_store.purge_expired(batch_size).await {
+                        tracing::warn!(error = %error, "presence history expiry maintenance failed");
+                    }
+                }
+            });
         }
         builder = builder.presence_history_store(presence_history_store);
         builder = builder.presence_manager(presence_manager);

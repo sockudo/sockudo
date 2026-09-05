@@ -1,0 +1,5 @@
+{"attempts":4,"repeat":0,"retry_span_us":303737,"elapsed_us":306241,"delivered":1,"case":"S10_rabbit"}
+{"case":"S10_rabbit","repeat":1,"elapsed_us":307188,"attempts":4,"retry_span_us":304797,"delivered":1}
+{"delivered":1,"attempts":4,"elapsed_us":307640,"repeat":2,"retry_span_us":305160,"case":"S10_rabbit"}
+{"case":"S10_rabbit","repeat":3,"elapsed_us":307324,"attempts":4,"delivered":1,"retry_span_us":304874}
+{"case":"S10_rabbit","repeat":4,"delivered":1,"elapsed_us":306534,"retry_span_us":304065,"attempts":4}

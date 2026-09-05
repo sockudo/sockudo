@@ -1,0 +1,24 @@
+
+running 1 test
+test benchmark_rabbitmq_ingress ... F2-rabbitmq,payload=1024,sample=0,offered=192,admitted=192,rejected=0,rss_kib=15620,publish_ns=36216258,control_ns=11969616
+F2-rabbitmq,payload=1024,sample=1,offered=192,admitted=192,rejected=0,rss_kib=16484,publish_ns=31603382,control_ns=12256558
+F2-rabbitmq,payload=1024,sample=2,offered=192,admitted=192,rejected=0,rss_kib=16744,publish_ns=26499568,control_ns=12026092
+F2-rabbitmq,payload=1024,sample=3,offered=192,admitted=192,rejected=0,rss_kib=16748,publish_ns=31316119,control_ns=10920884
+F2-rabbitmq,payload=1024,sample=4,offered=192,admitted=192,rejected=0,rss_kib=16748,publish_ns=26003832,control_ns=11209560
+F2-rabbitmq,payload=1024,sample=5,offered=192,admitted=192,rejected=0,rss_kib=16480,publish_ns=31503454,control_ns=11833859
+F2-rabbitmq,payload=1024,sample=6,offered=192,admitted=192,rejected=0,rss_kib=16752,publish_ns=19018163,control_ns=11894243
+F2-rabbitmq,payload=1024,sample=7,offered=192,admitted=192,rejected=0,rss_kib=16752,publish_ns=17647163,control_ns=11822738
+F2-rabbitmq,payload=1024,sample=8,offered=192,admitted=192,rejected=0,rss_kib=16756,publish_ns=21306466,control_ns=11744811
+F2-rabbitmq,payload=1048576,sample=0,offered=192,admitted=127,rejected=65,rss_kib=122784,publish_ns=183707769,control_ns=11788504
+F2-rabbitmq,payload=1048576,sample=1,offered=192,admitted=127,rejected=65,rss_kib=211256,publish_ns=162886920,control_ns=11752595
+F2-rabbitmq,payload=1048576,sample=2,offered=192,admitted=127,rejected=65,rss_kib=211524,publish_ns=170759365,control_ns=11734060
+F2-rabbitmq,payload=1048576,sample=3,offered=192,admitted=127,rejected=65,rss_kib=213440,publish_ns=169253119,control_ns=12000914
+F2-rabbitmq,payload=1048576,sample=4,offered=192,admitted=127,rejected=65,rss_kib=214728,publish_ns=169231828,control_ns=11777783
+F2-rabbitmq,payload=1048576,sample=5,offered=192,admitted=127,rejected=65,rss_kib=211524,publish_ns=176953257,control_ns=11863275
+F2-rabbitmq,payload=1048576,sample=6,offered=192,admitted=127,rejected=65,rss_kib=206696,publish_ns=184509624,control_ns=10738530
+F2-rabbitmq,payload=1048576,sample=7,offered=192,admitted=127,rejected=65,rss_kib=187944,publish_ns=170358948,control_ns=11795206
+F2-rabbitmq,payload=1048576,sample=8,offered=192,admitted=127,rejected=65,rss_kib=173528,publish_ns=192915938,control_ns=10719474
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 7.50s
+

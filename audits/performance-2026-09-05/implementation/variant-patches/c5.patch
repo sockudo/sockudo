@@ -1,0 +1,201 @@
+--- a/crates/sockudo-core/src/history/memory.rs
++++ b/crates/sockudo-core/src/history/memory.rs
+@@ -31,6 +31,8 @@
+     next_serial: u64,
+     retained_bytes: u64,
+     records: VecDeque<HistoryAppendRecord>,
++    // Imports may be out of order. Seek only while this invariant is proven.
++    serials_ordered: bool,
+     retention: Option<HistoryRetentionPolicy>,
+ }
+ 
+@@ -41,6 +43,7 @@
+             next_serial: 1,
+             retained_bytes: 0,
+             records: VecDeque::new(),
++            serials_ordered: true,
+             retention: None,
+         }
+     }
+@@ -48,7 +51,7 @@
+ 
+ #[derive(Clone, Default)]
+ pub struct MemoryHistoryStore {
+-    pub(super) channels: Arc<RwLock<BTreeMap<String, MemoryHistoryChannel>>>,
++    pub(super) channels: Arc<RwLock<BTreeMap<String, Arc<RwLock<MemoryHistoryChannel>>>>>,
+     config: MemoryHistoryStoreConfig,
+ }
+ 
+@@ -62,6 +65,13 @@
+ 
+     fn channel_key(app_id: &str, channel: &str) -> String {
+         format!("{app_id}\0{channel}")
++    }
++
++    async fn channel(&self, key: &str) -> Arc<RwLock<MemoryHistoryChannel>> {
++        if let Some(channel) = self.channels.read().await.get(key).cloned() {
++            return channel;
++        }
++        self.channels.write().await.entry(key.to_owned()).or_default().clone()
+     }
+ 
+     fn default_retention(config: &MemoryHistoryStoreConfig) -> HistoryRetentionPolicy {
+@@ -136,8 +146,9 @@
+         channel: &str,
+     ) -> Result<HistoryWriteReservation> {
+         let key = Self::channel_key(app_id, channel);
+-        let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_handle = self.channel(&key).await;
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+         let reservation = HistoryWriteReservation {
+             stream_id: channel_state.stream_id.clone(),
+             serial: channel_state.next_serial,
+@@ -148,8 +159,9 @@
+ 
+     async fn append(&self, record: HistoryAppendRecord) -> Result<()> {
+         let key = Self::channel_key(&record.app_id, &record.channel);
+-        let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_handle = self.channel(&key).await;
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+         if channel_state.stream_id != record.stream_id {
+             channel_state.stream_id.clone_from(&record.stream_id);
+         }
+@@ -160,6 +172,9 @@
+         channel_state.retained_bytes = channel_state
+             .retained_bytes
+             .saturating_add(record.payload_bytes.len() as u64);
++        channel_state.serials_ordered &= channel_state.records.back().is_none_or(|last| {
++            last.serial < record.serial && last.stream_id == record.stream_id
++        });
+         channel_state.records.push_back(record);
+         let retention = channel_state
+             .retention
+@@ -172,8 +187,8 @@
+     async fn read_page(&self, request: HistoryReadRequest) -> Result<HistoryPage> {
+         request.validate()?;
+         let key = Self::channel_key(&request.app_id, &request.channel);
+-        let mut channels = self.channels.write().await;
+-        let Some(channel_state) = channels.get_mut(&key) else {
++        let channel_handle = self.channels.read().await.get(&key).cloned();
++        let Some(channel_handle) = channel_handle else {
+             return Ok(HistoryPage {
+                 items: Vec::new(),
+                 next_cursor: None,
+@@ -191,6 +206,8 @@
+                 truncated_by_retention: false,
+             });
+         };
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+         let retention = channel_state
+             .retention
+             .clone()
+@@ -244,17 +261,34 @@
+                     })
+         };
+ 
++        // Serial bounds are monotonic even when timestamps skew. On arbitrary
++        // imports preserve the original scan and insertion-order behavior.
++        let (start, end) = if channel_state.serials_ordered {
++            let start = channel_state.records.partition_point(|record| {
++                request.bounds.start_serial.is_some_and(|start| record.serial < start)
++                    || (request.direction == HistoryDirection::OldestFirst
++                        && request.cursor.as_ref().is_some_and(|cursor| record.serial <= cursor.serial))
++            });
++            let end = channel_state.records.partition_point(|record| {
++                request.bounds.end_serial.is_none_or(|end| record.serial <= end)
++                    && (request.direction != HistoryDirection::NewestFirst
++                        || request.cursor.as_ref().is_none_or(|cursor| record.serial < cursor.serial))
++            });
++            (start.min(end), end)
++        } else {
++            (0, channel_state.records.len())
++        };
+         let collected: Vec<&HistoryAppendRecord> = match request.direction {
+             HistoryDirection::NewestFirst => channel_state
+                 .records
+-                .iter()
++                .range(start..end)
+                 .rev()
+                 .filter(matcher)
+                 .take(request.limit + 1)
+                 .collect(),
+             HistoryDirection::OldestFirst => channel_state
+                 .records
+-                .iter()
++                .range(start..end)
+                 .filter(matcher)
+                 .take(request.limit + 1)
+                 .collect(),
+@@ -304,10 +338,12 @@
+ 
+     async fn channel_head(&self, app_id: &str, channel: &str) -> Result<HistoryRetentionStats> {
+         let key = Self::channel_key(app_id, channel);
+-        let mut channels = self.channels.write().await;
+-        let Some(channel_state) = channels.get_mut(&key) else {
++        let channel_handle = self.channels.read().await.get(&key).cloned();
++        let Some(channel_handle) = channel_handle else {
+             return Ok(HistoryRetentionStats::default());
+         };
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+         let retention = channel_state
+             .retention
+             .clone()
+@@ -333,8 +369,9 @@
+         channel: &str,
+     ) -> Result<HistoryStreamRuntimeState> {
+         let key = Self::channel_key(app_id, channel);
+-        let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_handle = self.channel(&key).await;
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+         let retention = channel_state
+             .retention
+             .clone()
+@@ -355,8 +392,9 @@
+         channel: &str,
+     ) -> Result<HistoryStreamInspection> {
+         let key = Self::channel_key(app_id, channel);
+-        let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_handle = self.channel(&key).await;
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+         let retention = channel_state
+             .retention
+             .clone()
+@@ -386,12 +424,14 @@
+         _requested_by: Option<&str>,
+     ) -> Result<HistoryResetResult> {
+         let key = Self::channel_key(app_id, channel);
+-        let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_handle = self.channel(&key).await;
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+         let previous_stream_id = Some(channel_state.stream_id.clone());
+         let purged_messages = channel_state.records.len() as u64;
+         let purged_bytes = channel_state.retained_bytes;
+         channel_state.records.clear();
++        channel_state.serials_ordered = true;
+         channel_state.retained_bytes = 0;
+         channel_state.next_serial = 1;
+         channel_state.stream_id = uuid::Uuid::new_v4().to_string();
+@@ -429,8 +469,9 @@
+     ) -> Result<HistoryPurgeResult> {
+         request.validate()?;
+         let key = Self::channel_key(app_id, channel);
+-        let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_handle = self.channel(&key).await;
++        let mut guard = channel_handle.write().await;
++        let channel_state = &mut *guard;
+ 
+         let previous_records = channel_state.records.len();
+         let previous_bytes = channel_state.retained_bytes;

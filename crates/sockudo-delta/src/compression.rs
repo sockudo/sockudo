@@ -97,6 +97,7 @@ impl DeltaCompressionManager {
         let socket_state = self.socket_states.get(socket_id)?;
         let channel_state = socket_state.get_channel_state(channel)?;
         let cache = channel_state.get_conflation_state(conflation_key)?;
+        drop(socket_state);
         let msg = cache.get_last_message().await?;
         Some((Arc::clone(&msg.content), msg.sequence))
     }
@@ -139,6 +140,19 @@ impl DeltaCompressionManager {
         match self.config.algorithm {
             DeltaAlgorithm::Fossil => self.compute_fossil_delta(base_message, new_message),
             DeltaAlgorithm::Xdelta3 => self.compute_xdelta3_delta(base_message, new_message),
+        }
+    }
+
+    /// Compute a shared delta using the recipient's negotiated algorithm.
+    pub fn compute_delta_for_algorithm(
+        &self,
+        base: &[u8],
+        next: &[u8],
+        algorithm: DeltaAlgorithm,
+    ) -> Result<Vec<u8>> {
+        match algorithm {
+            DeltaAlgorithm::Fossil => self.compute_fossil_delta(base, next),
+            DeltaAlgorithm::Xdelta3 => self.compute_xdelta3_delta(base, next),
         }
     }
 
@@ -343,6 +357,40 @@ impl DeltaCompressionManager {
         is_full_message: bool,
         channel_settings: Option<&ChannelDeltaSettings>,
     ) -> Result<()> {
+        let conflation_key_path = channel_settings
+            .and_then(|s| s.conflation_key.as_ref())
+            .or(self.config.conflation_key_path.as_ref());
+
+        let conflation_key = if let Some(path) = conflation_key_path {
+            self.extract_conflation_key_with_path(&sent_message_bytes, path)
+        } else {
+            String::new()
+        };
+
+        self.store_shared_sent_message_with_key(
+            socket_id,
+            channel,
+            event_name,
+            sent_message_bytes,
+            is_full_message,
+            channel_settings,
+            &conflation_key,
+        )
+        .await
+    }
+
+    /// Store a shared base with the conflation key resolved once by fanout.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn store_shared_sent_message_with_key(
+        &self,
+        socket_id: &SocketId,
+        channel: &str,
+        event_name: &str,
+        sent_message_bytes: Arc<Vec<u8>>,
+        is_full_message: bool,
+        channel_settings: Option<&ChannelDeltaSettings>,
+        conflation_key: &str,
+    ) -> Result<()> {
         let socket_state = match self.socket_states.get(socket_id) {
             Some(state) => state,
             None => return Ok(()),
@@ -363,15 +411,7 @@ impl DeltaCompressionManager {
             }
         };
 
-        let conflation_key_path = channel_settings
-            .and_then(|s| s.conflation_key.as_ref())
-            .or(self.config.conflation_key_path.as_ref());
-
-        let conflation_key = if let Some(path) = conflation_key_path {
-            self.extract_conflation_key_with_path(&sent_message_bytes, path)
-        } else {
-            String::new()
-        };
+        drop(socket_state);
 
         let cache_key = if conflation_key.is_empty() {
             event_name.to_string()

@@ -1,0 +1,14 @@
+[package]
+name="sockudo-core-audit-bench"
+version="0.0.0"
+edition="2024"
+[workspace]
+[features]
+default=[]
+after=[]
+[dependencies]
+sockudo-push={path="../baseline/crates/sockudo-push"}
+tokio={version="1",features=["full"]}
+[profile.release]
+codegen-units=1
+lto=true

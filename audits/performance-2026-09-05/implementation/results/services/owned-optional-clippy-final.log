@@ -1,0 +1,34 @@
+    Blocking waiting for file lock on build directory
+    Checking sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Checking sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+    Checking surrealdb-core v3.2.3
+    Checking criterion v0.7.0
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+error: this `if` statement can be collapsed
+  --> crates/sockudo-webhook/src/lambda_sender.rs:41:17
+   |
+41 | /                 if clients.len() >= 64 {
+42 | |                     if let Some(key) = clients.keys().next().cloned() {
+43 | |                         clients.remove(&key);
+44 | |                     }
+45 | |                 }
+   | |_________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+   = note: `-D clippy::collapsible-if` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+   |
+41 ~                 if clients.len() >= 64
+42 ~                     && let Some(key) = clients.keys().next().cloned() {
+43 |                         clients.remove(&key);
+44 ~                     }
+   |
+
+error: could not compile `sockudo-webhook` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

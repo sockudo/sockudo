@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/c6/crates/sockudo-server)
+    Finished `release` profile [optimized] target(s) in 3m 29s
+  Executable unittests src/main.rs (target/release/deps/sockudo-0487f9d58cb3dca7)

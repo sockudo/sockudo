@@ -1,0 +1,15 @@
+
+running 1 test
+test benchmark_kafka_partitioned_fanout ... F5,sample=0,ns=277169180,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=1,ns=268491585,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=2,ns=270328696,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=3,ns=269804426,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=4,ns=269618344,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=5,ns=271141711,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=6,ns=271572806,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=7,ns=269043888,channels=16,delivered=1024,handler_delay_ms=1
+F5,sample=8,ns=268174605,channels=16,delivered=1024,handler_delay_ms=1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 4.23s
+

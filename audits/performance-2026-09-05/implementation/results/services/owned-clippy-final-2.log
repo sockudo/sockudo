@@ -1,0 +1,34 @@
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+error: function `broker_retry_delay` is never used
+  --> crates/sockudo-queue/src/lib.rs:93:4
+   |
+93 | fn broker_retry_delay(
+   |    ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: could not compile `sockudo-queue` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: this function has too many arguments (8/7)
+   --> crates/sockudo-webhook/src/sender.rs:249:5
+    |
+249 | /     fn create_webhook_task(
+250 | |         &self,
+251 | |         webhook_config: &Webhook,
+252 | |         permit: tokio::sync::OwnedSemaphorePermit,
+...   |
+257 | |         body_to_send: String,
+258 | |     ) -> tokio::task::JoinHandle<()> {
+    | |____________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: could not compile `sockudo-webhook` (lib) due to 1 previous error

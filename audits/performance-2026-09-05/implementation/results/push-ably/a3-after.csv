@@ -1,0 +1,14 @@
+a3,n=1000,rep=0,returned=2,us=38,allocations=115,allocated_bytes=13873
+a3,n=1000,rep=1,returned=2,us=11,allocations=115,allocated_bytes=13873
+a3,n=1000,rep=2,returned=2,us=8,allocations=115,allocated_bytes=13873
+a3,n=1000,rep=3,returned=2,us=7,allocations=115,allocated_bytes=13873
+a3,n=1000,rep=4,returned=2,us=7,allocations=115,allocated_bytes=13873
+a3,n=1000,rep=5,returned=2,us=6,allocations=115,allocated_bytes=13873
+a3,n=1000,rep=6,returned=2,us=7,allocations=115,allocated_bytes=13873
+a3,n=10000,rep=0,returned=2,us=791,allocations=116,allocated_bytes=13913
+a3,n=10000,rep=1,returned=2,us=12,allocations=115,allocated_bytes=13873
+a3,n=10000,rep=2,returned=2,us=8,allocations=115,allocated_bytes=13873
+a3,n=10000,rep=3,returned=2,us=6,allocations=115,allocated_bytes=13873
+a3,n=10000,rep=4,returned=2,us=7,allocations=115,allocated_bytes=13873
+a3,n=10000,rep=5,returned=2,us=7,allocations=115,allocated_bytes=13873
+a3,n=10000,rep=6,returned=2,us=7,allocations=115,allocated_bytes=13873

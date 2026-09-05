@@ -94,8 +94,8 @@ use sockudo_push::{
     FormFactor, HealthStatus, Platform, ProviderDispatchWorker, ProviderError,
     ProviderFailureClass, PublishIntent, PublishTarget, PushAcceptOutcome, PushAcceptRequest,
     PushDispatcher, PushPayload, PushPipeline, PushPipelineError, PushProviderKind, PushRecipient,
-    SecretString, generate_device_identity_token, hash_device_identity_token, stable_hash,
-    verify_device_identity_token,
+    SecretString, generate_device_identity_token, hash_device_identity_token_async, stable_hash,
+    verify_device_identity_token_async,
 };
 use sockudo_ws::{Message, axum_integration::WebSocketUpgrade};
 use sonic_rs::JsonValueMutTrait;
@@ -531,7 +531,7 @@ struct ResolvedAblyKey {
     rotation_id: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct AblyAuthError {
     status: StatusCode,
     code: u32,
@@ -665,21 +665,14 @@ fn ably_delta_state(params: &HashMap<String, String>) -> Option<AblyDeltaState> 
 
 #[derive(Clone, Default)]
 struct AblyAttachGate {
-    messages: Vec<AblyProtocolMessage>,
+    messages: Vec<Arc<AblyProtocolMessage>>,
     bytes: usize,
     overflowed: bool,
 }
 
-fn push_bounded_recovery_message(gate: &mut AblyAttachGate, message: AblyProtocolMessage) {
-    let message_bytes = sonic_rs::to_vec(&message)
-        .map(|bytes| bytes.len())
-        .unwrap_or(ABLY_ATTACH_GATE_MAX_BYTES.saturating_add(1));
-    push_bounded_recovery_message_with_size(gate, message, message_bytes);
-}
-
 fn push_bounded_recovery_message_with_size(
     gate: &mut AblyAttachGate,
-    message: AblyProtocolMessage,
+    message: impl Into<Arc<AblyProtocolMessage>>,
     message_bytes: usize,
 ) {
     if gate.overflowed
@@ -692,13 +685,13 @@ fn push_bounded_recovery_message_with_size(
         return;
     }
     gate.bytes = gate.bytes.saturating_add(message_bytes);
-    gate.messages.push(message);
+    gate.messages.push(message.into());
 }
 
 #[derive(Clone)]
 struct AblyRecoveryTailMessage {
     sequence: u64,
-    message: AblyProtocolMessage,
+    message: Arc<AblyProtocolMessage>,
     publisher_connection_id: Option<Arc<str>>,
     echo_override: Option<bool>,
     bytes: usize,
@@ -725,7 +718,7 @@ impl Default for AblyRecoveryTail {
 impl AblyRecoveryTail {
     fn push_with_size(
         &mut self,
-        message: AblyProtocolMessage,
+        message: impl Into<Arc<AblyProtocolMessage>>,
         publisher_connection_id: Option<&str>,
         echo_override: Option<bool>,
         message_bytes: usize,
@@ -747,7 +740,7 @@ impl AblyRecoveryTail {
         self.bytes = self.bytes.saturating_add(message_bytes);
         self.messages.push_back(AblyRecoveryTailMessage {
             sequence: self.sequence,
-            message,
+            message: message.into(),
             publisher_connection_id: publisher_connection_id.map(Arc::from),
             echo_override,
             bytes: message_bytes,
@@ -770,7 +763,11 @@ impl AblyRecoveryTail {
                 entry.echo_override,
             ) && mode_flags & ABLY_MODE_SUBSCRIBE != 0
             {
-                push_bounded_recovery_message(&mut gate, entry.message.clone());
+                push_bounded_recovery_message_with_size(
+                    &mut gate,
+                    Arc::clone(&entry.message),
+                    entry.bytes,
+                );
             }
         }
         gate
@@ -1240,12 +1237,25 @@ fn auth_backend_failure(operation: &'static str) -> AblyAuthError {
     AblyAuthError::backend_unavailable()
 }
 
+const REVOCATION_SNAPSHOT_FRESHNESS: Duration = Duration::from_millis(250);
+const REVOCATION_SNAPSHOT_APP_LIMIT: usize = 32;
+const REVOCATION_SNAPSHOT_CACHE_BYTES: usize = 2 * 1024 * 1024;
+type RevocationSnapshotSlot = Arc<AsyncMutex<Option<RevocationSnapshot>>>;
+
+struct RevocationSnapshot {
+    // Measure age from scan start, not completion, so slow storage cannot extend
+    // the freshness bound seen by an existing connection.
+    started: TokioInstant,
+    outcome: Result<Arc<Vec<AblyRevocationRecord>>, AblyAuthError>,
+}
+
 #[derive(Default)]
 pub struct AblyCompatHub {
     channels: DashMap<AblyChannelKey, Arc<Mutex<AblyChannelState>>>,
     sessions: DashMap<String, AblySessionRecord>,
     tokens: DashMap<String, AblyTokenRecord>,
     revocations: Mutex<AblyRevocationStore>,
+    revocation_snapshots: Mutex<HashMap<String, RevocationSnapshotSlot>>,
     live_sessions: DashMap<String, AblyLiveSession>,
     node_session_owners: DashMap<AblyPresenceConnectionKey, String>,
     session_echo: DashMap<String, bool>,
@@ -1741,6 +1751,14 @@ async fn stats_key_app_id(hub: &AblyCompatHub, key_name: &str) -> Option<String>
 }
 
 impl RealtimeEgressTap for AblyCompatRuntime {
+    fn invalidate_continuity(
+        &self,
+        app_id: Option<&str>,
+        channel: Option<&str>,
+    ) -> SockudoResult<()> {
+        self.hub.invalidate_continuity(app_id, channel)
+    }
+
     fn has_subscribers(&self, app_id: &str, channel: &str) -> bool {
         self.hub.has_subscribers(app_id, channel)
     }
@@ -1775,6 +1793,54 @@ impl RealtimeEgressTap for AblyCompatRuntime {
 }
 
 impl RealtimeEgressTap for AblyCompatHub {
+    fn invalidate_continuity(
+        &self,
+        app_id: Option<&str>,
+        channel: Option<&str>,
+    ) -> SockudoResult<()> {
+        let mut affected_sessions = HashSet::new();
+        for entry in &self.channels {
+            if app_id.is_some_and(|app| entry.key().app_id != app)
+                || channel.is_some_and(|channel| entry.key().channel != channel)
+            {
+                continue;
+            }
+            let mut state = lock_channel_state(entry.value());
+            state.delivery_reset_required = true;
+            state.pending_deliveries.clear();
+            state.recovery_tail.messages.clear();
+            state.recovery_tail.bytes = 0;
+            for (key, subscriber) in &mut state.subscribers {
+                subscriber.sender.invalidate_continuity();
+                subscriber.direct_recovery_gate = AblyAttachGate {
+                    overflowed: true,
+                    ..Default::default()
+                };
+                if let Some(gate) = subscriber.attach_gate.as_mut() {
+                    *gate = AblyAttachGate {
+                        overflowed: true,
+                        ..Default::default()
+                    };
+                }
+                affected_sessions.insert(key.session_id.to_string());
+            }
+            for gate in state.recovery_gates.values_mut() {
+                *gate = AblyAttachGate {
+                    overflowed: true,
+                    ..Default::default()
+                };
+            }
+        }
+        for session_id in affected_sessions {
+            if let Some(session) = self.live_sessions.get(&session_id)
+                && let Err(error) = session.command_tx.try_send(AblySessionCommand::Superseded)
+            {
+                debug!(error = %error, "continuity reset session notification unavailable");
+            }
+        }
+        Ok(())
+    }
+
     fn has_subscribers(&self, app_id: &str, channel: &str) -> bool {
         self.has_subscribers(app_id, channel)
     }
@@ -2576,8 +2642,10 @@ impl AblyCompatHub {
                 .set(&key, &encoded, ttl_seconds)
                 .await
                 .map_err(|_| auth_backend_failure("revocation cache write"))?;
+            self.invalidate_revocation_snapshot(app_id);
             return Ok(());
         }
+        self.invalidate_revocation_snapshot(app_id);
         let now = now_ms();
         let expires_at_ms = now
             .max(record.issued_before)
@@ -2606,6 +2674,177 @@ impl AblyCompatHub {
             return Ok(Some(record));
         }
         Ok(lock_revocations(&self.revocations).get(&key, now_ms()))
+    }
+
+    fn invalidate_revocation_snapshot(&self, app_id: &str) {
+        self.revocation_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(app_id);
+    }
+
+    async fn authorization_is_revoked_from_snapshot(
+        &self,
+        app_id: &str,
+        authorization: &ConnectionAuthorization,
+        attached_channels: &HashMap<String, AblyConnectionAttachment>,
+    ) -> bool {
+        if !authorization.revocable {
+            return false;
+        }
+        let slot = {
+            let mut slots = self
+                .revocation_snapshots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(slot) = slots.get(app_id) {
+                Arc::clone(slot)
+            } else {
+                // Cache only a bounded number of app snapshots. Eviction affects
+                // performance only; every replacement must perform a fresh read.
+                if slots.len() >= REVOCATION_SNAPSHOT_APP_LIMIT
+                    && let Some(key) = slots.keys().next().cloned()
+                {
+                    slots.remove(&key);
+                }
+                let slot = Arc::new(AsyncMutex::new(None));
+                slots.insert(app_id.to_owned(), Arc::clone(&slot));
+                slot
+            }
+        };
+        let mut snapshot = slot.lock().await;
+        let outcome = if let Some(current) = snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.started.elapsed() < REVOCATION_SNAPSHOT_FRESHNESS)
+        {
+            current.outcome.clone()
+        } else {
+            let started = TokioInstant::now();
+            let outcome = match tokio::time::timeout(
+                REVOCATION_SNAPSHOT_FRESHNESS,
+                self.read_revocation_snapshot(app_id),
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    warn!(app_id = %app_id, error = %error, "revocation snapshot refresh timed out");
+                    Err(AblyAuthError::backend_unavailable())
+                }
+            };
+            match outcome {
+                Ok((records, bytes)) => {
+                    let records = Arc::new(records);
+                    if bytes <= REVOCATION_SNAPSHOT_CACHE_BYTES {
+                        *snapshot = Some(RevocationSnapshot {
+                            started,
+                            outcome: Ok(Arc::clone(&records)),
+                        });
+                    } else {
+                        *snapshot = None;
+                    }
+                    Ok(records)
+                }
+                Err(error) => {
+                    *snapshot = Some(RevocationSnapshot {
+                        started: TokioInstant::now(),
+                        outcome: Err(error.clone()),
+                    });
+                    Err(error)
+                }
+            }
+        };
+        drop(snapshot);
+        match outcome {
+            Ok(records) => {
+                let now = now_ms();
+                records.iter().any(|record| {
+                    if authorization.issued_ms >= record.issued_before || now < record.applies_at {
+                        return false;
+                    }
+                    match record.target_type.as_str() {
+                        "clientId" => {
+                            authorization.client_id.as_deref() == Some(record.target_value.as_str())
+                        }
+                        "revocationKey" => {
+                            authorization.revocation_key.as_deref()
+                                == Some(record.target_value.as_str())
+                        }
+                        "channel" => {
+                            attached_channels.contains_key(&record.target_value)
+                                || channel_revocation_applies(record, authorization, now)
+                        }
+                        _ => false,
+                    }
+                })
+            }
+            Err(error) => {
+                self.metrics.mark_backend_failure();
+                warn!(protocol = "ably", app_id = %app_id, error = %error.message, "revocation snapshot unavailable; authorization rejected");
+                true
+            }
+        }
+    }
+
+    async fn read_revocation_snapshot(
+        &self,
+        app_id: &str,
+    ) -> Result<(Vec<AblyRevocationRecord>, usize), AblyAuthError> {
+        static SCANS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+        let _scan = SCANS
+            .get_or_init(|| tokio::sync::Semaphore::new(4))
+            .acquire()
+            .await
+            .map_err(|_| AblyAuthError::backend_unavailable())?;
+        let Some(cache) = &self.cache else {
+            let records = lock_revocations(&self.revocations).records(app_id, now_ms());
+            let bytes = records
+                .iter()
+                .map(|record| {
+                    record.target_type.len()
+                        + record.target_value.len()
+                        + std::mem::size_of::<AblyRevocationRecord>()
+                })
+                .sum();
+            return Ok((records, bytes));
+        };
+        const PAGE_SIZE: usize = 512;
+        const MAX_PAGES: usize = ABLY_REVOCATION_MAX_ENTRIES.div_ceil(PAGE_SIZE) + 1;
+        let prefix = format!("ably-compat:revocation:{app_id}:");
+        let mut cursor = None;
+        let mut records = Vec::new();
+        let mut bytes = 0usize;
+        for _ in 0..MAX_PAGES {
+            let page = cache
+                .scan_prefix_page(&prefix, cursor.clone(), PAGE_SIZE)
+                .await
+                .map_err(|_| auth_backend_failure("revocation cache scan"))?;
+            if page.entries.len() > PAGE_SIZE {
+                return Err(auth_backend_failure("revocation cache page bound"));
+            }
+            if records.len().saturating_add(page.entries.len()) > ABLY_REVOCATION_MAX_ENTRIES {
+                return Err(AblyAuthError::revocation_capacity());
+            }
+            for (key, encoded) in page.entries {
+                bytes = bytes
+                    .checked_add(key.len())
+                    .and_then(|bytes| bytes.checked_add(encoded.len()))
+                    .filter(|bytes| *bytes <= ABLY_REVOCATION_MAX_BYTES)
+                    .ok_or_else(AblyAuthError::revocation_capacity)?;
+                records.push(
+                    serde_json::from_str(&encoded)
+                        .map_err(|_| auth_backend_failure("revocation cache decode"))?,
+                );
+            }
+            match page.next_cursor {
+                Some(next) if !next.is_empty() && cursor.as_deref() != Some(next.as_str()) => {
+                    cursor = Some(next)
+                }
+                Some(_) => return Err(auth_backend_failure("revocation cache cursor")),
+                None => return Ok((records, bytes)),
+            }
+        }
+        Err(AblyAuthError::revocation_capacity())
     }
 
     async fn authorization_is_revoked(
@@ -2874,7 +3113,7 @@ impl AblyCompatHub {
                 .as_deref()
                 .and_then(|serial| parse_ably_channel_serial(serial).ok())
             else {
-                messages.push(message);
+                messages.push(Arc::unwrap_or_clone(message));
                 continue;
             };
             if let Some(high_water) = high_water {
@@ -2892,7 +3131,7 @@ impl AblyCompatHub {
                     continue;
                 }
             }
-            messages.push(message);
+            messages.push(Arc::unwrap_or_clone(message));
         }
         Ok(messages)
     }
@@ -3198,6 +3437,7 @@ impl AblyCompatHub {
         publisher_connection_id: Option<&str>,
         echo_override: Option<bool>,
     ) {
+        let message = Arc::new(message);
         let now = now_ms();
         let mut delivered_messages = 0u64;
         let mut delivered_bytes = 0u64;
@@ -3372,11 +3612,11 @@ impl AblyCompatHub {
             let mut projected = if requested_channel.as_ref() == channel
                 && message.channel.as_deref() == Some(channel)
             {
-                message.clone()
+                message.as_ref().clone()
             } else {
                 AblyProtocolMessage {
                     channel: Some(requested_channel.to_string()),
-                    ..message.clone()
+                    ..message.as_ref().clone()
                 }
             };
             let Some((_, first_subscriber)) = subscribers.first() else {
@@ -3394,6 +3634,7 @@ impl AblyCompatHub {
             );
             match encode_protocol_bytes(&projected, format) {
                 Ok(bytes) => {
+                    let projected = Arc::new(projected);
                     let encoded = Arc::new(bytes);
                     let byte_count = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
                     self.metrics.data_encoded.fetch_add(1, Ordering::Relaxed);
@@ -3449,11 +3690,11 @@ impl AblyCompatHub {
             let mut projected = if requested_channel.as_ref() == channel
                 && message.channel.as_deref() == Some(channel)
             {
-                message.clone()
+                message.as_ref().clone()
             } else {
                 AblyProtocolMessage {
                     channel: Some(requested_channel.to_string()),
-                    ..message.clone()
+                    ..message.as_ref().clone()
                 }
             };
             let filter = subscribers
@@ -3481,6 +3722,7 @@ impl AblyCompatHub {
                     shared_recovery_bytes.map_or(recovery_bytes, |bytes| bytes.max(recovery_bytes)),
                 );
             }
+            let projected = Arc::new(projected);
             let encoded_bytes = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
             for (subscriber_key, subscriber) in subscribers {
                 if subscriber.sender.send_data(Arc::clone(&encoded)).is_err() {

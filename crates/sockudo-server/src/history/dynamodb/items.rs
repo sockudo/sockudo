@@ -36,6 +36,10 @@ impl DynamoDbHistoryStore {
         record: &StoredStreamRecord,
     ) -> HashMap<String, AttributeValue> {
         let mut item = HashMap::new();
+        item.insert(
+            "retention_revision".into(),
+            Self::attr_number(record.retention_revision),
+        );
         item.insert("stream_key".to_string(), Self::attr_string(stream_key));
         item.insert("app_id".to_string(), Self::attr_string(&record.app_id));
         item.insert("channel".to_string(), Self::attr_string(&record.channel));
@@ -160,7 +164,10 @@ impl DynamoDbHistoryStore {
         item
     }
 
-    fn item_attr_string(item: &HashMap<String, AttributeValue>, key: &str) -> Result<String> {
+    pub(super) fn item_attr_string(
+        item: &HashMap<String, AttributeValue>,
+        key: &str,
+    ) -> Result<String> {
         match item.get(key) {
             Some(AttributeValue::S(value)) => Ok(value.clone()),
             _ => Err(Error::Internal(format!(
@@ -169,7 +176,7 @@ impl DynamoDbHistoryStore {
         }
     }
 
-    fn item_attr_u64(item: &HashMap<String, AttributeValue>, key: &str) -> Result<u64> {
+    pub(super) fn item_attr_u64(item: &HashMap<String, AttributeValue>, key: &str) -> Result<u64> {
         match item.get(key) {
             Some(AttributeValue::N(value)) => value.parse::<u64>().map_err(|e| {
                 Error::Internal(format!("Invalid DynamoDB numeric attribute {key}: {e}"))
@@ -180,7 +187,7 @@ impl DynamoDbHistoryStore {
         }
     }
 
-    fn item_attr_i64(item: &HashMap<String, AttributeValue>, key: &str) -> Result<i64> {
+    pub(super) fn item_attr_i64(item: &HashMap<String, AttributeValue>, key: &str) -> Result<i64> {
         match item.get(key) {
             Some(AttributeValue::N(value)) => value.parse::<i64>().map_err(|e| {
                 Error::Internal(format!("Invalid DynamoDB numeric attribute {key}: {e}"))
@@ -209,6 +216,9 @@ impl DynamoDbHistoryStore {
         item: HashMap<String, AttributeValue>,
     ) -> Result<StoredStreamRecord> {
         Ok(StoredStreamRecord {
+            retention_revision: Self::item_opt_i64(&item, "retention_revision")
+                .unwrap_or(0)
+                .max(0) as u64,
             app_id: Self::item_attr_string(&item, "app_id")?,
             channel: Self::item_attr_string(&item, "channel")?,
             stream_id: Self::item_attr_string(&item, "stream_id")?,

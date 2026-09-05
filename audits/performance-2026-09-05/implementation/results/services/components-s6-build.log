@@ -1,0 +1,17 @@
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s6/crates/sockudo-protocol)
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s6/crates/sockudo-filter)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s6/crates/sockudo-core)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s6/crates/sockudo-app)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s6/crates/sockudo-cache)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/s6/crates/sockudo-metrics)
+   Compiling services-components v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/components-bench-s6)
+warning: function `main` is never used
+   --> ../services-bench/src/../../../diagnostics/src/bin/services.rs:196:10
+    |
+196 | async fn main() {
+    |          ^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `services-components` (bin "services-components") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 41.90s

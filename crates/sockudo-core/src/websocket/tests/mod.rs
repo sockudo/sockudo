@@ -1200,3 +1200,62 @@ async fn shutdown_cancels_task_while_handle_retained() {
 
     drop(_retained_sender);
 }
+
+#[tokio::test]
+async fn prepared_broadcast_preserves_negotiated_frame_and_byte_accounting() {
+    use sockudo_protocol::wire::{WireFormat, deserialize_message, serialize_message};
+    for format in [
+        WireFormat::Json,
+        WireFormat::MessagePack,
+        WireFormat::Protobuf,
+    ] {
+        let (writer, mut client) = create_server_writer_with_client().await;
+        let mut ws = WebSocket::with_buffer_config(
+            SocketId::new(),
+            writer,
+            WebSocketBufferConfig::with_both_limits(16, 1024, true),
+        );
+        ws.state.wire_format = format;
+        let socket = WebSocketRef::new(ws);
+        let message = PusherMessage::pong();
+        let frame = Bytes::from(serialize_message(&message, format).unwrap());
+        assert!(socket.admit_prepared_broadcast(frame, format).unwrap());
+        let received = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let payload = match received {
+            sockudo_ws::Message::Text(bytes) if !format.is_binary() => bytes,
+            sockudo_ws::Message::Binary(bytes) if format.is_binary() => bytes,
+            other => panic!("wrong negotiated frame: {other:?}"),
+        };
+        assert_eq!(deserialize_message(&payload, format).unwrap(), message);
+        tokio::task::yield_now().await;
+        assert_eq!(socket.buffer_stats().pending_bytes, Some(0));
+        socket.shutdown_token.cancel();
+        assert!(
+            socket
+                .admit_prepared_broadcast(Bytes::from_static(b"x"), format)
+                .is_err()
+        );
+        assert_eq!(socket.buffer_stats().pending_bytes, Some(0));
+    }
+}
+
+#[tokio::test]
+async fn rejected_prepared_frame_never_advances_byte_admission() {
+    let socket = create_websocket_ref_with_buffer_config(WebSocketBufferConfig::with_both_limits(
+        1, 4, false,
+    ))
+    .await;
+    assert!(
+        !socket
+            .admit_prepared_broadcast(
+                Bytes::from_static(b"oversized"),
+                sockudo_protocol::WireFormat::Json
+            )
+            .unwrap()
+    );
+    assert_eq!(socket.buffer_stats().pending_bytes, Some(0));
+}

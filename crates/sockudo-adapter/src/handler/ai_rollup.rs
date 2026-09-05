@@ -1,5 +1,5 @@
 use super::ConnectionHandler;
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::{self, FuturesUnordered, StreamExt};
 use parking_lot::Mutex;
 use sockudo_ai_transport::{
     ActiveStreamDelta, DueStreamToken, RollupDelivery, RollupDeliveryReason, RollupEngine,
@@ -137,21 +137,68 @@ async fn run_rollup_worker(
 ) {
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(wheel_tick_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut retries = VecDeque::with_capacity(MAX_RETRY_QUEUE);
+    let mut retries = VecDeque::new();
+    let mut active_channels = std::collections::HashSet::new();
+    let mut deliveries = FuturesUnordered::new();
+    let mut active_items = 0usize;
 
     loop {
+        // A slow channel owns one delivery future; other channels can use slots
+        // immediately when they complete, without waiting for an entire tick batch.
+        while deliveries.len() < MAX_CONCURRENT_CHANNELS {
+            let Some(index) = retries.iter().position(|item: &ScheduledItem| {
+                !active_channels.contains(&(item.app_id().to_owned(), item.channel().to_owned()))
+            }) else {
+                break;
+            };
+            let first = retries.remove(index).expect("scheduled item index exists");
+            let key = (first.app_id().to_owned(), first.channel().to_owned());
+            active_channels.insert(key.clone());
+            let mut group = vec![first];
+            let mut retained = VecDeque::new();
+            for item in retries.drain(..) {
+                if item.app_id() == key.0 && item.channel() == key.1 {
+                    group.push(item);
+                } else {
+                    retained.push_back(item);
+                }
+            }
+            retries = retained;
+            let count = group.len();
+            active_items += count;
+            let handler = &handler;
+            let engine = &engine;
+            deliveries.push(async move {
+                let failed = process_channel_group(handler, engine, group).await;
+                (key, count, failed)
+            });
+        }
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
+                // Own and join every in-flight delivery before draining pending
+                // streams, so cancellation cannot detach accepted ordered work.
+                while let Some((_key, _count, failed)) = deliveries.next().await {
+                    requeue_failures(&handler, &engine, vec![failed], &mut retries);
+                }
                 drain_for_shutdown(&handler, &engine, &mut retries).await;
                 return;
             }
+            completed = deliveries.next(), if !deliveries.is_empty() => {
+                if let Some((key, count, failed)) = completed {
+                    active_items = active_items.saturating_sub(count);
+                    active_channels.remove(&key);
+                    // Failed older tokens must precede newly polled tokens for
+                    // this channel. Full-payload retry policy remains unchanged.
+                    let later = std::mem::take(&mut retries);
+                    requeue_failures(&handler, &engine, vec![failed], &mut retries);
+                    retries.extend(later);
+                }
+            }
             _ = interval.tick() => {
-                let available = MAX_DUE_PER_TICK.saturating_sub(retries.len());
+                let available = MAX_DUE_PER_TICK.saturating_sub(retries.len() + active_items);
                 let poll = engine.poll_due_tokens(rollup_now_ms(), available);
-                let mut work = retries.drain(..).collect::<Vec<_>>();
-                work.extend(poll.tokens.into_iter().map(ScheduledItem::due));
-                process_deliveries(&handler, &engine, work, &mut retries).await;
+                retries.extend(poll.tokens.into_iter().map(ScheduledItem::due));
             }
         }
     }
@@ -207,6 +254,15 @@ async fn process_deliveries(
         .collect::<Vec<_>>()
         .await;
 
+    requeue_failures(handler, engine, failures, retries);
+}
+
+fn requeue_failures(
+    handler: &ConnectionHandler,
+    engine: &RollupEngine,
+    failures: Vec<Vec<ScheduledItem>>,
+    retries: &mut VecDeque<ScheduledItem>,
+) {
     for group in failures {
         let mut reset_channel = false;
         for item in group {
@@ -420,3 +476,7 @@ mod tests {
         assert!(stopped.load(Ordering::Acquire));
     }
 }
+
+#[cfg(test)]
+#[path = "ai_rollup_perf_tests.rs"]
+mod performance_tests;

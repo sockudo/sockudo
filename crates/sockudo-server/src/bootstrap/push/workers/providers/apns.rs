@@ -81,6 +81,7 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
                             queue,
                             Arc::new(dispatcher),
                         )
+                        .with_store(store.clone())
                         .with_max_outbound_requests(max_outbound);
                         warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, "APNs dispatch worker started with stored credential");
                         loop {
@@ -127,8 +128,10 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
             "provider",
             format!("sockudo-monolith-apns-{worker_index}"),
             {
+                let store = store.clone();
                 let queue = queue.clone();
                 move |group| {
+                    let store = store.clone();
                     let queue = queue.clone();
                     let dispatcher = dispatcher.clone();
                     async move {
@@ -137,6 +140,7 @@ pub(in crate::bootstrap::push::workers) fn start_apns_provider_workers(
                             queue,
                             Arc::new(dispatcher),
                         )
+                        .with_store(store.clone())
                         .with_max_outbound_requests(max_outbound);
                         warn!(worker = %group, "APNs dispatch worker started");
                         loop {

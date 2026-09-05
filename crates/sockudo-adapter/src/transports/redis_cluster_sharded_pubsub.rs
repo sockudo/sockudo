@@ -22,7 +22,17 @@ use tracing::{info, warn};
 const TOPOLOGY_REFRESH_INTERVAL_SECS: u64 = 30;
 const TOPOLOGY_REFRESH_FAILURE_THRESHOLD: u64 = 3;
 
-type ShardedPushChannelFlavor = mpsc::Array<redis::PushInfo>;
+pub struct BoundedPush {
+    message: redis::PushInfo,
+    _bytes: tokio::sync::OwnedSemaphorePermit,
+}
+impl std::ops::Deref for BoundedPush {
+    type Target = redis::PushInfo;
+    fn deref(&self) -> &Self::Target {
+        &self.message
+    }
+}
+type ShardedPushChannelFlavor = mpsc::Array<BoundedPush>;
 type ShardedPushSender = crossfire::MAsyncTx<ShardedPushChannelFlavor>;
 
 /// Receiver end of the bounded fan-in channel returned by `ShardedSubscriber::start`.
@@ -354,6 +364,8 @@ pub(crate) struct ShardListenerParams {
     channels: Vec<String>,
     mode: PubSubMode,
     fan_in_tx: ShardedPushSender,
+    byte_budget: Arc<tokio::sync::Semaphore>,
+    on_ingress_gap: crate::horizontal_transport::IngressGapHandler,
     ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
     is_running: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
@@ -370,9 +382,9 @@ pub(crate) struct ShardListenerParams {
 /// to the bounded fan-in sender. Reconnects with exponential back-off
 /// (500 ms to 10 s) on any failure.
 pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
-    // Unbounded because push_sender must not block the redis runtime;
-    // backpressure is applied at the bounded fan-in boundary.
-    type InternalFlavor = mpsc::List<redis::PushInfo>;
+    // The synchronous Redis callback cannot await. Bound both stages and fail
+    // closed on saturation rather than retaining unlimited pending pushes.
+    type InternalFlavor = mpsc::Array<BoundedPush>;
 
     let mut retry_delay = 500u64;
     const MAX_RETRY_DELAY: u64 = 10_000;
@@ -385,14 +397,57 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
         }
 
         let (internal_tx, internal_rx): (
-            crossfire::MTx<InternalFlavor>,
+            crossfire::MAsyncTx<InternalFlavor>,
             crossfire::AsyncRx<InternalFlavor>,
-        ) = mpsc::unbounded_async();
+        ) = mpsc::bounded_async(256);
 
         let push_sender = {
             let tx = internal_tx;
+            let budget = Arc::clone(&params.byte_budget);
+            let gap = Arc::clone(&params.on_ingress_gap);
+            let metrics = Arc::clone(&params.metrics);
             move |msg: redis::PushInfo| -> std::result::Result<(), redis::aio::SendError> {
-                tx.send(msg).map_err(|_| redis::aio::SendError)
+                let payload = msg.data.get(1).and_then(push_value_bytes);
+                let size = payload.map_or(128, |bytes| bytes.len().saturating_add(128));
+                let permit = u32::try_from(size)
+                    .ok()
+                    .and_then(|size| Arc::clone(&budget).try_acquire_many_owned(size).ok());
+                let Some(permit) = permit else {
+                    if let Some(metrics) = metrics.get() {
+                        metrics.mark_horizontal_transport_message_dropped("redis_cluster");
+                    }
+                    super::dispatch::report_ingress_gap(&gap, payload);
+                    tracing::error!(
+                        adapter = "redis_cluster",
+                        queued_bytes = 64 * 1024 * 1024,
+                        "redis push byte budget exhausted continuity invalidated"
+                    );
+                    return Err(redis::aio::SendError);
+                };
+                match tx.try_send(BoundedPush {
+                    message: msg,
+                    _bytes: permit,
+                }) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        let rejected = match error {
+                            crossfire::TrySendError::Full(value)
+                            | crossfire::TrySendError::Disconnected(value) => value,
+                        };
+                        if let Some(metrics) = metrics.get() {
+                            metrics.mark_horizontal_transport_message_dropped("redis_cluster");
+                        }
+                        super::dispatch::report_ingress_gap(
+                            &gap,
+                            rejected.data.get(1).and_then(push_value_bytes),
+                        );
+                        tracing::error!(
+                            adapter = "redis_cluster",
+                            "redis push queue admission failed continuity invalidated"
+                        );
+                        Err(redis::aio::SendError)
+                    }
+                }
             }
         };
 
@@ -524,21 +579,18 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
                     break;
                 }
                 redis::PushKind::SMessage | redis::PushKind::Message => {
-                    match params.fan_in_tx.try_send(push_info) {
-                        Ok(()) => {}
-                        Err(crossfire::TrySendError::Full(_)) => {
-                            // Bounded fan-in is full; drop this message.
-                            // The 10 000-cap prevents OOM under sustained backpressure.
-                        }
-                        Err(crossfire::TrySendError::Disconnected(_)) => {
-                            break 'outer; // caller dropped the receiver; stop
-                        }
+                    if let Err(error) = params.fan_in_tx.send(push_info).await {
+                        tracing::debug!(adapter = "redis_cluster", error = %error, "redis push fan in closed");
+                        break 'outer;
                     }
                 }
                 _ => {} // SSubscribe confirmation, Pong, etc. not forwarded
             }
         }
 
+        // Pub/Sub cannot prove what was published while this shard was
+        // disconnected. End existing subscriptions before reconnecting.
+        (params.on_ingress_gap)(None, None);
         reconnection_count += 1;
         warn!(
             adapter = "redis_cluster",
@@ -566,6 +618,7 @@ pub(crate) struct ShardedSubscriber {
     shutdown: Arc<Notify>,
     refresh_notify: Arc<Notify>,
     tls: RedisTlsOptions,
+    on_ingress_gap: crate::horizontal_transport::IngressGapHandler,
 }
 
 impl ShardedSubscriber {
@@ -624,9 +677,18 @@ impl ShardedSubscriber {
             metrics,
             is_running,
             shutdown,
+            on_ingress_gap: Arc::new(|_, _| {}),
             refresh_notify: Arc::new(Notify::new()),
             tls,
         }
+    }
+
+    pub(crate) fn with_ingress_gap_handler(
+        mut self,
+        handler: crate::horizontal_transport::IngressGapHandler,
+    ) -> Self {
+        self.on_ingress_gap = handler;
+        self
     }
 
     /// Discover cluster topology, spawn per-shard listeners, and return the
@@ -655,6 +717,7 @@ impl ShardedSubscriber {
         let (fan_tx, fan_rx): (ShardedPushSender, ShardedPushReceiver) =
             mpsc::bounded_async(10_000);
 
+        let byte_budget = Arc::new(tokio::sync::Semaphore::new(64 * 1024 * 1024));
         let scheme = if self.seed_urls.iter().any(|u| u.starts_with("rediss://")) {
             "rediss"
         } else {
@@ -667,6 +730,7 @@ impl ShardedSubscriber {
             .and_then(|ci| ci.redis_settings().password().map(str::to_owned));
 
         // Clone fan_tx for the refresh task BEFORE the drop at the end.
+        let refresh_gap_handler = Arc::clone(&self.on_ingress_gap);
         let fan_tx_for_refresh = fan_tx.clone();
 
         let channel_shard_map: Arc<Mutex<HashMap<String, NodeAddr>>> =
@@ -698,6 +762,8 @@ impl ShardedSubscriber {
                     channels: shard_channels,
                     mode: self.mode,
                     fan_in_tx: fan_tx.clone(),
+                    byte_budget: Arc::clone(&byte_budget),
+                    on_ingress_gap: Arc::clone(&self.on_ingress_gap),
                     ready_tx: Some(ready_tx),
                     is_running: self.is_running.clone(),
                     shutdown: self.shutdown.clone(),
@@ -782,6 +848,8 @@ impl ShardedSubscriber {
                     continue;
                 }
 
+                // Moving a subscription can leave a gap; invalidate before aborting old readers.
+                refresh_gap_handler(None, None);
                 let mut sh = shard_handles_clone.lock().await;
 
                 for old_str in old_shards_to_abort {
@@ -798,6 +866,8 @@ impl ShardedSubscriber {
                         channels,
                         mode,
                         fan_in_tx: fan_tx_for_refresh.clone(),
+                        byte_budget: Arc::clone(&byte_budget),
+                        on_ingress_gap: Arc::clone(&refresh_gap_handler),
                         ready_tx: None,
                         is_running: is_running_clone.clone(),
                         shutdown: shutdown_clone.clone(),
@@ -1152,5 +1222,13 @@ mod tests {
         ]);
         let topo = parse_cluster_shards(raw).expect("should skip malformed and succeed");
         assert_eq!(topo.masters.len(), 1);
+    }
+}
+
+fn push_value_bytes(value: &redis::Value) -> Option<&[u8]> {
+    match value {
+        redis::Value::BulkString(value) => Some(value),
+        redis::Value::SimpleString(value) => Some(value.as_bytes()),
+        _ => None,
     }
 }

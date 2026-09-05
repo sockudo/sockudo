@@ -1,0 +1,89 @@
+snapshot page 118 entries in 358.086µs
+snapshot page 109 entries in 245.153µs
+snapshot page 92 entries in 206.5µs
+snapshot page 125 entries in 232.94µs
+snapshot page 107 entries in 194.597µs
+snapshot page 128 entries in 199.688µs
+snapshot page 116 entries in 179.148µs
+snapshot page 115 entries in 180.642µs
+snapshot page 114 entries in 178.467µs
+a1,records=1024,sessions=100,rep=0,allowed=100,us=2621,p50_us=2458,p95_us=2521,p99_us=2526,allocations=5967,allocated_bytes=1290266,cache_calls=9,read_bytes=189354
+snapshot page 118 entries in 204.376µs
+snapshot page 109 entries in 167.556µs
+snapshot page 92 entries in 151.907µs
+snapshot page 125 entries in 181.774µs
+snapshot page 107 entries in 171.995µs
+snapshot page 128 entries in 183.997µs
+snapshot page 116 entries in 174.4µs
+snapshot page 115 entries in 173.067µs
+snapshot page 114 entries in 171.374µs
+a1,records=1024,sessions=100,rep=1,allowed=100,us=2149,p50_us=2037,p95_us=2094,p99_us=2099,allocations=5963,allocated_bytes=1272705,cache_calls=9,read_bytes=189354
+snapshot page 118 entries in 204.766µs
+snapshot page 109 entries in 170.652µs
+snapshot page 92 entries in 151.827µs
+snapshot page 125 entries in 187.324µs
+snapshot page 107 entries in 168.439µs
+snapshot page 128 entries in 181.583µs
+snapshot page 116 entries in 171.795µs
+snapshot page 115 entries in 170.613µs
+snapshot page 114 entries in 179.078µs
+a1,records=1024,sessions=100,rep=2,allowed=100,us=2143,p50_us=2039,p95_us=2094,p99_us=2099,allocations=5962,allocated_bytes=1272659,cache_calls=9,read_bytes=189354
+snapshot page 118 entries in 198.575µs
+snapshot page 109 entries in 167.186µs
+snapshot page 92 entries in 154.061µs
+snapshot page 125 entries in 184.278µs
+snapshot page 107 entries in 189.959µs
+snapshot page 128 entries in 192.654µs
+snapshot page 116 entries in 179.248µs
+snapshot page 115 entries in 184.108µs
+snapshot page 114 entries in 177.776µs
+a1,records=1024,sessions=100,rep=3,allowed=100,us=2201,p50_us=2095,p95_us=2152,p99_us=2157,allocations=5963,allocated_bytes=1272705,cache_calls=9,read_bytes=189354
+snapshot page 118 entries in 202.723µs
+snapshot page 109 entries in 177.194µs
+snapshot page 92 entries in 167.025µs
+snapshot page 125 entries in 188.246µs
+snapshot page 107 entries in 171.534µs
+snapshot page 128 entries in 189.739µs
+snapshot page 116 entries in 234.102µs
+snapshot page 115 entries in 195.57µs
+snapshot page 114 entries in 185.66µs
+a1,records=1024,sessions=100,rep=4,allowed=100,us=2283,p50_us=2178,p95_us=2234,p99_us=2239,allocations=5964,allocated_bytes=1272751,cache_calls=9,read_bytes=189354
+snapshot page 118 entries in 212.943µs
+snapshot page 109 entries in 178.096µs
+snapshot page 92 entries in 160.954µs
+snapshot page 125 entries in 189.949µs
+snapshot page 107 entries in 188.125µs
+snapshot page 128 entries in 198.836µs
+snapshot page 116 entries in 180.321µs
+snapshot page 115 entries in 177.826µs
+snapshot page 114 entries in 174.129µs
+a1,records=1024,sessions=100,rep=5,allowed=100,us=2217,p50_us=2107,p95_us=2166,p99_us=2171,allocations=5964,allocated_bytes=1272751,cache_calls=9,read_bytes=189354
+snapshot page 118 entries in 211.179µs
+snapshot page 109 entries in 177.275µs
+snapshot page 92 entries in 403.412µs
+snapshot page 125 entries in 200.709µs
+snapshot page 107 entries in 173.978µs
+snapshot page 128 entries in 186.703µs
+snapshot page 116 entries in 180.291µs
+snapshot page 115 entries in 182.154µs
+snapshot page 114 entries in 188.687µs
+a1,records=1024,sessions=100,rep=6,allowed=100,us=2468,p50_us=2359,p95_us=2414,p99_us=2419,allocations=5963,allocated_bytes=1272705,cache_calls=9,read_bytes=189354
+snapshot page 0 entries in 60.574µs
+snapshot page 0 entries in 52.669µs
+snapshot page 0 entries in 50.465µs
+snapshot page 0 entries in 51.788µs
+snapshot page 0 entries in 51.948µs
+snapshot page 0 entries in 53.742µs
+snapshot page 0 entries in 50.696µs
+snapshot page 0 entries in 50.906µs
+snapshot page 0 entries in 51.417µs
+snapshot page 0 entries in 218.403µs
+snapshot page 1 entries in 152.248µs
+snapshot page 0 entries in 88.938µs
+snapshot page 0 entries in 91.382µs
+snapshot page 0 entries in 83.428µs
+snapshot page 0 entries in 93.377µs
+snapshot page 0 entries in 138.722µs
+snapshot page 0 entries in 86.243µs
+snapshot page 0 entries in 78.759µs
+a1fresh,fresh_rejected=1,active_rejected=1,fresh_us=32,active_us=255014

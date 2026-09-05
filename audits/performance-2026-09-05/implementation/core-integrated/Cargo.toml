@@ -1,0 +1,18 @@
+[package]
+name = "sockudo-performance-integrated"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+sockudo-core = { path = "/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core" }
+sockudo-protocol = { path = "/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol" }
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+sonic-rs = "0.5"
+
+[profile.release]
+codegen-units = 1
+lto = true

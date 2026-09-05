@@ -1,3 +1,4 @@
+use super::dispatch::{OrderedDispatcher, ingress_scope, routing_key};
 use crate::horizontal_adapter::{
     BroadcastMessage, PresenceEntry, RequestBody, RequestType, ResponseBody, generate_request_id,
 };
@@ -90,6 +91,7 @@ pub struct NatsTransport {
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
+    ingress_gap: Arc<OnceLock<crate::horizontal_transport::IngressGapHandler>>,
 }
 
 impl NatsTransport {
@@ -208,12 +210,16 @@ impl HorizontalTransport for NatsTransport {
         let metrics_driver: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>> =
             Arc::new(OnceLock::new());
         let event_metrics = metrics_driver.clone();
+        let ingress_gap =
+            Arc::new(OnceLock::<crate::horizontal_transport::IngressGapHandler>::new());
+        let event_gap = Arc::clone(&ingress_gap);
 
         // Build NATS Options
         let mut nats_options = NatsOptions::new()
             .retry_on_initial_connect()
             .event_callback(move |event| {
                 let event_metrics = event_metrics.clone();
+                let event_gap = Arc::clone(&event_gap);
                 async move {
                     let record = |event_name: &str| {
                         if let Some(metrics) = event_metrics.get() {
@@ -227,10 +233,16 @@ impl HorizontalTransport for NatsTransport {
                         }
                         async_nats::Event::Disconnected => {
                             record("disconnected");
+                            if let Some(gap) = event_gap.get() {
+                                gap(None, None);
+                            }
                             warn!(adapter = "nats", retryable = true, "connection lost");
                         }
                         async_nats::Event::SlowConsumer(sid) => {
                             record("slow_consumer");
+                            if let Some(gap) = event_gap.get() {
+                                gap(None, None);
+                            }
                             error!(
                                 adapter = "nats",
                                 subscription_id = sid,
@@ -278,12 +290,10 @@ impl HorizontalTransport for NatsTransport {
             nats_options = nats_options.no_echo();
         }
 
-        if let Some(cap) = config.subscription_capacity {
-            nats_options = nats_options.subscription_capacity(cap);
-        }
-        if let Some(cap) = config.client_capacity {
-            nats_options = nats_options.client_capacity(cap);
-        }
+        nats_options = nats_options
+            .subscription_capacity(config.subscription_capacity.unwrap_or(64).clamp(1, 256));
+        nats_options =
+            nats_options.client_capacity(config.client_capacity.unwrap_or(64).clamp(1, 256));
         if let Some(max) = config.max_reconnects {
             nats_options = nats_options.max_reconnects(max);
         }
@@ -323,12 +333,14 @@ impl HorizontalTransport for NatsTransport {
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
+            ingress_gap,
         })
     }
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
         let message_data = sonic_rs::to_vec(message)
             .map_err(|e| Error::Other(format!("Failed to serialize broadcast message: {e}")))?;
+        super::dispatch::validate_frame_size(message_data.len())?;
 
         self.client
             .publish(self.broadcast_subject.clone(), message_data.into())
@@ -342,6 +354,7 @@ impl HorizontalTransport for NatsTransport {
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
         let request_data = sonic_rs::to_vec(request)
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        super::dispatch::validate_frame_size(request_data.len())?;
 
         self.client
             .publish(self.request_subject.clone(), request_data.into())
@@ -355,6 +368,7 @@ impl HorizontalTransport for NatsTransport {
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
         let response_data = sonic_rs::to_vec(response)
             .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
+        super::dispatch::validate_frame_size(response_data.len())?;
 
         self.client
             .publish(self.response_subject.clone(), response_data.into())
@@ -366,6 +380,7 @@ impl HorizontalTransport for NatsTransport {
     }
 
     async fn start_listeners(&self, handlers: TransportHandlers) -> Result<()> {
+        let _ = self.ingress_gap.set(Arc::clone(&handlers.on_ingress_gap));
         let client = self.client.clone();
         let broadcast_subject = self.broadcast_subject.clone();
         let request_subject = self.request_subject.clone();
@@ -436,7 +451,9 @@ impl HorizontalTransport for NatsTransport {
         );
 
         // Spawn a task to handle broadcast messages
+        let broadcast_dispatch = OrderedDispatcher::new(16);
         let broadcast_handler = handlers.on_broadcast.clone();
+        let broadcast_gap = handlers.on_ingress_gap.clone();
         tokio::spawn(async move {
             loop {
                 if !running_broadcast.load(Ordering::Relaxed) {
@@ -453,7 +470,10 @@ impl HorizontalTransport for NatsTransport {
                 let handler = broadcast_handler.clone();
                 let metrics = metrics_broadcast.clone();
                 let metrics_driver = metrics_driver_broadcast.clone();
-                tokio::spawn(async move {
+                let ingress_size = msg.payload.len();
+                let ingress_key = routing_key(&msg.payload);
+                let (app_id, channel) = ingress_scope(&msg.payload);
+                if let Err(error) = broadcast_dispatch.dispatch(ingress_key, ingress_size, Box::pin(async move {
                     match sonic_rs::from_slice::<BroadcastMessage>(&msg.payload) {
                         Ok(broadcast) => {
                             handler(broadcast).await;
@@ -467,12 +487,20 @@ impl HorizontalTransport for NatsTransport {
                             error!(adapter = "nats", error = %e, "broadcast message parse failed");
                         }
                     }
-                });
+                })).await {
+                    broadcast_gap(app_id.as_deref(), channel.as_deref());
+                    error!(adapter = "nats", error = %error, "horizontal ingress rejected frame");
+                }
             }
+            if running_broadcast.load(Ordering::Relaxed) {
+                broadcast_gap(None, None);
+            }
+            broadcast_dispatch.drain().await;
             warn!(adapter = "nats", "broadcast subscription ended");
         });
 
         // Spawn a task to handle request messages
+        let request_dispatch = OrderedDispatcher::new(4);
         let request_handler = handlers.on_request.clone();
         tokio::spawn(async move {
             loop {
@@ -491,7 +519,9 @@ impl HorizontalTransport for NatsTransport {
                 let metrics = metrics_request.clone();
                 let metrics_driver = metrics_driver_request.clone();
                 let client = response_client.clone();
-                tokio::spawn(async move {
+                let ingress_size = msg.payload.len();
+                let ingress_key = routing_key(&msg.payload);
+                if let Err(error) = request_dispatch.dispatch(ingress_key, ingress_size, Box::pin(async move {
                     match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
                         Ok(request) => {
                             let response_result = handler(request).await;
@@ -518,8 +548,12 @@ impl HorizontalTransport for NatsTransport {
                             error!(adapter = "nats", error = %e, "request message parse failed");
                         }
                     }
-                });
+                })).await {
+                    error!(error = %error, "horizontal ingress stopped after admission failure");
+                    break;
+                }
             }
+            request_dispatch.drain().await;
             warn!(adapter = "nats", "request subscription ended");
         });
 
@@ -687,6 +721,7 @@ impl HorizontalTransport for NatsTransport {
     ) -> Result<()> {
         let request_data = sonic_rs::to_vec(request)
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        super::dispatch::validate_frame_size(request_data.len())?;
 
         self.client
             .publish_with_reply(
@@ -709,6 +744,7 @@ impl HorizontalTransport for NatsTransport {
         let target_subject = format!("{}.node.{}", self.config.prefix, target_node_id);
         let request_data = sonic_rs::to_vec(request)
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        super::dispatch::validate_frame_size(request_data.len())?;
         self.client
             .publish(Subject::from(target_subject), request_data.into())
             .await
@@ -838,6 +874,7 @@ impl Clone for NatsTransport {
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),
+            ingress_gap: self.ingress_gap.clone(),
         }
     }
 }

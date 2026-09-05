@@ -64,6 +64,10 @@ impl AppManager for MemoryAppManager {
         Ok(())
     }
 
+    async fn has_apps(&self) -> Result<bool> {
+        Ok(!self.state.read().unwrap().apps_by_id.is_empty())
+    }
+
     async fn get_apps(&self) -> Result<Vec<App>> {
         let state = self.state.read().unwrap();
         Ok(state.apps_by_id.values().cloned().collect())

@@ -1,0 +1,57 @@
+     Locking 154 packages to latest Rust 1.98.1 compatible versions
+      Adding base64 v0.22.1 (available: v0.23.1)
+   Compiling typenum v1.20.1
+   Compiling const-oid v0.10.2
+   Compiling cpufeatures v0.3.1
+   Compiling syn v2.0.119
+   Compiling getrandom v0.3.4
+   Compiling ref-cast-impl v1.0.27
+   Compiling serde v1.0.229
+   Compiling ahash v0.8.12
+   Compiling ref-cast v1.0.27
+   Compiling faststr v0.2.34
+   Compiling sonic-rs v0.5.8
+   Compiling hybrid-array v0.4.14
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling synstructure v0.13.2
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling tracing-attributes v0.1.31
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling tracing v0.1.44
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tokio v1.53.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling tokio-util v0.7.19
+   Compiling crossfire v3.1.19
+   Compiling combine v4.6.8
+   Compiling redis v1.4.1
+   Compiling ably-auth-audit-baseline v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-baseline)
+warning: unused import: `OnceLock`
+  --> src/main.rs:10:49
+   |
+10 | use std::{collections::HashMap,sync::{Arc,Mutex,OnceLock,atomic::{AtomicU64,Ordering}},alloc::{GlobalAlloc,Layout,System},time::{Dur...
+   |                                                 ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ably-auth-audit-baseline` (bin "ably-auth-audit-baseline") generated 1 warning (run `cargo fix --bin "ably-auth-audit-baseline" -p ably-auth-audit-baseline` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 14.26s
+     Locking 154 packages to latest Rust 1.98.1 compatible versions
+      Adding base64 v0.22.1 (available: v0.23.1)
+   Compiling ably-auth-audit-a1 v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-a1)
+    Finished `release` profile [optimized] target(s) in 1.29s

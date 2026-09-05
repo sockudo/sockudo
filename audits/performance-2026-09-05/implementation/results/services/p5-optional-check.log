@@ -1,0 +1,104 @@
+    Checking tracing v0.1.44
+    Checking rustls v0.23.42
+    Checking tokio v1.53.1
+    Checking crossbeam-epoch v0.9.20
+    Checking crossbeam-deque v0.8.7
+    Checking rayon-core v1.13.0
+    Checking uuid v1.24.0
+   Compiling fastrand v2.5.0
+   Compiling phf_generator v0.13.1
+    Checking rayon v1.12.0
+    Checking tokio-util v0.7.19
+    Checking h2 v0.4.16
+    Checking tower v0.5.3
+    Checking aws-smithy-types v1.5.0
+    Checking aws-smithy-async v1.2.14
+    Checking aws-smithy-runtime-api v1.12.3
+    Checking tokio-rustls v0.26.4
+    Checking tokio-stream v0.1.19
+    Checking hyper v1.11.0
+    Checking i_overlay v4.0.7
+    Checking geo-types v0.7.19
+    Checking hyper-util v0.1.20
+   Compiling string_cache_codegen v0.6.1
+   Compiling phf_codegen v0.13.1
+    Checking geo v0.32.0
+    Checking hyper-rustls v0.27.9
+   Compiling web_atoms v0.2.5
+    Checking axum-core v0.5.6
+   Compiling phf_macros v0.13.1
+    Checking axum v0.8.9
+    Checking phf v0.13.1
+    Checking hyper-timeout v0.5.2
+    Checking aws-smithy-schema v0.1.0
+   Compiling bitflags v2.13.1
+    Checking revision v0.30.0
+    Checking tonic v0.14.6
+    Checking storekey v0.11.0
+    Checking markup5ever v0.39.0
+    Checking ahash v0.8.12
+    Checking tower-http v0.6.11
+    Checking rustls-platform-verifier v0.7.0
+    Checking aws-credential-types v1.2.14
+    Checking aws-smithy-http v0.63.6
+    Checking tonic-prost v0.14.6
+   Compiling sqlx-postgres v0.9.0
+    Checking surrealdb-protocol v0.10.2
+    Checking sqlx-core v0.9.0
+    Checking reqwest v0.13.4
+   Compiling sqlx-mysql v0.9.0
+    Checking html5ever v0.39.0
+    Checking diskann-utils v0.54.0
+    Checking aws-smithy-http-client v1.1.13
+    Checking aws-smithy-observability v0.2.6
+    Checking ammonia v4.1.4
+    Checking tungstenite v0.28.0
+   Compiling sqlx-macros-core v0.9.0
+    Checking aws-smithy-runtime v1.11.3
+    Checking object_store v0.13.2
+    Checking surrealdb-types v3.2.3
+    Checking diskann v0.54.0
+    Checking scylla-cql-core v1.7.0
+    Checking aws-types v1.3.16
+    Checking aws-sigv4 v1.4.5
+    Checking quick_cache v0.6.24
+    Checking surrealdb-strand v3.2.3
+    Checking surrealdb-collections v3.2.3
+    Checking sysinfo v0.37.2
+    Checking surrealdb-core v3.2.3
+    Checking scylla-cql v1.7.0
+    Checking tokio-tungstenite v0.28.0
+    Checking aws-runtime v1.7.5
+   Compiling sqlx-macros v0.9.0
+    Checking aws-smithy-json v0.62.7
+    Checking aws-sdk-dynamodb v1.116.0
+    Checking sonic-rs v0.5.8
+    Checking scylla v1.7.0
+    Checking sqlx v0.9.0
+    Checking surrealdb v3.2.3
+    Checking sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+error[E0425]: cannot find type `DevicePushState` in this scope
+   --> crates/sockudo-push/src/feedback.rs:778:43
+    |
+778 | pub fn device_is_terminally_failed(state: DevicePushState) -> bool {
+    |                                           ^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this enum through its public re-export
+    |
+  1 + use crate::DevicePushState;
+    |
+
+error[E0433]: cannot find type `DevicePushState` in this scope
+   --> crates/sockudo-push/src/feedback.rs:779:21
+    |
+779 |     matches!(state, DevicePushState::Failed)
+    |                     ^^^^^^^^^^^^^^^ use of undeclared type `DevicePushState`
+    |
+help: consider importing this enum through its public re-export
+    |
+  1 + use crate::DevicePushState;
+    |
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `sockudo-push` (lib) due to 2 previous errors

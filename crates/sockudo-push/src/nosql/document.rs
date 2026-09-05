@@ -131,6 +131,35 @@ pub trait DocumentBackend: Clone + Send + Sync + 'static {
             .collect())
     }
 
+    /// Bounded traversal of the full (pk, sk) order, including wide partitions.
+    async fn scan_app_page(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        start_after: Option<&(String, String)>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        let limit = limit.max(1);
+        let mut rows = if let Some((pk, sk)) = start_after {
+            self.scan_pk_page(family, app_id, pk, Some(sk), limit)
+                .await?
+        } else {
+            Vec::new()
+        };
+        if rows.len() < limit {
+            rows.extend(
+                self.scan_app_page_by_pk(
+                    family,
+                    app_id,
+                    start_after.map(|(pk, _)| pk.as_str()),
+                    limit - rows.len(),
+                )
+                .await?,
+            );
+        }
+        Ok(rows)
+    }
+
     async fn delete_many(
         &self,
         family: &'static str,
@@ -209,19 +238,6 @@ where
         sk: &str,
     ) -> PushStorageResult<DeleteDeviceOutcome> {
         delete_outcome(self.backend.delete(family, app_id, pk, sk).await?)
-    }
-
-    pub(super) async fn scan_json<T: DeserializeOwned>(
-        &self,
-        family: &'static str,
-        app_id: &str,
-    ) -> PushStorageResult<Vec<(String, String, T)>> {
-        self.backend
-            .scan_app(family, app_id)
-            .await?
-            .into_iter()
-            .map(|doc| Ok((doc.pk, doc.sk, from_json_str(&doc.data)?)))
-            .collect()
     }
 
     pub(super) async fn scan_pk_json<T: DeserializeOwned>(

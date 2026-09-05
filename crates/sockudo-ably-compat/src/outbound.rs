@@ -235,6 +235,12 @@ impl AblyOutbound {
         self.try_send(bytes, OutboundPriority::Data)
     }
 
+    pub(crate) fn invalidate_continuity(&self) {
+        if let Err(error) = self.overflow(OutboundPriority::Data) {
+            tracing::debug!(error = %error, "outbound continuity invalidated");
+        }
+    }
+
     pub(crate) fn continuity_lost(&self) -> bool {
         self.continuity_lost.load(Ordering::Acquire)
     }

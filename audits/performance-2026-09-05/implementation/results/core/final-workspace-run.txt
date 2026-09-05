@@ -1,0 +1,3 @@
+final-workspace-tests 0
+final-workspace-clippy 101
+final-full-build 0

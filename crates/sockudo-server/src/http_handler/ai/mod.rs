@@ -51,20 +51,20 @@ pub(super) async fn ai_channel_stats(
         None
     };
 
-    let latest_messages = if handler.server_options().versioned_messages.enabled {
+    let message_count = if handler.server_options().versioned_messages.enabled {
         handler
             .version_store()
-            .latest_by_history(app_id, channel)
+            .message_count(app_id, channel)
             .await?
     } else {
-        Vec::new()
+        0
     };
     let active_streams = handler.ai_active_stream_count(app_id, channel).await?;
 
     Ok(Some(json!({
         "active_streams": active_streams,
         "last_history_serial": last_history_serial,
-        "message_count": latest_messages.len()
+        "message_count": message_count
     })))
 }
 

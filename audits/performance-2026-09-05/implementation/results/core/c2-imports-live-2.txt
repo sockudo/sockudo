@@ -1,0 +1,37 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 03s
+     Running unittests src/main.rs (target/debug/deps/sockudo-3d03145e2c9cc262)
+
+running 6 tests
+test history::dynamodb::version_store::tests::dynamodb_compact_versions_restart_and_fencing ... ok
+test history::mysql::version_store::tests::mysql_compact_versions_counters_imports_and_retention ... ok
+test history::postgres::version_store::tests::postgres_compact_versions_counters_imports_and_retention ... ok
+test history::scylla::version_store::tests::scylla_compact_versions_restart_and_fencing ... ok
+test history::surreal::version_store::tests::surreal_compact_versions_restart_and_fencing ... ok
+test history::surreal::version_store::tests::surreal_compact_versions_retention_preserves_receipts ... 
+thread 'history::surreal::version_store::tests::surreal_compact_versions_retention_preserves_receipts' (62963) panicked at crates/sockudo-server/src/history/surreal/version_store/tests.rs:61:66:
+called `Result::unwrap()` on an `Err` value: Internal("failed to decode purged version rows: Failed to deserialize field 'id' on type 'VersionDeletedRow': Expected record, got none")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    history::surreal::version_store::tests::surreal_compact_versions_retention_preserves_receipts
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 175 filtered out; finished in 23.78s
+
+error: test failed, to rerun pass `-p sockudo --bin sockudo`

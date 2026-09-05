@@ -1,3 +1,6 @@
+use crate::history::annotation_cache::{
+    AnnotationProjectionCache, CachedProjection, ProjectionReadBudget,
+};
 use async_trait::async_trait;
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::primitives::Blob;
@@ -33,6 +36,7 @@ const EXPIRES_AT_ATTR: &str = "expires_at";
 /// in one DynamoDB transaction. The duplicated rows avoid eventually
 /// consistent secondary indexes in projection compare-and-apply.
 pub(super) struct DynamoDbAnnotationStore {
+    projection_cache: AnnotationProjectionCache,
     client: Client,
     table: String,
     retention_seconds: u64,
@@ -86,6 +90,7 @@ impl DynamoDbAnnotationStore {
             config = config.profile_name(profile);
         }
         let store = Self {
+            projection_cache: AnnotationProjectionCache::default(),
             client: Client::new(&config.load().await),
             table: format!("{table_prefix}_annotation_commits"),
             retention_seconds,
@@ -526,6 +531,7 @@ impl DynamoDbAnnotationStore {
         let upper = format!("{prefix};");
         let mut start_key = None;
         let mut result = Vec::with_capacity(limit.min(256));
+        let mut budget = ProjectionReadBudget::default();
         let now_seconds = now_ms().div_euclid(1_000);
         loop {
             let response = self
@@ -552,6 +558,11 @@ impl DynamoDbAnnotationStore {
                     continue;
                 }
                 if Self::is_active(item, now_seconds) {
+                    let payload_len = item
+                        .get("payload_bytes")
+                        .and_then(|value| value.as_b().ok())
+                        .map_or(0, |value| value.as_ref().len());
+                    budget.add(payload_len)?;
                     result.push(item.clone());
                     if result.len() >= limit {
                         return Ok(result);
@@ -762,15 +773,41 @@ impl DynamoDbAnnotationStore {
             }
 
             let state = self.projection_state(&request).await?;
-            let mut events = self.events_for_projection(&request).await?;
-            if events.len() >= MAX_PROJECTION_EVENTS {
-                return Err(Error::BufferFull(format!(
-                    "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
-                )));
-            }
-            events.push((record.clone(), expires_at));
-            let build =
-                Self::build_projection(&request, &events, AnnotationProjectionOptions::default())?;
+            let mut cached = self.projection_cache.take(
+                &request,
+                state.as_ref().map_or(0, |state| state.revision),
+                state.as_ref().map(|state| &state.projection),
+            );
+            let reused = if let Some(value) = cached.as_mut() {
+                if value.event_count >= MAX_PROJECTION_EVENTS {
+                    return Err(Error::BufferFull(format!(
+                        "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                    )));
+                }
+                value.append(&record, expires_at)?
+            } else {
+                false
+            };
+            let _rebuild;
+            let cached = if reused {
+                cached.expect("reused projection")
+            } else {
+                _rebuild = self.projection_cache.admit_rebuild()?;
+                let mut events = self.events_for_projection(&request).await?;
+                if events.len() >= MAX_PROJECTION_EVENTS {
+                    return Err(Error::BufferFull(format!(
+                        "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                    )));
+                }
+                events.push((record.clone(), expires_at));
+                CachedProjection::rebuild(&request, &events)?
+            };
+            let build = ProjectionBuild {
+                projection: cached.accumulator.projection.clone(),
+                valid_until: cached.valid_until,
+                expires_at: cached.expires_at,
+                event_count: cached.event_count,
+            };
             let next_revision = state.as_ref().map_or(1, |state| state.revision + 1);
             let projection_key = Self::projection_key(&request);
 
@@ -821,6 +858,7 @@ impl DynamoDbAnnotationStore {
             }
             match transaction.send().await {
                 Ok(_) => {
+                    self.projection_cache.put(&request, next_revision, cached);
                     return Ok(AnnotationAppendOutcome {
                         projection: build.projection,
                         canonical_serial: record.annotation.serial.clone(),
@@ -883,6 +921,7 @@ impl DynamoDbAnnotationStore {
         let projection_key = Self::projection_key(request);
         for _ in 0..MAX_CAS_ATTEMPTS {
             let state = self.projection_state(request).await?;
+            let _rebuild = self.projection_cache.admit_rebuild()?;
             let events = self.events_for_projection(request).await?;
             let build = Self::build_projection(request, &events, options)?;
             if build.event_count == 0 {

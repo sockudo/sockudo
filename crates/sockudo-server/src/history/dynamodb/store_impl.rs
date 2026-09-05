@@ -67,6 +67,7 @@ impl HistoryStore for DynamoDbHistoryStore {
 
             let now_ms = sockudo_core::history::now_ms();
             let stream = StoredStreamRecord {
+                retention_revision: 0,
                 app_id: app_id.to_string(),
                 channel: channel.to_string(),
                 stream_id: uuid::Uuid::new_v4().to_string(),
@@ -314,6 +315,10 @@ impl HistoryStore for DynamoDbHistoryStore {
 
         let now_ms = sockudo_core::history::now_ms();
         let new_stream = StoredStreamRecord {
+            retention_revision: self
+                .load_stream_raw(app_id, channel)
+                .await?
+                .map_or(0, |state| state.retention_revision),
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             stream_id: uuid::Uuid::new_v4().to_string(),
@@ -390,44 +395,12 @@ impl HistoryStore for DynamoDbHistoryStore {
                 })
                 .cloned()
                 .collect();
-            let retained_rows: Vec<StoredEntryRecord> = entries
-                .into_iter()
-                .filter(|row| match request.mode {
-                    HistoryPurgeMode::All => false,
-                    HistoryPurgeMode::BeforeSerial => {
-                        row.serial >= request.before_serial.unwrap_or_default()
-                    }
-                    HistoryPurgeMode::BeforeTimeMs => {
-                        row.published_at_ms >= request.before_time_ms.unwrap_or_default()
-                    }
-                })
-                .collect();
             purged_messages = to_delete.len() as u64;
             purged_bytes = to_delete.iter().map(|row| row.payload_size_bytes).sum();
             self.delete_entries(app_id, channel, stream_id, &to_delete)
                 .await?;
-            if let Some(current) = self.load_stream_raw(app_id, channel).await? {
-                let retained = HistoryRetentionStats {
-                    stream_id: Some(stream_id.to_string()),
-                    retained_messages: retained_rows.len() as u64,
-                    retained_bytes: retained_rows.iter().map(|row| row.payload_size_bytes).sum(),
-                    oldest_serial: retained_rows.first().map(|row| row.serial),
-                    newest_serial: retained_rows.last().map(|row| row.serial),
-                    oldest_published_at_ms: retained_rows.first().map(|row| row.published_at_ms),
-                    newest_published_at_ms: retained_rows.last().map(|row| row.published_at_ms),
-                };
-                let updated = StoredStreamRecord {
-                    retained_messages: retained.retained_messages,
-                    retained_bytes: retained.retained_bytes,
-                    oldest_available_serial: retained.oldest_serial,
-                    newest_available_serial: retained.newest_serial,
-                    oldest_available_published_at_ms: retained.oldest_published_at_ms,
-                    newest_available_published_at_ms: retained.newest_published_at_ms,
-                    updated_at_ms: sockudo_core::history::now_ms(),
-                    ..current
-                };
-                self.upsert_stream_raw(app_id, channel, &updated).await?;
-            }
+            self.refresh_retention_bounds(app_id, channel, stream_id)
+                .await?;
             if let Some(metrics) = self.metrics.as_ref() {
                 let retained = self.retained_stats(app_id, channel).await?;
                 metrics.update_history_retained(

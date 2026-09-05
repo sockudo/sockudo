@@ -1,0 +1,20 @@
+{
+  "baseline_commit": "5613bb291032b6b7660352974b03da9eb0646da0",
+  "scope": "integrated P5 feedback plus P6 SQL storage; not P5-only isolation",
+  "fixture": "sockudo-perf-core-postgres",
+  "schema": [
+    "001_push_schema.sql",
+    "003_push_lifecycle.sql"
+  ],
+  "repeats": 3,
+  "inner_samples_per_group": 3,
+  "outcomes_per_sample": 256,
+  "groups": [
+    1,
+    64
+  ],
+  "queue_batch_limit": {
+    "group1": 64,
+    "group64": 4
+  }
+}

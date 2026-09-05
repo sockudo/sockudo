@@ -1,0 +1,16 @@
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+error[E0277]: the trait bound `sockudo_core::history::HistoryRetentionPolicy: std::default::Default` is not satisfied
+   --> crates/sockudo-server/src/history/maintenance_tests.rs:172:132
+    |
+172 | ...ionPolicy {retention_window_seconds:3600,..Default::default()})).await.unwrap(); }
+    |                                               ^^^^^^^^^^^^^^^^^^ the trait `std::default::Default` is not implemented for `sockudo_core::history::HistoryRetentionPolicy`
+
+error[E0277]: the trait bound `sockudo_core::history::HistoryRetentionPolicy: std::default::Default` is not satisfied
+   --> crates/sockudo-server/src/history/maintenance_tests.rs:177:71
+    |
+177 |     let policy=HistoryRetentionPolicy{retention_window_seconds:3600,..Default::default()};
+    |                                                                       ^^^^^^^^^^^^^^^^^^ the trait `std::default::Default` is not implemented for `sockudo_core::history::HistoryRetentionPolicy`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `sockudo` (bin "sockudo" test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...

@@ -46,7 +46,7 @@ macro_rules! register_gauge {
         let opts = $opts;
         describe_gauge!(opts.name.clone(), opts.help.clone());
         Ok::<Gauge, MetricsRegistrationError>(Gauge {
-            name: opts.name,
+            key: std::sync::Arc::new(metrics::Key::from_name(opts.name)),
             value: AtomicU64::new(0),
         })
     }};
@@ -59,6 +59,7 @@ macro_rules! register_gauge_vec {
         Ok::<GaugeVec, MetricsRegistrationError>(GaugeVec {
             name: opts.name,
             label_names: $labels,
+            handles: Default::default(),
         })
     }};
 }
@@ -70,6 +71,7 @@ macro_rules! register_counter_vec {
         Ok::<CounterVec, MetricsRegistrationError>(CounterVec {
             name: opts.name,
             label_names: $labels,
+            handles: Default::default(),
         })
     }};
 }
@@ -81,6 +83,7 @@ macro_rules! register_histogram_vec {
         Ok::<HistogramVec, MetricsRegistrationError>(HistogramVec {
             name: opts.name,
             label_names: $labels,
+            handles: Default::default(),
         })
     }};
 }
@@ -89,6 +92,7 @@ macro_rules! register_histogram_vec {
 pub struct PrometheusMetricsDriver {
     pub(super) prefix: String,
     pub(super) port: u16,
+    pub(super) port_label: String,
     pub(super) handle: PrometheusHandle,
 
     // Process metrics (for memory leak detection)
@@ -1174,6 +1178,7 @@ impl PrometheusMetricsDriver {
         Self {
             prefix,
             port,
+            port_label: port.to_string(),
             handle,
             process_resident_memory_bytes,
             process_virtual_memory_bytes,
@@ -1448,7 +1453,7 @@ impl PrometheusMetricsDriver {
     }
 
     /// Get the tags for Prometheus
-    pub(super) fn get_tags(&self, app_id: &str) -> Vec<String> {
-        vec![app_id.to_string(), self.port.to_string()]
+    pub(super) fn get_tags<'a>(&'a self, app_id: &'a str) -> [&'a str; 2] {
+        [app_id, self.port_label.as_str()]
     }
 }

@@ -1,0 +1,27 @@
+[package]
+name = "sockudo-performance-audit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+sockudo-core = { path = "../../../crates/sockudo-core" }
+sockudo-protocol = { path = "../../../crates/sockudo-protocol" }
+sockudo-cache = { path = "../../../crates/sockudo-cache" }
+sockudo-push = { path = "../../../crates/sockudo-push" }
+sockudo-filter = { path = "../../../crates/sockudo-filter" }
+ahash = "0.8"
+dashmap = "6"
+tracing = "0.1"
+sockudo-queue = { path = "../../../crates/sockudo-queue" }
+sockudo-app = { path = "../../../crates/sockudo-app" }
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+async-trait = "0.1"
+sonic-rs = "0.5"
+
+[profile.release]
+codegen-units = 1
+lto = true

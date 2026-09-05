@@ -1,0 +1,132 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.40s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_protocol-cd04f4ac8d90d048)
+
+running 40 tests
+test messages::tests::info_query_parser_trims_and_matches_exactly ... ok
+test messages::tests::protocol_heartbeat_detection_ignores_regular_messages ... ok
+test messages::tests::annotation_create_serializes_camel_case_contract ... ok
+test messages::tests::protocol_heartbeat_detection_matches_both_prefix_families ... ok
+test messages::tests::message_summary_serializes_summary_envelope ... ok
+test protocol_version::tests::test_parse_any_protocol_event ... ok
+test protocol_version::tests::test_from_query_param ... ok
+test messages::tests::pusher_message_debug_redacts_payload_extras_and_idempotency ... ok
+test protocol_version::tests::test_rewrite_event_prefix ... ok
+test protocol_version::tests::test_parse_event_name ... ok
+test protocol_version::tests::test_v1_prefix ... ok
+test protocol_version::tests::test_v2_native_features ... ok
+test protocol_version::tests::test_v2_prefix ... ok
+test protocol_version::tests::test_wire_event ... ok
+test protocol_version::tests::test_wire_internal_event ... ok
+test versioned_messages::tests::append_request_allows_empty_terminal_data ... ok
+test versioned_messages::tests::append_request_rejects_empty_non_terminal_data ... ok
+test versioned_messages::tests::delete_request_deserializes_string_data_via_serde_json ... ok
+test versioned_messages::tests::delete_request_rejects_replace_and_clear_same_field ... ok
+test versioned_messages::tests::update_request_deserializes_string_data_via_serde_json ... ok
+test versioned_messages::tests::update_request_rejects_empty_body ... ok
+test versioned_messages::tests::update_request_rejects_replace_and_clear_same_field ... ok
+test versioned_messages::tests::update_request_deserializes_string_data_via_sonic ... ok
+test versioned_messages::tests::versioned_realtime_message_rejects_mismatched_event ... ok
+test versioned_messages::tests::versioned_realtime_message_requires_version_metadata ... ok
+test versioned_messages::tests::update_request_preserves_large_json_number_across_serde_round_trip ... ok
+test versioned_messages::tests::versioned_realtime_message_validates_v2_event_name ... ok
+test wire::tests::parse_query_param_accepts_known_values ... ok
+test wire::tests::parse_query_param_rejects_unknown_value ... ok
+test wire::tests::deserialize_versioned_message_rejects_invalid_action_event_pair ... ok
+test wire::tests::messagepack_rejects_trailing_values ... ok
+test wire::tests::round_trip_messagepack ... ok
+test wire::tests::round_trip_messagepack_binary_uses_native_bin_data ... ok
+test wire::tests::round_trip_protobuf_binary ... ok
+test wire::tests::round_trip_protobuf ... ok
+test wire::tests::round_trip_versioned_messagepack ... ok
+test wire::tests::round_trip_versioned_protobuf ... ok
+test wire::tests::round_trip_versioned_messagepack_binary ... ok
+test wire::tests::versioned_messagepack_rejects_trailing_values ... ok
+test wire::borrowing_tests::borrowed_encoders_preserve_every_binary_field_and_owned_decoders ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocol_compliance.rs (target/debug/deps/protocol_compliance-48e9265e9b13aa25)
+
+running 71 tests
+test test_ai_codec_headers_reject_unsafe_keys ... ok
+test test_ai_codec_headers_accept_ably_camel_case_keys ... ok
+test test_ai_codec_other_values_stay_small ... ok
+test test_ai_codec_provider_metadata_accepts_ably_sized_payloads ... ok
+test test_ai_event_constants_and_predicate ... ok
+test test_ai_codec_provider_metadata_remains_bounded ... ok
+test test_ai_header_validation_rejects_limits_and_domains ... ok
+test test_ai_transport_accepts_run_continue_header ... ok
+test test_ai_transport_accepts_steer_codec_message_ids_header ... ok
+test test_ai_transport_headers_are_borrowed_views ... ok
+test test_ai_transport_identity_keys_reject_empty_except_native_unknown_owners ... ok
+test test_ai_transport_legacy_turn_id_alias_is_still_readable ... ok
+test test_ai_transport_model_key_accepted ... ok
+test test_ai_transport_model_key_optional ... ok
+test test_ai_transport_model_key_rejects_empty ... ok
+test test_ai_transport_msg_regenerate_accepts_ably_message_id ... ok
+test test_ai_transport_msg_regenerate_rejects_empty ... ok
+test test_ai_transport_rejects_obsolete_start_serial_header ... ok
+test test_ai_transport_still_accepts_legacy_turn_continue_header ... ok
+test test_ai_transport_supersedes_accepts_run_id ... ok
+test test_ai_transport_supersedes_rejects_empty ... ok
+test test_ai_transport_unknown_owner_sentinels_are_wire_preserved_but_not_identities ... ok
+test test_channel_event_with_user_id ... ok
+test test_cache_miss_event_format ... ok
+test test_channel_info_full_format ... ok
+test test_channel_info_minimal_format ... ok
+test test_channel_event_format ... ok
+test test_channel_info_with_cache_data ... ok
+test test_channel_info_with_subscription_count ... ok
+test test_channel_info_with_user_count ... ok
+test test_channel_info_zero_values ... ok
+test test_client_event_accepts_json ... ok
+test test_client_event_accepts_string ... ok
+test test_configured_steer_ceiling_admits_a_larger_stamp ... ok
+test test_configured_steer_ceiling_does_not_widen_scalar_values ... ok
+test test_default_limits_match_the_compiled_ceilings ... ok
+test test_connection_established_format ... ok
+test test_encrypted_channel_event_format ... ok
+test test_error_format ... ok
+test test_extras_default_is_all_none ... ok
+test test_extras_idempotency_key ... ok
+test test_extras_skipped_in_serialization_when_none ... ok
+test test_extras_round_trip_serialize_deserialize ... ok
+test test_filter_headers_returns_headers_when_set ... ok
+test test_filter_headers_returns_none_when_extras_none ... ok
+test test_is_ephemeral_false_when_extras_none ... ok
+test test_is_ephemeral_false_when_extras_present_but_not_set ... ok
+test test_is_ephemeral_true_when_set ... ok
+test test_per_key_steer_allowance_does_not_widen_other_transport_keys ... ok
+test test_member_removed_format ... ok
+test test_member_added_format ... ok
+test test_ping_format ... ok
+test test_pong_format ... ok
+test test_should_echo_false_overrides_connection_default ... ok
+test test_should_echo_returns_connection_default_when_extras_none ... ok
+test test_should_echo_true_overrides_connection_default ... ok
+test test_should_include_extras_by_protocol ... ok
+test test_signin_success_format ... ok
+test test_steer_codec_message_ids_exceeds_the_generic_scalar_budget ... ok
+test test_steer_codec_message_ids_still_has_a_ceiling ... ok
+test test_subscription_succeeded_non_presence_format ... ok
+test test_v1_channel_event_json_snapshot_is_stable_without_extras ... ok
+test test_v1_delivery_strips_extras ... ok
+test test_v2_delivery_includes_extras ... ok
+test test_validate_headers_accepts_flat_scalars ... ok
+test test_validate_headers_ok_when_no_extras ... ok
+test test_v2_extras_push_is_serialized_inside_extras ... ok
+test test_subscription_succeeded_format ... ok
+test test_validate_headers_rejects_arrays ... ok
+test test_validate_headers_rejects_nested_objects ... ok
+test test_watchlist_events_format ... ok
+
+test result: ok. 71 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,17 @@
+{"case":"S6_ws_100k","allocations":4300008,"allocated_bytes":110301880,"verified":{"repeat":0},"elapsed_us":31282}
+{"allocated_bytes":110301792,"verified":{"repeat":1},"case":"S6_ws_100k","elapsed_us":30782,"allocations":4300005}
+{"case":"S6_ws_100k","elapsed_us":30541,"allocated_bytes":110301792,"verified":{"repeat":2},"allocations":4300005}
+{"verified":{"repeat":3},"allocated_bytes":110301792,"case":"S6_ws_100k","elapsed_us":30731,"allocations":4300005}
+{"elapsed_us":30728,"allocated_bytes":110301792,"allocations":4300005,"verified":{"repeat":4},"case":"S6_ws_100k"}
+{"case":"S5_churn","elapsed_us":1063,"allocations":52973,"verified":{"count":1000},"allocated_bytes":2962020}
+{"case":"S5_scrape","elapsed_us":78,"allocated_bytes":64021,"allocations":576,"verified":{"repeat":0,"bytes":4876,"series":56,"published":1000.0,"count":1000}}
+{"verified":{"count":1000,"series":56,"published":1000.0,"repeat":1,"bytes":4875},"allocated_bytes":55814,"case":"S5_scrape","allocations":551,"elapsed_us":58}
+{"verified":{"published":1000.0,"count":1000,"series":56,"bytes":4876,"repeat":2},"elapsed_us":62,"allocations":551,"case":"S5_scrape","allocated_bytes":58989}
+{"allocated_bytes":14766328,"verified":{"count":10000},"elapsed_us":6709,"allocations":520162,"case":"S5_churn"}
+{"verified":{"repeat":0,"series":56,"published":11000.0,"bytes":4892,"count":10000},"allocations":729,"allocated_bytes":78533,"case":"S5_scrape","elapsed_us":72}
+{"allocated_bytes":58989,"case":"S5_scrape","verified":{"series":56,"published":11000.0,"count":10000,"bytes":4891,"repeat":1},"elapsed_us":57,"allocations":551}
+{"case":"S5_scrape","elapsed_us":55,"allocations":551,"verified":{"bytes":4892,"count":10000,"published":11000.0,"repeat":2,"series":56},"allocated_bytes":55814}
+{"case":"S5_churn","verified":{"count":100000},"elapsed_us":74951,"allocated_bytes":158439816,"allocations":5471568}
+{"allocations":2310,"verified":{"repeat":0,"series":56,"bytes":4909,"count":100000,"published":111000.0},"elapsed_us":293,"case":"S5_scrape","allocated_bytes":227820}
+{"allocations":551,"verified":{"count":100000,"series":56,"repeat":1,"bytes":4908,"published":111000.0},"allocated_bytes":58989,"elapsed_us":63,"case":"S5_scrape"}
+{"verified":{"series":56,"repeat":2,"published":111000.0,"bytes":4907,"count":100000},"case":"S5_scrape","elapsed_us":54,"allocations":550,"allocated_bytes":52180}

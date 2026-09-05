@@ -1,0 +1,60 @@
+   Compiling futures-util v0.3.33
+   Compiling hyper v1.11.0
+   Compiling axum-core v0.5.6
+   Compiling tokio-rustls v0.26.4
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling criterion v0.7.0
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling redis v1.4.1
+   Compiling axum v0.8.9
+   Compiling sockudo-ws v2.0.1
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.08s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_delta-271f144fce750e71)
+
+running 34 tests
+test compression::tests::explicit_vcdiff_round_trips_short_compatibility_payloads ... ok
+test compression::tests::test_is_encrypted_channel ... ok
+test conflation::tests::test_conflation_key_extraction_no_path ... ok
+test conflation::tests::test_conflation_key_extraction_nested ... ok
+test conflation::tests::test_conflation_key_extraction_root_level ... ok
+test compression::tests::test_encrypted_channel_skips_compression ... ok
+test compression::tests::test_compression_first_message ... ok
+test compression::tests::test_compression_small_message_uncompressed ... ok
+test compression::tests::test_compression_delta_creation ... ok
+test compression::tests::test_compression_uses_per_channel_algorithm ... ok
+test conflation::tests::test_conflation_key_with_number_type ... ok
+test compression::tests::test_xdelta3_algorithm ... ok
+test conflation::tests::test_conflation_improves_compression_efficiency ... ok
+test compression::tests::test_algorithm_comparison ... ok
+test conflation::tests::test_conflation_key_separate_delta_states ... ok
+test conflation::tests::test_conflation_state_cleanup ... ok
+test manager::tests::test_delta_compression_manager_enable_disable ... ok
+test manager::tests::test_clear_channel_state_clears_delta_settings ... ok
+test manager::tests::test_global_disabled_ignores_per_channel ... ok
+test manager::tests::test_has_channel_delta_settings ... ok
+test manager::tests::test_full_per_subscription_flow ... ok
+test manager::tests::test_is_enabled_for_socket_channel_respects_encrypted ... ok
+test manager::tests::test_per_channel_delta_settings_enable_disable ... ok
+test manager::tests::test_per_channel_algorithm_override ... ok
+test state::tests::test_per_channel_delta_settings_default ... ok
+test messages::tests::test_base64_encode ... ok
+test manager::tests::test_per_channel_delta_settings_without_global_enable ... ok
+test state::tests::test_conflation_cache_should_send_full_message ... ok
+test manager::tests::wildcard_channel_delta_settings_apply_algorithm_override ... ok
+test state::tests::test_remove_channel_delta_settings ... ok
+test manager::tests::test_per_channel_settings_ignored_for_encrypted_channels ... ok
+test manager::tests::wildcard_channel_delta_settings_apply_to_matching_channels ... ok
+test state::tests::test_socket_delta_state_algorithm_selection ... ok
+test state::tests::test_socket_delta_state_channel_enabled_check ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_delta
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

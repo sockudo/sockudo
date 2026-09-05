@@ -109,23 +109,278 @@ impl SurrealHistoryStore {
             ))
         })
     }
+    async fn accounted_state(&self, current: &StoredStreamRecord) -> Result<StoredStreamRecord> {
+        let mut next = current.clone();
+        if current.retention_revision.is_none() {
+            let legacy = self
+                .load_entry_keys_for_stream(&current.app_id, &current.channel, &current.stream_id)
+                .await?;
+            next.retained_messages = legacy.len() as i64;
+            next.retained_bytes = legacy.iter().map(|row| row.payload_size_bytes).sum();
+        }
+        Ok(next)
+    }
+
+    pub(super) async fn retention_prefix(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: &str,
+        newest: bool,
+    ) -> Result<Vec<EntryKeyRecord>> {
+        let sql = format!(
+            "SELECT serial,published_at_ms,payload_size_bytes FROM {} WHERE app_id=$app AND channel=$channel AND stream_id=$stream ORDER BY serial {} LIMIT {}",
+            self.tables.entries,
+            if newest { "DESC" } else { "ASC" },
+            if newest { 1 } else { 256 }
+        );
+        let mut response = self
+            .db
+            .query(sql)
+            .bind(("app", app_id.to_string()))
+            .bind(("channel", channel.to_string()))
+            .bind(("stream", stream_id.to_string()))
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to seek SurrealDB retention prefix: {e}"))
+            })?;
+        response.take(0usize).map_err(|e| {
+            Error::Internal(format!("Failed to decode SurrealDB retention prefix: {e}"))
+        })
+    }
+
+    async fn commit_retention(
+        &self,
+        current: &StoredStreamRecord,
+        next: &StoredStreamRecord,
+        insert: Option<&StoredEntryRecord>,
+        delete: &[EntryKeyRecord],
+    ) -> Result<bool> {
+        let mut sql = "BEGIN TRANSACTION; LET $changed = UPDATE type::record($stream_table,$stream_key) SET retention_revision=$next_revision, retained_messages=$count, retained_bytes=$bytes, next_serial=$next, oldest_available_serial=$oldest, newest_available_serial=$newest, oldest_available_published_at_ms=$oldest_time, newest_available_published_at_ms=$newest_time, updated_at_ms=$now WHERE stream_id=$stream AND next_serial=$expected_next AND (retention_revision=$revision OR (retention_revision IS NONE AND $revision=0)) RETURN AFTER; IF array::len($changed) = 0 { THROW 'history_conflict'; };".to_string();
+        if insert.is_some() {
+            sql.push_str(
+                " LET $created=CREATE ONLY type::record($entry_table,$entry_id) CONTENT $entry;",
+            );
+        }
+        for index in 0..delete.len() {
+            sql.push_str(&format!(" LET $removed_{index}=DELETE type::record($entry_table,$delete_ids[{index}]) RETURN BEFORE; IF array::len($removed_{index}) = 0 {{ THROW 'history_conflict'; }};"));
+        }
+        sql.push_str(" COMMIT TRANSACTION;");
+        let mut query = self
+            .db
+            .query(sql)
+            .bind(("stream_table", self.tables.streams.clone()))
+            .bind((
+                "stream_key",
+                self.stream_resource(&current.app_id, &current.channel).1,
+            ))
+            .bind(("entry_table", self.tables.entries.clone()))
+            .bind(("stream", current.stream_id.clone()))
+            .bind(("revision", current.retention_revision.unwrap_or(0)))
+            .bind(("next_revision", current.retention_revision.unwrap_or(0) + 1))
+            .bind(("expected_next", current.next_serial))
+            .bind(("count", next.retained_messages))
+            .bind(("bytes", next.retained_bytes))
+            .bind(("next", next.next_serial))
+            .bind(("oldest", next.oldest_available_serial))
+            .bind(("newest", next.newest_available_serial))
+            .bind(("oldest_time", next.oldest_available_published_at_ms))
+            .bind(("newest_time", next.newest_available_published_at_ms))
+            .bind(("now", next.updated_at_ms));
+        if let Some(insert) = insert {
+            query = query
+                .bind((
+                    "entry_id",
+                    self.entry_resource(
+                        &current.app_id,
+                        &current.channel,
+                        &current.stream_id,
+                        insert.serial as u64,
+                    )
+                    .1,
+                ))
+                .bind(("entry", insert.clone()));
+        }
+        if !delete.is_empty() {
+            query = query.bind((
+                "delete_ids",
+                delete
+                    .iter()
+                    .map(|row| {
+                        self.entry_resource(
+                            &current.app_id,
+                            &current.channel,
+                            &current.stream_id,
+                            row.serial as u64,
+                        )
+                        .1
+                    })
+                    .collect::<Vec<_>>(),
+            ));
+        }
+        // A failed transaction marks earlier statements as cancelled. Inspect
+        // every statement so a cancellation cannot hide the actual CAS conflict.
+        let result = match query.await {
+            Ok(mut response) => {
+                let mut errors: Vec<_> = response.take_errors().into_iter().collect();
+                errors.sort_by_key(|(index, _)| *index);
+                let actual = errors.iter().position(|(_, error)| {
+                    !error
+                        .to_string()
+                        .contains("query was not executed due to a failed transaction")
+                });
+                if errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errors.swap_remove(actual.unwrap_or(0)).1)
+                }
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(()) => Ok(true),
+            Err(error)
+                if error.to_string().contains("history_conflict")
+                    || error.to_string().contains("already exists")
+                    || error.to_string().contains("already been created")
+                    || error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("read or write conflict")
+                    || error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("transaction conflict")
+                    || error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("write conflict") =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(Error::Internal(format!(
+                "Failed to commit SurrealDB history retention: {error}"
+            ))),
+        }
+    }
+
+    pub(super) async fn refresh_retention_bounds(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: &str,
+    ) -> Result<HistoryRetentionStats> {
+        for attempt in 0..64 {
+            let current = self
+                .load_stream_raw(app_id, channel)
+                .await?
+                .ok_or_else(|| Error::Internal("Missing SurrealDB history stream".into()))?;
+            if current.stream_id != stream_id {
+                return Err(Error::InvalidMessageFormat(
+                    "History stream changed during retention".into(),
+                ));
+            }
+            let oldest = self
+                .retention_prefix(app_id, channel, stream_id, false)
+                .await?;
+            let newest = self
+                .retention_prefix(app_id, channel, stream_id, true)
+                .await?;
+            let mut next = self.accounted_state(&current).await?;
+            next.oldest_available_serial = oldest.first().map(|row| row.serial);
+            next.newest_available_serial = newest.first().map(|row| row.serial);
+            next.oldest_available_published_at_ms = oldest.first().map(|row| row.published_at_ms);
+            next.newest_available_published_at_ms = newest.first().map(|row| row.published_at_ms);
+            if current.retention_revision.is_some()
+                && current.retained_messages == next.retained_messages
+                && current.retained_bytes == next.retained_bytes
+                && current.oldest_available_serial == next.oldest_available_serial
+                && current.newest_available_serial == next.newest_available_serial
+                && current.oldest_available_published_at_ms == next.oldest_available_published_at_ms
+                && current.newest_available_published_at_ms == next.newest_available_published_at_ms
+            {
+                return Ok(super::state::retained_from_stream_record(&current));
+            }
+            if self.commit_retention(&current, &next, None, &[]).await? {
+                return Ok(super::state::retained_from_stream_record(&next));
+            }
+            tokio::time::sleep(retention_conflict_delay(attempt)).await;
+        }
+        Err(Error::Internal(
+            "SurrealDB history bounds contention limit reached".into(),
+        ))
+    }
+
     pub(super) async fn delete_entries(
         &self,
         app_id: &str,
         channel: &str,
         stream_id: &str,
         rows: &[EntryKeyRecord],
-    ) -> Result<()> {
-        for row in rows {
-            let _: Option<StoredEntryRecord> = self
-                .db
-                .delete(self.entry_resource(app_id, channel, stream_id, row.serial as u64))
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to delete SurrealDB history row: {e}"))
+    ) -> Result<u64> {
+        let mut deleted = 0u64;
+        for chunk in rows.chunks(64) {
+            let mut completed = false;
+            for attempt in 0..64 {
+                let current = self
+                    .load_stream_raw(app_id, channel)
+                    .await?
+                    .ok_or_else(|| Error::Internal("Missing SurrealDB history stream".into()))?;
+                if current.stream_id != stream_id {
+                    return Err(Error::InvalidMessageFormat(
+                        "History stream changed during purge".into(),
+                    ));
+                }
+                let sql = format!(
+                    "SELECT serial,published_at_ms,payload_size_bytes FROM {} WHERE app_id=$app AND channel=$channel AND stream_id=$stream AND serial IN $serials",
+                    self.tables.entries
+                );
+                let mut response = self
+                    .db
+                    .query(sql)
+                    .bind(("app", app_id.to_string()))
+                    .bind(("channel", channel.to_string()))
+                    .bind(("stream", stream_id.to_string()))
+                    .bind((
+                        "serials",
+                        chunk.iter().map(|row| row.serial).collect::<Vec<_>>(),
+                    ))
+                    .await
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to read SurrealDB purge batch: {e}"))
+                    })?;
+                let present: Vec<EntryKeyRecord> = response.take(0usize).map_err(|e| {
+                    Error::Internal(format!("Failed to decode SurrealDB purge batch: {e}"))
                 })?;
+                let mut next = self.accounted_state(&current).await?;
+                next.retained_messages =
+                    next.retained_messages.saturating_sub(present.len() as i64);
+                next.retained_bytes = next.retained_bytes.saturating_sub(
+                    present
+                        .iter()
+                        .map(|row| row.payload_size_bytes)
+                        .sum::<i64>(),
+                );
+                if present.is_empty()
+                    || self
+                        .commit_retention(&current, &next, None, &present)
+                        .await?
+                {
+                    deleted += present.len() as u64;
+                    completed = true;
+                    break;
+                }
+                tokio::time::sleep(retention_conflict_delay(attempt)).await;
+            }
+            if !completed {
+                return Err(Error::Internal(
+                    "SurrealDB purge contention limit reached".into(),
+                ));
+            }
         }
-        Ok(())
+        self.refresh_retention_bounds(app_id, channel, stream_id)
+            .await?;
+        Ok(deleted)
     }
 
     pub(super) async fn persist_record(&self, record: &HistoryAppendRecord) -> Result<()> {
@@ -141,95 +396,136 @@ impl SurrealHistoryStore {
             payload_bytes: record.payload_bytes.to_vec(),
             payload_size_bytes: record.payload_bytes.len() as i64,
         };
-        let _: Option<StoredEntryRecord> = self
-            .db
-            .create(self.entry_resource(
-                &record.app_id,
-                &record.channel,
-                &record.stream_id,
-                record.serial,
-            ))
-            .content(stored)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to create SurrealDB history row: {e}")))?;
+        let mut inserted = false;
+        for attempt in 0..64 {
+            let current = self
+                .load_stream_raw(&record.app_id, &record.channel)
+                .await?
+                .ok_or_else(|| Error::Internal("Missing SurrealDB history stream".into()))?;
+            if current.stream_id != record.stream_id {
+                return Err(Error::InvalidMessageFormat(
+                    "History append stream changed".into(),
+                ));
+            }
+            let mut next = self.accounted_state(&current).await?;
 
-        let mut rows = self
-            .load_entry_keys_for_stream(&record.app_id, &record.channel, &record.stream_id)
-            .await?;
-        let cutoff_ms = record
-            .published_at_ms
-            .saturating_sub((record.retention.retention_window_seconds * 1000) as i64);
-        let mut to_delete = Vec::new();
-
-        while let Some(first) = rows.first() {
-            if first.published_at_ms < cutoff_ms {
-                to_delete.push(first.clone());
-                rows.remove(0);
-            } else {
+            next.retained_messages += 1;
+            next.retained_bytes += stored.payload_size_bytes;
+            next.next_serial = next.next_serial.max(record.serial.saturating_add(1) as i64);
+            next.updated_at_ms = record.published_at_ms;
+            if self
+                .commit_retention(&current, &next, Some(&stored), &[])
+                .await?
+            {
+                inserted = true;
                 break;
             }
-        }
-        if let Some(max_messages) = record.retention.max_messages_per_channel {
-            while rows.len() > max_messages {
-                to_delete.push(rows.remove(0));
-            }
-        }
-        if let Some(max_bytes) = record.retention.max_bytes_per_channel {
-            let mut retained_bytes: u64 = rows
-                .iter()
-                .map(|row| row.payload_size_bytes.max(0) as u64)
-                .sum();
-            while retained_bytes > max_bytes && !rows.is_empty() {
-                let removed = rows.remove(0);
-                retained_bytes =
-                    retained_bytes.saturating_sub(removed.payload_size_bytes.max(0) as u64);
-                to_delete.push(removed);
-            }
-        }
-
-        self.delete_entries(
-            &record.app_id,
-            &record.channel,
-            &record.stream_id,
-            &to_delete,
-        )
-        .await?;
-
-        let retained = HistoryRetentionStats {
-            stream_id: Some(record.stream_id.clone()),
-            retained_messages: rows.len() as u64,
-            retained_bytes: rows
-                .iter()
-                .map(|row| row.payload_size_bytes.max(0) as u64)
-                .sum(),
-            oldest_serial: rows.first().map(|row| row.serial as u64),
-            newest_serial: rows.last().map(|row| row.serial as u64),
-            oldest_published_at_ms: rows.first().map(|row| row.published_at_ms),
-            newest_published_at_ms: rows.last().map(|row| row.published_at_ms),
-        };
-        let current = self
-            .load_stream_raw(&record.app_id, &record.channel)
-            .await?
-            .ok_or_else(|| {
-                Error::Internal(format!(
-                    "Missing SurrealDB history stream row for {}/{}",
-                    record.app_id, record.channel
+            let existing: Option<StoredEntryRecord> = self
+                .db
+                .select(self.entry_resource(
+                    &record.app_id,
+                    &record.channel,
+                    &record.stream_id,
+                    record.serial,
                 ))
-            })?;
-        let updated_stream = StoredStreamRecord {
-            next_serial: current
-                .next_serial
-                .max(record.serial.saturating_add(1) as i64),
-            retained_messages: retained.retained_messages as i64,
-            retained_bytes: retained.retained_bytes as i64,
-            oldest_available_serial: retained.oldest_serial.map(|value| value as i64),
-            newest_available_serial: retained.newest_serial.map(|value| value as i64),
-            oldest_available_published_at_ms: retained.oldest_published_at_ms,
-            newest_available_published_at_ms: retained.newest_published_at_ms,
-            updated_at_ms: record.published_at_ms,
-            ..current
-        };
-        self.upsert_stream_raw(&record.app_id, &record.channel, &updated_stream)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to inspect duplicate SurrealDB append: {e}"))
+                })?;
+            if let Some(existing) = existing {
+                if existing.payload_bytes != stored.payload_bytes
+                    || existing.message_id != stored.message_id
+                    || existing.published_at_ms != stored.published_at_ms
+                    || existing.event_name != stored.event_name
+                    || existing.operation_kind != stored.operation_kind
+                {
+                    return Err(Error::InvalidMessageFormat(
+                        "Conflicting SurrealDB history append at existing serial".into(),
+                    ));
+                }
+                inserted = true;
+                break;
+            }
+            tokio::time::sleep(retention_conflict_delay(attempt)).await;
+        }
+        if !inserted {
+            return Err(Error::Internal(
+                "SurrealDB history append contention limit reached".into(),
+            ));
+        }
+        let cutoff = record.published_at_ms.saturating_sub(
+            record
+                .retention
+                .retention_window_seconds
+                .saturating_mul(1000)
+                .min(i64::MAX as u64) as i64,
+        );
+        let mut age_prefix_complete = false;
+        let mut evicted_messages = 0u64;
+        let mut evicted_bytes = 0u64;
+        let mut conflicts = 0;
+        loop {
+            let current = self
+                .load_stream_raw(&record.app_id, &record.channel)
+                .await?
+                .ok_or_else(|| Error::Internal("Missing SurrealDB history stream".into()))?;
+            if current.stream_id != record.stream_id {
+                return Err(Error::InvalidMessageFormat(
+                    "History stream changed during retention".into(),
+                ));
+            }
+            let rows = self
+                .retention_prefix(&record.app_id, &record.channel, &record.stream_id, false)
+                .await?;
+            let mut next = self.accounted_state(&current).await?;
+            let mut remove = 0;
+            let mut next_age_prefix_complete = age_prefix_complete;
+            for row in &rows {
+                if !next_age_prefix_complete && row.published_at_ms >= cutoff {
+                    next_age_prefix_complete = true;
+                }
+                if next_age_prefix_complete
+                    && !record
+                        .retention
+                        .max_messages_per_channel
+                        .is_some_and(|limit| next.retained_messages > limit as i64)
+                    && !record
+                        .retention
+                        .max_bytes_per_channel
+                        .is_some_and(|limit| next.retained_bytes > limit as i64)
+                {
+                    break;
+                }
+                next.retained_messages = next.retained_messages.saturating_sub(1);
+                next.retained_bytes = next.retained_bytes.saturating_sub(row.payload_size_bytes);
+                remove += 1;
+            }
+            if remove == 0 {
+                break;
+            }
+            if self
+                .commit_retention(&current, &next, None, &rows[..remove])
+                .await?
+            {
+                age_prefix_complete = next_age_prefix_complete;
+                evicted_messages += remove as u64;
+                evicted_bytes += rows[..remove]
+                    .iter()
+                    .map(|row| row.payload_size_bytes.max(0) as u64)
+                    .sum::<u64>();
+                conflicts = 0;
+            } else {
+                conflicts += 1;
+                if conflicts >= 64 {
+                    return Err(Error::Internal(
+                        "SurrealDB retention contention limit reached".into(),
+                    ));
+                }
+                tokio::time::sleep(retention_conflict_delay(conflicts)).await;
+            }
+        }
+        let retained = self
+            .refresh_retention_bounds(&record.app_id, &record.channel, &record.stream_id)
             .await?;
         if let Some(metrics) = self.metrics.as_ref() {
             metrics.update_history_retained(
@@ -237,18 +533,15 @@ impl SurrealHistoryStore {
                 retained.retained_messages,
                 retained.retained_bytes,
             );
-            if !to_delete.is_empty() {
-                let evicted_bytes = to_delete
-                    .iter()
-                    .map(|row| row.payload_size_bytes.max(0) as u64)
-                    .sum();
-                metrics.mark_history_eviction(
-                    &record.app_id,
-                    to_delete.len() as u64,
-                    evicted_bytes,
-                );
+            if evicted_messages > 0 {
+                metrics.mark_history_eviction(&record.app_id, evicted_messages, evicted_bytes);
             }
         }
         Ok(())
     }
+}
+
+fn retention_conflict_delay(attempt: u32) -> std::time::Duration {
+    let ceiling = (1u64 << attempt.min(4)).max(1);
+    std::time::Duration::from_millis(1 + u64::from(uuid::Uuid::new_v4().as_bytes()[0]) % ceiling)
 }

@@ -1,0 +1,1 @@
+{"case":"S8_redis_skew","allocations":70690,"elapsed_us":514607,"allocated_bytes":37479170,"verified":{"delivered":1000,"slow":10}}

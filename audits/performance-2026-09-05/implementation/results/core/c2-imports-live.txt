@@ -1,0 +1,28 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+error[E0277]: the trait bound `sockudo_core::history::HistoryRetentionPolicy: std::default::Default` is not satisfied
+   --> crates/sockudo-server/src/history/maintenance_tests.rs:172:132
+    |
+172 | ...ionPolicy {retention_window_seconds:3600,..Default::default()})).await.unwrap(); }
+    |                                               ^^^^^^^^^^^^^^^^^^ the trait `std::default::Default` is not implemented for `sockudo_core::history::HistoryRetentionPolicy`
+
+error[E0277]: the trait bound `sockudo_core::history::HistoryRetentionPolicy: std::default::Default` is not satisfied
+   --> crates/sockudo-server/src/history/maintenance_tests.rs:177:71
+    |
+177 |     let policy=HistoryRetentionPolicy{retention_window_seconds:3600,..Default::default()};
+    |                                                                       ^^^^^^^^^^^^^^^^^^ the trait `std::default::Default` is not implemented for `sockudo_core::history::HistoryRetentionPolicy`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `sockudo` (bin "sockudo" test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...

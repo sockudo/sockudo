@@ -1,0 +1,27 @@
+    Blocking waiting for file lock on build directory
+    Checking sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+error[E0425]: cannot find type `DevicePushState` in this scope
+   --> crates/sockudo-push/src/feedback.rs:773:43
+    |
+773 | pub fn device_is_terminally_failed(state: DevicePushState) -> bool {
+    |                                           ^^^^^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this enum through its public re-export
+    |
+  1 + use crate::DevicePushState;
+    |
+
+error[E0433]: cannot find type `DevicePushState` in this scope
+   --> crates/sockudo-push/src/feedback.rs:774:21
+    |
+774 |     matches!(state, DevicePushState::Failed)
+    |                     ^^^^^^^^^^^^^^^ use of undeclared type `DevicePushState`
+    |
+help: consider importing this enum through its public re-export
+    |
+  1 + use crate::DevicePushState;
+    |
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `sockudo-push` (lib) due to 2 previous errors

@@ -66,6 +66,29 @@ impl ScyllaHistoryStore {
                     "Failed to create ScyllaDB history entries table: {e}"
                 ))
             })?;
+        for column in [
+            "retention_count",
+            "retention_bytes",
+            "retention_revision",
+            "retention_oldest_serial",
+            "retention_newest_serial",
+            "retention_oldest_time",
+            "retention_newest_time",
+        ] {
+            let query = format!(
+                "ALTER TABLE {} ADD {} bigint static",
+                self.tables.entries_fq(),
+                column
+            );
+            if let Err(error) = self.session.query_unpaged(query, ()).await {
+                let message = error.to_string();
+                if !message.contains("already exists") && !message.contains("existing column") {
+                    return Err(Error::Internal(format!(
+                        "Failed to add ScyllaDB history retention column: {error}"
+                    )));
+                }
+            }
+        }
         let create_version_streams = format!(
             "CREATE TABLE IF NOT EXISTS {} (
                 app_id text,

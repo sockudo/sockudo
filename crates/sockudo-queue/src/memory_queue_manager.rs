@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 const MAX_CONCURRENT_JOBS_PER_QUEUE: usize = 64;
 const MAX_ID_LENGTH: usize = 512;
+const DEDUP_CLEANUP_BUDGET: usize = 64;
 
 struct MemoryJob {
     id: String,
@@ -39,6 +40,7 @@ struct QueueState {
     fingerprints: HashMap<String, u64>,
     outstanding: HashSet<String>,
     dedup: HashMap<String, (String, u64)>,
+    dedup_expiry: BTreeMap<(u64, String), ()>,
     completed: VecDeque<String>,
 }
 
@@ -175,9 +177,14 @@ impl MemoryQueueManager {
                 };
             }
             if let Some(key) = options.deduplication_key.as_deref()
-                && let Some((existing, _)) = state.dedup.get(key)
+                && let Some((existing, expires)) = state.dedup.get(key)
             {
-                return Ok(QueueJobId(existing.clone()));
+                if *expires > now {
+                    return Ok(QueueJobId(existing.clone()));
+                }
+                let expires = *expires;
+                state.dedup.remove(key);
+                state.dedup_expiry.remove(&(expires, key.to_owned()));
             }
             let depth =
                 state.ready.len() + state.delayed.len() + state.active + state.dead_letter.len();
@@ -191,13 +198,9 @@ impl MemoryQueueManager {
             state.fingerprints.insert(id.clone(), fingerprint);
             state.outstanding.insert(id.clone());
             if let Some(key) = options.deduplication_key {
-                state.dedup.insert(
-                    key,
-                    (
-                        id.clone(),
-                        now.saturating_add(self.inner.config.deduplication_ttl_ms),
-                    ),
-                );
+                let expires = now.saturating_add(self.inner.config.deduplication_ttl_ms);
+                state.dedup.insert(key.clone(), (id.clone(), expires));
+                state.dedup_expiry.insert((expires, key), ());
             }
             if options.delay_ms == 0 {
                 state.ready.push_back(job);
@@ -215,7 +218,22 @@ impl MemoryQueueManager {
     }
 
     fn cleanup_dedup(state: &mut QueueState, now: u64) {
-        state.dedup.retain(|_, (_, expires)| *expires > now);
+        for _ in 0..DEDUP_CLEANUP_BUDGET {
+            let Some(((expires, _), ())) = state.dedup_expiry.first_key_value() else {
+                break;
+            };
+            if *expires > now {
+                break;
+            }
+            if let Some(((expires, key), ())) = state.dedup_expiry.pop_first()
+                && state
+                    .dedup
+                    .get(&key)
+                    .is_some_and(|(_, current)| *current == expires)
+            {
+                state.dedup.remove(&key);
+            }
+        }
     }
 
     async fn supervisor_loop(&self) {
@@ -255,6 +273,9 @@ impl MemoryQueueManager {
             .map(|entry| entry.key().clone())
             .collect();
         for queue_name in queue_names {
+            if let Some(state) = self.inner.queues.get(&queue_name) {
+                Self::cleanup_dedup(&mut state.lock(), now);
+            }
             let Some(processor) = self.inner.processors.read().get(&queue_name).cloned() else {
                 continue;
             };
@@ -652,6 +673,54 @@ mod tests {
         let mut changed = job();
         changed.app_id = "other".to_string();
         assert!(manager.enqueue("id", changed, options).await.is_err());
+    }
+
+    #[test]
+    fn dedup_cleanup_is_bounded_and_preserves_refreshed_keys() {
+        let mut state = QueueState::default();
+        for index in 0..200 {
+            let key = format!("key-{index}");
+            state.dedup.insert(key.clone(), (key.clone(), 10));
+            state.dedup_expiry.insert((10, key), ());
+        }
+        state.dedup.insert("key-0".into(), ("new".into(), 20));
+        state.dedup_expiry.insert((20, "key-0".into()), ());
+        MemoryQueueManager::cleanup_dedup(&mut state, 10);
+        assert_eq!(state.dedup_expiry.len(), 201 - DEDUP_CLEANUP_BUDGET);
+        assert_eq!(state.dedup.get("key-0").unwrap().0, "new");
+        for _ in 0..4 {
+            MemoryQueueManager::cleanup_dedup(&mut state, 10);
+        }
+        assert_eq!(state.dedup.len(), 1);
+        MemoryQueueManager::cleanup_dedup(&mut state, 20);
+        assert!(state.dedup.is_empty());
+    }
+
+    #[tokio::test]
+    async fn expired_dedup_is_not_extended_by_cleanup_backlog() {
+        let manager = MemoryQueueManager::new();
+        let state = manager.state("expiry");
+        {
+            let mut state = state.lock();
+            for index in 0..200 {
+                let key = format!("a-{index:03}");
+                state.dedup.insert(key.clone(), ("old".into(), 0));
+                state.dedup_expiry.insert((0, key), ());
+            }
+            state.dedup.insert("z".into(), ("expired".into(), 0));
+            state.dedup_expiry.insert((0, "z".into()), ());
+        }
+        let options = QueueJobOptions {
+            job_id: Some("new".into()),
+            deduplication_key: Some("z".into()),
+            ..Default::default()
+        };
+        let id = manager
+            .enqueue("expiry", job(), options.clone())
+            .await
+            .unwrap();
+        assert_eq!(id.0, "new");
+        assert_eq!(manager.enqueue("expiry", job(), options).await.unwrap(), id);
     }
 
     #[tokio::test]

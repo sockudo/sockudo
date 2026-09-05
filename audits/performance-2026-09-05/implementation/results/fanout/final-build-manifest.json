@@ -1,0 +1,20 @@
+{
+  "f2-rabbit": {
+    "command": [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f2/Cargo.toml",
+      "-p",
+      "sockudo-adapter",
+      "--release",
+      "--features",
+      "redis,nats,kafka,rabbitmq",
+      "--test",
+      "fanout_performance_live",
+      "--no-run"
+    ],
+    "exit_code": 0,
+    "binary_sha256": "8e861ce674276c58c300ffb294f39c3c6b83aaf731847ff6399bf53b45834aee"
+  }
+}

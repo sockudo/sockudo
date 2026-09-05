@@ -116,159 +116,125 @@ impl VersionStore for SurrealVersionStore {
     }
 
     async fn append_version(&self, record: StoredVersionRecord) -> Result<()> {
-        let app_id = record.app_id.as_str();
-        let channel = record.channel.as_str();
-        let msg_serial = record.message_serial().as_str();
-        let ver_serial = record.version_serial().as_str();
-        let delivery_serial = record.delivery_serial();
-        let history_serial = record.history_serial();
-        let now_ms = sockudo_core::history::now_ms();
-
-        let payload_bytes = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
-
-        let entry_id = deterministic_key([app_id, channel, msg_serial, ver_serial].into_iter());
-        let entry = StoredVersionEntryRec {
-            app_id: app_id.to_string(),
-            channel: channel.to_string(),
-            message_serial: msg_serial.to_string(),
-            version_serial: ver_serial.to_string(),
-            delivery_serial: delivery_serial as i64,
-            payload_bytes: payload_bytes.clone(),
-            created_at_ms: now_ms,
-        };
-
-        // Write entry idempotently (IF NOT EXISTS via create, ignore "already exists")
-        let create_entry: std::result::Result<Option<StoredVersionEntryRec>, _> = self
-            .db
-            .create((self.tables.entries.clone(), entry_id.clone()))
-            .content(entry)
-            .await;
-        if let Err(e) = create_entry {
-            let err_text = e.to_string();
-            if !err_text.contains("already exists")
-                && !err_text.contains("already been created")
-                && !err_text.contains("Database record")
-            {
-                return Err(Error::Internal(format!(
-                    "Failed to write SurrealDB version entry: {e}"
-                )));
-            }
-        }
-
-        // Upsert version_messages — advance latest_version_serial pointer only when newer
-        let msg_id = deterministic_key([app_id, channel, msg_serial].into_iter());
-        let existing_msg: Option<StoredVersionMessageRec> = self
-            .db
-            .select((self.tables.messages.clone(), msg_id.clone()))
-            .await
-            .map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to fetch SurrealDB version message record: {e}"
-                ))
+        let app_id = record.app_id.clone();
+        let channel = record.channel.clone();
+        let entry_id = deterministic_key(
+            [
+                app_id.as_str(),
+                channel.as_str(),
+                record.message_serial().as_str(),
+                record.version_serial().as_str(),
+            ]
+            .into_iter(),
+        );
+        let message_id = deterministic_key(
+            [
+                app_id.as_str(),
+                channel.as_str(),
+                record.message_serial().as_str(),
+            ]
+            .into_iter(),
+        );
+        let stream_id = deterministic_key([app_id.as_str(), channel.as_str()].into_iter());
+        let delivery = i64::try_from(record.delivery_serial())
+            .ok()
+            .filter(|value| *value < i64::MAX)
+            .ok_or_else(|| {
+                Error::InvalidMessageFormat("imported delivery serial exceeds storage range".into())
             })?;
-
-        let advance_msg = |db: &Surreal<Any>,
-                           tables: &VersionStoreTables,
-                           msg_id: String,
-                           entry_id: String,
-                           ver_serial: String,
-                           now_ms: i64| {
-            let db = db.clone();
-            let tables = tables.clone();
-            async move {
-                let mut response = db
-                    .query("UPDATE ONLY type::record($table, $id) SET latest_version_serial = $ver, latest_entry_key = $key, updated_at_ms = $now WHERE latest_version_serial < $ver RETURN AFTER")
-                    .bind(("table", tables.messages.clone()))
-                    .bind(("id", msg_id))
-                    .bind(("ver", ver_serial))
-                    .bind(("key", entry_id))
-                    .bind(("now", now_ms))
-                    .await
-                    .map_err(|e| Error::Internal(format!("Failed to advance SurrealDB version message pointer: {e}")))?;
-                let _: std::result::Result<Option<StoredVersionMessageRec>, _> =
-                    response.take(0usize);
-                Ok::<(), Error>(())
-            }
+        let now = sockudo_core::history::now_ms();
+        let payload = sonic_rs::to_vec(&record)?;
+        let entry = StoredVersionEntryRec {
+            app_id: app_id.clone(),
+            channel: channel.clone(),
+            message_serial: record.message_serial().as_str().into(),
+            version_serial: record.version_serial().as_str().into(),
+            delivery_serial: delivery,
+            payload_bytes: payload.clone(),
+            text_snapshot_key: None,
+            created_at_ms: now,
         };
-
-        match existing_msg {
-            None => {
-                let msg_record = StoredVersionMessageRec {
-                    app_id: app_id.to_string(),
-                    channel: channel.to_string(),
-                    message_serial: msg_serial.to_string(),
-                    latest_version_serial: ver_serial.to_string(),
-                    latest_entry_key: entry_id.clone(),
-                    history_serial: history_serial as i64,
-                    latest_payload_bytes: payload_bytes.clone(),
-                    append_count: i64::from(
-                        record.message.action
-                            == sockudo_core::versioned_messages::MessageAction::Append,
-                    ),
-                    is_open_stream: record.is_open_ai_stream(),
-                    updated_at_ms: now_ms,
-                };
-                let create_msg: std::result::Result<Option<StoredVersionMessageRec>, _> = self
-                    .db
-                    .create((self.tables.messages.clone(), msg_id.clone()))
-                    .content(msg_record)
-                    .await;
-                if let Err(e) = create_msg {
-                    let err_text = e.to_string();
-                    if !err_text.contains("already exists")
-                        && !err_text.contains("already been created")
-                        && !err_text.contains("Database record")
-                    {
-                        return Err(Error::Internal(format!(
-                            "Failed to create SurrealDB version message record: {e}"
-                        )));
-                    }
-                    // Race: another writer created it first — still try to advance the pointer
-                    advance_msg(
-                        &self.db,
-                        &self.tables,
-                        msg_id,
-                        entry_id,
-                        ver_serial.to_string(),
-                        now_ms,
-                    )
-                    .await?;
+        let increment = i64::from(
+            record.message.action == sockudo_core::versioned_messages::MessageAction::Append,
+        );
+        let initial_message = StoredVersionMessageRec {
+            app_id: app_id.clone(),
+            channel: channel.clone(),
+            message_serial: record.message_serial().as_str().into(),
+            latest_version_serial: record.version_serial().as_str().into(),
+            state_version_serial: Some(record.version_serial().as_str().to_string()),
+            latest_entry_key: entry_id.clone(),
+            history_serial: record.history_serial() as i64,
+            latest_payload_bytes: payload.clone(),
+            append_count: increment,
+            is_open_stream: record.is_open_ai_stream(),
+            updated_at_ms: now,
+        };
+        for _ in 0..64 {
+            let query = self.db.query(
+                "BEGIN TRANSACTION;
+                 LET $exists = SELECT VALUE id FROM type::record($entries, $entry_id);
+                 IF array::len($exists) = 0 {
+                    LET $previous = (SELECT * FROM type::record($messages, $message_id))[0];
+                    LET $wins = $previous = NONE OR $previous.latest_version_serial < $version;
+                    LET $old_open = IF $previous.is_open_stream = true THEN 1 ELSE 0 END;
+                    LET $created = CREATE ONLY type::record($entries, $entry_id) CONTENT $entry;
+                    IF $previous = NONE {
+                        LET $message_write = CREATE ONLY type::record($messages, $message_id) CONTENT $initial_message;
+                    } ELSE {
+                        LET $count_write = UPDATE type::record($messages, $message_id) SET append_count = (append_count ?? 0) + $increment, updated_at_ms = $now;
+                        IF $wins {
+                            LET $latest_write = UPDATE type::record($messages, $message_id) SET latest_version_serial = $version, state_version_serial = $version, latest_entry_key = $entry_id, latest_payload_bytes = $payload, is_open_stream = $is_open;
+                        };
+                    };
+                    LET $stream_write = UPSERT type::record($streams, $stream_id) SET app_id = $app_id, channel = $channel, stream_id = $public_stream_id,
+                        next_delivery_serial = math::max([next_delivery_serial ?? 1, $next_delivery]),
+                        open_stream_count = (open_stream_count ?? 0) + IF $wins THEN $new_open - $old_open ELSE 0 END,
+                        oldest_delivery_serial = math::min([oldest_delivery_serial ?? $delivery, $delivery]),
+                        newest_delivery_serial = math::max([newest_delivery_serial ?? $delivery, $delivery]), updated_at_ms = $now;
+                 }; COMMIT TRANSACTION;"
+            ).bind(("entries", self.tables.entries.clone())).bind(("entry_id", entry_id.clone())).bind(("entry", entry.clone()))
+                .bind(("messages", self.tables.messages.clone())).bind(("message_id", message_id.clone())).bind(("initial_message", initial_message.clone()))
+                .bind(("version", record.version_serial().as_str().to_string())).bind(("payload", payload.clone())).bind(("increment", increment)).bind(("is_open", record.is_open_ai_stream()))
+                .bind(("streams", self.tables.streams.clone())).bind(("stream_id", stream_id.clone())).bind(("app_id", app_id.clone())).bind(("channel", channel.clone()))
+                .bind(("public_stream_id", format!("{app_id}/{channel}"))).bind(("delivery", delivery)).bind(("next_delivery", delivery + 1)).bind(("new_open", i64::from(record.is_open_ai_stream()))).bind(("now", now));
+            let result = query.await.and_then(|mut response| {
+                let mut errors: Vec<_> = response.take_errors().into_iter().collect();
+                errors.sort_by_key(|(index, _)| *index);
+                if errors.is_empty() {
+                    Ok(response)
+                } else {
+                    let actual = errors
+                        .iter()
+                        .position(|(_, error)| {
+                            !error
+                                .to_string()
+                                .contains("query was not executed due to a failed transaction")
+                        })
+                        .unwrap_or(0);
+                    Err(errors.swap_remove(actual).1)
+                }
+            });
+            match result {
+                Ok(_) => return Ok(()),
+                Err(error)
+                    if error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("write conflict")
+                        || error.to_string().contains("already exists")
+                        || error.to_string().contains("already been created") =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    return Err(Error::Internal(format!(
+                        "failed to import SurrealDB version transaction: {error}"
+                    )));
                 }
             }
-            Some(existing) if ver_serial > existing.latest_version_serial.as_str() => {
-                advance_msg(
-                    &self.db,
-                    &self.tables,
-                    msg_id,
-                    entry_id,
-                    ver_serial.to_string(),
-                    now_ms,
-                )
-                .await?;
-            }
-            Some(_) => {
-                // New version is not newer than the current pointer — nothing to update
-            }
         }
-
-        // Update version_streams window: maintain oldest/newest delivery_serial bounds
-        let stream_record_id = deterministic_key([app_id, channel].into_iter());
-        let _: std::result::Result<_, _> = self
-            .db
-            .query(
-                "UPDATE ONLY type::record($table, $id) SET \
-                 oldest_delivery_serial = IF oldest_delivery_serial IS NONE OR $delivery < oldest_delivery_serial THEN $delivery ELSE oldest_delivery_serial END, \
-                 newest_delivery_serial = IF newest_delivery_serial IS NONE OR $delivery > newest_delivery_serial THEN $delivery ELSE newest_delivery_serial END, \
-                 updated_at_ms = $now",
-            )
-            .bind(("table", self.tables.streams.clone()))
-            .bind(("id", stream_record_id))
-            .bind(("delivery", delivery_serial as i64))
-            .bind(("now", now_ms))
-            .await;
-
-        Ok(())
+        Err(Error::OverCapacity)
     }
 
     async fn commit_create(&self, request: VersionCreateRequest) -> Result<VersionCreateResult> {
@@ -348,6 +314,7 @@ impl VersionStore for SurrealVersionStore {
             version_serial: record.version_serial().as_str().to_string(),
             delivery_serial: next_delivery as i64,
             payload_bytes: payload_bytes.clone(),
+            text_snapshot_key: None,
             created_at_ms: now_ms,
         };
         let message = StoredVersionMessageRec {
@@ -355,6 +322,7 @@ impl VersionStore for SurrealVersionStore {
             channel: record.channel.clone(),
             message_serial: record.message_serial().as_str().to_string(),
             latest_version_serial: record.version_serial().as_str().to_string(),
+            state_version_serial: Some(record.version_serial().as_str().to_string()),
             latest_entry_key: entry_id.clone(),
             history_serial: record.history_serial() as i64,
             latest_payload_bytes: payload_bytes,
@@ -365,7 +333,7 @@ impl VersionStore for SurrealVersionStore {
         let next_open = open_count + usize::from(record.is_open_ai_stream());
         let (stream_statement, stream_content) = if let Some(stream) = existing_stream {
             (
-                "LET $stream_write = UPDATE ONLY type::record($stream_table, $stream_id) SET next_delivery_serial = $next_delivery, open_stream_count = $next_open, oldest_delivery_serial = IF oldest_delivery_serial IS NONE THEN $delivery ELSE oldest_delivery_serial END, newest_delivery_serial = $delivery, updated_at_ms = $now WHERE next_delivery_serial = $expected_delivery AND open_stream_count = $expected_open RETURN AFTER; IF $stream_write = NONE { THROW 'version_conflict'; };",
+                "LET $stream_write = UPDATE type::record($stream_table, $stream_id) SET next_delivery_serial = $next_delivery, open_stream_count = $next_open, oldest_delivery_serial = IF oldest_delivery_serial IS NONE THEN $delivery ELSE oldest_delivery_serial END, newest_delivery_serial = $delivery, updated_at_ms = $now WHERE next_delivery_serial = $expected_delivery AND open_stream_count = $expected_open RETURN AFTER; IF array::len($stream_write) = 0 { THROW 'version_conflict'; };",
                 Some(stream),
             )
         } else {
@@ -410,6 +378,10 @@ impl VersionStore for SurrealVersionStore {
             Ok(_) => Ok(VersionCreateResult::Applied { record, stream_id }),
             Err(error)
                 if error.to_string().contains("version_conflict")
+                    || error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("write conflict")
                     || error.to_string().contains("already exists")
                     || error.to_string().contains("already been created") =>
             {
@@ -460,9 +432,10 @@ impl VersionStore for SurrealVersionStore {
                 if receipt.operation_fingerprint != operation.payload_fingerprint {
                     return Err(Error::IdempotencyConflict);
                 }
-                let record = sonic_rs::from_slice(&receipt.payload_bytes).map_err(|e| {
-                    Error::Internal(format!("Failed to decode mutation receipt: {e}"))
-                })?;
+                let record = self
+                    .decode_records(vec![receipt.payload_bytes])
+                    .await?
+                    .remove(0);
                 return Ok(VersionMutationResult::Duplicate {
                     record,
                     stream_id: stream.stream_id,
@@ -485,14 +458,15 @@ impl VersionStore for SurrealVersionStore {
         else {
             return Ok(VersionMutationResult::Conflict { current: None });
         };
-        let current = if message.latest_payload_bytes.is_empty() {
+        let current_encoding = Self::cached_latest(&message)?;
+        let current = if current_encoding.is_none() {
             self.get_latest(&request.app_id, &request.channel, &request.message_serial)
                 .await?
                 .ok_or_else(|| Error::Internal("Latest version entry is missing".to_string()))?
         } else {
-            sonic_rs::from_slice(&message.latest_payload_bytes).map_err(|e| {
-                Error::Internal(format!("Failed to decode mutation predecessor: {e}"))
-            })?
+            self.decode_records(vec![message.latest_payload_bytes.clone()])
+                .await?
+                .remove(0)
         };
         let delivery_serial =
             (stream.next_delivery_serial as u64).max(current.delivery_serial().saturating_add(1));
@@ -515,8 +489,16 @@ impl VersionStore for SurrealVersionStore {
                 VersionMutationRejection::OpenStreamingMessages { limit },
             ));
         }
-        let payload_bytes = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize mutation record: {e}")))?;
+        let plan = sockudo_core::version_store::EncodedVersionRecord::plan(
+            &record,
+            Some((
+                &current,
+                current_encoding
+                    .as_ref()
+                    .and_then(|record| record.text.as_ref()),
+            )),
+        )?;
+        let payload_bytes = plan.entry_bytes;
         let now_ms = sockudo_core::history::now_ms();
         let entry_id = deterministic_key(
             [
@@ -534,6 +516,10 @@ impl VersionStore for SurrealVersionStore {
             version_serial: record.version_serial().as_str().to_string(),
             delivery_serial: delivery_serial as i64,
             payload_bytes: payload_bytes.clone(),
+            text_snapshot_key: plan
+                .snapshot
+                .as_ref()
+                .map(|(reference, _)| reference.snapshot_key.clone()),
             created_at_ms: now_ms,
         };
         let next_open = stream.open_stream_count + i64::from(opens) - i64::from(closes);
@@ -572,10 +558,33 @@ impl VersionStore for SurrealVersionStore {
                 },
             )
         };
+        let snapshot_id = plan
+            .snapshot
+            .as_ref()
+            .map(|(reference, _)| {
+                Self::text_key(&record.app_id, &record.channel, &reference.snapshot_key)
+            })
+            .unwrap_or_default();
+        let snapshot_content =
+            plan.snapshot
+                .as_ref()
+                .map(|(reference, text)| StoredVersionTextRec {
+                    app_id: record.app_id.clone(),
+                    channel: record.channel.clone(),
+                    snapshot_key: reference.snapshot_key.clone(),
+                    text_data: text.clone(),
+                    updated_at_ms: now_ms,
+                    retain_for_receipts: reference.retain_for_receipts,
+                });
+        let snapshot_statement = if snapshot_content.is_some() {
+            "LET $snapshot_write = UPSERT ONLY type::record($text_table, $snapshot_id) CONTENT $snapshot_content;"
+        } else {
+            ""
+        };
         let query = self
             .db
             .query(format!(
-                "BEGIN TRANSACTION; LET $stream_write = UPDATE ONLY type::record($stream_table, $stream_id) SET next_delivery_serial = $next_delivery, open_stream_count = $next_open, newest_delivery_serial = $delivery, updated_at_ms = $now WHERE next_delivery_serial = $expected_delivery AND open_stream_count = $expected_open RETURN AFTER; IF $stream_write = NONE {{ THROW 'version_conflict'; }}; LET $message_write = UPDATE ONLY type::record($message_table, $message_id) SET latest_version_serial = $next_version, latest_entry_key = $entry_id, latest_payload_bytes = $payload, append_count = $next_append, is_open_stream = $is_open, updated_at_ms = $now WHERE latest_version_serial = $expected_version RETURN AFTER; IF $message_write = NONE {{ THROW 'version_conflict'; }}; LET $entry_write = CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; {receipt_statement} COMMIT TRANSACTION;"
+                "BEGIN TRANSACTION; LET $stream_write = UPDATE type::record($stream_table, $stream_id) SET next_delivery_serial = $next_delivery, open_stream_count = $next_open, newest_delivery_serial = $delivery, updated_at_ms = $now WHERE next_delivery_serial = $expected_delivery AND open_stream_count = $expected_open RETURN AFTER; IF array::len($stream_write) = 0 {{ THROW 'version_conflict'; }}; LET $message_write = UPDATE type::record($message_table, $message_id) SET latest_version_serial = $next_version, state_version_serial = $next_version, latest_entry_key = $entry_id, latest_payload_bytes = $payload, append_count = $next_append, is_open_stream = $is_open, updated_at_ms = $now WHERE latest_version_serial = $expected_version AND append_count = $expected_append RETURN AFTER; IF array::len($message_write) = 0 {{ THROW 'version_conflict'; }}; LET $entry_write = CREATE ONLY type::record($entry_table, $entry_id) CONTENT $entry_content; {receipt_statement} {snapshot_statement} COMMIT TRANSACTION;"
             ))
             .bind(("stream_table", self.tables.streams.clone()))
             .bind(("stream_id", stream_record_id))
@@ -588,23 +597,47 @@ impl VersionStore for SurrealVersionStore {
             .bind(("message_table", self.tables.messages.clone()))
             .bind(("message_id", message_id))
             .bind(("next_version", record.version_serial().as_str().to_string()))
-            .bind(("payload", payload_bytes.clone()))
+            .bind(("payload", plan.latest_bytes))
             .bind(("next_append", next_append))
             .bind(("is_open", record.is_open_ai_stream()))
             .bind(("expected_version", current.version_serial().as_str().to_string()))
+            .bind(("expected_append", message.append_count))
             .bind(("entry_table", self.tables.entries.clone()))
             .bind(("entry_id", entry_id))
             .bind(("entry_content", entry))
             .bind(("receipt_table", self.tables.receipts.clone()))
             .bind(("receipt_id", receipt_id))
-            .bind(("receipt_content", receipt));
-        match query.await.and_then(|response| response.check()) {
+            .bind(("receipt_content", receipt))
+            .bind(("text_table", self.tables.texts.clone()))
+            .bind(("snapshot_id", snapshot_id))
+            .bind(("snapshot_content", snapshot_content));
+        match query.await.and_then(|mut response| {
+            let mut errors: Vec<_> = response.take_errors().into_iter().collect();
+            errors.sort_by_key(|(index, _)| *index);
+            if errors.is_empty() {
+                Ok(response)
+            } else {
+                let actual = errors
+                    .iter()
+                    .position(|(_, error)| {
+                        !error
+                            .to_string()
+                            .contains("query was not executed due to a failed transaction")
+                    })
+                    .unwrap_or(0);
+                Err(errors.swap_remove(actual).1)
+            }
+        }) {
             Ok(_) => Ok(VersionMutationResult::Applied {
                 record,
                 stream_id: stream.stream_id,
             }),
             Err(error)
                 if error.to_string().contains("version_conflict")
+                    || error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("write conflict")
                     || error.to_string().contains("already exists")
                     || error.to_string().contains("already been created") =>
             {
@@ -639,12 +672,11 @@ impl VersionStore for SurrealVersionStore {
             return Ok(None);
         };
 
-        if !msg.latest_payload_bytes.is_empty() {
-            let record = sonic_rs::from_slice(&msg.latest_payload_bytes).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to deserialize SurrealDB latest version: {e}"
-                ))
-            })?;
+        if Self::cached_latest(&msg)?.is_some() {
+            let record = self
+                .decode_records(vec![msg.latest_payload_bytes])
+                .await?
+                .remove(0);
             return Ok(Some(record));
         }
 
@@ -660,12 +692,44 @@ impl VersionStore for SurrealVersionStore {
             return Ok(None);
         };
 
-        let record = sonic_rs::from_slice(&entry.payload_bytes).map_err(|e| {
-            Error::Internal(format!(
-                "Failed to deserialize SurrealDB version entry: {e}"
-            ))
-        })?;
+        let record = self
+            .decode_records(vec![entry.payload_bytes])
+            .await?
+            .remove(0);
         Ok(Some(record))
+    }
+
+    async fn get_latest_batch(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serials: &[sockudo_core::versioned_messages::MessageSerial],
+    ) -> Result<
+        std::collections::BTreeMap<
+            sockudo_core::versioned_messages::MessageSerial,
+            StoredVersionRecord,
+        >,
+    > {
+        use futures_util::{StreamExt, TryStreamExt};
+        let requested = message_serials
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        // Point selection uses deterministic record IDs and preserves legacy
+        // latest-entry fallback. Bound in-flight database calls without spawning.
+        let records = futures_util::stream::iter(
+            requested
+                .into_iter()
+                .map(|serial| async move { self.get_latest(app_id, channel, &serial).await }),
+        )
+        .buffer_unordered(8)
+        .try_collect::<Vec<_>>()
+        .await?;
+        Ok(records
+            .into_iter()
+            .flatten()
+            .map(|record| (record.message_serial().clone(), record))
+            .collect())
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {
@@ -692,7 +756,7 @@ impl VersionStore for SurrealVersionStore {
         }
 
         let sql = format!(
-            "SELECT app_id, channel, message_serial, version_serial, delivery_serial, payload_bytes FROM {} WHERE {} ORDER BY version_serial {} LIMIT {}",
+            "SELECT app_id, channel, message_serial, version_serial, delivery_serial, payload_bytes, created_at_ms, text_snapshot_key FROM {} WHERE {} ORDER BY version_serial {} LIMIT {}",
             self.tables.entries,
             clauses.join(" AND "),
             order,
@@ -721,17 +785,14 @@ impl VersionStore for SurrealVersionStore {
         })?;
 
         let has_more = rows.len() > request.limit;
-        let items: Vec<StoredVersionRecord> = rows
-            .into_iter()
-            .take(request.limit)
-            .map(|row| {
-                sonic_rs::from_slice(&row.payload_bytes).map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to deserialize SurrealDB version history entry: {e}"
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let items = self
+            .decode_records(
+                rows.into_iter()
+                    .take(request.limit)
+                    .map(|row| row.payload_bytes)
+                    .collect(),
+            )
+            .await?;
 
         let next_cursor = if has_more {
             items.last().map(|item| VersionStoreCursor {
@@ -759,7 +820,7 @@ impl VersionStore for SurrealVersionStore {
         let mut response = self
             .db
             .query(format!(
-                "SELECT payload_bytes FROM {} WHERE app_id = $app_id AND channel = $channel AND delivery_serial > $after ORDER BY delivery_serial ASC LIMIT {}",
+                "SELECT payload_bytes, delivery_serial FROM {} WHERE app_id = $app_id AND channel = $channel AND delivery_serial > $after ORDER BY delivery_serial ASC LIMIT {}",
                 self.tables.entries, request.limit
             ))
             .bind(("app_id", request.app_id.clone()))
@@ -774,15 +835,8 @@ impl VersionStore for SurrealVersionStore {
             ))
         })?;
 
-        rows.into_iter()
-            .map(|row| {
-                sonic_rs::from_slice(&row.payload_bytes).map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to deserialize SurrealDB version replay entry: {e}"
-                    ))
-                })
-            })
-            .collect()
+        self.decode_records(rows.into_iter().map(|row| row.payload_bytes).collect())
+            .await
     }
 
     async fn latest_by_history(
@@ -793,7 +847,7 @@ impl VersionStore for SurrealVersionStore {
         let mut response = self
             .db
             .query(format!(
-                "SELECT latest_entry_key FROM {} WHERE app_id = $app_id AND channel = $channel ORDER BY history_serial ASC",
+                "SELECT latest_entry_key, history_serial FROM {} WHERE app_id = $app_id AND channel = $channel ORDER BY history_serial ASC",
                 self.tables.messages
             ))
             .bind(("app_id", app_id.to_string()))
@@ -823,16 +877,66 @@ impl VersionStore for SurrealVersionStore {
                     ))
                 })?;
             if let Some(entry) = entry {
-                let record: StoredVersionRecord =
-                    sonic_rs::from_slice(&entry.payload_bytes).map_err(|e| {
-                        Error::Internal(format!(
-                            "Failed to deserialize SurrealDB version entry in latest_by_history: {e}"
-                        ))
-                    })?;
-                result.push(record);
+                result.push(entry.payload_bytes);
             }
         }
-        Ok(result)
+        self.decode_records(result).await
+    }
+
+    async fn message_count(&self, app_id: &str, channel: &str) -> Result<u64> {
+        #[derive(serde::Deserialize, surrealdb_types::SurrealValue)]
+        struct CountRow {
+            count: u64,
+        }
+        let mut response = self.db.query(format!("SELECT count() AS count FROM {} WHERE app_id = $app_id AND channel = $channel GROUP ALL", self.tables.messages))
+            .bind(("app_id", app_id.to_string())).bind(("channel", channel.to_string())).await
+            .map_err(|e| Error::Internal(format!("Failed to count version messages: {e}")))?;
+        let rows: Vec<CountRow> = response
+            .take(0usize)
+            .map_err(|e| Error::Internal(format!("Failed to decode message count: {e}")))?;
+        Ok(rows.first().map_or(0, |row| row.count))
+    }
+
+    async fn active_stream_count(&self, app_id: &str, channel: &str) -> Result<usize> {
+        #[derive(serde::Deserialize, surrealdb_types::SurrealValue)]
+        struct StateRow {
+            message_serial: String,
+            latest_version_serial: String,
+            state_version_serial: Option<String>,
+            is_open_stream: Option<bool>,
+        }
+        let mut after = String::new();
+        let mut count = 0usize;
+        loop {
+            let mut response = self.db.query(format!("SELECT message_serial, latest_version_serial, state_version_serial, is_open_stream FROM {} WHERE app_id=$app AND channel=$channel AND message_serial>$after ORDER BY message_serial LIMIT 100", self.tables.messages))
+                .bind(("app", app_id.to_owned())).bind(("channel", channel.to_owned())).bind(("after", after.clone()))
+                .await.map_err(|e| Error::Internal(format!("failed to read active stream metadata: {e}")))?;
+            let rows: Vec<StateRow> = response.take(0usize).map_err(|e| {
+                Error::Internal(format!("failed to decode active stream metadata: {e}"))
+            })?;
+            if rows.is_empty() {
+                return Ok(count);
+            }
+            for row in rows {
+                after = row.message_serial;
+                if row.state_version_serial.as_deref() == Some(row.latest_version_serial.as_str())
+                    && let Some(open) = row.is_open_stream
+                {
+                    count += usize::from(open);
+                    continue;
+                }
+                let serial = MessageSerial::new(after.clone())?;
+                if let Some(record) = self.get_latest(app_id, channel, &serial).await? {
+                    count += usize::from(record.is_open_ai_stream());
+                    let id = deterministic_key([app_id, channel, serial.as_str()].into_iter());
+                    self.db.query("UPDATE type::record($table, $id) SET is_open_stream=$open, state_version_serial=$version WHERE latest_version_serial=$version RETURN NONE")
+                        .bind(("table", self.tables.messages.clone())).bind(("id", id))
+                        .bind(("open", record.is_open_ai_stream())).bind(("version", record.version_serial().as_str().to_owned()))
+                        .await.map_err(|e| Error::Internal(format!("failed to refresh active stream metadata: {e}")))?
+                        .check().map_err(|e| Error::Internal(format!("failed to commit active stream metadata: {e}")))?;
+                }
+            }
+        }
     }
 
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {
@@ -893,7 +997,11 @@ impl VersionStore for SurrealVersionStore {
                 if ids.is_empty() {
                     return Ok::<(u64, bool), Error>((0, false));
                 }
-                db.query("DELETE $ids")
+                let mut deleted = db
+                    .query(format!(
+                        "DELETE $ids WHERE {ts_field} < $cutoff RETURN BEFORE"
+                    ))
+                    .bind(("cutoff", before_ms))
                     .bind(("ids", ids))
                     .await
                     .map_err(|e| {
@@ -901,7 +1009,10 @@ impl VersionStore for SurrealVersionStore {
                             "Failed to delete expired rows in SurrealDB {table}: {e}"
                         ))
                     })?;
-                Ok((len, len as i64 == limit))
+                let deleted: Vec<VersionDeletedRow> = deleted.take(0usize).map_err(|e| {
+                    Error::Internal(format!("failed to decode purged version rows: {e}"))
+                })?;
+                Ok((deleted.len() as u64, len as i64 == limit))
             }
         };
 
@@ -910,9 +1021,11 @@ impl VersionStore for SurrealVersionStore {
         let (messages_deleted, messages_more) =
             purge_table(&self.tables.messages, "updated_at_ms").await?;
 
+        let (snapshots_deleted, snapshots_more) =
+            self.purge_texts(before_ms, batch_size.min(256)).await?;
         Ok((
-            entries_deleted + messages_deleted,
-            entries_more || messages_more,
+            entries_deleted + messages_deleted + snapshots_deleted,
+            entries_more || messages_more || snapshots_more,
         ))
     }
 }

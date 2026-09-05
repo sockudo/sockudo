@@ -1,69 +1,97 @@
-use metrics::{counter, gauge, histogram};
+use metrics::{Key, Label, Level, Metadata};
+use std::sync::Arc;
+static METADATA: Metadata<'static> =
+    Metadata::new(module_path!(), Level::INFO, Some(module_path!()));
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) trait MetricLabelValues {
-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)>;
+    fn values(&self) -> impl ExactSizeIterator<Item = &str>;
 }
 
-fn labels_from_iter<'a>(
-    label_names: &[&str],
-    values: impl IntoIterator<Item = &'a str>,
-) -> Vec<(String, String)> {
-    let values = values.into_iter().collect::<Vec<_>>();
-    debug_assert_eq!(
-        label_names.len(),
-        values.len(),
-        "metric label/value count mismatch"
-    );
-
-    label_names
-        .iter()
-        .zip(values)
-        .map(|(name, value)| ((*name).to_owned(), value.to_owned()))
-        .collect()
+impl<T: AsRef<str>> MetricLabelValues for &[T] {
+    fn values(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.iter().map(AsRef::as_ref)
+    }
 }
-
-impl<'a> MetricLabelValues for &'a [&'a str] {
-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
-        labels_from_iter(label_names, self.iter().copied())
+impl<T: AsRef<str>, const N: usize> MetricLabelValues for &[T; N] {
+    fn values(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.iter().map(AsRef::as_ref)
+    }
+}
+impl<T: AsRef<str>> MetricLabelValues for &Vec<T> {
+    fn values(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.iter().map(AsRef::as_ref)
     }
 }
 
-impl<'a, const N: usize> MetricLabelValues for &'a [&'a str; N] {
-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
-        labels_from_iter(label_names, self.iter().copied())
+type CachedHandle<T> = (Box<[Box<str>]>, T);
+/// Cache only a bounded number of combinations. Overflow still records normally;
+/// hash collisions are compared against all labels and never merge distinct series.
+pub(super) struct HandleCache<T> {
+    entries: RwLock<HashMap<u64, CachedHandle<T>>>,
+}
+impl<T> Default for HandleCache<T> {
+    fn default() -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+        }
     }
 }
-
-impl<'a, const N: usize> MetricLabelValues for &'a [&'a String; N] {
-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
-        labels_from_iter(label_names, self.iter().map(|value| value.as_str()))
-    }
-}
-
-impl<'a> MetricLabelValues for &'a [&'a String] {
-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
-        labels_from_iter(label_names, self.iter().map(|value| value.as_str()))
-    }
-}
-
-impl MetricLabelValues for &Vec<String> {
-    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
-        labels_from_iter(label_names, self.iter().map(String::as_str))
+impl<T: Clone> HandleCache<T> {
+    fn get(
+        &self,
+        values: impl MetricLabelValues,
+        names: &'static [&'static str],
+        register: impl FnOnce(Vec<Label>) -> T,
+    ) -> T {
+        debug_assert_eq!(values.values().len(), names.len());
+        let mut hasher = DefaultHasher::new();
+        for value in values.values() {
+            value.hash(&mut hasher);
+        }
+        let hash = hasher.finish();
+        {
+            let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
+            if let Some((labels, handle)) = entries.get(&hash)
+                && labels.iter().map(AsRef::as_ref).eq(values.values())
+            {
+                return handle.clone();
+            }
+        }
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
+        if let Some((labels, handle)) = entries.get(&hash)
+            && labels.iter().map(AsRef::as_ref).eq(values.values())
+        {
+            return handle.clone();
+        }
+        let labels = names
+            .iter()
+            .zip(values.values())
+            .map(|(name, value)| Label::new(*name, value.to_owned()))
+            .collect();
+        let handle = register(labels);
+        if entries.len() < 1024 && !entries.contains_key(&hash) {
+            entries.insert(
+                hash,
+                (values.values().map(Box::from).collect(), handle.clone()),
+            );
+        }
+        handle
     }
 }
 
 pub(super) struct Gauge {
-    pub(super) name: String,
+    pub(super) key: Arc<Key>,
     pub(super) value: AtomicU64,
 }
-
 impl Gauge {
     pub(super) fn set(&self, value: f64) {
         self.value.store(value.to_bits(), Ordering::Relaxed);
-        gauge!(self.name.clone()).set(value);
+        metrics::with_recorder(|recorder| recorder.register_gauge(&self.key, &METADATA).set(value));
     }
-
     pub(super) fn get(&self) -> f64 {
         f64::from_bits(self.value.load(Ordering::Relaxed))
     }
@@ -72,74 +100,59 @@ impl Gauge {
 pub(super) struct GaugeVec {
     pub(super) name: String,
     pub(super) label_names: &'static [&'static str],
+    pub(super) handles: HandleCache<Arc<Key>>,
 }
-
 impl GaugeVec {
     pub(super) fn with_label_values(&self, values: impl MetricLabelValues) -> GaugeWithLabels {
-        GaugeWithLabels {
-            name: self.name.clone(),
-            labels: values.to_pairs(self.label_names),
-        }
+        GaugeWithLabels(self.handles.get(values, self.label_names, |labels| {
+            Arc::new(Key::from_parts(self.name.clone(), labels))
+        }))
     }
-
     pub(super) fn reset(&self) {}
 }
-
-pub(super) struct GaugeWithLabels {
-    pub(super) name: String,
-    pub(super) labels: Vec<(String, String)>,
-}
-
+pub(super) struct GaugeWithLabels(Arc<Key>);
 impl GaugeWithLabels {
     pub(super) fn add(&self, value: f64) {
-        let gauge = gauge!(self.name.clone(), &self.labels);
         if value.is_sign_negative() {
-            gauge.decrement(value.abs());
+            metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).decrement(value.abs()));
         } else {
-            gauge.increment(value);
+            metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).increment(value));
         }
     }
-
     pub(super) fn inc(&self) {
-        gauge!(self.name.clone(), &self.labels).increment(1.0);
+        metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).increment(1.0));
     }
-
     pub(super) fn dec(&self) {
-        gauge!(self.name.clone(), &self.labels).decrement(1.0);
+        metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).decrement(1.0));
     }
-
     pub(super) fn set(&self, value: f64) {
-        gauge!(self.name.clone(), &self.labels).set(value);
+        metrics::with_recorder(|r| r.register_gauge(&self.0, &METADATA).set(value));
     }
 }
 
 pub(super) struct CounterVec {
     pub(super) name: String,
     pub(super) label_names: &'static [&'static str],
+    pub(super) handles: HandleCache<Arc<Key>>,
 }
-
 impl CounterVec {
     pub(super) fn with_label_values(&self, values: impl MetricLabelValues) -> CounterWithLabels {
-        CounterWithLabels {
-            name: self.name.clone(),
-            labels: values.to_pairs(self.label_names),
-        }
+        CounterWithLabels(self.handles.get(values, self.label_names, |labels| {
+            Arc::new(Key::from_parts(self.name.clone(), labels))
+        }))
     }
 }
-
-pub(super) struct CounterWithLabels {
-    pub(super) name: String,
-    pub(super) labels: Vec<(String, String)>,
-}
-
+pub(super) struct CounterWithLabels(Arc<Key>);
 impl CounterWithLabels {
     pub(super) fn inc(&self) {
-        counter!(self.name.clone(), &self.labels).increment(1);
+        metrics::with_recorder(|r| r.register_counter(&self.0, &METADATA).increment(1));
     }
-
     pub(super) fn inc_by(&self, value: f64) {
         if value.is_sign_positive() {
-            counter!(self.name.clone(), &self.labels).increment(value as u64);
+            metrics::with_recorder(|r| {
+                r.register_counter(&self.0, &METADATA)
+                    .increment(value as u64)
+            });
         }
     }
 }
@@ -147,24 +160,58 @@ impl CounterWithLabels {
 pub(super) struct HistogramVec {
     pub(super) name: String,
     pub(super) label_names: &'static [&'static str],
+    pub(super) handles: HandleCache<Arc<Key>>,
 }
-
 impl HistogramVec {
     pub(super) fn with_label_values(&self, values: impl MetricLabelValues) -> HistogramWithLabels {
-        HistogramWithLabels {
-            name: self.name.clone(),
-            labels: values.to_pairs(self.label_names),
-        }
+        HistogramWithLabels(self.handles.get(values, self.label_names, |labels| {
+            Arc::new(Key::from_parts(self.name.clone(), labels))
+        }))
+    }
+}
+pub(super) struct HistogramWithLabels(Arc<Key>);
+impl HistogramWithLabels {
+    pub(super) fn observe(&self, value: f64) {
+        metrics::with_recorder(|r| r.register_histogram(&self.0, &METADATA).record(value));
     }
 }
 
-pub(super) struct HistogramWithLabels {
-    pub(super) name: String,
-    pub(super) labels: Vec<(String, String)>,
-}
-
-impl HistogramWithLabels {
-    pub(super) fn observe(&self, value: f64) {
-        histogram!(self.name.clone(), &self.labels).record(value);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cached_keys_follow_the_active_recorder_and_preserve_overflow_labels() {
+        let counter = CounterVec {
+            name: "services_scope_total".into(),
+            label_names: &["app_id"],
+            handles: Default::default(),
+        };
+        let first = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let second = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        // A warm call before a recorder exists must not freeze a noop handle.
+        counter.with_label_values(&["same"]).inc();
+        metrics::with_local_recorder(&first, || counter.with_label_values(&["same"]).inc());
+        metrics::with_local_recorder(&second, || {
+            counter.with_label_values(&["same"]).inc();
+            for n in 0..2048 {
+                counter.with_label_values(&[format!("app-{n}")]).inc();
+            }
+        });
+        assert!(
+            first
+                .handle()
+                .render()
+                .contains("services_scope_total{app_id=\"same\"} 1")
+        );
+        let rendered = second.handle().render();
+        assert!(rendered.contains("services_scope_total{app_id=\"same\"} 1"));
+        assert_eq!(
+            rendered
+                .lines()
+                .filter(|line| line.starts_with("services_scope_total{"))
+                .count(),
+            2049
+        );
+        assert_eq!(counter.handles.entries.read().unwrap().len(), 1024);
     }
 }

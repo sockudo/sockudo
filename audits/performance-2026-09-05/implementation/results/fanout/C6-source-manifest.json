@@ -1,0 +1,41 @@
+{
+  "baseline_commit": "5613bb291032b6b7660352974b03da9eb0646da0",
+  "production_files": {
+    "postgres": [
+      "schema.rs",
+      "writers.rs",
+      "history_store_impl.rs"
+    ],
+    "mysql": [
+      "schema.rs",
+      "writes.rs",
+      "store_impl.rs",
+      "mod.rs"
+    ],
+    "dynamodb": [
+      "degraded.rs",
+      "items.rs",
+      "mod.rs",
+      "queries.rs",
+      "store_impl.rs",
+      "writes.rs"
+    ],
+    "surreal": [
+      "entries.rs",
+      "records.rs",
+      "resources.rs",
+      "state.rs",
+      "store_impl.rs",
+      "mod.rs"
+    ],
+    "scylla": [
+      "entries.rs",
+      "mod.rs",
+      "schema.rs",
+      "store_impl.rs",
+      "retention.rs"
+    ]
+  },
+  "isolation": "C8 page methods restored to unchanged baseline in C6 variant; no version or annotation store changes",
+  "instrumentation": "shared source benchmark_tests.rs; injected Scylla session fixture constructor outside timed region"
+}

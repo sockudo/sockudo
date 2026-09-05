@@ -8025,6 +8025,7 @@ dependencies = [
  "rdkafka",
  "redis",
  "regex",
+ "rustls",
  "scc",
  "serde",
  "sockudo-ai-transport",

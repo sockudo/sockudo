@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -500,7 +500,10 @@ pub struct MemoryPushQueue {
 #[derive(Default)]
 struct MemoryQueueState {
     next_id: u64,
-    ready: BTreeMap<PushQueueStage, VecDeque<StoredMessage>>,
+    ready: BTreeMap<PushQueueStage, BTreeMap<u64, StoredMessage>>,
+    delayed: BTreeMap<PushQueueStage, BTreeMap<(u64, u64), StoredMessage>>,
+    lease_deadlines: BTreeSet<(u64, PushQueueStage, String)>,
+    next_order: u64,
     inflight: BTreeMap<(PushQueueStage, String), StoredMessage>,
     produced_keys: BTreeMap<PushQueueStage, BTreeMap<String, String>>,
     dead_letters: Vec<StoredDeadLetter>,
@@ -596,23 +599,13 @@ impl PushQueue for MemoryPushQueue {
         let now = now_ms();
         let mut inner = self.lock()?;
         reclaim_expired_leases(&mut inner, now);
-        let mut queue = inner.ready.remove(&stage).unwrap_or_default();
-        let mut deferred = VecDeque::new();
-        let mut out = Vec::new();
-
-        while let Some(mut stored) = queue.pop_front() {
-            if out.len() >= max_messages {
-                deferred.push_back(stored);
-                continue;
-            }
-            if stored
-                .not_before_ms
-                .is_some_and(|not_before| not_before > now)
-            {
-                deferred.push_back(stored);
-                continue;
-            }
-
+        promote_due_messages(&mut inner, stage, now);
+        let mut out = Vec::with_capacity(max_messages.min(1024));
+        while out.len() < max_messages {
+            let Some((_, mut stored)) = inner.ready.get_mut(&stage).and_then(BTreeMap::pop_first)
+            else {
+                break;
+            };
             stored.lease_deadline_ms = now.saturating_add(lease_timeout_ms);
             let token = QueueAckToken {
                 stage,
@@ -629,21 +622,25 @@ impl PushQueue for MemoryPushQueue {
                 enqueued_at_ms: stored.enqueued_at_ms,
                 not_before_ms: stored.not_before_ms,
                 lease_deadline_ms: stored.lease_deadline_ms,
-                ack: token.clone(),
+                ack: token,
             };
+            inner.lease_deadlines.insert((
+                stored.lease_deadline_ms,
+                stage,
+                stored.message_id.clone(),
+            ));
             inner
                 .inflight
                 .insert((stage, stored.message_id.clone()), stored);
             out.push(message);
         }
 
-        inner.ready.insert(stage, deferred);
         Ok(out)
     }
 
     async fn ack(&self, token: QueueAckToken) -> PushQueueResult<()> {
         let mut inner = self.lock()?;
-        if let Some(stored) = inner.inflight.remove(&(token.stage, token.message_id)) {
+        if let Some(stored) = remove_inflight(&mut inner, &token) {
             remove_produced_key(&mut inner, token.stage, &stored.key);
         }
         Ok(())
@@ -651,22 +648,18 @@ impl PushQueue for MemoryPushQueue {
 
     async fn nack(&self, token: QueueAckToken, retry_at_ms: Option<u64>) -> PushQueueResult<()> {
         let mut inner = self.lock()?;
-        if let Some(mut stored) = inner.inflight.remove(&(token.stage, token.message_id)) {
+        if let Some(mut stored) = remove_inflight(&mut inner, &token) {
             stored.attempt = stored.attempt.saturating_add(1);
             stored.not_before_ms = retry_at_ms;
             stored.lease_deadline_ms = 0;
-            inner
-                .ready
-                .entry(token.stage)
-                .or_default()
-                .push_back(stored);
+            insert_pending(&mut inner, token.stage, stored);
         }
         Ok(())
     }
 
     async fn dead_letter(&self, token: QueueAckToken, reason: String) -> PushQueueResult<()> {
         let mut inner = self.lock()?;
-        if let Some(stored) = inner.inflight.remove(&(token.stage, token.message_id)) {
+        if let Some(stored) = remove_inflight(&mut inner, &token) {
             remove_produced_key(&mut inner, token.stage, &stored.key);
             let dead_letter = dead_letter_from_message(token.stage, &stored, reason);
             inner.dead_letters.push(StoredDeadLetter {
@@ -677,11 +670,10 @@ impl PushQueue for MemoryPushQueue {
                 original_key: Some(stored.key.clone()),
                 original_payload: Some(stored.payload.clone()),
             });
-            inner
-                .ready
-                .entry(PushQueueStage::DeadLetters)
-                .or_default()
-                .push_back(StoredMessage {
+            insert_pending(
+                &mut inner,
+                PushQueueStage::DeadLetters,
+                StoredMessage {
                     message_id: format!("dlq-{}", stored.message_id),
                     key: dead_letter.key.clone(),
                     route: QueueRoute::for_message(
@@ -694,7 +686,8 @@ impl PushQueue for MemoryPushQueue {
                     enqueued_at_ms: now_ms(),
                     not_before_ms: None,
                     lease_deadline_ms: 0,
-                });
+                },
+            );
         }
         Ok(())
     }
@@ -769,10 +762,11 @@ impl PushQueue for MemoryPushQueue {
 
     async fn lag(&self, stage: PushQueueStage) -> PushQueueResult<QueueLagMetrics> {
         let now = now_ms();
-        let inner = self.lock()?;
+        let mut inner = self.lock()?;
+        promote_due_messages(&mut inner, stage, now);
         let mut metrics = QueueLagMetrics::default();
         if let Some(queue) = inner.ready.get(&stage) {
-            for message in queue {
+            for message in queue.values() {
                 if message
                     .not_before_ms
                     .is_some_and(|not_before| not_before > now)
@@ -789,6 +783,15 @@ impl PushQueue for MemoryPushQueue {
                         Some(queue_message_age_ms(message, now)),
                     );
                 }
+            }
+        }
+        if let Some(queue) = inner.delayed.get(&stage) {
+            metrics.delayed_depth += queue.len() as u64;
+            for message in queue.values() {
+                metrics.oldest_delayed_age_ms = max_optional_u64(
+                    metrics.oldest_delayed_age_ms,
+                    Some(queue_message_age_ms(message, now)),
+                );
             }
         }
         for ((message_stage, _), message) in &inner.inflight {
@@ -842,11 +845,10 @@ impl MemoryPushQueue {
                 original_payload: None,
             });
         }
-        inner
-            .ready
-            .entry(stage)
-            .or_default()
-            .push_back(StoredMessage {
+        insert_pending(
+            &mut inner,
+            stage,
+            StoredMessage {
                 message_id: message_id.clone(),
                 key,
                 route,
@@ -855,7 +857,8 @@ impl MemoryPushQueue {
                 enqueued_at_ms: now_ms(),
                 not_before_ms,
                 lease_deadline_ms: 0,
-            });
+            },
+        );
         Ok(message_id)
     }
 
@@ -879,20 +882,63 @@ fn remove_produced_key(inner: &mut MemoryQueueState, stage: PushQueueStage, key:
     }
 }
 
-fn reclaim_expired_leases(inner: &mut MemoryQueueState, now_ms: u64) {
-    let expired = inner
+fn remove_inflight(inner: &mut MemoryQueueState, token: &QueueAckToken) -> Option<StoredMessage> {
+    let stored = inner
         .inflight
-        .iter()
-        .filter_map(|((stage, message_id), message)| {
-            (message.lease_deadline_ms <= now_ms).then_some((*stage, message_id.clone()))
-        })
-        .collect::<Vec<_>>();
+        .remove(&(token.stage, token.message_id.clone()))?;
+    inner.lease_deadlines.remove(&(
+        stored.lease_deadline_ms,
+        token.stage,
+        token.message_id.clone(),
+    ));
+    Some(stored)
+}
 
-    for (stage, message_id) in expired {
+fn insert_pending(inner: &mut MemoryQueueState, stage: PushQueueStage, message: StoredMessage) {
+    inner.next_order = inner
+        .next_order
+        .checked_add(1)
+        .expect("memory queue ordering space exhausted");
+    let order = inner.next_order;
+    if let Some(due) = message.not_before_ms.filter(|due| *due > now_ms()) {
+        inner
+            .delayed
+            .entry(stage)
+            .or_default()
+            .insert((due, order), message);
+    } else {
+        inner.ready.entry(stage).or_default().insert(order, message);
+    }
+}
+
+fn promote_due_messages(inner: &mut MemoryQueueState, stage: PushQueueStage, now_ms: u64) {
+    let Some(delayed) = inner.delayed.get_mut(&stage) else {
+        return;
+    };
+    let ready = inner.ready.entry(stage).or_default();
+    while delayed
+        .first_key_value()
+        .is_some_and(|((due, _), _)| *due <= now_ms)
+    {
+        if let Some(((_, order), message)) = delayed.pop_first() {
+            ready.insert(order, message);
+        }
+    }
+}
+
+fn reclaim_expired_leases(inner: &mut MemoryQueueState, now_ms: u64) {
+    while inner
+        .lease_deadlines
+        .first()
+        .is_some_and(|(deadline, _, _)| *deadline <= now_ms)
+    {
+        let Some((_, stage, message_id)) = inner.lease_deadlines.pop_first() else {
+            break;
+        };
         if let Some(mut message) = inner.inflight.remove(&(stage, message_id)) {
             message.attempt = message.attempt.saturating_add(1);
             message.lease_deadline_ms = 0;
-            inner.ready.entry(stage).or_default().push_back(message);
+            insert_pending(inner, stage, message);
         }
     }
 }
@@ -1868,6 +1914,8 @@ mod tests {
         };
         let store = AlwaysConflictStatusStore {
             current: VersionedPublishStatus {
+                pending_feedback: Default::default(),
+                pending_children: Default::default(),
                 status,
                 revision: 7,
                 updated_at_ms: 10,
@@ -2547,6 +2595,160 @@ mod tests {
             not_before_ms: None,
             expires_at_ms: None,
         }
+    }
+
+    #[tokio::test]
+    async fn nested_client_shards_are_bounded_and_complete() {
+        {
+            let store = Arc::new(MemoryPushStore::new());
+            let queue = Arc::new(MemoryPushQueue::new());
+            let prototype = sample_device("seed");
+            for index in 0..11 {
+                let mut device = prototype.clone();
+                device.id = format!("device-{index:02}");
+                store.upsert_device(device).await.unwrap();
+            }
+            store
+                .upsert_subscription(ChannelSubscription::from_client(
+                    "app-1", "room", "client-1",
+                ))
+                .await
+                .unwrap();
+            let mut direct = prototype.clone();
+            direct.id = "zz-last-device".to_owned();
+            direct.client_id = Some("other-client".to_owned());
+            store.upsert_device(direct.clone()).await.unwrap();
+            store
+                .upsert_subscription(ChannelSubscription::from_device("room", &direct))
+                .await
+                .unwrap();
+            let config = FanoutConfig {
+                fast_threshold: 2,
+                shard_size: 3,
+                page_size: 2,
+                provider_batch_size: 20,
+                ..FanoutConfig::default()
+            };
+            PushPipeline::new(store.clone(), queue.clone(), config.clone())
+                .accept_publish(
+                    PushAcceptRequest {
+                        intent: sample_intent(vec![PublishTarget::Channel {
+                            channel: "room".to_owned(),
+                        }]),
+                        expected_recipients: 12,
+                    },
+                    10,
+                )
+                .await
+                .unwrap();
+            PushPlanner::new(store.clone(), queue.clone(), config.clone())
+                .run_once("planner")
+                .await
+                .unwrap();
+            let worker = PushShardWorker::new(store, queue.clone(), config);
+            let mut ids = std::collections::BTreeSet::new();
+            let mut iterations = 0;
+            while worker.run_once("shards").await.unwrap() > 0 {
+                iterations += 1;
+                assert!(iterations < 20, "continuations must make forward progress");
+                let batches = queue
+                    .consume(
+                        PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                        "check",
+                        32,
+                        30_000,
+                    )
+                    .await
+                    .unwrap();
+                let mut emitted = 0;
+                for message in batches {
+                    let PushQueuePayload::DeliveryBatch(batch) = message.payload else {
+                        panic!("delivery batch expected")
+                    };
+                    emitted += batch.jobs.len();
+                    for job in batch.jobs {
+                        assert!(
+                            ids.insert(job.device_id.unwrap()),
+                            "recipient emitted twice"
+                        );
+                    }
+                    queue.ack(message.ack).await.unwrap();
+                }
+                assert!(emitted <= 3);
+                let next = queue
+                    .consume(PushQueueStage::ShardJobs, "peek", 1, 30_000)
+                    .await
+                    .unwrap();
+                for message in next {
+                    let PushQueuePayload::ShardJob(_) = &message.payload else {
+                        panic!("shard expected")
+                    };
+                    queue.nack(message.ack, None).await.unwrap();
+                }
+            }
+            assert_eq!(ids.len(), 12);
+            assert!(ids.contains("zz-last-device"));
+        }
+    }
+
+    #[tokio::test]
+    async fn underestimated_fast_audience_continues_without_dropping_recipients() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let prototype = sample_device("seed");
+        for index in 0..7 {
+            let mut device = prototype.clone();
+            device.id = format!("d-{index}");
+            store.upsert_device(device).await.unwrap();
+        }
+        let config = FanoutConfig {
+            fast_threshold: 2,
+            shard_size: 2,
+            page_size: 2,
+            provider_batch_size: 20,
+            ..FanoutConfig::default()
+        };
+        PushPipeline::new(store.clone(), queue.clone(), config.clone())
+            .accept_publish(
+                PushAcceptRequest {
+                    intent: sample_intent(vec![PublishTarget::Client {
+                        client_id: "client-1".to_owned(),
+                    }]),
+                    expected_recipients: 1,
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        PushPlanner::new(store.clone(), queue.clone(), config.clone())
+            .run_once("planner")
+            .await
+            .unwrap();
+        let worker = PushShardWorker::new(store, queue.clone(), config);
+        for _ in 0..10 {
+            if worker.run_once("shards").await.unwrap() == 0 {
+                break;
+            }
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for message in queue
+            .consume(
+                PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                "check",
+                32,
+                30_000,
+            )
+            .await
+            .unwrap()
+        {
+            let PushQueuePayload::DeliveryBatch(batch) = message.payload else {
+                panic!("delivery batch expected")
+            };
+            for job in batch.jobs {
+                assert!(ids.insert(job.device_id.unwrap()));
+            }
+        }
+        assert_eq!(ids.len(), 7);
     }
 
     fn sample_device(device_id: &str) -> DeviceDetails {

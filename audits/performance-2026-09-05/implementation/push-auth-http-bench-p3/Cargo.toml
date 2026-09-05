@@ -1,0 +1,11 @@
+[package]
+name="push-auth-http-audit-p3"
+version="0.0.0"
+edition="2024"
+[workspace]
+[dependencies]
+sockudo-push={path="../variants/p3/crates/sockudo-push",features=["push-fcm"]}
+async-trait="0.1.89"
+reqwest={version="0.12",default-features=false,features=["rustls-tls"]}
+sonic-rs="0.5.6"
+tokio={version="1",features=["full"]}

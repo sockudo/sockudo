@@ -1,0 +1,77 @@
+    Checking hyper-util v0.1.20
+    Checking jsonwebtoken v11.0.0
+    Checking sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+    Checking serde-aux v4.7.0
+    Checking redis v1.4.1
+    Checking sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Checking google-cloud-wkt v1.7.0
+   Compiling sqlx-core v0.9.0
+    Checking tracing-subscriber v0.3.23
+    Checking amq-protocol-types v10.6.2
+    Checking quinn-udp v0.5.15
+    Checking jsonwebtoken v10.4.0
+    Checking iggy_common v0.10.0
+    Checking async-nats v0.47.0
+    Checking rdkafka v0.39.0
+    Checking oxidelta v0.1.4
+    Checking quinn v0.11.11
+    Checking amq-protocol-uri v10.6.2
+    Checking amq-protocol-tcp v10.6.2
+    Checking amq-protocol v10.6.2
+    Checking tracing-opentelemetry v0.33.0
+    Checking hyper-rustls v0.27.9
+    Checking axum v0.8.9
+    Checking hyper-timeout v0.5.2
+    Checking hyper-tls v0.6.0
+    Checking axum-server v0.8.0
+    Checking google-cloud-rpc v1.6.0
+    Checking google-cloud-type v1.6.0
+    Checking reqwest v0.13.4
+    Checking aws-smithy-http-client v1.1.13
+    Checking reqwest v0.12.28
+    Checking lapin v4.10.0
+    Checking google-cloud-gax v1.13.0
+    Checking aws-smithy-runtime v1.11.3
+    Checking sqlx-postgres v0.9.0
+    Checking sqlx-mysql v0.9.0
+    Checking reqwest-middleware v0.5.2
+    Checking google-cloud-auth v1.15.0
+    Checking reqwest-tracing v0.7.1
+    Checking reqwest-retry v0.9.1
+    Checking aws-runtime v1.7.5
+    Checking tonic v0.14.6
+    Checking sockudo-ws v2.0.1
+    Checking iggy v0.10.0
+    Checking aws-sdk-sts v1.107.0
+    Checking aws-sdk-ssooidc v1.104.0
+    Checking aws-sdk-sso v1.102.0
+    Checking aws-sdk-dynamodb v1.116.0
+    Checking aws-sdk-lambda v1.131.0
+    Checking aws-sdk-sns v1.104.0
+    Checking aws-sdk-sqs v1.102.0
+    Checking tonic-prost v0.14.6
+    Checking surrealdb-protocol v0.10.2
+    Checking google-cloud-gax-internal v0.7.16
+   Compiling sqlx-macros-core v0.9.0
+    Checking aws-config v1.8.18
+    Checking google-cloud-iam-v1 v1.11.0
+   Compiling sqlx-macros v0.9.0
+    Checking google-cloud-pubsub v1.3.0
+    Checking sqlx v0.9.0
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking surrealdb-types v3.2.3
+    Checking surrealdb-core v3.2.3
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+    Checking sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+    Checking sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+    Checking surrealdb v3.2.3
+    Checking sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Checking sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+    Checking sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 59.35s

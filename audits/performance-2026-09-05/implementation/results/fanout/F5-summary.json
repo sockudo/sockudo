@@ -1,0 +1,34 @@
+{
+  "baseline": {
+    "channels=16": {
+      "ns": {
+        "median": 1063653504,
+        "min": 1060524532,
+        "max": 1067979878,
+        "samples": 9
+      },
+      "delivered": {
+        "median": 1024,
+        "min": 1024,
+        "max": 1024,
+        "samples": 9
+      }
+    }
+  },
+  "after": {
+    "channels=16": {
+      "ns": {
+        "median": 269804426,
+        "min": 268174605,
+        "max": 277169180,
+        "samples": 9
+      },
+      "delivered": {
+        "median": 1024,
+        "min": 1024,
+        "max": 1024,
+        "samples": 9
+      }
+    }
+  }
+}

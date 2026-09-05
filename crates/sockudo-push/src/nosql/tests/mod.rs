@@ -14,6 +14,19 @@ type TestDocumentMap = Arc<RwLock<BTreeMap<TestDocumentKey, String>>>;
 #[derive(Clone, Default)]
 struct TestDocumentBackend {
     inner: TestDocumentMap,
+    full_scans: Arc<std::sync::atomic::AtomicUsize>,
+    page_rows: Arc<std::sync::atomic::AtomicUsize>,
+    child_write_gate: Option<Arc<ChildWriteGate>>,
+    missing_parent_read_gate: Option<Arc<ChildWriteGate>>,
+}
+
+#[derive(Default)]
+struct ChildWriteGate {
+    started: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+    armed: std::sync::atomic::AtomicBool,
+    fail_after_write: std::sync::atomic::AtomicBool,
+    missing_reads_until_pause: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait]
@@ -26,10 +39,26 @@ impl DocumentBackend for TestDocumentBackend {
         sk: &str,
         data: String,
     ) -> PushStorageResult<()> {
+        let gate = self.child_write_gate.as_ref().filter(|gate| {
+            family == super::constants::FAMILY_FANOUT_SHARD
+                && gate.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
+        });
+        if let Some(gate) = gate {
+            gate.started.notify_one();
+            gate.resume.notified().await;
+        }
         self.inner.write().await.insert(
             (family_app(family, app_id), pk.to_owned(), sk.to_owned()),
             data,
         );
+        if gate.is_some_and(|gate| {
+            gate.fail_after_write
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }) {
+            return Err(crate::storage::PushStorageError::Backend(
+                "injected uncertain child write".to_owned(),
+            ));
+        }
         Ok(())
     }
 
@@ -57,12 +86,26 @@ impl DocumentBackend for TestDocumentBackend {
         pk: &str,
         sk: &str,
     ) -> PushStorageResult<Option<String>> {
-        Ok(self
+        let value = self
             .inner
             .read()
             .await
             .get(&(family_app(family, app_id), pk.to_owned(), sk.to_owned()))
-            .cloned())
+            .cloned();
+        if value.is_none()
+            && family == super::constants::FAMILY_STATUS
+            && let Some(gate) = &self.missing_parent_read_gate
+            && gate.armed.load(std::sync::atomic::Ordering::SeqCst)
+            && gate
+                .missing_reads_until_pause
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+        {
+            gate.armed.store(false, std::sync::atomic::Ordering::SeqCst);
+            gate.started.notify_one();
+            gate.resume.notified().await;
+        }
+        Ok(value)
     }
 
     async fn get_consistent(
@@ -130,6 +173,8 @@ impl DocumentBackend for TestDocumentBackend {
         family: &'static str,
         app_id: &str,
     ) -> PushStorageResult<Vec<StoredDocument>> {
+        self.full_scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self
             .inner
             .read()
@@ -142,6 +187,75 @@ impl DocumentBackend for TestDocumentBackend {
                 data: data.clone(),
             })
             .collect())
+    }
+    async fn scan_pk_page(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let family_key = family_app(family, app_id);
+        let rows: Vec<_> = self
+            .inner
+            .read()
+            .await
+            .range((
+                Excluded((
+                    family_key.clone(),
+                    pk.to_owned(),
+                    start_after.unwrap_or("").to_owned(),
+                )),
+                Unbounded,
+            ))
+            .take_while(|((f, p, _), _)| f == &family_key && p == pk)
+            .take(limit.max(1))
+            .map(|((_, pk, sk), data)| StoredDocument {
+                pk: pk.clone(),
+                sk: sk.clone(),
+                data: data.clone(),
+            })
+            .collect();
+        self.page_rows
+            .fetch_add(rows.len(), std::sync::atomic::Ordering::Relaxed);
+        Ok(rows)
+    }
+
+    async fn scan_app_page_by_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        start_after_pk: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let family_key = family_app(family, app_id);
+        let rows: Vec<_> = self
+            .inner
+            .read()
+            .await
+            .range((
+                Excluded((
+                    family_key.clone(),
+                    start_after_pk.unwrap_or("").to_owned(),
+                    String::new(),
+                )),
+                Unbounded,
+            ))
+            .take_while(|((f, _, _), _)| f == &family_key)
+            .filter(|((_, pk, _), _)| start_after_pk.is_none_or(|start| pk.as_str() > start))
+            .take(limit.max(1))
+            .map(|((_, pk, sk), data)| StoredDocument {
+                pk: pk.clone(),
+                sk: sk.clone(),
+                data: data.clone(),
+            })
+            .collect();
+        self.page_rows
+            .fetch_add(rows.len(), std::sync::atomic::Ordering::Relaxed);
+        Ok(rows)
     }
 }
 
@@ -464,4 +578,146 @@ async fn document_store_satisfies_secondary_storage_contracts() {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn ordered_index_migration_resumes_legacy_wide_partitions_and_rolls_back() {
+    use super::constants::*;
+    use crate::domain::ChannelSubscription;
+    use crate::storage::PushSubscriptionStore;
+    use std::sync::atomic::Ordering;
+    let store = test_store();
+    // Legacy writers did not populate any ordered references. Include a wide pk.
+    for channel in ["a", "a0", "b"] {
+        for index in 0..9 {
+            let subscription =
+                ChannelSubscription::from_client("app-1", channel, format!("client-{index}"));
+            store
+                .put_json(
+                    FAMILY_SUBSCRIPTION,
+                    "app-1",
+                    channel,
+                    &subscription.device_id,
+                    &subscription,
+                )
+                .await
+                .unwrap();
+        }
+    }
+    let legacy = store.list_subscriptions("app-1", 100, None).await.unwrap();
+    assert_eq!(legacy.items.len(), 27);
+    let mut checkpoint = store
+        .migrate_ordered_indexes_page("app-1", None, 4)
+        .await
+        .unwrap();
+    assert!(checkpoint.is_some());
+    // A crash before the completion marker leaves legacy reading intact.
+    let restarted = DocumentPushStore::with_backend(store.backend.clone());
+    assert_eq!(
+        restarted
+            .list_subscriptions("app-1", 100, None)
+            .await
+            .unwrap(),
+        legacy
+    );
+    while let Some(cursor) = checkpoint {
+        let serialized = sonic_rs::to_string(&cursor).unwrap();
+        checkpoint = restarted
+            .migrate_ordered_indexes_page(
+                "app-1",
+                Some(sonic_rs::from_str(&serialized).unwrap()),
+                4,
+            )
+            .await
+            .unwrap();
+    }
+    store.backend.full_scans.store(0, Ordering::Relaxed);
+    store.backend.page_rows.store(0, Ordering::Relaxed);
+    let mut cursor = None;
+    let mut found = Vec::new();
+    loop {
+        let page = restarted
+            .list_subscriptions("app-1", 3, cursor)
+            .await
+            .unwrap();
+        found.extend(page.items);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(found, legacy.items);
+    assert_eq!(store.backend.full_scans.load(Ordering::Relaxed), 0);
+    assert!(store.backend.page_rows.load(Ordering::Relaxed) <= 36);
+    restarted.disable_ordered_indexes("app-1").await.unwrap();
+    assert_eq!(
+        restarted
+            .list_subscriptions("app-1", 100, None)
+            .await
+            .unwrap(),
+        legacy
+    );
+    assert_eq!(store.backend.full_scans.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn ordered_subscription_reads_skip_crash_orphans_without_losing_progress() {
+    use super::constants::*;
+    use crate::domain::ChannelSubscription;
+    use crate::storage::PushSubscriptionStore;
+    let store = test_store();
+    for index in 0..5 {
+        store
+            .upsert_subscription(ChannelSubscription::from_client(
+                "app-1",
+                "room",
+                format!("client-{index}"),
+            ))
+            .await
+            .unwrap();
+    }
+    let mut cursor = store
+        .migrate_ordered_indexes_page("app-1", None, 2)
+        .await
+        .unwrap();
+    while let Some(checkpoint) = cursor {
+        cursor = store
+            .migrate_ordered_indexes_page("app-1", Some(checkpoint), 2)
+            .await
+            .unwrap();
+    }
+    // Simulate a crash after canonical removal but before advisory index deletion.
+    let deleted = ChannelSubscription::from_client("app-1", "room", "client-0");
+    store
+        .backend
+        .delete(FAMILY_SUBSCRIPTION, "app-1", "room", &deleted.device_id)
+        .await
+        .unwrap();
+    let first = store.list_subscriptions("app-1", 1, None).await.unwrap();
+    assert!(first.items.is_empty());
+    assert!(first.next_cursor.is_some());
+    let remaining = store
+        .list_subscriptions("app-1", 10, first.next_cursor)
+        .await
+        .unwrap();
+    assert_eq!(remaining.items.len(), 4);
+}
+
+#[tokio::test]
+async fn document_lifecycle_retention_survives_restart_and_drains_after_rollback() {
+    let store = test_store();
+    let restarted = DocumentPushStore::with_backend(store.backend.clone());
+    crate::lifecycle::tests::exercise_retention(Arc::new(store), Arc::new(restarted))
+        .await
+        .unwrap();
+}
+
+mod lifecycle;
+mod pagination;
+
+#[tokio::test]
+async fn document_cleanup_scans_are_bounded_and_progress_after_restart() {
+    let store = test_store();
+    let restarted = DocumentPushStore::with_backend(store.backend.clone());
+    crate::lifecycle::tests::exercise_cleanup_progress(Arc::new(store), Arc::new(restarted)).await;
 }

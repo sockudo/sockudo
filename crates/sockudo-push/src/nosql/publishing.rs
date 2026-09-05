@@ -2,6 +2,7 @@
 use super::constants::*;
 use super::document::{DocumentBackend, DocumentPushStore};
 use super::helpers::*;
+use super::ordered::*;
 use crate::cleanup::terminal_publish_state;
 use crate::domain::{
     ChannelSubscription, DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, NotificationTemplate,
@@ -26,6 +27,10 @@ struct StoredPublishStatus {
     revision: u64,
     updated_at_ms: u64,
     status: PublishStatus,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pending_feedback: std::collections::BTreeMap<String, crate::storage::FeedbackReceipt>,
+    #[serde(default)]
+    pending_children: std::collections::BTreeSet<String>,
 }
 
 struct DecodedPublishStatus {
@@ -38,6 +43,8 @@ fn encode_publish_status(status: &VersionedPublishStatus) -> PushStorageResult<S
         revision: status.revision,
         updated_at_ms: status.updated_at_ms,
         status: status.status.clone(),
+        pending_feedback: status.pending_feedback.clone(),
+        pending_children: status.pending_children.clone(),
     })
 }
 
@@ -53,6 +60,8 @@ fn decode_publish_status(data: &str) -> PushStorageResult<DecodedPublishStatus> 
                 status: stored.status,
                 revision: stored.revision,
                 updated_at_ms: stored.updated_at_ms,
+                pending_feedback: stored.pending_feedback,
+                pending_children: stored.pending_children,
             },
             legacy: false,
         });
@@ -63,6 +72,8 @@ fn decode_publish_status(data: &str) -> PushStorageResult<DecodedPublishStatus> 
             status: from_json_str::<PublishStatus>(data)?,
             revision: INITIAL_PUBLISH_STATUS_REVISION,
             updated_at_ms: 0,
+            pending_feedback: Default::default(),
+            pending_children: Default::default(),
         },
         legacy: true,
     })
@@ -76,7 +87,7 @@ impl<B> DocumentPushStore<B>
 where
     B: DocumentBackend,
 {
-    async fn read_versioned_publish_status(
+    pub(super) async fn read_versioned_publish_status(
         &self,
         app_id: &str,
         publish_id: &str,
@@ -88,6 +99,9 @@ where
         else {
             return Ok(None);
         };
+        if super::lifecycle::tombstone(&data).is_some() {
+            return Ok(None);
+        }
         let mut decoded = decode_publish_status(&data)?;
         if decoded.legacy {
             decoded.versioned.updated_at_ms = self
@@ -99,6 +113,84 @@ where
                 .unwrap_or(0);
         }
         Ok(Some((data, decoded.versioned)))
+    }
+
+    // Each call owns a unique durable admission. It has no expiring lease: cleanup cannot
+    // overtake a paused backend write. An uncertain/crashed write leaves visible bounded
+    // metadata instead of silently turning absence of work into retirement proof.
+    pub(super) async fn set_child_admission(
+        &self,
+        app_id: &str,
+        publish_id: &str,
+        token: &str,
+        reserve: bool,
+    ) -> PushStorageResult<bool> {
+        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(PushStorageError::Backend(
+                "invalid child admission token".to_owned(),
+            ));
+        }
+        for _ in 0..32 {
+            let Some((raw, current)) = self
+                .read_versioned_publish_status(app_id, publish_id)
+                .await?
+            else {
+                if self
+                    .backend
+                    .get_consistent(FAMILY_STATUS, app_id, publish_id, DEFAULT_SK)
+                    .await?
+                    .is_some()
+                {
+                    return Err(PushStorageError::Backend(
+                        "publish has been retired".to_owned(),
+                    ));
+                }
+                return Err(PushStorageError::Backend(
+                    "publish status is missing; child write must retry after status repair"
+                        .to_owned(),
+                ));
+            };
+            let mut updated = current.clone();
+            if reserve {
+                if updated.pending_children.len() >= 64 && !updated.pending_children.contains(token)
+                {
+                    return Err(PushStorageError::Backend(
+                        "publish child admission capacity reached".to_owned(),
+                    ));
+                }
+                updated.pending_children.insert(token.to_owned());
+            } else if !updated.pending_children.remove(token) {
+                return Err(PushStorageError::Backend(
+                    "publish child admission was lost".to_owned(),
+                ));
+            }
+            updated.revision = current.revision.checked_add(1).ok_or_else(|| {
+                PushStorageError::Backend("publish status revision exhausted".to_owned())
+            })?;
+            updated.updated_at_ms = next_publish_status_updated_at(current.updated_at_ms);
+            let index = self.prepare_publish_status_index(&updated).await?;
+            if self
+                .backend
+                .compare_and_swap(
+                    FAMILY_STATUS,
+                    app_id,
+                    publish_id,
+                    DEFAULT_SK,
+                    &raw,
+                    encode_publish_status(&updated)?,
+                )
+                .await?
+            {
+                self.refresh_publish_status_indexes(&updated, Some(current.updated_at_ms))
+                    .await;
+                return Ok(true);
+            }
+            self.discard_publish_status_index_if_stale(&updated, &index)
+                .await;
+        }
+        Err(PushStorageError::Backend(
+            "publish child admission contention".to_owned(),
+        ))
     }
 
     async fn prepare_publish_status_index(
@@ -239,6 +331,14 @@ impl<B> PushPublishStatusStore for DocumentPushStore<B>
 where
     B: DocumentBackend,
 {
+    async fn is_publish_retired(&self, app_id: &str, publish_id: &str) -> PushStorageResult<bool> {
+        Ok(self
+            .backend
+            .get_consistent(FAMILY_STATUS, app_id, publish_id, DEFAULT_SK)
+            .await?
+            .is_some_and(|raw| super::lifecycle::tombstone(&raw).is_some()))
+    }
+
     async fn create_publish_status_if_absent(
         &self,
         status: PublishStatus,
@@ -260,6 +360,8 @@ where
             status,
             revision: INITIAL_PUBLISH_STATUS_REVISION,
             updated_at_ms: next_publish_status_updated_at(0),
+            pending_feedback: Default::default(),
+            pending_children: Default::default(),
         };
         let indexed_data = self.prepare_publish_status_index(&versioned).await?;
         if !self
@@ -300,6 +402,21 @@ where
         expected: &VersionedPublishStatus,
         next: PublishStatus,
     ) -> PushStorageResult<PublishStatusCasOutcome> {
+        self.compare_and_swap_feedback_status(expected, next, expected.pending_feedback.clone())
+            .await
+    }
+
+    async fn compare_and_swap_feedback_status(
+        &self,
+        expected: &VersionedPublishStatus,
+        next: PublishStatus,
+        pending: std::collections::BTreeMap<String, crate::storage::FeedbackReceipt>,
+    ) -> PushStorageResult<PublishStatusCasOutcome> {
+        if pending.len() > crate::storage::MAX_PENDING_FEEDBACK {
+            return Err(crate::storage::PushStorageError::Backend(
+                "feedback receipt capacity reached".into(),
+            ));
+        }
         if expected.revision == 0
             || expected.status.app_id != next.app_id
             || expected.status.publish_id != next.publish_id
@@ -326,6 +443,8 @@ where
             status: next,
             revision,
             updated_at_ms: next_publish_status_updated_at(current.updated_at_ms),
+            pending_feedback: pending,
+            pending_children: current.pending_children.clone(),
         };
         let indexed_data = self.prepare_publish_status_index(&updated).await?;
         if !self
@@ -357,6 +476,20 @@ where
     B: DocumentBackend,
 {
     async fn append_publish_log_event(&self, event: PublishLogEvent) -> PushStorageResult<()> {
+        let token = hex::encode(rand::random::<[u8; 32]>());
+        let admitted = self
+            .set_child_admission(&event.app_id, &event.publish_id, &token, true)
+            .await?;
+
+        let position = format!("{:020}:{}", event.occurred_at_ms, event.event_id);
+        self.write_ordered_reference(
+            FAMILY_PUBLISH_LOG_ORDERED,
+            &event.app_id,
+            &position,
+            &event.publish_id,
+            &position,
+        )
+        .await?;
         self.put_json(
             FAMILY_PUBLISH_LOG,
             &event.app_id,
@@ -364,7 +497,12 @@ where
             &format!("{:020}:{}", event.occurred_at_ms, event.event_id),
             &event,
         )
-        .await
+        .await?;
+        if admitted {
+            self.set_child_admission(&event.app_id, &event.publish_id, &token, false)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn list_publish_log_events(
@@ -373,21 +511,15 @@ where
         limit: usize,
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<PublishLogEvent>> {
-        let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .scan_json::<PublishLogEvent>(FAMILY_PUBLISH_LOG, app_id)
-            .await?
-            .into_iter()
-            .map(|(_, position, event)| (position, event))
-            .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(page_from_rows(
+        self.ordered_page(
+            FAMILY_PUBLISH_LOG,
+            FAMILY_PUBLISH_LOG_ORDERED,
             app_id,
             PushCursorKind::PublishLog,
-            rows,
             limit,
-            start,
-        ))
+            cursor,
+        )
+        .await
     }
 }
 
@@ -397,6 +529,11 @@ where
     B: DocumentBackend,
 {
     async fn put_fanout_shard(&self, shard: ShardJob) -> PushStorageResult<()> {
+        let token = hex::encode(rand::random::<[u8; 32]>());
+        let admitted = self
+            .set_child_admission(&shard.app_id, &shard.publish_id, &token, true)
+            .await?;
+
         self.put_json(
             FAMILY_FANOUT_SHARD,
             &shard.app_id,
@@ -404,7 +541,12 @@ where
             &shard.shard_id,
             &shard,
         )
-        .await
+        .await?;
+        if admitted {
+            self.set_child_admission(&shard.app_id, &shard.publish_id, &token, false)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn get_fanout_shard(
@@ -630,16 +772,8 @@ pub(super) async fn document_cleanup_publish_statuses<B>(
 where
     B: DocumentBackend,
 {
-    let rows = store
-        .backend
-        .scan_pk_page(
-            FAMILY_STATUS_UPDATED_TIME,
-            app_id,
-            "time",
-            None,
-            limit.max(1),
-        )
-        .await?;
+    let rows =
+        super::coordination::cleanup_page(store, FAMILY_STATUS_UPDATED_TIME, app_id, limit).await?;
     let mut counters = crate::cleanup::PushCleanupCounters::default();
     for document in rows {
         counters.scanned = counters.scanned.saturating_add(1);
@@ -703,6 +837,22 @@ where
             continue;
         };
 
+        if super::lifecycle::tombstone(&status_data).is_some() {
+            continue;
+        }
+        if store
+            .backend
+            .get(
+                FAMILY_FANOUT_SHARD,
+                app_id,
+                &publish_id,
+                crate::lifecycle::PLANNER_RECEIPT_ID,
+            )
+            .await?
+            .is_some()
+        {
+            continue;
+        }
         let mut decoded = decode_publish_status(&status_data)?;
         if decoded.legacy {
             let Some(legacy_updated_at_ms) = store
@@ -732,7 +882,10 @@ where
                 .await?;
             continue;
         }
-        if !terminal_publish_state(decoded.versioned.status.state) {
+        if !terminal_publish_state(decoded.versioned.status.state)
+            || !decoded.versioned.pending_feedback.is_empty()
+            || !decoded.versioned.pending_children.is_empty()
+        {
             continue;
         }
         if store

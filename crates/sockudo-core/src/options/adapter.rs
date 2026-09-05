@@ -160,6 +160,10 @@ pub struct KafkaAdapterConfig {
     pub sasl_username: Option<String>,
     pub sasl_password: Option<String>,
     pub nodes_number: Option<u32>,
+    /// Partitions for a fresh topic generation. Existing generation counts must not change.
+    pub partitions: i32,
+    /// Explicit isolated generation used for a drained partition/key migration.
+    pub topic_epoch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +281,8 @@ impl Default for KafkaAdapterConfig {
             sasl_username: None,
             sasl_password: None,
             nodes_number: None,
+            partitions: 1,
+            topic_epoch: None,
         }
     }
 }

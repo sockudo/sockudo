@@ -1,0 +1,25 @@
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+error: manual implementation of `BuildHasher::hash_one`
+  --> crates/sockudo-app/src/cached_app_manager.rs:69:23
+   |
+69 |         &self.flights[hasher.finish() as usize % self.flights.len()]
+   |                       ^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_hash_one
+   = note: `-D clippy::manual-hash-one` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::manual_hash_one)]`
+help: try
+   |
+67 ~         
+68 ~         
+69 ~         &self.flights[self.flight_hasher.hash_one(&key) as usize % self.flights.len()]
+   |
+
+error: could not compile `sockudo-app` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

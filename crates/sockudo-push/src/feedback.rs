@@ -1,15 +1,13 @@
+use crate::domain::DevicePushState;
 use futures_util::StreamExt;
 
 use crate::domain::{
-    DeadLetter, DeliveryEvent, DeliveryFeedback, DeliveryOutcome, DeliveryResult, DevicePushState,
-    ProviderError, ProviderFailureClass, PublishLifecycleState, PublishStatus,
+    DeadLetter, DeliveryEvent, DeliveryFeedback, DeliveryOutcome, DeliveryResult, ProviderError,
+    ProviderFailureClass, PublishLifecycleState, PublishStatus,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::{PushMetrics, provider_label};
-use crate::pipeline::{
-    PublishStatusMutationOutcome, PushPipelineResult, PushQueuePayload, PushQueueStage,
-    QueueMessage, mutate_publish_status_with_cas, now_ms,
-};
+use crate::pipeline::{PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, now_ms};
 use crate::retry::RetryPolicy;
 use crate::storage::{DynPushStore, IdempotencyRecord};
 
@@ -23,6 +21,7 @@ pub struct PushFeedbackProcessor {
     failure_threshold: u32,
     retry_policy: RetryPolicy,
     metrics: PushMetrics,
+    effect_slots: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl PushFeedbackProcessor {
@@ -35,6 +34,7 @@ impl PushFeedbackProcessor {
             failure_threshold: 3,
             retry_policy: RetryPolicy::default(),
             metrics: PushMetrics::default(),
+            effect_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),
         }
     }
 
@@ -58,44 +58,64 @@ impl PushFeedbackProcessor {
             .queue
             .consume(PushQueueStage::DeliveryResults, consumer_group, 64, 30_000)
             .await?;
-        let outcomes = futures_util::stream::iter(messages.into_iter().map(|message| {
-            let processor = self.clone();
-            async move {
-                let ack = message.ack.clone();
-                match processor.handle_message(message).await {
-                    Ok(()) => Ok(1_usize),
+        let mut groups = std::collections::BTreeMap::<(String, String), Vec<QueueMessage>>::new();
+        for message in messages {
+            let result = match &message.payload {
+                PushQueuePayload::DeliveryResult(result) => result.as_ref(),
+                PushQueuePayload::DeliveryFeedback(feedback) => &feedback.result,
+                _ => {
+                    self.queue
+                        .dead_letter(message.ack, "unexpected payload for feedback".into())
+                        .await?;
+                    continue;
+                }
+            };
+            groups
+                .entry((result.app_id.clone(), result.publish_id.clone()))
+                .or_default()
+                .push(message);
+        }
+        let outcomes =
+            futures_util::stream::iter(groups.into_values().map(|messages| async move {
+                let mut acknowledgements = Vec::with_capacity(messages.len());
+                let mut feedback = Vec::with_capacity(messages.len());
+                for message in messages {
+                    acknowledgements.push(message.ack);
+                    feedback.push(match message.payload {
+                        PushQueuePayload::DeliveryResult(result) => {
+                            DeliveryFeedback::from_result(*result)
+                        }
+                        PushQueuePayload::DeliveryFeedback(feedback) => *feedback,
+                        _ => unreachable!("validated feedback group"),
+                    });
+                }
+                match self.apply_feedback_batch(feedback).await {
+                    Ok(()) => {
+                        let count = acknowledgements.len();
+                        for ack in acknowledgements {
+                            self.queue.ack(ack).await?;
+                        }
+                        Ok(count)
+                    }
                     Err(error) => {
-                        processor.queue.dead_letter(ack, error.to_string()).await?;
+                        warn_feedback_retry(&error);
+                        // A storage/queue outage must not turn a partially committed
+                        // accepted batch into a terminal dead letter.
+                        for ack in acknowledgements {
+                            self.queue
+                                .nack(ack, Some(now_ms().saturating_add(250)))
+                                .await?;
+                        }
                         Ok(0)
                     }
                 }
-            }
-        }))
-        .buffer_unordered(16)
-        .collect::<Vec<PushPipelineResult<usize>>>()
-        .await;
-
-        outcomes.into_iter().try_fold(0_usize, |count, outcome| {
-            outcome.map(|processed| count + processed)
-        })
-    }
-
-    async fn handle_message(&self, message: QueueMessage) -> PushPipelineResult<()> {
-        let QueueMessage { payload, ack, .. } = message;
-        let feedback = match payload {
-            PushQueuePayload::DeliveryResult(result) => DeliveryFeedback::from_result(*result),
-            PushQueuePayload::DeliveryFeedback(feedback) => *feedback,
-            _ => {
-                self.queue
-                    .dead_letter(ack, "unexpected payload for feedback".to_owned())
-                    .await?;
-                return Ok(());
-            }
-        };
-
-        self.apply_feedback(feedback).await?;
-        self.queue.ack(ack).await?;
-        Ok(())
+            }))
+            .buffer_unordered(16)
+            .collect::<Vec<PushPipelineResult<usize>>>()
+            .await;
+        outcomes
+            .into_iter()
+            .try_fold(0, |total, outcome| outcome.map(|count| total + count))
     }
 
     pub async fn apply_result(&self, result: DeliveryResult) -> PushPipelineResult<()> {
@@ -104,222 +124,388 @@ impl PushFeedbackProcessor {
     }
 
     pub async fn apply_feedback(&self, feedback: DeliveryFeedback) -> PushPipelineResult<()> {
+        self.apply_feedback_batch(vec![feedback]).await
+    }
+
+    async fn apply_feedback_batch(
+        &self,
+        feedback: Vec<DeliveryFeedback>,
+    ) -> PushPipelineResult<()> {
+        let Some(first) = feedback.first() else {
+            return Ok(());
+        };
+        let app_id = first.result.app_id.clone();
+        let publish_id = first.result.publish_id.clone();
+        if feedback.len() > 64
+            || feedback
+                .iter()
+                .any(|f| f.result.app_id != app_id || f.result.publish_id != publish_id)
+        {
+            return Err(crate::pipeline::PushPipelineError::InvalidPayload(
+                "feedback batch must contain at most 64 results for one publish".into(),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let feedback = feedback.into_iter().filter(|f| {
+            if seen.insert(feedback_receipt_id(f)) {
+                true
+            } else {
+                self.metrics.duplicate_suppressed();
+                false
+            }
+        });
+        let results =
+            futures_util::stream::iter(feedback.map(|feedback| self.prepare_feedback(feedback)))
+                .buffer_unordered(16)
+                .collect::<Vec<_>>()
+                .await;
+        let mut prepared = Vec::new();
+        let mut first_error = None;
+        for result in results {
+            match result {
+                Ok(Some(feedback)) => prepared.push(feedback),
+                Ok(None) => {}
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(error) => warn_feedback_retry(&error),
+            }
+        }
+        self.commit_feedback_status(&app_id, &publish_id, &prepared)
+            .await?;
+        let completions = futures_util::stream::iter(
+            prepared
+                .into_iter()
+                .map(|prepared| self.complete_feedback(prepared)),
+        )
+        .buffer_unordered(16)
+        .collect::<Vec<_>>()
+        .await;
+        for completed in completions {
+            completed?;
+        }
+        // The canonical status receipt is removed only after its durable complete
+        // outcome marker. Replays can therefore never apply a counter twice.
+        self.commit_feedback_status(&app_id, &publish_id, &[])
+            .await?;
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn complete_feedback(&self, prepared: PreparedFeedback) -> PushPipelineResult<()> {
+        let result = &prepared.feedback.result;
+        self.store
+            .put_idempotency_record_if_absent(IdempotencyRecord {
+                app_id: result.app_id.clone(),
+                key: format!("delivery-result:{}", prepared.id),
+                publish_id: result.publish_id.clone(),
+                expires_at_ms: prepared
+                    .receipt
+                    .occurred_at_ms
+                    .saturating_add(Self::FEEDBACK_IDEMPOTENCY_TTL_MS),
+            })
+            .await?;
+        if let Some(device_id) = result.device_id.as_deref() {
+            self.store
+                .complete_device_feedback_receipt(&result.app_id, device_id, &prepared.id)
+                .await?;
+        }
+        emit_feedback_meta_event(result);
+        Ok(())
+    }
+
+    async fn prepare_feedback(
+        &self,
+        feedback: DeliveryFeedback,
+    ) -> PushPipelineResult<Option<PreparedFeedback>> {
+        let _permit = self.effect_slots.acquire().await.map_err(|_| {
+            crate::pipeline::PushPipelineError::Backpressure("feedback admission closed".into())
+        })?;
         let result = &feedback.result;
+        let id = feedback_receipt_id(&feedback);
         let event_id = result_event_id(&feedback);
-        let dedupe_key = format!("delivery-result:{event_id}");
+        // Honor old complete markers during rolling upgrades. New pending markers
+        // are intentionally a different namespace and never suppress work.
+        let complete = self
+            .store
+            .get_idempotency_record(&result.app_id, &format!("delivery-result:{id}"))
+            .await?
+            .is_some()
+            || self
+                .store
+                .get_idempotency_record(&result.app_id, &format!("delivery-result:{event_id}"))
+                .await?
+                .is_some();
+        if complete {
+            if let Some(device_id) = result.device_id.as_deref() {
+                self.store
+                    .complete_device_feedback_receipt(&result.app_id, device_id, &id)
+                    .await?;
+            }
+            self.metrics.duplicate_suppressed();
+            return Ok(None);
+        }
+        let pending_key = format!("delivery-pending:{id}");
+        let received_at_ms = now_ms();
         let inserted = self
             .store
             .put_idempotency_record_if_absent(IdempotencyRecord {
                 app_id: result.app_id.clone(),
-                key: dedupe_key,
+                key: pending_key.clone(),
                 publish_id: result.publish_id.clone(),
-                expires_at_ms: now_ms().saturating_add(Self::FEEDBACK_IDEMPOTENCY_TTL_MS),
+                expires_at_ms: received_at_ms.saturating_add(Self::FEEDBACK_IDEMPOTENCY_TTL_MS),
             })
             .await?;
-        if !inserted {
-            self.metrics.duplicate_suppressed();
-            return Ok(());
-        }
-
-        let event = DeliveryEvent {
-            app_id: result.app_id.clone(),
-            publish_id: result.publish_id.clone(),
-            event_id,
-            occurred_at_ms: now_ms(),
-            result: result.clone(),
+        let occurred_at_ms = if inserted {
+            // A successful conditional insertion proves the canonical timestamp;
+            // only a replay needs to read the earlier owner's persisted value.
+            received_at_ms
+        } else {
+            self.store
+                .get_idempotency_record(&result.app_id, &pending_key)
+                .await?
+                .ok_or_else(|| {
+                    crate::storage::PushStorageError::Backend(
+                        "feedback pending record disappeared".into(),
+                    )
+                })?
+                .expires_at_ms
+                .saturating_sub(Self::FEEDBACK_IDEMPOTENCY_TTL_MS)
         };
-        self.store.append_delivery_event(event).await?;
-        if !matches!(result.outcome, DeliveryOutcome::Accepted) {
-            let failure_class = result_failure_class(result);
-            emit_push_meta_event(PushMetaEvent::provider_rejected(
-                &result.app_id,
-                &result.publish_id,
-                result.provider,
-                result.outcome,
-                result.error.as_ref().map(|error| error.class.as_str()),
-                Some(failure_class),
-            ));
-            self.metrics.provider_failure_class(
-                result.provider,
-                &result.app_id,
-                failure_class.label(),
-            );
-        }
-
-        if let Some(device_id) = result.device_id.as_deref() {
-            self.update_device_state(result, device_id).await?;
-        }
-        let status = self.update_publish_status(result).await?;
-        if is_device_terminal_failure(result)
-            && let Some(status) = status.as_ref()
-        {
-            self.emit_invalidation_guard_if_needed(result, status);
-        }
-        self.handle_retry_or_dlq(&feedback).await?;
-        emit_feedback_meta_event(result);
-        Ok(())
+        let retry_at_ms = self
+            .retry_policy
+            .schedule_retry(&feedback, occurred_at_ms)
+            .map(|entry| entry.next_attempt_at_ms);
+        self.store
+            .append_delivery_event(DeliveryEvent {
+                app_id: result.app_id.clone(),
+                publish_id: result.publish_id.clone(),
+                event_id,
+                occurred_at_ms,
+                result: result.clone(),
+            })
+            .await?;
+        self.update_device_state(result, &id, occurred_at_ms)
+            .await?;
+        self.handle_retry_or_dlq(&feedback, occurred_at_ms).await?;
+        Ok(Some(PreparedFeedback {
+            feedback,
+            id,
+            receipt: crate::storage::FeedbackReceipt {
+                occurred_at_ms,
+                retry_at_ms,
+                status_applied: true,
+            },
+        }))
     }
 
     async fn update_device_state(
         &self,
         result: &DeliveryResult,
-        device_id: &str,
+        receipt_id: &str,
+        occurred_at_ms: u64,
     ) -> PushPipelineResult<()> {
-        match result.outcome {
-            DeliveryOutcome::Accepted => {
-                if let Some(mut device) = self.store.get_device(&result.app_id, device_id).await? {
-                    let previous = device.push.state;
-                    device.record_delivery_success();
-                    device.last_active_at_ms = now_ms();
-                    if previous != device.push.state {
-                        self.metrics.device_state_transition(
-                            &result.app_id,
-                            previous,
-                            device.push.state,
-                        );
-                        emit_push_meta_event(PushMetaEvent::device_state_changed(
-                            &result.app_id,
-                            &result.publish_id,
-                            previous,
-                            device.push.state,
-                        ));
-                    }
-                    self.store.upsert_device(device).await?;
-                }
-            }
+        use crate::storage::{DeviceFeedbackEffect, DeviceFeedbackRequest};
+        let Some(device_id) = result.device_id.as_deref() else {
+            return Ok(());
+        };
+        let effect = match result.outcome {
+            DeliveryOutcome::Accepted => DeviceFeedbackEffect::Success,
             DeliveryOutcome::Rejected if is_device_terminal_failure(result) => {
-                self.store.delete_device(&result.app_id, device_id).await?;
-                self.metrics
-                    .token_invalidated(result.provider, &result.app_id);
-                emit_push_meta_event(PushMetaEvent::token_invalidated(
-                    &result.app_id,
-                    &result.publish_id,
-                    result.provider,
-                ));
+                DeviceFeedbackEffect::Delete
             }
             DeliveryOutcome::Rejected | DeliveryOutcome::Retryable
                 if is_device_transient_failure(result) =>
             {
-                if let Some(mut device) = self.store.get_device(&result.app_id, device_id).await? {
-                    let previous = device.push.state;
-                    if device.push.failure_count == 0 {
-                        tracing::warn!(
-                            app_id = %result.app_id,
-                            publish_id = %result.publish_id,
-                            device_id = %device_id,
-                            provider = ?result.provider,
-                            "first push delivery failure"
-                        );
-                    }
-                    device.record_delivery_failure(
-                        self.failure_threshold,
-                        result
-                            .error
-                            .as_ref()
-                            .and_then(|error| error.reason.clone())
-                            .unwrap_or_else(|| "provider delivery failed".to_owned()),
-                    );
-                    if previous != device.push.state {
-                        self.metrics.device_state_transition(
-                            &result.app_id,
-                            previous,
-                            device.push.state,
-                        );
-                        emit_push_meta_event(PushMetaEvent::device_state_changed(
-                            &result.app_id,
-                            &result.publish_id,
-                            previous,
-                            device.push.state,
-                        ));
-                        if device.push.state == DevicePushState::Failed {
-                            tracing::warn!(
-                                app_id = %result.app_id,
-                                publish_id = %result.publish_id,
-                                device_id = %device_id,
-                                provider = ?result.provider,
-                                "push device transitioned to FAILED"
-                            );
-                        }
-                    }
-                    self.store.upsert_device(device).await?;
+                DeviceFeedbackEffect::Failure {
+                    threshold: self.failure_threshold,
+                    reason: result
+                        .error
+                        .as_ref()
+                        .and_then(|error| error.reason.clone())
+                        .unwrap_or_else(|| "provider delivery failed".into()),
                 }
             }
-            DeliveryOutcome::Rejected | DeliveryOutcome::Retryable => {}
-            DeliveryOutcome::Expired | DeliveryOutcome::Cancelled => {}
+            _ => return Ok(()),
+        };
+        let applied = self
+            .store
+            .apply_device_feedback_once(DeviceFeedbackRequest {
+                app_id: result.app_id.clone(),
+                device_id: device_id.into(),
+                publish_id: result.publish_id.clone(),
+                receipt_id: receipt_id.into(),
+                occurred_at_ms,
+                expires_at_ms: occurred_at_ms.saturating_add(Self::FEEDBACK_IDEMPOTENCY_TTL_MS),
+                effect,
+            })
+            .await?;
+        if !applied.applied {
+            return Ok(());
+        }
+        if let (Some(previous), Some(next)) = (applied.previous, applied.next) {
+            if previous != next {
+                self.metrics
+                    .device_state_transition(&result.app_id, previous, next);
+                emit_push_meta_event(PushMetaEvent::device_state_changed(
+                    &result.app_id,
+                    &result.publish_id,
+                    previous,
+                    next,
+                ));
+            }
+        } else if applied.previous.is_some() {
+            self.metrics
+                .token_invalidated(result.provider, &result.app_id);
+            emit_push_meta_event(PushMetaEvent::token_invalidated(
+                &result.app_id,
+                &result.publish_id,
+                result.provider,
+            ));
         }
         Ok(())
     }
 
-    async fn update_publish_status(
+    async fn commit_feedback_status(
         &self,
-        result: &DeliveryResult,
-    ) -> PushPipelineResult<Option<PublishStatus>> {
-        let outcome = mutate_publish_status_with_cas(
-            self.store.as_ref(),
-            &self.metrics,
-            "feedback",
-            &result.app_id,
-            &result.publish_id,
-            |current| {
-                let mut status = current.clone();
-                match result.outcome {
-                    DeliveryOutcome::Accepted => {
-                        status.counters.dispatched = status.counters.dispatched.saturating_add(1);
-                        status.counters.succeeded = status.counters.succeeded.saturating_add(1);
-                    }
-                    DeliveryOutcome::Rejected => {
-                        status.counters.dispatched = status.counters.dispatched.saturating_add(1);
-                        status.counters.failed = status.counters.failed.saturating_add(1);
-                    }
-                    DeliveryOutcome::Expired => {
-                        status.counters.dispatched = status.counters.dispatched.saturating_add(1);
-                        status.counters.expired = status.counters.expired.saturating_add(1);
-                    }
-                    DeliveryOutcome::Retryable | DeliveryOutcome::Cancelled => {}
+        app_id: &str,
+        publish_id: &str,
+        prepared: &[PreparedFeedback],
+    ) -> PushPipelineResult<()> {
+        for attempt in 0..8 {
+            let Some(expected) = self
+                .store
+                .get_versioned_publish_status(app_id, publish_id)
+                .await?
+            else {
+                return Ok(());
+            };
+            let mut pending = expected.pending_feedback.clone();
+            let mut status = expected.status.clone();
+            let ids = expected
+                .pending_feedback
+                .keys()
+                .cloned()
+                .chain(prepared.iter().map(|item| item.id.clone()))
+                .collect::<std::collections::BTreeSet<_>>();
+            let completed = futures_util::stream::iter(ids.into_iter().map(|id| async move {
+                let done = self
+                    .store
+                    .get_idempotency_record(app_id, &format!("delivery-result:{id}"))
+                    .await?
+                    .is_some();
+                Ok::<_, crate::storage::PushStorageError>((id, done))
+            }))
+            .buffer_unordered(16)
+            .collect::<Vec<_>>()
+            .await;
+            let mut completed_ids = std::collections::BTreeSet::new();
+            for result in completed {
+                let (id, done) = result?;
+                if done {
+                    pending.remove(&id);
+                    completed_ids.insert(id);
                 }
-                if let Some(retry_after_ms) =
-                    result.error.as_ref().and_then(|error| error.retry_after_ms)
-                {
-                    status.retry_after_ms = Some(retry_after_ms);
+            }
+            let mut newly_applied = Vec::new();
+            for item in prepared {
+                // Read completion AFTER the status snapshot. If a concurrent
+                // worker completes/removes this receipt, our CAS must conflict.
+                if completed_ids.contains(&item.id) || pending.contains_key(&item.id) {
+                    continue;
                 }
-                let next = status.counters.resolve_lifecycle_state(current.state);
-                // Audience counts for channel/client targets are estimates until fanout. A late
-                // valid outcome may refine one terminal delivery summary into another, but never
-                // reactivates it.
-                status.state = next;
-                Ok(Some(status))
+                if pending.len() >= crate::storage::MAX_PENDING_FEEDBACK {
+                    return Err(crate::pipeline::PushPipelineError::Backpressure(
+                        "publish feedback receipt capacity reached".into(),
+                    ));
+                }
+                apply_feedback_status_delta(
+                    &mut status,
+                    &item.feedback.result,
+                    item.receipt.retry_at_ms,
+                );
+                pending.insert(item.id.clone(), item.receipt.clone());
+                newly_applied.push(item);
+            }
+            if pending == expected.pending_feedback && status == expected.status {
+                return Ok(());
+            }
+            match self
+                .store
+                .compare_and_swap_feedback_status(&expected, status.clone(), pending)
+                .await?
+            {
+                crate::storage::PublishStatusCasOutcome::Updated { .. } => {
+                    let mut projected = expected.status.clone();
+                    for item in newly_applied {
+                        apply_feedback_status_delta(
+                            &mut projected,
+                            &item.feedback.result,
+                            item.receipt.retry_at_ms,
+                        );
+                        let result = &item.feedback.result;
+                        self.metrics
+                            .delivery_status(app_id, outcome_label(result.outcome));
+                        if !matches!(result.outcome, DeliveryOutcome::Accepted) {
+                            let failure = result_failure_class(result);
+                            self.metrics.provider_failure_class(
+                                result.provider,
+                                app_id,
+                                failure.label(),
+                            );
+                            emit_push_meta_event(PushMetaEvent::provider_rejected(
+                                app_id,
+                                publish_id,
+                                result.provider,
+                                result.outcome,
+                                result.error.as_ref().map(|error| error.class.as_str()),
+                                Some(failure),
+                            ));
+                        }
+                        if is_device_terminal_failure(result) {
+                            self.emit_invalidation_guard_if_needed(result, &projected);
+                        }
+                    }
+                    if status.state != expected.status.state
+                        && matches!(
+                            status.state,
+                            PublishLifecycleState::Succeeded
+                                | PublishLifecycleState::PartiallySucceeded
+                                | PublishLifecycleState::Failed
+                                | PublishLifecycleState::Expired
+                                | PublishLifecycleState::DeadLettered
+                        )
+                    {
+                        emit_push_meta_event(PushMetaEvent::completed(
+                            app_id,
+                            publish_id,
+                            lifecycle_label(status.state),
+                        ));
+                    }
+                    return Ok(());
+                }
+                crate::storage::PublishStatusCasOutcome::Missing => return Ok(()),
+                crate::storage::PublishStatusCasOutcome::Conflict => {
+                    self.metrics.publish_status_cas_conflict("feedback");
+                    tokio::time::sleep(std::time::Duration::from_millis(1 << attempt.min(5))).await;
+                }
+                outcome => {
+                    return Err(
+                        crate::pipeline::PushPipelineError::UnexpectedPublishStatusCasOutcome {
+                            operation: "feedback batch",
+                            outcome,
+                        },
+                    );
+                }
+            }
+        }
+        Err(
+            crate::pipeline::PushPipelineError::PublishStatusCasExhausted {
+                component: "feedback",
+                app_id: app_id.into(),
+                publish_id: publish_id.into(),
             },
         )
-        .await?;
-        let status = match outcome {
-            PublishStatusMutationOutcome::Missing => return Ok(None),
-            PublishStatusMutationOutcome::Unchanged(status) => return Ok(Some(status)),
-            PublishStatusMutationOutcome::Updated(status) => status,
-        };
-
-        self.metrics
-            .delivery_status(&result.app_id, outcome_label(result.outcome));
-        if matches!(
-            status.state,
-            PublishLifecycleState::Succeeded
-                | PublishLifecycleState::PartiallySucceeded
-                | PublishLifecycleState::Failed
-                | PublishLifecycleState::Expired
-                | PublishLifecycleState::DeadLettered
-        ) {
-            emit_push_meta_event(PushMetaEvent::completed(
-                &result.app_id,
-                &result.publish_id,
-                lifecycle_label(status.state),
-            ));
-            tracing::info!(
-                app_id = %result.app_id,
-                publish_id = %result.publish_id,
-                state = ?status.state,
-                "push publish completed"
-            );
-        }
-        Ok(Some(status))
     }
 
     fn emit_invalidation_guard_if_needed(&self, result: &DeliveryResult, status: &PublishStatus) {
@@ -347,17 +533,21 @@ impl PushFeedbackProcessor {
         );
     }
 
-    async fn handle_retry_or_dlq(&self, feedback: &DeliveryFeedback) -> PushPipelineResult<()> {
+    async fn handle_retry_or_dlq(
+        &self,
+        feedback: &DeliveryFeedback,
+        occurred_at_ms: u64,
+    ) -> PushPipelineResult<()> {
         let result = &feedback.result;
         if matches!(result.outcome, DeliveryOutcome::Retryable) {
-            let Some(entry) = self.retry_policy.schedule_retry(feedback, now_ms()) else {
+            let Some(entry) = self.retry_policy.schedule_retry(feedback, occurred_at_ms) else {
                 let dead_letter = DeadLetter {
                     app_id: result.app_id.clone(),
                     publish_id: result.publish_id.clone(),
                     stage: "delivery_result".to_owned(),
                     key: result.batch_id.clone(),
                     reason: "retryable result missing retry context".to_owned(),
-                    occurred_at_ms: now_ms(),
+                    occurred_at_ms,
                 };
                 self.queue
                     .produce(
@@ -366,7 +556,7 @@ impl PushFeedbackProcessor {
                         PushQueuePayload::DeadLetter(Box::new(dead_letter)),
                     )
                     .await?;
-                self.mark_retry_context_missing(result).await?;
+
                 emit_push_meta_event(PushMetaEvent::dead_letter(
                     &result.app_id,
                     &result.publish_id,
@@ -384,8 +574,7 @@ impl PushFeedbackProcessor {
                     next_attempt_at_ms,
                 )
                 .await?;
-            self.mark_retry_scheduled(result, next_attempt_at_ms)
-                .await?;
+
             self.metrics
                 .retry_scheduled(result.provider, &result.app_id);
             emit_push_meta_event(PushMetaEvent::scheduler_event(
@@ -406,7 +595,7 @@ impl PushFeedbackProcessor {
                     .as_ref()
                     .map(|error| error.class.clone())
                     .unwrap_or_else(|| "rejected".to_owned()),
-                occurred_at_ms: now_ms(),
+                occurred_at_ms,
             };
             self.queue
                 .produce(
@@ -428,48 +617,68 @@ impl PushFeedbackProcessor {
         }
         Ok(())
     }
+}
 
-    async fn mark_retry_scheduled(
-        &self,
-        result: &DeliveryResult,
-        next_attempt_at_ms: u64,
-    ) -> PushPipelineResult<()> {
-        mutate_publish_status_with_cas(
-            self.store.as_ref(),
-            &self.metrics,
-            "feedback",
-            &result.app_id,
-            &result.publish_id,
-            |current| {
-                let mut status = current.clone();
-                status.counters.retry_scheduled = status.counters.retry_scheduled.saturating_add(1);
-                status.retry_after_ms = Some(next_attempt_at_ms);
-                Ok(Some(status))
-            },
-        )
-        .await?;
-        Ok(())
-    }
+fn warn_feedback_retry(error: &crate::pipeline::PushPipelineError) {
+    // Backend error displays can contain stored JSON fragments or queue payloads.
+    // Keep the operational source without copying content-bearing diagnostics.
+    let failure_source = match error {
+        crate::pipeline::PushPipelineError::Storage(_) => "storage",
+        crate::pipeline::PushPipelineError::Queue(_) => "queue",
+        crate::pipeline::PushPipelineError::Domain(_) => "validation",
+        crate::pipeline::PushPipelineError::Backpressure(_) => "capacity",
+        _ => "feedback-state",
+    };
+    tracing::warn!(failure_source, "push feedback work will retry");
+}
 
-    async fn mark_retry_context_missing(&self, result: &DeliveryResult) -> PushPipelineResult<()> {
-        mutate_publish_status_with_cas(
-            self.store.as_ref(),
-            &self.metrics,
-            "feedback",
-            &result.app_id,
-            &result.publish_id,
-            |current| {
-                let mut status = current.clone();
-                status.counters.dead_lettered = status.counters.dead_lettered.saturating_add(1);
-                status.error_reason = Some("retryable result missing retry context".to_owned());
-                let next = status.counters.resolve_lifecycle_state(current.state);
-                status.state = next;
-                Ok(Some(status))
-            },
-        )
-        .await?;
-        Ok(())
+struct PreparedFeedback {
+    feedback: DeliveryFeedback,
+    id: String,
+    receipt: crate::storage::FeedbackReceipt,
+}
+
+fn feedback_receipt_id(feedback: &DeliveryFeedback) -> String {
+    let digest = aws_lc_rs::digest::digest(
+        &aws_lc_rs::digest::SHA256,
+        result_event_id(feedback).as_bytes(),
+    );
+    hex::encode(digest.as_ref())
+}
+
+fn apply_feedback_status_delta(
+    status: &mut PublishStatus,
+    result: &DeliveryResult,
+    retry_at_ms: Option<u64>,
+) {
+    match result.outcome {
+        DeliveryOutcome::Accepted => {
+            status.counters.dispatched = status.counters.dispatched.saturating_add(1);
+            status.counters.succeeded = status.counters.succeeded.saturating_add(1);
+        }
+        DeliveryOutcome::Rejected => {
+            status.counters.dispatched = status.counters.dispatched.saturating_add(1);
+            status.counters.failed = status.counters.failed.saturating_add(1);
+        }
+        DeliveryOutcome::Expired => {
+            status.counters.dispatched = status.counters.dispatched.saturating_add(1);
+            status.counters.expired = status.counters.expired.saturating_add(1);
+        }
+        DeliveryOutcome::Retryable if retry_at_ms.is_some() => {
+            status.counters.retry_scheduled = status.counters.retry_scheduled.saturating_add(1);
+        }
+        DeliveryOutcome::Retryable => {
+            status.counters.dead_lettered = status.counters.dead_lettered.saturating_add(1);
+            status.error_reason = Some("retryable result missing retry context".into());
+        }
+        DeliveryOutcome::Cancelled => {}
     }
+    if let Some(next) =
+        retry_at_ms.or_else(|| result.error.as_ref().and_then(|error| error.retry_after_ms))
+    {
+        status.retry_after_ms = Some(next);
+    }
+    status.state = status.counters.resolve_lifecycle_state(status.state);
 }
 
 fn result_event_id(feedback: &DeliveryFeedback) -> String {
@@ -562,6 +771,7 @@ fn emit_feedback_meta_event(result: &DeliveryResult) {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::DevicePushState;
     use std::sync::Arc;
 
     use sonic_rs::json;
@@ -579,6 +789,165 @@ mod tests {
     use crate::storage::{PushDeviceStore, PushPublishStatusStore};
 
     use super::*;
+
+    #[test]
+    fn feedback_worker_future_can_run_on_supervised_multithreaded_executor() {
+        fn assert_send<T: Send>(_: T) {}
+        let processor = PushFeedbackProcessor::new(
+            Arc::new(MemoryPushStore::new()),
+            Arc::new(MemoryPushQueue::new()),
+        );
+        assert_send(async move { processor.run_once("supervised-feedback").await });
+    }
+
+    #[tokio::test]
+    async fn feedback_replays_every_committed_boundary_without_counter_or_device_drift() {
+        use crate::storage::{PushDeliveryEventStore, PushIdempotencyStore};
+        for boundary in 0..4 {
+            let store = Arc::new(MemoryPushStore::new());
+            let queue = Arc::new(MemoryPushQueue::new());
+            store
+                .put_publish_status(status_with_planned("publish-1", 1))
+                .await
+                .unwrap();
+            store.upsert_device(device("device-1")).await.unwrap();
+            let feedback = DeliveryFeedback::from_result(rejected_result(
+                "publish-1",
+                "device-1",
+                "transient",
+                ProviderFailureClass::DeviceTransient,
+            ));
+            let id = feedback_receipt_id(&feedback);
+            let processor = PushFeedbackProcessor::new(store.clone(), queue.clone());
+            let pending_time = now_ms();
+            store
+                .put_idempotency_record_if_absent(IdempotencyRecord {
+                    app_id: "app-1".into(),
+                    key: format!("delivery-pending:{id}"),
+                    publish_id: "publish-1".into(),
+                    expires_at_ms: pending_time
+                        + PushFeedbackProcessor::FEEDBACK_IDEMPOTENCY_TTL_MS,
+                })
+                .await
+                .unwrap();
+            if boundary >= 1 {
+                let prepared = processor
+                    .prepare_feedback(feedback.clone())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if boundary >= 2 {
+                    processor
+                        .commit_feedback_status(
+                            "app-1",
+                            "publish-1",
+                            std::slice::from_ref(&prepared),
+                        )
+                        .await
+                        .unwrap();
+                }
+                if boundary >= 3 {
+                    store
+                        .put_idempotency_record_if_absent(IdempotencyRecord {
+                            app_id: "app-1".into(),
+                            key: format!("delivery-result:{id}"),
+                            publish_id: "publish-1".into(),
+                            expires_at_ms: pending_time
+                                + PushFeedbackProcessor::FEEDBACK_IDEMPOTENCY_TTL_MS,
+                        })
+                        .await
+                        .unwrap();
+                }
+            }
+            drop(processor);
+            let restarted = PushFeedbackProcessor::new(store.clone(), queue.clone());
+            restarted.apply_feedback(feedback.clone()).await.unwrap();
+            restarted.apply_feedback(feedback).await.unwrap();
+            let final_status = store
+                .get_versioned_publish_status("app-1", "publish-1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                final_status.status.counters.failed, 1,
+                "boundary {boundary}"
+            );
+            assert_eq!(final_status.status.counters.dispatched, 1);
+            assert!(final_status.pending_feedback.is_empty());
+            assert_eq!(
+                store
+                    .get_device("app-1", "device-1")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .push
+                    .failure_count,
+                1
+            );
+            assert_eq!(
+                store
+                    .list_delivery_events("app-1", "publish-1", 10, None)
+                    .await
+                    .unwrap()
+                    .items
+                    .len(),
+                1
+            );
+            assert_eq!(
+                queue
+                    .lag(PushQueueStage::DeadLetters)
+                    .await
+                    .unwrap()
+                    .ready_depth,
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn feedback_batch_applies_sixty_four_outcomes_with_two_status_writes() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .put_publish_status(status_with_planned("publish-1", 64))
+            .await
+            .unwrap();
+        for number in 0..64 {
+            let result = rejected_result(
+                "publish-1",
+                &format!("device-{number}"),
+                "bad-payload",
+                ProviderFailureClass::CallerPayload,
+            );
+            queue
+                .produce(
+                    PushQueueStage::DeliveryResults,
+                    format!("result-{number}"),
+                    PushQueuePayload::DeliveryResult(Box::new(result)),
+                )
+                .await
+                .unwrap();
+        }
+        let processor = PushFeedbackProcessor::new(store.clone(), queue.clone());
+        assert_eq!(processor.run_once("feedback").await.unwrap(), 64);
+        let status = store
+            .get_versioned_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.status.counters.failed, 64);
+        assert_eq!(status.status.counters.dispatched, 64);
+        assert_eq!(status.revision, 3);
+        assert!(status.pending_feedback.is_empty());
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::DeliveryResults)
+                .await
+                .unwrap()
+                .inflight_depth,
+            0
+        );
+    }
 
     #[tokio::test]
     async fn feedback_duplicate_suppression_prevents_counter_drift() {
@@ -685,13 +1054,17 @@ mod tests {
         store.put_publish_status(terminal).await.unwrap();
         let processor = PushFeedbackProcessor::new(store.clone(), queue);
 
-        let observed = processor
-            .update_publish_status(&rejected_result(
+        processor
+            .apply_result(rejected_result(
                 "publish-1",
                 "device-2",
                 "rejected",
                 ProviderFailureClass::CallerPayload,
             ))
+            .await
+            .unwrap();
+        let observed = store
+            .get_publish_status("app-1", "publish-1")
             .await
             .unwrap()
             .unwrap();
@@ -729,8 +1102,8 @@ mod tests {
         );
 
         let (first_result, second_result) = tokio::join!(
-            processor.update_publish_status(&first),
-            processor.update_publish_status(&second)
+            processor.apply_result(first),
+            processor.apply_result(second)
         );
         first_result.unwrap();
         second_result.unwrap();
@@ -1032,7 +1405,7 @@ mod tests {
         status_with_planned("publish-1", 1)
     }
 
-    fn status_with_planned(publish_id: &str, planned: u64) -> PublishStatus {
+    pub(super) fn status_with_planned(publish_id: &str, planned: u64) -> PublishStatus {
         PublishStatus {
             app_id: "app-1".to_owned(),
             publish_id: publish_id.to_owned(),
@@ -1053,7 +1426,7 @@ mod tests {
         }
     }
 
-    fn rejected_result(
+    pub(super) fn rejected_result(
         publish_id: &str,
         device_id: &str,
         class: &str,
@@ -1077,7 +1450,7 @@ mod tests {
         }
     }
 
-    fn device(device_id: &str) -> DeviceDetails {
+    pub(super) fn device(device_id: &str) -> DeviceDetails {
         let identity_token = generate_device_identity_token();
         DeviceDetails {
             app_id: "app-1".to_owned(),
@@ -1150,3 +1523,18 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(
+    test,
+    any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "dynamodb",
+        feature = "scylladb",
+        feature = "surrealdb"
+    )
+))]
+pub(crate) mod live_tests;
+
+#[cfg(test)]
+mod fault_tests;

@@ -296,6 +296,10 @@ skew. Revocation uses signed HTTP `POST /apps/{appId}/revocations` and shared ca
 ## AI Transport and Mutable Defaults
 
 Runtime config uses `[versioned_messages]`; `VersionStore` is the Rust trait/storage abstraction.
+
+Compact append storage is automatic and reads existing full records without a format switch.
+See [compact append storage and upgrades](/docs/server/mutable-messages#compact-append-storage-and-upgrades)
+for the coordinated upgrade and rollback procedure.
 There is no separate `[version_store]` TOML section in the current code.
 
 The following block is machine checked by `sockudo-core` tests. Update it whenever code defaults
@@ -457,6 +461,16 @@ metadata is inspected through `/apps/{appId}/push/deadLetters`. Cleanup is bound
 | `[logging]` | Controls ANSI colors and tracing-target inclusion for text/JSON output. |
 | [logging environment](/docs/reference/logging) | Runtime filters, structured output, lifecycle fields, and data-safety policy. |
 
+### Annotation metric labels
+
+Annotation metric names and label keys remain stable. Their `channel` label
+aggregates into the existing channel classes (`public`, `private`, `presence`,
+`private_encrypted`, and `cache`), and `type` aggregates into the summarizer
+identities `total`, `flag`, `distinct`, `unique`, `multiple`, `count`, or `custom`.
+App and port labels remain unchanged. Update dashboards that selected a raw
+channel or annotation namespace to select these aggregate labels; raw names
+are no longer retained as metric series. Counter totals are preserved.
+
 ## Example production skeleton
 
 ```toml
@@ -558,8 +572,24 @@ Google Pub/Sub, and standard SQS queues. SQS FIFO batches remain serial to
 preserve message-group order. `max_attempts` configures NATS delivery limits,
 Kafka and Iggy retry/DLQ transitions, RabbitMQ republish/DLQ transitions, and
 Pulsar's native dead-letter policy. SQS retry/dead-letter limits remain an AWS
-queue redrive-policy concern; Sockudo does not advertise a DLQ unless it owns
-that policy.
+queue redrive-policy concern; Google Pub/Sub delivery limits and dead-letter
+forwarding are also subscription policies owned by the operator. Sockudo does
+not advertise a managed DLQ for either driver. Configure those external
+policies when finite retry exhaustion is required.
+
+RabbitMQ and Iggy retain the unacknowledged source job while waiting for
+configured exponential backoff and jitter, then acknowledge only after a
+confirmed retry or dead-letter transfer. Kafka processes each assigned
+partition serially with paced retries and commits offsets asynchronously after
+success or confirmed dead-letter transfer. Kafka and Iggy run up to 64 consumer
+workers, bounded further by their configured partition count; see
+[partition migration](/docs/server/scaling) before increasing Kafka partitions.
+
+SQS failures use native visibility delays derived from the receive count and
+configured backoff. New Google Pub/Sub subscriptions receive the configured
+retry policy. For an existing subscription without a nonzero broker retry
+policy, the bounded callback worker waits before NACK; its policy is not
+replaced during startup.
 
 Queue v2 options are fail-closed. A broker that cannot honor per-job delay,
 deduplication, or attempt overrides returns an error instead of silently

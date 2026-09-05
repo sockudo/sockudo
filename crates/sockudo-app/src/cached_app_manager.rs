@@ -6,6 +6,7 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::options::CacheSettings;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
@@ -33,6 +34,10 @@ pub struct CachedAppManager {
     settings: CacheSettings,
     local_apps_by_id: DashMap<String, LocalAppEntry>,
     local_app_id_by_key: DashMap<String, String>,
+    flights: [Mutex<()>; 128],
+    flight_hasher: ahash::RandomState,
+    negative: moka::future::Cache<String, ()>,
+    mutations: RwLock<()>,
 }
 
 impl CachedAppManager {
@@ -47,7 +52,18 @@ impl CachedAppManager {
             settings,
             local_apps_by_id: DashMap::new(),
             local_app_id_by_key: DashMap::new(),
+            flights: std::array::from_fn(|_| Mutex::new(())),
+            flight_hasher: ahash::RandomState::new(),
+            negative: moka::future::Cache::builder()
+                .max_capacity(1024)
+                .time_to_live(Duration::from_millis(250))
+                .build(),
+            mutations: RwLock::new(()),
         }
+    }
+
+    fn flight(&self, key: &str) -> &Mutex<()> {
+        &self.flights[self.flight_hasher.hash_one(key) as usize % self.flights.len()]
     }
 
     fn cache_key_for_id(app_id: &str) -> String {
@@ -103,11 +119,17 @@ impl CachedAppManager {
     }
 
     fn remember_apps(&self, apps: &[App]) {
-        self.local_apps_by_id.clear();
-        self.local_app_id_by_key.clear();
+        let ids = apps
+            .iter()
+            .map(|app| app.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
         for app in apps {
             self.remember_app(app);
         }
+        self.local_apps_by_id
+            .retain(|id, _| ids.contains(id.as_str()));
+        self.local_app_id_by_key
+            .retain(|_, id| ids.contains(id.as_str()));
     }
 
     fn forget_app(&self, app_id: &str, app_key: Option<&str>) {
@@ -193,22 +215,10 @@ impl CachedAppManager {
         }
     }
 
-    async fn set<T: serde::Serialize>(&self, key: &str, value: &T) {
-        let json = match Self::serialize(value) {
-            Ok(j) => j,
-            Err(e) => {
-                warn!(
-                    cache_index = Self::cache_index_label(key),
-                    error = %e,
-                    "app cache serialize error"
-                );
-                return;
-            }
-        };
-
+    async fn set_serialized(&self, key: &str, json: &str) {
         match timeout(
             SHARED_CACHE_ACCESS_TIMEOUT,
-            self.cache.set(key, &json, self.settings.ttl),
+            self.cache.set(key, json, self.settings.ttl),
         )
         .await
         {
@@ -242,8 +252,23 @@ impl CachedAppManager {
 
     async fn cache_app(&self, app: &App) {
         self.remember_app(app);
-        self.set(&Self::cache_key_for_id(&app.id), app).await;
-        self.set(&Self::cache_key_for_key(&app.key), app).await;
+        self.negative
+            .invalidate(&Self::cache_key_for_id(&app.id))
+            .await;
+        self.negative
+            .invalidate(&Self::cache_key_for_key(&app.key))
+            .await;
+        match Self::serialize(app) {
+            Ok(json) => {
+                let id_key = Self::cache_key_for_id(&app.id);
+                let app_key = Self::cache_key_for_key(&app.key);
+                tokio::join!(
+                    self.set_serialized(&id_key, &json),
+                    self.set_serialized(&app_key, &json),
+                );
+            }
+            Err(error) => warn!(error = %error, "app cache serialize error"),
+        }
     }
 
     async fn invalidate_app(&self, app_id: &str, app_key: &str) {
@@ -289,6 +314,14 @@ impl AppManager for CachedAppManager {
         }
 
         let cache_key = Self::cache_key_for_id(app_id);
+        let _flight = self.flight(&cache_key).lock().await;
+        let _mutation = self.mutations.read().await;
+        if let Some(app) = self.find_local_by_id(app_id) {
+            return Ok(Some(app));
+        }
+        if self.negative.get(&cache_key).await.is_some() {
+            return Ok(None);
+        }
         if let Some(app) = self.get::<App>(&cache_key).await {
             self.remember_app(&app);
             return Ok(Some(app));
@@ -297,6 +330,8 @@ impl AppManager for CachedAppManager {
         let app = self.inner.find_by_id(app_id).await?;
         if let Some(ref app) = app {
             self.cache_app(app).await;
+        } else {
+            self.negative.insert(cache_key, ()).await;
         }
 
         Ok(app)
@@ -313,6 +348,14 @@ impl AppManager for CachedAppManager {
         }
 
         let cache_key = Self::cache_key_for_key(key);
+        let _flight = self.flight(&cache_key).lock().await;
+        let _mutation = self.mutations.read().await;
+        if let Some(app) = self.find_local_by_key(key) {
+            return Ok(Some(app));
+        }
+        if self.negative.get(&cache_key).await.is_some() {
+            return Ok(None);
+        }
         if let Some(app) = self.get::<App>(&cache_key).await {
             self.remember_app(&app);
             return Ok(Some(app));
@@ -321,6 +364,8 @@ impl AppManager for CachedAppManager {
         let app = self.inner.find_by_key(key).await?;
         if let Some(ref app) = app {
             self.cache_app(app).await;
+        } else {
+            self.negative.insert(cache_key, ()).await;
         }
 
         Ok(app)
@@ -328,6 +373,7 @@ impl AppManager for CachedAppManager {
 
     /// Register a new app in the database and cache
     async fn create_app(&self, config: App) -> Result<()> {
+        let _mutation = self.mutations.write().await;
         self.inner.create_app(config.clone()).await?;
 
         if self.settings.enabled {
@@ -339,6 +385,7 @@ impl AppManager for CachedAppManager {
 
     /// Update an existing app and refresh the cache
     async fn update_app(&self, config: App) -> Result<()> {
+        let _mutation = self.mutations.write().await;
         let previous_key = if self.settings.enabled {
             self.find_local_by_id(&config.id).map(|app| app.key)
         } else {
@@ -362,6 +409,7 @@ impl AppManager for CachedAppManager {
 
     /// Remove an app from the database and cache
     async fn delete_app(&self, app_id: &str) -> Result<()> {
+        let _mutation = self.mutations.write().await;
         let app = if self.settings.enabled {
             self.inner.find_by_id(app_id).await?
         } else {
@@ -383,17 +431,19 @@ impl AppManager for CachedAppManager {
 
     /// Get all apps from the database
     async fn get_apps(&self) -> Result<Vec<App>> {
+        let _mutation = self.mutations.write().await;
         let apps = self.inner.get_apps().await?;
 
         if self.settings.enabled {
             self.remember_apps(&apps);
-            for app in &apps {
-                self.cache_app(app).await;
-            }
-            debug!(apps_count = apps.len(), "apps cached");
+            debug!(apps_count = apps.len(), "local app index refreshed");
         }
 
         Ok(apps)
+    }
+
+    async fn has_apps(&self) -> Result<bool> {
+        self.inner.has_apps().await
     }
 
     async fn check_health(&self) -> Result<()> {
@@ -411,6 +461,94 @@ mod tests {
     use sockudo_core::options::MemoryCacheOptions;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::sleep;
+
+    #[tokio::test]
+    async fn cold_waves_share_cache_loads_and_missing_entries_are_invalidated_on_create() {
+        let inner = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(SlowCacheManager::new(Duration::from_millis(20)));
+        let manager = Arc::new(CachedAppManager::new(
+            inner.clone(),
+            cache.clone(),
+            CacheSettings {
+                enabled: true,
+                ttl: 60,
+            },
+        ));
+        let app = create_test_app("wave");
+        inner.create_app(app.clone()).await.unwrap();
+        let mut tasks = Vec::new();
+        for _ in 0..128 {
+            let manager = manager.clone();
+            tasks.push(tokio::spawn(async move {
+                manager.find_by_key("wave_key").await.unwrap().unwrap().id
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.unwrap(), "wave");
+        }
+        assert_eq!(cache.get_calls(), 1);
+        assert_eq!(cache.set_calls.load(Ordering::Relaxed), 2);
+        for _ in 0..4 {
+            assert!(manager.find_by_id("missing").await.unwrap().is_none());
+        }
+        assert_eq!(cache.get_calls(), 2);
+        manager
+            .create_app(create_test_app("missing"))
+            .await
+            .unwrap();
+        assert!(manager.find_by_id("missing").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn cancelled_cold_lookup_does_not_strand_waiters() {
+        let inner = Arc::new(MemoryAppManager::new());
+        inner.create_app(create_test_app("cancel")).await.unwrap();
+        let cache = Arc::new(SlowCacheManager::new(Duration::from_millis(50)));
+        let manager = Arc::new(CachedAppManager::new(
+            inner,
+            cache,
+            CacheSettings {
+                enabled: true,
+                ttl: 60,
+            },
+        ));
+        let first = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.find_by_id("cancel").await })
+        };
+        sleep(Duration::from_millis(5)).await;
+        first.abort();
+        assert!(
+            timeout(Duration::from_secs(1), manager.find_by_id("cancel"))
+                .await
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn enumeration_and_readiness_do_not_write_shared_cache() {
+        let inner = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(SlowCacheManager::new(Duration::ZERO));
+        let manager = CachedAppManager::new(
+            inner.clone(),
+            cache.clone(),
+            CacheSettings {
+                enabled: true,
+                ttl: 60,
+            },
+        );
+        assert!(!manager.has_apps().await.unwrap());
+        for id in ["one", "two", "three"] {
+            inner.create_app(create_test_app(id)).await.unwrap();
+        }
+        assert!(manager.has_apps().await.unwrap());
+        assert_eq!(manager.get_apps().await.unwrap().len(), 3);
+        assert_eq!(cache.set_calls.load(Ordering::Relaxed), 0);
+        assert!(manager.find_by_id("one").await.unwrap().is_some());
+        assert_eq!(cache.get_calls(), 0);
+    }
 
     #[test]
     fn cache_log_labels_do_not_contain_app_identifiers_or_keys() {

@@ -1,0 +1,74 @@
+    Blocking waiting for file lock on build directory
+    Checking surrealdb v3.2.3
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+error[E0609]: no field `partitions` on type `KafkaAdapterConfig`
+  --> crates/sockudo-queue/src/kafka_queue_manager.rs:49:19
+   |
+49 |         if config.partitions < 1 || (config.partitions > 1 && config.topic_epoch.as_deref().is_none_or(str::is_empty)) {
+   |                   ^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `brokers`, `prefix`, `request_timeout_ms`, `security_protocol`, `sasl_mechanism` ... and 3 others
+
+error[E0609]: no field `partitions` on type `KafkaAdapterConfig`
+  --> crates/sockudo-queue/src/kafka_queue_manager.rs:49:45
+   |
+49 |         if config.partitions < 1 || (config.partitions > 1 && config.topic_epoch.as_deref().is_none_or(str::is_empty)) {
+   |                                             ^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `brokers`, `prefix`, `request_timeout_ms`, `security_protocol`, `sasl_mechanism` ... and 3 others
+
+error[E0609]: no field `topic_epoch` on type `KafkaAdapterConfig`
+  --> crates/sockudo-queue/src/kafka_queue_manager.rs:49:70
+   |
+49 |         if config.partitions < 1 || (config.partitions > 1 && config.topic_epoch.as_deref().is_none_or(str::is_empty)) {
+   |                                                                      ^^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `brokers`, `prefix`, `request_timeout_ms`, `security_protocol`, `sasl_mechanism` ... and 3 others
+
+error[E0609]: no field `partitions` on type `KafkaAdapterConfig`
+  --> crates/sockudo-queue/src/kafka_queue_manager.rs:92:56
+   |
+92 |         let topics = [NewTopic::new(topic, self.config.partitions, TopicReplication::Fixed(1))];
+   |                                                        ^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `brokers`, `prefix`, `request_timeout_ms`, `security_protocol`, `sasl_mechanism` ... and 3 others
+
+error[E0609]: no field `topic_epoch` on type `KafkaAdapterConfig`
+   --> crates/sockudo-queue/src/kafka_queue_manager.rs:124:74
+    |
+124 | ...   sonic_rs::to_vec(data).map(|payload| (if self.config.topic_epoch.is_some() { data.app_id.clone() } else { String::new() }, pa...
+    |                                                            ^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `brokers`, `prefix`, `request_timeout_ms`, `security_protocol`, `sasl_mechanism` ... and 3 others
+
+error[E0609]: no field `topic_epoch` on type `KafkaAdapterConfig`
+  --> crates/sockudo-queue/src/kafka_queue_manager.rs:74:27
+   |
+74 |         match self.config.topic_epoch.as_deref() {
+   |                           ^^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `brokers`, `prefix`, `request_timeout_ms`, `security_protocol`, `sasl_mechanism` ... and 3 others
+
+error[E0609]: no field `partitions` on type `KafkaAdapterConfig`
+   --> crates/sockudo-queue/src/kafka_queue_manager.rs:180:46
+    |
+180 |         for _ in 0..64_usize.min(self.config.partitions as usize).max(1) {
+    |                                              ^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `brokers`, `prefix`, `request_timeout_ms`, `security_protocol`, `sasl_mechanism` ... and 3 others
+
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+warning: unused variable: `dlq_topic`
+   --> crates/sockudo-queue/src/iggy_queue_manager.rs:166:13
+    |
+166 |         let dlq_topic = dlq_topic.clone();
+    |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dlq_topic`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+For more information about this error, try `rustc --explain E0609`.
+warning: `sockudo-queue` (lib) generated 1 warning
+error: could not compile `sockudo-queue` (lib) due to 7 previous errors; 1 warning emitted
+warning: build failed, waiting for other jobs to finish...

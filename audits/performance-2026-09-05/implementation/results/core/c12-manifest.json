@@ -1,0 +1,65 @@
+{
+  "started_utc": "2026-09-05T00:12:35.221873+00:00",
+  "profile": "release; LTO; codegen-units=1",
+  "repetitions": 5,
+  "runtime": "Tokio current_thread, 1ms healthy timer",
+  "workload": "8,64,192 concurrent device verifications; every result counted as completed-valid or explicit overload; <=64 all complete",
+  "baseline": "unchanged baseline production",
+  "after": "baseline + crypto.rs + public exports only",
+  "commands": [
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-baseline/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-c12/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-c12/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-baseline/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-baseline/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-c12/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-c12/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-baseline/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-baseline/release/sockudo-core-audit-bench"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/target-core-bench-c12/release/sockudo-core-audit-bench"
+    ]
+  ],
+  "sha256": {
+    "baseline": "0a65df74cd8d8cee56d63d18d965065890665d7ca09179a5ba52fcfc1c99222a",
+    "after": "465c0a6fb7d0b2ce5e67311cf9c9e3c7a2a79ad9c32723a1e7e5858ef275830b"
+  }
+}

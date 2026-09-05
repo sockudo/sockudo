@@ -90,6 +90,7 @@ impl PushPlanner {
                 return Ok(());
             }
         };
+        self.persist_planner_receipt(&event, 0, 0, false).await?;
         let plan_result = match event.fanout_regime {
             FanoutRegime::FastPath => self.plan_fast_path(&event).await,
             FanoutRegime::ShardPath => self.plan_shard_path(&event).await,
@@ -154,7 +155,17 @@ impl PushPlanner {
             .get_publish_status(&event.app_id, &event.publish_id)
             .await?
         else {
-            return Ok(false);
+            if self
+                .store
+                .is_publish_retired(&event.app_id, &event.publish_id)
+                .await?
+            {
+                return Ok(false);
+            }
+            return Err(crate::storage::PushStorageError::Backend(
+                "publish status is missing; publish log must retry after status repair".to_owned(),
+            )
+            .into());
         };
         Ok(matches!(
             status.state,
@@ -242,14 +253,85 @@ impl PushPlanner {
             },
             self.metrics.clone(),
         );
-        for target in &event.intent.targets {
-            self.stream_target(target, &mut batcher, Some(event.fast_threshold))
-                .await?;
+        for (index, target) in event.intent.targets.iter().enumerate() {
+            if let Some(cursor) = self
+                .stream_target(target, &mut batcher, Some(event.fast_threshold))
+                .await?
+            {
+                let shard = ShardJob {
+                    app_id: event.app_id.clone(),
+                    publish_id: event.publish_id.clone(),
+                    shard_id: format!("fast-continuation-{index}"),
+                    target: target.clone(),
+                    payload: event.intent.payload.clone(),
+                    provider_overrides: event.intent.provider_overrides.clone(),
+                    not_before_ms: event.intent.not_before_ms,
+                    expires_at_ms: event.intent.expires_at_ms,
+                    cursor: Some(cursor),
+                    page_size: self.config.page_size,
+                    shard_size: self.config.shard_size,
+                    emitted_recipients: 0,
+                    emitted_batches: 0,
+                    status: ShardJobStatus::Pending,
+                };
+                self.store.put_fanout_shard(shard.clone()).await?;
+                self.queue
+                    .produce(
+                        PushQueueStage::ShardJobs,
+                        shard.queue_key(),
+                        PushQueuePayload::ShardJob(Box::new(shard)),
+                    )
+                    .await?;
+            }
         }
-        batcher.flush(&self.queue).await
+        batcher.flush(&self.queue).await?;
+        self.persist_planner_receipt(
+            event,
+            batcher.emitted_recipients,
+            batcher.emitted_batches,
+            true,
+        )
+        .await
+    }
+
+    async fn persist_planner_receipt(
+        &self,
+        event: &PublishLogEvent,
+        emitted_recipients: u64,
+        emitted_batches: u64,
+        complete: bool,
+    ) -> PushPipelineResult<()> {
+        let target = event.intent.targets.first().cloned().ok_or_else(|| {
+            PushPipelineError::InvalidPayload("publish has no targets".to_owned())
+        })?;
+        self.store
+            .put_fanout_shard(ShardJob {
+                app_id: event.app_id.clone(),
+                publish_id: event.publish_id.clone(),
+                shard_id: crate::lifecycle::PLANNER_RECEIPT_ID.to_owned(),
+                target,
+                payload: event.intent.payload.clone(),
+                provider_overrides: event.intent.provider_overrides.clone(),
+                not_before_ms: event.intent.not_before_ms,
+                expires_at_ms: event.intent.expires_at_ms,
+                cursor: None,
+                page_size: self.config.page_size,
+                shard_size: self.config.shard_size,
+                emitted_recipients,
+                emitted_batches,
+                status: if complete {
+                    ShardJobStatus::Complete
+                } else {
+                    ShardJobStatus::Pending
+                },
+            })
+            .await?;
+        Ok(())
     }
 
     async fn plan_shard_path(&self, event: &PublishLogEvent) -> PushPipelineResult<()> {
+        let mut direct_recipients = 0_u64;
+        let mut direct_batches = 0_u64;
         let mut ids = BTreeSet::new();
         let payload = Arc::new(event.intent.payload.clone());
         let rendered_payloads =
@@ -300,10 +382,14 @@ impl PushPlanner {
                     );
                     self.stream_target(target, &mut batcher, None).await?;
                     batcher.flush(&self.queue).await?;
+                    direct_recipients =
+                        direct_recipients.saturating_add(batcher.emitted_recipients);
+                    direct_batches = direct_batches.saturating_add(batcher.emitted_batches);
                 }
             }
         }
-        Ok(())
+        self.persist_planner_receipt(event, direct_recipients, direct_batches, true)
+            .await
     }
 
     async fn stream_target(
@@ -312,7 +398,6 @@ impl PushPlanner {
         batcher: &mut ProviderBatcher,
         max_recipients: Option<u64>,
     ) -> PushPipelineResult<Option<crate::domain::PushCursor>> {
-        let mut emitted = 0_u64;
         match target {
             PublishTarget::Device { device_id } => {
                 if let Some(device) = self.store.get_device(&batcher.app_id, device_id).await? {
@@ -320,92 +405,17 @@ impl PushPlanner {
                 }
                 Ok(None)
             }
-            PublishTarget::Client { client_id } => {
-                let mut cursor = None;
-                loop {
-                    let page = self
-                        .store
-                        .list_devices(&batcher.app_id, self.config.page_size, cursor)
-                        .await?;
-                    let next_cursor = page.next_cursor.clone();
-                    for device in page
-                        .items
-                        .into_iter()
-                        .filter(|device| device.client_id.as_deref() == Some(client_id))
-                    {
-                        batcher.push_device(device, &self.queue).await?;
-                        emitted += 1;
-                        if max_recipients.is_some_and(|max| emitted >= max) {
-                            return Ok(next_cursor);
-                        }
-                    }
-                    cursor = next_cursor;
-                    if cursor.is_none() {
-                        return Ok(None);
-                    }
-                }
-            }
-            PublishTarget::Channel { channel } => {
-                let mut cursor = None;
-                loop {
-                    let page = self
-                        .store
-                        .list_channel_subscribers(
-                            &batcher.app_id,
-                            channel,
-                            self.config.page_size,
-                            cursor,
-                        )
-                        .await?;
-                    let next_cursor = page.next_cursor.clone();
-                    for subscription in page.items {
-                        if let Some(client_id) = subscription.scoped_client_id() {
-                            let mut device_cursor = None;
-                            loop {
-                                let devices = self
-                                    .store
-                                    .list_devices(
-                                        &batcher.app_id,
-                                        self.config.page_size,
-                                        device_cursor,
-                                    )
-                                    .await?;
-                                let next_device_cursor = devices.next_cursor.clone();
-                                for device in devices
-                                    .items
-                                    .into_iter()
-                                    .filter(|device| device.client_id.as_deref() == Some(client_id))
-                                {
-                                    batcher.push_device(device, &self.queue).await?;
-                                    emitted += 1;
-                                    if max_recipients.is_some_and(|max| emitted >= max) {
-                                        return Ok(next_cursor);
-                                    }
-                                }
-                                device_cursor = next_device_cursor;
-                                if device_cursor.is_none() {
-                                    break;
-                                }
-                            }
-                            continue;
-                        }
-                        if let Some(device) = self
-                            .store
-                            .get_device(&batcher.app_id, &subscription.device_id)
-                            .await?
-                        {
-                            batcher.push_device(device, &self.queue).await?;
-                            emitted += 1;
-                            if max_recipients.is_some_and(|max| emitted >= max) {
-                                return Ok(next_cursor);
-                            }
-                        }
-                    }
-                    cursor = next_cursor;
-                    if cursor.is_none() {
-                        return Ok(None);
-                    }
-                }
+            PublishTarget::Client { .. } | PublishTarget::Channel { .. } => {
+                stream_indexed_target(
+                    &self.store,
+                    &self.queue,
+                    target,
+                    None,
+                    self.config.page_size,
+                    max_recipients.unwrap_or(u64::MAX),
+                    batcher,
+                )
+                .await
             }
             PublishTarget::Recipient { recipient } => {
                 recipient.validate()?;
@@ -489,6 +499,14 @@ impl PushShardWorker {
             return Ok(());
         };
         let mut shard = *shard;
+        if self
+            .store
+            .is_publish_retired(&shard.app_id, &shard.publish_id)
+            .await?
+        {
+            self.queue.ack(ack).await?;
+            return Ok(());
+        }
 
         shard.status = ShardJobStatus::Running;
         self.store.put_fanout_shard(shard.clone()).await?;
@@ -528,7 +546,11 @@ impl PushShardWorker {
 
         if let Some(cursor) = next_cursor {
             let next = ShardJob {
-                shard_id: format!("{}-next-{}", shard.shard_id, shard.emitted_recipients),
+                shard_id: {
+                    let identity = sonic_rs::to_string(&(&shard.shard_id, &cursor))
+                        .map_err(|_| crate::domain::PushDomainError::CursorDecode)?;
+                    format!("next-{}", crate::domain::stable_hash(identity.as_bytes()))
+                },
                 cursor: Some(cursor),
                 status: ShardJobStatus::Pending,
                 emitted_recipients: 0,
@@ -554,87 +576,157 @@ impl PushShardWorker {
         shard: &ShardJob,
         batcher: &mut ProviderBatcher,
     ) -> PushPipelineResult<Option<crate::domain::PushCursor>> {
-        let mut cursor = shard.cursor.clone();
-        let mut emitted = 0_u64;
-        match &shard.target {
-            PublishTarget::Channel { channel } => loop {
-                let remaining = shard.shard_size.saturating_sub(emitted).max(1);
-                let limit = shard.page_size.min(remaining as usize);
-                let page = self
-                    .store
-                    .list_channel_subscribers(&shard.app_id, channel, limit, cursor)
-                    .await?;
-                let next_cursor = page.next_cursor.clone();
-                for subscription in page.items {
-                    if let Some(client_id) = subscription.scoped_client_id() {
-                        let mut device_cursor = None;
-                        loop {
-                            let devices = self
-                                .store
-                                .list_devices(&shard.app_id, shard.page_size, device_cursor)
-                                .await?;
-                            let next_device_cursor = devices.next_cursor.clone();
-                            for device in devices
-                                .items
-                                .into_iter()
-                                .filter(|device| device.client_id.as_deref() == Some(client_id))
-                            {
-                                batcher.push_device(device, &self.queue).await?;
-                                emitted += 1;
-                            }
-                            device_cursor = next_device_cursor;
-                            if device_cursor.is_none() {
-                                break;
-                            }
-                        }
-                        if emitted >= shard.shard_size {
-                            return Ok(next_cursor);
-                        }
-                        continue;
-                    }
-                    if let Some(device) = self
-                        .store
-                        .get_device(&shard.app_id, &subscription.device_id)
-                        .await?
-                    {
-                        batcher.push_device(device, &self.queue).await?;
-                        emitted += 1;
-                        if emitted >= shard.shard_size {
-                            return Ok(next_cursor);
-                        }
-                    }
+        stream_indexed_target(
+            &self.store,
+            &self.queue,
+            &shard.target,
+            shard.cursor.clone(),
+            shard.page_size,
+            shard.shard_size,
+            batcher,
+        )
+        .await
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChannelFanoutCursorV2 {
+    version: u8,
+    subscription_after: String,
+    client_id: String,
+    device_cursor: crate::domain::PushCursor,
+}
+
+#[allow(clippy::too_many_arguments)] // Shared initial and continuation traversal keeps one cursor contract.
+async fn stream_indexed_target(
+    store: &DynPushStore,
+    queue: &crate::pipeline::DynPushQueue,
+    target: &PublishTarget,
+    cursor: Option<crate::domain::PushCursor>,
+    page_size: usize,
+    max_recipients: u64,
+    batcher: &mut ProviderBatcher,
+) -> PushPipelineResult<Option<crate::domain::PushCursor>> {
+    use crate::domain::{PushCursor, PushCursorKind};
+    let app_id = batcher.app_id.clone();
+    let max_recipients = max_recipients.max(1);
+    let page_size = page_size.max(1);
+    let mut emitted = 0u64;
+    let mut cursor = cursor;
+    match target {
+        PublishTarget::Client { client_id } => loop {
+            let limit =
+                page_size.min(usize::try_from(max_recipients - emitted).unwrap_or(usize::MAX));
+            let page = store
+                .list_devices_by_client(&app_id, client_id, limit, cursor)
+                .await?;
+            for device in page.items {
+                batcher.push_device(device, queue).await?;
+                emitted += 1;
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() || emitted >= max_recipients {
+                return Ok(cursor);
+            }
+        },
+        PublishTarget::Channel { channel } => {
+            let mut pending_client = None;
+            if let Some(saved) = cursor
+                .as_ref()
+                .filter(|cursor| cursor.kind == PushCursorKind::ChannelFanout)
+            {
+                if saved.app_id != app_id {
+                    return Err(crate::domain::PushDomainError::CursorDecode.into());
                 }
-                cursor = next_cursor;
-                if cursor.is_none() {
-                    return Ok(None);
+                let state: ChannelFanoutCursorV2 = sonic_rs::from_str(&saved.position)
+                    .map_err(|_| crate::domain::PushDomainError::CursorDecode)?;
+                if state.version != 2 {
+                    return Err(crate::domain::PushDomainError::CursorDecode.into());
                 }
-            },
-            PublishTarget::Client { client_id } => loop {
-                let remaining = shard.shard_size.saturating_sub(emitted).max(1);
-                let limit = shard.page_size.min(remaining as usize);
-                let page = self
-                    .store
-                    .list_devices(&shard.app_id, limit, cursor)
-                    .await?;
-                let next_cursor = page.next_cursor.clone();
-                for device in page
-                    .items
-                    .into_iter()
-                    .filter(|device| device.client_id.as_deref() == Some(client_id))
+                cursor = Some(PushCursor {
+                    app_id: app_id.clone(),
+                    kind: PushCursorKind::ChannelSubscription,
+                    position: state.subscription_after.clone(),
+                    issued_at_ms: 0,
+                });
+                pending_client = Some((
+                    state.subscription_after,
+                    state.client_id,
+                    Some(state.device_cursor),
+                ));
+            }
+            loop {
+                if let Some((subscription_after, client_id, mut device_cursor)) =
+                    pending_client.take()
                 {
-                    batcher.push_device(device, &self.queue).await?;
-                    emitted += 1;
-                    if emitted >= shard.shard_size {
-                        return Ok(next_cursor);
+                    loop {
+                        let limit = page_size
+                            .min(
+                                usize::try_from(max_recipients.saturating_sub(emitted))
+                                    .unwrap_or(usize::MAX),
+                            )
+                            .max(1);
+                        let page = store
+                            .list_devices_by_client(&app_id, &client_id, limit, device_cursor)
+                            .await?;
+                        for device in page.items {
+                            batcher.push_device(device, queue).await?;
+                            emitted += 1;
+                        }
+                        device_cursor = page.next_cursor;
+                        if emitted >= max_recipients {
+                            if let Some(device_cursor) = device_cursor {
+                                let position = sonic_rs::to_string(&ChannelFanoutCursorV2 {
+                                    version: 2,
+                                    subscription_after,
+                                    client_id,
+                                    device_cursor,
+                                })
+                                .map_err(|_| crate::domain::PushDomainError::CursorDecode)?;
+                                return Ok(Some(PushCursor {
+                                    app_id,
+                                    kind: PushCursorKind::ChannelFanout,
+                                    position,
+                                    issued_at_ms: 0,
+                                }));
+                            }
+                            return Ok(cursor);
+                        }
+                        if device_cursor.is_none() {
+                            break;
+                        }
                     }
                 }
-                cursor = next_cursor;
-                if cursor.is_none() {
-                    return Ok(None);
+                // A single subscription can expand to many devices; retain its exact
+                // position before traversing the nested device pages.
+                let page = store
+                    .list_channel_subscribers(&app_id, channel, 1, cursor)
+                    .await?;
+                let Some(subscription) = page.items.into_iter().next() else {
+                    return Ok(page.next_cursor);
+                };
+                let after = subscription.device_id.clone();
+                cursor = Some(PushCursor {
+                    app_id: app_id.clone(),
+                    kind: PushCursorKind::ChannelSubscription,
+                    position: after.clone(),
+                    issued_at_ms: 0,
+                });
+                if let Some(client_id) = subscription.scoped_client_id() {
+                    pending_client = Some((after, client_id.to_owned(), None));
+                } else {
+                    if let Some(device) = store.get_device(&app_id, &subscription.device_id).await?
+                    {
+                        batcher.push_device(device, queue).await?;
+                        emitted += 1;
+                    }
+                    if emitted >= max_recipients || page.next_cursor.is_none() {
+                        return Ok(page.next_cursor);
+                    }
                 }
-            },
-            _ => Ok(None),
+            }
         }
+        _ => Ok(None),
     }
 }
 
@@ -837,6 +929,69 @@ mod tests {
     use crate::storage::{PushPublishLogStore, PushPublishStatusStore};
 
     use super::*;
+
+    #[tokio::test]
+    async fn missing_parent_preserves_publish_log_until_status_repair() {
+        let accepted_store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        accept_direct_publish(accepted_store.clone(), queue.clone(), 1_000).await;
+        let accepted_status = accepted_store
+            .get_publish_status("app-1", "publish-1")
+            .await
+            .unwrap()
+            .unwrap();
+        // Simulate a legacy partial restore: the accepted queue item survived,
+        // but its canonical status was omitted from the restored store.
+        let store = Arc::new(MemoryPushStore::new());
+        let planner = PushPlanner::new(store.clone(), queue.clone(), FanoutConfig::default());
+        let message = queue
+            .consume(PushQueueStage::PublishLog, "planner-a", 1, 30_000)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let token = message.ack.clone();
+        let error = planner
+            .handle_publish_message(message, "planner-a")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("publish status is missing"));
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .inflight_depth,
+            1
+        );
+        assert_eq!(
+            delivery_lag(&queue, PushProviderKind::Fcm)
+                .await
+                .ready_depth,
+            0
+        );
+
+        store.put_publish_status(accepted_status).await.unwrap();
+        // Broker redelivery after the failed worker is fenced must still carry
+        // the original item; completing the repair cannot require republishing.
+        queue.nack(token, None).await.unwrap();
+        let restarted = PushPlanner::new(store, queue.clone(), FanoutConfig::default());
+        assert_eq!(restarted.run_once("planner-b").await.unwrap(), 1);
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .inflight_depth,
+            0
+        );
+        assert_eq!(
+            delivery_lag(&queue, PushProviderKind::Fcm)
+                .await
+                .ready_depth,
+            1
+        );
+    }
 
     #[tokio::test]
     async fn duplicate_publish_log_after_dispatching_does_not_emit_more_delivery_jobs() {

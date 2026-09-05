@@ -1,0 +1,4 @@
+operation,retained,payload_bytes,samples,p50_ns,p95_ns,p99_ns,alloc_calls_per_op,requested_alloc_bytes_per_op
+annotation_duplicate_rebuild,100,0,101,1483,1593,3547,53,2134
+annotation_duplicate_rebuild,1000,0,101,1503,1623,1713,53,2134
+annotation_duplicate_rebuild,10000,0,101,1623,1683,1763,53,2134

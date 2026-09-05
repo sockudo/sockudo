@@ -171,16 +171,10 @@ pub(super) async fn mark_channel_degraded(
         db.select(resource.clone()).await;
     match current {
         Ok(Some(stream)) => {
-            let updated = StoredStreamRecord {
-                durable_state: state.durable_state.as_str().to_string(),
-                durable_state_reason: Some(state.reason.clone()),
-                durable_state_node_id: state.node_id.clone(),
-                durable_state_changed_at_ms: Some(state.last_transition_at_ms),
-                updated_at_ms: now_ms,
-                ..stream
-            };
-            let upsert_result: std::result::Result<Option<StoredStreamRecord>, _> =
-                db.upsert(resource).content(updated).await;
+            let upsert_result = db.query("UPDATE ONLY type::record($table,$id) SET durable_state=$state, durable_state_reason=$reason, durable_state_node_id=$node, durable_state_changed_at_ms=$now, updated_at_ms=$now WHERE stream_id=$stream")
+                .bind(("table",resource.0)).bind(("id",resource.1)).bind(("stream",stream.stream_id))
+                .bind(("state",state.durable_state.as_str().to_string())).bind(("reason",state.reason.clone()))
+                .bind(("node",state.node_id.clone())).bind(("now",now_ms)).await.and_then(|response|response.check());
             if let Err(err) = upsert_result {
                 error!(app_id = %request.app_id, channel = %request.channel, error = %err, "failed to persist surrealdb history degraded state");
             }

@@ -1,0 +1,35 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.41s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_push-ad9b0f8862a6adbb)
+
+running 4 tests
+test feedback::live_tests::dynamodb_feedback_restart_boundaries ... 
+thread 'feedback::live_tests::dynamodb_feedback_restart_boundaries' (487251) panicked at crates/sockudo-push/src/feedback/live_tests.rs:80:58:
+called `Result::unwrap()` on an `Err` value: Storage(Backend("push document JSON mapping failed: invalid type: newtype struct, expected a valid json at line 1 column 376\n\n\tACTIVE\"}}\n\t........^\n"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test feedback::live_tests::mysql_feedback_restart_boundaries ... 
+thread 'feedback::live_tests::mysql_feedback_restart_boundaries' (487329) panicked at crates/sockudo-push/src/feedback/live_tests.rs:80:58:
+called `Result::unwrap()` on an `Err` value: Storage(Backend("push SQL backend error: error occurred while decoding column \"expires_at_ms\": mismatched types; Rust type `i64` (as SQL type `BIGINT`) is not compatible with SQL type `BIGINT UNSIGNED`"))
+FAILED
+test feedback::live_tests::postgres_feedback_restart_boundaries ... 
+thread 'feedback::live_tests::postgres_feedback_restart_boundaries' (487401) panicked at crates/sockudo-push/src/feedback/live_tests.rs:13:48:
+called `Result::unwrap()` on an `Err` value: Backend("push SQL backend error: error returned from database: no partition of relation \"push_publish_status\" found for row at line 325")
+FAILED
+test feedback::live_tests::surreal_feedback_restart_boundaries ... 
+thread 'feedback::live_tests::surreal_feedback_restart_boundaries' (487407) panicked at crates/sockudo-push/src/feedback/live_tests.rs:80:58:
+called `Result::unwrap()` on an `Err` value: Storage(Backend("push document JSON mapping failed: invalid type: newtype struct, expected a valid json at line 1 column 376\n\n\t:\"en-US\"}\n\t........^\n"))
+FAILED
+
+failures:
+
+failures:
+    feedback::live_tests::dynamodb_feedback_restart_boundaries
+    feedback::live_tests::mysql_feedback_restart_boundaries
+    feedback::live_tests::postgres_feedback_restart_boundaries
+    feedback::live_tests::surreal_feedback_restart_boundaries
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 151 filtered out; finished in 4.02s
+
+error: test failed, to rerun pass `-p sockudo-push --lib`

@@ -71,14 +71,43 @@ impl SurrealHistoryStore {
         channel: &str,
         record: &StoredStreamRecord,
     ) -> Result<()> {
-        let _: Option<StoredStreamRecord> = self
-            .db
-            .upsert(self.stream_resource(app_id, channel))
-            .content(record.clone())
-            .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to upsert SurrealDB history stream: {e}"))
-            })?;
+        let mut next = record.clone();
+        next.retention_revision = Some(record.retention_revision.unwrap_or(0) + 1);
+        let latest = self.load_stream_raw(app_id, channel).await?;
+        if latest.is_none() {
+            let _: Option<StoredStreamRecord> = self
+                .db
+                .create(self.stream_resource(app_id, channel))
+                .content(next)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to create SurrealDB history stream during reset: {e}"
+                    ))
+                })?;
+            return Ok(());
+        }
+
+        if let Some(latest) = &latest {
+            if latest.stream_id == record.stream_id {
+                next.next_serial = next.next_serial.max(latest.next_serial);
+            }
+        }
+        let mut response = self.db.query("UPDATE ONLY type::record($table,$id) CONTENT $content WHERE (retention_revision=$revision OR (retention_revision IS NONE AND $revision=0)) AND next_serial=$expected_next RETURN AFTER")
+            .bind(("table",self.tables.streams.clone())).bind(("id",self.stream_resource(app_id,channel).1))
+            .bind(("content",next)).bind(("revision",record.retention_revision.unwrap_or(0)))
+            .bind(("expected_next",latest.map_or(record.next_serial, |state|state.next_serial)))
+            .await.map_err(|e|Error::Internal(format!("Failed to conditionally update SurrealDB history stream: {e}")))?;
+        let updated: Option<StoredStreamRecord> = response.take(0usize).map_err(|e| {
+            Error::Internal(format!(
+                "Failed to decode SurrealDB history stream update: {e}"
+            ))
+        })?;
+        if updated.is_none() {
+            return Err(Error::Internal(
+                "SurrealDB history stream changed during update".into(),
+            ));
+        }
         Ok(())
     }
 }

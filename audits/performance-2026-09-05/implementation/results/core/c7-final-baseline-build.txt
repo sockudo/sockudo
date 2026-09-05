@@ -1,0 +1,4 @@
+     Removed 25 files, 143.8MiB total
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/c7-baseline-instrumented/crates/sockudo-server)
+    Finished `release` profile [optimized] target(s) in 4m 32s
+  Executable unittests src/main.rs (audits/performance-2026-09-05/implementation/target-c7-final-baseline/release/deps/sockudo-26866ec1cc67b2f2)

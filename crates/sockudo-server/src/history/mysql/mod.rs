@@ -271,3 +271,11 @@ pub(super) use annotation_store::MysqlAnnotationStore;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(super) async fn simulate_legacy_retention(db: &DatabaseConnection, config: HistoryConfig) {
+    let store = MySqlHistoryStore::new(db, &DatabasePooling::default(), config, None, None)
+        .await
+        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {} SET retention_initialized=FALSE,retained_messages=777,retained_bytes=999 WHERE app_id='c6-app' AND channel='legacy'",store.tables.streams).as_str())).execute(&store.pool).await.unwrap();
+}

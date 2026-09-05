@@ -1,0 +1,28 @@
+
+thread 'history::scylla::page_tests::benchmark_scylla_bounded_history_pages' (84273) panicked at crates/sockudo-server/src/history/scylla/page_tests.rs:22:50:
+called `Result::unwrap()` on an `Err` value: LastAttemptError(DbError(WriteTimeout { consistency: LocalQuorum, received: 0, required: 1, write_type: Simple }, "Operation timed out for c8_5105c03320f8.sockudo_history_entries - received only 0 responses from 1 CL=LOCAL_QUORUM."))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Command exited with non-zero status 101
+	Command being timed: "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/binaries/c8-baseline history::scylla::page_tests::benchmark_scylla_bounded_history_pages --ignored --exact --nocapture --test-threads=1"
+	User time (seconds): 0.49
+	System time (seconds): 0.31
+	Percent of CPU this job got: 7%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:10.11
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 67644
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 3023
+	Voluntary context switches: 3873
+	Involuntary context switches: 871
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 32
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101

@@ -1,3 +1,11 @@
+#[cfg(any(
+    feature = "redis",
+    feature = "redis-cluster",
+    feature = "nats",
+    feature = "kafka",
+    test
+))]
+pub(crate) mod dispatch;
 #[cfg(feature = "google-pubsub")]
 pub mod google_pubsub_transport;
 #[cfg(feature = "iggy")]

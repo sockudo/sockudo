@@ -66,6 +66,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+rustls = { workspace = true }
 chrono = { workspace = true }
 md5 = { workspace = true }
 sockudo-app = { workspace = true }

@@ -12,6 +12,11 @@ use std::collections::BTreeMap;
 
 #[async_trait]
 pub trait PresenceHistoryStore: Send + Sync {
+    /// Reclaim expired idle payloads within a bounded maintenance budget.
+    async fn purge_expired(&self, _batch_size: usize) -> Result<(u64, bool)> {
+        Ok((0, false))
+    }
+
     async fn record_transition(&self, record: PresenceHistoryTransitionRecord) -> Result<()>;
 
     async fn read_page(&self, request: PresenceHistoryReadRequest) -> Result<PresenceHistoryPage>;

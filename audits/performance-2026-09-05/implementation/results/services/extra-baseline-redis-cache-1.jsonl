@@ -1,0 +1,5 @@
+{"verified":{"repeat":0,"count":10000},"elapsed_us":435348,"allocations":121075,"case":"S4_redis_sweep","allocated_bytes":67852809}
+{"allocated_bytes":67852753,"case":"S4_redis_sweep","verified":{"repeat":1,"count":10000},"allocations":121073,"elapsed_us":431961}
+{"allocations":121073,"elapsed_us":413141,"case":"S4_redis_sweep","verified":{"count":10000,"repeat":2},"allocated_bytes":67852753}
+{"case":"S4_redis_sweep","elapsed_us":403197,"verified":{"repeat":3,"count":10000},"allocations":121073,"allocated_bytes":67852753}
+{"case":"S4_redis_sweep","verified":{"count":10000,"repeat":4},"allocated_bytes":67852753,"allocations":121073,"elapsed_us":435281}

@@ -54,6 +54,7 @@ impl MySqlHistoryStore {
                 durable_state_reason TEXT NULL,
                 durable_state_node_id VARCHAR(255) NULL,
                 durable_state_changed_at_ms BIGINT NULL,
+                retention_initialized BOOLEAN NOT NULL DEFAULT FALSE,
                 retained_messages BIGINT NOT NULL DEFAULT 0,
                 retained_bytes BIGINT NOT NULL DEFAULT 0,
                 oldest_available_serial BIGINT NULL,
@@ -266,6 +267,12 @@ impl MySqlHistoryStore {
                 })?;
         }
 
+        self.add_column_if_not_exists(
+            &self.tables.streams,
+            "retention_initialized",
+            "BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .await?;
         self.add_column_if_not_exists(
             &self.tables.streams,
             "oldest_available_published_at_ms",

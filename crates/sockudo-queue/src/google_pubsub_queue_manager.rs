@@ -28,7 +28,7 @@ pub struct GooglePubSubQueueManager {
     workers: WorkerRegistry,
     publishers: DashMap<String, Publisher>,
     provisioned_topics: DashSet<String>,
-    provisioned_subscriptions: DashSet<String>,
+    provisioned_subscriptions: DashMap<String, bool>,
     reliability: QueueReliabilityConfig,
 }
 
@@ -58,7 +58,7 @@ impl GooglePubSubQueueManager {
             workers: WorkerRegistry::default(),
             publishers: DashMap::new(),
             provisioned_topics: DashSet::new(),
-            provisioned_subscriptions: DashSet::new(),
+            provisioned_subscriptions: DashMap::new(),
             reliability,
         })
     }
@@ -111,37 +111,55 @@ impl GooglePubSubQueueManager {
         }
     }
 
-    async fn ensure_subscription(&self, subscription: &str, topic: &str) -> Result<()> {
-        if self.provisioned_subscriptions.contains(subscription) {
-            return Ok(());
+    async fn ensure_subscription(&self, subscription: &str, topic: &str) -> Result<bool> {
+        if let Some(paced) = self.provisioned_subscriptions.get(subscription) {
+            return Ok(*paced);
         }
-        match self
+        let mut retry = google_cloud_pubsub::model::RetryPolicy::new();
+        retry.minimum_backoff = Some(
+            std::time::Duration::from_millis(
+                self.reliability.retry_base_delay_ms.clamp(1, 600_000),
+            )
+            .try_into()
+            .map_err(|error| Error::Config(format!("invalid pub/sub retry minimum: {error}")))?,
+        );
+        retry.maximum_backoff = Some(
+            std::time::Duration::from_millis(self.reliability.retry_max_delay_ms.clamp(1, 600_000))
+                .try_into()
+                .map_err(|error| {
+                    Error::Config(format!("invalid pub/sub retry maximum: {error}"))
+                })?,
+        );
+        let configured = match self
             .subscription_admin
             .create_subscription()
             .set_name(subscription)
             .set_topic(topic)
+            .set_retry_policy(retry)
             .send()
             .await
         {
-            Ok(_) => {
-                self.provisioned_subscriptions
-                    .insert(subscription.to_string());
-                Ok(())
-            }
+            Ok(configured) => configured,
             Err(create_error) => self
                 .subscription_admin
                 .get_subscription()
                 .set_subscription(subscription)
                 .send()
                 .await
-                .map(|_| {
-                    self.provisioned_subscriptions
-                        .insert(subscription.to_string());
-                })
-                .map_err(|_| Error::Queue(format!(
-                    "Failed to ensure Google Pub/Sub subscription {subscription}: {create_error}"
-                ))),
-        }
+                .map_err(|_| {
+                    Error::Queue(format!(
+                        "failed to ensure Google Pub/Sub subscription: {create_error}"
+                    ))
+                })?,
+        };
+        let paced = configured
+            .retry_policy
+            .as_ref()
+            .and_then(|policy| policy.minimum_backoff.as_ref())
+            .is_some_and(|delay| delay.seconds() > 0 || delay.nanos() > 0);
+        self.provisioned_subscriptions
+            .insert(subscription.to_owned(), paced);
+        Ok(paced)
     }
 
     async fn publisher_for(&self, topic: &str) -> Result<Publisher> {
@@ -204,7 +222,8 @@ impl QueueInterface for GooglePubSubQueueManager {
         let topic = self.topic_name(queue_name);
         let subscription = self.subscription_name(queue_name);
         self.ensure_topic(&topic).await?;
-        self.ensure_subscription(&subscription, &topic).await?;
+        let broker_paces_retries = self.ensure_subscription(&subscription, &topic).await?;
+        let reliability = self.reliability.clone();
         let subscriber = self.subscriber.clone();
         let callback: ArcJobProcessorFn = Arc::from(callback);
         let shutdown = self.shutdown.clone();
@@ -240,13 +259,20 @@ impl QueueInterface for GooglePubSubQueueManager {
                 match message {
                     Ok((message, ack_handler)) => {
                         let callback = callback.clone();
+                        let reliability = reliability.clone();
                         in_flight.spawn(async move {
                             match sonic_rs::from_slice::<JobData>(&message.data) {
                                 Ok(job) => {
                                     match callback(job).await {
                                         Ok(()) => ack_handler.ack(),
-                                        Err(_) => {
-                                            warn!("google pub/sub queue processor failed");
+                                        Err(error) => {
+                                            warn!(error = %error, "google pub/sub queue processor failed");
+                                            if !broker_paces_retries {
+                                                // Existing subscriptions may not have a broker retry
+                                                // policy. Keep this bounded prefetch slot/ack lease
+                                                // while pacing, preserving externally owned policy.
+                                                tokio::time::sleep(crate::broker_retry_delay(&reliability, 1)).await;
+                                            }
                                             ack_handler.nack();
                                         }
                                     }

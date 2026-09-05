@@ -411,7 +411,13 @@ pub(super) async fn resolve_ably_push_auth(
     else {
         return Err(AblyAuthError::invalid_credentials());
     };
-    if !verify_device_identity_token(&token, &device.device_secret) {
+    if !verify_device_identity_token_async(&token, &device.device_secret)
+        .await
+        .map_err(|error| {
+            warn!(error = %error, "device identity verification unavailable");
+            AblyAuthError::backend_unavailable()
+        })?
+    {
         return Err(AblyAuthError::invalid_credentials());
     }
     let app = handler
@@ -544,7 +550,7 @@ pub(super) fn ably_device_identity_header(headers: &HeaderMap) -> Result<Option<
 }
 
 #[cfg(feature = "push")]
-pub(super) fn ensure_ably_device_owner(
+pub(super) async fn ensure_ably_device_owner(
     resolved: &ResolvedAblyAuth,
     headers: &HeaderMap,
     device: &DeviceDetails,
@@ -557,13 +563,22 @@ pub(super) fn ensure_ably_device_owner(
             "A matching device identity token is required".to_string(),
         ));
     };
-    if verify_device_identity_token(token, &device.device_secret) {
+    if verify_device_identity_token_async(token, &device.device_secret)
+        .await
+        .map_err(ably_device_crypto_error)?
+    {
         Ok(())
     } else {
         Err(AppError::Forbidden(
             "Invalid device identity token".to_string(),
         ))
     }
+}
+
+#[cfg(feature = "push")]
+fn ably_device_crypto_error(error: sockudo_push::DeviceIdentityCryptoError) -> AppError {
+    warn!(error = %error, "device identity cryptography unavailable");
+    ably_auth_app_error(AblyAuthError::backend_unavailable())
 }
 
 #[cfg(feature = "push")]
@@ -825,16 +840,16 @@ pub(super) async fn save_ably_push_device(
     {
         object.insert(DEVICE_SECRET_KEY, Value::from(device_secret));
     }
-    let identity_hash = existing
-        .as_ref()
-        .map(|device| device.device_secret.clone())
-        .unwrap_or_else(|| {
-            hash_device_identity_token(
-                issued_identity
-                    .as_ref()
-                    .expect("new registrations issue an identity token"),
-            )
-        });
+    let identity_hash = match existing.as_ref() {
+        Some(device) => device.device_secret.clone(),
+        None => hash_device_identity_token_async(
+            issued_identity
+                .as_ref()
+                .expect("new registrations issue an identity token"),
+        )
+        .await
+        .map_err(ably_device_crypto_error)?,
+    };
     let device = DeviceDetails {
         app_id: app_id.to_string(),
         id,
@@ -937,7 +952,7 @@ pub(super) async fn ably_push_save_device_response(
             }
             Err(error) => return ably_app_error_response_format(ably_push_error(error), format),
         };
-        if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device) {
+        if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device).await {
             return ably_app_error_response_format(error, format);
         }
     }
@@ -970,8 +985,11 @@ pub(super) async fn ably_push_get_device(
     match store.get_device(&resolved.app.id, &device_id).await {
         Ok(Some(device)) => {
             if ensure_ably_push_admin(&resolved, None).is_err()
-                && let Err(error) = ensure_ably_push_subscribe(&resolved, None)
-                    .and_then(|()| ensure_ably_device_owner(&resolved, &headers, &device))
+                && let Err(error) = async {
+                    ensure_ably_push_subscribe(&resolved, None)?;
+                    ensure_ably_device_owner(&resolved, &headers, &device).await
+                }
+                .await
             {
                 return ably_app_error_response_format(error, format);
             }
@@ -1090,7 +1108,7 @@ pub(super) async fn ably_push_delete_devices_inner(
                     return ably_app_error_response_format(ably_push_error(error), format);
                 }
             };
-            if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device) {
+            if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device).await {
                 return ably_app_error_response_format(error, format);
             }
         }
@@ -1162,9 +1180,11 @@ pub(super) async fn ably_push_save_subscription(
         match store.get_device(&resolved.app.id, device_id).await {
             Ok(Some(device)) => {
                 if ensure_ably_push_admin(&resolved, Some(&request.channel)).is_err()
-                    && let Err(error) =
-                        ensure_ably_push_subscribe(&resolved, Some(&request.channel))
-                            .and_then(|()| ensure_ably_device_owner(&resolved, &headers, &device))
+                    && let Err(error) = async {
+                        ensure_ably_push_subscribe(&resolved, Some(&request.channel))?;
+                        ensure_ably_device_owner(&resolved, &headers, &device).await
+                    }
+                    .await
                 {
                     return ably_app_error_response_format(error, format);
                 }
@@ -1354,7 +1374,7 @@ pub(super) async fn ably_push_delete_subscriptions(
                     return ably_app_error_response_format(ably_push_error(error), format);
                 }
             };
-            if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device) {
+            if let Err(error) = ensure_ably_device_owner(&resolved, &headers, &device).await {
                 return ably_app_error_response_format(error, format);
             }
         } else if let Some(client_id) = query.client_id.as_deref() {
@@ -1507,7 +1527,7 @@ pub(super) async fn summarize_ably_push_devices_for_client(
     let mut summary = AblyPushRecipientSummary::default();
     loop {
         let page = store
-            .list_devices(app_id, 1_000, cursor)
+            .list_devices_by_client(app_id, client_id, 1_000, cursor)
             .await
             .map_err(ably_push_error)?;
         for device in page

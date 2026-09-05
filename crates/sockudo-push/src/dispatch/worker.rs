@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,6 +24,7 @@ pub struct ProviderDispatchWorker {
     max_outbound_requests: usize,
     over_quota_tenants: BTreeSet<String>,
     tenant_inflight_cap: usize,
+    store: Option<crate::storage::DynPushStore>,
 }
 
 impl ProviderDispatchWorker {
@@ -42,11 +44,18 @@ impl ProviderDispatchWorker {
             max_outbound_requests: 32,
             over_quota_tenants: BTreeSet::new(),
             tenant_inflight_cap: 8,
+            store: None,
         }
     }
 
     pub fn with_circuit_breaker(mut self, circuit_breaker: ProviderCircuitBreaker) -> Self {
         self.circuit_breaker = circuit_breaker;
+        self
+    }
+
+    /// Fence duplicate delivery while durable completion evidence is retained.
+    pub fn with_store(mut self, store: crate::storage::DynPushStore) -> Self {
+        self.store = Some(store);
         self
     }
 
@@ -117,6 +126,14 @@ impl ProviderDispatchWorker {
             return Ok(());
         };
         let batch = *batch;
+        if let Some(store) = &self.store
+            && store
+                .is_publish_retired(&batch.app_id, &batch.publish_id)
+                .await?
+        {
+            self.queue.ack(ack).await?;
+            return Ok(());
+        }
         let Some(batch) = self.preflight_batch(ack.clone(), batch).await? else {
             return Ok(());
         };
@@ -183,6 +200,7 @@ impl ProviderDispatchWorker {
                     jobs: chunk_jobs,
                 })
                 .await;
+            let mut feedbacks = Vec::with_capacity(results.len());
             for result in results {
                 let original_job = original_jobs.next();
                 if !matches!(result.outcome, DeliveryOutcome::Accepted) {
@@ -221,13 +239,23 @@ impl ProviderDispatchWorker {
                     saw_retry_after = Some(retry_after_ms);
                 }
                 let feedback = delivery_feedback(result, original_job, started_ms);
-                self.queue
-                    .produce(
-                        PushQueueStage::DeliveryResults,
-                        feedback_key(&feedback),
-                        PushQueuePayload::DeliveryFeedback(Box::new(feedback)),
-                    )
-                    .await?;
+                feedbacks.push(feedback);
+            }
+            // All per-recipient successors must be durable before the batch ACK.
+            // Drain every admitted enqueue even on failure; cancellation would leave
+            // the status of an in-flight broker write uncertain.
+            let outcomes = futures_util::stream::iter(feedbacks.into_iter().map(|feedback| {
+                self.queue.produce(
+                    PushQueueStage::DeliveryResults,
+                    feedback_key(&feedback),
+                    PushQueuePayload::DeliveryFeedback(Box::new(feedback)),
+                )
+            }))
+            .buffer_unordered(16)
+            .collect::<Vec<_>>()
+            .await;
+            for outcome in outcomes {
+                outcome?;
             }
         }
 

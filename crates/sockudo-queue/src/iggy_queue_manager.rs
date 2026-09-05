@@ -160,14 +160,19 @@ impl QueueInterface for IggyQueueManager {
         ensure_consumer_group(&self.client, &self.config, &self.stream, &topic, &group).await?;
 
         let callback: ArcJobProcessorFn = Arc::from(callback);
-        let config = self.config.clone();
-        let stream = self.stream.clone();
-        let producers = self.producers.clone();
-        let shutdown = self.shutdown.clone();
-        let running = self.running.clone();
-        let max_attempts = self.reliability.max_attempts;
+        for _ in 0..64_usize.min(self.config.partitions_count as usize).max(1) {
+            let callback = Arc::clone(&callback);
+            let topic = topic.clone();
+            let group = group.clone();
+            let config = self.config.clone();
+            let stream = self.stream.clone();
+            let producers = self.producers.clone();
+            let shutdown = self.shutdown.clone();
+            let running = self.running.clone();
+            let max_attempts = self.reliability.max_attempts;
+            let reliability = self.reliability.clone();
 
-        self.workers.spawn(async move {
+            self.workers.spawn(async move {
             let mut retry_attempt = 0;
             while running.load(Ordering::Relaxed) {
                 let client = match connect_client(&config).await {
@@ -222,8 +227,11 @@ impl QueueInterface for IggyQueueManager {
                                                         error!(error = %error, "failed to commit apache iggy queue offset");
                                                     }
                                                 }
-                                                Err(_) => {
-                                                    warn!("apache iggy queue processor failed");
+                                                Err(error) => {
+                                                    warn!(error = %error, "apache iggy queue processor failed");
+                                                    if delivery_attempt(&message) < max_attempts {
+                                                        tokio::time::sleep(crate::broker_retry_delay(&reliability, delivery_attempt(&message))).await;
+                                                    }
                                                     if let Err(error) = handle_failed_job(
                                                         &QueuePublisher {
                                                             producers: &producers,
@@ -240,17 +248,19 @@ impl QueueInterface for IggyQueueManager {
                                                     .await
                                                     {
                                                         warn!(error = %error, "apache iggy queue job could not be moved for retry or dlq");
+                                                        break;
                                                     }
                                                 }
                                             }
                                         }
                                         Err(error) => {
                                             error!(error = %error, "failed to deserialize apache iggy queue job");
-                                            if let Err(error) = consumer
-                                                .store_offset(message.header.offset, Some(partition_id))
-                                                .await
-                                            {
-                                                error!(error = %error, "failed to commit malformed apache iggy queue job");
+                                            if let Err(error) = handle_failed_job(
+                                                &QueuePublisher { producers: &producers, client: &client, config: &config, stream: &stream, max_attempts: 1 },
+                                                &topic, &message, &mut consumer, partition_id,
+                                            ).await {
+                                                error!(error = %error, "failed to dead-letter malformed apache iggy queue job");
+                                                break;
                                             }
                                         }
                                     }
@@ -275,6 +285,7 @@ impl QueueInterface for IggyQueueManager {
             }
             info!("apache iggy queue worker stopped");
         });
+        }
 
         Ok(())
     }

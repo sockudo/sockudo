@@ -1,13 +1,16 @@
 pub mod activation;
 pub mod api;
+pub mod batch_wire;
 pub mod cleanup;
 #[doc(hidden)]
 #[cfg(any(test, feature = "testing"))]
 pub mod conformance;
 pub mod credentials;
+pub mod crypto;
 pub mod dispatch;
 pub mod domain;
 pub mod feedback;
+mod lifecycle;
 pub mod memory;
 pub mod meta;
 pub mod metrics;
@@ -31,6 +34,10 @@ pub mod templates;
 pub mod testing;
 pub mod transform;
 pub mod transformer;
+
+pub use crypto::{
+    DeviceIdentityCryptoError, hash_device_identity_token_async, verify_device_identity_token_async,
+};
 
 pub use cleanup::{
     PushCleanupCounters, PushCleanupPolicy, PushCleanupReport, PushCleanupRequest,

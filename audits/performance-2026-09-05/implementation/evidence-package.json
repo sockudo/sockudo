@@ -1,0 +1,498 @@
+{
+  "baseline_commit": "5613bb291032b6b7660352974b03da9eb0646da0",
+  "scope": "Snapshot of all recorded text benchmark results, including failed/intermediate runs; not a claim of final verification",
+  "omitted_artifacts": [
+    {
+      "path": "implementation/results/services/memory_queue-s1-s4",
+      "bytes": 918544,
+      "sha256": "56f244feb6203531d4dcc5db25171e3cdc11eb3b9efd78737e17d05c7fd37632",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/services-s1-s4",
+      "bytes": 2653040,
+      "sha256": "b5d1798b3f4f1f651dd5c087a7b3d39f353ec140fbde6078c6099228b3e24714",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/c4-baseline-binary",
+      "bytes": 1367776,
+      "sha256": "e9ec736b7f26635f5837e34ce7edb028fff68e92b41b0b61d09dbe8e5f8a951f",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/c4-current-binary",
+      "bytes": 1415544,
+      "sha256": "a1a59b2b50515a08144f47449e48dc3f6de9c18f19e2de3505097aa327029014",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/s11-isolated-binary",
+      "bytes": 18275160,
+      "sha256": "61e8488794c40e1a67b3cd056e39379a5de9faa3c49b31f684a8de62da67d7cf",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/s12-isolated-binary",
+      "bytes": 18256848,
+      "sha256": "03b897f97029f8bc26c8a2ee7919c7ba46e9e1138a8da43c49cd1c56a47b1998",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/c4-current-queried-binary",
+      "bytes": 1426528,
+      "sha256": "9870d625f788cff9ddc5b982de2f5a1c309197ee57328dde50314ce9a731304a",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/baseline-broker-binary",
+      "bytes": 10434944,
+      "sha256": "52bb8d31a7cc72fa5c96ffbb4a0561ec227dea8e662de818eff2162f566fc9f7",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/s13-isolated-binary",
+      "bytes": 18271072,
+      "sha256": "e5cadbb64639645f47eeb0293d850c2aedfcc0ff65982c57ae7737a58e5324ec",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/s9-broker-binary",
+      "bytes": 10456288,
+      "sha256": "b6f7662fa4ef77e3f995a090fcc6d687280488c04d483a55a2864b0d622095f0",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/s10-broker-binary",
+      "bytes": 10437832,
+      "sha256": "17a25c8a956a8a5312b62a8694f4ec2a691862bd3763c6e3394152b5bfdf3dc7",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/c4-baseline-queried-binary",
+      "bytes": 1368944,
+      "sha256": "291f1e2450ea144b5dcc33dbbc0c08fe503085e9d1416fc3505d912e6e34f46a",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/s7-isolated-binary",
+      "bytes": 18311856,
+      "sha256": "6ab7573d0d62be03dbf870be55498d004827c80a1438dc5e67d8c095c518ec48",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/p5-sql-baseline-binary",
+      "bytes": 5879360,
+      "sha256": "f6edddee5c1a43d40ae2c4b9bc66b6da1f0c5dd6385bf8639c11ad8ec051cd92",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/p5-sql-current-binary",
+      "bytes": 6280464,
+      "sha256": "fafa01887845c97e82f09a9c9da505ed34eb2f46ade642bfe15aaf6c8a386300",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/c4-range-current-binary",
+      "bytes": 1436944,
+      "sha256": "5729111319a8ca09c6c0c3b510616a7083612ad7889cbbef99835ef48e14b4be",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/components-baseline-binary",
+      "bytes": 3420120,
+      "sha256": "9e57eccf10cc9ea8a07bfcd80c71ba21d33c6634615c4c8c4c649d762878a171",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/components-s2-binary",
+      "bytes": 3419272,
+      "sha256": "4441a639d93cf1426d325acfd3ef1dc9ba431f29acd92c6e7c363242948a21b1",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/components-s3-binary",
+      "bytes": 3693760,
+      "sha256": "9b4c0d0caa74ba3f86e7c3cad3393c797d21707130d542fe009682cd3a697a08",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/components-s5-binary",
+      "bytes": 5029304,
+      "sha256": "a2b7abdb91acb7e9dbdc472a0da6a6f0ff748aba32853f2151a6eafebc96faab",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/components-s6-binary",
+      "bytes": 3464256,
+      "sha256": "83a0af8980c27b0c89fb5d64cba70343b59da213391927f2921a667f305d93dc",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/p5-controlled-baseline-binary",
+      "bytes": 6168176,
+      "sha256": "599222f446382d1a26029f2172c5c2432eaa66deac397b5bc35841ec209d17f5",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/services/p5-controlled-current-binary",
+      "bytes": 6279856,
+      "sha256": "83f6186a4bd1ab72a9111fa472a11318a0f95c82faaa7a700cda2d5ff0472653",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-baseline-256-encoded.json",
+      "bytes": 494886,
+      "sha256": "19b33e932cdbb849bcadccd44a9b1b4e95f614f0431145b946eef7dfb4763bf4",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-baseline-256-restored.json",
+      "bytes": 494886,
+      "sha256": "19b33e932cdbb849bcadccd44a9b1b4e95f614f0431145b946eef7dfb4763bf4",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-baseline-65536-encoded.json",
+      "bytes": 6577386,
+      "sha256": "515e2d65e53884feac04442664309dd1fff4bdd881819005d19c84c8947fa16b",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-baseline-65536-restored.json",
+      "bytes": 6577386,
+      "sha256": "515e2d65e53884feac04442664309dd1fff4bdd881819005d19c84c8947fa16b",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-after-256-encoded.json",
+      "bytes": 127231,
+      "sha256": "e3e7214bf3a1d0d4f381273d67462163362f876718e11265ce46168106d8cc51",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-after-256-restored.json",
+      "bytes": 127231,
+      "sha256": "e3e7214bf3a1d0d4f381273d67462163362f876718e11265ce46168106d8cc51",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-after-65536-encoded.json",
+      "bytes": 78211,
+      "sha256": "24769371b68fc398828bb8a05a3c762367ef81c9a15fc1c86518cb168c7b1152",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/push-ably/p4-after-65536-restored.json",
+      "bytes": 78211,
+      "sha256": "24769371b68fc398828bb8a05a3c762367ef81c9a15fc1c86518cb168c7b1152",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/results/fanout/C6-check.txt",
+      "bytes": 1201,
+      "reason": "binary fixture"
+    },
+    {
+      "path": "implementation/baseline-binaries/state_stores",
+      "bytes": 1453512,
+      "sha256": "a7f9e94444e409b7f93dd05471257999325eb00eb5e21236bb51f2ddcb1ac832",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/services",
+      "bytes": 2577320,
+      "sha256": "846cc9916c2f13765cde29598b97b11cf93e60b8f709cbf19456b82bb31fe08f",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/memory_queue",
+      "bytes": 903856,
+      "sha256": "df5b47ebe26477b163df86b45a192dc712edc143263a3a0afba6e5d75116d150",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/auth_refresh",
+      "bytes": 820872,
+      "sha256": "3dbb821887d5297235c9fe75b13a1947427ca48eab6309c47e2b7d3f318566ec",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/presence_retention",
+      "bytes": 912880,
+      "sha256": "194ac07cc973275f2ce13d6078efbf7532ef796b8e577635cae161a6da6d4a54",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/conflation",
+      "bytes": 698840,
+      "sha256": "5182f008c56aa260c6400ecd52d675b2281a9d5029b421f46137d8b46a7c6900",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/device_hash",
+      "bytes": 2875640,
+      "sha256": "8e33a578cca610ccde66e4c1ba9a47a0743f922e2c88fcb77e659c364c6ff807",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/state_stores-c5",
+      "bytes": 1457552,
+      "sha256": "e8c9049d9740549bbcdf1444ef9466e04577159e710add2ce572167bd72958f7",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/state_stores-c1",
+      "bytes": 1460168,
+      "sha256": "2989a19568d6e10c872c39024a8a06212270b7e8b3aa8a2f76577c963c61ab15",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/p4-envelope",
+      "bytes": 1204480,
+      "sha256": "779a75227de4c43d74a17c3a36712b78b8ce13d2c5a0d54342dc31f8e3721055",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/baseline-binaries/p4-envelope-worker-restart",
+      "bytes": 1215888,
+      "sha256": "73168daa30a169ece42c6a8a154381fab68d6dba9b592892297d29e239e74000",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/push-auth-http-bench-baseline/src/fcm-test-key.pem",
+      "bytes": 1675,
+      "sha256": "1198689e2785d1124a9ba70ea34ce98b40813ffa2a66042d56ceea5882a9089a",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    },
+    {
+      "path": "implementation/push-auth-http-bench-p3/src/fcm-test-key.pem",
+      "bytes": 1675,
+      "sha256": "1198689e2785d1124a9ba70ea34ce98b40813ffa2a66042d56ceea5882a9089a",
+      "reason": "local executable, credential fixture, or synthetic payload fixture (measurements retained)"
+    }
+  ],
+  "variant_patches": [
+    {
+      "variant": "c1",
+      "patch": "implementation/variant-patches/c1.patch",
+      "sha256": "422c53ac7b3767d34fd9eaca475143c50dc1977c1b1bd360dc0563e1e9db5400"
+    },
+    {
+      "variant": "c10",
+      "patch": "implementation/variant-patches/c10.patch",
+      "sha256": "f591e88dc22f4b1d8f20d87d6eda33dd7597fee255b0e2828642c1ce7a08c5e3"
+    },
+    {
+      "variant": "c11-after",
+      "patch": "implementation/variant-patches/c11-after.patch",
+      "sha256": "cf5d91af946ba9ae08fbd834ffda6061822d6f710bdee3b5b71073582338f925"
+    },
+    {
+      "variant": "c11-baseline",
+      "patch": "implementation/variant-patches/c11-baseline.patch",
+      "sha256": "b7552ba4b85321f83795b4f9c580d2a7591cb7a7aebaf3326cfb7ef0c1b0c8a5"
+    },
+    {
+      "variant": "c12",
+      "patch": "implementation/variant-patches/c12.patch",
+      "sha256": "191e7984d12a6bffc485c9285b2e5872546ff560cabc41c910fc9343af2036b8"
+    },
+    {
+      "variant": "c2",
+      "patch": "implementation/variant-patches/c2.patch",
+      "sha256": "6b6e62b6d645bc4100e40ab4ee85f4b5c110e58b91c555d0781ead999d064207"
+    },
+    {
+      "variant": "c3",
+      "patch": "implementation/variant-patches/c3.patch",
+      "sha256": "3883444d1f56366170e898764baf41872beb66d8a99ca29d8590ab17748d5275"
+    },
+    {
+      "variant": "c3-baseline-instrumented",
+      "patch": "implementation/variant-patches/c3-baseline-instrumented.patch",
+      "sha256": "9cb76845e1ee90be1374641c8a8a990279ffc6776bcbfffe0784f13597a981a8"
+    },
+    {
+      "variant": "c4",
+      "patch": "implementation/variant-patches/c4.patch",
+      "sha256": "507a15f205507e375325ca471b941d020025c63916255f3c377a06b7d266388b"
+    },
+    {
+      "variant": "c5",
+      "patch": "implementation/variant-patches/c5.patch",
+      "sha256": "1aeefbe07212d91846a28d2a683b62898a1dd8418bf3357dd1ccbe2eba43ae44"
+    },
+    {
+      "variant": "c6",
+      "patch": "implementation/variant-patches/c6.patch",
+      "sha256": "cf9e715c049c3233affd552d9ca16a7fcd9788731ddcdf611d124ede10c3e302"
+    },
+    {
+      "variant": "c6-baseline-instrumented",
+      "patch": "implementation/variant-patches/c6-baseline-instrumented.patch",
+      "sha256": "a0cfd9a58200e6784bde11d0021aa1606e6a13c357abe9d6c05cbf83219ec3bb"
+    },
+    {
+      "variant": "c7",
+      "patch": "implementation/variant-patches/c7.patch",
+      "sha256": "1163a615ca240c1e0b7feeb0df1e8a8c32782c7dde84074f5de9925a0207bdd9"
+    },
+    {
+      "variant": "c7-baseline-instrumented",
+      "patch": "implementation/variant-patches/c7-baseline-instrumented.patch",
+      "sha256": "858249d894a0b2205567e3e7dc4db85a18fa9ef0771f92407c5b6bd846156601"
+    },
+    {
+      "variant": "c8",
+      "patch": "implementation/variant-patches/c8.patch",
+      "sha256": "1d92478db989d793deee5420a6717171ae5ffe60623c0174d96c54c8a13a16b1"
+    },
+    {
+      "variant": "c8-baseline-instrumented",
+      "patch": "implementation/variant-patches/c8-baseline-instrumented.patch",
+      "sha256": "d988a95734fcda5461c65a3fe3e3cc4ee6446ed45ab1114cdf05811a37093ae6"
+    },
+    {
+      "variant": "c9-after",
+      "patch": "implementation/variant-patches/c9-after.patch",
+      "sha256": "a2b859d7b97a3d934c0be9fede68f42f8465dc85c2b039336c4f8e80a2104726"
+    },
+    {
+      "variant": "c9-baseline",
+      "patch": "implementation/variant-patches/c9-baseline.patch",
+      "sha256": "33ef3e3b7fe5a4ac549501f305270d3b58f7649f10648628b07a954bc07761d0"
+    },
+    {
+      "variant": "f1",
+      "patch": "implementation/variant-patches/f1.patch",
+      "sha256": "3ece27bf04516643176958897d5daede0282908d02a7ba45904614ec2200aa20"
+    },
+    {
+      "variant": "f1-f4-baseline-instrumented",
+      "patch": "implementation/variant-patches/f1-f4-baseline-instrumented.patch",
+      "sha256": "a2a2e962cf35eab627767d36ba823c221a7d145a392c7ebe390fa42cbb2e277d"
+    },
+    {
+      "variant": "f2",
+      "patch": "implementation/variant-patches/f2.patch",
+      "sha256": "891481f92d00208465a8a35d87d9b033cf0b96b8f5a491227b0f52c260cab9b8"
+    },
+    {
+      "variant": "f2-f5-baseline-instrumented",
+      "patch": "implementation/variant-patches/f2-f5-baseline-instrumented.patch",
+      "sha256": "aa2491f3b0bc581034d2818a9d9f1c57bc2e44cb3ef2f4e9aca9ebbd4767ee58"
+    },
+    {
+      "variant": "f4",
+      "patch": "implementation/variant-patches/f4.patch",
+      "sha256": "6a5233aa11e26e9ca8e4f330c7a87117be7b08811b89f964b53c9d923a75f28e"
+    },
+    {
+      "variant": "f5",
+      "patch": "implementation/variant-patches/f5.patch",
+      "sha256": "dcaa3760a609242ff3fe4e26d1d510988f3b960ab0055405f3ebbca0349699fc"
+    },
+    {
+      "variant": "f6-baseline-instrumented",
+      "patch": "implementation/variant-patches/f6-baseline-instrumented.patch",
+      "sha256": "9fd2d959b1f687a7c0b392fbdbb9fc048cb07f96bd786c65ae4db2aca761dd05"
+    },
+    {
+      "variant": "p1",
+      "patch": "implementation/variant-patches/p1.patch",
+      "sha256": "cb127bc9be37231251e6135913e26b0356417ad93e2495b20a645ff28c7e1820"
+    },
+    {
+      "variant": "p2",
+      "patch": "implementation/variant-patches/p2.patch",
+      "sha256": "0c0c607be11de2c9fb2842708134c7f53057f7195b4471ddcd8e0fd9bd5e6c4a"
+    },
+    {
+      "variant": "p3",
+      "patch": "implementation/variant-patches/p3.patch",
+      "sha256": "24333fc39d144d7ff6d1cae704ff0e574e20162c5365acaee0bd171cd61f886a"
+    },
+    {
+      "variant": "p4",
+      "patch": "implementation/variant-patches/p4.patch",
+      "sha256": "3e169caf85c48776fd62e6ce39b3104da76f621a45e483b62929a996fb2f44af"
+    },
+    {
+      "variant": "p4-baseline",
+      "patch": "implementation/variant-patches/p4-baseline.patch",
+      "sha256": "bc0f787af4d26f54381b7a027cfbe4e80fa506ec8372d5769a3fc5306076db55"
+    },
+    {
+      "variant": "p5-control-after",
+      "patch": "implementation/variant-patches/p5-control-after.patch",
+      "sha256": "5ea7ae6db5aeb1f02b1799959eebc5a85e065759f6812827fe484f7728573760"
+    },
+    {
+      "variant": "p5-control-before",
+      "patch": "implementation/variant-patches/p5-control-before.patch",
+      "sha256": "f842ff3bd086cc21488df3546abc23d68272862ad8284caa196b6cfe3772468e"
+    },
+    {
+      "variant": "p7",
+      "patch": "implementation/variant-patches/p7.patch",
+      "sha256": "6a71d17313ac2e4d46728a7f9b40bbaf151de02e29dd71663f09ca16bb97a2a4"
+    },
+    {
+      "variant": "p8",
+      "patch": "implementation/variant-patches/p8.patch",
+      "sha256": "99a75d04009145893fc21f269416ad617beeb157fcd169e8357f3a8e32c7f532"
+    },
+    {
+      "variant": "s10",
+      "patch": "implementation/variant-patches/s10.patch",
+      "sha256": "3bc19ca19e830ae2fbac2167f68957e57139ccd70ed028f983a4890585544812"
+    },
+    {
+      "variant": "s11",
+      "patch": "implementation/variant-patches/s11.patch",
+      "sha256": "e25e34e66a14a589758c93fed75ec64ab6f217350b2dc7d3bb02cf181a41dd99"
+    },
+    {
+      "variant": "s12",
+      "patch": "implementation/variant-patches/s12.patch",
+      "sha256": "9a2ded4f3ba24df33e2808437703787351afeda43612513a1eb25e1c7175209f"
+    },
+    {
+      "variant": "s13",
+      "patch": "implementation/variant-patches/s13.patch",
+      "sha256": "b827f3634dbe8190965355155bbc1711ed6ef8c0e868650c5bbc4c1df7bddb4c"
+    },
+    {
+      "variant": "s2",
+      "patch": "implementation/variant-patches/s2.patch",
+      "sha256": "58e72399091f02d2360d60372e96b447f8087be6be6d65fd614b07c192cc3dfa"
+    },
+    {
+      "variant": "s3",
+      "patch": "implementation/variant-patches/s3.patch",
+      "sha256": "daae1bd1295903b29871c1a96c05742d7e3e8af21f5f509d731364a4309fdafa"
+    },
+    {
+      "variant": "s5",
+      "patch": "implementation/variant-patches/s5.patch",
+      "sha256": "dde4e8552de59fa25cd6382c33264185d955e6055eab984aeaa0d97a9575d14e"
+    },
+    {
+      "variant": "s6",
+      "patch": "implementation/variant-patches/s6.patch",
+      "sha256": "8d199d504a337497b2072f7dece06441ff25c0b3a9406933d79881365e6ba8fe"
+    },
+    {
+      "variant": "s7",
+      "patch": "implementation/variant-patches/s7.patch",
+      "sha256": "2f85c480b04bc7b92fb57d2eaad19d2775d00fb59946a4f87c3da84ccf44e6b4"
+    },
+    {
+      "variant": "s9",
+      "patch": "implementation/variant-patches/s9.patch",
+      "sha256": "2462e4af5295bed1223732ddf8bed1e5beadd3abfe7167f6f0430819a36691e5"
+    }
+  ],
+  "sensitive_result_files_excluded": []
+}

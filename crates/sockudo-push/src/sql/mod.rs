@@ -1,6 +1,7 @@
 mod common_traits;
 mod device;
 mod helpers;
+mod lifecycle;
 mod stores;
 
 #[cfg(feature = "mysql")]

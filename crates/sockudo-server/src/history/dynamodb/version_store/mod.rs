@@ -1,3 +1,4 @@
+mod encoding;
 // ── DynamoDB VersionStore ─────────────────────────────────────────────────────
 
 use aws_sdk_dynamodb::Client;
@@ -481,9 +482,12 @@ impl DynamoDbVersionStore {
         &self,
         record: &StoredVersionRecord,
         operation: Option<&sockudo_core::message_envelope::PublishIdempotencyMetadata>,
+        payload_override: Option<&[u8]>,
     ) -> Result<HashMap<String, AttributeValue>> {
-        let payload = sonic_rs::to_vec(record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
+        let payload = match payload_override {
+            Some(bytes) => bytes.to_vec(),
+            None => sonic_rs::to_vec(record)?,
+        };
         let app_channel = Self::app_channel_key(&record.app_id, &record.channel);
         let mut item = HashMap::new();
         item.insert("app_channel".to_string(), Self::attr_s(&app_channel));
@@ -548,3 +552,29 @@ impl DynamoDbVersionStore {
 
 #[cfg(feature = "versioned-messages")]
 mod store_impl;
+
+#[cfg(test)]
+mod tests;
+
+fn transaction_is_conflict(
+    error: &aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError,
+) -> bool {
+    use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+    match error {
+        TransactWriteItemsError::TransactionCanceledException(cancelled) => {
+            let reasons = cancelled.cancellation_reasons();
+            reasons.iter().any(|reason| {
+                matches!(
+                    reason.code(),
+                    Some("ConditionalCheckFailed" | "TransactionConflict")
+                )
+            }) && reasons.iter().all(|reason| {
+                matches!(
+                    reason.code(),
+                    None | Some("None" | "ConditionalCheckFailed" | "TransactionConflict")
+                )
+            })
+        }
+        _ => false,
+    }
+}

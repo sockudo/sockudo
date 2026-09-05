@@ -1,0 +1,19 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 29s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-690969c8c439da9f)
+
+running 10 tests
+test presence_history::durable::tests::durable_presence_history_reuses_cached_latest_state ... ok
+test presence_history::durable::tests::durable_presence_history_dedupes_and_suppresses_same_state ... ok
+test presence_history::durable::tests::durable_presence_history_round_trips_over_history_store ... ok
+test presence_history::durable::tests::durable_presence_history_snapshot_and_reset_follow_presence_semantics ... ok
+test presence_history::durable::tests::durable_presence_cache_observes_other_nodes_and_late_commits ... ok
+test presence_history::durable::tests::durable_presence_same_node_concurrent_duplicates_append_once ... ok
+test presence_history::durable::review_tests::incomplete_empty_and_reset_races_never_prove_absence ... ok
+test presence_history::durable::review_tests::channel_churn_and_large_retention_bound_disposable_metadata ... ok
+test presence_history::durable::review_tests::membership_pruning_never_forgets_observed_identity ... ok
+test presence_history::durable::review_tests::steady_new_members_do_not_replay_history_beyond_metadata_capacity ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 363 filtered out; finished in 2.04s
+

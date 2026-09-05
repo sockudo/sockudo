@@ -1,0 +1,250 @@
+--- a/crates/sockudo-core/src/history/memory.rs
++++ b/crates/sockudo-core/src/history/memory.rs
+@@ -3,7 +3,7 @@
+ use super::types::*;
+ use crate::error::{Error, Result};
+ use async_trait::async_trait;
+-use std::collections::{BTreeMap, VecDeque};
++use std::collections::{BTreeMap, BTreeSet, VecDeque};
+ use std::sync::Arc;
+ use std::time::Duration;
+ use tokio::sync::RwLock;
+@@ -32,6 +32,7 @@
+     retained_bytes: u64,
+     records: VecDeque<HistoryAppendRecord>,
+     retention: Option<HistoryRetentionPolicy>,
++    scheduled_expiry: Option<i64>,
+ }
+ 
+ impl Default for MemoryHistoryChannel {
+@@ -42,6 +43,7 @@
+             retained_bytes: 0,
+             records: VecDeque::new(),
+             retention: None,
++            scheduled_expiry: None,
+         }
+     }
+ }
+@@ -50,6 +52,7 @@
+ pub struct MemoryHistoryStore {
+     pub(super) channels: Arc<RwLock<BTreeMap<String, MemoryHistoryChannel>>>,
+     config: MemoryHistoryStoreConfig,
++    expiries: Arc<parking_lot::Mutex<BTreeSet<(i64, String)>>>,
+ }
+ 
+ impl MemoryHistoryStore {
+@@ -57,6 +60,7 @@
+         Self {
+             channels: Arc::new(RwLock::new(BTreeMap::new())),
+             config,
++            expiries: Arc::default(),
+         }
+     }
+ 
+@@ -107,6 +111,36 @@
+                 }
+             }
+         }
++    }
++
++    fn schedule_expiry(&self, key: &str, channel: &mut MemoryHistoryChannel) {
++        let retention = channel
++            .retention
++            .as_ref()
++            .cloned()
++            .unwrap_or_else(|| Self::default_retention(&self.config));
++        let deadline = channel.records.front().map(|record| {
++            record
++                .published_at_ms
++                .saturating_add(
++                    retention
++                        .retention_window_seconds
++                        .saturating_mul(1000)
++                        .min(i64::MAX as u64) as i64,
++                )
++                .saturating_add(1)
++        });
++        if deadline == channel.scheduled_expiry {
++            return;
++        }
++        let mut expiries = self.expiries.lock();
++        if let Some(previous) = channel.scheduled_expiry {
++            expiries.remove(&(previous, key.to_owned()));
++        }
++        if let Some(deadline) = deadline {
++            expiries.insert((deadline, key.to_owned()));
++        }
++        channel.scheduled_expiry = deadline;
+     }
+ 
+     fn retained_from_channel(channel_state: &MemoryHistoryChannel) -> HistoryRetentionStats {
+@@ -137,7 +171,7 @@
+     ) -> Result<HistoryWriteReservation> {
+         let key = Self::channel_key(app_id, channel);
+         let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_state = channels.entry(key.clone()).or_default();
+         let reservation = HistoryWriteReservation {
+             stream_id: channel_state.stream_id.clone(),
+             serial: channel_state.next_serial,
+@@ -149,7 +183,7 @@
+     async fn append(&self, record: HistoryAppendRecord) -> Result<()> {
+         let key = Self::channel_key(&record.app_id, &record.channel);
+         let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_state = channels.entry(key.clone()).or_default();
+         if channel_state.stream_id != record.stream_id {
+             channel_state.stream_id.clone_from(&record.stream_id);
+         }
+@@ -166,6 +200,7 @@
+             .clone()
+             .unwrap_or_else(|| Self::default_retention(&self.config));
+         Self::evict_channel(&retention, channel_state);
++        self.schedule_expiry(&key, channel_state);
+         Ok(())
+     }
+ 
+@@ -196,6 +231,7 @@
+             .clone()
+             .unwrap_or_else(|| Self::default_retention(&self.config));
+         Self::evict_channel(&retention, channel_state);
++        self.schedule_expiry(&key, channel_state);
+ 
+         let retained = Self::retained_from_channel(channel_state);
+ 
+@@ -313,7 +349,71 @@
+             .clone()
+             .unwrap_or_else(|| Self::default_retention(&self.config));
+         Self::evict_channel(&retention, channel_state);
++        self.schedule_expiry(&key, channel_state);
+         Ok(Self::retained_from_channel(channel_state))
++    }
++
++    async fn purge_before(&self, _before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
++        // Memory deadlines honor each channel's retention override. Operator
++        // time-based deletion is provided by purge_stream, independently.
++        let now = now_ms();
++        let mut deleted = 0;
++        for _ in 0..batch_size {
++            if deleted >= batch_size {
++                break;
++            }
++            let due = {
++                let mut expiries = self.expiries.lock();
++                if expiries
++                    .first()
++                    .is_some_and(|(deadline, _)| *deadline <= now)
++                {
++                    expiries.pop_first()
++                } else {
++                    None
++                }
++            };
++            let Some((deadline, key)) = due else {
++                break;
++            };
++            let mut channels = self.channels.write().await;
++            let Some(channel) = channels.get_mut(&key) else { continue; };
++            if channel.scheduled_expiry != Some(deadline) {
++                continue;
++            }
++            channel.scheduled_expiry = None;
++            let retention = channel
++                .retention
++                .as_ref()
++                .cloned()
++                .unwrap_or_else(|| Self::default_retention(&self.config));
++            let cutoff = now.saturating_sub(
++                retention
++                    .retention_window_seconds
++                    .saturating_mul(1000)
++                    .min(i64::MAX as u64) as i64,
++            );
++            while deleted < batch_size
++                && channel
++                    .records
++                    .front()
++                    .is_some_and(|record| record.published_at_ms < cutoff)
++            {
++                if let Some(record) = channel.records.pop_front() {
++                    channel.retained_bytes = channel
++                        .retained_bytes
++                        .saturating_sub(record.payload_bytes.len() as u64);
++                    deleted += 1;
++                }
++            }
++            self.schedule_expiry(&key, channel);
++        }
++        let has_more = self
++            .expiries
++            .lock()
++            .first()
++            .is_some_and(|(deadline, _)| *deadline <= now);
++        Ok((deleted as u64, has_more))
+     }
+ 
+     async fn runtime_status(&self) -> Result<HistoryRuntimeStatus> {
+@@ -334,12 +434,13 @@
+     ) -> Result<HistoryStreamRuntimeState> {
+         let key = Self::channel_key(app_id, channel);
+         let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_state = channels.entry(key.clone()).or_default();
+         let retention = channel_state
+             .retention
+             .clone()
+             .unwrap_or_else(|| Self::default_retention(&self.config));
+         Self::evict_channel(&retention, channel_state);
++        self.schedule_expiry(&key, channel_state);
+ 
+         Ok(HistoryStreamRuntimeState::healthy(
+             app_id,
+@@ -356,12 +457,13 @@
+     ) -> Result<HistoryStreamInspection> {
+         let key = Self::channel_key(app_id, channel);
+         let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_state = channels.entry(key.clone()).or_default();
+         let retention = channel_state
+             .retention
+             .clone()
+             .unwrap_or_else(|| Self::default_retention(&self.config));
+         Self::evict_channel(&retention, channel_state);
++        self.schedule_expiry(&key, channel_state);
+ 
+         Ok(HistoryStreamInspection {
+             app_id: app_id.to_string(),
+@@ -387,7 +489,7 @@
+     ) -> Result<HistoryResetResult> {
+         let key = Self::channel_key(app_id, channel);
+         let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_state = channels.entry(key.clone()).or_default();
+         let previous_stream_id = Some(channel_state.stream_id.clone());
+         let purged_messages = channel_state.records.len() as u64;
+         let purged_bytes = channel_state.retained_bytes;
+@@ -396,6 +498,7 @@
+         channel_state.next_serial = 1;
+         channel_state.stream_id = uuid::Uuid::new_v4().to_string();
+ 
++        self.schedule_expiry(&key, channel_state);
+         let inspection = HistoryStreamInspection {
+             app_id: app_id.to_string(),
+             channel: channel.to_string(),
+@@ -430,7 +533,7 @@
+         request.validate()?;
+         let key = Self::channel_key(app_id, channel);
+         let mut channels = self.channels.write().await;
+-        let channel_state = channels.entry(key).or_default();
++        let channel_state = channels.entry(key.clone()).or_default();
+ 
+         let previous_records = channel_state.records.len();
+         let previous_bytes = channel_state.retained_bytes;
+@@ -458,6 +561,7 @@
+             .map(|record| record.payload_bytes.len() as u64)
+             .sum();
+ 
++        self.schedule_expiry(&key, channel_state);
+         let inspection = HistoryStreamInspection {
+             app_id: app_id.to_string(),
+             channel: channel.to_string(),

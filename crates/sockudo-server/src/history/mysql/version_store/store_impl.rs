@@ -1,4 +1,5 @@
 use super::*;
+use sockudo_core::version_store::EncodedVersionRecord;
 
 #[cfg(feature = "versioned-messages")]
 #[async_trait::async_trait]
@@ -184,14 +185,16 @@ impl VersionStore for MysqlVersionStore {
         let upsert_msg = format!(
             r#"INSERT INTO `{}` (
                 app_id, channel, message_serial, history_serial, original_client_id,
-                latest_version_serial, latest_delivery_serial, latest_action,
-                created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                latest_version_serial, latest_delivery_serial, latest_action, is_open_stream,
+                created_at_ms, updated_at_ms, state_version_serial
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
-                latest_version_serial = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(latest_version_serial), latest_version_serial),
                 latest_delivery_serial = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(latest_delivery_serial), latest_delivery_serial),
                 latest_action = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(latest_action), latest_action),
-                updated_at_ms = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(updated_at_ms), updated_at_ms)"#,
+                is_open_stream = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(is_open_stream), is_open_stream),
+                updated_at_ms = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(updated_at_ms), updated_at_ms),
+                state_version_serial = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(state_version_serial), state_version_serial),
+                latest_version_serial = IF(latest_version_serial < VALUES(latest_version_serial), VALUES(latest_version_serial), latest_version_serial)"#,
             self.tables.version_messages
         );
         sqlx::query(sqlx::AssertSqlSafe(upsert_msg.as_str()))
@@ -203,8 +206,10 @@ impl VersionStore for MysqlVersionStore {
             .bind(record.version_serial().as_str())
             .bind(record.delivery_serial() as i64)
             .bind(record.message.action.as_str())
+            .bind(record.is_open_ai_stream())
             .bind(now_ms)
             .bind(now_ms)
+            .bind(record.version_serial().as_str())
             .execute(&self.pool)
             .await
             .map_err(|e| Error::Internal(format!("Failed to upsert version message: {e}")))?;
@@ -278,9 +283,10 @@ impl VersionStore for MysqlVersionStore {
             .map_err(|e| Error::Internal(format!("Failed to check version create target: {e}")))?
         {
             let payload: Vec<u8> = row.get("payload_bytes");
-            let current = sonic_rs::from_slice(&payload).map_err(|e| {
-                Error::Internal(format!("Failed to decode existing version record: {e}"))
-            })?;
+            let current = self
+                .decode_records_on(&mut tx, vec![payload])
+                .await?
+                .remove(0);
             return Ok(VersionCreateResult::Conflict {
                 current: Some(current),
             });
@@ -343,7 +349,7 @@ impl VersionStore for MysqlVersionStore {
             .await
             .map_err(|e| Error::Internal(format!("Failed to insert create version: {e}")))?;
         let insert_message = format!(
-            "INSERT INTO `{}` (app_id, channel, message_serial, history_serial, original_client_id, latest_version_serial, latest_delivery_serial, latest_action, is_open_stream, created_at_ms, updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO `{}` (app_id, channel, message_serial, history_serial, original_client_id, latest_version_serial, latest_delivery_serial, latest_action, is_open_stream, created_at_ms, updated_at_ms, state_version_serial) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             self.tables.version_messages
         );
         sqlx::query(sqlx::AssertSqlSafe(insert_message.as_str()))
@@ -358,6 +364,7 @@ impl VersionStore for MysqlVersionStore {
             .bind(record.is_open_ai_stream())
             .bind(now_ms)
             .bind(now_ms)
+            .bind(record.version_serial().as_str())
             .execute(&mut *tx)
             .await
             .map_err(|e| Error::Internal(format!("Failed to insert version message: {e}")))?;
@@ -420,9 +427,10 @@ impl VersionStore for MysqlVersionStore {
                     return Err(Error::IdempotencyConflict);
                 }
                 let payload: Vec<u8> = row.get("payload_bytes");
-                let record = sonic_rs::from_slice(&payload).map_err(|e| {
-                    Error::Internal(format!("Failed to decode mutation receipt: {e}"))
-                })?;
+                let record = self
+                    .decode_records_on(&mut tx, vec![payload])
+                    .await?
+                    .remove(0);
                 return Ok(VersionMutationResult::Duplicate { record, stream_id });
             }
         }
@@ -441,20 +449,67 @@ impl VersionStore for MysqlVersionStore {
             return Ok(VersionMutationResult::Conflict { current: None });
         };
         let payload: Vec<u8> = row.get("payload_bytes");
-        let current: StoredVersionRecord = sonic_rs::from_slice(&payload)
-            .map_err(|e| Error::Internal(format!("Failed to decode mutation predecessor: {e}")))?;
-        let append_count_sql = format!(
-            "SELECT COUNT(*) AS count FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? AND action = 'message.append'",
-            self.tables.version_entries
-        );
-        let append_count = sqlx::query(sqlx::AssertSqlSafe(append_count_sql.as_str()))
-            .bind(&request.app_id)
-            .bind(&request.channel)
-            .bind(request.message_serial.as_str())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to count message appends: {e}")))?
-            .get::<i64, _>("count") as usize;
+        let predecessor_encoding = EncodedVersionRecord::decode(&payload)?;
+        let current = self
+            .decode_records_on(&mut tx, vec![payload])
+            .await?
+            .remove(0);
+        let append_count = if matches!(
+            request.mutation,
+            sockudo_core::version_store::VersionMutation::Append(_)
+        ) && request.limits.max_appends_per_message.is_some()
+        {
+            let cached_sql = format!(
+                "SELECT append_count FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? FOR UPDATE",
+                self.tables.version_messages
+            );
+            let cached: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(cached_sql.as_str()))
+                .bind(&request.app_id)
+                .bind(&request.channel)
+                .bind(request.message_serial.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to read message append count: {e}"))
+                })?;
+            if let Some(count) = cached {
+                count as usize
+            } else {
+                // Locking read observes the current committed rows under
+                // InnoDB REPEATABLE READ, including imports after our snapshot.
+                let count_sql = format!(
+                    "SELECT version_serial FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? AND action = 'message.append' FOR UPDATE",
+                    self.tables.version_entries
+                );
+                let rows = sqlx::query(sqlx::AssertSqlSafe(count_sql.as_str()))
+                    .bind(&request.app_id)
+                    .bind(&request.channel)
+                    .bind(request.message_serial.as_str())
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to initialize message append count: {e}"))
+                    })?;
+                let count = rows.len() as i64;
+                let save_sql = format!(
+                    "UPDATE `{}` SET append_count = ? WHERE app_id = ? AND channel = ? AND message_serial = ?",
+                    self.tables.version_messages
+                );
+                sqlx::query(sqlx::AssertSqlSafe(save_sql.as_str()))
+                    .bind(count)
+                    .bind(&request.app_id)
+                    .bind(&request.channel)
+                    .bind(request.message_serial.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to save message append count: {e}"))
+                    })?;
+                count as usize
+            }
+        } else {
+            0
+        };
         let delivery_serial = (stream.get::<i64, _>("next_delivery_serial") as u64)
             .max(current.delivery_serial().saturating_add(1));
         let outcome = request.apply_to(&current, &stream_id, delivery_serial, append_count)?;
@@ -484,8 +539,32 @@ impl VersionStore for MysqlVersionStore {
                 ));
             }
         }
-        let payload = sonic_rs::to_vec(&record)
-            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
+        let plan = EncodedVersionRecord::plan(
+            &record,
+            Some((&current, predecessor_encoding.text.as_ref())),
+        )?;
+        let payload = plan.entry_bytes;
+        let text_snapshot_key = plan
+            .snapshot
+            .as_ref()
+            .map(|(reference, _)| reference.snapshot_key.as_str());
+        if let Some((reference, text)) = plan.snapshot.as_ref() {
+            let sql = format!(
+                "INSERT INTO `{}` (app_id, channel, snapshot_key, text_data, updated_at_ms) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE text_data = VALUES(text_data), updated_at_ms = VALUES(updated_at_ms)",
+                self.text_table()
+            );
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(&record.app_id)
+                .bind(&record.channel)
+                .bind(&reference.snapshot_key)
+                .bind(text)
+                .bind(sockudo_core::history::now_ms())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to persist version text snapshot: {e}"))
+                })?;
+        }
         let operation_key = request
             .idempotency
             .as_ref()
@@ -496,7 +575,7 @@ impl VersionStore for MysqlVersionStore {
             .map(|value| value.payload_fingerprint.as_str());
         let now_ms = sockudo_core::history::now_ms();
         let insert_entry = format!(
-            "INSERT INTO `{}` (app_id, channel, message_serial, version_serial, delivery_serial, history_serial, action, client_id, description, event_name, payload_bytes, payload_size_bytes, version_timestamp_ms, created_at_ms, operation_key, operation_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO `{}` (app_id, channel, message_serial, version_serial, delivery_serial, history_serial, action, client_id, description, event_name, payload_bytes, payload_size_bytes, version_timestamp_ms, created_at_ms, operation_key, operation_fingerprint, text_snapshot_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             self.tables.version_entries
         );
         sqlx::query(sqlx::AssertSqlSafe(insert_entry.as_str()))
@@ -516,11 +595,12 @@ impl VersionStore for MysqlVersionStore {
             .bind(now_ms)
             .bind(operation_key)
             .bind(operation_fingerprint)
+            .bind(text_snapshot_key)
             .execute(&mut *tx)
             .await
             .map_err(|e| Error::Internal(format!("Failed to insert mutation version: {e}")))?;
         let update_message = format!(
-            "UPDATE `{}` SET latest_version_serial = ?, latest_delivery_serial = ?, latest_action = ?, is_open_stream = ?, updated_at_ms = ? WHERE app_id = ? AND channel = ? AND message_serial = ?",
+            "UPDATE `{}` SET latest_version_serial = ?, latest_delivery_serial = ?, latest_action = ?, is_open_stream = ?, state_version_serial = latest_version_serial, updated_at_ms = ? WHERE app_id = ? AND channel = ? AND message_serial = ?",
             self.tables.version_messages
         );
         sqlx::query(sqlx::AssertSqlSafe(update_message.as_str()))
@@ -580,12 +660,57 @@ impl VersionStore for MysqlVersionStore {
             None => Ok(None),
             Some(row) => {
                 let bytes: Vec<u8> = row.get("payload_bytes");
-                let record: StoredVersionRecord = sonic_rs::from_slice(&bytes).map_err(|e| {
-                    Error::Internal(format!("Failed to deserialize version record: {e}"))
-                })?;
+                let record = self.decode_records(vec![bytes]).await?.remove(0);
                 Ok(Some(record))
             }
         }
+    }
+
+    async fn get_latest_batch(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serials: &[sockudo_core::versioned_messages::MessageSerial],
+    ) -> Result<
+        std::collections::BTreeMap<
+            sockudo_core::versioned_messages::MessageSerial,
+            StoredVersionRecord,
+        >,
+    > {
+        let requested: Vec<_> = message_serials
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut result = std::collections::BTreeMap::new();
+        for chunk in requested.chunks(256) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT ve.payload_bytes FROM `{vm}` vm JOIN `{ve}` ve ON ve.app_id = vm.app_id AND ve.channel = vm.channel AND ve.message_serial = vm.message_serial AND ve.version_serial = vm.latest_version_serial WHERE vm.app_id = ? AND vm.channel = ? AND vm.message_serial IN ({placeholders})",
+                vm = self.tables.version_messages,
+                ve = self.tables.version_entries
+            );
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(app_id)
+                .bind(channel);
+            for serial in chunk {
+                query = query.bind(serial.as_str());
+            }
+            let rows = query.fetch_all(&self.pool).await.map_err(|e| {
+                Error::Internal(format!("failed to read latest version batch: {e}"))
+            })?;
+            for record in self
+                .decode_records(
+                    rows.into_iter()
+                        .map(|row| row.get::<Vec<u8>, _>("payload_bytes"))
+                        .collect(),
+                )
+                .await?
+            {
+                result.insert(record.message_serial().clone(), record);
+            }
+        }
+        Ok(result)
     }
 
     async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {
@@ -627,15 +752,14 @@ impl VersionStore for MysqlVersionStore {
         };
 
         let has_more = rows.len() > request.limit;
-        let items: Vec<StoredVersionRecord> = rows
-            .into_iter()
-            .take(request.limit)
-            .map(|row| {
-                let bytes: Vec<u8> = row.get("payload_bytes");
-                sonic_rs::from_slice(&bytes)
-                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let items = self
+            .decode_records(
+                rows.into_iter()
+                    .take(request.limit)
+                    .map(|row| row.get::<Vec<u8>, _>("payload_bytes"))
+                    .collect(),
+            )
+            .await?;
 
         let next_cursor = if has_more {
             items.last().map(|item| VersionStoreCursor {
@@ -672,13 +796,12 @@ impl VersionStore for MysqlVersionStore {
             .await
             .map_err(|e| Error::Internal(format!("Failed to replay version entries: {e}")))?;
 
-        rows.into_iter()
-            .map(|row| {
-                let bytes: Vec<u8> = row.get("payload_bytes");
-                sonic_rs::from_slice(&bytes)
-                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
-            })
-            .collect()
+        self.decode_records(
+            rows.into_iter()
+                .map(|row| row.get::<Vec<u8>, _>("payload_bytes"))
+                .collect(),
+        )
+        .await
     }
 
     async fn latest_by_history(
@@ -705,13 +828,85 @@ impl VersionStore for MysqlVersionStore {
             .await
             .map_err(|e| Error::Internal(format!("Failed to query latest by history: {e}")))?;
 
-        rows.into_iter()
-            .map(|row| {
-                let bytes: Vec<u8> = row.get("payload_bytes");
-                sonic_rs::from_slice(&bytes)
-                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
-            })
-            .collect()
+        self.decode_records(
+            rows.into_iter()
+                .map(|row| row.get::<Vec<u8>, _>("payload_bytes"))
+                .collect(),
+        )
+        .await
+    }
+
+    async fn message_count(&self, app_id: &str, channel: &str) -> Result<u64> {
+        let sql = format!(
+            "SELECT COUNT(*) FROM `{messages}` m JOIN `{entries}` e ON e.app_id=m.app_id AND e.channel=m.channel AND e.message_serial=m.message_serial AND e.version_serial=m.latest_version_serial WHERE m.app_id=? AND m.channel=?",
+            messages = self.tables.version_messages,
+            entries = self.tables.version_entries
+        );
+        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(app_id)
+            .bind(channel)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to count version messages: {e}")))?;
+        Ok(count as u64)
+    }
+
+    async fn active_stream_count(&self, app_id: &str, channel: &str) -> Result<usize> {
+        let mut after = String::new();
+        let mut count = 0usize;
+        loop {
+            // Metadata is authoritative only for the corresponding latest version.
+            // Joining the retained entry keeps expiry semantics identical to reads.
+            let sql = format!(
+                "SELECT m.message_serial, m.latest_version_serial, m.state_version_serial, m.is_open_stream FROM {messages} m JOIN {entries} e ON e.app_id=m.app_id AND e.channel=m.channel AND e.message_serial=m.message_serial AND e.version_serial=m.latest_version_serial WHERE m.app_id = ? AND m.channel = ? AND m.message_serial > ? ORDER BY m.message_serial LIMIT 100",
+                messages = self.tables.version_messages,
+                entries = self.tables.version_entries
+            );
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(app_id)
+                .bind(channel)
+                .bind(&after)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("failed to read active stream metadata: {e}"))
+                })?;
+            if rows.is_empty() {
+                return Ok(count);
+            }
+            for row in rows {
+                after = row.get("message_serial");
+                let latest: String = row.get("latest_version_serial");
+                let verified: Option<String> = row.get("state_version_serial");
+                if verified.as_deref() == Some(latest.as_str()) {
+                    count += usize::from(row.get::<bool, _>("is_open_stream"));
+                    continue;
+                }
+                let serial = sockudo_core::versioned_messages::MessageSerial::new(after.clone())?;
+                if let Some(record) = self.get_latest(app_id, channel, &serial).await? {
+                    count += usize::from(record.is_open_ai_stream());
+                    // Lazily repair old imported metadata, fenced against a new writer.
+                    let update = format!(
+                        "UPDATE `{}` SET is_open_stream=?, state_version_serial=? WHERE app_id=? AND channel=? AND message_serial=? AND latest_version_serial=?",
+                        self.tables.version_messages
+                    );
+                    sqlx::query(sqlx::AssertSqlSafe(update.as_str()))
+                        .bind(record.is_open_ai_stream())
+                        .bind(record.version_serial().as_str())
+                        .bind(app_id)
+                        .bind(channel)
+                        .bind(record.message_serial().as_str())
+                        .bind(record.version_serial().as_str())
+                        .execute(&self.pool)
+                        .await
+                        .map_err(|e| {
+                            Error::Internal(format!(
+                                "failed to refresh active stream metadata: {e}"
+                            ))
+                        })?;
+                }
+            }
+        }
     }
 
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {
@@ -775,8 +970,22 @@ impl VersionStore for MysqlVersionStore {
             .map_err(|e| Error::Internal(format!("Failed to purge version messages: {e}")))?
             .rows_affected();
 
-        let deleted = entries_deleted + messages_deleted;
-        let has_more = entries_deleted as i64 == limit || messages_deleted as i64 == limit;
+        let snapshots_sql = format!(
+            "DELETE FROM `{snapshots}` WHERE updated_at_ms < ? AND NOT EXISTS (SELECT 1 FROM `{entries}` e WHERE e.app_id=`{snapshots}`.app_id AND e.channel=`{snapshots}`.channel AND e.text_snapshot_key=`{snapshots}`.snapshot_key) ORDER BY updated_at_ms LIMIT ?",
+            snapshots = self.text_table(),
+            entries = self.tables.version_entries
+        );
+        let snapshots_deleted = sqlx::query(sqlx::AssertSqlSafe(snapshots_sql.as_str()))
+            .bind(before_ms)
+            .bind(limit)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to purge version text snapshots: {e}")))?
+            .rows_affected();
+        let deleted = entries_deleted + messages_deleted + snapshots_deleted;
+        let has_more = entries_deleted as i64 == limit
+            || messages_deleted as i64 == limit
+            || snapshots_deleted as i64 == limit;
         Ok((deleted, has_more))
     }
 }

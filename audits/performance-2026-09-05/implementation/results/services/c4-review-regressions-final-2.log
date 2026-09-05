@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.32s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-690969c8c439da9f)
+
+running 8 tests
+test presence_history::durable::tests::durable_presence_history_round_trips_over_history_store ... ok
+
+thread 'presence_history::durable::tests::durable_presence_cache_observes_other_nodes_and_late_commits' (25) panicked at crates/sockudo-core/src/presence_history/durable.rs:1085:14:
+called `Result::unwrap()` on an `Err` value: Internal("presence history coverage changed during transition lookup")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test presence_history::durable::tests::durable_presence_history_reuses_cached_latest_state ... ok
+test presence_history::durable::tests::durable_presence_cache_observes_other_nodes_and_late_commits ... FAILED
+test presence_history::durable::tests::durable_presence_history_dedupes_and_suppresses_same_state ... ok
+test presence_history::durable::tests::durable_presence_history_snapshot_and_reset_follow_presence_semantics ... ok
+test presence_history::durable::tests::durable_presence_same_node_concurrent_duplicates_append_once ... ok
+test presence_history::durable::review_tests::incomplete_empty_and_reset_races_never_prove_absence ... ok
+
+thread 'presence_history::durable::review_tests::channel_churn_and_large_retention_bound_disposable_metadata' (23) panicked at crates/sockudo-core/src/presence_history/durable/review_tests.rs:148:14:
+called `Result::unwrap()` on an `Err` value: Internal("presence history changed or was incomplete during transition lookup")
+test presence_history::durable::review_tests::channel_churn_and_large_retention_bound_disposable_metadata ... FAILED
+
+failures:
+
+failures:
+    presence_history::durable::review_tests::channel_churn_and_large_retention_bound_disposable_metadata
+    presence_history::durable::tests::durable_presence_cache_observes_other_nodes_and_late_commits
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 363 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p sockudo-core --lib`

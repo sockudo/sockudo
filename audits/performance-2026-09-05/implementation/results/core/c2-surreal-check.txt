@@ -1,0 +1,21 @@
+    Checking sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Checking sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+    Checking sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+error[E0308]: mismatched types
+   --> crates/sockudo-server/src/history/surreal/version_store/encoding.rs:17:87
+    |
+ 17 | ...ey| surrealdb::types::RecordId::from((self.tables.texts.clone(), key.clone()))).collect();
+    |        -------------------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `RecordId`, found `(String, String)`
+    |        |
+    |        arguments to this function are incorrect
+    |
+    = note: expected struct `surrealdb_types::RecordId`
+                found tuple `(std::string::String, std::string::String)`
+note: associated function defined here
+   --> /home/radud/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/convert/mod.rs:594:8
+    |
+594 |     fn from(value: T) -> Self;
+    |        ^^^^
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `sockudo` (bin "sockudo") due to 1 previous error

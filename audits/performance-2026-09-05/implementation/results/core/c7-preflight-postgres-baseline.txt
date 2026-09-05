@@ -1,0 +1,16 @@
+
+running 1 test
+test history::audit_version_batch_bench::benchmark_durable_latest_batch ... BATCH_CSV,backend,messages,sample,requested,returned,elapsed_us,returned_bytes
+BATCH_CSV,postgres,1000,0,102,100,68311,64971
+BATCH_CSV,postgres,1000,1,102,100,67932,64971
+BATCH_CSV,postgres,1000,2,102,100,67836,64971
+BATCH_CSV,postgres,1000,3,102,100,67223,64971
+BATCH_CSV,postgres,1000,4,102,100,67929,64971
+BATCH_CSV,postgres,1000,5,102,100,67301,64971
+BATCH_CSV,postgres,1000,6,102,100,67417,64971
+BATCH_CSV,postgres,1000,7,102,100,67505,64971
+BATCH_CSV,postgres,1000,8,102,100,68211,64971
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 2.99s
+

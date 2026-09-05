@@ -677,9 +677,24 @@ impl Sockudo {
         params: Option<&BTreeMap<String, String>>,
         extra_headers: Option<&HashMap<String, String>>,
     ) -> Result<Response> {
-        let full_path = self.inner.config.prefix_path(path);
-        let body_str = body.map(sonic_rs::to_string).transpose()?;
+        self.send_serialized_request(method, path, body.map(sonic_rs::to_string).transpose()?, params, extra_headers).await
+    }
 
+    pub(crate) async fn post_serializable_with_headers<T: serde::Serialize + ?Sized>(
+        &self, path: &str, body: &T, extra_headers: &HashMap<String, String>,
+    ) -> Result<Response> {
+        self.send_serialized_request("POST", path, Some(sonic_rs::to_string(body)?), None, Some(extra_headers)).await
+    }
+
+    async fn send_serialized_request(
+        &self,
+        method: &str,
+        path: &str,
+        body_str: Option<String>,
+        params: Option<&BTreeMap<String, String>>,
+        extra_headers: Option<&HashMap<String, String>>,
+    ) -> Result<Response> {
+        let full_path = self.inner.config.prefix_path(path);
         let query_string = create_signed_query_string(
             self.inner.config.token(),
             method,
@@ -702,39 +717,41 @@ impl Sockudo {
             1
         };
 
+        let mut request = match method {
+            "GET" => self.inner.client.get(&url),
+            "POST" => self.inner.client.post(&url),
+            "DELETE" => self.inner.client.delete(&url),
+            _ => {
+                return Err(SockudoError::Request(RequestError::new(
+                    format!("Unsupported HTTP method: {}", method),
+                    &url,
+                    None,
+                    None,
+                )));
+            }
+        };
+
+        if let Some(body_str) = body_str {
+            request = request
+                .header("Content-Type", "application/json")
+                .body(body_str);
+        }
+
+        if let Some(headers) = extra_headers {
+            for (key, value) in headers {
+                request = request.header(key, value);
+            }
+        }
+
+        // A reusable reqwest request stores its body in shared immutable Bytes.
+        // Signing and encryption happen once; retries clone only shared backing.
+        let request = request.header("X-Sockudo-Library", "sockudo-http/1.5.0").build()?;
         loop {
             attempt += 1;
-
-            let mut request = match method {
-                "GET" => self.inner.client.get(&url),
-                "POST" => self.inner.client.post(&url),
-                "DELETE" => self.inner.client.delete(&url),
-                _ => {
-                    return Err(SockudoError::Request(RequestError::new(
-                        format!("Unsupported HTTP method: {}", method),
-                        &url,
-                        None,
-                        None,
-                    )));
-                }
-            };
-
-            if let Some(ref body_str) = body_str {
-                request = request
-                    .header("Content-Type", "application/json")
-                    .body(body_str.clone());
-            }
-
-            if let Some(headers) = extra_headers {
-                for (key, value) in headers {
-                    request = request.header(key, value);
-                }
-            }
-
-            let response = request
-                .header("X-Sockudo-Library", "sockudo-http/1.5.0")
-                .send()
-                .await;
+            let attempt_request = request.try_clone().ok_or_else(|| SockudoError::Validation {
+                message: "serialized request body is not reusable".into(),
+            })?;
+            let response = self.inner.client.execute(attempt_request).await;
 
             match response {
                 Ok(resp) => {
@@ -773,11 +790,14 @@ impl Sockudo {
                 }
             }
 
-            // Exponential backoff: 100ms, 200ms, 400ms, etc.
-            let delay = Duration::from_millis(100 * (1 << (attempt - 1)));
-            tokio::time::sleep(delay).await;
+            tokio::time::sleep(retry_delay(attempt)).await;
         }
     }
+}
+
+fn retry_delay(attempt: u32) -> Duration {
+    let ceiling = 100u64.saturating_mul(1u64.checked_shl(attempt.saturating_sub(1)).unwrap_or(u64::MAX)).min(60_000);
+    Duration::from_millis(rand::random_range((ceiling / 2)..=ceiling))
 }
 
 /// Creates a signed query string for Sockudo API requests
@@ -1084,5 +1104,57 @@ mod tests {
         assert_eq!(response.channel, "chat:room-1");
         assert_eq!(response.item["message_serial"].as_str(), Some("msg:1"));
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn retries_preserve_exact_signed_body_headers_and_idempotency() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected_body = sonic_rs::to_string(&json!({"text": "α".repeat(32768)})).unwrap();
+        let received_body = expected_body.clone();
+        let server = thread::spawn(move || {
+            let mut first_target = None;
+            for status in [503, 500, 200] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let header_end = loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    assert!(read > 0);
+                    raw.extend_from_slice(&chunk[..read]);
+                    if let Some(end) = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n") { break end + 4; }
+                };
+                let header = String::from_utf8(raw[..header_end].to_vec()).unwrap();
+                let length: usize = header.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length: ").map(str::to_owned)).unwrap().parse().unwrap();
+                while raw.len() - header_end < length {
+                    let read = stream.read(&mut chunk).unwrap();
+                    assert!(read > 0);
+                    raw.extend_from_slice(&chunk[..read]);
+                }
+                assert_eq!(&raw[header_end..], received_body.as_bytes());
+                assert!(header.to_ascii_lowercase().contains("x-idempotency-key: fixed-key"));
+                let target = header.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                assert!(target.contains(&format!("body_md5={}", util::get_md5(&received_body))));
+                if let Some(first) = &first_target { assert_eq!(first, target); }
+                else { first_target = Some(target.to_owned()); }
+                let response = format!("HTTP/1.1 {status} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let client = Sockudo::new(Config::builder().app_id("123").key("key").secret("secret")
+            .host("127.0.0.1").port(address.port()).use_tls(false).max_retries(2).build().unwrap()).unwrap();
+        let body: Value = sonic_rs::from_str(&expected_body).unwrap();
+        let headers = HashMap::from([("X-Idempotency-Key".to_owned(), "fixed-key".to_owned())]);
+        assert!(client.post_with_headers("/events", &body, &headers).await.unwrap().status().is_success());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn retry_jitter_is_bounded_and_extreme_attempts_do_not_overflow() {
+        let delays: std::collections::BTreeSet<_> = (0..128).map(|_| retry_delay(1).as_millis()).collect();
+        assert!(delays.iter().all(|delay| (50..=100).contains(delay)));
+        assert!(delays.len() > 1);
+        for attempt in [1, 2, 3, 32, u32::MAX] { assert!(retry_delay(attempt) <= Duration::from_secs(60)); }
     }
 }

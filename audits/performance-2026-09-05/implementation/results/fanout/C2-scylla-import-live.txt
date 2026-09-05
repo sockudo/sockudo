@@ -1,0 +1,10 @@
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.87s
+     Running unittests src/main.rs (target/debug/deps/sockudo-1ce900ee46723fc4)
+
+running 1 test
+test history::scylla::version_store::tests::scylla_raw_import_updates_atomic_latest_counts_and_preserves_compact_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 3.24s
+

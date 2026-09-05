@@ -1,0 +1,35 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.91s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_push-ad9b0f8862a6adbb)
+
+running 4 tests
+test feedback::live_tests::dynamodb_feedback_restart_boundaries ... feedback_restart_boundary=0 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=1 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=2 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=3 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+ok
+test feedback::live_tests::mysql_feedback_restart_boundaries ... 
+thread 'feedback::live_tests::mysql_feedback_restart_boundaries' (497221) panicked at crates/sockudo-push/src/feedback/live_tests.rs:104:18:
+called `Result::unwrap()` on an `Err` value: Backend("push SQL backend error: error occurred while decoding column \"occurred_at_ms\": mismatched types; Rust type `i64` (as SQL type `BIGINT`) is not compatible with SQL type `BIGINT UNSIGNED`")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test feedback::live_tests::postgres_feedback_restart_boundaries ... feedback_restart_boundary=0 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=1 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=2 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=3 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+ok
+test feedback::live_tests::surreal_feedback_restart_boundaries ... feedback_restart_boundary=0 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=1 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=2 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+feedback_restart_boundary=3 device_failures=1 dispatched=1 failed=1 event_count=1 receipts=0
+ok
+
+failures:
+
+failures:
+    feedback::live_tests::mysql_feedback_restart_boundaries
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 152 filtered out; finished in 5.82s
+
+error: test failed, to rerun pass `-p sockudo-push --lib`

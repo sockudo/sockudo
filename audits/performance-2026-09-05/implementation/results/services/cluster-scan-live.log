@@ -1,0 +1,21 @@
+    Blocking waiting for file lock on build directory
+   Compiling tower v0.5.3
+   Compiling redis v1.4.1
+   Compiling axum v0.8.9
+   Compiling sockudo-ws v2.0.1
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling moka v0.12.15
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.28s
+     Running tests/redis_cluster_scan_live.rs (target/debug/deps/redis_cluster_scan_live-19a9d7dd9ee51605)
+
+running 1 test
+cluster_scan_repeat=0 exact_rows=1024 pages=61
+cluster_scan_repeat=1 exact_rows=1024 pages=61
+cluster_scan_repeat=2 exact_rows=1024 pages=61
+test cluster_scan_visits_every_primary_and_returns_exact_values ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+

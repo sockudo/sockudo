@@ -16,6 +16,7 @@ impl PostgresHistoryStore {
                 durable_state_reason TEXT NULL,
                 durable_state_node_id TEXT NULL,
                 durable_state_changed_at_ms BIGINT NULL,
+                retention_initialized BOOLEAN NOT NULL DEFAULT FALSE,
                 retained_messages BIGINT NOT NULL DEFAULT 0,
                 retained_bytes BIGINT NOT NULL DEFAULT 0,
                 oldest_available_serial BIGINT NULL,
@@ -242,9 +243,14 @@ impl PostgresHistoryStore {
             self.tables.streams
         );
 
+        let initialize_retention = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS retention_initialized BOOLEAN NOT NULL DEFAULT FALSE",
+            self.tables.streams
+        );
         let ddl = [
             create_streams,
             create_entries,
+            initialize_retention,
             index_serial,
             index_time,
             create_version_streams,

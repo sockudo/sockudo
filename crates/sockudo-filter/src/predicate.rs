@@ -247,7 +247,7 @@ impl PredicateEvaluationError {
     }
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 enum CompiledTagNode {
     Logical {
         op: LogicalOp,
@@ -336,6 +336,23 @@ impl MessagePredicate {
             expression,
             id,
         })
+    }
+
+    /// Compare complete canonical views before sharing an evaluation result.
+    /// A predicate ID alone is not a collision-proof delivery decision.
+    #[must_use]
+    pub fn equivalent_to(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.events == other.events
+            && self.tags == other.tags
+            && self.expression.as_ref().map(|value| value.as_str())
+                == other.expression.as_ref().map(|value| value.as_str())
+    }
+
+    /// Check the bounded event/tag portion before constructing a document.
+    #[must_use]
+    pub fn matches_event_and_tags<T: TagMap>(&self, event: Option<&str>, tags: &T) -> bool {
+        self.matches_cheap(event, tags)
     }
 
     /// Returns whether this predicate accepts a projected message.
@@ -743,6 +760,28 @@ mod tests {
 
     use super::*;
     use crate::node::FilterNodeBuilder;
+
+    #[test]
+    fn equal_ids_do_not_prove_equivalent_predicates() {
+        let a = MessagePredicate::compile(SubscriptionView {
+            events: vec!["a".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        let mut b = MessagePredicate::compile(SubscriptionView {
+            events: vec!["b".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        b.id = a.id;
+        assert!(!a.equivalent_to(&b));
+        let same = MessagePredicate::compile(SubscriptionView {
+            events: vec!["a".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(a.equivalent_to(&same));
+    }
 
     #[test]
     fn combines_events_tags_and_expression() {

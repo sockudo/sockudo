@@ -104,6 +104,27 @@ impl WebSocketRef {
 
     #[inline]
     pub fn send_broadcast(&self, bytes: Bytes) -> Result<()> {
+        self.send_prepared_broadcast(bytes, WireFormat::Json)
+    }
+
+    /// Enqueue an immutable shared frame through the bounded broadcast queue.
+    /// The caller must prepare the frame using this socket's negotiated format.
+    #[inline]
+    pub fn send_prepared_broadcast(&self, bytes: Bytes, format: WireFormat) -> Result<()> {
+        self.admit_prepared_broadcast(bytes, format).map(|_| ())
+    }
+
+    /// Returns false when the configured slow-consumer policy drops the frame.
+    /// Delta senders must only advance their base after true admission.
+    pub fn admit_prepared_broadcast(&self, bytes: Bytes, format: WireFormat) -> Result<bool> {
+        if self.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
+            return Err(Error::ConnectionClosed("Connection shutting down".into()));
+        }
+        if format != self.wire_format {
+            return Err(Error::InvalidMessageFormat(
+                "Broadcast wire format mismatch".into(),
+            ));
+        }
         let msg_size = bytes.len();
 
         let byte_reservation = self
@@ -113,19 +134,22 @@ impl WebSocketRef {
         if let Some((counter, byte_limit)) = byte_reservation
             && !counter.try_reserve(msg_size, byte_limit)
         {
-            return self.handle_buffer_full("byte limit", byte_limit, Some(msg_size));
+            return self
+                .handle_buffer_full("byte limit", byte_limit, Some(msg_size))
+                .map(|_| false);
         }
 
-        let sized_msg = SizedMessage::new(bytes);
+        let sized_msg = SizedMessage::prepared(bytes, format);
 
         match self.broadcast_tx.try_send(sized_msg) {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(true),
             Err(TrySendError::Full(_)) => {
                 if let Some((counter, _)) = byte_reservation {
                     counter.sub(msg_size);
                 }
                 let limit = self.buffer_config.limit.message_limit().unwrap_or(0);
                 self.handle_buffer_full("message limit", limit, None)
+                    .map(|_| false)
             }
             Err(TrySendError::Disconnected(_)) => {
                 if let Some((counter, _)) = byte_reservation {

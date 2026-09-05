@@ -13,7 +13,10 @@ use sockudo_core::metrics::MetricsInterface;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Handlers for transport events
+pub type IngressGapHandler = Arc<dyn Fn(Option<&str>, Option<&str>) + Send + Sync>;
+
 pub struct TransportHandlers {
+    pub on_ingress_gap: IngressGapHandler,
     pub node_id: String,
     pub on_broadcast: Arc<dyn Fn(BroadcastMessage) -> BoxFuture<'static, ()> + Send + Sync>,
     pub on_request:

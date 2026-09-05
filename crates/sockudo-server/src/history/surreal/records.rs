@@ -70,6 +70,8 @@ impl HistoryStreamRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub(super) struct StoredStreamRecord {
+    #[serde(default)]
+    pub(super) retention_revision: Option<i64>,
     pub(super) app_id: String,
     pub(super) channel: String,
     pub(super) stream_id: String,

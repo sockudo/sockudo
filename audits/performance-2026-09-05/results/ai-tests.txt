@@ -1,0 +1,27 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.33s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_ai_transport-547a7eb735b25d1d)
+
+running 18 tests
+test observability::tests::classifies_run_and_cancel_events_without_legacy_turn_labels_for_metrics ... ok
+test observability::tests::expires_streams_that_never_receive_a_terminal_event ... ok
+test observability::tests::malformed_headers_are_counted_but_do_not_block_observation ... ok
+test observability::tests::legacy_turn_suspend_maps_to_run_suspended_signal ... ok
+test observability::tests::run_end_reason_is_bounded ... ok
+test observability::tests::treats_empty_run_client_id_as_absent_for_derived_observability ... ok
+test observability::tests::tracks_stream_duration_and_bytes ... ok
+test tests::allowed_window_values_match_wire_contract ... ok
+test tests::active_stream_cap_bypasses_new_rollup_state ... ok
+test tests::first_append_delivers_immediately_and_arms_window ... ok
+test tests::appends_within_window_are_coalesced_until_deadline ... ok
+test tests::coalesced_appends_preserve_combined_append_fragment ... ok
+test tests::orphan_sweep_drops_first_only_state_without_duplicate_delivery ... ok
+test tests::terminal_append_does_not_redeliver_the_immediate_first_append ... ok
+test tests::terminal_append_flushes_pending_before_terminal ... ok
+test tests::orphan_sweep_flushes_and_removes_state ... ok
+test tests::update_flushes_pending_before_terminal ... ok
+test tests::zero_window_bypasses_rollup ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -133,9 +133,13 @@ history first, then live messages. In a cluster, route this request to the node 
 attachment. If Sockudo cannot find that authoritative attachment position, it rejects the read
 instead of silently removing the upper bound and returning a page that could overlap live delivery.
 
+ScyllaDB applies serial bounds before loading payload rows and limits each sparse time-filter scan. A page can therefore contain no items while still returning `has_more` and a continuation cursor. Continue from that cursor until `has_more` is false; do not treat an empty page as the end of history. The cursor advances past every inspected serial, preserving both read directions without rescanning or skipping matching records.
+
 ## Presence history
 
 Presence history records joins, leaves, causes, and continuity metadata. It is different from the current presence member list.
+
+Durable transition checks retain bounded metadata for up to 64 channels per store, with a 256 KiB accounting limit per cached channel. After proving complete stream coverage, the store reads newly appended records and uses conservative summaries of serial ranges to locate older users or duplicate transition keys. A summary can cause extra reads but cannot prove a duplicate by itself. Cold lookups may therefore read durable pages; repeated lookups can reuse verified outcomes. Expired ranges release their summary slots, and a changed stream generation discards cached evidence. Missing records, incomplete pages, or a reset during lookup fail closed.
 
 Protocol projections must write transitions through the native presence
 service. Current membership remains available if the durable tier fails, but
@@ -191,3 +195,14 @@ Push notifications should include stable identifiers that let the app fetch auth
 ```
 
 Do not encode the entire durable state into the push payload. Use push to wake the app, then read the latest message or application API state.
+
+
+## Durable retention accounting upgrades
+
+Durable history tracks retained record counts and payload bytes alongside entry writes. PostgreSQL and MySQL lock the channel metadata row and commit insert, eviction, and accounting together. DynamoDB and SurrealDB condition entry changes on the current stream and accounting revision. ScyllaDB stores accounting in static columns in the same history-entry partition, so its conditional batch changes the entries and counters together. Duplicate appends do not increment retention totals.
+
+Eviction reads bounded metadata batches rather than all retained payloads. Batch sizes are 256 metadata rows for SQL and SurrealDB, 25 for DynamoDB, and 64 for ScyllaDB. A retention reduction or a large expiry burst can require several batches; the store completes maintenance before reporting a synchronous append complete. PostgreSQL keeps its existing bounded asynchronous writer queues and degraded-state behavior; MySQL appends remain synchronous. PostgreSQL coalesces already queued adjacent writes for the same channel, stream, and retention policy, with increasing serials and timestamps. A batch holds at most 64 records or 1 MiB of payloads and spends at most 1 ms collecting queued work, without adding a batching delay. Imported or duplicate serial ranges run individually. A failed batch rolls back and retries records individually so an invalid record does not discard the other accepted writes. Explicit purge and reset operations can inspect the requested retained range.
+
+When upgrading an existing database, pause publishers and wait for every server's durable history writer queue to drain, then stop the old server processes before starting the upgraded fleet. The new schema columns are additive. Each existing channel or entry partition reconciles its legacy metadata once, under the backend's lock or conditional revision check; later writes update exact deltas. Allow for this one-time metadata scan when estimating first-write latency on large retained channels. All writers and expiry jobs must use the new accounting protocol together.
+
+Rollback also requires pausing publishers and draining all accepted writes before stopping the upgraded fleet. Keep the added schema columns. Before a later upgrade, invalidate the initialization marker or accounting revision for channels written by the older fleet so their totals are reconciled again; perform that backend-specific maintenance while all writers are stopped. Never reset a live accounting revision or remove ScyllaDB static accounting while writers are running. A stream reset changes its identity; clients with old cursors must follow the existing reset-required recovery flow.

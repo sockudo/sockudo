@@ -6,6 +6,8 @@ mod document;
 #[cfg(feature = "dynamodb")]
 mod dynamodb;
 mod helpers;
+mod lifecycle;
+mod ordered;
 mod publishing;
 #[cfg(feature = "scylladb")]
 mod scylla;

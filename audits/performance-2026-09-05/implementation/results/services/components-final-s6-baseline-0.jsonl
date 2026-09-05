@@ -1,0 +1,17 @@
+{"case":"S6_ws_100k","verified":{"repeat":0},"elapsed_us":31225,"allocations":4300008,"allocated_bytes":110301880}
+{"case":"S6_ws_100k","verified":{"repeat":1},"allocated_bytes":110301792,"allocations":4300005,"elapsed_us":31312}
+{"allocations":4300005,"allocated_bytes":110301792,"case":"S6_ws_100k","verified":{"repeat":2},"elapsed_us":31450}
+{"elapsed_us":31629,"case":"S6_ws_100k","allocated_bytes":110301792,"verified":{"repeat":3},"allocations":4300005}
+{"verified":{"repeat":4},"case":"S6_ws_100k","elapsed_us":31544,"allocations":4300005,"allocated_bytes":110301792}
+{"elapsed_us":1621,"verified":{"count":1000},"case":"S5_churn","allocated_bytes":3574848,"allocations":59344}
+{"allocations":137503,"elapsed_us":6504,"allocated_bytes":13092475,"case":"S5_scrape","verified":{"bytes":1640366,"published":1000.0,"count":1000,"repeat":0,"series":17039}}
+{"case":"S5_scrape","verified":{"repeat":1,"count":1000,"series":17039,"bytes":1640363,"published":1000.0},"allocations":132482,"elapsed_us":5701,"allocated_bytes":11250144}
+{"allocated_bytes":10627698,"allocations":132482,"verified":{"repeat":2,"series":17039,"count":1000,"bytes":1640367,"published":1000.0},"elapsed_us":5029,"case":"S5_scrape"}
+{"case":"S5_churn","elapsed_us":14365,"allocated_bytes":34319704,"allocations":590211,"verified":{"count":10000}}
+{"allocations":1502509,"elapsed_us":78170,"allocated_bytes":130820910,"case":"S5_scrape","verified":{"repeat":0,"published":11000.0,"count":10000,"bytes":18360388,"series":187039}}
+{"elapsed_us":73109,"verified":{"published":11000.0,"series":187039,"count":10000,"bytes":18360388,"repeat":1},"allocations":1452503,"case":"S5_scrape","allocated_bytes":102026626}
+{"case":"S5_scrape","allocated_bytes":123521837,"verified":{"bytes":18360388,"series":187039,"repeat":2,"count":10000,"published":11000.0},"allocations":1452504,"elapsed_us":73436}
+{"verified":{"count":100000},"elapsed_us":164169,"allocated_bytes":342604888,"case":"S5_churn","allocations":6170197}
+{"verified":{"bytes":189060412,"series":1887039,"published":111000.0,"repeat":0,"count":100000},"elapsed_us":946487,"allocated_bytes":1513772747,"allocations":15152531,"case":"S5_scrape"}
+{"case":"S5_scrape","allocated_bytes":1235578779,"elapsed_us":915333,"allocations":14652525,"verified":{"repeat":1,"series":1887039,"count":100000,"bytes":189060413,"published":111000.0}}
+{"elapsed_us":912190,"verified":{"published":111000.0,"series":1887039,"repeat":2,"bytes":189060413,"count":100000},"allocated_bytes":1243966242,"allocations":14652525,"case":"S5_scrape"}

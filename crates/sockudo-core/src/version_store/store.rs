@@ -137,6 +137,23 @@ pub trait VersionStore: Send + Sync {
         channel: &str,
     ) -> Result<Vec<StoredVersionRecord>>;
 
+    /// Count retained logical messages without fetching their full bodies.
+    /// Legacy implementations may use the channel projection fallback.
+    async fn message_count(&self, app_id: &str, channel: &str) -> Result<u64> {
+        Ok(self.latest_by_history(app_id, channel).await?.len() as u64)
+    }
+
+    /// Count authoritative latest AI states. Implementations may project metadata,
+    /// but an advisory cache must never undercount streams used by admission.
+    async fn active_stream_count(&self, app_id: &str, channel: &str) -> Result<usize> {
+        Ok(self
+            .latest_by_history(app_id, channel)
+            .await?
+            .iter()
+            .filter(|record| record.is_open_ai_stream())
+            .count())
+    }
+
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState>;
 
     /// Purge version entries whose server-side `created_at_ms` is strictly

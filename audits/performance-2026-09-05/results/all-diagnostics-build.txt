@@ -1,0 +1,5 @@
+     Locking 1 package to latest Rust 1.98.1 compatible version
+      Adding sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-performance-audit v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/diagnostics)
+    Finished `release` profile [optimized] target(s) in 31.18s

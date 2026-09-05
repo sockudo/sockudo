@@ -108,11 +108,8 @@ impl ConnectionHandler {
         let key = active_stream_count_key(app_id, channel);
         let authoritative = self
             .version_store()
-            .latest_by_history(app_id, channel)
-            .await?
-            .iter()
-            .filter(|record| record_ai_status(record) == Some("streaming"))
-            .count();
+            .active_stream_count(app_id, channel)
+            .await?;
         if let Err(error) = self
             .cache_manager()
             .set(

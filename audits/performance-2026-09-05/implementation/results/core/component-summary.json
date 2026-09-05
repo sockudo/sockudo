@@ -1,0 +1,3573 @@
+{
+  "C12_baseline": [
+    {
+      "scenario": "device_verify",
+      "offered": "8",
+      "completed": {
+        "min": 8.0,
+        "median": 8.0,
+        "max": 8.0,
+        "repetitions": 5
+      },
+      "rejected": {
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "repetitions": 5
+      },
+      "elapsed_us": {
+        "min": 71205.0,
+        "median": 71284.0,
+        "max": 82197.0,
+        "repetitions": 5
+      },
+      "timer_p50_us": {
+        "min": 70210.0,
+        "median": 70290.0,
+        "max": 81199.0,
+        "repetitions": 5
+      },
+      "timer_p95_us": {
+        "min": 70210.0,
+        "median": 70290.0,
+        "max": 81199.0,
+        "repetitions": 5
+      },
+      "timer_max_us": {
+        "min": 70210.0,
+        "median": 70290.0,
+        "max": 81199.0,
+        "repetitions": 5
+      }
+    },
+    {
+      "scenario": "device_verify",
+      "offered": "64",
+      "completed": {
+        "min": 64.0,
+        "median": 64.0,
+        "max": 64.0,
+        "repetitions": 5
+      },
+      "rejected": {
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "repetitions": 5
+      },
+      "elapsed_us": {
+        "min": 563937.0,
+        "median": 571258.0,
+        "max": 663639.0,
+        "repetitions": 5
+      },
+      "timer_p50_us": {
+        "min": 562938.0,
+        "median": 570257.0,
+        "max": 662638.0,
+        "repetitions": 5
+      },
+      "timer_p95_us": {
+        "min": 562938.0,
+        "median": 570257.0,
+        "max": 662638.0,
+        "repetitions": 5
+      },
+      "timer_max_us": {
+        "min": 562938.0,
+        "median": 570257.0,
+        "max": 662638.0,
+        "repetitions": 5
+      }
+    },
+    {
+      "scenario": "device_verify",
+      "offered": "192",
+      "completed": {
+        "min": 192.0,
+        "median": 192.0,
+        "max": 192.0,
+        "repetitions": 5
+      },
+      "rejected": {
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "repetitions": 5
+      },
+      "elapsed_us": {
+        "min": 1704647.0,
+        "median": 1715070.0,
+        "max": 1996238.0,
+        "repetitions": 5
+      },
+      "timer_p50_us": {
+        "min": 1703644.0,
+        "median": 1714067.0,
+        "max": 1995234.0,
+        "repetitions": 5
+      },
+      "timer_p95_us": {
+        "min": 1703644.0,
+        "median": 1714067.0,
+        "max": 1995234.0,
+        "repetitions": 5
+      },
+      "timer_max_us": {
+        "min": 1703644.0,
+        "median": 1714067.0,
+        "max": 1995234.0,
+        "repetitions": 5
+      }
+    }
+  ],
+  "C12_after": [
+    {
+      "scenario": "device_verify",
+      "offered": "8",
+      "completed": {
+        "min": 8.0,
+        "median": 8.0,
+        "max": 8.0,
+        "repetitions": 5
+      },
+      "rejected": {
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "repetitions": 5
+      },
+      "elapsed_us": {
+        "min": 9426.0,
+        "median": 9597.0,
+        "max": 10385.0,
+        "repetitions": 5
+      },
+      "timer_p50_us": {
+        "min": 1056.0,
+        "median": 1056.0,
+        "max": 1059.0,
+        "repetitions": 5
+      },
+      "timer_p95_us": {
+        "min": 1369.0,
+        "median": 1505.0,
+        "max": 1531.0,
+        "repetitions": 5
+      },
+      "timer_max_us": {
+        "min": 1369.0,
+        "median": 1505.0,
+        "max": 1531.0,
+        "repetitions": 5
+      }
+    },
+    {
+      "scenario": "device_verify",
+      "offered": "64",
+      "completed": {
+        "min": 64.0,
+        "median": 64.0,
+        "max": 64.0,
+        "repetitions": 5
+      },
+      "rejected": {
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "repetitions": 5
+      },
+      "elapsed_us": {
+        "min": 75783.0,
+        "median": 76858.0,
+        "max": 82210.0,
+        "repetitions": 5
+      },
+      "timer_p50_us": {
+        "min": 1055.0,
+        "median": 1056.0,
+        "max": 1057.0,
+        "repetitions": 5
+      },
+      "timer_p95_us": {
+        "min": 1400.0,
+        "median": 1478.0,
+        "max": 1857.0,
+        "repetitions": 5
+      },
+      "timer_max_us": {
+        "min": 1520.0,
+        "median": 1608.0,
+        "max": 1874.0,
+        "repetitions": 5
+      }
+    },
+    {
+      "scenario": "device_verify",
+      "offered": "192",
+      "completed": {
+        "min": 64.0,
+        "median": 64.0,
+        "max": 64.0,
+        "repetitions": 5
+      },
+      "rejected": {
+        "min": 128.0,
+        "median": 128.0,
+        "max": 128.0,
+        "repetitions": 5
+      },
+      "elapsed_us": {
+        "min": 76371.0,
+        "median": 78547.0,
+        "max": 80134.0,
+        "repetitions": 5
+      },
+      "timer_p50_us": {
+        "min": 1055.0,
+        "median": 1056.0,
+        "max": 1057.0,
+        "repetitions": 5
+      },
+      "timer_p95_us": {
+        "min": 1452.0,
+        "median": 1668.0,
+        "max": 1807.0,
+        "repetitions": 5
+      },
+      "timer_max_us": {
+        "min": 1701.0,
+        "median": 1845.0,
+        "max": 1919.0,
+        "repetitions": 5
+      }
+    }
+  ],
+  "baseline": [
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 471.0,
+        "median": 471.0,
+        "max": 481.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 491.0,
+        "median": 501.0,
+        "max": 511.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 521.0,
+        "median": 521.0,
+        "max": 531.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 771.0,
+        "median": 771.0,
+        "max": 771.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6833.0,
+        "median": 6973.0,
+        "max": 7164.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 11171.0,
+        "median": 11401.0,
+        "max": 11502.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 12093.0,
+        "median": 12464.0,
+        "max": 12804.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 65.0,
+        "median": 65.0,
+        "max": 65.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 11736.0,
+        "median": 11736.0,
+        "max": 11736.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 742.0,
+        "median": 751.0,
+        "max": 761.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 772.0,
+        "median": 782.0,
+        "max": 801.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 801.0,
+        "median": 862.0,
+        "max": 1934.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 771.0,
+        "median": 771.0,
+        "max": 771.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 12874.0,
+        "median": 13165.0,
+        "max": 13245.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19417.0,
+        "median": 20008.0,
+        "max": 21550.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 21741.0,
+        "median": 21911.0,
+        "max": 26269.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 68.0,
+        "median": 68.0,
+        "max": 68.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 20349.0,
+        "median": 20349.0,
+        "max": 20349.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2665.0,
+        "median": 2685.0,
+        "max": 2685.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2695.0,
+        "median": 2725.0,
+        "max": 2766.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2725.0,
+        "median": 2785.0,
+        "max": 2906.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 771.0,
+        "median": 771.0,
+        "max": 771.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 78127.0,
+        "median": 78288.0,
+        "max": 78729.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 82216.0,
+        "median": 82276.0,
+        "max": 82336.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 83678.0,
+        "median": 84169.0,
+        "max": 85672.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 74.0,
+        "median": 74.0,
+        "max": 74.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 112308.0,
+        "median": 112308.0,
+        "max": 112308.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 541.0,
+        "median": 541.0,
+        "max": 551.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 552.0,
+        "median": 571.0,
+        "max": 581.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 581.0,
+        "median": 601.0,
+        "max": 631.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4611.0,
+        "median": 4611.0,
+        "max": 4611.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 7244.0,
+        "median": 7424.0,
+        "max": 7564.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 11451.0,
+        "median": 11502.0,
+        "max": 11762.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 11552.0,
+        "median": 11973.0,
+        "max": 12464.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 65.0,
+        "median": 65.0,
+        "max": 65.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 38616.0,
+        "median": 38616.0,
+        "max": 38616.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 881.0,
+        "median": 882.0,
+        "max": 882.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 912.0,
+        "median": 912.0,
+        "max": 932.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 932.0,
+        "median": 942.0,
+        "max": 1022.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4611.0,
+        "median": 4611.0,
+        "max": 4611.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 13475.0,
+        "median": 13626.0,
+        "max": 14096.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19476.0,
+        "median": 19998.0,
+        "max": 20108.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 19988.0,
+        "median": 20238.0,
+        "max": 20689.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 68.0,
+        "median": 68.0,
+        "max": 68.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 47229.0,
+        "median": 47229.0,
+        "max": 47229.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2765.0,
+        "median": 2775.0,
+        "max": 2825.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2806.0,
+        "median": 2825.0,
+        "max": 2876.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2856.0,
+        "median": 2915.0,
+        "max": 2976.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4611.0,
+        "median": 4611.0,
+        "max": 4611.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 82927.0,
+        "median": 83749.0,
+        "max": 85362.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 91003.0,
+        "median": 91954.0,
+        "max": 99489.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 93607.0,
+        "median": 97705.0,
+        "max": 107092.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 74.0,
+        "median": 74.0,
+        "max": 74.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 139188.0,
+        "median": 139188.0,
+        "max": 139188.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 1373.0,
+        "median": 1373.0,
+        "max": 1383.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 1412.0,
+        "median": 1412.0,
+        "max": 1413.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 1413.0,
+        "median": 1413.0,
+        "max": 1442.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66051.0,
+        "median": 66051.0,
+        "max": 66051.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 48542.0,
+        "median": 49945.0,
+        "max": 50105.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 52810.0,
+        "median": 56436.0,
+        "max": 57179.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 55315.0,
+        "median": 158460.0,
+        "max": 161876.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 65.0,
+        "median": 65.0,
+        "max": 65.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 468696.0,
+        "median": 468696.0,
+        "max": 468696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 1593.0,
+        "median": 1603.0,
+        "max": 1613.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 1633.0,
+        "median": 1643.0,
+        "max": 1643.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 1653.0,
+        "median": 1663.0,
+        "max": 2544.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66051.0,
+        "median": 66051.0,
+        "max": 66051.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 54323.0,
+        "median": 56367.0,
+        "max": 56387.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 63000.0,
+        "median": 65093.0,
+        "max": 80322.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 67749.0,
+        "median": 85281.0,
+        "max": 106792.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 68.0,
+        "median": 68.0,
+        "max": 68.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 477309.0,
+        "median": 477309.0,
+        "max": 477309.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 3487.0,
+        "median": 3497.0,
+        "max": 3517.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 3527.0,
+        "median": 3567.0,
+        "max": 3596.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 3597.0,
+        "median": 3606.0,
+        "max": 4549.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66051.0,
+        "median": 66051.0,
+        "max": 66051.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 126930.0,
+        "median": 128884.0,
+        "max": 129835.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 134534.0,
+        "median": 137620.0,
+        "max": 140156.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 144995.0,
+        "median": 148080.0,
+        "max": 302212.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 74.0,
+        "median": 74.0,
+        "max": 74.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 569268.0,
+        "median": 569268.0,
+        "max": 569268.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "100",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 19056.0,
+        "median": 19076.0,
+        "max": 19147.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19407.0,
+        "median": 19426.0,
+        "max": 19427.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 20228.0,
+        "median": 22843.0,
+        "max": 24216.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 64.0,
+        "median": 64.0,
+        "max": 64.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 13040.0,
+        "median": 13040.0,
+        "max": 13040.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "1000",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 219214.0,
+        "median": 219685.0,
+        "max": 224515.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 224886.0,
+        "median": 229664.0,
+        "max": 230507.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 228082.0,
+        "median": 232430.0,
+        "max": 235235.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 77.0,
+        "median": 77.0,
+        "max": 77.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 170032.0,
+        "median": 170032.0,
+        "max": 170032.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "10000",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2435308.0,
+        "median": 2441219.0,
+        "max": 2552701.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2474552.0,
+        "median": 2521101.0,
+        "max": 2655344.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2494570.0,
+        "median": 2646588.0,
+        "max": 2715799.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 86.0,
+        "median": 86.0,
+        "max": 86.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 1389696.0,
+        "median": 1389696.0,
+        "max": 1389696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "1000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6042.0,
+        "median": 6152.0,
+        "max": 6282.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6152.0,
+        "median": 6362.0,
+        "max": 6422.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6382.0,
+        "median": 6563.0,
+        "max": 8626.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "1000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 7053.0,
+        "median": 7124.0,
+        "max": 7253.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 7224.0,
+        "median": 7263.0,
+        "max": 7384.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 7274.0,
+        "median": 7975.0,
+        "max": 10409.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "10000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6091.0,
+        "median": 6192.0,
+        "max": 6211.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6252.0,
+        "median": 6262.0,
+        "max": 6322.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6352.0,
+        "median": 6472.0,
+        "max": 7163.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "10000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 19177.0,
+        "median": 19307.0,
+        "max": 19407.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19517.0,
+        "median": 22303.0,
+        "max": 22473.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 23274.0,
+        "median": 23836.0,
+        "max": 24256.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "100000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6162.0,
+        "median": 6172.0,
+        "max": 6352.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6252.0,
+        "median": 6302.0,
+        "max": 6472.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6472.0,
+        "median": 7164.0,
+        "max": 7304.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "100000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 141388.0,
+        "median": 141899.0,
+        "max": 144223.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 147790.0,
+        "median": 149443.0,
+        "max": 150495.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 151386.0,
+        "median": 152689.0,
+        "max": 156205.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    }
+  ],
+  "c1-after": [
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 561.0,
+        "median": 571.0,
+        "max": 581.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 601.0,
+        "median": 601.0,
+        "max": 622.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 622.0,
+        "median": 631.0,
+        "max": 632.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 787.0,
+        "median": 787.0,
+        "max": 787.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2796.0,
+        "median": 2805.0,
+        "max": 2855.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 3226.0,
+        "median": 3396.0,
+        "max": 4729.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 4629.0,
+        "median": 4859.0,
+        "max": 4979.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 5696.0,
+        "median": 5696.0,
+        "max": 5696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 561.0,
+        "median": 571.0,
+        "max": 571.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 611.0,
+        "median": 751.0,
+        "max": 1082.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 611.0,
+        "median": 1112.0,
+        "max": 1253.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 787.0,
+        "median": 787.0,
+        "max": 787.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2736.0,
+        "median": 2765.0,
+        "max": 2845.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 3126.0,
+        "median": 3176.0,
+        "max": 4148.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 4077.0,
+        "median": 4920.0,
+        "max": 5570.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 5696.0,
+        "median": 5696.0,
+        "max": 5696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 551.0,
+        "median": 551.0,
+        "max": 581.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 591.0,
+        "median": 621.0,
+        "max": 622.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 612.0,
+        "median": 631.0,
+        "max": 632.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 787.0,
+        "median": 787.0,
+        "max": 787.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2825.0,
+        "median": 2875.0,
+        "max": 2906.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 3206.0,
+        "median": 3456.0,
+        "max": 3787.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 4619.0,
+        "median": 4769.0,
+        "max": 5020.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 5696.0,
+        "median": 5696.0,
+        "max": 5696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 631.0,
+        "median": 631.0,
+        "max": 661.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 661.0,
+        "median": 671.0,
+        "max": 691.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 671.0,
+        "median": 691.0,
+        "max": 711.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4627.0,
+        "median": 4627.0,
+        "max": 4627.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2164.0,
+        "median": 2244.0,
+        "max": 3376.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2395.0,
+        "median": 2535.0,
+        "max": 3878.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2635.0,
+        "median": 2695.0,
+        "max": 4298.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 32576.0,
+        "median": 32576.0,
+        "max": 32576.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 601.0,
+        "median": 611.0,
+        "max": 661.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 631.0,
+        "median": 641.0,
+        "max": 722.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 661.0,
+        "median": 662.0,
+        "max": 1643.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4627.0,
+        "median": 4627.0,
+        "max": 4627.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2174.0,
+        "median": 2185.0,
+        "max": 2495.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2345.0,
+        "median": 2445.0,
+        "max": 3757.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2455.0,
+        "median": 2535.0,
+        "max": 4158.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 32576.0,
+        "median": 32576.0,
+        "max": 32576.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 611.0,
+        "median": 611.0,
+        "max": 781.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 641.0,
+        "median": 651.0,
+        "max": 802.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 661.0,
+        "median": 671.0,
+        "max": 841.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4627.0,
+        "median": 4627.0,
+        "max": 4627.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 5320.0,
+        "median": 5531.0,
+        "max": 5561.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 7244.0,
+        "median": 7424.0,
+        "max": 7645.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 7655.0,
+        "median": 8185.0,
+        "max": 9348.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 32576.0,
+        "median": 32576.0,
+        "max": 32576.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 1423.0,
+        "median": 1433.0,
+        "max": 1443.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 1453.0,
+        "median": 1473.0,
+        "max": 1473.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 1483.0,
+        "median": 1493.0,
+        "max": 1493.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66067.0,
+        "median": 66067.0,
+        "max": 66067.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 42340.0,
+        "median": 43693.0,
+        "max": 44083.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 46167.0,
+        "median": 48702.0,
+        "max": 55545.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 49003.0,
+        "median": 78920.0,
+        "max": 226579.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 462656.0,
+        "median": 462656.0,
+        "max": 462656.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 1423.0,
+        "median": 1442.0,
+        "max": 1442.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 1463.0,
+        "median": 1473.0,
+        "max": 1482.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 1483.0,
+        "median": 1603.0,
+        "max": 2305.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66067.0,
+        "median": 66067.0,
+        "max": 66067.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 42420.0,
+        "median": 43723.0,
+        "max": 44995.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 44815.0,
+        "median": 52530.0,
+        "max": 52980.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 47600.0,
+        "median": 114045.0,
+        "max": 148260.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 462656.0,
+        "median": 462656.0,
+        "max": 462656.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 1423.0,
+        "median": 1423.0,
+        "max": 1442.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 1472.0,
+        "median": 1473.0,
+        "max": 1483.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 1533.0,
+        "median": 2575.0,
+        "max": 2795.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66067.0,
+        "median": 66067.0,
+        "max": 66067.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 43853.0,
+        "median": 44274.0,
+        "max": 46047.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 47710.0,
+        "median": 50004.0,
+        "max": 57289.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 58401.0,
+        "median": 73088.0,
+        "max": 148100.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 55.0,
+        "median": 55.0,
+        "max": 55.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 462656.0,
+        "median": 462656.0,
+        "max": 462656.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "100",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 18024.0,
+        "median": 18846.0,
+        "max": 19157.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19186.0,
+        "median": 19196.0,
+        "max": 19456.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 20309.0,
+        "median": 21681.0,
+        "max": 22192.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 64.0,
+        "median": 64.0,
+        "max": 64.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 13040.0,
+        "median": 13040.0,
+        "max": 13040.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "1000",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 206520.0,
+        "median": 207843.0,
+        "max": 219585.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 210327.0,
+        "median": 212311.0,
+        "max": 223672.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 211790.0,
+        "median": 213453.0,
+        "max": 223993.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 77.0,
+        "median": 77.0,
+        "max": 77.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 170032.0,
+        "median": 170032.0,
+        "max": 170032.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "10000",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2477151.0,
+        "median": 2483143.0,
+        "max": 2536924.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2598239.0,
+        "median": 2611425.0,
+        "max": 2760647.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2640640.0,
+        "median": 2651070.0,
+        "max": 2821612.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 86.0,
+        "median": 86.0,
+        "max": 86.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 1389696.0,
+        "median": 1389696.0,
+        "max": 1389696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "1000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6222.0,
+        "median": 6231.0,
+        "max": 6322.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6512.0,
+        "median": 6612.0,
+        "max": 6692.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6742.0,
+        "median": 7224.0,
+        "max": 7444.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "1000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 7274.0,
+        "median": 7284.0,
+        "max": 7304.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 7384.0,
+        "median": 7404.0,
+        "max": 7474.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 7494.0,
+        "median": 8356.0,
+        "max": 9779.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "10000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6071.0,
+        "median": 6072.0,
+        "max": 6092.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6182.0,
+        "median": 6192.0,
+        "max": 6202.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6242.0,
+        "median": 6973.0,
+        "max": 7103.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "10000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 19476.0,
+        "median": 19546.0,
+        "max": 19667.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19787.0,
+        "median": 19987.0,
+        "max": 20248.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 21971.0,
+        "median": 22913.0,
+        "max": 23014.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "100000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 5691.0,
+        "median": 5711.0,
+        "max": 5811.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 5781.0,
+        "median": 5861.0,
+        "max": 5901.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6442.0,
+        "median": 6603.0,
+        "max": 9558.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "100000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 143101.0,
+        "median": 143140.0,
+        "max": 143781.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 147639.0,
+        "median": 149963.0,
+        "max": 154181.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 148220.0,
+        "median": 157557.0,
+        "max": 158089.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22798.0,
+        "median": 22798.0,
+        "max": 22798.0,
+        "repetitions": 3
+      }
+    }
+  ],
+  "c5-after": [
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 461.0,
+        "median": 461.0,
+        "max": 481.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 491.0,
+        "median": 501.0,
+        "max": 511.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 491.0,
+        "median": 521.0,
+        "max": 551.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 771.0,
+        "median": 771.0,
+        "max": 771.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6763.0,
+        "median": 6823.0,
+        "max": 6903.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 11251.0,
+        "median": 11282.0,
+        "max": 11311.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 12193.0,
+        "median": 12483.0,
+        "max": 12694.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 65.0,
+        "median": 65.0,
+        "max": 65.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 11736.0,
+        "median": 11736.0,
+        "max": 11736.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 712.0,
+        "median": 721.0,
+        "max": 741.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 782.0,
+        "median": 792.0,
+        "max": 1192.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 811.0,
+        "median": 811.0,
+        "max": 1443.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 771.0,
+        "median": 771.0,
+        "max": 771.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 12905.0,
+        "median": 13025.0,
+        "max": 13105.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19938.0,
+        "median": 19978.0,
+        "max": 22452.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 20209.0,
+        "median": 28514.0,
+        "max": 68199.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 68.0,
+        "median": 68.0,
+        "max": 68.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 20349.0,
+        "median": 20349.0,
+        "max": 20349.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2625.0,
+        "median": 2645.0,
+        "max": 2665.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2655.0,
+        "median": 2665.0,
+        "max": 2685.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2685.0,
+        "median": 2715.0,
+        "max": 3407.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 771.0,
+        "median": 771.0,
+        "max": 771.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 77326.0,
+        "median": 77357.0,
+        "max": 77997.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 82737.0,
+        "median": 82766.0,
+        "max": 84139.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 84369.0,
+        "median": 84780.0,
+        "max": 101512.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 74.0,
+        "median": 74.0,
+        "max": 74.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 112308.0,
+        "median": 112308.0,
+        "max": 112308.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 531.0,
+        "median": 541.0,
+        "max": 561.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 551.0,
+        "median": 611.0,
+        "max": 842.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 562.0,
+        "median": 641.0,
+        "max": 902.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4611.0,
+        "median": 4611.0,
+        "max": 4611.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 7053.0,
+        "median": 7173.0,
+        "max": 7303.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 11081.0,
+        "median": 11091.0,
+        "max": 11171.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 11321.0,
+        "median": 11351.0,
+        "max": 11512.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 65.0,
+        "median": 65.0,
+        "max": 65.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 38616.0,
+        "median": 38616.0,
+        "max": 38616.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 862.0,
+        "median": 862.0,
+        "max": 872.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 891.0,
+        "median": 892.0,
+        "max": 901.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 902.0,
+        "median": 902.0,
+        "max": 961.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4611.0,
+        "median": 4611.0,
+        "max": 4611.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 13185.0,
+        "median": 13296.0,
+        "max": 13445.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 19557.0,
+        "median": 19607.0,
+        "max": 19667.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 19938.0,
+        "median": 20028.0,
+        "max": 20219.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 68.0,
+        "median": 68.0,
+        "max": 68.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 47229.0,
+        "median": 47229.0,
+        "max": 47229.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2735.0,
+        "median": 2745.0,
+        "max": 2775.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2786.0,
+        "median": 2806.0,
+        "max": 2806.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2825.0,
+        "median": 2845.0,
+        "max": 3887.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 4611.0,
+        "median": 4611.0,
+        "max": 4611.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "4096",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 82215.0,
+        "median": 82426.0,
+        "max": 83007.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 90481.0,
+        "median": 91213.0,
+        "max": 92014.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 96412.0,
+        "median": 112182.0,
+        "max": 119987.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 74.0,
+        "median": 74.0,
+        "max": 74.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 139188.0,
+        "median": 139188.0,
+        "max": 139188.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "16",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 1352.0,
+        "median": 1363.0,
+        "max": 1373.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 1383.0,
+        "median": 1393.0,
+        "max": 1403.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 1423.0,
+        "median": 1433.0,
+        "max": 1443.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66051.0,
+        "median": 66051.0,
+        "max": 66051.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "16",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 47881.0,
+        "median": 49384.0,
+        "max": 49754.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 52028.0,
+        "median": 56617.0,
+        "max": 65984.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 54764.0,
+        "median": 149913.0,
+        "max": 159241.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 65.0,
+        "median": 65.0,
+        "max": 65.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 468696.0,
+        "median": 468696.0,
+        "max": 468696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "128",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 1563.0,
+        "median": 1573.0,
+        "max": 1603.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 1603.0,
+        "median": 1603.0,
+        "max": 1653.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 1634.0,
+        "median": 1673.0,
+        "max": 1673.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66051.0,
+        "median": 66051.0,
+        "max": 66051.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "128",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 53822.0,
+        "median": 54172.0,
+        "max": 57018.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 60464.0,
+        "median": 62989.0,
+        "max": 65414.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 65904.0,
+        "median": 66325.0,
+        "max": 93707.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 68.0,
+        "median": 68.0,
+        "max": 68.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 477309.0,
+        "median": 477309.0,
+        "max": 477309.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "get_latest",
+      "retained": "1024",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 3507.0,
+        "median": 3517.0,
+        "max": 3517.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 3547.0,
+        "median": 3557.0,
+        "max": 3597.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 3587.0,
+        "median": 3596.0,
+        "max": 4649.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 11.0,
+        "median": 11.0,
+        "max": 11.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 66051.0,
+        "median": 66051.0,
+        "max": 66051.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "compare_apply_fixed_size",
+      "retained": "1024",
+      "payload_bytes": "65536",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 127050.0,
+        "median": 129655.0,
+        "max": 130457.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 138863.0,
+        "median": 144232.0,
+        "max": 149212.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 253699.0,
+        "median": 280029.0,
+        "max": 325145.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 74.0,
+        "median": 74.0,
+        "max": 74.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 569268.0,
+        "median": 569268.0,
+        "max": 569268.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "100",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 18415.0,
+        "median": 18474.0,
+        "max": 18695.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 18705.0,
+        "median": 18956.0,
+        "max": 19277.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 19456.0,
+        "median": 20929.0,
+        "max": 22121.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 64.0,
+        "median": 64.0,
+        "max": 64.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 13040.0,
+        "median": 13040.0,
+        "max": 13040.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "1000",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 206941.0,
+        "median": 211490.0,
+        "max": 212422.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 214204.0,
+        "median": 217641.0,
+        "max": 219755.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 215758.0,
+        "median": 223983.0,
+        "max": 238060.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 77.0,
+        "median": 77.0,
+        "max": 77.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 170032.0,
+        "median": 170032.0,
+        "max": 170032.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "annotation_duplicate_rebuild",
+      "retained": "10000",
+      "payload_bytes": "0",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 2379215.0,
+        "median": 2383654.0,
+        "max": 2409854.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 2411377.0,
+        "median": 2446081.0,
+        "max": 2471449.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 2425824.0,
+        "median": 2478543.0,
+        "max": 2533216.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 86.0,
+        "median": 86.0,
+        "max": 86.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 1389696.0,
+        "median": 1389696.0,
+        "max": 1389696.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "1000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6192.0,
+        "median": 6202.0,
+        "max": 6342.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6392.0,
+        "median": 6402.0,
+        "max": 6492.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 7093.0,
+        "median": 7144.0,
+        "max": 7404.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22814.0,
+        "median": 22814.0,
+        "max": 22814.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "1000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 5962.0,
+        "median": 5962.0,
+        "max": 6021.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6071.0,
+        "median": 6072.0,
+        "max": 6152.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6122.0,
+        "median": 6923.0,
+        "max": 9498.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22814.0,
+        "median": 22814.0,
+        "max": 22814.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "10000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6131.0,
+        "median": 6222.0,
+        "max": 6232.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6232.0,
+        "median": 6322.0,
+        "max": 6332.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6362.0,
+        "median": 6362.0,
+        "max": 7073.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22814.0,
+        "median": 22814.0,
+        "max": 22814.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "10000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 5871.0,
+        "median": 5921.0,
+        "max": 5962.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 5982.0,
+        "median": 6091.0,
+        "max": 6141.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6122.0,
+        "median": 6843.0,
+        "max": 9708.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22814.0,
+        "median": 22814.0,
+        "max": 22814.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_first_page",
+      "retained": "100000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 6322.0,
+        "median": 6342.0,
+        "max": 6843.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 6513.0,
+        "median": 6533.0,
+        "max": 7083.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6623.0,
+        "median": 7183.0,
+        "max": 7224.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22814.0,
+        "median": 22814.0,
+        "max": 22814.0,
+        "repetitions": 3
+      }
+    },
+    {
+      "operation": "history_deep_page",
+      "retained": "100000",
+      "payload_bytes": "256",
+      "samples": {
+        "min": 101.0,
+        "median": 101.0,
+        "max": 101.0,
+        "repetitions": 3
+      },
+      "p50_ns": {
+        "min": 5851.0,
+        "median": 5891.0,
+        "max": 6241.0,
+        "repetitions": 3
+      },
+      "p95_ns": {
+        "min": 5961.0,
+        "median": 5991.0,
+        "max": 6433.0,
+        "repetitions": 3
+      },
+      "p99_ns": {
+        "min": 6071.0,
+        "median": 8576.0,
+        "max": 9368.0,
+        "repetitions": 3
+      },
+      "alloc_calls_per_op": {
+        "min": 316.0,
+        "median": 316.0,
+        "max": 316.0,
+        "repetitions": 3
+      },
+      "requested_alloc_bytes_per_op": {
+        "min": 22814.0,
+        "median": 22814.0,
+        "max": 22814.0,
+        "repetitions": 3
+      }
+    }
+  ]
+}

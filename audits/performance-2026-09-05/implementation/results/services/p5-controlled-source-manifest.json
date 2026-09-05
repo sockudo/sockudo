@@ -1,0 +1,11 @@
+{
+  "component": "P5 feedback algorithm only",
+  "storage": "identical current PostgreSQL/P6 implementation",
+  "before_feedback_sha256": "a3e05ba27de08b42ebca4985a10e0539c0d659fcd2d662a8f165dbe494df63ca",
+  "after_feedback_sha256": "62cd7bc4b840b9c08b73416573e1864d7ab1a1d2ebf9edce1377c35aa76cf02e",
+  "dependency_sets_identical": true,
+  "binaries": {
+    "baseline": "599222f446382d1a26029f2172c5c2432eaa66deac397b5bc35841ec209d17f5",
+    "current": "83f6186a4bd1ab72a9111fa472a11318a0f95c82faaa7a700cda2d5ff0472653"
+  }
+}

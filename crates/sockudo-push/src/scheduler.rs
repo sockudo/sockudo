@@ -153,7 +153,7 @@ mod tests {
     };
     use crate::memory::MemoryPushStore;
     use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueueStage};
-    use crate::storage::PushSchedulerLockStore;
+    use crate::storage::{PushPublishLogStore, PushPublishStatusStore, PushSchedulerLockStore};
 
     use super::*;
 
@@ -161,6 +161,18 @@ mod tests {
     async fn scheduler_uses_distributed_lock_and_emits_publish_log_only() {
         let store = Arc::new(MemoryPushStore::new());
         let queue = Arc::new(MemoryPushQueue::new());
+        store
+            .put_publish_status(crate::domain::PublishStatus {
+                app_id: "app-1".to_owned(),
+                publish_id: "publish-1".to_owned(),
+                state: crate::domain::PublishLifecycleState::Queued,
+                counters: Default::default(),
+                fanout_regime: None,
+                retry_after_ms: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
         let intent = PublishIntent {
             app_id: "app-1".to_owned(),
             publish_id: "publish-1".to_owned(),
@@ -251,6 +263,114 @@ mod tests {
                 .await
                 .unwrap()
                 .ready_depth,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_parent_preserves_scheduled_work_until_status_repair() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let job = ScheduledPushJob {
+            app_id: "app-1".to_owned(),
+            publish_id: "publish-1".to_owned(),
+            due_at_ms: 1_000,
+            due_minute_ms: 0,
+            payload_json: json!({
+                "appId": "app-1",
+                "publishId": "publish-1",
+                "targets": [{"type": "channel", "channel": "room"}],
+                "payload": {"title": "hello", "body": "body"}
+            }),
+        };
+        store.put_scheduled_job(job.clone()).await.unwrap();
+        let scheduler = PushScheduler::new(
+            store.clone(),
+            queue.clone(),
+            "node-a",
+            FanoutConfig::default(),
+        )
+        .with_lock_ttl_ms(10);
+
+        let error = scheduler
+            .poll_due_bucket("app-1", 0, 1_000)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("publish status is missing"));
+        assert!(
+            store
+                .get_scheduled_job("app-1", "publish-1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .list_publish_log_events("app-1", 10, None)
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            0
+        );
+
+        // Restore the canonical accepted state, then let the failed owner's
+        // lease expire before a restarted scheduler retries the retained job.
+        store
+            .put_publish_status(crate::domain::PublishStatus {
+                app_id: job.app_id,
+                publish_id: job.publish_id,
+                state: crate::domain::PublishLifecycleState::Queued,
+                counters: Default::default(),
+                fanout_regime: None,
+                retry_after_ms: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
+        let restarted = PushScheduler::new(
+            store.clone(),
+            queue.clone(),
+            "node-b",
+            FanoutConfig::default(),
+        );
+        assert_eq!(
+            restarted.poll_due_bucket("app-1", 0, 1_011).await.unwrap(),
+            1
+        );
+        assert!(
+            store
+                .get_scheduled_job("app-1", "publish-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .list_publish_log_events("app-1", 10, None)
+                .await
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            1
+        );
+        assert_eq!(
+            restarted.poll_due_bucket("app-1", 0, 1_012).await.unwrap(),
             0
         );
     }

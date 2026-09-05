@@ -184,3 +184,82 @@ fn job(signature: &str) -> JobData {
         original_signature: signature.to_string(),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires SOCKUDO_REDIS_QUEUE_TEST_URL"]
+async fn redis_queue_keeps_healthy_workers_progressing_behind_a_stalled_callback() {
+    let url = std::env::var("SOCKUDO_REDIS_QUEUE_TEST_URL").unwrap();
+    let manager = RedisQueueManager::new_with_config(
+        &url,
+        None,
+        &format!("sockudo-skew-test-{}", uuid::Uuid::new_v4().simple()),
+        4,
+        5000,
+        QueueReliabilityConfig {
+            worker_prefetch: 1,
+            worker_poll_interval_ms: 5,
+            completed_retention: 0,
+            event_retention: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let jobs = (0..100)
+        .map(|index| {
+            let mut data = job("skew");
+            data.job_id = Some(index.to_string());
+            data
+        })
+        .collect();
+    manager.add_batch_to_queue("skew", jobs).await.unwrap();
+    let release = Arc::new(Notify::new());
+    let completed = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
+    let callback_release = release.clone();
+    let callback_completed = completed.clone();
+    let callback_seen = seen.clone();
+    manager
+        .process_queue(
+            "skew",
+            Box::new(move |data| {
+                let release = callback_release.clone();
+                let completed = callback_completed.clone();
+                let seen = callback_seen.clone();
+                Box::pin(async move {
+                    let id = data.job_id.unwrap();
+                    if id == "0" {
+                        release.notified().await;
+                    }
+                    assert!(
+                        seen.lock().await.insert(id),
+                        "duplicate delivery during healthy ownership"
+                    );
+                    completed.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+        )
+        .await
+        .unwrap();
+    let progressed = tokio::time::timeout(Duration::from_secs(2), async {
+        while completed.load(Ordering::SeqCst) < 90 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    release.notify_one();
+    assert!(
+        progressed.is_ok(),
+        "healthy callbacks must progress while one worker is blocked"
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while completed.load(Ordering::SeqCst) < 100 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen.lock().await.len(), 100);
+    manager.disconnect().await.unwrap();
+}

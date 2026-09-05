@@ -30,6 +30,10 @@ use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_adapter::transports::{RedisAdapterConfig, RedisTransport};
 use sockudo_core::options::{RedisConnection, RedisSentinel, RedisTlsOptions};
 
+#[allow(dead_code)]
+#[path = "adapter/transports/test_helpers.rs"]
+mod helpers;
+
 const IGNORE_REASON: &str = "requires a live Redis Sentinel deployment; configure via SOCKUDO_SENTINEL_* env vars (see `make sentinel-tls-up`)";
 
 fn env_bool(name: &str) -> bool {
@@ -91,6 +95,7 @@ fn sentinel_connection() -> RedisConnection {
 }
 
 fn transport_config(test_name: &str) -> RedisAdapterConfig {
+    install_test_crypto_provider();
     let connection = sentinel_connection();
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -108,6 +113,7 @@ fn transport_config(test_name: &str) -> RedisAdapterConfig {
 }
 
 fn direct_transport_config(test_name: &str) -> RedisAdapterConfig {
+    install_test_crypto_provider();
     let mut connection = sentinel_connection();
     connection.sentinels.clear();
     connection.host =
@@ -126,6 +132,17 @@ fn direct_transport_config(test_name: &str) -> RedisAdapterConfig {
         sentinel: None,
         tls: connection.master_tls,
     }
+}
+
+fn install_test_crypto_provider() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .expect("install the same TLS provider as the server bootstrap");
+        }
+    });
 }
 
 #[tokio::test]
@@ -175,4 +192,56 @@ async fn sentinel_transport_reports_node_count() {
         node_count >= 1,
         "node count should be at least 1, got {node_count}"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires a live Sentinel fixture; supports the same private CA and mTLS environment as the connection tests"]
+async fn sentinel_resp3_delivers_authenticated_frames_and_control_replies() {
+    let transport = RedisTransport::new(transport_config("resp3-delivery"))
+        .await
+        .unwrap();
+    let collector = helpers::MessageCollector::new();
+    transport
+        .start_listeners(helpers::create_test_handlers(collector.clone()))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        transport
+            .publish_broadcast(&helpers::create_test_broadcast("ready"))
+            .await
+            .unwrap();
+        if collector.wait_for_broadcast(100).await.is_some() {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    collector.clear().await;
+    for serial in 0..32 {
+        let mut message = helpers::create_test_broadcast("tls");
+        message.message = serial.to_string();
+        transport.publish_broadcast(&message).await.unwrap();
+    }
+    assert!(
+        helpers::wait_for_condition(
+            || async { collector.get_broadcasts().await.len() == 32 },
+            5000
+        )
+        .await
+    );
+    assert_eq!(
+        collector
+            .get_broadcasts()
+            .await
+            .iter()
+            .map(|message| message.message.parse::<usize>().unwrap())
+            .collect::<Vec<_>>(),
+        (0..32).collect::<Vec<_>>()
+    );
+    transport
+        .publish_request(&helpers::create_test_request())
+        .await
+        .unwrap();
+    assert!(collector.wait_for_response(5000).await.is_some());
 }

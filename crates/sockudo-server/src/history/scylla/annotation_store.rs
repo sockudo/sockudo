@@ -1,3 +1,6 @@
+use crate::history::annotation_cache::{
+    AnnotationProjectionCache, CachedProjection, ProjectionReadBudget,
+};
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use scylla::client::session::Session;
@@ -26,6 +29,7 @@ const MAX_CHANNEL_PROJECTIONS: usize = 10_000;
 const MAX_RAW_REPLAY: usize = 10_000;
 
 pub(super) struct ScyllaAnnotationStore {
+    projection_cache: AnnotationProjectionCache,
     session: Arc<Session>,
     keyspace: String,
     table: String,
@@ -94,6 +98,7 @@ impl ScyllaAnnotationStore {
         )
         .await?;
         let store = Self {
+            projection_cache: AnnotationProjectionCache::default(),
             session,
             keyspace,
             table: format!("{table_prefix}_annotation_commits"),
@@ -368,6 +373,7 @@ impl ScyllaAnnotationStore {
             })?;
         let now_seconds = now_ms().div_euclid(1_000);
         let mut result = Vec::with_capacity(limit.min(256));
+        let mut budget = ProjectionReadBudget::default();
         while let Some((_key, payload, expires_at)) = rows.try_next().await.map_err(|error| {
             Error::Internal(format!(
                 "Failed to read ScyllaDB annotation stream: {error}"
@@ -376,6 +382,7 @@ impl ScyllaAnnotationStore {
             if expires_at.is_some_and(|expiry| expiry <= now_seconds) {
                 continue;
             }
+            budget.add(payload.len())?;
             result.push((Self::decode_event(&payload)?, expires_at));
             if result.len() >= limit {
                 break;
@@ -643,15 +650,39 @@ impl ScyllaAnnotationStore {
             let state = self.projection_state(&request).await?.ok_or_else(|| {
                 Error::Internal("ScyllaDB projection initializer was not visible".to_string())
             })?;
-            let mut events = self.events_for_projection(&request).await?;
-            if events.len() >= MAX_PROJECTION_EVENTS {
-                return Err(Error::BufferFull(format!(
-                    "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
-                )));
-            }
-            events.push((record.clone(), expires_at));
-            let build =
-                Self::build_projection(&request, &events, AnnotationProjectionOptions::default())?;
+            let mut cached =
+                self.projection_cache
+                    .take(&request, state.revision, state.projection.as_ref());
+            let reused = if let Some(value) = cached.as_mut() {
+                if value.event_count >= MAX_PROJECTION_EVENTS {
+                    return Err(Error::BufferFull(format!(
+                        "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                    )));
+                }
+                value.append(&record, expires_at)?
+            } else {
+                false
+            };
+            let _rebuild;
+            let cached = if reused {
+                cached.expect("reused projection")
+            } else {
+                _rebuild = self.projection_cache.admit_rebuild()?;
+                let mut events = self.events_for_projection(&request).await?;
+                if events.len() >= MAX_PROJECTION_EVENTS {
+                    return Err(Error::BufferFull(format!(
+                        "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                    )));
+                }
+                events.push((record.clone(), expires_at));
+                CachedProjection::rebuild(&request, &events)?
+            };
+            let build = ProjectionBuild {
+                projection: cached.accumulator.projection.clone(),
+                valid_until: cached.valid_until,
+                expires_at: cached.expires_at,
+                event_count: cached.event_count,
+            };
             let summary = sonic_rs::to_vec(&build.projection.summary).map_err(|error| {
                 Error::Internal(format!(
                     "Failed to encode ScyllaDB annotation summary: {error}"
@@ -756,6 +787,8 @@ impl ScyllaAnnotationStore {
             match result {
                 Ok(result) => {
                     if Self::conditional_applied(result)? {
+                        self.projection_cache
+                            .put(&request, state.revision + 1, cached);
                         return Ok(AnnotationAppendOutcome {
                             projection: build.projection,
                             canonical_serial: record.annotation.serial.clone(),
@@ -814,6 +847,7 @@ impl ScyllaAnnotationStore {
             let state = self.projection_state(request).await?.ok_or_else(|| {
                 Error::Internal("ScyllaDB projection initializer was not visible".to_string())
             })?;
+            let _rebuild = self.projection_cache.admit_rebuild()?;
             let events = self.events_for_projection(request).await?;
             let build = Self::build_projection(request, &events, options)?;
             let query = if build.event_count == 0 {

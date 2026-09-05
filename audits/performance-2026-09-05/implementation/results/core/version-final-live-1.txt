@@ -1,0 +1,45 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 16s
+     Running unittests src/main.rs (target/debug/deps/sockudo-83d498b8407f8947)
+
+running 13 tests
+test history::dynamodb::version_store::tests::dynamodb_compact_versions_restart_and_fencing ... ok
+test history::dynamodb::version_store::tests::dynamodb_latest_batch_retries_partial_results_and_fails_closed ... ok
+test history::dynamodb::version_store::tests::dynamodb_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::mysql::version_store::tests::mysql_compact_versions_counters_imports_and_retention ... ok
+test history::mysql::version_store::tests::mysql_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::postgres::version_store::tests::postgres_compact_versions_counters_imports_and_retention ... ok
+test history::postgres::version_store::tests::postgres_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::scylla::version_store::tests::scylla_compact_versions_restart_and_fencing ... ok
+test history::scylla::version_store::tests::scylla_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::scylla::version_store::tests::scylla_raw_import_updates_atomic_latest_counts_and_preserves_compact_history ... ok
+test history::surreal::version_store::tests::surreal_compact_versions_restart_and_fencing ... ok
+test history::surreal::version_store::tests::surreal_compact_versions_retention_preserves_receipts ... ok
+test history::surreal::version_store::tests::surreal_metadata_counts_preserve_legacy_and_latest_states ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 186 filtered out; finished in 98.36s
+
+     Running tests/clustered_durable_history_redis_test.rs (target/debug/deps/clustered_durable_history_redis_test-d927e7c687587d1b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_v2_heartbeat_test.rs (target/debug/deps/native_v2_heartbeat_test-822f99bb400a6155)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

@@ -806,6 +806,11 @@ pub trait AppManager: Send + Sync + 'static {
     async fn update_app(&self, config: App) -> crate::error::Result<()>;
     async fn delete_app(&self, app_id: &str) -> crate::error::Result<()>;
     async fn get_apps(&self) -> crate::error::Result<Vec<App>>;
+    /// Probe whether any app is configured, including disabled apps.
+    /// Backends should override this with a bounded existence query.
+    async fn has_apps(&self) -> crate::error::Result<bool> {
+        Ok(!self.get_apps().await?.is_empty())
+    }
     async fn find_by_key(&self, key: &str) -> crate::error::Result<Option<App>>;
     async fn find_by_id(&self, app_id: &str) -> crate::error::Result<Option<App>>;
     async fn check_health(&self) -> crate::error::Result<()>;

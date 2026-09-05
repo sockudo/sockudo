@@ -14,7 +14,8 @@ The monolith push cleanup worker runs when `push.cleanup_interval_secs > 0`.
 
 | State | Retention |
 | --- | --- |
-| Terminal publish statuses | `push.publish_status_ttl_days` |
+| Terminal publish statuses | `push.publish_status_ttl_days`; lifecycle evidence holds V2 statuses through the retry horizon |
+| Original publish logs and fanout shards | Completed receipt proof and at least 30 days |
 | Delivery events | `push.analytics_retention_days` |
 | Operator invalidation events | `push.analytics_retention_days` |
 | Expired idempotency records | The record `expires_at_ms`; legacy non-epoch expiries are retained |
@@ -28,6 +29,72 @@ Cleanup is bounded by `push.cleanup_batch_size` per category and
 new writes through internal app and time indexes where available; families without a time index are
 cleaned by bounded app-partition scans. Memory cleanup is for tests and local development only.
 
+### Internal storage upgrades and lifecycle retention
+
+Push workers use one current internal queue format. Delivery batches store shared original and
+rendered payloads once, with per-recipient references; readers also accept previously persisted
+batches. The format discriminator describes an internal storage record and has no effect on the
+Pusher V1, Sockudo V2, or Ably public protocols. Channel fanout continuations can resume partway
+through one client's indexed device audience while still accepting older subscription cursors.
+
+Apply the additive SQL schema matching the configured backend before upgrading workers:
+`ops/migrations/postgres/003_push_lifecycle.sql` or `ops/migrations/mysql/005_push_lifecycle.sql`.
+Document stores create internal metadata families as needed. Replace old push producers and consumers
+together while preserving queued work; old binaries cannot consume current compact envelopes or
+nested continuations. New readers migrate old work automatically as it is processed. There are no
+operator switches selecting old and new write paths.
+
+Retirement requires completed planner and shard receipts whose actual emitted recipient total is
+covered by terminal outcomes. Estimated audience size is not completion proof. Pending feedback,
+admitted child writes, scheduled jobs, active planner/repair leases, incomplete shards, and outstanding
+retries retain original payloads. Status age must exceed both configured status retention and the
+supported 30-day retry horizon; the original schedule and expiry must also be safe. Legacy records
+without complete receipts retain their original logs and shards. Repair and retention scans resume
+across cleanup ticks; document and SQL checkpoints also survive worker restart.
+
+An atomic status transition records terminal evidence before deleting any original log or shard.
+This marker rejects stale status creation/CAS and new child writes, while bounded cleanup resumes
+after a crash. It keeps archived terminal status metadata for another 30 days after election to fence
+delayed duplicates. Cleanup metrics expose `publish_log` and `fanout_shard` categories, and
+`cleanup_max_deleted_per_tick` limits total artifact deletions.
+
+SQL child writes lock and revise their parent status in the same transaction. Document-store child
+writes reserve one of 64 durable admission slots before writing and release it after successful
+completion. Cancelled or uncertain writes retain their admissions across restart and prevent
+retirement. Additional child writes fail with a capacity error if all slots are occupied, leaving
+accepted queue work eligible for retry. Investigate retained admissions only after fencing original
+writers; elapsed time does not prove that an uncertain write cannot still complete.
+
+A child log or shard write with no canonical publish status returns a storage error and remains
+eligible for retry. This prevents an old paused writer from racing a later reuse of the same publish
+ID. The publish-log planner also retains queue work when status is missing without explicit retirement evidence. Legacy orphan fanout requires restoring its canonical status from consistent queue/database
+records before retrying; do not fabricate completion counters or reuse that publish ID during repair.
+Unknown-status provider batches keep their existing dispatch behavior.
+
+Provider workers suppress duplicate dispatch only when explicit retirement evidence exists. Original
+batches without an explicit expiry have no absolute broker-redelivery age limit; the 30-day retry
+policy starts at the first provider attempt. Once a retirement marker expires, an exceptionally old
+original duplicate follows existing dispatch behavior. An absent status cannot safely justify
+silently discarding accepted work.
+
+Binary rollback requires a build that understands current queue envelopes, continuation cursors, and
+retirement markers. Returning to an older binary requires an offline conversion of queued work and a
+consistent database/queue snapshot predating retirement; disabling cleanup cannot restore deleted
+payloads. Keep additive SQL tables during rollback so interrupted maintenance can finish.
+
+### Automatic document index migration
+
+Document registry and operator pages validate ordered references against canonical rows. A missing
+index triggers automatic backfill in pages of at most 256 rows, with a durable checkpoint so repeated
+requests and worker restarts make progress. Until the index is complete, a page request reports that
+backfill is in progress and can be retried; it never returns a partial result as a complete page.
+Once ready, pages advance by both physical index key components, including through stale references
+and records with equal timestamps. Canonical record formats remain readable from older data.
+
+Maintenance walks persist their position even when the visited records are still active. Each
+cleanup pass visits one document-store app and bounded pages of each maintenance family, allowing
+later expired records to progress without scanning or cloning the entire registry.
+
 Dead-letter queue messages remain owned by the configured queue backend. Operators can inspect
 queue-native dead-letter metadata through `GET /apps/{appId}/push/deadLetters`, filter by
 `provider`, `sinceMs`, and `untilMs`, and page with `limit` plus `cursor`. Responses include safe
@@ -39,6 +106,33 @@ Use `POST /apps/{appId}/push/deadLetters/{deadLetterId}/replay` to re-enqueue a 
 dead-letter's original queue item after fixing the underlying incident. Marker-only dead letters
 that were emitted without retained original queue payload stay inspectable but are returned as
 `replayable: false`.
+
+## Feedback recovery
+
+Each feedback pass consumes at most 64 results and groups them by app and publish.
+Up to 16 independent result effects run concurrently. Per-recipient delivery
+events and immutable retry context remain intact; one grouped status change
+accounts for completed effects, and a second releases completed receipts.
+
+Pending feedback records are distinct from completion records. Device updates
+and their outcome receipts commit atomically, and publish counters commit with
+a bounded set of at most 64 outcome receipts. A worker can resume after a crash
+without incrementing the same device failure or publish counter twice. The
+seven-day feedback deduplication window is unchanged. Queue or storage failures
+leave source results eligible for retry; acknowledgement follows successful
+successor transfer, status accounting, and durable completion. A full receipt
+set applies backpressure until its pending results recover.
+
+Document stores can briefly retain a fenced device-deletion marker while a
+result finishes; registry reads omit that device. Completion releases the
+marker. Normal registration and status writes preserve pending receipts.
+
+Upgrade all feedback processors and status writers together after stopping and
+draining old workers. Older writers do not preserve the new storage metadata.
+Existing completed deduplication records remain recognized, and HTTP status,
+device, delivery-event, and queue payload shapes are unchanged. Keep queue
+redelivery enabled during restart, and monitor result-stage lag if a dependency
+outage prevents pending receipts from completing.
 
 ## Metrics
 

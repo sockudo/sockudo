@@ -1,0 +1,11 @@
+   Compiling services-perf v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/services-bench-baseline)
+warning: unused import: `WebhookRetryConfig`
+ --> ../services-bench/src/main.rs:3:134
+  |
+3 | ...ics::MetricsInterface, options::{QueueReliabilityConfig,WebhookRetryConfig}, queue::QueueInterface, webhook_types::{JobData,JobPay...
+  |                                                            ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `services-perf` (bin "services-extra") generated 1 warning (run `cargo fix --bin "services-extra" -p services-perf` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 35.84s

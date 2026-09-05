@@ -305,6 +305,14 @@ impl VersionStore for LeasedVersionStore {
         self.inner.latest_by_history(app_id, channel).await
     }
 
+    async fn message_count(&self, app_id: &str, channel: &str) -> Result<u64> {
+        self.inner.message_count(app_id, channel).await
+    }
+
+    async fn active_stream_count(&self, app_id: &str, channel: &str) -> Result<usize> {
+        self.inner.active_stream_count(app_id, channel).await
+    }
+
     async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {
         self.inner.stream_state(app_id, channel).await
     }

@@ -1,0 +1,20 @@
+
+running 1 test
+test history::benchmark_tests::benchmark_history_surreal ... C6,cap=64,payload=128,sample=0,ns=70178746,verified=8
+C6,cap=64,payload=128,sample=1,ns=68506987,verified=8
+C6,cap=64,payload=128,sample=2,ns=70046556,verified=8
+C6,cap=64,payload=128,sample=3,ns=69871595,verified=8
+C6,cap=64,payload=128,sample=4,ns=70841929,verified=8
+C6,cap=64,payload=128,sample=5,ns=68796745,verified=8
+C6,cap=64,payload=128,sample=6,ns=69647061,verified=8
+C6,cap=64,payload=128,sample=7,ns=68469256,verified=8
+C6,cap=64,payload=128,sample=8,ns=72346111,verified=8
+C6,cap=64,payload=16384,sample=0,ns=4612437496,verified=8
+C6,cap=64,payload=16384,sample=1,ns=4649055261,verified=8
+C6,cap=64,payload=16384,sample=2,ns=4615286819,verified=8
+C6,cap=64,payload=16384,sample=3,ns=4656678584,verified=8
+C6,cap=64,payload=16384,sample=4,ns=4596822242,verified=8
+C6,cap=64,payload=16384,sample=5,ns=4575298605,verified=8
+C6,cap=64,payload=16384,sample=6,ns=4633967655,verified=8
+C6,cap=64,payload=16384,sample=7,ns=4594512388,verified=8
+C6,cap=64,payload=16384,sample=8,ns=4627151536,verified=8

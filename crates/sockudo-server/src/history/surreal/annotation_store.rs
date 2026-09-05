@@ -1,4 +1,7 @@
 use super::{deterministic_key, validate_identifier};
+use crate::history::annotation_cache::{
+    AnnotationProjectionCache, CachedProjection, ProjectionReadBudget,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sockudo_core::annotations::{
@@ -89,6 +92,7 @@ struct StoredAnnotationCreateReceipt {
 }
 
 pub(super) struct SurrealAnnotationStore {
+    projection_cache: AnnotationProjectionCache,
     db: Surreal<Any>,
     tables: AnnotationTables,
 }
@@ -143,7 +147,11 @@ impl SurrealAnnotationStore {
                 ))
             })?;
 
-        let store = Self { db, tables };
+        let store = Self {
+            db,
+            tables,
+            projection_cache: AnnotationProjectionCache::default(),
+        };
         store.ensure_schema().await?;
         Ok(store)
     }
@@ -344,34 +352,43 @@ impl SurrealAnnotationStore {
         &self,
         request: &AnnotationProjectionRequest,
     ) -> Result<Vec<StoredAnnotationEvent>> {
-        let mut response = self
-            .db
-            .query(format!(
-                "SELECT app_id, channel_id, message_serial, annotation_type, annotation_serial, annotation_id, action, payload_bytes, created_at_ms FROM {} WHERE app_id = $app_id AND channel_id = $channel_id AND message_serial = $message_serial AND annotation_type = $annotation_type ORDER BY annotation_serial ASC LIMIT {}",
+        let mut events = Vec::new();
+        let mut after: Option<String> = None;
+        let mut budget = ProjectionReadBudget::default();
+        loop {
+            let mut response = self.db.query(format!(
+                "SELECT app_id, channel_id, message_serial, annotation_type, annotation_serial, annotation_id, action, payload_bytes, created_at_ms FROM {} WHERE app_id = $app_id AND channel_id = $channel_id AND message_serial = $message_serial AND annotation_type = $annotation_type AND ($after = NONE OR annotation_serial > $after) ORDER BY annotation_serial ASC LIMIT 128",
                 self.tables.events,
-                MAX_ANNOTATION_EVENTS_PER_PROJECTION + 1
             ))
-            .bind(("app_id", request.app_id.clone()))
-            .bind(("channel_id", request.channel_id.clone()))
-            .bind(("message_serial", request.message_serial.as_str().to_string()))
-            .bind(("annotation_type", request.annotation_type.as_str().to_string()))
-            .await
-            .map_err(|error| {
-                Error::Internal(format!(
-                    "Failed to query SurrealDB annotation events: {error}"
-                ))
-            })?;
-        let records: Vec<StoredAnnotationEventRecord> = response.take(0usize).map_err(|error| {
-            Error::Internal(format!(
-                "Failed to decode SurrealDB annotation events: {error}"
-            ))
-        })?;
-        if records.len() > MAX_ANNOTATION_EVENTS_PER_PROJECTION {
-            return Err(Error::BufferFull(format!(
-                "annotation projection exceeds the {MAX_ANNOTATION_EVENTS_PER_PROJECTION} event bound"
-            )));
+                .bind(("app_id", request.app_id.clone()))
+                .bind(("channel_id", request.channel_id.clone()))
+                .bind(("message_serial", request.message_serial.as_str().to_string()))
+                .bind(("annotation_type", request.annotation_type.as_str().to_string()))
+                .bind(("after", after))
+                .await.map_err(|error| Error::Internal(format!("Failed to query SurrealDB annotation events: {error}")))?;
+            let records: Vec<StoredAnnotationEventRecord> =
+                response.take(0usize).map_err(|error| {
+                    Error::Internal(format!(
+                        "Failed to decode SurrealDB annotation events: {error}"
+                    ))
+                })?;
+            let complete = records.len() < 128;
+            after = records
+                .last()
+                .map(|record| record.annotation_serial.clone());
+            for record in records {
+                if events.len() >= MAX_ANNOTATION_EVENTS_PER_PROJECTION {
+                    return Err(Error::BufferFull(format!(
+                        "annotation projection exceeds the {MAX_ANNOTATION_EVENTS_PER_PROJECTION} event bound"
+                    )));
+                }
+                budget.add(record.payload_bytes.len())?;
+                events.push(Self::decode_event(record)?);
+            }
+            if complete {
+                return Ok(events);
+            }
         }
-        records.into_iter().map(Self::decode_event).collect()
     }
 
     async fn load_event(
@@ -430,11 +447,22 @@ impl SurrealAnnotationStore {
     }
 
     fn first_response_error(mut response: surrealdb::IndexedResults) -> Option<String> {
-        response
-            .take_errors()
-            .into_iter()
-            .min_by_key(|(statement, _)| *statement)
-            .map(|(statement, error)| format!("statement {statement} failed: {error}"))
+        let mut errors: Vec<_> = response.take_errors().into_iter().collect();
+        errors.sort_by_key(|(statement, _)| *statement);
+        let actual = errors
+            .iter()
+            .position(|(_, error)| {
+                !error
+                    .to_string()
+                    .contains("query was not executed due to a failed transaction")
+            })
+            .unwrap_or(0);
+        if errors.is_empty() {
+            None
+        } else {
+            let (statement, error) = errors.swap_remove(actual);
+            Some(format!("statement {statement} failed: {error}"))
+        }
     }
 
     async fn contention_backoff(operation: &'static str, attempt: usize) {
@@ -553,17 +581,53 @@ impl SurrealAnnotationStore {
             }
 
             let current_projection = self.load_projection_record(&request).await?;
-            let mut events = self.load_projection_events(&request).await?;
-            events.push(record.clone());
-            let projection =
-                Self::build_projection(&request, events, AnnotationProjectionOptions::default())?;
+            let current_public = current_projection
+                .clone()
+                .map(Self::projection_from_record)
+                .transpose()?;
+            let mut cached = self.projection_cache.take(
+                &request,
+                current_projection
+                    .as_ref()
+                    .map_or(0, |value| value.revision as u64),
+                current_public.as_ref(),
+            );
+            let reused = if let Some(value) = cached.as_mut() {
+                if value.event_count >= MAX_ANNOTATION_EVENTS_PER_PROJECTION {
+                    return Err(Error::BufferFull(format!(
+                        "annotation projection exceeds the {MAX_ANNOTATION_EVENTS_PER_PROJECTION} event bound"
+                    )));
+                }
+                value.append(record, None)?
+            } else {
+                false
+            };
+            let _rebuild;
+            let cached = if reused {
+                cached.expect("reused projection")
+            } else {
+                _rebuild = self.projection_cache.admit_rebuild()?;
+                let mut events = self.load_projection_events(&request).await?;
+                if events.len() >= MAX_ANNOTATION_EVENTS_PER_PROJECTION {
+                    return Err(Error::BufferFull(format!(
+                        "annotation projection exceeds the {MAX_ANNOTATION_EVENTS_PER_PROJECTION} event bound"
+                    )));
+                }
+                events.push(record.clone());
+                let events = events
+                    .into_iter()
+                    .map(|event| (event, None))
+                    .collect::<Vec<_>>();
+                CachedProjection::rebuild(&request, &events)?
+            };
+            let projection = cached.accumulator.projection.clone();
             let next_revision = current_projection
                 .as_ref()
                 .map_or(1, |projection| projection.revision.saturating_add(1));
             let projection_content = Self::projection_record(&projection, next_revision)?;
 
             let projection_statement = if current_projection.is_some() {
-                "LET $projection_write = UPDATE ONLY type::record($projection_table, $projection_id) CONTENT $projection_content WHERE revision = $expected_revision RETURN AFTER; IF $projection_write = NONE { THROW 'annotation_conflict'; };"
+                "LET $projection_write = UPDATE type::record($projection_table, $projection_id) CONTENT $projection_content WHERE revision = $expected_revision RETURN AFTER; IF array::len($projection_write) = 0 { THROW 'annotation_conflict'; };"
             } else {
                 "LET $projection_write = CREATE ONLY type::record($projection_table, $projection_id) CONTENT $projection_content;"
             };
@@ -616,6 +680,8 @@ impl SurrealAnnotationStore {
             };
             match response_error {
                 None => {
+                    self.projection_cache
+                        .put(&request, next_revision as u64, cached);
                     return Ok(AnnotationAppendOutcome {
                         projection,
                         canonical_serial: record.annotation.serial.clone(),
@@ -645,6 +711,7 @@ impl SurrealAnnotationStore {
     ) -> Result<StoredAnnotationProjection> {
         for attempt in 0..MAX_CAS_ATTEMPTS {
             let current = self.load_projection_record(request).await?;
+            let _rebuild = self.projection_cache.admit_rebuild()?;
             let events = self.load_projection_events(request).await?;
             let projection = Self::build_projection(request, events, options)?;
             let next_revision = current
@@ -652,7 +719,7 @@ impl SurrealAnnotationStore {
                 .map_or(1, |value| value.revision.saturating_add(1));
             let content = Self::projection_record(&projection, next_revision)?;
             let statement = if current.is_some() {
-                "LET $projection_write = UPDATE ONLY type::record($table, $id) CONTENT $content WHERE revision = $expected RETURN AFTER; IF $projection_write = NONE { THROW 'annotation_conflict'; };"
+                "LET $projection_write = UPDATE type::record($table, $id) CONTENT $content WHERE revision = $expected RETURN AFTER; IF array::len($projection_write) = 0 { THROW 'annotation_conflict'; };"
             } else {
                 "LET $projection_write = CREATE ONLY type::record($table, $id) CONTENT $content;"
             };
@@ -702,6 +769,7 @@ impl SurrealAnnotationStore {
 
         for attempt in 0..MAX_CAS_ATTEMPTS {
             let current = self.load_projection_record(request).await?;
+            let _rebuild = self.projection_cache.admit_rebuild()?;
             let all_events = self.load_projection_events(request).await?;
             let actual_serials = all_events
                 .iter()
@@ -750,7 +818,7 @@ impl SurrealAnnotationStore {
             })?;
 
             let projection_statement = if current.is_some() {
-                "LET $projection_write = UPDATE ONLY type::record($projection_table, $projection_id) CONTENT $projection_content WHERE revision = $expected_revision RETURN AFTER; IF $projection_write = NONE { THROW 'annotation_conflict'; };"
+                "LET $projection_write = UPDATE type::record($projection_table, $projection_id) CONTENT $projection_content WHERE revision = $expected_revision RETURN AFTER; IF array::len($projection_write) = 0 { THROW 'annotation_conflict'; };"
             } else {
                 "LET $projection_write = CREATE ONLY type::record($projection_table, $projection_id) CONTENT $projection_content;"
             };
@@ -827,7 +895,7 @@ impl AnnotationStore for SurrealAnnotationStore {
                 }
                 let response = self
                     .db
-                    .query("UPDATE ONLY type::record($table, $id) SET next_serial = $next, updated_at_ms = $now WHERE next_serial = $expected RETURN AFTER")
+                    .query("UPDATE type::record($table, $id) SET next_serial = $next, updated_at_ms = $now WHERE next_serial = $expected RETURN AFTER")
                     .bind(("table", self.tables.streams.clone()))
                     .bind(("id", stream_id.clone()))
                     .bind(("next", current.next_serial.saturating_add(1)))
@@ -846,7 +914,7 @@ impl AnnotationStore for SurrealAnnotationStore {
                         )));
                     }
                 };
-                let updated: Option<StoredAnnotationStreamRecord> = match response.take(0usize) {
+                let updated: Vec<StoredAnnotationStreamRecord> = match response.take(0usize) {
                     Ok(updated) => updated,
                     Err(error) if Self::is_transaction_conflict(&error.to_string()) => {
                         Self::contention_backoff("serial_allocation", attempt).await;
@@ -858,7 +926,7 @@ impl AnnotationStore for SurrealAnnotationStore {
                         )));
                     }
                 };
-                if updated.is_some() {
+                if !updated.is_empty() {
                     return Ok(Some(AnnotationSerial::new(format!(
                         "ann:{:020}",
                         current.next_serial

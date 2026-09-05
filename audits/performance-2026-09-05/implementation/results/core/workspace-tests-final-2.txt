@@ -1,0 +1,1977 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-simulator v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-simulator)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 21s
+     Running unittests src/main.rs (target/debug/deps/sockudo-fbc3416dc5334499)
+
+running 99 tests
+test bootstrap::maintenance::tests::final_batch_honors_remaining_budget_and_preserves_partial_failure ... ok
+test bootstrap::maintenance::tests::progressing_empty_pages_cannot_monopolize_a_tick ... ok
+test bootstrap::router::tests::api_rate_limit_is_scoped_to_api_routes ... ok
+test bootstrap::router::tests::websocket_rate_limit_is_scoped_to_websocket_routes ... ok
+test http_handler::ai::tests::ai_transport_authz_matrix_enumerates_every_operation_and_principal ... ok
+test cleanup::worker::tests::stale_task_after_sync_fallback_is_harmless ... ok
+test http_handler::annotations::tests::annotation_publish_requires_channel_policy_flag ... ok
+test http_handler::ai::tests::append_message_rejects_ai_accumulated_content_over_cap ... ok
+test http_handler::events::idempotency_tests::batch_publish_fails_closed_when_idempotency_cache_is_unavailable ... ok
+test http_handler::events::idempotency_tests::batch_publish_rejects_empty_per_event_idempotency_key ... ok
+test cleanup::worker::tests::v2_ungraceful_disconnect_uses_recovery_presence_lease ... ok
+test http_handler::ai::tests::append_message_rejects_ai_append_count_over_cap ... ok
+test cleanup::worker::tests::deferred_worker_completes_exhaustive_cleanup ... ok
+test http_handler::annotations::tests::annotation_delete_missing_annotation_returns_404 ... ok
+test http_handler::ai::tests::append_message_persists_terminal_status_in_latest_record ... ok
+test http_handler::events::idempotency_tests::single_publish_fails_closed_when_idempotency_cache_is_unavailable ... ok
+test http_handler::annotations::tests::annotation_publish_and_delete_update_summary_projection ... ok
+test http_handler::history::tests::channel_history_rejects_when_history_is_disabled_by_app_policy ... ok
+test http_handler::history::tests::channel_history_reset_rejects_mismatched_confirmation ... ok
+test http_handler::history::tests::channel_history_rejects_invalid_cursor ... ok
+test http_handler::history::tests::channel_history_filters_by_serial_range ... ok
+test http_handler::history::tests::channel_history_purge_before_serial_advances_retained_floor_without_rotation ... ok
+test http_handler::presence_history::tests::ably_time_aliases_resolve_correctly ... ok
+test http_handler::history::tests::channel_history_returns_published_messages ... ok
+test http_handler::history::tests::channel_history_reset_rotates_stream_and_purges_history ... ok
+test http_handler::history::tests::channel_history_paginates_newest_first_and_oldest_first ... ok
+test http_handler::presence_history::tests::channel_presence_history_filters_by_serial_and_time ... ok
+test http_handler::history::tests::channel_history_state_endpoint_returns_authoritative_stream_state ... ok
+test http_handler::history::tests::namespace_history_retention_override_beats_app_default ... ok
+test http_handler::presence_history::tests::channel_presence_history_rejects_cursor_with_mismatched_bounds ... ok
+test http_handler::presence_history::tests::channel_presence_history_rejects_non_presence_channels ... ok
+test http_handler::events::idempotency_tests::batch_request_key_does_not_shadow_matching_event_key ... ok
+test http_handler::presence_history::tests::channel_presence_history_paginates_newest_first_and_oldest_first ... ok
+test http_handler::presence_history::tests::channel_presence_history_snapshot_at_serial_bound ... ok
+test http_handler::presence_history::tests::channel_presence_history_reports_degraded_stream_fail_closed ... ok
+test http_handler::ai::tests::events_rejects_ai_create_when_open_stream_cap_is_reached ... ok
+test http_handler::presence_history::tests::channel_presence_history_reset_rotates_stream_and_purges_history ... ok
+test http_handler::presence_history::tests::channel_presence_history_state_endpoint_returns_authoritative_stream_state ... ok
+test http_handler::ai::tests::ai_http_publish_idempotency_key_header_returns_cached_serial_ack ... ok
+test http_handler::presence_history::tests::channel_presence_history_snapshot_rejects_non_presence_channel ... ok
+test http_handler::presence_history::tests::channel_presence_history_returns_presence_events ... ok
+test http_handler::ai::tests::ai_http_publish_returns_serial_ack_and_message_id_dedupes ... ok
+test http_handler::ai::tests::ai_batch_http_publish_returns_serial_acks_in_request_order ... ok
+test http_handler::ai::tests::channel_state_includes_ai_block_for_ai_transport_channels ... ok
+test http_handler::presence_history::tests::channel_presence_history_snapshot_reconstructs_membership ... ok
+test http_handler::errors::tests::internal_error_response_does_not_expose_backend_details ... ok
+test http_handler::system::tests::accept_traffic_fails_open_when_memory_admission_is_disabled ... ok
+test http_handler::presence_history::tests::continuity_includes_degraded_field ... ok
+test http_handler::presence_history::tests::dead_node_cleanup_replay_does_not_duplicate_presence_history_rows ... ok
+test http_handler::presence_history::tests::dead_node_cleanup_removes_ably_virtual_member_from_typed_registry_once ... ok
+test http_handler::annotations::tests::annotation_delete_rejects_socket_id_in_api_role ... ok
+test http_handler::versioned_messages::mutations::tests::append_message_reports_not_implemented_after_validation ... ok
+test http_handler::annotations::tests::annotation_publish_denies_socket_without_annotation_publish_capability ... ok
+test http_handler::annotations::tests::annotation_delete_own_denies_identity_mismatch ... ok
+test http_handler::channels::tests::channels_list_includes_subscription_count_when_requested ... ok
+test http_handler::versioned_messages::mutations::tests::append_message_denies_non_owner_with_own_capability ... ok
+test http_handler::versioned_messages::mutations::tests::append_message_op_id_replay_returns_duplicate_serial_ack ... ok
+test http_handler::annotations::tests::annotation_subscribe_rejects_socket_id_in_api_role ... ok
+test http_handler::errors::tests::error_responses_include_code_and_status_fields ... ok
+test http_handler::annotations::tests::annotation_delete_any_allows_moderator ... ok
+test http_handler::versioned_messages::mutations::tests::update_message_validates_request_body_before_runtime ... ok
+test http_handler::annotations::tests::annotation_delete_own_allows_annotation_owner ... ok
+test http_handler::annotations::tests::annotation_publish_requires_feature_flag ... ok
+test http_handler::events::idempotency_tests::oversized_batch_is_rejected_before_its_idempotency_key_is_claimed ... ok
+test http_handler::system::tests::accept_traffic_reports_memory_pressure_without_changing_readiness ... ok
+test http_handler::events::idempotency_tests::batch_publish_rejects_overlength_per_event_idempotency_key ... ok
+test http_handler::annotations::tests::annotation_publish_rejects_socket_id_in_api_role ... ok
+test http_handler::versioned_messages::mutations::tests::delete_message_allows_authenticated_any_capability ... ok
+test http_handler::annotations::tests::annotation_publish_rejects_unidentified_ownership_summarizer ... ok
+test http_handler::versioned_messages::tests::channel_message_returns_latest_versioned_item ... ok
+test logging::tests::output_format_is_explicit_and_safe_by_default ... ok
+test logging::tests::resolved_filter_precedence_is_stable ... ok
+test http_handler::versioned_messages::mutations::tests::update_message_denies_authenticated_socket_without_mutation_capability ... ok
+test http_handler::versioned_messages::mutations::tests::append_message_accepts_empty_terminal_ai_append_and_retains_fragment ... ok
+test logging::tests::text_and_json_resolve_the_same_runtime_settings ... ok
+test middleware::tests::test_get_params_for_signature_empty ... ok
+test middleware::tests::test_get_params_for_signature_invalid_queries ... ok
+test middleware::tests::test_get_params_for_signature_with_auth ... ok
+test ws_handler::tests::append_mode_query_accepts_delta_and_full ... ok
+test middleware::tests::test_get_params_for_signature_with_auth2 ... ok
+test ws_handler::tests::append_rollup_window_accepts_locked_values ... ok
+test ws_handler::tests::v1_ignores_wire_format_query ... ok
+test http_handler::versioned_messages::mutations::tests::update_message_allows_authenticated_owner_with_own_capability ... ok
+test ws_handler::tests::v2_rejects_unknown_wire_format ... ok
+test http_handler::versioned_messages::tests::channel_message_versions_pages_newest_first ... ok
+test middleware::tests::auth_body_limit_preserves_bytes_and_stops_chunked_overflow ... ok
+test http_handler::versioned_messages::tests::channel_message_versions_returns_append_fragment_for_replay ... ok
+test http_handler::versioned_messages::tests::versioned_message_endpoints_require_feature_flag ... ok
+test ws_handler::tests::websocket_heartbeat_ownership_follows_protocol_version ... ok
+test http_handler::versioned_messages::tests::events_create_then_append_substitutes_latest_visible_history ... ok
+test http_handler::versioned_messages::tests::events_create_then_delete_substitutes_latest_visible_history ... ok
+test middleware::signed_body_tests::limited_auth_preserves_signed_whitespace_utf8_and_downstream_bytes ... ok
+test http_handler::versioned_messages::tests::events_create_then_update_substitutes_latest_visible_history ... ok
+test http_handler::history::tests::channel_history_large_read_is_bounded_and_fast ... ok
+test http_handler::events::idempotency_tests::concurrent_publish_timeout_returns_retryable_backpressure ... ok
+test http_handler::system::tests::stats_endpoint_returns_empty_totals_for_empty_server ... ok
+test http_handler::system::tests::stats_endpoint_reports_presence_history_health_summary ... ok
+test http_handler::system::tests::stats_endpoint_reports_non_empty_occupancy_counts ... ok
+test cleanup::worker::tests::disconnect_cleanup_retains_then_emits_presence_leave_without_webhooks ... ok
+
+test result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running tests/clustered_durable_history_redis_test.rs (target/debug/deps/clustered_durable_history_redis_test-ec0e2e90fe017cc5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_v2_heartbeat_test.rs (target/debug/deps/native_v2_heartbeat_test-a66212f938c11abe)
+
+running 2 tests
+test native_v2_heartbeat_closes_nonresponsive_peer_with_4201 ... ok
+test native_v2_heartbeat_accepts_matching_pong_and_keeps_connection_open ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_ably_compat-03508bba58738b6a)
+
+running 181 tests
+test channel_name::tests::accepts_ably_character_set_and_extracts_base_channel ... ok
+test channel_name::tests::rejects_invalid_channel_shapes ... ok
+test codec::tests::msgpack_rejects_oversized_array_before_allocating_declared_capacity ... ok
+test codec::tests::attach_params_reject_nested_values ... ok
+test codec::tests::msgpack_rejects_oversized_map_before_reading_entries ... ok
+test codec::tests::msgpack_annotation_binary_data_is_normalized_with_base64_encoding ... ok
+test channel_name::tests::enforces_bounded_utf8_wire_length ... ok
+test codec::tests::binary_data_is_normalized_once_and_keeps_unknown_encoding_chain ... ok
+test codec::tests::attach_params_normalize_numeric_scalars_in_json_and_msgpack ... ok
+test codec::tests::msgpack_protocol_rejects_trailing_bytes ... ok
+test codec::tests::json_annotation_structured_data_preserves_value_and_encoding ... ok
+test outbound::tests::data_queue_uses_configured_websocket_bounds ... ok
+test outbound::tests::reserve_bytes_is_atomic_at_the_limit ... ok
+test runtime::tests::ably_channel_serial_round_trips_stream_position ... ok
+test outbound::tests::control_encoding_is_excluded_from_shared_data_encoding_metric ... ok
+test filter::tests::rejects_invalid_and_oversized_filters ... ok
+test filter::tests::evaluates_message_name_and_headers ... ok
+test runtime::tests::ably_key_parses_key_and_secret ... ok
+test runtime::tests::ably_protocol_format_defaults_to_json_and_accepts_msgpack ... ok
+test outbound::tests::control_frames_are_prioritized_over_data ... ok
+test runtime::tests::ably_token_capability_accepts_json_string_and_wildcard ... ok
+test outbound::tests::data_overflow_marks_continuity_and_emits_recoverable_error ... ok
+test runtime::tests::ably_token_capability_maps_to_sockudo_capabilities ... ok
+test runtime::tests::ably_token_client_id_cannot_be_overridden ... ok
+test runtime::tests::ably_errors_use_browser_decodable_json_for_all_request_formats ... ok
+test runtime::tests::ack_count_covers_the_inbound_protocol_serial_range ... ok
+test runtime::tests::annotation_delete_capabilities_are_independent_operations ... ok
+test runtime::tests::annotation_cursor_is_opaque_and_scoped_to_app_channel_and_message ... ok
+test runtime::tests::append_projection_uses_delta_for_mutations_and_aggregate_for_history ... ok
+test runtime::tests::attach_modes_are_intersected_with_token_capabilities ... ok
+test runtime::tests::attach_options_accept_only_vcdiff_delta_mode ... ok
+test runtime::tests::attach_mode_intersection_normalizes_echoed_modes_parameter ... ok
+test runtime::tests::attach_options_default_to_supported_channel_modes ... ok
+test runtime::tests::attach_options_drop_unknown_params_and_unknown_mode_bits ... ok
+test runtime::tests::attach_params_modes_override_protocol_mode_flags ... ok
+test runtime::tests::attach_resume_suppresses_rewind_params ... ok
+test runtime::tests::attached_channel_modes_deny_only_explicitly_missing_operations ... ok
+test runtime::tests::authenticated_identity_rejects_mutation_actor_spoofing ... ok
+test runtime::tests::authorization_replacement_is_atomic_and_invalidates_stale_deadlines ... ok
+test runtime::tests::attached_sets_has_presence_even_when_no_other_flags_are_present ... ok
+test runtime::tests::batch_publish_body_decodes_single_message_without_expansion ... ok
+test runtime::tests::batch_publish_accepts_single_and_many_request_shapes ... ok
+test runtime::tests::channel_serial_source_never_falls_through_an_enabled_durable_authority ... ok
+test runtime::tests::bearer_token_accepts_raw_and_ably_base64_values ... ok
+test runtime::tests::capability_downgrade_removes_subscribe_without_affecting_publish_upgrade ... ok
+test runtime::tests::client_id_header_requires_base64_utf8 ... ok
+test runtime::tests::close_and_disconnect_actions_have_distinct_terminal_outcomes ... ok
+test runtime::tests::bounded_ordered_work_limits_inflight_and_preserves_input_order ... ok
+test runtime::tests::connection_key_validation_is_bounded_and_matches_server_issued_shape ... ok
+test runtime::tests::connection_query_accepts_canonical_names_aliases_and_boolean_echo ... ok
+test runtime::tests::compact_jwe_decrypts_nested_jwt_and_rejects_tampering ... ok
+test runtime::tests::create_annotation_rejects_authenticated_client_id_spoofing ... ok
+test runtime::tests::delete_annotation_dto_keeps_native_target_selector_fields ... ok
+test runtime::tests::delete_own_and_delete_any_authorize_independently_of_message_mutation ... ok
+test runtime::tests::echo_filter_only_suppresses_the_originating_connection ... ok
+test runtime::tests::durable_presence_payload_decodes_nested_json_data ... ok
+test runtime::tests::explicit_channel_serial_uses_durable_recovery_on_a_resumed_attach ... ok
+test runtime::tests::heartbeat_response_echoes_correlation_id ... ok
+test runtime::tests::empty_version_stream_advertises_zero_without_consuming_the_first_position ... ok
+test runtime::tests::embedded_jwt_verifies_signature_key_and_inner_credential ... ok
+test runtime::tests::history_link_header_includes_stable_first_and_next_relations ... ok
+test runtime::tests::history_next_link_preserves_page_shape_without_credentials ... ok
+test runtime::tests::hot_recovery_fails_closed_when_the_stream_changes ... ok
+test runtime::tests::hot_recovery_fails_closed_without_a_buffered_position ... ok
+test runtime::tests::hot_recovery_filters_the_live_tail_after_the_explicit_boundary ... ok
+test runtime::tests::inbound_protocol_serial_is_processed_once_per_transport ... ok
+test runtime::tests::inbound_protocol_serial_ranges_suppress_overlapping_retries ... ok
+test runtime::tests::jwt_lifetime_cannot_outlive_local_revocation_retention ... ok
+test runtime::tests::jwt_timestamp_conversion_rejects_seconds_that_overflow_milliseconds ... ok
+test runtime::tests::jwt_ttl_is_bounded_by_revocation_retention ... ok
+test runtime::tests::key_rotation_metadata_controls_key_activity ... ok
+test runtime::tests::local_revocation_store_enforces_its_byte_limit ... ok
+test runtime::tests::local_revocation_store_preserves_live_evidence_when_capacity_is_exhausted ... ok
+test runtime::tests::legacy_batch_publish_partial_failure_uses_browser_decodable_40020_envelope ... ok
+test runtime::tests::interest_check_does_not_create_compatibility_channel_state ... ok
+test runtime::tests::malformed_recover_and_resume_keys_use_invalid_format_error ... ok
+test runtime::tests::connection_key_resolves_only_a_live_same_app_identity ... ok
+test runtime::tests::fatal_socket_error_is_delivered_before_orderly_close ... ok
+test runtime::tests::issued_before_revocation_does_not_disconnect_a_renewed_generation ... ok
+test runtime::tests::expiry_sweep_removes_expired_sessions_and_tokens ... ok
+test runtime::tests::local_revocation_retention_covers_the_configured_maximum_token_lifetime ... ok
+test runtime::tests::derived_filter_cache_reports_hits_and_misses ... ok
+test runtime::tests::multi_message_idempotency_requires_one_base_and_consecutive_serials ... ok
+test runtime::tests::msgpack_binary_payload_is_projected_to_base64_without_rejection ... ok
+test runtime::tests::mutation_path_is_authoritative_for_message_serial ... ok
+test runtime::tests::multiple_summary_renames_native_client_counts_only_at_ably_edge ... ok
+test runtime::tests::attach_gate_delivers_only_messages_after_captured_high_water ... ok
+test runtime::tests::mutation_operation_without_serial_uses_message_serial ... ok
+test runtime::tests::pagination_relations_are_emitted_as_separate_link_values ... ok
+test runtime::tests::presence_history_link_replaces_the_final_history_segment ... ok
+test runtime::tests::presence_reentry_preserves_only_valid_same_connection_ids ... ok
+test runtime::tests::authentication_cache_failures_do_not_reach_client_error_messages ... ok
+test runtime::tests::publish_validation_accepts_nameless_and_dataless_messages ... ok
+test runtime::tests::publish_validation_accepts_empty_ai_step_owner ... ok
+test runtime::tests::publish_validation_accepts_step_start_serial ... ok
+test runtime::tests::publish_validation_rejects_reserved_and_unknown_fields ... ok
+test runtime::tests::publish_validation_rejects_obsolete_start_serial ... ok
+test runtime::tests::local_channel_revocations_are_scoped_to_the_issuing_app ... ok
+test runtime::tests::auth_key_rotation_invalidates_previous_key_on_every_runtime ... ok
+test runtime::tests::missing_well_formed_recover_and_resume_keys_use_expired_error ... ok
+test runtime::tests::out_of_order_delivery_is_emitted_once_then_folded_into_the_frontier ... ok
+test runtime::tests::clean_recovered_attach_sets_the_resumed_flag ... ok
+test runtime::tests::pusher_to_ably_keeps_ai_extras_and_hides_runtime_headers ... ok
+test runtime::tests::active_connection_lease_refreshes_and_graceful_close_invalidates_it ... ok
+test runtime::tests::presence_registry_projects_present_and_removes_leave_from_base_state ... ok
+test runtime::tests::qualifier_wildcard_capability_matches_qualified_and_base_channels ... ok
+test runtime::tests::duplicate_remote_delivery_position_reaches_local_ably_subscriber_once ... ok
+test runtime::tests::realtime_message_ids_are_stable_across_unacked_retries ... ok
+test runtime::tests::realtime_publish_accepts_only_its_server_assigned_connection_id ... ok
+test runtime::tests::append_delivery_preserves_channel_serial_across_both_projections ... ok
+test runtime::tests::realtime_msgpack_protocol_message_round_trips_named_fields ... ok
+test runtime::tests::node_local_session_owner_survives_socket_registry_cleanup ... ok
+test runtime::tests::presence_sync_chunks_110_members_in_stable_order_with_continuation ... ok
+test runtime::tests::remain_present_for_uses_ably_default_and_bounds ... ok
+test runtime::tests::recovery_projects_annotation_summary_with_original_message_serial ... ok
+test runtime::tests::rest_msgpack_response_uses_named_message_fields ... ok
+test runtime::tests::recovery_projects_stored_annotation_as_action_21 ... ok
+test runtime::tests::rest_publish_payload_decodes_single_json_object ... ok
+test runtime::tests::rest_publish_rejects_message_client_id_spoofing ... ok
+test runtime::tests::rest_publish_payload_decodes_json_and_msgpack_arrays ... ok
+test runtime::tests::attach_gates_share_payloads_and_ingress_reset_is_scoped ... ok
+test runtime::tests::resumed_attach_without_a_channel_serial_keeps_the_live_recovery_tail ... ok
+test runtime::tests::recoverable_marking_does_not_lock_unrelated_channels ... ok
+test runtime::tests::rewind_history_request_is_bounded_and_ends_at_attach_high_water ... ok
+test runtime::tests::rewind_parser_accepts_count_and_seconds_minutes_hours ... ok
+test runtime::tests::rewind_parser_rejects_zero_invalid_and_overflowing_values ... ok
+test runtime::tests::rsa6_capability_intersection_preserves_equal_and_intersects_ops_and_paths ... ok
+test runtime::tests::rsa6_rejects_empty_unknown_and_mixed_wildcard_operations ... ok
+test runtime::tests::qualified_and_base_subscriptions_share_state_but_keep_wire_names ... ok
+test runtime::tests::stamp_ai_identity_rejects_client_id_spoofing ... ok
+test runtime::tests::recovered_transport_supersedes_without_unregistering_replacement ... ok
+test runtime::tests::stats_fixture_ingest_decodes_json_and_msgpack ... ok
+test runtime::tests::revocable_token_tracks_key_rotation_and_revocation ... ok
+test runtime::tests::token_request_integer_accepts_decimal_json_strings ... ok
+test runtime::tests::unsigned_embedded_token_envelope_accepts_token_from_jwe_header ... ok
+test runtime::tests::wire_connection_key_is_not_treated_as_delivered_connection_id ... ok
+test runtime::tests::resumed_subscriber_replays_the_bounded_delivery_window_in_order ... ok
+test runtime::tests::constructed_runtimes_do_not_share_compatibility_state ... ok
+test runtime::tests::unsigned_embedded_token_envelope_accepts_token_from_jws_claims ... ok
+test runtime::tests::invalid_cached_revocation_is_reported_without_serialization_details ... ok
+test services::tests::publish_context_keeps_actor_identity_separate_from_fanout_exclusion ... ok
+test runtime::tests::token_request_mac_uses_canonical_newline_terminated_input ... ok
+test runtime::tests::recovered_session_owner_supersedes_the_previous_node_atomically ... ok
+test runtime::tests::resumed_subscriber_replays_the_shared_channel_tail_in_order ... ok
+test runtime::tests::synthesized_disconnect_leave_omits_the_enter_message_id ... ok
+test runtime::tests::contiguous_delivery_frontier_suppresses_old_duplicates_without_growing_memory ... ok
+test runtime::tests::revocable_authorization_fails_closed_when_shared_backend_is_unavailable ... ok
+test runtime::tests::recover_key_survives_handoff_to_another_runtime_node ... ok
+test runtime::tests::abrupt_disconnect_presence_removal_runs_after_its_deadline ... ok
+test stats::cache_index::tests::redis_calendar_index_resumes_backfill_and_preserves_legacy_reads ... ignored, requires local Redis fixture
+test runtime::tests::presence_replication_converges_two_isolated_node_registries ... ok
+test stats::tests::acknowledged_observation_is_flushed_before_record_returns ... ok
+test stats::tests::critical_stats_interrupt_optional_wait_but_wait_for_store ... ok
+test stats::tests::memory_stats_retention_refreshes_touched_buckets_and_expires_inactive_apps ... ok
+test stats::tests::fixture_ingestion_and_rollups_share_the_store_contract ... ok
+test stats::tests::cursor_is_interval_anchored_and_rejects_query_changes ... ok
+test stats::tests::nonblocking_recording_never_exceeds_the_bounded_queue ... ok
+test runtime::tests::revocation_is_observed_by_an_independent_runtime_through_shared_cache ... ok
+test stats::tests::memory_stats_narrow_ranges_ignore_unrelated_retained_minutes ... ok
+test stats::tests::cache_store_merges_concurrent_nodes_and_survives_runtime_recreation ... ok
+test stats::tests::live_observations_reconcile_with_worker_counters ... ok
+test runtime::tests::excessive_delivery_reordering_fails_closed_and_requires_reset ... ok
+test runtime::tests::two_runtimes_share_nonce_replay_and_issued_tokens_through_cache ... ok
+test stats::tests::fixture_ingestion_enforces_field_and_depth_bounds ... ok
+test runtime::tests::shared_cache_channel_revocation_scan_pages_past_one_thousand_records ... ok
+test stats::tests::redis_store_merges_independent_nodes_and_survives_rolling_restart ... ok
+test runtime::tests::two_redis_backed_nodes_share_tokens_revocation_and_session_ownership ... ok
+test runtime::tests::subscriber_mode_update_stops_delivery_after_auth_downgrade ... ok
+test runtime::tests::derived_filter_cache_evicts_at_the_entry_bound ... ok
+test channel_name::tests::percent_decoded_printable_unicode_and_spaces_parse ... ok
+test runtime::tests::recovered_live_session_cancels_pending_presence_removal ... ok
+test channel_name::tests::malformed_or_missing_qualifier_close_is_rejected ... ok
+test channel_name::tests::valid_qualifiers_share_the_base_channel ... ok
+test runtime::tests::recovered_shared_owner_cancels_the_old_nodes_presence_deadline ... ok
+test channel_name::tests::control_characters_are_always_rejected ... ok
+test codec::tests::json_round_trip_preserves_json_semantics ... ok
+test codec::tests::msgpack_round_trip_preserves_every_wire_variant ... ok
+test runtime::tests::second_disconnect_uses_a_new_presence_removal_deadline ... ok
+test stats::cache_index::tests::calendar_index_resumes_legacy_backfill_bounds_reads_and_recovers_eviction ... ok
+test runtime::tests::active_revocation_snapshot_observes_remote_changes_and_local_invalidation ... ok
+test runtime::tests::active_revocation_snapshot_shares_scan_but_fresh_auth_fails_closed ... ok
+
+test result: ok. 180 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_adapter-5d980d996c3f4e04)
+
+running 145 tests
+test filter_index::tests::test_eq_index_key_hashing ... ok
+test handler::connection_management::tests::test_broadcast_message_ephemeral_flag ... ok
+test handler::connection_management::tests::test_broadcast_message_ephemeral_skipped_when_false ... ok
+test handler::connection_management::tests::test_different_channels_same_key_produce_different_cache_keys ... ok
+test handler::connection_management::tests::test_disabled_echo_control_strips_echo_override_only ... ok
+test filter_index::tests::test_filter_index_no_filter ... ok
+test handler::connection_management::tests::test_disabled_ephemeral_strips_ephemeral_flag ... ok
+test handler::connection_management::tests::test_ephemeral_explicitly_false ... ok
+test handler::connection_management::tests::horizontal_broadcast_round_trip_preserves_commit_envelope ... ok
+test handler::connection_management::tests::test_echo_messages_default_is_true ... ok
+test handler::connection_management::tests::test_ephemeral_false_when_extras_present_but_ephemeral_not_set ... ok
+test handler::connection_management::tests::test_ephemeral_message_is_detected ... ok
+test handler::connection_management::tests::test_ephemeral_preserves_echo_control ... ok
+test handler::connection_management::tests::test_ephemeral_with_idempotency_key_both_present ... ok
+test handler::connection_management::tests::test_extras_idempotency_key_cache_key_format ... ok
+test handler::connection_management::tests::test_message_with_extras_key_returns_key ... ok
+test handler::connection_management::tests::test_message_without_extras_key_proceeds ... ok
+test handler::connection_management::tests::test_non_ephemeral_message ... ok
+test handler::connection_management::tests::test_resolve_idempotency_app_override_enabled ... ok
+test handler::connection_management::tests::test_resolve_idempotency_app_disables_globally_enabled ... ok
+test handler::connection_management::tests::test_resolve_idempotency_uses_global_when_no_app_override ... ok
+test handler::connection_management::tests::test_resolve_idempotency_partial_app_override ... ok
+test handler::connection_management::tests::test_rest_publish_no_socket_delivers_to_all ... ok
+test handler::connection_management::tests::test_same_channel_same_key_different_apps_produce_different_cache_keys ... ok
+test handler::connection_management::tests::test_runtime_message_from_record_uses_sockudo_action_event ... ok
+test handler::connection_management::tests::test_should_echo_connection_disabled ... ok
+test handler::connection_management::tests::test_should_echo_default_true ... ok
+test handler::connection_management::tests::test_should_echo_message_override_false ... ok
+test handler::connection_management::tests::test_should_echo_message_override_true ... ok
+test handler::connection_management::tests::test_v1_always_excludes_publisher ... ok
+test handler::connection_management::tests::test_v2_echo_messages_false_excludes_publisher ... ok
+test handler::connection_management::tests::test_v1_delivery_strips_extras_including_ephemeral ... ok
+test handler::connection_management::tests::test_v2_echo_messages_true_includes_publisher ... ok
+test handler::history_frames::tests::channel_history_frame_accepts_additive_v2_fields_and_aliases ... ok
+test handler::history_frames::tests::channel_history_frame_defaults_to_current_contract ... ok
+test handler::presence_update::tests::parse_presence_update_accepts_json_data ... ok
+test handler::presence_update::tests::parse_presence_update_rejects_missing_data_field ... ok
+test handler::presence_update::tests::presence_update_rate_key_preserves_member_scope ... ok
+test handler::recovery::tests::parse_resume_positions_supports_legacy_serials ... ok
+test handler::recovery::tests::parse_resume_positions_supports_continuity_tokens ... ok
+test handler::signin_management::tests::token_authenticated_connections_cannot_sign_in_again ... ok
+test handler::signin_management::tests::non_token_connections_can_use_legacy_signin ... ok
+test handler::subscription_management::rewind_tests::buffered_rewind_messages_drop_duplicates_and_preserve_gap_free_order ... ok
+test handler::recovery::tests::terminal_recovery_position_advances_over_suppressed_messages ... ok
+test handler::subscription_management::rewind_tests::rewind_count_builds_newest_first_request ... ok
+test handler::subscription_management::rewind_tests::rewind_count_items_are_reordered_oldest_to_newest_for_delivery ... ok
+test handler::subscription_management::rewind_tests::rewind_duration_builds_time_bounded_request ... ok
+test handler::subscription_management::rewind_tests::clean_attach_keeps_messages_buffered_at_or_before_high_watermark ... ok
+test handler::subscription_management::tests::test_presence_subscription_includes_self ... ok
+test handler::subscription_management::rewind_tests::subscription_success_includes_attach_serial_when_captured ... ok
+test handler::subscription_management::tests::test_presence_subscription_no_double_counting ... ok
+test handler::types::rewind_tests::rewind_parser_accepts_count_and_seconds_shapes ... ok
+test handler::types::rewind_tests::rewind_parser_rejects_invalid_shapes ... ok
+test handler::types::tests::non_string_event_filter_entry_fails_closed ... ok
+test handler::types::tests::malformed_tag_filter_fails_closed ... ok
+test handler::types::tests::compound_expression_compiles_once_at_subscription_boundary ... ok
+test handler::types::tests::test_annotation_subscribe_mode_parses_from_modes_array ... ok
+test handler::types::tests::realtime_subscribe_message_builds_compound_predicate ... ok
+test handler::types::tests::test_annotation_subscribe_mode_rejects_non_array ... ok
+test handler::types::tests::test_event_name_filtering_disabled_ignores_filter_events ... ok
+test handler::types::tests::test_compound_filter_parses_tags_filter_node ... ok
+test handler::types::tests::test_extract_event_name_filter_compound_events_only ... ok
+test handler::types::tests::test_extract_event_name_filter_compound_with_events ... ok
+test handler::types::tests::test_extract_event_name_filter_empty_events_array ... ok
+test handler::types::tests::test_extract_event_name_filter_legacy_filter_passthrough ... ok
+test handler::types::tests::test_extract_event_name_filter_none_when_no_filter ... ok
+test handler::types::tests::test_no_filter_results_in_none ... ok
+test handler::types::tests::test_validation_event_name_exactly_200_chars_ok ... ok
+test handler::types::tests::test_validation_event_name_max_200_chars ... ok
+test handler::types::tests::test_validation_max_50_event_names ... ok
+test handler::validation::tests::ai_client_id_headers_allow_empty_native_unknown_owners_for_trusted_app ... ok
+test handler::validation::tests::ai_client_id_headers_allow_trusted_app_publish ... ok
+test handler::validation::tests::ai_client_id_headers_reject_empty_unknown_owner_from_untrusted_clients ... ok
+test handler::validation::tests::ai_client_id_headers_reject_spoofed_client_identity ... ok
+test handler::validation::tests::capability_permission_allows_matching_presence_pattern ... ok
+test handler::validation::tests::capability_permission_denies_publish_when_pattern_missing ... ok
+test handler::validation::tests::capability_permission_denies_subscribe_when_pattern_missing ... ok
+test handler::validation::tests::namespace_permission_denies_publish_when_flag_disabled ... ok
+test handler::validation::tests::namespace_permission_denies_subscribe_when_flag_disabled ... ok
+test handler::validation::tests::presence_capability_does_not_satisfy_subscribe_gate ... ok
+test handler::validation::tests::rewind_validation_namespace_override_beats_app_default ... ok
+test handler::validation::tests::rewind_validation_rejects_disabled_policy ... ok
+test handler::validation::tests::subscribe_capability_does_not_satisfy_presence_gate ... ok
+test horizontal_adapter::tests::test_is_fire_and_forget_false_for_all_query_types ... ok
+test horizontal_adapter::tests::test_is_fire_and_forget_true_for_all_eight ... ok
+test local_adapter::broadcast::regression_tests::benchmark_equivalent_predicate_routing ... ignored, repeated release predicate routing measurement over real socket subscriptions
+test local_adapter::broadcast::regression_tests::benchmark_shared_fanout_preparation ... ignored, repeated release fanout measurement using actual localhost WebSocket frames
+test local_adapter::tests::v1_compatible_message_delivers_versioned_creates_as_plain_events ... ok
+test local_adapter::tests::v1_compatible_message_drops_versioned_mutation_events ... ok
+test local_adapter::tests::v1_compatible_message_rewrites_versioned_create_protocol_prefix_to_v1 ... ok
+test local_adapter::tests::v1_compatible_message_strips_v2_only_fields_for_plain_messages ... ok
+test local_adapter::tests::v2_runtime_message_id_skips_protocol_heartbeats ... ok
+test local_adapter::tests::v2_runtime_message_id_still_assigns_regular_messages ... ok
+test local_adapter::tests::read_only_queries_do_not_create_empty_namespaces ... ok
+test horizontal_adapter::tests::send_request_wakes_on_notify_without_polling_delay ... ok
+test message_predicate::tests::projection_exposes_public_filter_fields_and_hides_internal_headers ... ok
+test presence::tests::presence_manager_records_authoritative_join_and_leave_history ... ok
+test presence::tests::presence_manager_skips_non_authoritative_socket_churn_history ... ok
+test presence::tests::presence_manager_suppresses_duplicate_authoritative_join_reports ... ok
+test presence::tests::presence_manager_suppresses_duplicate_authoritative_remove_reports ... ok
+test presence::tests::test_cleanup_stale_locks_threshold ... ok
+test presence::tests::test_presence_lock_key_format ... ok
+test presence::tests::test_presence_manager_creation ... ok
+test replay_buffer::allocation_tests::sparse_checkpoints_do_not_reserve_retention_slots ... ok
+test services::tests::fingerprint_changes_with_publisher_identity_or_payload ... ok
+test services::tests::fingerprint_is_stable_across_transport_origin_and_commit_metadata ... ok
+test services::tests::mutation_fingerprint_includes_supplied_version_identity_and_timestamp ... ok
+test local_adapter::broadcast::regression_tests::predicate_routing_preserves_exact_wildcard_or_and_annotation_permissions ... ok
+test handler::ai_orphans::tests::evictable_counter_is_not_stream_limit_authority ... ok
+test handler::recovery::tests::retention_gap_fails_explicitly ... ok
+test handler::recovery::tests::epoch_mismatch_fails_explicitly ... ok
+test handler::rate_limiting::tests::socket_cleanup_removes_all_socket_scoped_limiters ... ok
+test handler::recovery::tests::hot_recovery_success_uses_replay_buffer ... ok
+test handler::recovery::tests::reset_required_state_fails_cold_recovery_as_stream_reset ... ok
+test handler::recovery::tests::history_state_lookup_failure_fails_closed_as_persistence_unavailable ... ok
+test handler::recovery::tests::cold_recovery_rejects_non_contiguous_history ... ok
+test handler::recovery::tests::recovery_rejects_has_more_page_without_cursor ... ok
+test handler::ai_orphans::tests::janitor_refreshes_registry_when_latest_version_advanced ... ok
+test handler::recovery::tests::recovery_rejects_position_ahead_of_durable_stream ... ok
+test handler::recovery::tests::replay_buffer_loss_falls_back_to_cold_history ... ok
+test handler::recovery::tests::stream_change_mid_reconnect_fails_as_stream_reset ... ok
+test handler::recovery::tests::cold_recovery_keeps_frozen_bounds_across_multiple_pages ... ok
+test handler::ai_orphans::tests::stale_terminal_cannot_remove_a_newer_streaming_registration ... ok
+test handler::recovery::tests::cold_recovery_success_uses_durable_history ... ok
+test handler::recovery::tests::hot_position_ahead_falls_back_to_authoritative_durable_history ... ok
+test transports::dispatch::tests::route_separates_app_and_channel_boundaries ... ok
+test v2_broadcast::predicate_tests::annotation_permission_is_part_of_the_accepting_view ... ok
+test handler::recovery::tests::fully_evicted_durable_history_does_not_look_like_a_new_empty_stream ... ok
+test v2_broadcast::predicate_tests::subscription_components_are_anded_within_one_view ... ok
+test handler::recovery::tests::retention_boundary_crossed_mid_reconnect_fails_as_position_expired ... ok
+test watchlist::tests::removes_empty_placeholder_entries_when_watchlist_changes ... ok
+test handler::recovery::tests::per_channel_recovery_outcomes_are_independent ... ok
+test handler::recovery::tests::durable_recovery_rejects_gap_larger_than_configured_window ... ok
+test watchlist::tests::preserves_watcher_placeholders_when_user_goes_offline ... ok
+test handler::recovery::tests::shared_degraded_state_blocks_cross_node_cold_recovery ... ok
+test handler::recovery::tests::shared_history_store_allows_cross_node_cold_recovery ... ok
+test transports::dispatch::tests::preserves_channel_order_and_drains_accepted_work ... ok
+test handler::ai_orphans::tests::janitor_closes_streaming_orphan_once_from_another_node ... ok
+test handler::ai_orphans::tests::concurrent_registry_writers_keep_the_newest_delivery_serial ... ok
+test transports::dispatch::tests::byte_admission_waits_until_handler_releases_payload ... ok
+test local_adapter::broadcast::regression_tests::fanout_shares_bases_and_preserves_codecs_sequences_algorithms_and_failed_admission ... ok
+test horizontal_adapter::tests::request_cleanup_operates_on_live_pending_requests ... ok
+test local_adapter::broadcast::regression_tests::divergent_delta_bases_preserve_frames_across_preparation_count_and_byte_limits ... ok
+test memory_rate_limiter::tests::expired_entries_reset_without_background_cleanup_tasks ... ok
+test memory_rate_limiter::tests::shared_cleanup_reaps_idle_expired_entries ... ok
+
+test result: ok. 143 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+     Running tests/broker_fanout_live.rs (target/debug/deps/broker_fanout_live-45b017dd3b2a707e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cleanup_fallback_tests.rs (target/debug/deps/cleanup_fallback_tests-9b0aa44cd6a4b0c0)
+
+running 2 tests
+test tests::test_fallback_when_queue_full ... ok
+test tests::test_presence_channel_cleanup_info ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cleanup_sender_tests.rs (target/debug/deps/cleanup_sender_tests-8f40f2a338b9e671)
+
+running 6 tests
+test tests::test_cleanup_sender_clone_semantics ... ok
+test tests::test_cleanup_sender_direct_backpressure ... ok
+test tests::test_cleanup_sender_direct_variant ... ok
+test tests::test_cleanup_sender_try_send_interface ... ok
+test tests::test_cleanup_sender_is_closed ... ok
+test tests::test_cleanup_sender_error_types ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/fanout_performance_live.rs (target/debug/deps/fanout_performance_live-60741f10c075f6ca)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/integration.rs (target/debug/deps/integration-13ac7190c1aae9f5)
+
+running 286 tests
+test adapter::auth_test::test_api_auth_post_empty_body_with_wrong_body_md5_should_fail ... ok
+test adapter::auth_test::test_api_auth_get_with_body_md5_should_fail ... ok
+test adapter::auth_test::test_api_auth_expired_timestamp ... ok
+test adapter::auth_test::test_api_auth_post_no_body_with_body_md5_should_fail ... ok
+test adapter::auth_test::test_api_auth_post_with_body_md5 ... ok
+test adapter::auth_test::test_api_auth_case_insensitive_sorting_order ... ok
+test adapter::auth_test::test_api_auth_invalid_signature ... ok
+test adapter::auth_test::test_api_auth_valid_signature ... ok
+test adapter::auth_test::test_api_auth_post_empty_body_with_body_md5 ... ok
+test adapter::auth_test::test_api_auth_case_insensitive_query_keys ... ok
+test adapter::auth_test::test_api_auth_empty_parameter_values ... ok
+test adapter::auth_test::test_validate_channel_auth_invalid_key ... ok
+test adapter::auth_test::test_sign_in_token_generation ... ok
+test adapter::auth_test::test_api_auth_post_with_wrong_body_md5 ... ok
+test adapter::auth_test::test_api_auth_special_characters_in_keys ... ok
+test adapter::auth_test::test_api_auth_rejects_route_app_id_mismatch ... ok
+test adapter::auth_test::test_validate_channel_auth_invalid_signature ... ok
+test adapter::auth_test::test_api_auth_large_number_of_parameters ... ok
+test adapter::auth_test::test_validate_channel_auth_valid ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_default_values ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_default_values_ratios ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_validation_boundary_case ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_validation_heartbeat_too_high ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_validation_cleanup_interval_too_high ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_validation_success ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_validation_zero_cleanup_interval ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_validation_zero_heartbeat ... ok
+test adapter::cluster_health_tests::test_cluster_health_config_validation_zero_node_timeout ... ok
+test adapter::cluster_health_integration_tests::test_leader_election_algorithm ... ok
+test adapter::cluster_health_integration_tests::test_dead_node_detection_logic ... ok
+test adapter::cluster_health_tests::test_cluster_health_field_direct_access ... ok
+test adapter::cluster_health_tests::test_cluster_health_disabled_flag_behavior ... ok
+test adapter::cluster_health_tests::test_set_cluster_health_with_invalid_config_uses_defaults ... ok
+test adapter::cluster_health_tests::test_set_cluster_health_applies_configuration ... ok
+test adapter::cluster_health_integration_tests::test_cluster_health_configuration_applied ... ok
+test adapter::cluster_presence_registry_tests::test_local_channel_members_filters_by_app_id ... ok
+test adapter::cluster_presence_registry_tests::test_local_channel_members_merges_registry ... ok
+test adapter::cluster_presence_registry_tests::test_local_channel_members_skips_own_node ... ok
+test adapter::active_channels_gauge_tests::join_channel_fast_reports_transition_only_on_first_join ... ok
+test adapter::cross_node_sync_tests::test_channels_with_socket_count_aggregation ... ok
+test adapter::cross_node_sync_tests::test_empty_response_aggregation ... ok
+test adapter::cross_node_sync_tests::test_channel_members_aggregation_deduplication ... ok
+test adapter::dead_node_detection_tests::test_cleanup_leader_election_excludes_dead_nodes ... ok
+test adapter::cluster_presence_registry_tests::test_concurrent_read_write_registry ... ok
+test adapter::cross_node_sync_tests::test_request_with_no_other_nodes_returns_immediately ... ok
+test adapter::dead_node_detection_tests::dead_node_cleanup_keeps_each_ably_connection_for_same_client ... ok
+test adapter::dead_node_detection_tests::test_heartbeat_tracking_updates_node_registry ... ok
+test adapter::graceful_departure_tests::test_mock_transport_node_count_is_not_real_time ... ok
+test adapter::clustered_active_channels_gauge_tests::unsubscribe_local_does_not_fan_out_for_cluster_count ... ok
+test adapter::clustered_active_channels_gauge_tests::subscribe_does_not_fan_out_for_cluster_count ... ok
+test adapter::dead_node_detection_tests::test_cleanup_leader_election_logic ... ok
+test adapter::dead_node_detection_tests::test_dead_node_cleanup_removes_presence_data ... ok
+test adapter::filter_index_disconnect_cleanup_tests::remove_from_channel_cleans_filter_index_when_socket_already_gone ... ok
+test adapter::cross_node_sync_tests::test_request_response_aggregation_logic ... ok
+test adapter::dead_node_detection_tests::test_follower_cleanup_only_removes_registry_data ... ok
+test adapter::cross_node_sync_tests::test_exists_flag_aggregation_logic ... ok
+test adapter::dead_node_detection_tests::test_dead_node_event_structure_contains_required_data ... ok
+test adapter::graceful_departure_tests::test_receiving_node_dead_prunes_peer_heartbeat ... ok
+test adapter::connected_gauge_regression_tests::drain_guard_is_accepting_false_when_running_false ... ok
+test adapter::handler::annotations_test::flag_summary_deduplicates_deletes_and_requires_client ... ok
+test adapter::handler::annotations_test::distinct_summary_tracks_per_name_buckets_and_named_deletes ... ok
+test adapter::handler::annotations_test::identified_summary_clips_client_ids_at_configured_limit ... ok
+test adapter::clustered_active_channels_gauge_tests::batch_socket_counts_use_registry_when_aggregate_counts_enabled ... ok
+test adapter::dead_node_detection_tests::test_dead_node_detection_identifies_timeout_nodes ... ok
+test adapter::handler::annotations_test::multiple_summary_clips_client_counts_and_preserves_total_client_ids ... ok
+test adapter::handler::annotations_test::multiple_summary_tracks_counts_unidentified_and_delete_by_client ... ok
+test adapter::connected_gauge_regression_tests::is_accepting_defaults_to_true ... ok
+test adapter::connected_gauge_regression_tests::connected_gauge_over_quota_never_increments ... ok
+test adapter::auth_test::test_validate_channel_auth_with_app_key_prefix ... ok
+test adapter::handler::annotations_test::total_summary_create_delete_and_duplicate_client_counts ... ok
+test adapter::handler::annotations_test::unique_summary_moves_client_between_names ... ok
+test adapter::async_disconnect_cleanup_tests::queue_fallback_remains_idempotent ... ok
+test adapter::handler::annotations_test::flag_publish_rejects_unidentified_client ... ok
+test adapter::async_disconnect_cleanup_tests::delayed_worker_cannot_delay_cancellation ... ok
+test adapter::handler::activity_timeout_test::initial_activity_timeout_task_is_installed_only_for_v1 ... ok
+test adapter::handler::annotations_test::caller_annotation_id_suppresses_sequential_retry_delivery_and_counting ... ok
+test adapter::handler::authentication_test::test_verify_channel_authentication_presence_channel ... ok
+test adapter::handler::authentication_test::test_verify_channel_authentication_public_channel ... ok
+test adapter::handler::authentication_test::test_verify_channel_authentication_private_channel_with_auth ... ok
+test adapter::handler::annotations_test::shared_annotation_store_converges_under_two_node_concurrent_publishes ... ok
+test adapter::handler::annotations_test::reconnect_subscription_marks_projection_rebuild_metrics_on_cache_miss ... ok
+test adapter::handler::annotations_test::shared_annotation_store_converges_under_two_node_concurrent_counting_publishes ... ok
+test adapter::handler::annotations_test::shared_annotation_store_converges_after_node_failover_delete_and_replay ... ok
+test adapter::handler::presence_user_id_guard_test::production_same_id_signin_updates_user_info_without_duplicate_route ... ok
+test adapter::handler::presence_user_id_guard_test::test_presence_subscription_guard_preserves_signin_user_id ... ok
+test adapter::handler::presence_user_id_guard_test::production_signin_rejects_disconnecting_socket_without_reindexing ... ok
+test adapter::handler::presence_user_id_guard_test::production_signin_migrates_composite_routing_identity ... ok
+test adapter::handler::annotations_test::caller_annotation_id_suppresses_concurrent_retry_counting ... ok
+test adapter::handler::presence_user_id_guard_test::test_presence_subscription_guard_sets_user_id_when_none ... ok
+test adapter::handler::auth_token_user_index_tests::token_auth_sets_all_expected_state_fields ... ok
+test adapter::handler::authentication_test::test_verify_channel_authentication_private_channel_no_auth ... ok
+test adapter::handler::auth_token_user_index_tests::token_auth_context_prevents_signin_overwrite ... ok
+test adapter::handler::auth_token_user_index_tests::migration_detection_predicate_fires_for_differing_ids ... ok
+test adapter::handler::auth_token_user_index_tests::presence_subscription_cannot_overwrite_token_auth_user_id ... ok
+test adapter::handler::auth_token_user_index_tests::token_auth_refresh_same_client_id_is_idempotent ... ok
+test adapter::handler::auth_token_user_index_tests::token_auth_on_fresh_connection_is_first_time_assignment ... ok
+test adapter::connected_gauge_regression_tests::connected_gauge_socket_replacement_nets_zero ... ok
+test adapter::connected_gauge_regression_tests::connected_gauge_setup_failure_decrements_on_cleanup ... ok
+test adapter::handler::signin_test::test_auth_validator_sign_in_token_generation ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e ... ok
+test adapter::handler::annotations_test::reconnect_subscription_receives_coherent_summary_snapshot ... ok
+test adapter::handler::signin_test::test_auth_validator_with_different_user_data ... ok
+test adapter::connected_gauge_regression_tests::connected_gauge_no_double_decrement_on_close_and_cleanup ... ok
+test adapter::handler::signin_test::test_handle_signin_request_authentication_disabled ... ok
+test adapter::handler::signin_test::test_handle_signin_request_invalid_user_data ... ok
+test adapter::handler::signin_test::test_signin_request_from_message_invalid_format ... ok
+test adapter::handler::signin_test::test_handle_signin_request_invalid_signature ... ok
+test adapter::handler::signin_test::test_handle_signin_request_parse_and_validate_user_data ... ok
+test adapter::handler::signin_test::test_handle_signin_request_missing_user_id ... ok
+test adapter::handler::signin_test::test_signin_request_from_message_json_format ... ok
+test adapter::handler::signin_test::test_signin_request_from_message_missing_auth_structured ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::partial_per_channel_recovery_results_surface_real_deliveries_e2e ... ok
+test adapter::handler::signin_test::test_signin_request_from_message_missing_user_data_json ... ok
+test adapter::handler::signin_test::test_signin_request_from_message_structured_format ... ok
+test adapter::handler::annotations_test::publish_annotation_delivers_summary_and_delete_delivers_decrement ... ok
+test adapter::handler::signin_test::test_handle_signin_request_early_validation_flow ... ok
+test adapter::handler::signin_test::test_parse_user_data_extracts_capabilities_and_meta ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::hot_recovery_resumes_idle_subscription_e2e ... ok
+test adapter::handler::signin_test::test_verify_signin_authentication_with_invalid_signature ... ok
+test adapter::handler::signin_test::test_verify_signin_authentication_with_prefix ... ok
+test adapter::handler::presence_user_id_guard_test::production_v1_presence_lifecycle_preserves_member_events_and_single_user_route ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_allowed_on_presence_channel ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_allowed_on_private_channel ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_binary_client_event_payload_size_limit_uses_raw_bytes ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_cannot_use_pusher_prefix ... ok
+test adapter::handler::signin_test::test_verify_signin_authentication_without_prefix ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::resume_success_precedes_live_messages_published_during_replay_e2e ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::hot_recovery_replays_real_deliveries_e2e ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_cannot_use_pusher_internal_prefix ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::reserved_mutation_delivery_position_is_preserved_e2e ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::rewind_handoff_has_no_gap_and_suppresses_duplicates_e2e ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_payload_size_limit ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_rejected_on_public_channel ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_name_length_limit ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_channel_name_length_limit ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_with_special_prefixes_variations ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_must_start_with_client_prefix ... ok
+test adapter::horizontal_adapter_base_test::test_broadcast_message_verification ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_valid_client_event_passes_validation ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_event_validation_edge_cases ... ok
+test adapter::handler::validation_test::client_event_validation_tests::test_client_events_disabled_for_app ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::cold_recovery_replays_real_deliveries_e2e ... ok
+test adapter::horizontal_adapter_base_test::test_corrupt_response_handling ... ok
+test adapter::horizontal_adapter_base_test::test_dynamic_node_count_handling ... ok
+test adapter::horizontal_adapter_base_test::test_connection_manager_error_propagation ... ok
+test adapter::horizontal_adapter_base_test::test_horizontal_adapter_base_new ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::ai_transport_streamed_response_fans_out_and_rewinds_as_latest_message_e2e ... ok
+test adapter::horizontal_adapter_base_test::test_horizontal_adapter_base_new_failure ... ok
+test adapter::horizontal_adapter_base_test::test_disabled_socket_counting_returns_local_count_without_remote_request ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::ai_transport_concurrent_runs_cancel_and_codec_metadata_round_trip_e2e ... ok
+test adapter::clustered_active_channels_gauge_tests::unsubscribe_empties_local_while_cluster_still_holds_channel ... ok
+test adapter::horizontal_adapter_base_test::test_transport_health_failure_propagation ... ok
+test adapter::clustered_active_channels_gauge_tests::subscribe_activates_on_local_transition_not_cluster_count ... ok
+test adapter::clustered_active_channels_gauge_tests::resubscribe_does_not_activate_again ... ok
+test adapter::horizontal_adapter_failure_tests::test_channel_operation_edge_cases ... ok
+test adapter::horizontal_adapter_base_test::test_channel_socket_overlap_aggregation ... ok
+test adapter::horizontal_adapter_base_test::test_completed_empty_resolve_counts_as_resolved_promise ... ok
+test adapter::horizontal_adapter_base_test::test_conflicting_data_handling ... ok
+test adapter::horizontal_adapter_base_test::test_connection_manager_distributed_socket_count ... ok
+test adapter::horizontal_adapter_base_test::test_concurrent_request_isolation ... ok
+test adapter::horizontal_adapter_failure_tests::test_extreme_value_handling ... ok
+test adapter::horizontal_adapter_failure_tests::test_handler_registration_race_condition ... ok
+test adapter::horizontal_adapter_base_test::test_multi_node_socket_aggregation ... ok
+test adapter::horizontal_adapter_base_test::test_realistic_socket_aggregation ... ok
+test adapter::horizontal_adapter_base_test::test_presence_member_data_integrity ... ok
+test adapter::horizontal_adapter_failure_tests::test_duplicate_request_id_handling ... ok
+test adapter::handler::webhook_count_gate_test::non_presence_unsubscribe_skips_count_query ... ok
+test adapter::handler::webhook_count_gate_test::non_presence_subscribe_skips_count_query ... ok
+test adapter::horizontal_adapter_failure_tests::test_transport_publish_failure_recovery ... ok
+test adapter::horizontal_adapter_race_tests::test_adapter_state_isolation ... ok
+test adapter::handler::webhook_count_gate_test::presence_subscribe_triggers_count_query ... ok
+test adapter::horizontal_adapter_race_tests::test_concurrent_connection_manager_operations ... ok
+test adapter::horizontal_adapter_race_tests::test_concurrent_health_checks_during_operations ... ok
+test adapter::horizontal_adapter_race_tests::test_concurrent_listener_starts ... ok
+test adapter::horizontal_adapter_race_tests::test_memory_consistency_under_concurrent_access ... ok
+test adapter::horizontal_adapter_base_test::test_user_socket_aggregation ... ok
+test adapter::horizontal_adapter_base_test::test_request_id_uniqueness_under_load ... ok
+test adapter::horizontal_adapter_race_tests::test_node_count_changes_during_requests ... ok
+test adapter::horizontal_adapter_race_tests::test_request_response_matching_under_load ... ok
+test adapter::horizontal_adapter_race_tests::test_transport_state_consistency_under_load ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_cluster_health_disabled ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_app_isolation ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_error_handling ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_fallback_from_failed_distributed_adapter ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_concurrent_operations ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::concurrent_publishes_are_delivered_in_reserved_serial_order_e2e ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_no_horizontal_interface ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_memory_cleanup ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_with_custom_buffer ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_presence_operations ... ok
+test adapter::local_channel_members_tests::test_local_members_deduplicates_multi_socket_user ... ok
+test adapter::local_channel_members_tests::test_local_members_filters_app_and_excludes_self_node ... ok
+test adapter::local_channel_members_tests::test_local_members_merges_local_and_remote ... ok
+test adapter::presence_concurrency_tests::test_concurrent_joins_same_user ... ok
+test adapter::presence_concurrency_tests::test_concurrent_leave_join_race ... ok
+test adapter::presence_concurrency_tests::test_no_duplicate_member_added_on_second_join ... ok
+test adapter::presence_concurrency_tests::test_no_member_removed_while_other_connections_exist ... ok
+test adapter::presence_concurrency_tests::test_single_member_added_on_first_join ... ok
+test adapter::presence_concurrency_tests::test_single_member_removed_on_last_leave ... ok
+test adapter::presence_lock_scope_tests::test_presence_broadcast_order_with_member_removed ... ok
+test adapter::horizontal_adapter_base_test::test_connection_manager_socket_existence ... ok
+test adapter::presence_lock_scope_tests::test_presence_lock_prevents_duplicate_member_added ... ok
+test adapter::horizontal_adapter_failure_tests::test_corrupted_response_filtering ... ok
+test adapter::presence_lock_scope_tests::test_presence_lock_prevents_duplicate_member_removed ... ok
+test adapter::presence_lock_scope_tests::test_presence_webhook_order_with_member_added ... ok
+test adapter::presence_state_consistency_tests::test_presence_state_with_clock_skew ... ok
+test adapter::presence_state_consistency_tests::test_sequence_number_conflict_resolution ... ok
+test adapter::horizontal_adapter_base_test::test_connection_manager_user_operations ... ok
+test adapter::presence_synchronization_tests::test_presence_broadcast_skipped_when_cluster_health_disabled ... ok
+test adapter::presence_synchronization_tests::test_multiple_presence_members_same_channel ... ok
+test adapter::presence_state_consistency_tests::test_bulk_presence_cleanup ... ok
+test adapter::presence_synchronization_tests::test_presence_local_registry_update_always_happens ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::cursor_ahead_of_hot_stream_fails_closed ... ok
+test adapter::presence_synchronization_tests::test_presence_member_join_broadcast ... ok
+test adapter::presence_synchronization_tests::test_presence_member_leave_broadcast ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::gap_and_duplicate_serials_fail_closed ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::out_of_order_arrival_is_replayed_in_serial_order ... ok
+test adapter::presence_synchronization_tests::test_presence_state_consistency_across_join_leave ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::recovery_fails_closed_when_reserved_positions_leave_a_gap ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::reserved_position_is_preserved_without_minting_a_second_serial ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_empty_subscription_position_recovers_later_messages ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_ensure_position_aligns_empty_stream_with_durable_history ... ok
+test adapter::horizontal_adapter_failure_tests::test_transport_health_during_active_requests ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_eviction_under_capacity ... ok
+test adapter::horizontal_adapter_base_test::test_socket_existence_validation ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_next_serial_monotonic ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_store_and_retrieve_messages ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_store_updates_stream_id ... ok
+test adapter::horizontal_adapter_failure_tests::test_request_publish_failure_recovery ... ok
+test adapter::horizontal_adapter_failure_tests::test_unicode_and_special_characters ... ok
+test adapter::server_role_tests::test_api_only_always_publishes_horizontally ... ok
+test adapter::server_role_tests::test_api_only_get_sockets_count_returns_local ... ok
+test adapter::server_role_tests::test_api_only_request_reply_short_circuits ... ok
+test adapter::server_role_tests::test_api_only_should_skip_horizontal_communication_is_false ... ok
+test adapter::server_role_tests::test_default_should_skip_horizontal_communication_is_true ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_concurrent_store_and_read ... ok
+test adapter::single_node_optimization_tests::test_dead_node_optimization ... ok
+test adapter::single_node_optimization_tests::test_effective_node_count_detection ... ok
+test adapter::single_node_optimization_tests::test_multi_node_sends_presence_broadcasts ... ok
+test adapter::single_node_optimization_tests::test_should_skip_horizontal_communication ... ok
+test adapter::server_capacity_tests::server_max_connections_rejects_over_capacity ... ok
+test adapter::presence_state_sync_default_test::default_sync_sends_single_message ... ok
+test adapter::server_capacity_tests::memory_pressure_rejects_new_connection_without_marking_it_connected ... ok
+test adapter::single_node_optimization_tests::test_single_node_skips_presence_broadcasts ... ok
+test adapter::single_node_optimization_tests::test_single_node_skips_requests ... ok
+test adapter::single_node_optimization_tests::test_transition_single_to_multi_node ... ok
+test adapter::user_has_connections_tests::test_count_user_connections_in_channel_uses_registry_when_fast_transitions_enabled ... ok
+test adapter::user_has_connections_tests::test_presence_member_count_uses_registry_without_channel_members_request ... ok
+test adapter::horizontal_adapter_failure_tests::test_memory_exhaustion_protection ... ok
+test adapter::user_has_connections_tests::test_user_has_connections_uses_presence_registry_when_fast_transitions_enabled ... ok
+test adapter::user_has_connections_tests::test_user_has_connections_returns_true_from_local_without_remote_request ... ok
+test adapter::graceful_departure_tests::test_announce_node_departure_publishes_node_dead ... ok
+test adapter::user_socket_index_regression_tests::force_reconnect_closes_live_socket ... ok
+test adapter::user_socket_index_regression_tests::stale_id_is_ignored_by_routing_and_counting ... ok
+test adapter::user_socket_index_regression_tests::terminate_user_connections_closes_live_socket ... ok
+test adapter::horizontal_adapter_base_test::test_connection_manager_channel_specific_operations ... ok
+test adapter::graceful_departure_tests::test_announce_node_departure_ok_when_transport_unhealthy ... ok
+test adapter::single_node_optimization_tests::test_cluster_health_node_count_overrides_transport_hint_for_requests ... ok
+test adapter::single_node_optimization_tests::test_multi_node_sends_requests ... ok
+test adapter::horizontal_adapter_failure_tests::test_node_join_leave_during_requests ... ok
+test adapter::horizontal_adapter_failure_tests::test_request_timeout_boundary_conditions ... ok
+test adapter::single_node_optimization_tests::test_multi_node_sends_broadcast ... ok
+test adapter::single_node_optimization_tests::test_single_node_skips_broadcast ... ok
+test adapter::cross_node_sync_tests::test_partial_response_handling_timeout_behavior ... ok
+test adapter::horizontal_adapter_race_tests::test_response_handler_race_conditions ... ok
+test adapter::horizontal_adapter_race_tests::test_broadcast_during_listener_changes ... ok
+test adapter::horizontal_adapter_failure_tests::test_concurrent_request_cleanup ... ok
+test adapter::user_socket_index_regression_tests::server_to_user_fanout_reaches_all_live_sockets ... ok
+test adapter::local_adapter_fallback_tests::test_local_adapter_large_scale ... ok
+test adapter::handler::annotations_test::protocol_v1_subscription_receives_no_annotation_or_summary_frames ... ok
+test adapter::handler::annotations_test::annotation_subscribe_receives_raw_events_but_ordinary_subscribe_does_not ... ok
+test adapter::handler::runtime_rewind_recovery_e2e_test::writer_queue_full_fault_rejects_publish_without_live_delivery ... ok
+test adapter::horizontal_adapter_failure_tests::test_all_nodes_timeout_scenario ... ok
+test adapter::horizontal_adapter_race_tests::test_cleanup_after_abandoned_operations ... ok
+test adapter::replay_buffer_tests::replay_buffer_regression::test_ttl_expiry ... ok
+test adapter::cluster_health_integration_tests::test_cluster_health_disabled_no_heartbeat ... ok
+test adapter::horizontal_adapter_base_test::test_send_request_timeout_with_partial_responses ... ok
+test adapter::horizontal_adapter_base_test::test_timed_out_resolve_counts_as_uncomplete_promise ... ok
+test adapter::horizontal_adapter_failure_tests::test_partial_node_response_aggregation ... ok
+test adapter::user_has_connections_tests::test_user_has_connections_falls_back_to_remote_for_non_presence_channel ... ok
+test adapter::user_has_connections_tests::test_count_user_connections_in_channel_uses_remote_request_for_presence_by_default ... ok
+test adapter::user_has_connections_tests::test_user_has_connections_uses_remote_request_for_presence_by_default ... ok
+test adapter::server_capacity_tests::server_max_connections_zero_disables_limit ... ok
+test adapter::handler::activity_timeout_test::native_ping_resets_activity_timer_and_receives_pong ... ok
+test adapter::handler::activity_timeout_test::v1_pong_resets_activity_timer ... ok
+test adapter::handler::activity_timeout_test::v1_connection_closes_without_pong ... ok
+
+test result: ok. 286 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.03s
+
+     Running tests/redis_sentinel_live.rs (target/debug/deps/redis_sentinel_live-c77bee2b6501e43b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_ai_transport-fd1b165b8508c763)
+
+running 18 tests
+test observability::tests::legacy_turn_suspend_maps_to_run_suspended_signal ... ok
+test observability::tests::classifies_run_and_cancel_events_without_legacy_turn_labels_for_metrics ... ok
+test observability::tests::expires_streams_that_never_receive_a_terminal_event ... ok
+test observability::tests::malformed_headers_are_counted_but_do_not_block_observation ... ok
+test observability::tests::run_end_reason_is_bounded ... ok
+test observability::tests::treats_empty_run_client_id_as_absent_for_derived_observability ... ok
+test tests::allowed_window_values_match_wire_contract ... ok
+test observability::tests::tracks_stream_duration_and_bytes ... ok
+test tests::active_stream_cap_bypasses_new_rollup_state ... ok
+test tests::appends_within_window_are_coalesced_until_deadline ... ok
+test tests::first_append_delivers_immediately_and_arms_window ... ok
+test tests::coalesced_appends_preserve_combined_append_fragment ... ok
+test tests::orphan_sweep_drops_first_only_state_without_duplicate_delivery ... ok
+test tests::terminal_append_does_not_redeliver_the_immediate_first_append ... ok
+test tests::terminal_append_flushes_pending_before_terminal ... ok
+test tests::orphan_sweep_flushes_and_removes_state ... ok
+test tests::update_flushes_pending_before_terminal ... ok
+test tests::zero_window_bypasses_rollup ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ait_s_conformance.rs (target/debug/deps/ait_s_conformance-2740ef08eee1acc7)
+
+running 11 tests
+test ait_s001_002_message_actions_and_v2_event_names_match_spec ... ok
+test ait_s004_005_serial_newtypes_reject_empty_whitespace_and_overlong_values ... ok
+test ait_s006_to_s010_version_chain_and_replay_validation_fail_closed ... ok
+test ait_s003_versioned_realtime_message_flattens_payload_and_validates_serials ... ok
+test ait_s026_to_s030_history_cursor_and_bounds_validation_are_strict ... ok
+test ait_s053_054_ai_feature_and_runtime_channel_gate_defaults_are_closed ... ok
+test ait_s084_085_presence_timeout_defaults_off_and_can_be_configured ... ok
+test ait_s094_runtime_metadata_tracks_terminal_append_status ... ok
+test ait_s055_to_s064_ai_event_and_header_rules_match_registry ... ok
+test ait_s069_to_s073_rollup_table_and_reduced_state_are_deterministic ... ok
+test ait_s011_012_memory_version_store_projects_latest_visible_state ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ait_s_coverage.rs (target/debug/deps/ait_s_coverage-a7c0ff884e4b7c56)
+
+running 1 test
+test every_ait_s_assertion_maps_to_a_present_test_file_and_command ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/rollup_scheduler.rs (target/debug/deps/rollup_scheduler-b5b3645bfac66ce1)
+
+running 10 tests
+test backward_clock_jump_does_not_flush_early ... ok
+test boundary_deadline_polls_only_due_entries ... ok
+test deferred_delivery_keeps_latest_mixed_mode_echo_and_continuity_context ... ok
+test terminal_removal_invalidates_stale_deadlines ... ok
+test shutdown_drain_flushes_pending_content_once_and_removes_tracking ... ok
+test terminal_wins_safely_after_due_discovery_but_before_claim ... ok
+test terminal_race_never_reorders_a_pending_flush_after_terminal ... ok
+test first_delivery_retains_no_payload_and_tracking_overhead_is_bounded ... ok
+test at_least_999_per_mille_due_by_window_plus_five_ms_under_documented_load ... ok
+test empty_poll_work_is_independent_of_active_stream_cardinality ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_app-414bcb9a5f0c0989)
+
+running 13 tests
+test cached_app_manager::tests::cache_log_labels_do_not_contain_app_identifiers_or_keys ... ok
+test cached_app_manager::tests::enumeration_and_readiness_do_not_write_shared_cache ... ok
+test cached_app_manager::tests::test_init_warms_local_index_without_shared_cache_get ... ok
+test cached_app_manager::tests::test_find_by_key_uses_local_index_before_shared_cache ... ok
+test cached_app_manager::tests::test_cache_disabled ... ok
+test cached_app_manager::tests::test_find_by_id_uses_local_index_before_shared_cache ... ok
+test cached_app_manager::tests::test_delete_invalidates_cache ... ok
+test cached_app_manager::tests::test_find_by_id_caches_result ... ok
+test cached_app_manager::tests::test_find_by_key_caches_result ... ok
+test cached_app_manager::tests::test_update_invalidates_cache ... ok
+test cached_app_manager::tests::cold_waves_share_cache_loads_and_missing_entries_are_invalidated_on_create ... ok
+test cached_app_manager::tests::cancelled_cold_lookup_does_not_strand_waiters ... ok
+test cached_app_manager::tests::test_slow_shared_cache_get_falls_back_to_inner_manager_quickly ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/origin_validation_config_integration.rs (target/debug/deps/origin_validation_config_integration-8bd3d521853a5d0f)
+
+running 2 tests
+test origin_validation_config_integration_tests::test_environment_variable_parsing ... ok
+test origin_validation_config_integration_tests::test_memory_app_manager_with_allowed_origins ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/readiness_live.rs (target/debug/deps/readiness_live-8b5b126c70113a72)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_cache-55352393514a93f6)
+
+running 15 tests
+test fallback_cache_manager::tests::test_new_with_health_check_healthy_primary ... ok
+test fallback_cache_manager::tests::test_fallback_on_primary_failure ... ok
+test fallback_cache_manager::tests::test_new_without_health_check ... ok
+test fallback_cache_manager::tests::test_new_with_health_check_unhealthy_primary ... ok
+test memory_cache_manager::tests::compare_and_swap_requires_the_expected_value ... ok
+test memory_cache_manager::tests::compare_and_remove_cannot_release_another_owner_claim ... ok
+test fallback_cache_manager::tests::test_recovery_with_data_sync ... ok
+test memory_cache_manager::tests::replacing_value_keeps_new_generation_in_ordered_scan ... ok
+test memory_cache_manager::tests::ordered_pages_do_not_restart_after_terminal_or_deleted_cursor ... ok
+test fallback_cache_manager::tests::test_memory_cache_get_all_entries ... ok
+test fallback_cache_manager::tests::test_no_race_condition_during_operations ... ok
+test memory_cache_manager::tests::set_if_not_exists_has_one_winner_under_concurrency ... ok
+test memory_cache_manager::tests::increment_by_serializes_concurrent_updates ... ok
+test memory_cache_manager::tests::set_if_not_exists_has_one_winner_in_repeated_synchronized_races ... ok
+test memory_cache_manager::tests::concurrent_idempotent_retries_observe_one_committed_receipt ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/redis_cluster_scan_live.rs (target/debug/deps/redis_cluster_scan_live-4af9c8b13d514a74)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-4346cb3b972eda1f)
+
+running 382 tests
+test annotations::tests::annotation_type_parses_namespace_summarizer_and_version ... ok
+test app::tests::debug_output_redacts_app_credentials ... ok
+test annotations::tests::annotation_type_rejects_unknown_summarizer ... ok
+test app::tests::app_policy_round_trip_preserves_grouped_configuration ... ok
+test annotation_summarizers::total::tests::repeated_creates_increment_and_delete_decrements ... ok
+test annotations::tests::validation_requires_name_for_named_summarizers ... ok
+test annotations::tests::validation_requires_client_for_ownership_summarizers ... ok
+test annotation_summarizers::flag::tests::tracks_distinct_identified_clients ... ok
+test app::tests::decay_seconds_defaults_to_one_when_absent ... ok
+test app::tests::deserialize_channel_annotation_flags ... ok
+test app::tests::deserialize_decay_seconds_and_terminate_on_limit ... ok
+test app::tests::deserialize_channel_namespaces ... ok
+test app::tests::deserialize_decay_seconds_from_string ... ok
+test app::tests::cache_round_trip_preserves_optional_numbers ... ok
+test app::tests::deserialize_legacy_flat_shape_for_compatibility ... ok
+test app::tests::deserialize_optional_numbers_from_integers ... ok
+test app::tests::deserialize_optional_numbers_from_null ... ok
+test annotations::tests::total_counts_unidentified_and_repeated_client_events ... ok
+test app::tests::deserialize_optional_numbers_from_strings ... ok
+test app::tests::resolved_history_annotations_enabled_forces_persistence ... ok
+test app::tests::deserialize_optional_numbers_missing_fields ... ok
+test app::tests::resolved_history_applies_app_overrides ... ok
+test annotations::tests::client_id_clipping_reports_only_when_over_limit ... ok
+test annotations::tests::summary_serialization_excludes_raw_annotation_payloads ... ok
+test annotations::tests::flag_counts_each_identified_client_once ... ok
+test annotations::tests::distinct_allows_one_client_in_multiple_names ... ok
+test annotation_summarizers::tests::distinct_allows_same_client_in_multiple_names ... ok
+test annotations::tests::unique_moves_client_between_names ... ok
+test annotations::tests::rebuild_honors_delete_tombstone_when_node_order_sorts_before_create ... ok
+test annotation_summarizers::tests::multiple_tracks_identified_and_unidentified_counts ... ok
+test annotation_summarizers::tests::unique_moves_client_between_names ... ok
+test annotations::tests::rebuild_sorts_by_serial_and_ignores_duplicate_serials ... ok
+test annotations::tests::multiple_tracks_counts_and_removes_identified_client_contribution ... ok
+test annotations::tests::memory_store_reports_cold_projection_cache_rebuild_count ... ok
+test annotations::tests::memory_store_appends_events_and_materializes_projection ... ok
+test app::tests::cache_round_trip_preserves_flat_webhook_headers ... ok
+test annotations::tests::memory_store_purge_removes_events_and_stale_projection ... ok
+test annotations::tests::memory_store_list_projections_rebuilds_cold_projection_cache ... ok
+test annotations::tests::memory_store_deduplicates_by_annotation_serial ... ok
+test annotations::tests::memory_store_replays_raw_channel_events_by_annotation_serial ... ok
+test annotations::tests::memory_store_get_projection_repairs_stale_watermark ... ok
+test annotations::tests::memory_store_filters_message_before_applying_replay_limit ... ok
+test app::tests::resolved_history_uses_global_defaults_without_overrides ... ok
+test annotations::tests::memory_store_converges_after_out_of_order_unique_events ... ok
+test annotations::tests::memory_store_converges_under_concurrent_unique_churn ... ok
+test app::tests::resolved_history_namespace_overrides_beat_app_and_global ... ok
+test capability_token::tests::rejects_lifetime_over_24_hours ... ok
+test capability_token::tests::rejects_jti_over_128_bytes ... ok
+test capability_token::tests::annotation_capabilities_are_not_implied_by_publish_and_subscribe ... ok
+test capability_token::tests::rejects_wrong_kid ... ok
+test capability_token::tests::wildcard_prefix_does_not_match_bare_namespace ... ok
+test history::tests::history_cursor_rejects_oversized_input_before_decoding ... ok
+test capability_token::tests::validates_hs256_token_and_builds_capabilities ... ok
+test capability_token::tests::accepts_object_capability_claim_with_explicit_extended_operations ... ok
+test app::tests::validate_channel_namespace_rejects_invalid_regex ... ok
+test capability_token::tests::rejects_non_hs256_algorithm ... ok
+test history::tests::history_blocked_channel_does_not_block_other_channel_reservations ... ok
+test capability_token::tests::rejects_missing_jti ... ok
+test capability_token::tests::rejects_unsupported_operation ... ok
+test history::tests::idle_maintenance_does_not_shorten_channel_retention_override ... ok
+test history::tests::history_cursor_round_trip ... ok
+test history::tests::memory_history_channel_head_does_not_materialize_absent_channels ... ok
+test history::tests::memory_history_read_page_does_not_materialize_absent_channels ... ok
+test history::tests::memory_history_store_evicts_by_retention_and_count ... ok
+test history::tests::memory_history_store_filters_by_serial_and_time ... ok
+test history::tests::memory_history_store_orders_newest_first_with_cursor ... ok
+test memory_pressure::tests::observer_tracks_shedding_and_fail_open_state ... ok
+test history::tests::memory_history_store_orders_oldest_first_with_cursor ... ok
+test memory_pressure::tests::parses_finite_cgroup_limits_and_rejects_unlimited_values ... ok
+test memory_pressure::tests::parses_linux_rss_in_kibibytes ... ok
+test memory_pressure::tests::threshold_crossing_changes_only_new_connection_admission ... ok
+test idempotency::tests::durable_receipt_recovers_an_abandoned_pending_claim ... ok
+test memory_pressure::tests::unavailable_sample_fails_open ... ok
+test idempotency::tests::same_id_with_different_payload_is_a_conflict ... ok
+test message_envelope::tests::history_payload_reads_legacy_and_new_shapes ... ok
+test message_envelope::tests::envelope_round_trip_preserves_typed_positions_and_binary_content ... ok
+test history::tests::history_pages_preserve_scan_semantics_for_imports_and_clock_skew ... ok
+test namespace::tests::add_reports_activation_only_on_first_socket ... ok
+test options::ably_compat::tests::registry_defaults_off_and_redacts_secrets ... ok
+test options::adapter::tests::iggy_polling_defaults_to_low_latency_interval ... ok
+test namespace::tests::wildcard_index_is_removed_when_last_subscription_leaves ... ok
+test options::ai_transport::tests::ai_transport_allows_single_node_memory_development_matrix ... ok
+test options::ably_compat::tests::registry_rejects_duplicate_keys_and_invalid_capability ... ok
+test options::channels::tests::presence_timeout_defaults_preserve_v1_and_protect_v2_recovery ... ok
+test namespace::tests::remove_reports_vacation_only_on_last_socket ... ok
+test options::cors::cors_config_tests::test_deserialize_rejects_invalid_patterns ... ok
+test options::cors::cors_config_tests::test_deserialize_rejects_mixed_valid_and_invalid ... ok
+test namespace::tests::late_user_association_rolls_back_when_socket_gone ... ok
+test options::drivers::tests::delta_coordination_backend_parses_expected_values ... ok
+test options::drivers::tests::queue_driver_parses_broker_backends ... ok
+test namespace::tests::duplicate_removal_is_harmless ... ok
+test options::cors::cors_config_tests::test_deserialize_valid_exact_origins ... ok
+test options::push::tests::push_config_defaults_follow_capacity_model ... ok
+test options::cors::cors_config_tests::test_deserialize_allows_special_markers ... ok
+test namespace::tests::exact_channel_matching_uses_exact_and_wildcard_memberships_only ... ok
+test options::cors::cors_config_tests::test_deserialize_valid_wildcard_patterns ... ok
+test namespace::tests::remove_connection_clears_all_channel_membership ... ok
+test options::channels::tests::presence_timeout_can_be_overridden_per_protocol ... ok
+test options::push::tests::push_rules_default_off_and_validate_startup_shape ... ok
+test options::queue::tests::default_reliability_config_is_valid ... ok
+test options::env::tests::websocket_rate_limit_trust_hops_overrides_from_env ... ok
+test options::cors::cors_config_tests::default_allows_ably_browser_headers ... ok
+test options::cors::cors_config_tests::default_allows_ably_rest_mutation_methods ... ok
+test options::ai_transport::tests::ai_transport_rejects_horizontal_memory_state_matrix ... ok
+test options::queue::tests::lease_renewal_must_precede_expiry ... ok
+test options::queue::tests::redis_queue_default_response_timeout_is_failover_budget ... ok
+test options::queue::tests::retry_jitter_is_bounded ... ok
+test options::queue::tests::worker_prefetch_must_be_nonzero ... ok
+test options::env::tests::app_bootstrap_env_overrides_inline_apps ... ok
+test options::redis_connection::cluster_node_tests::test_from_seed_parses_plain_host_port ... ok
+test options::redis_connection::cluster_node_tests::test_from_seed_keeps_scheme_urls ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_aws_elasticache_hostname ... ok
+test namespace::tests::exhaustive_teardown_removes_all_state ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_basic_host ... ok
+test namespace::tests::add_user_before_remove_connection_drains_indexes ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_custom_port ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_ip_address ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_plain_host_with_port_in_host_field ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_ipv6_and_port_in_url ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_ipv6_full_address_no_port ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_ipv6_full_address_with_port ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_ipv6_no_port ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_options_adds_auth_and_tls ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_options_keeps_embedded_auth ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_redis_protocol ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_redis_protocol_and_port_in_url ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_redis_protocol_ipv6 ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_rediss_protocol ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_rediss_protocol_and_port_in_url ... ok
+test options::redis_connection::cluster_node_tests::test_to_url_with_trailing_whitespace ... ok
+test options::redis_connection::redis_connection_tests::test_cluster_node_urls_fallback_to_legacy_nodes ... ok
+test options::redis_connection::redis_connection_tests::test_is_sentinel_configured_false ... ok
+test options::redis_connection::redis_connection_tests::test_is_sentinel_configured_true ... ok
+test options::redis_connection::redis_connection_tests::test_master_tls_enables_cluster_tls_with_private_ca ... ok
+test options::redis_connection::redis_connection_tests::test_cluster_node_urls_with_shared_cluster_auth_and_tls ... ok
+test options::redis_connection::redis_connection_tests::test_redis_tls_options_has_client_cert ... ok
+test options::redis_connection::redis_connection_tests::test_normalize_cluster_seed_urls ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_spec_maps_fields_and_tls ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_spec_none_when_not_configured ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_to_host_port ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_url_basic ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_tls_deserializes_from_config ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_url_with_all_auth ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_url_with_master_password ... ok
+test options::redis_connection::redis_connection_tests::test_sentinel_url_with_sentinel_password ... ok
+test options::redis_connection::redis_connection_tests::test_standard_url_basic ... ok
+test options::redis_connection::redis_connection_tests::test_standard_url_uses_tls_when_master_tls_is_enabled ... ok
+test options::redis_connection::redis_connection_tests::test_standard_url_with_password ... ok
+test options::redis_connection::redis_connection_tests::test_standard_url_with_special_chars_in_password ... ok
+test options::redis_connection::redis_connection_tests::test_standard_url_with_username_and_password ... ok
+test options::runtime::websocket_config_tests::application_heartbeat_disables_native_deadlines ... ok
+test options::runtime::websocket_config_tests::native_heartbeat_uses_sockudo_timeout_contract ... ok
+test options::runtime::websocket_config_tests::zero_ping_interval_remains_disabled ... ok
+test options::server::tests::api_role_accepts_redis_adapter ... ok
+test options::server::tests::api_role_rejects_fallback_to_local ... ok
+test options::server::tests::api_role_rejects_local_adapter ... ok
+test options::server::tests::clustered_compatibility_rejects_node_local_coordination ... ok
+test options::server::tests::clustered_annotations_accept_every_durable_version_driver ... ok
+test options::server::tests::clustered_state_accepts_shared_coordination_and_durable_stores ... ok
+test options::server::tests::default_health_check_timeout_leaves_probe_headroom ... ok
+test options::server::tests::default_role_accepts_local_adapter ... ok
+test options::server::tests::enabled_connection_recovery_requires_a_nonzero_window ... ok
+test options::server::tests::enabled_idempotency_requires_nonzero_limits ... ok
+test options::server::tests::memory_pressure_admission_configuration_is_validated ... ok
+test options::server::tests::server_role_displays_lowercase ... ok
+test options::server::tests::server_role_parses_case_insensitive ... ok
+test options::server::tests::server_role_defaults_to_default ... ok
+test options::server::tests::server_role_rejects_unknown ... ok
+test origin_validation::tests::test_backwards_compatibility ... ok
+test origin_validation::tests::test_case_insensitive_validation ... ok
+test origin_validation::tests::test_cors_like_protocol_less_matching ... ok
+test origin_validation::tests::test_cors_like_with_ports ... ok
+test origin_validation::tests::test_edge_cases_with_protocols ... ok
+test origin_validation::tests::test_empty_allowed_origins ... ok
+test options::v2_features::tests::versioned_messages_driver_overrides_from_env ... ok
+test origin_validation::tests::test_exact_match ... ok
+test origin_validation::tests::test_mixed_protocol_patterns ... ok
+test origin_validation::tests::test_multiple_allowed_origins ... ok
+test origin_validation::tests::test_normalized_pattern_creation ... ok
+test origin_validation::tests::test_pattern_validation ... ok
+test origin_validation::tests::test_port_handling ... ok
+test origin_validation::tests::test_protocol_less_with_subdomains ... ok
+test origin_validation::tests::test_protocol_wildcard ... ok
+test origin_validation::tests::test_subdomain_wildcard ... ok
+test origin_validation::tests::test_validation_with_multiple_patterns ... ok
+test origin_validation::tests::test_wildcard_allows_all ... ok
+test presence_history::durable::review_tests::recent_eviction_at_maximum_serial_remains_bounded ... ok
+test history::tests::idle_history_maintenance_is_bounded_and_preserves_stream_identity ... ok
+test presence_history::memory::tests::memory_presence_history_read_page_does_not_materialize_absent_channels ... ok
+test presence_history::memory::tests::memory_presence_history_deduplicates_same_transition_key ... ok
+test presence_history::memory::tests::multinode_dedupe_collapses_fanout_duplicates ... ok
+test presence_history::memory::tests::memory_presence_history_applies_time_and_count_retention ... ok
+test options::push::tests::push_queue_driver_overrides_from_env ... ok
+test options::push::tests::push_storage_driver_overrides_from_env ... ok
+test presence_history::memory::tests::memory_presence_history_suppresses_consecutive_duplicate_user_transitions ... ok
+test presence_history::memory::tests::memory_presence_history_orders_oldest_and_newest_first ... ok
+test presence_history::store::tests::complete_snapshot_rejects_a_missing_serial_prefix ... ok
+test presence_history::store::tests::snapshot_rejects_impossible_complete_presence_transition_sequence ... ok
+test presence_history::durable::tests::durable_presence_history_reuses_cached_latest_state ... ok
+test presence_history::store::tests::snapshot_rejects_internal_presence_serial_gap ... ok
+test presence_history::store::tests::snapshot_at_reconstructs_membership_from_events ... ok
+test presence_history::durable::tests::durable_presence_history_round_trips_over_history_store ... ok
+test presence_history::durable::tests::durable_presence_history_dedupes_and_suppresses_same_state ... ok
+test presence_history::store::tests::snapshot_allows_missing_prefix_when_retention_truncated_history ... ok
+test presence_history::durable::tests::durable_presence_history_snapshot_and_reset_follow_presence_semantics ... ok
+test presence_history::store::tests::time_bounded_snapshot_allows_clock_skew_serial_gaps_and_missing_prefixes ... ok
+test presence_history::tracking::tests::tracking_presence_history_store_marks_failed_channels_degraded ... ok
+test presence_history::tracking::tests::tracking_presence_history_store_escalates_existing_stream_failures_to_reset_required ... ok
+test presence_history::types::tests::presence_history_cursor_rejects_oversized_input_before_decoding ... ok
+test presence_history::tracking::tests::tracking_store_fail_closed_degrades_on_write_failure ... ok
+test namespace::tests::wildcard_only_subscription_matches_concrete_channel_in_partitioned_lookup ... ok
+test namespace::tests::remove_socket_from_all_users_cleans_all_associations ... ok
+test presence_history::durable::tests::durable_presence_same_node_concurrent_duplicates_append_once ... ok
+test redis_client::tests::sentinel_client_build_is_offline_safe ... ok
+test redis_client::tests::sentinel_requires_hosts ... ok
+test redis_client::tests::standalone_tls_applies_insecure_mode_explicitly ... ok
+test redis_client::tests::standalone_tls_reports_missing_private_ca ... ok
+test presence_history::memory::tests::rapid_join_leave_churn_maintains_correct_count ... ok
+test redis_client::tests::standalone_tls_upgrades_plain_redis_url ... ok
+test token::tests::test_token_sign ... ok
+test token::tests::test_token_verify_different_secrets ... ok
+test token::tests::test_token_verify_invalid ... ok
+test token::tests::test_token_verify_valid ... ok
+test presence_history::memory::tests::retention_eviction_under_count_cap_preserves_newest ... ok
+test presence_history::memory::tests::paging_through_large_retained_window_returns_all_events ... ok
+test presence_history::store::tests::sparse_filtered_reads_are_bounded_and_continue_without_skipping ... ok
+test utils::substitute_env_vars_tests::backward_compat_no_interpolation ... ok
+test utils::substitute_env_vars_tests::default_used_when_missing ... ok
+test utils::substitute_env_vars_tests::default_ignored_when_present ... ok
+test utils::substitute_env_vars_tests::adjacent_interpolations ... ok
+test utils::substitute_env_vars_tests::collects_all_missing_vars ... ok
+test utils::substitute_env_vars_tests::default_with_colons_preserved ... ok
+test utils::substitute_env_vars_tests::empty_default_produces_empty_string ... ok
+test utils::substitute_env_vars_tests::errors_on_missing_var ... ok
+test utils::substitute_env_vars_tests::no_placeholders_unchanged ... ok
+test utils::substitute_env_vars_tests::json_integration_round_trip ... ok
+test utils::substitute_env_vars_tests::mixed_resolved_and_default ... ok
+test utils::substitute_env_vars_tests::resolves_known_var ... ok
+test utils::tests::test_data_to_bytes_flexible ... ok
+test utils::tests::test_channel_namespace_name ... ok
+test utils::tests::test_validate_channel_name_rejects_unknown_namespace ... ok
+test utils::substitute_env_vars_tests::toml_integration_round_trip ... ok
+test utils::tests::test_validate_channel_name ... ok
+test utils::tests::test_validate_wildcard_subscription_pattern ... ok
+test utils::tests::test_wildcard_pattern_matches ... ok
+test version_store::encoding::tests::mismatched_predecessor_creates_independent_snapshot ... ok
+test version_store::encoding::tests::corrupt_or_unknown_storage_never_yields_truncated_text ... ok
+test version_store::encoding::tests::legacy_bytes_and_compact_historical_record_are_exact ... ok
+test utils::tests::test_validate_channel_name_rejects_user_limited_without_namespace_support ... ok
+test version_store::tests::atomic_create_abort_before_commit_does_not_expose_recovery_gap ... ok
+test version_store::tests::atomic_mutation_id_replay_returns_original_receipt_and_rejects_payload_change ... ok
+test options::push::tests::push_release_env_overrides_are_parsed ... ok
+test presence_registry::tests::multiple_connections_preserve_first_join_and_last_leave ... ok
+test presence_registry::tests::connection_has_members_distinguishes_registration_from_presence_entry ... ok
+test presence_history::durable::tests::durable_presence_cache_observes_other_nodes_and_late_commits ... ok
+test namespace::tests::live_user_association_resolves_through_sockets ... ok
+test presence_registry::tests::disconnect_is_idempotent_and_removes_every_client_once ... ok
+test presence_history::memory::tests::orphan_cleanup_records_dead_node_id ... ok
+test version_store::tests::leased_store_discards_stale_local_range_when_reserving_after_latest ... ok
+test version_store::tests::default_batch_projection_uses_one_history_read_and_zero_row_reads ... ok
+test version_store::tests::memory_store_pages_version_history ... ok
+test presence_registry::tests::one_connection_can_authoritatively_hold_multiple_clients ... ok
+test presence_history::durable::review_tests::incomplete_empty_and_reset_races_never_prove_absence ... ok
+test presence_registry::tests::detach_removes_only_the_requested_channel_and_keeps_connection_live ... ok
+test namespace::tests::remove_connection_before_add_user_prevents_insertion ... ok
+test utils::tests::test_validate_channel_name_with_namespace_override ... ok
+test version_store::tests::memory_store_projects_latest_by_history_order ... ok
+test version_store::tests::memory_store_rejects_duplicate_channel_delivery_serial ... ok
+test version_store::tests::memory_batch_projection_returns_latest_records_for_requested_serials ... ok
+test presence_registry::tests::two_node_join_leave_race_has_one_first_join_and_one_last_leave ... ok
+test version_store::tests::atomic_terminal_race_applies_one_terminal_append_and_rejects_the_other ... ok
+test version_store::tests::memory_store_reserves_delivery_positions_with_stable_stream_id ... ok
+test versioned_message_auth::tests::own_append_fails_without_identified_actor ... ok
+test versioned_message_auth::tests::own_update_fails_for_mismatched_actor ... ok
+test versioned_message_auth::tests::own_update_succeeds_for_matching_identified_actor ... ok
+test version_store::tests::memory_store_rejects_invalid_append_without_corrupting_chain ... ok
+test version_store::tests::memory_store_replay_log_rebuilds_identical_aggregates ... ok
+test version_store::tests::memory_store_replays_in_delivery_order ... ok
+test version_store::tests::shared_store_two_node_create_admission_enforces_open_stream_limit_atomically ... ok
+test version_store::tests::leased_store_reserves_gapless_serials_with_amortized_backend_calls ... ok
+test versioned_message_auth::tests::any_delete_succeeds_without_owner_match ... ok
+test versioned_messages::tests::append_rejects_non_string_payloads ... ok
+test versioned_message_auth::tests::mutation_without_capability_is_denied ... ok
+test versioned_messages::tests::append_rolls_up_full_string_state ... ok
+test versioned_message_auth::tests::privileged_server_grants_any_scope ... ok
+test versioned_messages::tests::delete_can_clear_visible_fields ... ok
+test versioned_messages::tests::latest_visible_winner_is_highest_version_serial ... ok
+test version_store::tests::memory_store_returns_latest_visible_by_version_serial ... ok
+test version_store::tests::memory_store_aggregates_many_appends_for_latest_and_history_reads ... ok
+test versioned_messages::tests::replay_continuity_requires_contiguous_delivery_serials ... ok
+test namespace::tests::remove_user_socket_association_cleans_both_indexes ... ok
+test versioned_messages::tests::serials_reject_values_longer_than_storage_limit ... ok
+test versioned_messages::tests::update_keeps_omitted_fields ... ok
+test versioned_messages::tests::version_chain_rejects_duplicate_version_serial ... ok
+test versioned_messages::tests::version_chain_rejects_mixed_history_identity ... ok
+test versioned_messages::tests::version_chain_rejects_mixed_message_identity ... ok
+test webhook_types::tests::legacy_job_data_without_job_id_is_accepted ... ok
+test versioned_messages::tests::update_distinguishes_explicit_empty_from_clear ... ok
+test webhook_types::tests::matches_channel_combined_prefix_and_namespace_both_pass ... ok
+test webhook_types::tests::matches_channel_combined_prefix_and_namespace_namespace_fails ... ok
+test webhook_types::tests::matches_channel_namespace_singular_mismatch ... ok
+test webhook_types::tests::matches_channel_invalid_regex_returns_false ... ok
+test webhook_types::tests::matches_channel_namespaces_plural_in_list ... ok
+test webhook_types::tests::matches_channel_namespaces_plural_not_in_list ... ok
+test webhook_types::tests::matches_channel_namespace_singular_match ... ok
+test webhook_types::tests::matches_channel_no_prefix_with_namespace ... ok
+test webhook_types::tests::matches_channel_all_none_always_true ... ok
+test webhook_types::tests::matches_channel_prefix_match ... ok
+test webhook_types::tests::matches_channel_combined_prefix_and_namespace_prefix_fails ... ok
+test webhook_types::tests::matches_channel_suffix_match ... ok
+test webhook_types::tests::matches_channel_presence_prefix_namespace_extraction ... ok
+test websocket::capabilities::tests::push_capabilities_are_explicit_and_channel_scoped ... ok
+test webhook_types::tests::matches_channel_prefix_mismatch ... ok
+test webhook_types::tests::matches_channel_with_pattern_none_skips_pattern_check ... ok
+test websocket::tests::close_wait_returns_error_when_writer_is_cancelled_before_flush ... ok
+test webhook_types::tests::matches_channel_valid_pattern_match ... ok
+test websocket::tests::batched_gate_drain_stays_open_until_an_empty_atomic_pass ... ok
+test websocket::tests::rejected_prepared_frame_never_advances_byte_admission ... ok
+test websocket::capabilities::tests::object_capabilities_are_explicit_and_channel_scoped ... ok
+test webhook_types::tests::matches_channel_with_pattern_applies_supplied_pattern ... ok
+test websocket::state::timeout_tests::clear_all_aborts_token_expiry_task ... ok
+test websocket::tests::rewind_gates_share_one_message_allocation_across_subscribers ... ok
+test websocket::tests::close_frame_delivered_before_cancellation ... ok
+test websocket::tests::test_buffer_limit_both ... ok
+test websocket::tests::outbound_frames_preserve_enqueue_order_across_sources ... ok
+test websocket::tests::test_buffer_limit_bytes_only ... ok
+test websocket::tests::test_buffer_limit_messages_only ... ok
+test websocket::tests::test_byte_counter_basic ... ok
+test websocket::tests::test_byte_counter_would_exceed ... ok
+test webhook_types::tests::matches_channel_suffix_mismatch ... ok
+test websocket::tests::shutdown_cancels_task_while_handle_retained ... ok
+test websocket::tests::finish_rewind_gate_drains_buffered_messages ... ok
+test websocket::state::disconnect_cause_tests::specific_disconnect_cause_is_not_overwritten ... ok
+test websocket::tests::test_connection_capabilities_allow_matching_mutation_channels ... ok
+test websocket::tests::subscribe_getters_return_expected_values ... ok
+test websocket::tests::test_connection_capabilities_default_to_unrestricted_when_missing ... ok
+test websocket::tests::test_connection_capabilities_parse_hyphenated_annotation_grants ... ok
+test websocket::tests::rewind_gate_rejects_late_admission_after_drain_for_live_delivery ... ok
+test websocket::tests::test_connection_state ... ok
+test webhook_types::tests::matches_channel_valid_pattern_no_match ... ok
+test namespace::tests::concurrent_add_remove_churn_leaves_empty_indexes ... ok
+test websocket::tests::test_send_after_close_returns_error ... ok
+test websocket::tests::test_sized_message ... ok
+test websocket::tests::test_socket_id_display ... ok
+test websocket::tests::test_shutdown_token_cancels_receiver ... ok
+test websocket::tests::test_connection_capabilities_allow_matching_channels ... ok
+test websocket::tests::rewind_gate_fails_closed_when_count_or_byte_limit_overflows ... ok
+test websocket::tests::test_websocket_buffer_config_byte_limit ... ok
+test websocket::tests::test_websocket_buffer_config_default ... ok
+test websocket::tests::test_rewind_gate_buffers_and_drains_messages ... ok
+test websocket::tests::test_websocket_buffer_config_message_limit ... ok
+test websocket::tests::test_websocket_buffer_config_legacy_new ... ok
+test websocket::tests::resubscribe_preserves_rewind_gate_and_clears_attach_serial ... ok
+test websocket::tests::rewind_gate_message_overflow_shuts_down_connection ... ok
+test websocket::tests::test_websocket_buffer_config_both_limits ... ok
+test websocket::tests::test_socket_id_generation ... ok
+test websocket::tests::test_byte_counter_reservation_is_atomic_at_limit ... ok
+test websocket::tests::unified_outbound_queue_keeps_independent_source_bounds ... ok
+test websocket::tests::rewind_gate_byte_overflow_shuts_down_connection ... ok
+test websocket::tests::unsubscribe_removes_all_per_channel_state ... ok
+test presence_history::durable::review_tests::channel_churn_and_large_retention_bound_disposable_metadata ... ok
+test websocket::tests::prepared_broadcast_preserves_negotiated_frame_and_byte_accounting ... ok
+test presence_registry::tests::sustained_same_client_contention_preserves_first_and_last_transitions ... ok
+test version_store::tests::memory_store_preserves_channel_delivery_order_under_concurrent_appends ... ok
+test version_store::memory::compact_tests::append_snapshots_share_storage_and_survive_partial_retention ... ok
+test presence_registry::tests::concurrent_capacity_limit_has_exactly_one_winner_per_slot ... ok
+test idempotency::tests::identical_retry_observes_the_original_receipt ... ok
+test websocket::tests::test_concurrent_sends_preserve_ordering ... ok
+test websocket::tests::close_with_error_code_sends_error_then_close_frame ... ok
+test websocket::tests::test_send_broadcast_delivers_without_lock ... ok
+test websocket::tests::test_send_message_serializes_and_delivers ... ok
+test presence_history::durable::review_tests::expired_ranges_do_not_consume_membership_capacity_under_retention_churn ... ok
+test presence_registry::tests::empty_channel_cache_remains_bounded_under_identifier_churn ... ok
+test version_store::tests::atomic_compare_and_apply_preserves_one_hundred_concurrent_append_fragments ... ok
+test presence_registry::tests::idle_capacity_reservations_are_reclaimed_without_false_overcapacity ... ok
+test websocket::tests::test_send_message_respects_wire_format ... ok
+test presence_registry::tests::transient_identifiers_do_not_accumulate_coordination_locks ... ok
+test presence_history::durable::review_tests::membership_merging_and_pruning_never_forget_retained_identity ... ok
+test presence_history::durable::review_tests::steady_new_members_do_not_replay_history_beyond_metadata_capacity ... ok
+test presence_history::durable::review_tests::cold_member_lookup_reads_only_candidate_ranges_and_fails_closed ... ok
+test namespace::tests::concurrent_churn_keeps_activation_and_vacation_balanced ... ok
+test history::tests::maintenance_releases_idle_payload_owners_before_any_channel_read ... ok
+
+test result: ok. 382 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+     Running tests/cors_specific_case.rs (target/debug/deps/cors_specific_case-7d427b85157d984c)
+
+running 4 tests
+test cors_specific_case_tests::test_common_cors_patterns ... ok
+test cors_specific_case_tests::test_cors_and_app_origins_behave_identically ... ok
+test cors_specific_case_tests::test_cors_config_wildcard_origins ... ok
+test cors_specific_case_tests::test_protocol_agnostic_with_custom_port ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/docs_config_defaults.rs (target/debug/deps/docs_config_defaults-4e5b2a10a047975d)
+
+running 1 test
+test documented_ai_transport_related_defaults_match_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/origin_validation_integration.rs (target/debug/deps/origin_validation_integration-d6f69bcfd335c3d1)
+
+running 2 tests
+test origin_validation_integration_tests::test_complex_wildcard_patterns ... ok
+test origin_validation_integration_tests::test_edge_cases ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unix_socket_config.rs (target/debug/deps/unix_socket_config-8ba58a89a4f59172)
+
+running 18 tests
+test unix_socket_config_tests::test_unix_socket_config_defaults ... ok
+test unix_socket_config_tests::test_unix_socket_security_validation_relative_path ... ok
+test unix_socket_config_tests::test_unix_socket_security_validation_directory_traversal ... ok
+test unix_socket_config_tests::test_unix_socket_config_invalid_octal_permission ... ok
+test unix_socket_config_tests::test_unix_socket_config_various_valid_permissions ... ok
+test unix_socket_config_tests::test_unix_socket_config_json_deserialization ... ok
+test unix_socket_config_tests::test_unix_socket_config_permission_too_high ... ok
+test unix_socket_config_tests::test_unix_socket_config_permission_invalid_octal_digits ... ok
+test unix_socket_config_tests::test_env_override_unix_socket_permission_non_octal ... ok
+test unix_socket_config_tests::test_env_override_unix_socket_enabled ... ok
+test unix_socket_config_tests::test_env_override_unix_socket_path ... ok
+test unix_socket_config_tests::test_unix_socket_validation_enabled_empty_path ... ok
+test unix_socket_config_tests::test_unix_socket_security_validation_safe_paths ... ok
+test unix_socket_config_tests::test_unix_socket_ssl_warning_scenario ... ok
+test unix_socket_config_tests::test_env_override_unix_socket_permission_invalid ... ok
+test unix_socket_config_tests::test_full_server_options_with_unix_socket ... ok
+test unix_socket_config_tests::test_unix_socket_validation_disabled_ignores_path ... ok
+test unix_socket_config_tests::test_unix_socket_validation_permission_too_high ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/v2_feature_config.rs (target/debug/deps/v2_feature_config-fa776ac5cf09dcd5)
+
+running 2 tests
+test v2_feature_config_tests::test_v2_feature_config_defaults ... ok
+test v2_feature_config_tests::test_v2_feature_config_env_overrides ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_delta-c2bff48d01f6d436)
+
+running 34 tests
+test compression::tests::explicit_vcdiff_round_trips_short_compatibility_payloads ... ok
+test compression::tests::test_is_encrypted_channel ... ok
+test compression::tests::test_encrypted_channel_skips_compression ... ok
+test conflation::tests::test_conflation_key_extraction_no_path ... ok
+test compression::tests::test_compression_first_message ... ok
+test compression::tests::test_compression_uses_per_channel_algorithm ... ok
+test compression::tests::test_compression_small_message_uncompressed ... ok
+test conflation::tests::test_conflation_key_extraction_nested ... ok
+test conflation::tests::test_conflation_key_extraction_root_level ... ok
+test compression::tests::test_xdelta3_algorithm ... ok
+test compression::tests::test_compression_delta_creation ... ok
+test manager::tests::test_delta_compression_manager_enable_disable ... ok
+test manager::tests::test_full_per_subscription_flow ... ok
+test conflation::tests::test_conflation_key_with_number_type ... ok
+test manager::tests::test_clear_channel_state_clears_delta_settings ... ok
+test conflation::tests::test_conflation_improves_compression_efficiency ... ok
+test compression::tests::test_algorithm_comparison ... ok
+test manager::tests::test_has_channel_delta_settings ... ok
+test manager::tests::test_is_enabled_for_socket_channel_respects_encrypted ... ok
+test manager::tests::test_global_disabled_ignores_per_channel ... ok
+test manager::tests::test_per_channel_algorithm_override ... ok
+test manager::tests::test_per_channel_delta_settings_enable_disable ... ok
+test manager::tests::test_per_channel_delta_settings_without_global_enable ... ok
+test state::tests::test_per_channel_delta_settings_default ... ok
+test messages::tests::test_base64_encode ... ok
+test manager::tests::test_per_channel_settings_ignored_for_encrypted_channels ... ok
+test manager::tests::wildcard_channel_delta_settings_apply_to_matching_channels ... ok
+test state::tests::test_conflation_cache_should_send_full_message ... ok
+test manager::tests::wildcard_channel_delta_settings_apply_algorithm_override ... ok
+test state::tests::test_remove_channel_delta_settings ... ok
+test conflation::tests::test_conflation_state_cleanup ... ok
+test state::tests::test_socket_delta_state_algorithm_selection ... ok
+test state::tests::test_socket_delta_state_channel_enabled_check ... ok
+test conflation::tests::test_conflation_key_separate_delta_states ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_filter-f103953140e2f3e8)
+
+running 55 tests
+test node::tests::test_deserialize_numeric_val ... ok
+test node::tests::test_deserialize_mixed_types ... ok
+test node::tests::test_deserialize_and_with_numeric_values ... ok
+test node::tests::test_deserialize_numeric_vals ... ok
+test node::tests::test_validate_existence_checks ... ok
+test node::tests::test_validate_invalid_and_no_children ... ok
+test node::tests::test_validate_invalid_leaf_missing_key ... ok
+test node::tests::test_serialize_simple_filter ... ok
+test node::tests::test_validate_invalid_leaf_missing_value ... ok
+test node::tests::test_validate_invalid_not_multiple_children ... ok
+test node::tests::test_validate_invalid_set_operation_empty_vals ... ok
+test node::tests::test_serialize_complex_filter ... ok
+test node::tests::test_validate_valid_and ... ok
+test node::tests::test_validate_valid_leaf ... ok
+test node::tests::test_validate_valid_not ... ok
+test node::tests::test_validate_valid_set_operation ... ok
+test ops::tests::test_compare_op_as_str ... ok
+test node::tests::validation_rejects_unknown_logical_and_comparison_operators ... ok
+test ops::tests::test_compare_op_from_str ... ok
+test ops::tests::test_logical_op_as_str ... ok
+test ops::tests::test_logical_op_from_str ... ok
+test ops::tests::test_round_trip_compare_ops ... ok
+test ops::tests::test_round_trip_logical_ops ... ok
+test predicate::tests::bounded_projection_stops_at_the_configured_limit ... ok
+test predicate::tests::equal_ids_do_not_prove_equivalent_predicates ... ok
+test predicate::tests::expression_ast_limits_are_enforced_after_parsing ... ok
+test predicate::tests::combines_events_tags_and_expression ... ok
+test predicate::tests::projected_document_is_reusable_and_identity_is_canonical ... ok
+test predicate::tests::rejects_ambiguous_tag_node_shapes ... ok
+test predicate::tests::rejects_unknown_operators_and_all_bounded_dimensions ... ok
+test tests::test_and ... ok
+test tests::test_complex_nested ... ok
+test tests::test_and_filter_with_numeric_deserialization ... ok
+test tests::test_contains ... ok
+test tests::test_ends_with ... ok
+test tests::test_equal ... ok
+test tests::test_exists ... ok
+test tests::test_greater_than ... ok
+test tests::test_greater_than_or_equal ... ok
+test tests::test_in ... ok
+test tests::test_less_than ... ok
+test tests::test_less_than_or_equal ... ok
+test tests::test_missing_key_in_comparison ... ok
+test tests::test_missing_key_in_numeric_comparison ... ok
+test tests::test_not ... ok
+test tests::test_not_equal ... ok
+test tests::test_not_exists ... ok
+test tests::test_not_in ... ok
+test tests::test_numeric_comparison_decimals ... ok
+test tests::test_numeric_comparison_integers ... ok
+test tests::test_numeric_val_deserialization ... ok
+test tests::test_or ... ok
+test tests::test_starts_with ... ok
+test predicate::tests::arbitrary_event_inputs_never_bypass_limits ... ok
+test predicate::tests::arbitrary_jmespath_source_never_panics ... ok
+
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_metrics-4e4e623a12cfc165)
+
+running 2 tests
+test prometheus::handles::tests::cached_keys_follow_the_active_recorder_and_preserve_overflow_labels ... ok
+test prometheus::interface::annotation_metric_tests::annotation_churn_has_bounded_series_and_exact_aggregate_counts ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_protocol-9db519c10af4b163)
+
+running 40 tests
+test messages::tests::info_query_parser_trims_and_matches_exactly ... ok
+test messages::tests::annotation_create_serializes_camel_case_contract ... ok
+test messages::tests::protocol_heartbeat_detection_ignores_regular_messages ... ok
+test messages::tests::message_summary_serializes_summary_envelope ... ok
+test protocol_version::tests::test_from_query_param ... ok
+test messages::tests::protocol_heartbeat_detection_matches_both_prefix_families ... ok
+test protocol_version::tests::test_parse_any_protocol_event ... ok
+test messages::tests::pusher_message_debug_redacts_payload_extras_and_idempotency ... ok
+test protocol_version::tests::test_rewrite_event_prefix ... ok
+test protocol_version::tests::test_v1_prefix ... ok
+test protocol_version::tests::test_v2_native_features ... ok
+test protocol_version::tests::test_parse_event_name ... ok
+test protocol_version::tests::test_v2_prefix ... ok
+test protocol_version::tests::test_wire_event ... ok
+test protocol_version::tests::test_wire_internal_event ... ok
+test versioned_messages::tests::append_request_allows_empty_terminal_data ... ok
+test versioned_messages::tests::append_request_rejects_empty_non_terminal_data ... ok
+test versioned_messages::tests::delete_request_deserializes_string_data_via_serde_json ... ok
+test versioned_messages::tests::delete_request_rejects_replace_and_clear_same_field ... ok
+test versioned_messages::tests::update_request_deserializes_string_data_via_serde_json ... ok
+test versioned_messages::tests::update_request_deserializes_string_data_via_sonic ... ok
+test versioned_messages::tests::update_request_rejects_empty_body ... ok
+test versioned_messages::tests::update_request_rejects_replace_and_clear_same_field ... ok
+test versioned_messages::tests::update_request_preserves_large_json_number_across_serde_round_trip ... ok
+test versioned_messages::tests::versioned_realtime_message_rejects_mismatched_event ... ok
+test versioned_messages::tests::versioned_realtime_message_requires_version_metadata ... ok
+test versioned_messages::tests::versioned_realtime_message_validates_v2_event_name ... ok
+test wire::tests::parse_query_param_accepts_known_values ... ok
+test wire::tests::deserialize_versioned_message_rejects_invalid_action_event_pair ... ok
+test wire::tests::parse_query_param_rejects_unknown_value ... ok
+test wire::tests::messagepack_rejects_trailing_values ... ok
+test wire::tests::round_trip_messagepack ... ok
+test wire::tests::round_trip_messagepack_binary_uses_native_bin_data ... ok
+test wire::tests::round_trip_protobuf ... ok
+test wire::tests::round_trip_protobuf_binary ... ok
+test wire::tests::round_trip_versioned_messagepack_binary ... ok
+test wire::tests::round_trip_versioned_messagepack ... ok
+test wire::tests::round_trip_versioned_protobuf ... ok
+test wire::tests::versioned_messagepack_rejects_trailing_values ... ok
+test wire::borrowing_tests::borrowed_encoders_preserve_every_binary_field_and_owned_decoders ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocol_compliance.rs (target/debug/deps/protocol_compliance-2b02693ae372aa06)
+
+running 71 tests
+test test_ai_codec_headers_accept_ably_camel_case_keys ... ok
+test test_ai_codec_headers_reject_unsafe_keys ... ok
+test test_ai_codec_other_values_stay_small ... ok
+test test_ai_codec_provider_metadata_accepts_ably_sized_payloads ... ok
+test test_ai_codec_provider_metadata_remains_bounded ... ok
+test test_ai_event_constants_and_predicate ... ok
+test test_ai_header_validation_rejects_limits_and_domains ... ok
+test test_ai_transport_accepts_run_continue_header ... ok
+test test_ai_transport_accepts_steer_codec_message_ids_header ... ok
+test test_ai_transport_headers_are_borrowed_views ... ok
+test test_ai_transport_identity_keys_reject_empty_except_native_unknown_owners ... ok
+test test_ai_transport_legacy_turn_id_alias_is_still_readable ... ok
+test test_ai_transport_model_key_accepted ... ok
+test test_ai_transport_model_key_optional ... ok
+test test_ai_transport_model_key_rejects_empty ... ok
+test test_ai_transport_msg_regenerate_accepts_ably_message_id ... ok
+test test_ai_transport_msg_regenerate_rejects_empty ... ok
+test test_ai_transport_rejects_obsolete_start_serial_header ... ok
+test test_ai_transport_still_accepts_legacy_turn_continue_header ... ok
+test test_ai_transport_supersedes_accepts_run_id ... ok
+test test_ai_transport_supersedes_rejects_empty ... ok
+test test_ai_transport_unknown_owner_sentinels_are_wire_preserved_but_not_identities ... ok
+test test_cache_miss_event_format ... ok
+test test_channel_event_with_user_id ... ok
+test test_channel_info_full_format ... ok
+test test_channel_event_format ... ok
+test test_channel_info_minimal_format ... ok
+test test_channel_info_with_cache_data ... ok
+test test_channel_info_with_subscription_count ... ok
+test test_channel_info_with_user_count ... ok
+test test_channel_info_zero_values ... ok
+test test_client_event_accepts_json ... ok
+test test_client_event_accepts_string ... ok
+test test_configured_steer_ceiling_admits_a_larger_stamp ... ok
+test test_configured_steer_ceiling_does_not_widen_scalar_values ... ok
+test test_connection_established_format ... ok
+test test_default_limits_match_the_compiled_ceilings ... ok
+test test_encrypted_channel_event_format ... ok
+test test_error_format ... ok
+test test_extras_default_is_all_none ... ok
+test test_extras_idempotency_key ... ok
+test test_extras_skipped_in_serialization_when_none ... ok
+test test_extras_round_trip_serialize_deserialize ... ok
+test test_filter_headers_returns_headers_when_set ... ok
+test test_filter_headers_returns_none_when_extras_none ... ok
+test test_is_ephemeral_false_when_extras_none ... ok
+test test_is_ephemeral_false_when_extras_present_but_not_set ... ok
+test test_is_ephemeral_true_when_set ... ok
+test test_member_added_format ... ok
+test test_member_removed_format ... ok
+test test_per_key_steer_allowance_does_not_widen_other_transport_keys ... ok
+test test_ping_format ... ok
+test test_pong_format ... ok
+test test_should_echo_false_overrides_connection_default ... ok
+test test_should_echo_returns_connection_default_when_extras_none ... ok
+test test_should_echo_true_overrides_connection_default ... ok
+test test_should_include_extras_by_protocol ... ok
+test test_signin_success_format ... ok
+test test_steer_codec_message_ids_exceeds_the_generic_scalar_budget ... ok
+test test_steer_codec_message_ids_still_has_a_ceiling ... ok
+test test_subscription_succeeded_non_presence_format ... ok
+test test_subscription_succeeded_format ... ok
+test test_v1_channel_event_json_snapshot_is_stable_without_extras ... ok
+test test_v1_delivery_strips_extras ... ok
+test test_v2_delivery_includes_extras ... ok
+test test_v2_extras_push_is_serialized_inside_extras ... ok
+test test_validate_headers_accepts_flat_scalars ... ok
+test test_validate_headers_ok_when_no_extras ... ok
+test test_validate_headers_rejects_arrays ... ok
+test test_validate_headers_rejects_nested_objects ... ok
+test test_watchlist_events_format ... ok
+
+test result: ok. 71 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_push-307d1a9706900c08)
+
+running 137 tests
+test dispatch::tests::adaptive_rate_limiter_shrinks_and_grows_slowly ... ok
+test crypto::tests::queued_work_is_bounded_and_cancellation_reclaims_admission ... ok
+test dispatch::tests::invalid_token_classes_are_cleanup_signals ... ok
+test dispatch::tests::auth_cache_refreshes_only_inside_five_minute_window ... ok
+test dispatch::tests::circuit_breaker_opens_half_opens_and_closes ... ok
+test dispatch::tests::webpush_failure_classification_separates_subscription_auth_quota_and_provider_errors ... ok
+test dispatch::tests::provider_worker_expires_batch_without_dispatching ... ok
+test dispatch::tests::provider_outage_responses_are_retryable ... ok
+test dispatch::tests::provider_worker_dispatches_due_jobs_and_requeues_future_jobs ... ok
+test dispatch::tests::classifies_provider_error_classes_and_retry_after ... ok
+test dispatch::tests::apns_failure_classification_keeps_topic_auth_and_quota_off_device_health ... ok
+test cleanup::tests::cleanup_respects_tick_budget ... ok
+test cleanup::tests::cleanup_worker_records_metrics ... ok
+test dispatch::tests::provider_worker_defers_future_batch_without_dispatching ... ok
+test cleanup::tests::cleanup_deletes_expired_state_and_retains_active_state ... ok
+test dispatch::tests::fcm_failure_classification_preserves_devices_for_project_auth_quota_and_payload_errors ... ok
+test dispatch::tests::provider_request_debug_redacts_credentials_and_tokens ... ok
+test crypto::tests::cancelled_worker_keeps_capacity_until_crypto_finishes ... ok
+test dispatch::tests::provider_dispatchers_build_expected_headers_and_payloads ... ok
+test dispatch::fcm::tests::fcm_dispatcher_invalidates_token_and_retries_auth_failures ... ok
+test domain::tests::cursor_encoding_is_opaque_app_scoped_and_round_trips ... ok
+test domain::tests::terminal_outcome_count_does_not_overflow_u64 ... ok
+test dispatch::tests::provider_worker_bounds_outbound_dispatch_batch_size ... ok
+test domain::tests::pbkdf2_sha256_matches_known_test_vectors ... ok
+test domain::tests::deleting_missing_device_is_successful ... ok
+test domain::tests::web_push_endpoint_validation_blocks_ssrf_targets ... ok
+test domain::tests::zero_planned_publish_keeps_its_current_state ... ok
+test dispatch::tests::cached_preview_payload_is_provider_dispatch_input ... ok
+test domain::tests::publish_lifecycle_transitions_are_monotonic_and_terminal_states_are_absorbing ... ok
+test domain::tests::realtime_recipient_is_a_native_validated_push_target ... ok
+test feedback::tests::duplicate_retryable_feedback_is_suppressed ... ok
+test domain::tests::template_fallback_uses_exact_locale_then_language_then_default ... ok
+test batch_wire::tests::unknown_versions_and_missing_groups_fail_without_payload_diagnostics ... ok
+test feedback::tests::feedback_can_refine_a_terminal_summary_without_reactivating_it ... ok
+test dispatch::tests::weighted_scheduler_downgrades_over_quota_tenants_and_caps_each_lane ... ok
+test feedback::tests::concurrent_feedback_updates_do_not_lose_publish_counters ... ok
+test feedback::tests::feedback_worker_future_can_run_on_supervised_multithreaded_executor ... ok
+test lifecycle::tests::lifecycle_requires_exact_outcomes_and_completed_planner_receipt ... ok
+test feedback::tests::feedback_duplicate_suppression_prevents_counter_drift ... ok
+test feedback::tests::feedback_dedupe_is_scoped_by_publish_id ... ok
+test feedback::tests::redelivered_feedback_message_does_not_double_count_status ... ok
+test batch_wire::tests::mixed_payload_groups_and_retry_feedback_survive_restart ... ok
+test memory::tests::memory_status_cas_rejects_stale_snapshot_after_recreation ... ok
+test memory::tests::non_memory_backends_return_explicit_startup_errors ... ok
+test lifecycle::tests::memory_cleanup_scans_are_bounded_and_progress_past_active_prefixes ... ok
+test meta::tests::meta_event_serialization_is_redaction_safe ... ok
+test metrics::tests::app_removal_releases_app_and_tenant_snapshots_without_changing_other_apps ... ok
+test metrics::tests::cleanup_metrics_use_bounded_labels ... ok
+test metrics::tests::metric_catalog_covers_release_4_5_observability_contract ... ok
+test metrics::tests::push_metrics_records_labeled_samples ... ok
+test batch_wire::tests::legacy_and_compact_restart_roundtrips_preserve_context_and_share_payloads ... ok
+test dispatch::auth::tests::cancelled_refresh_does_not_poison_admission ... ok
+test pipeline::tests::accept_rejects_missing_template_before_queueing ... ok
+test memory::tests::memory_store_satisfies_secondary_storage_contracts ... ok
+test pipeline::tests::accept_recovers_status_created_before_idempotency_election ... ok
+test pipeline::tests::accept_does_not_attach_new_work_to_a_conflicting_status ... ok
+test memory::tests::memory_store_coordinates_scheduler_locks_and_operator_invalidations ... ok
+test feedback::tests::retryable_feedback_enqueues_retry_with_original_job_context ... ok
+test memory::tests::memory_status_cas_allows_exactly_one_writer_per_revision ... ok
+test pipeline::tests::memory_queue_lists_and_replays_dead_letters ... ok
+test pipeline::tests::feature_queue_runtime_preserves_ack_retry_and_lag_contract ... ok
+test pipeline::tests::memory_queue_reclaims_expired_leases ... ok
+test pipeline::tests::duplicate_accept_increments_duplicate_suppressed_metric ... ok
+test feedback::tests::feedback_batch_applies_sixty_four_outcomes_with_two_status_writes ... ok
+test pipeline::tests::memory_queue_lists_marker_dead_letters_as_not_replayable ... ok
+test pipeline::tests::push_queue_startup_checks_are_feature_aware ... ok
+test dispatch::auth::tests::invalidation_fences_refresh_and_clears_failed_outcomes ... ok
+test domain::tests::device_push_state_transitions_follow_failure_threshold_rules ... ok
+test domain::tests::channel_subscriptions_are_separate_app_scoped_push_rows ... ok
+test domain::tests::validation_rejects_unbounded_metadata_and_invalid_recipient_fields ... ok
+test domain::tests::device_details_use_camel_case_serde_and_provider_recipient_shape ... ok
+test feedback::tests::feedback_provider_transient_does_not_increment_device_failure_count ... ok
+test pipeline::tests::planner_fast_path_copies_delivery_timing_fields ... ok
+test planner::tests::duplicate_publish_log_after_dispatching_does_not_emit_more_delivery_jobs ... ok
+test planner::tests::planner_does_not_regress_a_terminal_publish_to_dispatching ... ok
+test retry::tests::deterministic_jitter_stays_inside_ratio ... ok
+test memory::tests::memory_store_satisfies_device_registration_idempotency ... ok
+test reconcile::tests::repair_requeues_stale_queued_publish_log_when_queue_message_was_lost ... ok
+test reconcile::tests::repair_skips_fresh_and_non_queued_publish_logs ... ok
+test retry::tests::max_backoff_clamps_exponential_growth ... ok
+test retry::tests::overflow_safe_timestamp_math_saturates ... ok
+test retry::tests::retry_after_wins_over_exponential_backoff ... ok
+test pipeline::tests::accept_persists_status_and_enqueues_publish_log_before_returning ... ok
+test retry::tests::expiry_prevents_retry_schedule_from_passing_deadline ... ok
+test domain::tests::debug_redacts_tokens_credentials_metadata_and_raw_payloads ... ok
+test retry::tests::retry_scheduler_dead_letters_expired_entries ... ok
+test retry::tests::retry_scheduler_dead_letters_attempt_exhaustion ... ok
+test retry::tests::retry_scheduler_dead_letters_malformed_payload ... ok
+test retry::tests::retry_scheduler_defers_future_entries ... ok
+test retry::tests::retry_scheduler_does_not_ack_when_successor_produce_fails ... ok
+test rules::tests::exact_and_wildcard_rules_match_expected_channels ... ok
+test pipeline::tests::dispatch_and_feedback_update_status_and_device_state ... ok
+test retry::tests::retry_scheduler_emits_due_delivery_batch ... ok
+test rules::tests::payload_mapping_extracts_title_body_and_remaining_data ... ok
+test rules::tests::payload_mapping_rejects_malformed_data ... ok
+test retry::tests::retry_status_write_does_not_regress_a_terminal_publish ... ok
+test rules::tests::validation_rejects_ambiguous_or_unbounded_rules ... ok
+test retry::tests::retry_terminal_outcome_can_refine_an_estimated_terminal_summary ... ok
+test scheduler::tests::scheduled_intent_falls_back_to_shard_path_until_recipient_count_is_known ... ok
+test storage::migration_smoke_tests::hyperscale_status_contracts_include_cas_revisions ... ok
+test storage::migration_smoke_tests::hyperscale_backend_schema_contracts_cover_denormalized_indexes ... ok
+test pipeline::tests::publish_expiry_before_dispatch_marks_publish_expired ... ok
+test storage::migration_smoke_tests::mysql_push_schema_limits_indexed_identifiers_to_ascii ... ok
+test retry::tests::scheduled_retry_after_estimated_terminal_state_dispatches_without_regression ... ok
+test storage::migration_smoke_tests::push_migrations_cover_required_storage_families ... ok
+test transform::tests::notification_template_resolves_locale_fallback_and_merges_overrides ... ok
+test transform::tests::generic_payload_maps_to_provider_shapes ... ok
+test transform::tests::provider_overrides_apply_to_all_supported_providers ... ok
+test storage::migration_smoke_tests::surrealdb_schema_declares_small_tier_push_indexes ... ok
+test transform::tests::template_substitution_is_sandboxed_and_output_bounded ... ok
+test transform::tests::missing_template_variable_and_oversized_payload_fail_before_dispatch ... ok
+test transform::tests::provider_overrides_take_precedence_and_are_validated ... ok
+test scheduler::tests::scheduler_uses_distributed_lock_and_emits_publish_log_only ... ok
+test pipeline::tests::planner_fast_path_enqueues_provider_batches_without_dispatching ... ok
+test lifecycle::tests::memory_lifecycle_retention_survives_interruption_and_keeps_deletion_bounds ... ok
+test domain::tests::device_validation_rejects_raw_device_secrets ... ok
+test pipeline::tests::nested_client_shards_are_bounded_and_complete ... ok
+test pipeline::tests::retryable_until_attempts_exhausted_dead_letters_publish ... ok
+test pipeline::tests::retryable_once_then_accepted_completes_publish ... ok
+test pipeline::tests::underestimated_fast_audience_continues_without_dropping_recipients ... ok
+test pipeline::tests::template_edit_after_accept_does_not_change_planned_delivery ... ok
+test feedback::tests::feedback_device_transient_increments_only_that_device_failure_count ... ok
+test memory::tests::memory_store_satisfies_stale_cleanup_scans ... ok
+test pipeline::tests::shard_path_copies_timing_into_shard_and_delivery_jobs ... ok
+test feedback::tests::feedback_device_terminal_deletes_only_target_and_is_idempotent ... ok
+test pipeline::tests::publish_status_cas_conflict_retries_are_bounded ... ok
+test domain::tests::idempotency_keys_are_stable_and_token_changes_update_registration_not_device_key ... ok
+test feedback::tests::feedback_mass_provider_auth_outage_preserves_device_registry ... ok
+test domain::tests::device_identity_tokens_are_hashed_and_verifiable ... ok
+test feedback::tests::feedback_replays_every_committed_boundary_without_counter_or_device_drift ... ok
+test crypto::tests::async_identity_preserves_valid_invalid_and_malformed_results ... ok
+test memory::tests::memory_store_satisfies_cursor_pagination_and_channel_fanout ... ok
+test pipeline::tests::shard_worker_paginates_and_requeues_continuation ... ok
+test dispatch::auth::tests::concurrent_successes_and_failures_share_one_refresh ... ok
+test feedback::fault_tests::partial_successor_failure_nacks_source_and_replays_only_unfinished_effects ... ok
+test memory::tests::memory_store_handles_concurrent_registration_update ... ok
+test pipeline::tests::planner_reuses_rendered_payload_for_large_channel_fanout ... ok
+
+test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.76s
+
+     Running tests/push_memory_pipeline.rs (target/debug/deps/push_memory_pipeline-b58a3a697847c96d)
+
+running 4 tests
+test device_removed_after_admission_is_not_dispatched ... ok
+test two_planner_nodes_claim_shared_publish_log_once ... ok
+test client_scoped_channel_subscription_expands_current_durable_devices ... ok
+test memory_pipeline_accepts_and_plans_channel_publish ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_queue-729abe19d62be2ec)
+
+running 6 tests
+test memory_queue_manager::tests::stable_id_is_idempotent_and_conflicts_on_other_payload ... ok
+test memory_queue_manager::tests::capacity_fails_closed_instead_of_dropping ... ok
+test memory_queue_manager::tests::dedup_cleanup_is_bounded_and_preserves_refreshed_keys ... ok
+test memory_queue_manager::tests::expired_dedup_is_not_extended_by_cleanup_backlog ... ok
+test memory_queue_manager::tests::exhausted_job_can_be_replayed_from_dead_letter ... ok
+test memory_queue_manager::tests::processor_errors_retry_then_succeed ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/broker_performance_live.rs (target/debug/deps/broker_performance_live-e0bf4840c1b2d364)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/iggy_queue_live_test.rs (target/debug/deps/iggy_queue_live_test-66ff30c8e509a886)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/redis_queue_live_test.rs (target/debug/deps/redis_queue_live_test-a03cb8450b0c2a17)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_rate_limiter-02cf4b9c49a5c2e1)
+
+running 9 tests
+test memory_limiter::tests::test_rate_limiter_reset ... ok
+test factory::tests::create_websocket_uses_websocket_rate_limit_settings ... ok
+test memory_limiter::tests::test_rate_limiter_check_doesnt_increment ... ok
+test memory_limiter::tests::test_rate_limiter_basic ... ok
+test factory::tests::create_push_acceptance_uses_existing_driver_limit ... ok
+test factory::tests::create_api_uses_api_rate_limit_settings ... ok
+test memory_limiter::tests::test_rate_limiter_exceeds_limit ... ok
+test memory_limiter::tests::test_rate_limiter_concurrent_increments ... ok
+test memory_limiter::tests::test_shared_cleanup_reaps_idle_expired_entries ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+
+     Running tests/redis_limiter_live.rs (target/debug/deps/redis_limiter_live-29e0d6879b789d12)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_simulator-553725932907a559)
+
+running 19 tests
+test simulator::tests::nightly_disaster_burn_in_seed_passes ... ignored, nightly disaster burn-in profile
+test workload::tests::rejects_empty_weight_profiles ... ok
+test workload::tests::zero_weight_actions_are_never_selected ... ok
+test config::tests::different_swarm_seeds_produce_different_profiles ... ok
+test config::tests::swarm_profile_is_seed_deterministic ... ok
+test io::tests::schedule_order_varies_by_seed ... ok
+test io::tests::schedule_order_replays_for_same_seed ... ok
+test workload::tests::generator_is_seed_deterministic ... ok
+test shrink::tests::artifact_preserves_seed_derived_profile_and_replay_command ... ok
+test shrink::tests::shrinker_minimizes_controlled_failure_fixture ... ok
+test simulator::tests::same_seed_replays_schedule_and_timer_trace ... ok
+test simulator::tests::same_seed_replays_operation_fault_trace_and_report ... ok
+test simulator::tests::dropped_fanout_recovers_from_history ... ok
+test simulator::tests::upgrade_risk_profile_preserves_cross_phase_oracles ... ok
+test simulator::tests::same_seed_replays_across_real_push_boundary ... ok
+test simulator::tests::liveness_mode_enforces_bounded_quiesce ... ok
+test simulator::tests::same_seed_produces_same_report ... ok
+test simulator::tests::storage_fault_seed_exercises_durable_recovery_oracles ... ok
+test simulator::tests::seed_corpus_small_medium_and_disaster_heavy_passes ... ok
+
+test result: ok. 18 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+     Running unittests src/main.rs (target/debug/deps/sockudo_sim-cebad40bf01bd6e6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shrink.rs (target/debug/deps/shrink-7e10daafc03b5fcc)
+
+running 1 test
+test public_shrink_api_reduces_controlled_failure_artifact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sockudo_webhook-305ad0418040a1a8)
+
+running 36 tests
+test integration::tests::test_merge_jobs_for_queue_splits_oversized_jobs ... ok
+test integration::tests::test_merge_jobs_for_queue_batches_by_app_and_size ... ok
+test integration::tests::test_webhook_config_serialization ... ok
+test integration::tests::wants_channel_count_webhook_disabled_integration ... ok
+test sender::tests::test_process_webhook_job_invalid_app ... ok
+test integration::tests::wants_channel_count_webhook_filter_prefix_no_match ... ok
+test integration::tests::wants_channel_count_webhook_no_webhooks_configured ... ok
+test sender::tests::test_process_webhook_job_concurrent_requests ... ok
+test integration::tests::test_send_ai_observability_and_version_webhooks ... ok
+test integration::tests::test_webhook_integration_send_event ... ok
+test integration::tests::test_webhook_integration_send_member_added ... ok
+test integration::tests::test_send_cache_missed ... ok
+test sender::tests::test_creating_webhook_sender ... ok
+test integration::tests::wants_channel_count_webhook_two_webhooks_second_filter_matches ... ok
+test integration::tests::wants_channel_count_webhook_no_filter_webhook_matches_all ... ok
+test integration::tests::wants_channel_count_webhook_filter_prefix_match ... ok
+test integration::tests::ai_webhooks_bypass_the_unbounded_batching_vector ... ok
+test integration::tests::test_send_ai_stream_cancelled ... ok
+test integration::tests::wants_channel_count_webhook_match_no_filter ... ok
+test sender::tests::test_find_relevant_webhooks_splits_events_per_endpoint ... ok
+test sender::tests::test_filter_events_for_webhook_respects_channel_prefix ... ok
+test integration::tests::test_webhook_integration_send_client_event ... ok
+test sender::tests::test_process_webhook_job_no_events ... ok
+test integration::tests::test_webhook_integration_new ... ok
+test sender::tests::test_filter_events_for_webhook_invalid_pattern_drops_all_events ... ok
+test integration::tests::test_webhook_integration_send_channel_vacated ... ok
+test integration::tests::wants_channel_count_webhook_event_type_mismatch ... ok
+test integration::tests::test_webhook_integration_send_member_removed ... ok
+test integration::tests::test_webhook_integration_send_channel_occupied ... ok
+test integration::tests::test_webhook_integration_send_subscription_count_changed ... ok
+test sender::tests::test_filter_events_for_webhook_respects_channel_pattern ... ok
+test sender::tests::test_process_webhook_job_with_events ... ok
+test integration::tests::test_send_subscription_count_changed ... ok
+test integration::tests::batch_byte_bound_rejects_a_single_oversized_job ... ok
+test integration::tests::batched_admission_bounds_pending_and_drained_jobs_then_recovers_without_loss ... ok
+test sender::tests::retries_release_active_capacity_and_ignore_unbounded_error_bodies ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+   Doc-tests sockudo_ably_compat
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_adapter
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_ai_transport
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_app
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_cache
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_delta
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_filter
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_metrics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_push
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_queue
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_rate_limiter
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_simulator
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sockudo_webhook
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

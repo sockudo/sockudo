@@ -1,0 +1,1 @@
+AI conformance offline fixture validation passed

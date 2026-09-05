@@ -1,0 +1,201 @@
+use super::*;
+use sockudo_core::{
+    app::{App, AppManager, AppPolicy},
+    error::Result,
+    message_envelope::MessageEnvelope,
+    options::ServerOptions,
+};
+use sockudo_protocol::{
+    messages::{AiExtras, MessageData, MessageExtras, PusherMessage},
+    versioned_messages::{MessageAction, MessageVersionMetadata, apply_runtime_metadata},
+};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct DelayedApps {
+    gate: Arc<tokio::sync::Semaphore>,
+    entered: Arc<tokio::sync::Notify>,
+}
+#[async_trait::async_trait]
+impl AppManager for DelayedApps {
+    async fn init(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn create_app(&self, _: App) -> Result<()> {
+        Ok(())
+    }
+    async fn update_app(&self, _: App) -> Result<()> {
+        Ok(())
+    }
+    async fn delete_app(&self, _: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn get_apps(&self) -> Result<Vec<App>> {
+        Ok(vec![])
+    }
+    async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
+        self.find_by_id(key).await
+    }
+    async fn find_by_id(&self, id: &str) -> Result<Option<App>> {
+        if id == "slow" {
+            self.entered.notify_one();
+            let _permit = self.gate.acquire().await.unwrap();
+        }
+        Ok(Some(App::from_policy(
+            id.into(),
+            "test-key".into(),
+            "test-secret".into(),
+            true,
+            AppPolicy::default(),
+        )))
+    }
+    async fn check_health(&self) -> Result<()> {
+        Ok(())
+    }
+}
+struct Delivered {
+    healthy: AtomicUsize,
+    all: AtomicUsize,
+    last_healthy_ms: AtomicUsize,
+    started: Instant,
+}
+impl crate::handler::RealtimeEgressTap for Delivered {
+    fn has_subscribers(&self, _: &str, _: &str) -> bool {
+        true
+    }
+    fn deliver(&self, app_id: &str, _: &str, _: &PusherMessage, _: &MessageEnvelope) -> Result<()> {
+        self.all.fetch_add(1, Ordering::Relaxed);
+        if app_id != "slow" {
+            self.healthy.fetch_add(1, Ordering::Relaxed);
+            self.last_healthy_ms.store(
+                self.started.elapsed().as_millis() as usize,
+                Ordering::Relaxed,
+            );
+        }
+        Ok(())
+    }
+}
+fn append_message(channel: &str, version: u64) -> PusherMessage {
+    let mut message = PusherMessage::ping();
+    message.channel = Some(channel.into());
+    message.data = Some(MessageData::String("a".repeat(version as usize)));
+    message.extras = Some(MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([
+                ("status".into(), "streaming".into()),
+                ("append-fragment".into(), "a".into()),
+            ])),
+            codec: None,
+        }),
+        ..MessageExtras::default()
+    });
+    apply_runtime_metadata(
+        &mut message,
+        MessageAction::Append,
+        "message",
+        &MessageVersionMetadata {
+            serial: format!("v{version}"),
+            timestamp_ms: version as i64,
+            client_id: None,
+            description: None,
+            metadata: None,
+        },
+        Some(version),
+    );
+    message
+}
+async fn stalled_channel_sample() -> usize {
+    use sockudo_ai_transport::{DeferredFanoutContext, RollupConfig};
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let delivered = Arc::new(Delivered {
+        healthy: AtomicUsize::new(0),
+        all: AtomicUsize::new(0),
+        last_healthy_ms: AtomicUsize::new(0),
+        started: Instant::now(),
+    });
+    let apps = Arc::new(DelayedApps {
+        gate: Arc::clone(&gate),
+        entered: Arc::clone(&entered),
+    });
+    let adapter = Arc::new(crate::local_adapter::LocalAdapter::new());
+    let cache = Arc::new(
+        sockudo_cache::memory_cache_manager::MemoryCacheManager::new(
+            "f6-test".into(),
+            Default::default(),
+        ),
+    );
+    let handler = ConnectionHandler::builder(apps, adapter, cache, ServerOptions::default())
+        .realtime_egress_tap(delivered.clone())
+        .build();
+    let engine = Arc::new(RollupEngine::new(RollupConfig {
+        window_ms: 5,
+        ..RollupConfig::default()
+    }));
+    let cancellation = CancellationToken::new();
+    let task = tokio::spawn(run_rollup_worker(
+        handler,
+        Arc::clone(&engine),
+        cancellation.clone(),
+        1,
+    ));
+    let context = || DeferredFanoutContext {
+        force_full_message: true,
+        envelope: Some(MessageEnvelope::default()),
+        ..DeferredFanoutContext::default()
+    };
+    for version in [1, 2] {
+        let _ = engine.ingest_with_context(
+            "slow",
+            "slow-channel",
+            append_message("slow-channel", version),
+            rollup_now_ms(),
+            context(),
+        );
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    // Due entries created after the stalled batch began must still progress.
+    for number in 0..20 {
+        let channel = format!("healthy-{number}");
+        for version in [1, 2] {
+            let _ = engine.ingest_with_context(
+                "healthy",
+                &channel,
+                append_message(&channel, version),
+                rollup_now_ms(),
+                context(),
+            );
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    gate.add_permits(1);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while delivered.all.load(Ordering::Relaxed) != 21 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(delivered.healthy.load(Ordering::Relaxed), 20);
+    cancellation.cancel();
+    task.await.unwrap();
+    delivered.last_healthy_ms.load(Ordering::Relaxed)
+}
+#[tokio::test]
+async fn stalled_delivery_does_not_block_new_healthy_deadlines() {
+    assert!(
+        stalled_channel_sample().await < 100,
+        "healthy delivery waited for the 150ms stalled lookup"
+    );
+}
+#[tokio::test]
+#[ignore = "repeated performance measurement"]
+async fn benchmark_stalled_delivery_deadlines() {
+    for sample in 0..9 {
+        println!(
+            "F6 sample={sample} last_healthy_ms={} completed=21 healthy=20 stalled_ms=150",
+            stalled_channel_sample().await
+        );
+    }
+}

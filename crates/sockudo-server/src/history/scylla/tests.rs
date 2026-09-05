@@ -1,12 +1,33 @@
 use super::*;
 use sockudo_core::history_conformance::HistoryStoreConformance;
 
-async fn is_scylla_available() -> bool {
-    let session = SessionBuilder::new()
-        .known_nodes(["127.0.0.1:19042"])
+pub(in crate::history) async fn fixture_session() -> std::result::Result<Arc<Session>, String> {
+    use scylla::errors::TranslationError;
+    use scylla::policies::address_translator::{AddressTranslator, UntranslatedPeer};
+    struct FixtureAddress(std::net::SocketAddr);
+    #[async_trait::async_trait]
+    impl AddressTranslator for FixtureAddress {
+        async fn translate_address(
+            &self,
+            _: &UntranslatedPeer,
+        ) -> std::result::Result<std::net::SocketAddr, TranslationError> {
+            Ok(self.0)
+        }
+    }
+    let address =
+        std::env::var("SOCKUDO_C8_SCYLLA_ADDR").unwrap_or_else(|_| "127.0.0.1:19042".into());
+    SessionBuilder::new()
+        .known_node(address.clone())
+        .address_translator(Arc::new(FixtureAddress(address.parse().unwrap())))
+        .disallow_shard_aware_port(true)
         .build()
-        .await;
-    let Ok(session) = session else {
+        .await
+        .map(Arc::new)
+        .map_err(|error| error.to_string())
+}
+
+async fn is_scylla_available() -> bool {
+    let Ok(session) = fixture_session().await else {
         return false;
     };
     session
@@ -34,9 +55,11 @@ async fn build_store() -> Arc<dyn HistoryStore + Send + Sync> {
         },
         ..HistoryConfig::default()
     };
-    create_scylla_history_store(&db, config, None, None)
-        .await
-        .unwrap()
+    Arc::new(
+        ScyllaHistoryStore::from_session(&db, config, None, None, fixture_session().await.unwrap())
+            .await
+            .unwrap(),
+    )
 }
 
 #[tokio::test]

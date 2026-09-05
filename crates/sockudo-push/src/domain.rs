@@ -1631,6 +1631,8 @@ fn default_retry_max_attempts() -> u32 {
 #[serde(rename_all = "camelCase")]
 pub enum PushCursorKind {
     Device,
+    /// Internal V2 fanout continuation containing subscription and device progress.
+    ChannelFanout,
     ChannelSubscription,
     Credential,
     Template,

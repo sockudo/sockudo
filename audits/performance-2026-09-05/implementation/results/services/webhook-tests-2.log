@@ -1,0 +1,45 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.64s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_webhook-a4a29a614f461bc3)
+
+running 33 tests
+test integration::tests::test_merge_jobs_for_queue_splits_oversized_jobs ... ok
+test integration::tests::test_merge_jobs_for_queue_batches_by_app_and_size ... ok
+test integration::tests::test_webhook_config_serialization ... ok
+test integration::tests::wants_channel_count_webhook_disabled_integration ... ok
+test integration::tests::test_webhook_integration_send_client_event ... ok
+test sender::tests::test_process_webhook_job_no_events ... ok
+test integration::tests::test_webhook_integration_send_subscription_count_changed ... ok
+test sender::tests::test_filter_events_for_webhook_respects_channel_prefix ... ok
+test sender::tests::test_find_relevant_webhooks_splits_events_per_endpoint ... ok
+test integration::tests::wants_channel_count_webhook_filter_prefix_no_match ... ok
+test integration::tests::test_send_cache_missed ... ok
+test integration::tests::test_webhook_integration_send_event ... ok
+test sender::tests::test_process_webhook_job_invalid_app ... ok
+test integration::tests::ai_webhooks_bypass_the_unbounded_batching_vector ... ok
+test integration::tests::test_webhook_integration_send_channel_occupied ... ok
+test sender::tests::test_creating_webhook_sender ... ok
+test integration::tests::test_send_ai_stream_cancelled ... ok
+test sender::tests::test_process_webhook_job_concurrent_requests ... ok
+test integration::tests::wants_channel_count_webhook_two_webhooks_second_filter_matches ... ok
+test integration::tests::wants_channel_count_webhook_event_type_mismatch ... ok
+test integration::tests::test_webhook_integration_send_channel_vacated ... ok
+test integration::tests::test_webhook_integration_send_member_removed ... ok
+test integration::tests::wants_channel_count_webhook_no_webhooks_configured ... ok
+test sender::tests::test_filter_events_for_webhook_invalid_pattern_drops_all_events ... ok
+test integration::tests::wants_channel_count_webhook_no_filter_webhook_matches_all ... ok
+test integration::tests::test_send_ai_observability_and_version_webhooks ... ok
+test integration::tests::wants_channel_count_webhook_match_no_filter ... ok
+test integration::tests::test_webhook_integration_send_member_added ... ok
+test integration::tests::test_webhook_integration_new ... ok
+test integration::tests::wants_channel_count_webhook_filter_prefix_match ... ok
+test sender::tests::test_process_webhook_job_with_events ... ok
+test sender::tests::test_filter_events_for_webhook_respects_channel_pattern ... ok
+test integration::tests::test_send_subscription_count_changed ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

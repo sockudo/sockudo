@@ -1,8 +1,8 @@
+use super::dispatch::{OrderedDispatcher, routing_key};
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use crate::transports::redis_client::RedisClient;
 use async_trait::async_trait;
-use futures::StreamExt;
 use redis::AsyncCommands;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
@@ -104,6 +104,7 @@ impl HorizontalTransport for RedisTransport {
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
         let broadcast_json = sonic_rs::to_string(message)?;
+        super::dispatch::validate_frame_size(broadcast_json.len())?;
 
         // Retry broadcast with exponential backoff to handle connection recovery
         let mut retry_delay = 100u64; // Start with 100ms
@@ -171,6 +172,7 @@ impl HorizontalTransport for RedisTransport {
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
         let request_json = sonic_rs::to_string(request)
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        super::dispatch::validate_frame_size(request_json.len())?;
 
         let mut conn = self.client.command_connection().await?;
         let subscriber_count: i32 = match conn.publish(&self.request_channel, &request_json).await {
@@ -188,6 +190,7 @@ impl HorizontalTransport for RedisTransport {
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
         let response_json = sonic_rs::to_string(response)
             .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
+        super::dispatch::validate_frame_size(response_json.len())?;
 
         let mut conn = self.client.command_connection().await?;
         if let Err(e) = conn
@@ -223,6 +226,7 @@ impl HorizontalTransport for RedisTransport {
         let target_channel = format!("{}:#node:{}", self.prefix, target_node_id);
         let request_json = sonic_rs::to_string(request)
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        super::dispatch::validate_frame_size(request_json.len())?;
         let mut conn = self.client.command_connection().await?;
         let _: i32 = match conn.publish(&target_channel, &request_json).await {
             Ok(count) => count,
@@ -249,6 +253,9 @@ impl HorizontalTransport for RedisTransport {
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
 
+        let broadcast_dispatch = OrderedDispatcher::new(16);
+        let request_dispatch = OrderedDispatcher::new(4);
+        let response_dispatch = OrderedDispatcher::new(4);
         tokio::spawn(async move {
             let mut retry_delay = 500u64; // Start with 500ms delay
             const MAX_RETRY_DELAY: u64 = 10_000; // Max 10 seconds
@@ -264,7 +271,9 @@ impl HorizontalTransport for RedisTransport {
 
                 // For Sentinel, this re-resolves the current master each reconnect,
                 // which is how the listener follows master failover.
-                let mut pubsub = match sub_client.pubsub().await {
+                let (push_sender, mut push_receiver) =
+                    super::dispatch::bounded_redis_pushes(Arc::clone(&handlers.on_ingress_gap));
+                let mut pubsub = match sub_client.pubsub_with_push_sender(push_sender).await {
                     Ok(pubsub) => {
                         retry_delay = 500;
                         debug!(adapter = "redis", "pub/sub connection established");
@@ -287,14 +296,15 @@ impl HorizontalTransport for RedisTransport {
                     }
                 };
 
-                if let Err(e) = pubsub
-                    .subscribe(&[
+                if let Err(e) = redis::cmd("SUBSCRIBE")
+                    .arg(&[
                         &broadcast_channel,
                         &request_channel,
                         &response_channel,
                         &node_channel,
                         &reply_channel,
                     ])
+                    .query_async::<()>(&mut pubsub)
                     .await
                 {
                     error!(adapter = "redis", error = %e, retry_delay_ms = retry_delay, retryable = true, "pub/sub channel subscription failed");
@@ -316,7 +326,6 @@ impl HorizontalTransport for RedisTransport {
                     "transport subscriptions established"
                 );
 
-                let mut message_stream = pubsub.on_message();
                 let mut connection_broken = false;
 
                 loop {
@@ -325,28 +334,67 @@ impl HorizontalTransport for RedisTransport {
                     }
                     let next_msg = tokio::select! {
                         _ = shutdown.notified() => break,
-                        msg = message_stream.next() => msg,
+                        msg = push_receiver.recv() => msg,
                     };
                     let Some(msg) = next_msg else {
                         break;
                     };
-                    let channel = msg.get_channel_name();
-                    let payload_result: redis::RedisResult<Vec<u8>> = msg.get_payload();
+                    if msg.message.kind == redis::PushKind::Disconnection {
+                        connection_broken = true;
+                        break;
+                    }
+                    if msg.message.kind != redis::PushKind::Message {
+                        continue;
+                    }
+                    let Some(channel) = msg
+                        .message
+                        .data
+                        .first()
+                        .and_then(super::dispatch::redis_value_bytes)
+                        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    else {
+                        continue;
+                    };
+                    let payload_result: redis::RedisResult<Vec<u8>> = msg
+                        .message
+                        .data
+                        .get(1)
+                        .and_then(super::dispatch::redis_value_bytes)
+                        .map(|bytes| bytes.to_vec())
+                        .ok_or_else(|| {
+                            redis::RedisError::from((
+                                redis::ErrorKind::UnexpectedReturnType,
+                                "invalid push payload",
+                            ))
+                        });
 
                     if let Ok(payload) = payload_result {
                         if channel == broadcast_channel.as_str() {
                             let broadcast_handler = handlers.on_broadcast.clone();
                             let metrics_clone = metrics.clone();
 
-                            tokio::spawn(async move {
-                                if let Ok(broadcast) =
-                                    sonic_rs::from_slice::<BroadcastMessage>(&payload)
-                                {
-                                    broadcast_handler(broadcast).await;
-                                } else if let Some(metrics) = metrics_clone.get() {
-                                    metrics.mark_horizontal_transport_message_dropped("redis");
-                                }
-                            });
+                            let ingress_size = payload.len();
+                            let ingress_key = routing_key(&payload);
+                            let gap_scope = super::dispatch::ingress_scope(&payload);
+                            if let Err(error) = broadcast_dispatch.try_dispatch(
+                                ingress_key,
+                                ingress_size,
+                                Box::pin(async move {
+                                    if let Ok(broadcast) =
+                                        sonic_rs::from_slice::<BroadcastMessage>(&payload)
+                                    {
+                                        broadcast_handler(broadcast).await;
+                                    } else if let Some(metrics) = metrics_clone.get() {
+                                        metrics.mark_horizontal_transport_message_dropped("redis");
+                                    }
+                                }),
+                            ) {
+                                (handlers.on_ingress_gap)(
+                                    gap_scope.0.as_deref(),
+                                    gap_scope.1.as_deref(),
+                                );
+                                error!(error = %error, "horizontal ingress capacity exhausted continuity invalidated");
+                            }
                         } else if channel == request_channel.as_str()
                             || channel == node_channel.as_str()
                         {
@@ -355,7 +403,10 @@ impl HorizontalTransport for RedisTransport {
                             let response_channel_clone = response_channel.clone();
                             let metrics_clone = metrics.clone();
 
-                            tokio::spawn(async move {
+                            let ingress_size = payload.len();
+                            let ingress_key = routing_key(&payload);
+                            let gap_scope = super::dispatch::ingress_scope(&payload);
+                            if let Err(error) = request_dispatch.try_dispatch(ingress_key, ingress_size, Box::pin(async move {
                                 if let Ok(request) = sonic_rs::from_slice::<RequestBody>(&payload) {
                                     let reply_to = request.reply_to.clone();
                                     let response_result = request_handler(request).await;
@@ -387,14 +438,20 @@ impl HorizontalTransport for RedisTransport {
                                 } else if let Some(metrics) = metrics_clone.get() {
                                     metrics.mark_horizontal_transport_message_dropped("redis");
                                 }
-                            });
+                            })) {
+                                (handlers.on_ingress_gap)(gap_scope.0.as_deref(), gap_scope.1.as_deref());
+                                error!(error = %error, "horizontal ingress capacity exhausted continuity invalidated");
+                            }
                         } else if channel == response_channel.as_str()
                             || channel == reply_channel.as_str()
                         {
                             let response_handler = handlers.on_response.clone();
                             let metrics_clone = metrics.clone();
 
-                            tokio::spawn(async move {
+                            let ingress_size = payload.len();
+                            let ingress_key = routing_key(&payload);
+                            let gap_scope = super::dispatch::ingress_scope(&payload);
+                            if let Err(error) = response_dispatch.try_dispatch(ingress_key, ingress_size, Box::pin(async move {
                                 match sonic_rs::from_slice::<ResponseBody>(&payload) {
                                     Ok(response) => response_handler(response).await,
                                     Err(e) => {
@@ -405,7 +462,10 @@ impl HorizontalTransport for RedisTransport {
                                         warn!(adapter = "redis", error = %e, "response message parse failed");
                                     }
                                 }
-                            });
+                            })) {
+                                (handlers.on_ingress_gap)(gap_scope.0.as_deref(), gap_scope.1.as_deref());
+                                error!(error = %error, "horizontal ingress capacity exhausted continuity invalidated");
+                            }
                         }
                     } else {
                         // Error getting payload - connection might be broken
@@ -415,6 +475,12 @@ impl HorizontalTransport for RedisTransport {
                     }
                 }
 
+                if is_running.load(Ordering::Relaxed) {
+                    // Cached command/reply connections may still point at the
+                    // former Sentinel primary even after Pub/Sub reconnects.
+                    sub_client.invalidate();
+                    (handlers.on_ingress_gap)(None, None);
+                }
                 if connection_broken {
                     if let Some(metrics) = metrics.get() {
                         metrics.mark_horizontal_transport_reconnection("redis");
@@ -441,6 +507,9 @@ impl HorizontalTransport for RedisTransport {
                     );
                 }
             }
+            broadcast_dispatch.drain().await;
+            request_dispatch.drain().await;
+            response_dispatch.drain().await;
         });
 
         Ok(())

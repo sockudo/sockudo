@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_queue-fec16f03b1f25e93)
+
+running 2 tests
+test cloud_retry_live_tests::pubsub_emulator_existing_unpaced_subscription_uses_bounded_retry_delay ... attempts=3 successes=1 retry_span_ms=2156
+ok
+test cloud_retry_live_tests::sqs_emulator_receive_count_paces_retries ... attempts=3 successes=1 retry_span_ms=2036
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 7.23s
+

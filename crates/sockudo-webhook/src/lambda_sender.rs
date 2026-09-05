@@ -8,46 +8,67 @@ use aws_sdk_lambda::types::InvocationType;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::webhook_types::{LambdaConfig, Webhook};
 use sonic_rs::{Value, json};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 use tracing::{debug, error, info, warn};
 
 /// Handles invoking AWS Lambda functions for webhooks
 #[derive(Clone)]
 pub struct LambdaWebhookSender {
-    clients: dashmap::DashMap<String, LambdaClient>,
+    clients: Arc<parking_lot::Mutex<ahash::AHashMap<String, Arc<OnceCell<LambdaClient>>>>>,
 }
 
 impl LambdaWebhookSender {
     /// Create a new Lambda webhook sender
     pub fn new() -> Self {
         Self {
-            clients: dashmap::DashMap::new(),
+            clients: Arc::new(parking_lot::Mutex::new(ahash::AHashMap::new())),
         }
     }
 
     /// Get or create a Lambda client for a specific region
     async fn get_client(&self, region: &str) -> Result<LambdaClient> {
-        if let Some(client_ref) = self.clients.get(region) {
-            return Ok(client_ref.clone());
-        }
+        // Drop the map guard before async initialization; clones share one regional
+        // cell, and cancellation lets another waiter finish initialization.
+        let cell = {
+            let mut clients = self.clients.lock();
+            if let Some(cell) = clients.get(region) {
+                Arc::clone(cell)
+            } else {
+                // Configured regions can churn as apps are reloaded. Eviction
+                // releases only our reference; active invocations retain theirs.
+                if clients.len() >= 64
+                    && let Some(key) = clients.keys().next().cloned()
+                {
+                    clients.remove(&key);
+                }
+                let cell = Arc::new(OnceCell::new());
+                clients.insert(region.to_owned(), Arc::clone(&cell));
+                cell
+            }
+        };
+        let client = cell
+            .get_or_init(|| async {
+                let region_provider =
+                    RegionProviderChain::first_try(Region::new(region.to_string()))
+                        .or_default_provider()
+                        .or_else(Region::new("us-east-1"));
 
-        let region_provider = RegionProviderChain::first_try(Region::new(region.to_string()))
-            .or_default_provider()
-            .or_else(Region::new("us-east-1"));
+                let shared_config = aws_config::from_env()
+                    .region(region_provider)
+                    .timeout_config(
+                        aws_sdk_lambda::config::timeout::TimeoutConfig::builder()
+                            .operation_timeout(Duration::from_secs(10))
+                            .build(),
+                    )
+                    .load()
+                    .await;
 
-        let shared_config = aws_config::from_env()
-            .region(region_provider)
-            .timeout_config(
-                aws_sdk_lambda::config::timeout::TimeoutConfig::builder()
-                    .operation_timeout(Duration::from_secs(10))
-                    .build(),
-            )
-            .load()
+                LambdaClient::new(&shared_config)
+            })
             .await;
-
-        let client = LambdaClient::new(&shared_config);
-        self.clients.insert(region.to_string(), client.clone());
-        Ok(client)
+        Ok(client.clone())
     }
 
     /// Invoke a Lambda function with the provided webhook and payload.
@@ -232,17 +253,49 @@ mod tests {
     use super::*;
     use sockudo_core::webhook_types::Webhook;
 
+    #[tokio::test]
+    async fn cloned_senders_share_one_cancellation_safe_region_initialization() {
+        let sender = LambdaWebhookSender::new();
+        let clone = sender.clone();
+        assert!(Arc::ptr_eq(&sender.clients, &clone.clients));
+        let cell = Arc::new(OnceCell::new());
+        sender
+            .clients
+            .lock()
+            .insert("test-region".into(), cell.clone());
+        let first = {
+            let cell = cell.clone();
+            tokio::spawn(async move {
+                cell.get_or_init(|| async { std::future::pending::<LambdaClient>().await })
+                    .await
+                    .clone()
+            })
+        };
+        tokio::task::yield_now().await;
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        let config = aws_sdk_lambda::config::Builder::new()
+            .behavior_version_latest()
+            .region(Region::new("us-east-1"))
+            .build();
+        let client = LambdaClient::from_conf(config);
+        assert!(cell.set(client).is_ok());
+        let from_clone = clone.clients.lock().get("test-region").unwrap().clone();
+        assert!(Arc::ptr_eq(&cell, &from_clone));
+        assert!(from_clone.get().is_some());
+    }
+
     #[test]
     fn test_lambda_webhook_sender_new() {
         let sender = LambdaWebhookSender::new();
-        assert!(sender.clients.is_empty());
+        assert!(sender.clients.lock().is_empty());
     }
 
     #[tokio::test]
     async fn test_lambda_webhook_sender_with_clients() {
         let sender = LambdaWebhookSender::new();
         let _client = sender.get_client("us-east-1").await.unwrap();
-        assert!(!sender.clients.is_empty());
+        assert!(!sender.clients.lock().is_empty());
     }
 
     #[tokio::test]

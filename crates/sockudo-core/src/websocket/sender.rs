@@ -118,7 +118,7 @@ impl MessageSender {
                                 broadcast_pending.fetch_sub(1, Ordering::Release);
                                 msg_count += 1;
                                 let msg_size = sized_msg.size;
-                                let msg = Message::Text(sized_msg.bytes);
+                                let msg = sized_msg.into_frame();
 
                                 if let Err(e) = socket.send(msg).await {
                                     Self::log_connection_error(
@@ -254,7 +254,7 @@ impl MessageSender {
                     OutboundFrame::Broadcast(sized_msg) => {
                         broadcast_pending.fetch_sub(1, Ordering::Release);
                         msg_count += 1;
-                        if let Err(e) = socket.send(Message::Text(sized_msg.bytes)).await {
+                        if let Err(e) = socket.send(sized_msg.into_frame()).await {
                             Self::log_connection_error(
                                 &e,
                                 SocketOperation::WriteFrame,

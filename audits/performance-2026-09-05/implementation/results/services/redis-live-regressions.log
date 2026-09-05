@@ -1,0 +1,27 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.10s
+     Running tests/redis_queue_live_test.rs (target/debug/deps/redis_queue_live_test-0f7f29354954d8b9)
+
+running 2 tests
+test redis_queue_is_idempotent_retries_and_settles ... ok
+test redis_queue_keeps_healthy_workers_progressing_behind_a_stalled_callback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.53s
+
+     Running tests/redis_limiter_live.rs (target/debug/deps/redis_limiter_live-57626f45fcb73e6c)
+
+running 5 tests
+test redis_limiter_admits_at_most_the_limit_concurrently ... ok
+test redis_limiter_coalesces_a_concurrent_reconnect_storm ... ok
+test redis_limiter_counts_each_request_in_same_second ... ok
+test redis_limiter_removes_expired_window_entries ... ok
+test redis_limiter_retries_after_proxy_drops_idle_connections ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+

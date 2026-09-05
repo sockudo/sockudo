@@ -1,0 +1,452 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+error[E0432]: unresolved import `version_store::create_scylla_version_store`
+   --> crates/sockudo-server/src/history/scylla/mod.rs:293:16
+    |
+293 | pub(super) use version_store::create_scylla_version_store;
+    |                ^^^^^^^^^^^^^^^---------------------------
+    |                               |
+    |                               no `create_scylla_version_store` in `history::scylla::version_store`
+    |
+note: found an item that was configured out
+   --> crates/sockudo-server/src/history/scylla/version_store/mod.rs:133:14
+    |
+132 | #[cfg(feature = "versioned-messages")]
+    |       ------------------------------ the item is gated behind the `versioned-messages` feature
+133 | pub async fn create_scylla_version_store(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: a similar name exists in the module
+    |
+293 - pub(super) use version_store::create_scylla_version_store;
+293 + pub(super) use version_store::create_scylla_history_store;
+    |
+
+error[E0432]: unresolved import `version_store::create_surreal_version_store`
+   --> crates/sockudo-server/src/history/surreal/mod.rs:200:16
+    |
+200 | pub(super) use version_store::create_surreal_version_store;
+    |                ^^^^^^^^^^^^^^^----------------------------
+    |                               |
+    |                               no `create_surreal_version_store` in `history::surreal::version_store`
+    |
+note: found an item that was configured out
+   --> crates/sockudo-server/src/history/surreal/version_store/mod.rs:94:14
+    |
+ 93 | #[cfg(feature = "versioned-messages")]
+    |       ------------------------------ the item is gated behind the `versioned-messages` feature
+ 94 | pub async fn create_surreal_version_store(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: a similar name exists in the module
+    |
+200 - pub(super) use version_store::create_surreal_version_store;
+200 + pub(super) use version_store::create_surreal_history_store;
+    |
+
+error[E0433]: cannot find `version_storage_tests` in `history`
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:37:25
+    |
+ 37 |         crate::history::version_storage_tests::compact_versions(&store).await;
+    |                         ^^^^^^^^^^^^^^^^^^^^^ could not find `version_storage_tests` in `history`
+    |
+note: found an item that was configured out
+   --> crates/sockudo-server/src/history/mod.rs:396:5
+    |
+395 | #[cfg(all(test, feature = "versioned-messages"))]
+    |                 ------------------------------ the item is gated behind the `versioned-messages` feature
+396 | mod version_storage_tests;
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: cannot find `version_storage_tests` in `history`
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:96:25
+    |
+ 96 |         crate::history::version_storage_tests::compact_versions(&store).await;
+    |                         ^^^^^^^^^^^^^^^^^^^^^ could not find `version_storage_tests` in `history`
+    |
+note: found an item that was configured out
+   --> crates/sockudo-server/src/history/mod.rs:396:5
+    |
+395 | #[cfg(all(test, feature = "versioned-messages"))]
+    |                 ------------------------------ the item is gated behind the `versioned-messages` feature
+396 | mod version_storage_tests;
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: cannot find `version_storage_tests` in `history`
+   --> crates/sockudo-server/src/history/surreal/version_store/tests.rs:17:25
+    |
+ 17 |         crate::history::version_storage_tests::compact_versions(store.as_ref()).await;
+    |                         ^^^^^^^^^^^^^^^^^^^^^ could not find `version_storage_tests` in `history`
+    |
+note: found an item that was configured out
+   --> crates/sockudo-server/src/history/mod.rs:396:5
+    |
+395 | #[cfg(all(test, feature = "versioned-messages"))]
+    |                 ------------------------------ the item is gated behind the `versioned-messages` feature
+396 | mod version_storage_tests;
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: cannot find `version_storage_tests` in `history`
+   --> crates/sockudo-server/src/history/surreal/version_store/tests.rs:40:21
+    |
+ 40 |     crate::history::version_storage_tests::raw_imports(reader.as_ref(), &latest).await;
+    |                     ^^^^^^^^^^^^^^^^^^^^^ could not find `version_storage_tests` in `history`
+    |
+note: found an item that was configured out
+   --> crates/sockudo-server/src/history/mod.rs:396:5
+    |
+395 | #[cfg(all(test, feature = "versioned-messages"))]
+    |                 ------------------------------ the item is gated behind the `versioned-messages` feature
+396 | mod version_storage_tests;
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: cannot find `version_storage_tests` in `history`
+   --> crates/sockudo-server/src/history/surreal/version_store/tests.rs:123:25
+    |
+123 |         crate::history::version_storage_tests::compact_versions(store.as_ref()).await;
+    |                         ^^^^^^^^^^^^^^^^^^^^^ could not find `version_storage_tests` in `history`
+    |
+note: found an item that was configured out
+   --> crates/sockudo-server/src/history/mod.rs:396:5
+    |
+395 | #[cfg(all(test, feature = "versioned-messages"))]
+    |                 ------------------------------ the item is gated behind the `versioned-messages` feature
+396 | mod version_storage_tests;
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error[E0425]: cannot find type `ScyllaVersionStore` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/encoding.rs:5:6
+   |
+ 5 | impl ScyllaVersionStore {
+   |      ^^^^^^^^^^^^^^^^^^
+   |
+  ::: crates/sockudo-server/src/history/scylla/mod.rs:77:1
+   |
+77 | pub struct ScyllaHistoryStore {
+   | ----------------------------- similarly named struct `ScyllaHistoryStore` defined here
+   |
+help: a struct with a similar name exists
+   |
+ 5 - impl ScyllaVersionStore {
+ 5 + impl ScyllaHistoryStore {
+   |
+
+error[E0425]: cannot find type `StoredVersionRecord` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/encoding.rs:13:21
+   |
+13 |     ) -> Result<Vec<StoredVersionRecord>> {
+   |                     ^^^^^^^^^^^^^^^^^^^
+   |
+  ::: crates/sockudo-core/src/version_store/encoding.rs:20:1
+   |
+20 | pub struct EncodedVersionRecord {
+   | ------------------------------- similarly named struct `EncodedVersionRecord` defined here
+   |
+help: a struct with a similar name exists
+   |
+13 -     ) -> Result<Vec<StoredVersionRecord>> {
+13 +     ) -> Result<Vec<EncodedVersionRecord>> {
+   |
+help: you might be missing a type parameter
+   |
+ 5 | impl<StoredVersionRecord> ScyllaVersionStore {
+   |     +++++++++++++++++++++
+
+error[E0425]: cannot find type `ScyllaVersionStore` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/imports.rs:5:6
+   |
+ 5 | impl ScyllaVersionStore {
+   |      ^^^^^^^^^^^^^^^^^^
+   |
+  ::: crates/sockudo-server/src/history/scylla/mod.rs:77:1
+   |
+77 | pub struct ScyllaHistoryStore {
+   | ----------------------------- similarly named struct `ScyllaHistoryStore` defined here
+   |
+help: a struct with a similar name exists
+   |
+ 5 - impl ScyllaVersionStore {
+ 5 + impl ScyllaHistoryStore {
+   |
+
+error[E0425]: cannot find type `StoredVersionRecord` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/imports.rs:10:18
+   |
+10 |         record: &StoredVersionRecord,
+   |                  ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `StoredVersionRecord` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/imports.rs:11:24
+   |
+11 |     ) -> Result<Option<StoredVersionRecord>> {
+   |                        ^^^^^^^^^^^^^^^^^^^ not found in this scope
+   |
+help: you might be missing a type parameter
+   |
+ 5 | impl<StoredVersionRecord> ScyllaVersionStore {
+   |     +++++++++++++++++++++
+
+error[E0425]: cannot find type `ScyllaVersionStore` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/projections.rs:3:6
+   |
+ 3 | impl ScyllaVersionStore {
+   |      ^^^^^^^^^^^^^^^^^^
+   |
+  ::: crates/sockudo-server/src/history/scylla/mod.rs:77:1
+   |
+77 | pub struct ScyllaHistoryStore {
+   | ----------------------------- similarly named struct `ScyllaHistoryStore` defined here
+   |
+help: a struct with a similar name exists
+   |
+ 3 - impl ScyllaVersionStore {
+ 3 + impl ScyllaHistoryStore {
+   |
+
+error[E0425]: cannot find type `StoredVersionRecord` in this scope
+ --> crates/sockudo-server/src/history/scylla/version_store/projections.rs:6:18
+  |
+6 |         record: &StoredVersionRecord,
+  |                  ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `VersionReplayRequest` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:141:23
+    |
+141 |         .replay_after(VersionReplayRequest {
+    |                       ^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `VersionStoreReadRequest` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:159:23
+    |
+159 |         .get_versions(VersionStoreReadRequest {
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `VersionStoreReadRequest` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:268:27
+    |
+268 |             .get_versions(VersionStoreReadRequest {
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `SurrealVersionStore` in this scope
+  --> crates/sockudo-server/src/history/surreal/version_store/encoding.rs:5:6
+   |
+ 5 | impl SurrealVersionStore {
+   |      ^^^^^^^^^^^^^^^^^^^
+   |
+  ::: crates/sockudo-server/src/history/surreal/mod.rs:59:1
+   |
+59 | pub struct SurrealHistoryStore {
+   | ------------------------------ similarly named struct `SurrealHistoryStore` defined here
+   |
+help: a struct with a similar name exists
+   |
+ 5 - impl SurrealVersionStore {
+ 5 + impl SurrealHistoryStore {
+   |
+
+error[E0425]: cannot find type `StoredVersionMessageRec` in this scope
+   --> crates/sockudo-server/src/history/surreal/version_store/encoding.rs:9:19
+    |
+  9 |         message: &StoredVersionMessageRec,
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/sockudo-server/src/history/surreal/version_store/mod.rs:193:1
+    |
+193 | struct StoredVersionTextRec {
+    | --------------------------- similarly named struct `StoredVersionTextRec` defined here
+    |
+help: a struct with a similar name exists
+    |
+  9 -         message: &StoredVersionMessageRec,
+  9 +         message: &StoredVersionTextRec,
+    |
+
+warning: unused import: `super::*`
+ --> crates/sockudo-server/src/history/scylla/version_store/store_impl.rs:1:5
+  |
+1 | use super::*;
+  |     ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `VersionCreateRejection`, `VersionCreateRequest`, `VersionCreateResult`, `VersionMutationRejection`, `VersionMutationRequest`, `VersionMutationResult`, `VersionReplayRequest`, `VersionStoreCursor`, `VersionStoreDirection`, `VersionStorePage`, `VersionStoreReadRequest`, `VersionStreamState`, `VersionWriteReservationBlock`, and `VersionWriteReservation`
+  --> crates/sockudo-server/src/history/surreal/mod.rs:14:26
+   |
+14 |     StoredVersionRecord, VersionCreateRejection, VersionCreateRequest, VersionCreateResult,
+   |                          ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^
+15 |     VersionMutationRejection, VersionMutationRequest, VersionMutationResult, VersionReplayRequest,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+16 |     VersionStore, VersionStoreCursor, VersionStoreDirection, VersionStorePage,
+   |                   ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+17 |     VersionStoreReadRequest, VersionStreamState, VersionWriteReservation,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+18 |     VersionWriteReservationBlock,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `sockudo_core::versioned_messages::MessageSerial`
+  --> crates/sockudo-server/src/history/surreal/mod.rs:20:5
+   |
+20 | use sockudo_core::versioned_messages::MessageSerial;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `encoding::VersionDeletedRow`
+ --> crates/sockudo-server/src/history/surreal/version_store/mod.rs:2:5
+  |
+2 | use encoding::VersionDeletedRow;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::*`
+ --> crates/sockudo-server/src/history/surreal/version_store/store_impl.rs:1:5
+  |
+1 | use super::*;
+  |     ^^^^^^^^
+
+error[E0425]: cannot find function `message_commit_key` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/imports.rs:13:27
+   |
+13 |         let message_key = message_commit_key(record.message_serial().as_str());
+   |                           ^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `version_commit_key` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/imports.rs:14:27
+   |
+14 |         let version_key = version_commit_key(
+   |                           ^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `delivery_commit_key` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/imports.rs:18:28
+   |
+18 |         let delivery_key = delivery_commit_key(record.delivery_serial());
+   |                            ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `version_batch_applied` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/imports.rs:156:16
+    |
+156 |             if version_batch_applied(result)? {
+    |                ^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `ScyllaVersionStore` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:33:17
+   |
+33 |     let store = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+   |                 ^^^^^^^^^^^^^^^^^^ use of undeclared type `ScyllaVersionStore`
+   |
+help: a struct with a similar name exists
+   |
+33 -     let store = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+33 +     let store = ScyllaHistoryStore::from_session(&config, "test", 3600, session().await)
+   |
+
+error[E0433]: cannot find type `ScyllaVersionStore` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:52:18
+   |
+52 |     let reader = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+   |                  ^^^^^^^^^^^^^^^^^^ use of undeclared type `ScyllaVersionStore`
+   |
+help: a struct with a similar name exists
+   |
+52 -     let reader = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+52 +     let reader = ScyllaHistoryStore::from_session(&config, "test", 3600, session().await)
+   |
+
+error[E0433]: cannot find type `ScyllaVersionStore` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:89:17
+   |
+89 |     let store = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+   |                 ^^^^^^^^^^^^^^^^^^ use of undeclared type `ScyllaVersionStore`
+   |
+help: a struct with a similar name exists
+   |
+89 -     let store = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+89 +     let store = ScyllaHistoryStore::from_session(&config, "test", 3600, session().await)
+   |
+
+error[E0433]: cannot find type `ScyllaVersionStore` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:92:18
+   |
+92 |     let second = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+   |                  ^^^^^^^^^^^^^^^^^^ use of undeclared type `ScyllaVersionStore`
+   |
+help: a struct with a similar name exists
+   |
+92 -     let second = ScyllaVersionStore::from_session(&config, "test", 3600, session().await)
+92 +     let second = ScyllaHistoryStore::from_session(&config, "test", 3600, session().await)
+   |
+
+error[E0433]: cannot find type `VersionStoreDirection` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:163:24
+    |
+163 |             direction: VersionStoreDirection::OldestFirst,
+    |                        ^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `VersionStoreDirection`
+
+error[E0425]: cannot find function `message_commit_key` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:189:17
+    |
+189 |                 message_commit_key(latest.message_serial().as_str()),
+    |                 ^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `message_commit_key` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:258:17
+    |
+258 |                 message_commit_key(latest.message_serial().as_str()),
+    |                 ^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `VersionStoreDirection` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:272:28
+    |
+272 |                 direction: VersionStoreDirection::OldestFirst,
+    |                            ^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `VersionStoreDirection`
+
+error[E0433]: cannot find type `VersionMutationResult` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:208:9
+    |
+208 |         VersionMutationResult::Rejected(_)
+    |         ^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `VersionMutationResult`
+    |
+help: a struct with a similar name exists
+    |
+208 -         VersionMutationResult::Rejected(_)
+208 +         VersionMutationLimits::Rejected(_)
+    |
+
+error[E0433]: cannot find type `VersionMutationResult` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:244:9
+    |
+244 |     let VersionMutationResult::Applied { record: winner, .. } = outcome.unwrap() else {
+    |         ^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `VersionMutationResult`
+    |
+help: a struct with a similar name exists
+    |
+244 -     let VersionMutationResult::Applied { record: winner, .. } = outcome.unwrap() else {
+244 +     let VersionMutationLimits::Applied { record: winner, .. } = outcome.unwrap() else {
+    |
+
+error[E0433]: cannot find type `VersionMutationResult` in this scope
+  --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:64:9
+   |
+64 |     let VersionMutationResult::Duplicate { record, .. } =
+   |         ^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `VersionMutationResult`
+
+error[E0433]: cannot find type `VersionMutationResult` in this scope
+   --> crates/sockudo-server/src/history/scylla/version_store/tests.rs:211:9
+    |
+211 |     let VersionMutationResult::Applied { record, .. } =
+    |         ^^^^^^^^^^^^^^^^^^^^^ use of undeclared type `VersionMutationResult`
+    |
+help: a struct with a similar name exists
+    |
+211 -     let VersionMutationResult::Applied { record, .. } =
+211 +     let VersionMutationLimits::Applied { record, .. } =
+    |
+
+Some errors have detailed explanations: E0422, E0425, E0432, E0433.
+For more information about an error, try `rustc --explain E0422`.
+warning: `sockudo` (bin "sockudo" test) generated 5 warnings
+error: could not compile `sockudo` (bin "sockudo" test) due to 35 previous errors; 5 warnings emitted

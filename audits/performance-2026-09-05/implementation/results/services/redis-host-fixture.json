@@ -1,0 +1,28 @@
+{
+  "container": "d816f436d1b435abac88f48ed7e149016dba52eb1dce20a6a839373a158839e6",
+  "name": "sockudo-perf-services-redis-host",
+  "port": 56281,
+  "command": [
+    "podman",
+    "run",
+    "-d",
+    "--name",
+    "sockudo-perf-services-redis-host",
+    "--network",
+    "host",
+    "--memory",
+    "128m",
+    "docker.io/library/redis:7.4.5-alpine",
+    "redis-server",
+    "--port",
+    "56281",
+    "--bind",
+    "127.0.0.1",
+    "--save",
+    "",
+    "--appendonly",
+    "no",
+    "--protected-mode",
+    "yes"
+  ]
+}

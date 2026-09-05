@@ -1,0 +1,56 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (server-sdks/sockudo-http-rust/target/debug/deps/sockudo_http-bfe554d1913bb219)
+
+running 49 tests
+test config::tests::test_config_builder ... ok
+test config::tests::test_config_validation ... ok
+test auth::tests::test_get_socket_signature_for_user ... ok
+test config::tests::test_encryption_key_validation ... ok
+test events::tests::test_batch_event_with_idempotency_key ... ok
+test events::tests::test_batch_event_builder ... ok
+test events::tests::test_batch_event_with_auto_idempotency_key ... ok
+test events::tests::test_batch_event_with_tags ... ok
+test events::tests::test_event_data_conversions ... ok
+test events::tests::test_event_serialization_with_idempotency_key ... ok
+test events::tests::test_event_serialization_without_idempotency_key ... ok
+test events::tests::test_generate_idempotency_key ... ok
+test events::tests::test_trigger_params_builder ... ok
+test events::tests::test_trigger_params_builder_with_idempotency_key ... ok
+test events::tests::test_trigger_params_builder_with_tags ... ok
+test events::tests::test_trigger_params_builder_with_auto_idempotency_key ... ok
+test auth::tests::test_encrypted_channel_auth_with_encryption ... ok
+test channel::tests::test_channel_type_detection ... ok
+test channel::tests::test_channel_name_validation ... ok
+test channel::tests::test_channel_creation ... ok
+test sockudo::tests::test_history_params_to_map ... ok
+test sockudo::tests::test_for_cluster ... ok
+test sockudo::tests::test_sockudo_creation ... ok
+test sockudo::tests::test_signed_query_string_signs_lowercase_keys_but_keeps_request_keys ... ok
+test tests::test_build_info ... ok
+test sockudo::tests::test_force_reconnect_user_requests_expected_path ... ok
+test token::tests::test_debug_redaction ... ok
+test sockudo::tests::test_authorize_channel ... ok
+test token::tests::test_hmac_consistency ... ok
+test sockudo::tests::test_channel_history_requests_expected_path_and_decodes_page ... ok
+test sockudo::tests::test_get_message_requests_expected_path_and_decodes_payload ... ok
+test token::tests::test_sign_and_verify ... ok
+test util::tests::test_format_duration ... ok
+test util::tests::test_get_md5 ... ok
+test util::tests::test_is_encrypted_channel ... ok
+test util::tests::test_join_strings ... ok
+test util::tests::test_secure_compare ... ok
+test webhook::tests::test_event_round_trip ... ok
+test webhook::tests::test_event_parsing ... ok
+test util::tests::test_to_ordered_array ... ok
+test sockudo::tests::test_terminate_user_connections_requests_expected_path ... ok
+test util::tests::test_validate_socket_id ... ok
+test util::tests::test_validate_user_id ... ok
+test webhook::tests::test_webhook_data_parsing ... ok
+test webhook::tests::test_webhook_forward_compat_fixture ... ok
+test webhook::tests::test_webhook_data_accepts_nested_future_values ... ok
+test webhook::tests::test_webhook_validation ... ok
+test webhook::tests::test_webhook_preserves_raw_nested_future_values ... ok
+test sockudo::tests::test_force_reconnect_user_rejects_invalid_user_id ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

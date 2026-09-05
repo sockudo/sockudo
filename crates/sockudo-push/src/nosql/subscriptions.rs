@@ -2,6 +2,7 @@
 use super::constants::*;
 use super::document::{DocumentBackend, DocumentPushStore};
 use super::helpers::*;
+use super::ordered::*;
 use crate::domain::{
     ChannelSubscription, DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, NotificationTemplate,
     ProviderCredential, PublishLogEvent, PublishStatus, PushCursor, PushCursorKind, ShardJob,
@@ -25,6 +26,14 @@ where
         subscription: ChannelSubscription,
     ) -> PushStorageResult<()> {
         subscription.validate()?;
+        self.write_ordered_reference(
+            FAMILY_SUBSCRIPTION_ORDERED,
+            &subscription.app_id,
+            &format!("{}:{}", subscription.channel, subscription.device_id),
+            &subscription.channel,
+            &subscription.device_id,
+        )
+        .await?;
         self.put_json(
             FAMILY_SUBSCRIPTION,
             &subscription.app_id,
@@ -60,8 +69,18 @@ where
         self.backend
             .delete(FAMILY_SUBSCRIPTION_BY_DEVICE, app_id, device_id, channel)
             .await?;
-        self.delete_json(FAMILY_SUBSCRIPTION, app_id, channel, device_id)
-            .await
+        let outcome = self
+            .delete_json(FAMILY_SUBSCRIPTION, app_id, channel, device_id)
+            .await?;
+        self.delete_ordered_reference(
+            FAMILY_SUBSCRIPTION_ORDERED,
+            app_id,
+            &format!("{channel}:{device_id}"),
+            channel,
+            device_id,
+        )
+        .await?;
+        Ok(outcome)
     }
 
     async fn list_channel_subscribers(
@@ -128,26 +147,15 @@ where
         limit: usize,
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<ChannelSubscription>> {
-        let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .scan_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION, app_id)
-            .await?
-            .into_iter()
-            .map(|(_, _, subscription)| {
-                (
-                    format!("{}:{}", subscription.channel, subscription.device_id),
-                    subscription,
-                )
-            })
-            .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(page_from_rows(
+        self.ordered_page(
+            FAMILY_SUBSCRIPTION,
+            FAMILY_SUBSCRIPTION_ORDERED,
             app_id,
             PushCursorKind::ChannelSubscription,
-            rows,
             limit,
-            start,
-        ))
+            cursor,
+        )
+        .await
     }
 
     async fn list_subscription_channels(
@@ -198,9 +206,21 @@ where
         self.backend
             .delete_many(FAMILY_SUBSCRIPTION_BY_DEVICE, app_id, &reverse_keys)
             .await?;
-        self.backend
+        let deleted = self
+            .backend
             .delete_many(FAMILY_SUBSCRIPTION, app_id, &forward_keys)
-            .await
+            .await?;
+        for (channel, device_id) in &forward_keys {
+            self.delete_ordered_reference(
+                FAMILY_SUBSCRIPTION_ORDERED,
+                app_id,
+                &format!("{channel}:{device_id}"),
+                channel,
+                device_id,
+            )
+            .await?;
+        }
+        Ok(deleted)
     }
 
     async fn delete_subscriptions_by_channel(
@@ -224,6 +244,16 @@ where
             .backend
             .delete_many(FAMILY_SUBSCRIPTION, app_id, &forward_keys)
             .await?;
+        for (channel, device_id) in &forward_keys {
+            self.delete_ordered_reference(
+                FAMILY_SUBSCRIPTION_ORDERED,
+                app_id,
+                &format!("{channel}:{device_id}"),
+                channel,
+                device_id,
+            )
+            .await?;
+        }
         self.backend
             .delete(FAMILY_SUBSCRIPTION_CHANNEL, app_id, channel, DEFAULT_SK)
             .await?;

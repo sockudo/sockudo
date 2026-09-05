@@ -1,0 +1,9 @@
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+error[E0425]: cannot find value `scan` in this scope
+  --> crates/sockudo-push/src/memory/lifecycle.rs:50:36
+   |
+50 |         let (after_ms, after_id) = scan.log_position()?;
+   |                                    ^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `sockudo-push` (lib test) due to 1 previous error

@@ -1,0 +1,24 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s
+     Running unittests src/main.rs (target/debug/deps/sockudo-0e05229a4aa9e033)
+
+running 5 tests
+test history::dynamodb::version_store::tests::dynamodb_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::mysql::version_store::tests::mysql_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::postgres::version_store::tests::postgres_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::scylla::version_store::tests::scylla_metadata_counts_preserve_legacy_and_latest_states ... ok
+test history::surreal::version_store::tests::surreal_metadata_counts_preserve_legacy_and_latest_states ... 
+thread 'history::surreal::version_store::tests::surreal_metadata_counts_preserve_legacy_and_latest_states' (501927) panicked at crates/sockudo-server/src/history/surreal/version_store/tests.rs:179:16:
+called `Result::unwrap()` on an `Err` value: Error { code: -32001, message: "Connection reset", details: Connection(Some(ConnectionFailed)), cause: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    history::surreal::version_store::tests::surreal_metadata_counts_preserve_legacy_and_latest_states
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 144 filtered out; finished in 48.93s
+
+error: test failed, to rerun pass `-p sockudo --bin sockudo`

@@ -1,0 +1,39 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.45s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-690969c8c439da9f)
+
+running 1 test
+test history::tests::maintenance_releases_idle_payload_owners_before_any_channel_read ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 376 filtered out; finished in 1.01s
+
+     Running tests/cors_specific_case.rs (target/debug/deps/cors_specific_case-d41f9e071bce46c8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/docs_config_defaults.rs (target/debug/deps/docs_config_defaults-520255c6f5320f68)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/origin_validation_integration.rs (target/debug/deps/origin_validation_integration-dee7f62095250e85)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/unix_socket_config.rs (target/debug/deps/unix_socket_config-d8346bdc18a17a57)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/v2_feature_config.rs (target/debug/deps/v2_feature_config-ccbb2b4e42c2a7b9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

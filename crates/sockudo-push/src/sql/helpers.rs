@@ -111,7 +111,7 @@ where
                     .map_err(sql_error)?,
             )?,
             state: enum_from_label(&row.try_get::<String, _>("push_state").map_err(sql_error)?)?,
-            failure_count: row.try_get::<i32, _>("failure_count").map_err(sql_error)? as u32,
+            failure_count: row.try_get::<i64, _>("failure_count").map_err(sql_error)? as u32,
             error_reason: row.try_get("error_reason").map_err(sql_error)?,
         },
         push_rate_policy: None,

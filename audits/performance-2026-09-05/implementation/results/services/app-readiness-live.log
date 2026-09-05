@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+     Running tests/readiness_live.rs (target/debug/deps/readiness_live-5fdd9613bb941208)
+
+running 5 tests
+test dynamodb_readiness_is_authoritative_and_preserves_disabled_apps ... 
+thread 'dynamodb_readiness_is_authoritative_and_preserves_disabled_apps' (182114) panicked at crates/sockudo-app/tests/readiness_live.rs:6:36:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to check configured apps: service error")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test mysql_readiness_is_authoritative_and_preserves_disabled_apps ... ok
+test postgres_readiness_is_authoritative_and_preserves_disabled_apps ... ok
+test scylla_readiness_is_authoritative_and_preserves_disabled_apps ... 
+thread 'scylla_readiness_is_authoritative_and_preserves_disabled_apps' (182175) panicked at crates/sockudo-app/tests/readiness_live.rs:51:191:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to create keyspace: No connections in the pool: The pool is broken; Last connection failed with: Connection refused (os error 111)")
+FAILED
+test surreal_readiness_is_authoritative_and_preserves_disabled_apps ... 
+thread 'surreal_readiness_is_authoritative_and_preserves_disabled_apps' (182177) panicked at crates/sockudo-app/tests/readiness_live.rs:9:35:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to read app presence: Failed to deserialize field 'app' on type 'SurrealAppRecord': Expected object, got none")
+FAILED
+
+failures:
+
+failures:
+    dynamodb_readiness_is_authoritative_and_preserves_disabled_apps
+    scylla_readiness_is_authoritative_and_preserves_disabled_apps
+    surreal_readiness_is_authoritative_and_preserves_disabled_apps
+
+test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.71s
+
+error: test failed, to rerun pass `-p sockudo-app --test readiness_live`

@@ -64,6 +64,32 @@ fn ai_record(message_serial: &str, delivery_serial: u64, status: &str) -> Stored
     record
 }
 
+#[tokio::test]
+async fn metadata_counts_follow_latest_states_after_out_of_order_imports() {
+    let store = MemoryVersionStore::new();
+    let mut current = ai_record("stream", 1, "streaming");
+    current.message.version = version("ver:2", 2);
+    current.message.data = Some(MessageData::String("x".repeat(1024 * 1024)));
+    store.append_version(current.clone()).await.unwrap();
+    let mut older = current.clone();
+    older.message.version = version("ver:1", 1);
+    older.message.replay_position.delivery_serial = 2;
+    older.message.extras = None;
+    store.append_version(older).await.unwrap();
+    assert_eq!(store.message_count("app", "chat").await.unwrap(), 1);
+    assert_eq!(store.active_stream_count("app", "chat").await.unwrap(), 1);
+    current.message.version = version("ver:3", 3);
+    current.message.replay_position.delivery_serial = 3;
+    current.message.extras = None;
+    store.append_version(current).await.unwrap();
+    assert_eq!(store.message_count("app", "chat").await.unwrap(), 1);
+    assert_eq!(store.active_stream_count("app", "chat").await.unwrap(), 0);
+    assert_eq!(
+        store.active_stream_count("app", "missing").await.unwrap(),
+        0
+    );
+}
+
 struct CountingBlockVersionStore {
     inner: MemoryVersionStore,
     single_calls: AtomicU64,

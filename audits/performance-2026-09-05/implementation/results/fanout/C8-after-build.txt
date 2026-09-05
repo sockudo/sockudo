@@ -1,0 +1,4 @@
+    Finished `release` profile [optimized] target(s) in 0.24s
+  Executable unittests src/main.rs (target/release/deps/sockudo-8012b7f42d107d92)
+  Executable tests/clustered_durable_history_redis_test.rs (target/release/deps/clustered_durable_history_redis_test-ab92acdd739d05a4)
+  Executable tests/native_v2_heartbeat_test.rs (target/release/deps/native_v2_heartbeat_test-f9ef0db25df066d8)

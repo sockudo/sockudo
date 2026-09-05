@@ -53,6 +53,46 @@ fanout. Reusing it with a different operation is an idempotency conflict.
 Memory, PostgreSQL, MySQL, DynamoDB, ScyllaDB, and SurrealDB implement the same
 compare-and-apply contract.
 
+## Compact append storage and upgrades
+
+Channel statistics read latest-state metadata in bounded pages. For older SQL and
+SurrealDB records, the server verifies the latest record before lazily repairing
+its state metadata. The repair is conditional on the latest version, so a concurrent
+mutation cannot leave a stale streaming status marked as current. ScyllaDB counts
+merge current and legacy message identities without counting either twice.
+
+Memory and durable stores share the growing text of an append run across historical revisions.
+Compact append storage is automatic; there is no storage-format setting.
+This changes internal storage only. Every original fragment, version, envelope, and
+serial remains available; historical reads reconstruct the exact complete text for that version.
+Updates and incompatible imported revisions start independent text snapshots. V1, V2, and Ably
+responses keep their existing shapes.
+
+For an upgrade from a binary without compact-storage readers, pause writers and upgrade all
+processes that access version storage before resuming writes. Startup
+creates the additional SQL/Surreal snapshot tables and reference indexes; DynamoDB and ScyllaDB
+use auxiliary records in existing tables. Old full records remain readable without a rewrite.
+SQL append counters initialize lazily and database triggers maintain them for imports and purge.
+Provision schema/trigger permissions as part of the application upgrade.
+
+The private version-2 record prefix is `SVR2` followed by a zero byte. Snapshot replacement and
+its referencing version commit in the same conditional transaction, so a losing writer cannot
+change an accepted historical prefix. Snapshot cleanup waits for all referencing retained entries.
+Receipts that have no expiry also retain their snapshot; compact storage does not introduce a
+shorter idempotency lifetime. Scylla atomic version records and their snapshot currently retain
+the existing non-expiring lifetime, while legacy projection tables retain their configured TTL.
+
+Existing full records remain readable automatically. There is one normal write path; rollback
+uses a build that retains compact-storage readers. An older binary cannot safely open a store
+containing compact records. Returning to such a binary requires a separately validated full-record
+export/restore.
+Do not delete snapshot tables or auxiliary records while compact entries or receipts remain.
+
+This representation reduces retained historical text duplication. Each append still validates
+and constructs the full latest state, and durable snapshots still transmit that state when updated;
+it does not promise linear total write traffic. History reads trade that storage reduction for a
+bounded batch of snapshot lookups and exact prefix reconstruction. AI rollup remains egress-only.
+
 ## HTTP surfaces
 
 Signed app HTTP auth can create mutable messages through `/events`. Mutation and read surfaces are:

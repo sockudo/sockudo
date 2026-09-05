@@ -149,6 +149,9 @@ pub(super) fn stats_app_error(error: StatsError) -> AppError {
             AppError::InvalidInput(message)
         }
         StatsError::Store(message) => AppError::InternalError(message),
+        StatsError::IndexIncomplete => {
+            AppError::InternalError("stats range index needs rebuilding".to_owned())
+        }
         StatsError::Closed => AppError::InternalError("stats aggregator is closed".to_string()),
         StatsError::QueueFull => AppError::InternalError("stats queue is full".to_string()),
     }

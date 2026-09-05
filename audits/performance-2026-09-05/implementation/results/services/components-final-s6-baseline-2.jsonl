@@ -1,0 +1,17 @@
+{"allocated_bytes":110301880,"allocations":4300008,"verified":{"repeat":0},"elapsed_us":30830,"case":"S6_ws_100k"}
+{"case":"S6_ws_100k","allocations":4300005,"verified":{"repeat":1},"elapsed_us":30454,"allocated_bytes":110301792}
+{"case":"S6_ws_100k","allocated_bytes":110301792,"allocations":4300005,"elapsed_us":30459,"verified":{"repeat":2}}
+{"case":"S6_ws_100k","allocations":4300005,"allocated_bytes":110301792,"elapsed_us":30462,"verified":{"repeat":3}}
+{"case":"S6_ws_100k","allocated_bytes":110301792,"elapsed_us":30512,"verified":{"repeat":4},"allocations":4300005}
+{"verified":{"count":1000},"elapsed_us":1479,"allocated_bytes":3574848,"case":"S5_churn","allocations":59344}
+{"case":"S5_scrape","elapsed_us":6156,"allocated_bytes":14338256,"verified":{"bytes":1640365,"published":1000.0,"count":1000,"series":17039,"repeat":0},"allocations":137503}
+{"verified":{"count":1000,"repeat":1,"bytes":1640366,"series":17039,"published":1000.0},"allocated_bytes":10627698,"elapsed_us":5438,"case":"S5_scrape","allocations":132482}
+{"allocated_bytes":10627698,"case":"S5_scrape","elapsed_us":4880,"allocations":132482,"verified":{"count":1000,"bytes":1640366,"repeat":2,"series":17039,"published":1000.0}}
+{"verified":{"count":10000},"allocated_bytes":34319704,"elapsed_us":13154,"allocations":590211,"case":"S5_churn"}
+{"allocated_bytes":130820910,"elapsed_us":70041,"verified":{"repeat":0,"bytes":18360387,"series":187039,"published":11000.0,"count":10000},"allocations":1502509,"case":"S5_scrape"}
+{"elapsed_us":71429,"case":"S5_scrape","allocations":1452504,"allocated_bytes":123521835,"verified":{"published":11000.0,"repeat":1,"bytes":18360387,"series":187039,"count":10000}}
+{"verified":{"repeat":2,"series":187039,"published":11000.0,"bytes":18360388,"count":10000},"elapsed_us":69097,"allocations":1452504,"case":"S5_scrape","allocated_bytes":133484052}
+{"elapsed_us":162481,"verified":{"count":100000},"case":"S5_churn","allocations":6170197,"allocated_bytes":342604888}
+{"allocations":15152531,"allocated_bytes":1513772747,"elapsed_us":926315,"case":"S5_scrape","verified":{"repeat":0,"published":111000.0,"count":100000,"bytes":189060411,"series":1887039}}
+{"allocated_bytes":1235578779,"verified":{"count":100000,"published":111000.0,"bytes":189060412,"repeat":1,"series":1887039},"case":"S5_scrape","elapsed_us":889101,"allocations":14652525}
+{"case":"S5_scrape","allocations":14652525,"allocated_bytes":1164274612,"elapsed_us":885906,"verified":{"count":100000,"repeat":2,"published":111000.0,"bytes":189060412,"series":1887039}}

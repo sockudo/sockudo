@@ -1013,14 +1013,29 @@ impl<P: QueueRedisProvider> ReliableRedisQueue<P> {
                         leases.lock().insert(job.id.clone(), Arc::clone(&job.token));
                         let id = job.id.clone();
                         let token = Arc::clone(&job.token);
-                        let worker = &workers[next_worker];
-                        next_worker = (next_worker + 1) % workers.len();
-                        if let Err(error) = worker.send(job).await {
-                            warn!(
-                                job_id = %id,
-                                error = %error,
-                                "queue worker channel closed"
-                            );
+                        // This is the sole sender, so capacity observed before claiming
+                        // can only increase while a batch is being dispatched. Skip full
+                        // or stopped workers instead of blocking all workers behind one.
+                        let mut permit = None;
+                        for offset in 0..workers.len() {
+                            let index = (next_worker + offset) % workers.len();
+                            match workers[index].try_reserve() {
+                                Ok(slot) => {
+                                    permit = Some(slot);
+                                    next_worker = (index + 1) % workers.len();
+                                    break;
+                                }
+                                Err(error) => {
+                                    tracing::trace!(error = %error, "queue worker admission unavailable")
+                                }
+                            }
+                        }
+                        if let Some(permit) = permit {
+                            permit.send(job);
+                        } else {
+                            // Leave the durable claim to expire; do not renew work that
+                            // no surviving worker owns during shutdown.
+                            warn!(job_id = %id, "queue worker admission unavailable after claim");
                             remove_lease(&leases, &id, token.as_ref());
                         }
                     }

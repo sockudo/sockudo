@@ -1,0 +1,38 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+error[E0716]: temporary value dropped while borrowed
+   --> crates/sockudo-app/src/cached_app_manager.rs:253:42
+    |
+252 | /                 tokio::join!(
+253 | |                     self.set_serialized(&Self::cache_key_for_id(&app.id), &json),
+    | |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ creates a temporary value which is freed while still in use
+254 | |                     self.set_serialized(&Self::cache_key_for_key(&app.key), &json),
+255 | |                 );
+    | |                 -
+    | |                 |
+    | |_________________temporary value is freed at the end of this statement
+    |                   borrow later used here
+    |
+    = note: consider using a `let` binding to create a longer lived value
+
+error[E0716]: temporary value dropped while borrowed
+   --> crates/sockudo-app/src/cached_app_manager.rs:254:42
+    |
+252 | /                 tokio::join!(
+253 | |                     self.set_serialized(&Self::cache_key_for_id(&app.id), &json),
+254 | |                     self.set_serialized(&Self::cache_key_for_key(&app.key), &json),
+    | |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ creates a temporary value which is freed while still in use
+255 | |                 );
+    | |                 -
+    | |                 |
+    | |_________________temporary value is freed at the end of this statement
+    |                   borrow later used here
+    |
+    = note: consider using a `let` binding to create a longer lived value
+
+For more information about this error, try `rustc --explain E0716`.
+error: could not compile `sockudo-app` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...

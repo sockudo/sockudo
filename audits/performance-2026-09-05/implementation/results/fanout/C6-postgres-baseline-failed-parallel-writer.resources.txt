@@ -1,0 +1,28 @@
+
+thread 'history::benchmark_tests::benchmark_history_postgres' (241308) panicked at crates/sockudo-server/src/history/benchmark_tests.rs:57:21:
+durable writer did not finish HistoryRetentionStats { stream_id: Some("37b23595-7c12-4196-a2b5-b8354c0b76c2"), retained_messages: 50, retained_bytes: 6400, oldest_serial: Some(1), newest_serial: Some(63), oldest_published_at_ms: Some(1788601468067), newest_published_at_ms: Some(1788601468129) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Command exited with non-zero status 101
+	Command being timed: "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/binaries/c6-baseline history::benchmark_tests::benchmark_history_postgres --ignored --exact --nocapture --test-threads=1"
+	User time (seconds): 0.73
+	System time (seconds): 1.15
+	Percent of CPU this job got: 3%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:00.08
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 25840
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 464
+	Voluntary context switches: 169309
+	Involuntary context switches: 2420
+	Swaps: 0
+	File system inputs: 256
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101

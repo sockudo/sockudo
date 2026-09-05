@@ -443,7 +443,38 @@ where
             .idempotency_ttl
             .load(std::sync::atomic::Ordering::Relaxed);
 
+        let gap_local = self.horizontal.local_adapter.clone();
+        let gap_tap = self.realtime_egress_tap.clone();
         let handlers = TransportHandlers {
+            on_ingress_gap: Arc::new(move |app_id, channel| {
+                if let Some(tap) = gap_tap.get()
+                    && let Err(error) = tap.invalidate_continuity(app_id, channel)
+                {
+                    tracing::error!(error = %error, "realtime projection continuity invalidation failed");
+                }
+                for namespace in gap_local.namespaces.iter() {
+                    if app_id.is_some_and(|app| app != namespace.key()) {
+                        continue;
+                    }
+                    for socket in namespace.value().sockets.iter() {
+                        let affected = channel.is_none_or(|channel| {
+                            socket.channel_state.iter().any(|state| {
+                                let subscribed = state.key().as_ref();
+                                subscribed == channel
+                                    || (sockudo_core::utils::is_wildcard_subscription_pattern(
+                                        subscribed,
+                                    ) && sockudo_core::utils::wildcard_pattern_matches(
+                                        channel, subscribed,
+                                    ))
+                            })
+                        });
+                        if affected {
+                            socket.shutdown_token.cancel();
+                        }
+                    }
+                }
+                tracing::warn!("horizontal ingress gap invalidated local connection continuity");
+            }),
             node_id: self.node_id.clone(),
             on_broadcast: Arc::new(move |broadcast| {
                 let horizontal_clone = broadcast_horizontal.clone();

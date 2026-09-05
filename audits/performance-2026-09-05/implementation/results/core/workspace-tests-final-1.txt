@@ -1,0 +1,228 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling either v1.16.0
+   Compiling tokio-tungstenite v0.29.0
+   Compiling jsonwebtoken v11.0.0
+   Compiling prost-build v0.14.4
+   Compiling openssl v0.10.81
+   Compiling oxidelta v0.1.4
+   Compiling redis v1.4.1
+   Compiling tower-http v0.6.11
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling itertools v0.13.0
+   Compiling rayon v1.12.0
+   Compiling axum-server v0.8.0
+   Compiling axum v0.8.9
+   Compiling metrics-exporter-tcp v0.11.2
+   Compiling criterion-plot v0.6.0
+   Compiling criterion v0.7.0
+   Compiling native-tls v0.2.18
+   Compiling tokio-native-tls v0.3.1
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
+   Compiling sockudo-ws v2.0.1
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-simulator v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-simulator)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 57s
+     Running unittests src/main.rs (target/debug/deps/sockudo-fbc3416dc5334499)
+
+running 99 tests
+test bootstrap::maintenance::tests::final_batch_honors_remaining_budget_and_preserves_partial_failure ... ok
+test bootstrap::maintenance::tests::progressing_empty_pages_cannot_monopolize_a_tick ... ok
+test bootstrap::router::tests::websocket_rate_limit_is_scoped_to_websocket_routes ... ok
+test bootstrap::router::tests::api_rate_limit_is_scoped_to_api_routes ... ok
+test cleanup::worker::tests::v2_ungraceful_disconnect_uses_recovery_presence_lease ... FAILED
+test cleanup::worker::tests::deferred_worker_completes_exhaustive_cleanup ... FAILED
+test cleanup::worker::tests::disconnect_cleanup_retains_then_emits_presence_leave_without_webhooks ... FAILED
+test cleanup::worker::tests::stale_task_after_sync_fallback_is_harmless ... FAILED
+test http_handler::ai::tests::ai_transport_authz_matrix_enumerates_every_operation_and_principal ... ok
+test http_handler::errors::tests::internal_error_response_does_not_expose_backend_details ... ok
+test http_handler::events::idempotency_tests::batch_publish_fails_closed_when_idempotency_cache_is_unavailable ... ok
+test http_handler::events::idempotency_tests::single_publish_fails_closed_when_idempotency_cache_is_unavailable ... ok
+test http_handler::events::idempotency_tests::oversized_batch_is_rejected_before_its_idempotency_key_is_claimed ... ok
+test http_handler::channels::tests::channels_list_includes_subscription_count_when_requested ... FAILED
+test http_handler::events::idempotency_tests::batch_publish_rejects_empty_per_event_idempotency_key ... ok
+test http_handler::annotations::tests::annotation_subscribe_rejects_socket_id_in_api_role ... ok
+test http_handler::annotations::tests::annotation_publish_requires_channel_policy_flag ... ok
+test http_handler::events::idempotency_tests::batch_publish_rejects_overlength_per_event_idempotency_key ... ok
+test http_handler::annotations::tests::annotation_delete_any_allows_moderator ... FAILED
+test http_handler::annotations::tests::annotation_delete_own_denies_identity_mismatch ... FAILED
+test http_handler::annotations::tests::annotation_publish_rejects_socket_id_in_api_role ... ok
+test http_handler::ai::tests::append_message_rejects_ai_accumulated_content_over_cap ... ok
+test http_handler::annotations::tests::annotation_publish_denies_socket_without_annotation_publish_capability ... FAILED
+test http_handler::annotations::tests::annotation_delete_own_allows_annotation_owner ... FAILED
+test http_handler::errors::tests::error_responses_include_code_and_status_fields ... ok
+test http_handler::annotations::tests::annotation_delete_rejects_socket_id_in_api_role ... ok
+test http_handler::ai::tests::append_message_rejects_ai_append_count_over_cap ... ok
+test http_handler::annotations::tests::annotation_delete_missing_annotation_returns_404 ... ok
+test http_handler::ai::tests::append_message_persists_terminal_status_in_latest_record ... ok
+test http_handler::annotations::tests::annotation_publish_and_delete_update_summary_projection ... ok
+test http_handler::history::tests::channel_history_rejects_when_history_is_disabled_by_app_policy ... ok
+test http_handler::history::tests::channel_history_rejects_invalid_cursor ... ok
+test http_handler::history::tests::channel_history_purge_before_serial_advances_retained_floor_without_rotation ... ok
+test http_handler::history::tests::channel_history_filters_by_serial_range ... ok
+test http_handler::history::tests::channel_history_reset_rejects_mismatched_confirmation ... ok
+test http_handler::history::tests::channel_history_state_endpoint_returns_authoritative_stream_state ... ok
+test http_handler::history::tests::channel_history_reset_rotates_stream_and_purges_history ... ok
+test http_handler::history::tests::channel_history_returns_published_messages ... ok
+test http_handler::presence_history::tests::channel_presence_history_rejects_non_presence_channels ... ok
+test http_handler::presence_history::tests::channel_presence_history_filters_by_serial_and_time ... ok
+test http_handler::presence_history::tests::ably_time_aliases_resolve_correctly ... ok
+test http_handler::presence_history::tests::channel_presence_history_rejects_cursor_with_mismatched_bounds ... ok
+test http_handler::presence_history::tests::channel_presence_history_snapshot_rejects_non_presence_channel ... ok
+test http_handler::presence_history::tests::channel_presence_history_reset_rotates_stream_and_purges_history ... ok
+test http_handler::presence_history::tests::channel_presence_history_reports_degraded_stream_fail_closed ... ok
+test http_handler::presence_history::tests::channel_presence_history_snapshot_at_serial_bound ... ok
+test http_handler::presence_history::tests::channel_presence_history_paginates_newest_first_and_oldest_first ... ok
+test http_handler::presence_history::tests::channel_presence_history_returns_presence_events ... ok
+test http_handler::history::tests::namespace_history_retention_override_beats_app_default ... ok
+test http_handler::presence_history::tests::channel_presence_history_snapshot_reconstructs_membership ... ok
+test http_handler::system::tests::accept_traffic_reports_memory_pressure_without_changing_readiness ... ok
+test http_handler::presence_history::tests::channel_presence_history_state_endpoint_returns_authoritative_stream_state ... ok
+test http_handler::presence_history::tests::dead_node_cleanup_replay_does_not_duplicate_presence_history_rows ... ok
+test http_handler::presence_history::tests::dead_node_cleanup_removes_ably_virtual_member_from_typed_registry_once ... ok
+test http_handler::presence_history::tests::continuity_includes_degraded_field ... ok
+test logging::tests::output_format_is_explicit_and_safe_by_default ... ok
+test http_handler::system::tests::accept_traffic_fails_open_when_memory_admission_is_disabled ... ok
+test logging::tests::resolved_filter_precedence_is_stable ... ok
+test http_handler::versioned_messages::mutations::tests::append_message_denies_non_owner_with_own_capability ... FAILED
+test http_handler::versioned_messages::mutations::tests::delete_message_allows_authenticated_any_capability ... FAILED
+test logging::tests::text_and_json_resolve_the_same_runtime_settings ... ok
+test http_handler::versioned_messages::mutations::tests::update_message_allows_authenticated_owner_with_own_capability ... FAILED
+test http_handler::versioned_messages::mutations::tests::append_message_accepts_empty_terminal_ai_append_and_retains_fragment ... ok
+test http_handler::versioned_messages::mutations::tests::update_message_denies_authenticated_socket_without_mutation_capability ... FAILED
+test http_handler::history::tests::channel_history_paginates_newest_first_and_oldest_first ... ok
+test http_handler::versioned_messages::mutations::tests::append_message_reports_not_implemented_after_validation ... ok
+test http_handler::versioned_messages::tests::channel_message_returns_latest_versioned_item ... ok
+test http_handler::versioned_messages::tests::channel_message_versions_pages_newest_first ... ok
+test http_handler::versioned_messages::mutations::tests::append_message_op_id_replay_returns_duplicate_serial_ack ... ok
+test middleware::tests::test_get_params_for_signature_empty ... ok
+test http_handler::versioned_messages::tests::versioned_message_endpoints_require_feature_flag ... ok
+test middleware::tests::test_get_params_for_signature_invalid_queries ... ok
+test http_handler::annotations::tests::annotation_publish_requires_feature_flag ... ok
+test http_handler::versioned_messages::tests::channel_message_versions_returns_append_fragment_for_replay ... ok
+test middleware::tests::test_get_params_for_signature_with_auth ... ok
+test middleware::tests::test_get_params_for_signature_with_auth2 ... ok
+test http_handler::versioned_messages::mutations::tests::update_message_validates_request_body_before_runtime ... ok
+test middleware::tests::auth_body_limit_preserves_bytes_and_stops_chunked_overflow ... ok
+test ws_handler::tests::v1_ignores_wire_format_query ... ok
+test ws_handler::tests::append_rollup_window_accepts_locked_values ... ok
+test http_handler::annotations::tests::annotation_publish_rejects_unidentified_ownership_summarizer ... ok
+test ws_handler::tests::append_mode_query_accepts_delta_and_full ... ok
+test ws_handler::tests::v2_rejects_unknown_wire_format ... ok
+test ws_handler::tests::websocket_heartbeat_ownership_follows_protocol_version ... ok
+test middleware::signed_body_tests::limited_auth_preserves_signed_whitespace_utf8_and_downstream_bytes ... ok
+test http_handler::events::idempotency_tests::batch_request_key_does_not_shadow_matching_event_key ... ok
+test http_handler::ai::tests::events_rejects_ai_create_when_open_stream_cap_is_reached ... ok
+test http_handler::ai::tests::ai_http_publish_idempotency_key_header_returns_cached_serial_ack ... ok
+test http_handler::ai::tests::ai_http_publish_returns_serial_ack_and_message_id_dedupes ... ok
+test http_handler::ai::tests::channel_state_includes_ai_block_for_ai_transport_channels ... ok
+test http_handler::ai::tests::ai_batch_http_publish_returns_serial_acks_in_request_order ... ok
+test http_handler::versioned_messages::tests::events_create_then_delete_substitutes_latest_visible_history ... ok
+test http_handler::versioned_messages::tests::events_create_then_append_substitutes_latest_visible_history ... ok
+test http_handler::versioned_messages::tests::events_create_then_update_substitutes_latest_visible_history ... ok
+test http_handler::system::tests::stats_endpoint_reports_non_empty_occupancy_counts ... ok
+test http_handler::system::tests::stats_endpoint_reports_presence_history_health_summary ... ok
+test http_handler::system::tests::stats_endpoint_returns_empty_totals_for_empty_server ... ok
+test http_handler::history::tests::channel_history_large_read_is_bounded_and_fast ... ok
+test http_handler::events::idempotency_tests::concurrent_publish_timeout_returns_retryable_backpressure ... ok
+
+failures:
+
+---- cleanup::worker::tests::v2_ungraceful_disconnect_uses_recovery_presence_lease stdout ----
+
+thread 'cleanup::worker::tests::v2_ungraceful_disconnect_uses_recovery_presence_lease' (9771) panicked at crates/sockudo-server/src/cleanup/worker.rs:499:63:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- cleanup::worker::tests::deferred_worker_completes_exhaustive_cleanup stdout ----
+
+thread 'cleanup::worker::tests::deferred_worker_completes_exhaustive_cleanup' (9768) panicked at crates/sockudo-server/src/cleanup/worker.rs:499:63:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- cleanup::worker::tests::disconnect_cleanup_retains_then_emits_presence_leave_without_webhooks stdout ----
+
+thread 'cleanup::worker::tests::disconnect_cleanup_retains_then_emits_presence_leave_without_webhooks' (9769) panicked at crates/sockudo-server/src/cleanup/worker.rs:499:63:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- cleanup::worker::tests::stale_task_after_sync_fallback_is_harmless stdout ----
+
+thread 'cleanup::worker::tests::stale_task_after_sync_fallback_is_harmless' (9770) panicked at crates/sockudo-server/src/cleanup/worker.rs:499:63:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::channels::tests::channels_list_includes_subscription_count_when_requested stdout ----
+
+thread 'http_handler::channels::tests::channels_list_includes_subscription_count_when_requested' (9794) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::annotations::tests::annotation_delete_any_allows_moderator stdout ----
+
+thread 'http_handler::annotations::tests::annotation_delete_any_allows_moderator' (9782) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::annotations::tests::annotation_delete_own_denies_identity_mismatch stdout ----
+
+thread 'http_handler::annotations::tests::annotation_delete_own_denies_identity_mismatch' (9785) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::annotations::tests::annotation_publish_denies_socket_without_annotation_publish_capability stdout ----
+
+thread 'http_handler::annotations::tests::annotation_publish_denies_socket_without_annotation_publish_capability' (9788) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::annotations::tests::annotation_delete_own_allows_annotation_owner stdout ----
+
+thread 'http_handler::annotations::tests::annotation_delete_own_allows_annotation_owner' (9784) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::versioned_messages::mutations::tests::append_message_denies_non_owner_with_own_capability stdout ----
+
+thread 'http_handler::versioned_messages::mutations::tests::append_message_denies_non_owner_with_own_capability' (9836) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::versioned_messages::mutations::tests::delete_message_allows_authenticated_any_capability stdout ----
+
+thread 'http_handler::versioned_messages::mutations::tests::delete_message_allows_authenticated_any_capability' (9840) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::versioned_messages::mutations::tests::update_message_allows_authenticated_owner_with_own_capability stdout ----
+
+thread 'http_handler::versioned_messages::mutations::tests::update_message_allows_authenticated_owner_with_own_capability' (9841) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http_handler::versioned_messages::mutations::tests::update_message_denies_authenticated_socket_without_mutation_capability stdout ----
+
+thread 'http_handler::versioned_messages::mutations::tests::update_message_denies_authenticated_socket_without_mutation_capability' (9842) panicked at crates/sockudo-server/src/http_handler/test_support.rs:482:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+
+failures:
+    cleanup::worker::tests::deferred_worker_completes_exhaustive_cleanup
+    cleanup::worker::tests::disconnect_cleanup_retains_then_emits_presence_leave_without_webhooks
+    cleanup::worker::tests::stale_task_after_sync_fallback_is_harmless
+    cleanup::worker::tests::v2_ungraceful_disconnect_uses_recovery_presence_lease
+    http_handler::annotations::tests::annotation_delete_any_allows_moderator
+    http_handler::annotations::tests::annotation_delete_own_allows_annotation_owner
+    http_handler::annotations::tests::annotation_delete_own_denies_identity_mismatch
+    http_handler::annotations::tests::annotation_publish_denies_socket_without_annotation_publish_capability
+    http_handler::channels::tests::channels_list_includes_subscription_count_when_requested
+    http_handler::versioned_messages::mutations::tests::append_message_denies_non_owner_with_own_capability
+    http_handler::versioned_messages::mutations::tests::delete_message_allows_authenticated_any_capability
+    http_handler::versioned_messages::mutations::tests::update_message_allows_authenticated_owner_with_own_capability
+    http_handler::versioned_messages::mutations::tests::update_message_denies_authenticated_socket_without_mutation_capability
+
+test result: FAILED. 86 passed; 13 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+error: test failed, to rerun pass `-p sockudo --bin sockudo`

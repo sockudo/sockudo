@@ -1,0 +1,55 @@
+    Blocking waiting for file lock on build directory
+    Checking sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+error[E0425]: cannot find value `cache_prefix` in this scope
+   --> crates/sockudo-cache/src/redis_cluster_cache_manager.rs:446:69
+    |
+446 |                     && let Some(unprefixed_key) = key.strip_prefix(&cache_prefix)
+    |                                                                     ^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `entries` in this scope
+   --> crates/sockudo-cache/src/redis_cluster_cache_manager.rs:448:21
+    |
+448 |                     entries.push((unprefixed_key.to_owned(), value));
+    |                     ^^^^^^^ not found in this scope
+
+error[E0277]: a value of type `Result<_, RedisError>` cannot be built from an iterator over elements of type `Result<_, ParsingError>`
+    --> crates/sockudo-cache/src/redis_cluster_cache_manager.rs:258:107
+     |
+ 258 |             let values: Vec<Option<String>> = response.into_iter().map(redis::from_redis_value).collect::<redis::RedisResult<_>>()
+     |                                                                                                 -------   ^^^^^^^^^^^^^^^^^^^^^ value of type `Result<_, RedisError>` cannot be built from `std::iter::Iterator<Item=Result<_, ParsingError>>`
+     |                                                                                                 |
+     |                                                                                                 required by a bound introduced by this call
+     |
+help: the trait `FromIterator<Result<_, ParsingError>>` is not implemented for `Result<_, RedisError>`
+      but trait `FromIterator<Result<_, RedisError>>` is implemented for it
+    --> /home/radud/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:2114:1
+     |
+2114 | impl<A, E, V: FromIterator<A>> FromIterator<Result<A, E>> for Result<V, E> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for that trait implementation, expected `RedisError`, found `ParsingError`
+note: the method call chain might not have had the expected associated types
+    --> crates/sockudo-cache/src/redis_cluster_cache_manager.rs:258:68
+     |
+ 256 |   ...      let response = connection.route_pipeline(pipeline, 0, keys.len(), SingleNodeRoutingInfo::SpecificNode(Route::new(slot, ...
+     |  _________________________-
+ 257 | | ...          .map_err(|error| Error::Cache(format!("Redis Cluster scan values error: {error}")))?;
+     | |_________________________________________________________________________________________________- this expression has type `Vec<Value>`
+ 258 |   ...      let values: Vec<Option<String>> = response.into_iter().map(redis::from_redis_value).collect::<redis::RedisResult<_>>()
+     |                                                       ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Iterator::Item` changed to `Result<_, ParsingError>` here
+     |                                                       |
+     |                                                       `Iterator::Item` is `Value` here
+note: required by a bound in `collect`
+    --> /home/radud/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2077:19
+     |
+2077 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+Some errors have detailed explanations: E0277, E0425.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `sockudo-cache` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...

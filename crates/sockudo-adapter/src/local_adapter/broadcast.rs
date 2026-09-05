@@ -7,54 +7,10 @@ use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{MessageAction, extract_runtime_action};
-#[cfg(feature = "delta")]
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 #[cfg(feature = "tag-filtering")]
 use std::sync::atomic::Ordering;
-#[cfg(feature = "delta")]
-use tracing::info;
 use tracing::{debug, warn};
-
-#[cfg(feature = "delta")]
-fn hash_cached_base_message(base: &[u8]) -> u64 {
-    let mut hasher = ahash::AHasher::default();
-    base.hash(&mut hasher);
-    hasher.finish()
-}
-
-#[cfg(feature = "delta")]
-/// Parameters for sending a message to a socket with compression
-#[allow(dead_code)]
-struct SocketMessageParams {
-    socket_ref: WebSocketRef,
-    base_message: Arc<PusherMessage>,
-    base_message_bytes: Arc<Vec<u8>>,
-    channel: Arc<str>,
-    event_name: Arc<str>,
-    delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
-    channel_settings: Option<Arc<sockudo_delta::ChannelDeltaSettings>>,
-    tag_filtering_enabled: bool,
-}
-
-#[cfg(feature = "delta")]
-/// Parameters for sending a message with pre-computed delta
-#[allow(dead_code)]
-struct PrecomputedDeltaParams {
-    socket_ref: WebSocketRef,
-    base_message: Arc<PusherMessage>,
-    base_message_bytes: Arc<Vec<u8>>,
-    channel: Arc<str>,
-    event_name: Arc<str>,
-    delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
-    channel_settings: Option<Arc<sockudo_delta::ChannelDeltaSettings>>,
-    tag_filtering_enabled: bool,
-    /// Pre-computed delta bytes and the sequence number of the base message used to compute it
-    precomputed_delta: Option<(Arc<Vec<u8>>, u32)>,
-    conflation_key: Arc<str>,
-    /// Hash of the base message used to compute the precomputed delta (for verification)
-    base_hash: u64,
-}
 
 impl LocalAdapter {
     /// Send messages using chunked processing with semaphore-controlled concurrency
@@ -64,7 +20,34 @@ impl LocalAdapter {
         message_bytes: Bytes,
     ) -> Vec<Result<()>> {
         use futures::stream::{self, StreamExt};
-
+        use sockudo_protocol::wire::{WireFormat, serialize_message};
+        let mut prepared = std::collections::HashMap::new();
+        prepared.insert(WireFormat::Json, message_bytes.clone());
+        if target_socket_refs
+            .iter()
+            .any(|socket| socket.wire_format.is_binary())
+        {
+            let message = sonic_rs::from_slice::<PusherMessage>(&message_bytes);
+            for format in [WireFormat::MessagePack, WireFormat::Protobuf] {
+                if target_socket_refs
+                    .iter()
+                    .any(|socket| socket.wire_format == format)
+                {
+                    match message
+                        .as_ref()
+                        .map_err(|error| error.to_string())
+                        .and_then(|message| serialize_message(message, format))
+                    {
+                        Ok(bytes) => {
+                            prepared.insert(format, Bytes::from(bytes));
+                        }
+                        Err(error) => {
+                            warn!(error = %error, "broadcast encoding failed");
+                        }
+                    }
+                }
+            }
+        }
         let socket_count = target_socket_refs.len();
 
         // Determine target number of chunks (1-8 based on socket count vs max concurrency)
@@ -93,8 +76,16 @@ impl LocalAdapter {
                     let chunk_vec: Vec<_> = socket_chunk.to_vec();
                     let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
                         .map(|socket_ref| {
-                            let bytes = message_bytes.clone();
-                            async move { socket_ref.send_broadcast(bytes) }
+                            let bytes = prepared.get(&socket_ref.wire_format).cloned();
+                            async move {
+                                match bytes {
+                                    Some(bytes) => socket_ref
+                                        .send_prepared_broadcast(bytes, socket_ref.wire_format),
+                                    None => Err(Error::InvalidMessageFormat(
+                                        "Broadcast encoding failed".into(),
+                                    )),
+                                }
+                            }
                         })
                         .buffer_unordered(chunk_size)
                         .collect()
@@ -117,733 +108,190 @@ impl LocalAdapter {
     }
 
     #[cfg(feature = "delta")]
-    /// Send messages with delta compression support using chunked processing
+    /// Prepare equivalent delta/full envelopes once, then retain per-socket bases
+    /// only after bounded queue admission succeeds. Pointer identities are held
+    /// alive in the cache and are therefore an exact base proof, not a hash guess.
     pub(super) async fn send_messages_with_compression(
         &self,
-        target_socket_refs: Vec<WebSocketRef>,
+        sockets: Vec<WebSocketRef>,
         base_message: PusherMessage,
         base_message_bytes: Vec<u8>,
         channel: &str,
         event_name: &str,
         compression: crate::connection_manager::CompressionParams<'_>,
     ) -> Vec<Result<()>> {
-        let delta_compression = compression.delta_compression;
-        let channel_settings = compression.channel_settings;
-
-        use futures::stream::{self, StreamExt};
-
-        let socket_count = target_socket_refs.len();
-        #[cfg(feature = "tag-filtering")]
-        let tag_filtering = self.tag_filtering_enabled.load(Ordering::Acquire);
-        #[cfg(not(feature = "tag-filtering"))]
-        let tag_filtering = false;
-
-        // OPTIMIZATION: Pre-compute deltas at broadcast level to avoid recomputing for each socket
-        // Strategy:
-        // 1. Group sockets by their base message (for delta computation)
-        // 2. Compute delta ONCE per unique base message
-        // 3. Reuse the same delta for all sockets with that base
-
-        // Group sockets by base message hash (for delta computation)
-        // Key: (conflation_key, base_message_hash) -> list of sockets
-        let mut socket_groups: HashMap<(String, u64), Vec<WebSocketRef>> = HashMap::new();
-        let mut non_delta_sockets = Vec::new();
-
-        // First pass: categorize sockets
-        for socket_ref in target_socket_refs {
-            let socket_id = socket_ref.get_socket_id_sync();
-
-            // Check if socket has delta enabled for this specific channel
-            if delta_compression.is_enabled_for_socket_channel(socket_id, channel) {
-                debug!(socket_id = %socket_id, channel = %channel, "socket has delta compression enabled");
-                // Extract conflation key
-                let conflation_key_path = channel_settings
-                    .and_then(|s| s.conflation_key.as_ref())
-                    .or(delta_compression.get_conflation_key_path());
-
-                debug!(socket_id = %socket_id, conflation_key_path = ?conflation_key_path, "conflation key path for socket");
-
-                let conflation_key = if let Some(path) = conflation_key_path {
-                    let extracted = delta_compression
-                        .extract_conflation_key_from_path(&base_message_bytes, path);
-                    debug!(
-                        path = %path,
-                        conflation_key = %extracted,
-                        base_bytes_len = base_message_bytes.len(),
-                        "extracted conflation key from path"
-                    );
-                    extracted
-                } else {
-                    debug!("No conflation key path configured");
-                    String::new()
-                };
-
-                // Create composite cache key
-                let cache_key = if conflation_key.is_empty() {
-                    event_name.to_string()
-                } else {
-                    format!("{}:{}", event_name, conflation_key)
-                };
-
-                // Get base message for delta computation
-                debug!(
-                    socket_id = %socket_id,
-                    channel = %channel,
-                    cache_key = %cache_key,
-                    event = %event_name,
-                    "looking for base message"
-                );
-                let base_msg =
-                    delta_compression.get_last_message_for_socket(socket_id, channel, &cache_key);
-                let base_msg_opt = base_msg.await;
-                debug!(socket_id = %socket_id, found = base_msg_opt.is_some(), "base message lookup result");
-
-                // Hash the base message to group sockets with same base
-                let base_hash = if let Some(base) = base_msg_opt.as_ref() {
-                    hash_cached_base_message(base.as_slice())
-                } else {
-                    0 // No base message = send full message
-                };
-
-                debug!(
-                    socket_id = %socket_id,
-                    conflation_key = %conflation_key,
-                    base_hash = base_hash,
-                    has_base = base_hash != 0,
-                    "socket grouped for delta"
-                );
-                socket_groups
-                    .entry((conflation_key, base_hash))
-                    .or_default()
-                    .push(socket_ref);
+        use sockudo_protocol::wire::{WireFormat, serialize_message};
+        let manager = compression.delta_compression;
+        let settings = compression.channel_settings;
+        let path = settings
+            .and_then(|s| s.conflation_key.as_ref())
+            .or(manager.get_conflation_key_path());
+        let conflation_key = path
+            .map(|path| manager.extract_conflation_key_from_path(&base_message_bytes, path))
+            .unwrap_or_default();
+        let cache_key = if conflation_key.is_empty() {
+            event_name.to_owned()
+        } else {
+            format!("{event_name}:{conflation_key}")
+        };
+        let shared_base = Arc::new(base_message_bytes);
+        // Bound temporary preparation independently of fanout size and payload.
+        const MAX_PREPARED_BYTES: usize = 16 * 1024 * 1024;
+        const MAX_PREPARED_ENTRIES: usize = 256;
+        type DeltaCache = HashMap<(usize, u8), (Arc<Vec<u8>>, Option<Arc<str>>)>;
+        let mut deltas = DeltaCache::new();
+        let mut frames: HashMap<(usize, u8, u32, u32, WireFormat, bool), Bytes> = HashMap::new();
+        let mut prepared_bytes = 0usize;
+        let mut results = Vec::with_capacity(sockets.len());
+        for (index, socket) in sockets.into_iter().enumerate() {
+            if index % self.max_concurrent.max(1) == 0 {
+                tokio::task::yield_now().await;
+            }
+            if prepared_bytes >= MAX_PREPARED_BYTES
+                || frames.len() + deltas.len() >= MAX_PREPARED_ENTRIES
+            {
+                frames.clear();
+                deltas.clear();
+                prepared_bytes = 0;
+            }
+            let socket_id = socket.get_socket_id_sync();
+            let enabled = manager.is_enabled_for_socket_channel(socket_id, channel);
+            let sequence = if enabled {
+                manager.get_next_sequence(socket_id, channel, &cache_key)
             } else {
-                debug!(socket_id = %socket_id, "socket does not have delta compression enabled");
-                non_delta_sockets.push(socket_ref);
-            }
-        }
-
-        // Pre-compute deltas for each unique base message
-        // Stores (delta_bytes, base_sequence) - base_sequence is needed to tell client which message to use as base
-        type PrecomputedDelta = Option<(Arc<Vec<u8>>, u32)>;
-        let mut precomputed_deltas: HashMap<(String, u64), PrecomputedDelta> = HashMap::new();
-
-        debug!(
-            socket_groups = socket_groups.len(),
-            non_delta_sockets = non_delta_sockets.len(),
-            "pre-computing deltas for socket groups"
-        );
-
-        for ((conflation_key, base_hash), group_sockets) in &socket_groups {
-            if *base_hash == 0 {
-                // No base message, will send full message
-                debug!(
-                    conflation_key = %conflation_key,
-                    socket_count = group_sockets.len(),
-                    "group will send full messages (first message, no base)"
-                );
-                precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
-                continue;
-            }
-
-            // Get the base message from the first socket in the group (they all have the same base)
-            if let Some(first_socket) = group_sockets.first() {
-                let socket_id = first_socket.get_socket_id_sync();
-                let cache_key = if conflation_key.is_empty() {
-                    event_name.to_string()
-                } else {
-                    format!("{}:{}", event_name, conflation_key)
-                };
-
-                // Check if we should send a full message due to interval
-                let should_send_full =
-                    delta_compression.should_send_full_message(socket_id, channel, &cache_key);
-
-                if should_send_full {
-                    debug!(
-                        conflation_key = %conflation_key,
-                        base_hash = base_hash,
-                        socket_count = group_sockets.len(),
-                        "group sending full message due to interval"
-                    );
-                    precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
-                    continue;
-                }
-
-                // Use the new function that returns both message content AND sequence
-                if let Some((base_msg, base_sequence)) = delta_compression
+                0
+            };
+            let algorithm = manager.get_algorithm_for_channel(socket_id, channel);
+            let algorithm_id = match algorithm {
+                sockudo_delta::DeltaAlgorithm::Fossil => 0,
+                sockudo_delta::DeltaAlgorithm::Xdelta3 => 1,
+            };
+            let mut delta = None;
+            let mut memoize_frame = true;
+            let mut base_identity = 0;
+            let mut base_sequence = 0;
+            if enabled
+                && sequence >= 2
+                && !manager.should_send_full_message(socket_id, channel, &cache_key)
+                && let Some((base, serial)) = manager
                     .get_last_message_with_sequence(socket_id, channel, &cache_key)
                     .await
-                {
-                    // Compute delta ONCE for this group
-                    match delta_compression
-                        .compute_delta_for_broadcast(&base_msg, &base_message_bytes)
-                    {
-                        Ok(delta) => {
-                            // Check if delta is beneficial
-                            if delta.len() < base_message_bytes.len() {
-                                debug!(
-                                    conflation_key = %conflation_key,
-                                    base_hash = base_hash,
-                                    socket_count = group_sockets.len(),
-                                    delta_bytes = delta.len(),
-                                    original_bytes = base_message_bytes.len(),
-                                    base_seq = base_sequence,
-                                    "group computed delta successfully"
-                                );
-                                precomputed_deltas.insert(
-                                    (conflation_key.clone(), *base_hash),
-                                    Some((Arc::new(delta), base_sequence)),
-                                );
-                            } else {
-                                // Delta not beneficial
-                                debug!(
-                                    conflation_key = %conflation_key,
-                                    base_hash = base_hash,
-                                    socket_count = group_sockets.len(),
-                                    delta_bytes = delta.len(),
-                                    original_bytes = base_message_bytes.len(),
-                                    "group delta not beneficial, sending full"
-                                );
-                                precomputed_deltas
-                                    .insert((conflation_key.clone(), *base_hash), None);
-                            }
-                        }
-                        Err(e) => {
-                            // Delta computation failed
-                            warn!(
-                                conflation_key = %conflation_key,
-                                base_hash = base_hash,
-                                error = %e,
-                                "group delta computation failed, sending full"
-                            );
-                            precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
-                        }
-                    }
+            {
+                base_identity = Arc::as_ptr(&base) as usize;
+                base_sequence = serial;
+                if let Some(entry) = deltas.get(&(base_identity, algorithm_id)) {
+                    delta = entry.1.clone();
                 } else {
-                    precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
+                    delta = match manager.compute_delta_for_algorithm(
+                        &base,
+                        &shared_base,
+                        algorithm,
+                    ) {
+                        Ok(bytes) if bytes.len() < shared_base.len() => {
+                            Some(Arc::<str>::from(base64::Engine::encode(
+                                &base64::engine::general_purpose::STANDARD,
+                                bytes,
+                            )))
+                        }
+                        Ok(_) => None,
+                        Err(error) => {
+                            warn!(error = %error, channel, "delta computation failed using full message");
+                            None
+                        }
+                    };
+                    let retained_bytes = base
+                        .len()
+                        .saturating_add(delta.as_ref().map_or(0, |text| text.len()));
+                    if prepared_bytes.saturating_add(retained_bytes) <= MAX_PREPARED_BYTES
+                        && frames.len() + deltas.len() < MAX_PREPARED_ENTRIES
+                    {
+                        prepared_bytes += retained_bytes;
+                        deltas.insert((base_identity, algorithm_id), (base, delta.clone()));
+                    } else {
+                        // A delta frame may use pointer identity only while its exact
+                        // base is retained in the memo. Oversized bases remain local.
+                        memoize_frame = delta.is_none();
+                    }
                 }
             }
-        }
-
-        let base_message = Arc::new(base_message);
-        let base_message_bytes = Arc::new(base_message_bytes);
-        let channel: Arc<str> = Arc::from(channel);
-        let event_name: Arc<str> = Arc::from(event_name);
-        let channel_settings = channel_settings.cloned().map(Arc::new);
-
-        // Determine target number of chunks (1-8 based on socket count vs max concurrency)
-        let target_chunks = socket_count.div_ceil(self.max_concurrent).clamp(1, 8);
-
-        // Calculate socket chunk size based on socket count divided by target chunks
-        let socket_chunk_size = (socket_count / target_chunks)
-            .min(self.max_concurrent)
-            .max(1);
-
-        // Process chunks sequentially with controlled concurrency
-        let mut results = Vec::with_capacity(socket_count);
-
-        // Process delta-enabled socket groups
-        for ((conflation_key, base_hash), group_sockets) in socket_groups {
-            let precomputed_delta = precomputed_deltas
-                .get(&(conflation_key.clone(), base_hash))
-                .and_then(|d| d.as_ref())
-                .cloned();
-
-            for socket_chunk in group_sockets.chunks(socket_chunk_size) {
-                let chunk_size = socket_chunk.len();
-
-                // Acquire permits for the entire chunk
-                match self
-                    .broadcast_semaphore
-                    .acquire_many(chunk_size as u32)
-                    .await
-                {
-                    Ok(_permits) => {
-                        // Process sockets in this chunk using buffered unordered streaming
-                        let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                        let base_msg = Arc::clone(&base_message);
-                        let base_bytes = Arc::clone(&base_message_bytes);
-                        let channel_str = Arc::clone(&channel);
-                        let event_str = Arc::clone(&event_name);
-                        let delta_comp = Arc::clone(&delta_compression);
-                        let ch_settings = channel_settings.clone();
-                        let precomp_delta = precomputed_delta.clone();
-                        let conf_key: Arc<str> = Arc::from(conflation_key.as_str());
-
-                        let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
-                            .map(|socket_ref| {
-                                let msg = Arc::clone(&base_msg);
-                                let bytes = Arc::clone(&base_bytes);
-                                let ch = Arc::clone(&channel_str);
-                                let ev = Arc::clone(&event_str);
-                                let dc = Arc::clone(&delta_comp);
-                                let settings = ch_settings.clone();
-                                let delta = precomp_delta.clone();
-                                let ck = Arc::clone(&conf_key);
-
-                                async move {
-                                    Self::send_to_socket_with_precomputed_delta(
-                                        PrecomputedDeltaParams {
-                                            socket_ref,
-                                            base_message: msg,
-                                            base_message_bytes: bytes,
-                                            channel: ch,
-                                            event_name: ev,
-                                            delta_compression: dc,
-                                            channel_settings: settings,
-                                            tag_filtering_enabled: tag_filtering,
-                                            precomputed_delta: delta,
-                                            conflation_key: ck,
-                                            base_hash,
-                                        },
-                                    )
-                                    .await
-                                }
-                            })
-                            .buffer_unordered(chunk_size)
-                            .collect()
-                            .await;
-
-                        results.extend(chunk_results);
+            let frame_key = (
+                if delta.is_some() { base_identity } else { 0 },
+                if enabled { algorithm_id + 1 } else { 0 },
+                sequence,
+                if delta.is_some() { base_sequence } else { 0 },
+                socket.wire_format,
+                socket.protocol_version == sockudo_protocol::ProtocolVersion::V2,
+            );
+            let frame = if let Some(frame) = frames.get(&frame_key).filter(|_| memoize_frame) {
+                Ok(frame.clone())
+            } else {
+                let mut message = if let Some(delta) = &delta {
+                    let mut data = sonic_rs::json!({"event":event_name,"delta":delta.as_ref(),"seq":sequence,"base_index":base_sequence});
+                    if !manager.config.omit_delta_algorithm {
+                        data["algorithm"] = sonic_rs::json!(if algorithm_id == 0 {
+                            "fossil"
+                        } else {
+                            "xdelta3"
+                        });
                     }
-                    Err(_) => {
-                        // Return errors for all sockets if semaphore fails
-                        for _ in 0..chunk_size {
-                            results.push(Err(Error::Connection(
-                                "Broadcast semaphore unavailable".to_string(),
-                            )));
+                    if !conflation_key.is_empty() {
+                        data["conflation_key"] = sonic_rs::json!(conflation_key);
+                    }
+                    let mut message = PusherMessage::ping();
+                    message.event = Some("pusher:delta".into());
+                    message.channel = Some(channel.into());
+                    message.data = Some(sockudo_protocol::messages::MessageData::Json(data));
+                    message
+                } else {
+                    let mut message = base_message.clone();
+                    if enabled {
+                        message.delta_sequence = Some(sequence.into());
+                        if !conflation_key.is_empty() {
+                            message.delta_conflation_key = Some(conflation_key.clone());
                         }
                     }
-                }
-            }
-        }
-
-        // Process non-delta sockets
-        for socket_chunk in non_delta_sockets.chunks(socket_chunk_size) {
-            let chunk_size = socket_chunk.len();
-
-            match self
-                .broadcast_semaphore
-                .acquire_many(chunk_size as u32)
-                .await
+                    message
+                };
+                message.rewrite_prefix(socket.protocol_version);
+                serialize_message(&message, socket.wire_format)
+                    .map(|bytes| {
+                        let bytes = Bytes::from(bytes);
+                        if memoize_frame
+                            && prepared_bytes.saturating_add(bytes.len()) <= MAX_PREPARED_BYTES
+                            && frames.len() + deltas.len() < MAX_PREPARED_ENTRIES
+                        {
+                            prepared_bytes += bytes.len();
+                            frames.insert(frame_key, bytes.clone());
+                        }
+                        bytes
+                    })
+                    .map_err(|error| {
+                        Error::InvalidMessageFormat(format!("Serialization failed: {error}"))
+                    })
+            };
+            debug_assert!(prepared_bytes <= MAX_PREPARED_BYTES);
+            debug_assert!(frames.len() + deltas.len() <= MAX_PREPARED_ENTRIES);
+            let outcome =
+                frame.and_then(|bytes| socket.admit_prepared_broadcast(bytes, socket.wire_format));
+            if matches!(outcome, Ok(true))
+                && enabled
+                && let Err(error) = manager
+                    .store_shared_sent_message_with_key(
+                        socket_id,
+                        channel,
+                        event_name,
+                        Arc::clone(&shared_base),
+                        delta.is_none(),
+                        settings,
+                        &conflation_key,
+                    )
+                    .await
             {
-                Ok(_permits) => {
-                    let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                    let base_msg = Arc::clone(&base_message);
-                    let base_bytes = Arc::clone(&base_message_bytes);
-                    let channel_str = Arc::clone(&channel);
-                    let event_str = Arc::clone(&event_name);
-                    let delta_comp = Arc::clone(&delta_compression);
-                    let ch_settings = channel_settings.clone();
-
-                    let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
-                        .map(|socket_ref| {
-                            let msg = Arc::clone(&base_msg);
-                            let bytes = Arc::clone(&base_bytes);
-                            let ch = Arc::clone(&channel_str);
-                            let ev = Arc::clone(&event_str);
-                            let dc = Arc::clone(&delta_comp);
-                            let settings = ch_settings.clone();
-
-                            async move {
-                                Self::send_to_socket_with_compression(SocketMessageParams {
-                                    socket_ref,
-                                    base_message: msg,
-                                    base_message_bytes: bytes,
-                                    channel: ch,
-                                    event_name: ev,
-                                    delta_compression: dc,
-                                    channel_settings: settings,
-                                    tag_filtering_enabled: tag_filtering,
-                                })
-                                .await
-                            }
-                        })
-                        .buffer_unordered(chunk_size)
-                        .collect()
-                        .await;
-
-                    results.extend(chunk_results);
-                }
-                Err(_) => {
-                    for _ in 0..chunk_size {
-                        results.push(Err(Error::Connection(
-                            "Broadcast semaphore unavailable".to_string(),
-                        )));
-                    }
-                }
+                warn!(error = %error, socket_id = %socket_id, channel, "failed to store admitted delta base");
             }
+            results.push(outcome.map(|_| ()));
         }
-
         results
-    }
-
-    #[cfg(feature = "delta")]
-    /// Send a message to a single socket with delta compression support
-    ///
-    /// # Arguments
-    /// * `params` - Parameters for sending the message
-    async fn send_to_socket_with_compression(params: SocketMessageParams) -> Result<()> {
-        use sockudo_delta::CompressionResult;
-
-        let SocketMessageParams {
-            socket_ref,
-            base_message,
-            base_message_bytes,
-            channel,
-            event_name,
-            delta_compression,
-            channel_settings,
-            tag_filtering_enabled: _,
-        } = params;
-        let channel = channel.as_ref();
-        let event_name = event_name.as_ref();
-        let channel_settings = channel_settings.as_deref();
-
-        // Get socket ID and filter for this channel subscription (lock-free)
-        let socket_id = socket_ref.get_socket_id_sync();
-
-        // NOTE: Tag filtering already applied at broadcast level - no redundant check needed
-
-        // Only process delta compression if it's enabled for this socket
-        let compression_result =
-            if !delta_compression.is_enabled_for_socket_channel(socket_id, channel) {
-                CompressionResult::Uncompressed
-            } else {
-                // Compute compression WITHOUT sequence metadata
-                // Sequence changes every message and should not be part of delta base
-                delta_compression
-                    .compress_message(
-                        socket_id,
-                        channel,
-                        event_name,
-                        base_message_bytes.as_slice(),
-                        channel_settings,
-                    )
-                    .await?
-            };
-
-        match compression_result {
-            CompressionResult::Uncompressed => socket_ref.send_message(base_message.as_ref()),
-            CompressionResult::FullMessage {
-                sequence,
-                conflation_key,
-            } => {
-                // Store the message WITHOUT sequence/conflation_key for future delta compression
-                // The client strips these fields before storing, so we must match that behavior
-                info!(
-                    sequence = sequence,
-                    conflation_key = ?conflation_key,
-                    len_bytes = base_message_bytes.len(),
-                    "storing full base message"
-                );
-                if let Err(e) = delta_compression
-                    .store_shared_sent_message(
-                        socket_id,
-                        channel,
-                        event_name,
-                        Arc::clone(&base_message_bytes),
-                        true,
-                        channel_settings,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "failed to store full message for delta state");
-                }
-
-                let mut full_message = base_message.as_ref().clone();
-                full_message.delta_sequence = Some(sequence.into());
-                full_message.delta_conflation_key = conflation_key;
-                socket_ref.send_message(&full_message)
-            }
-            CompressionResult::Delta {
-                delta,
-                sequence,
-                algorithm,
-                conflation_key,
-                base_index,
-            } => {
-                // Send delta message
-                info!(
-                    sequence = sequence,
-                    base_index = ?base_index,
-                    conflation_key = ?conflation_key,
-                    delta_bytes = delta.len(),
-                    msg_bytes = base_message_bytes.len(),
-                    "sending delta message"
-                );
-                let algorithm_str = match algorithm {
-                    sockudo_delta::DeltaAlgorithm::Fossil => "fossil",
-                    sockudo_delta::DeltaAlgorithm::Xdelta3 => "xdelta3",
-                };
-
-                // Create delta message data
-                let mut delta_data = sonic_rs::json!({
-                    "event": event_name,
-                    "delta": base64::Engine::encode(
-                        &base64::engine::general_purpose::STANDARD,
-                        &delta,
-                    ),
-                    "seq": sequence,
-                    "algorithm": algorithm_str,
-                });
-
-                // Add conflation key and base index if available
-                if let Some(key) = conflation_key.clone() {
-                    delta_data["conflation_key"] = sonic_rs::Value::from(&key);
-                }
-                if let Some(idx) = base_index {
-                    delta_data["base_index"] = sonic_rs::Value::from(idx as u64);
-                }
-
-                // Wrap in Pusher message format
-                let mut pusher_msg = PusherMessage {
-                    event: Some("pusher:delta".to_string()),
-                    channel: Some(channel.to_string()),
-                    data: Some(sockudo_protocol::messages::MessageData::Json(delta_data)),
-                    name: None,
-                    user_id: None,
-                    tags: None,
-                    sequence: None,
-                    conflation_key: None,
-                    message_id: None,
-                    stream_id: None,
-                    serial: None,
-                    idempotency_key: None,
-                    extras: None,
-                    delta_sequence: None,
-                    delta_conflation_key: None,
-                };
-                if socket_ref.protocol_version == sockudo_protocol::ProtocolVersion::V2 {
-                    pusher_msg.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
-                }
-
-                // Store the ORIGINAL message bytes (without sequence/conflation_key metadata) for future delta computation
-                // The sequence changes every message, so it should not be part of the delta base
-                if let Err(e) = delta_compression
-                    .store_shared_sent_message(
-                        socket_id,
-                        channel,
-                        event_name,
-                        Arc::clone(&base_message_bytes),
-                        false,
-                        channel_settings,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "failed to store delta base message state");
-                }
-                socket_ref.send_message(&pusher_msg)
-            }
-        }
-    }
-
-    #[cfg(feature = "delta")]
-    /// Send a message to a single socket with pre-computed delta (broadcast optimization)
-    ///
-    /// This is used when delta has been computed once at the broadcast level and can be
-    /// reused for multiple sockets with the same base message.
-    async fn send_to_socket_with_precomputed_delta(params: PrecomputedDeltaParams) -> Result<()> {
-        let PrecomputedDeltaParams {
-            socket_ref,
-            base_message,
-            base_message_bytes,
-            channel,
-            event_name,
-            delta_compression,
-            channel_settings,
-            tag_filtering_enabled: _,
-            precomputed_delta,
-            conflation_key,
-            base_hash,
-        } = params;
-        let channel = channel.as_ref();
-        let event_name = event_name.as_ref();
-        let channel_settings = channel_settings.as_deref();
-
-        // Get socket ID (lock-free sync access)
-        let socket_id = socket_ref.get_socket_id_sync();
-
-        // NOTE: Tag filtering already applied at broadcast level - no redundant check needed
-
-        // Create composite cache key
-        let cache_key = if conflation_key.is_empty() {
-            event_name.to_string()
-        } else {
-            format!("{}:{}", event_name, conflation_key)
-        };
-
-        // Get the sequence number for this socket
-        let sequence = delta_compression.get_next_sequence(socket_id, channel, &cache_key);
-
-        // Check if we should send delta or full message
-        // IMPORTANT: Even if we have a precomputed delta from other sockets, we must verify
-        // that THIS socket has a base message (sequence > 0). If sequence == 0, this is the
-        // first message for this cache_key on this socket, so we MUST send a full message.
-        // This can happen after resubscribe when the socket's cache was cleared.
-        //
-        // SAFETY: Always send full messages for the first 2 messages (sequence 0 and 1).
-        // This ensures the client has a solid base before we start sending deltas, avoiding
-        // race conditions where the client's stored base might not match the server's.
-        //
-        // CRITICAL: We must also verify that THIS socket's base message matches the one used
-        // to compute the precomputed delta. The base_hash grouping can have collisions or
-        // group sockets incorrectly after resubscribe. We verify by checking if THIS socket's
-        // last message content hash matches the precomputed delta's base.
-        let (can_use_precomputed, actual_base_sequence) = if let Some((socket_base, base_seq)) =
-            delta_compression
-                .get_last_message_with_sequence(socket_id, channel, &cache_key)
-                .await
-        {
-            // Verify this socket's base matches the group's base by hashing
-            let socket_base_hash = hash_cached_base_message(socket_base.as_slice());
-
-            // The base_hash from the grouping should match this socket's actual base hash
-            // If they don't match, this socket has a different base message and we can't use the precomputed delta
-            (socket_base_hash == base_hash, Some(base_seq))
-        } else {
-            (false, None)
-        };
-
-        if let Some((delta_bytes, _precomputed_base_seq)) = precomputed_delta.filter(|_| {
-            sequence >= 2
-                && can_use_precomputed
-                && !delta_compression.should_send_full_message(socket_id, channel, &cache_key)
-        }) {
-            // Use the ACTUAL base message sequence from the stored message, not sequence - 1
-            // This is critical for multi-node setups where sequences may not be contiguous
-            let base_sequence =
-                actual_base_sequence.unwrap_or(if sequence > 0 { sequence - 1 } else { 0 });
-            // We have a pre-computed delta, use it
-            // base_sequence is the actual sequence number of the message used to compute this delta
-            debug!(
-                socket_id = %socket_id,
-                channel = %channel,
-                sequence = sequence,
-                base_seq = base_sequence,
-                delta_bytes = delta_bytes.len(),
-                "sending delta message to socket"
-            );
-            let algorithm = delta_compression.get_algorithm();
-            let omit_algorithm = delta_compression.config.omit_delta_algorithm;
-
-            let algorithm_str = match algorithm {
-                sockudo_delta::DeltaAlgorithm::Fossil => "fossil",
-                sockudo_delta::DeltaAlgorithm::Xdelta3 => "xdelta3",
-            };
-
-            // Use the ACTUAL base_sequence from when the delta was computed
-            // NOT sequence - 1, which is incorrect when messages have been evicted or skipped
-            let base_index = base_sequence as usize;
-
-            // Create delta message data
-            let mut delta_data = sonic_rs::json!({
-                "event": event_name,
-                "delta": base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    delta_bytes.as_ref(),
-                ),
-                "seq": sequence,
-            });
-
-            if !omit_algorithm {
-                delta_data["algorithm"] = sonic_rs::json!(algorithm_str);
-            }
-
-            // Add conflation key and base index
-            if !conflation_key.is_empty() {
-                delta_data["conflation_key"] = sonic_rs::Value::from(conflation_key.as_ref());
-            }
-            delta_data["base_index"] = sonic_rs::Value::from(base_index as u64);
-
-            // Wrap in Pusher message format
-            let mut pusher_msg = PusherMessage {
-                event: Some("pusher:delta".to_string()),
-                channel: Some(channel.to_string()),
-                data: Some(sockudo_protocol::messages::MessageData::Json(delta_data)),
-                name: None,
-                user_id: None,
-                tags: None, // Tags are handled at broadcast level or stripped
-                sequence: None,
-                conflation_key: None,
-                message_id: None,
-                stream_id: None,
-                serial: None,
-                idempotency_key: None,
-                extras: None,
-                delta_sequence: None,
-                delta_conflation_key: None,
-            };
-            if socket_ref.protocol_version == sockudo_protocol::ProtocolVersion::V2 {
-                pusher_msg.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
-            }
-
-            // CRITICAL: Store the NEW message WITHOUT metadata (base_message_bytes).
-            // The client strips __delta_seq and __conflation_key before storing, so we must
-            // store the same sanitized version for consistent delta computation.
-            // base_message_bytes IS the new message - no reconstruction needed.
-            let _ = delta_compression
-                .store_shared_sent_message(
-                    socket_id,
-                    channel,
-                    event_name,
-                    Arc::clone(&base_message_bytes),
-                    false,
-                    channel_settings,
-                )
-                .await;
-            socket_ref.send_message(&pusher_msg)
-        } else {
-            // No delta available (first message or delta not beneficial), send full message
-            debug!(
-                socket_id = %socket_id,
-                channel = %channel,
-                sequence = sequence,
-                size_bytes = base_message_bytes.len(),
-                "sending full message to socket"
-            );
-            // CRITICAL: Store the message WITHOUT metadata (base_message_bytes).
-            // The client strips __delta_seq and __conflation_key before storing, creating a
-            // "sanitized" base. We must store the same sanitized version so that when we
-            // compute deltas later, we use the same base the client has.
-            // Previously we stored msg_with_seq (with metadata), causing delta decode failures
-            // because the server's base had metadata but the client's base did not.
-            match delta_compression
-                .store_shared_sent_message(
-                    socket_id,
-                    channel,
-                    event_name,
-                    Arc::clone(&base_message_bytes),
-                    true,
-                    channel_settings,
-                )
-                .await
-            {
-                Ok(_) => {
-                    debug!(
-                        socket_id = %socket_id,
-                        channel = %channel,
-                        sequence = sequence,
-                        "stored full message for future delta base"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        socket_id = %socket_id,
-                        channel = %channel,
-                        error = %e,
-                        "failed to store full message"
-                    );
-                }
-            }
-
-            let mut full_message = base_message.as_ref().clone();
-            full_message.delta_sequence = Some(sequence.into());
-            if !conflation_key.is_empty() {
-                full_message.delta_conflation_key = Some(conflation_key.to_string());
-            }
-            socket_ref.send_message(&full_message)
-        }
     }
 
     // Helper function to get or create namespace
@@ -1123,3 +571,7 @@ impl LocalAdapter {
         Some((count, newly_subscribed, activated))
     }
 }
+
+#[cfg(all(test, feature = "delta", feature = "tag-filtering"))]
+#[path = "broadcast_tests.rs"]
+mod regression_tests;

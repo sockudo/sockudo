@@ -7,7 +7,8 @@ use redis::{AsyncCommands, Client};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
 use sockudo_core::redis_client::RedisClient;
-use tokio::sync::RwLock;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
 /// Redis-based rate limiter implementation
@@ -15,7 +16,8 @@ pub struct RedisRateLimiter {
     /// Shared Redis provider used to establish a fresh connection for safe retry.
     client: RedisClient,
     /// Redis connection with automatic reconnection
-    connection: RwLock<redis::aio::ConnectionManager>,
+    connection: RwLock<(u64, redis::aio::ConnectionManager)>,
+    reconnect: Mutex<Option<(Instant, String)>>,
     /// Prefix for Redis keys
     prefix: String,
     /// Configuration for rate limiting
@@ -80,10 +82,44 @@ impl RedisRateLimiter {
 
         Ok(Self {
             client,
-            connection: RwLock::new(connection),
+            connection: RwLock::new((0, connection)),
+            reconnect: Mutex::new(None),
             prefix,
             config,
         })
+    }
+
+    async fn reconnect_generation(&self, generation: u64) -> Result<redis::aio::ConnectionManager> {
+        let mut failure = self.reconnect.lock().await;
+        {
+            let connection = self.connection.read().await;
+            if connection.0 != generation {
+                return Ok(connection.1.clone());
+            }
+        }
+        if let Some((when, message)) = failure.as_ref()
+            && when.elapsed() < Duration::from_millis(250)
+        {
+            return Err(Error::Redis(message.clone()));
+        }
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            self.client.fresh_connection_manager().await
+        })
+        .await
+        .map_err(|_| Error::Redis("redis limiter reconnect timed out".into()))
+        .and_then(|result| result);
+        match result {
+            Ok(connection) => {
+                *self.connection.write().await = (generation.wrapping_add(1), connection.clone());
+                *failure = None;
+                Ok(connection)
+            }
+            Err(error) => {
+                warn!(error = %error, "redis limiter reconnect failed");
+                *failure = Some((Instant::now(), error.to_string()));
+                Err(error)
+            }
+        }
     }
 
     /// Get a key formatted with the prefix
@@ -115,7 +151,7 @@ impl RedisRateLimiter {
             member: &member,
         };
 
-        let mut connection = { self.connection.read().await.clone() };
+        let (generation, mut connection) = { self.connection.read().await.clone() };
         let first_result = crate::redis_window::run_sliding_window(&mut connection, request).await;
 
         match first_result {
@@ -127,7 +163,7 @@ impl RedisRateLimiter {
                     retryable = true,
                     "redis rate limiter command retry scheduled"
                 );
-                let replacement = self.client.fresh_connection_manager().await?;
+                let replacement = self.reconnect_generation(generation).await?;
                 let mut retry_connection = replacement.clone();
                 let result =
                     crate::redis_window::run_sliding_window(&mut retry_connection, request)
@@ -137,7 +173,6 @@ impl RedisRateLimiter {
                                 "redis sliding-window command failed after reconnect: {retry_error}"
                             ))
                         })?;
-                *self.connection.write().await = replacement;
                 Ok(result)
             }
             Err(error) => Err(Error::Redis(format!(
@@ -159,7 +194,7 @@ impl RateLimiter for RedisRateLimiter {
 
     async fn reset(&self, key: &str) -> Result<()> {
         let redis_key = self.get_key(key);
-        let mut conn = { self.connection.read().await.clone() };
+        let mut conn = { self.connection.read().await.1.clone() };
 
         let _: () = conn
             .del(&redis_key)

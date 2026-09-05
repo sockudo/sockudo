@@ -1,0 +1,22 @@
+{
+  "baseline": {
+    "metadata_timeout_ms=300": {
+      "timer_ns": {
+        "median": 300042378,
+        "min": 300030876,
+        "max": 300094526,
+        "samples": 9
+      }
+    }
+  },
+  "after": {
+    "metadata_timeout_ms=300": {
+      "timer_ns": {
+        "median": 11076208,
+        "min": 11067241,
+        "max": 11133225,
+        "samples": 9
+      }
+    }
+  }
+}

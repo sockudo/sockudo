@@ -108,6 +108,8 @@ pub struct PushCleanupReport {
     pub retry_entries: PushCleanupCounters,
     pub scheduled_jobs: PushCleanupCounters,
     pub stale_device_failures: PushCleanupCounters,
+    pub publish_logs: PushCleanupCounters,
+    pub fanout_shards: PushCleanupCounters,
 }
 
 impl PushCleanupReport {
@@ -125,7 +127,7 @@ impl PushCleanupReport {
             .sum()
     }
 
-    pub fn categories(&self) -> [(&'static str, PushCleanupCounters); 9] {
+    pub fn categories(&self) -> [(&'static str, PushCleanupCounters); 11] {
         [
             ("publish_status", self.publish_statuses),
             ("delivery_event", self.delivery_events),
@@ -136,6 +138,8 @@ impl PushCleanupReport {
             ("retry_entry", self.retry_entries),
             ("scheduled_job", self.scheduled_jobs),
             ("stale_device_failure", self.stale_device_failures),
+            ("publish_log", self.publish_logs),
+            ("fanout_shard", self.fanout_shards),
         ]
     }
 }

@@ -1,5 +1,9 @@
 use super::{HistoryTables, lock_postgres_schema, unlock_postgres_schema};
+use crate::history::annotation_cache::{
+    AnnotationProjectionCache, CachedProjection, ProjectionReadBudget,
+};
 use async_trait::async_trait;
+use futures_util::TryStreamExt;
 use sockudo_core::annotations::{
     Annotation, AnnotationAction, AnnotationAppendOutcome, AnnotationEventLookupRequest,
     AnnotationEventsRequest, AnnotationProjection, AnnotationProjectionOptions,
@@ -19,6 +23,7 @@ const MAX_PROJECTION_EVENTS: usize = 100_000;
 const MAX_RAW_REPLAY_EVENTS: usize = 10_000;
 
 pub(in crate::history) struct PostgresAnnotationStore {
+    projection_cache: AnnotationProjectionCache,
     pool: PgPool,
     tables: HistoryTables,
 }
@@ -62,7 +67,11 @@ impl PostgresAnnotationStore {
             annotation_events: format!("{table_prefix}_annotation_events"),
             annotation_projections: format!("{table_prefix}_annotation_projections"),
         };
-        let store = Self { pool, tables };
+        let store = Self {
+            pool,
+            tables,
+            projection_cache: AnnotationProjectionCache::default(),
+        };
         store.ensure_tables().await?;
         Ok(store)
     }
@@ -206,25 +215,60 @@ impl PostgresAnnotationStore {
             "SELECT payload_bytes FROM {} WHERE app_id = $1 AND channel = $2 AND message_serial = $3 AND annotation_type = $4 ORDER BY annotation_serial ASC LIMIT $5",
             self.tables.annotation_events
         );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        let mut rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(&request.app_id)
             .bind(&request.channel_id)
             .bind(request.message_serial.as_str())
             .bind(request.annotation_type.as_str())
             .bind(i64::try_from(MAX_PROJECTION_EVENTS + 1).unwrap_or(i64::MAX))
-            .fetch_all(&mut **transaction)
-            .await
-            .map_err(|error| {
-                Error::Internal(format!("Failed to read annotation events: {error}"))
-            })?;
-        if rows.len() > MAX_PROJECTION_EVENTS {
-            return Err(Error::BufferFull(format!(
-                "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
-            )));
+            .fetch(&mut **transaction);
+        let mut budget = ProjectionReadBudget::default();
+        let mut records = Vec::new();
+        while let Some(row) = rows.try_next().await.map_err(|error| {
+            Error::Internal(format!("Failed to stream annotation events: {error}"))
+        })? {
+            if records.len() >= MAX_PROJECTION_EVENTS {
+                return Err(Error::BufferFull(format!(
+                    "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                )));
+            }
+            let payload: Vec<u8> = row.get("payload_bytes");
+            budget.add(payload.len())?;
+            records.push(Self::decode_record(&payload)?);
         }
-        rows.into_iter()
-            .map(|row| Self::decode_record(&row.get::<Vec<u8>, _>("payload_bytes")))
-            .collect()
+        Ok(records)
+    }
+
+    async fn cached_projection_state(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        request: &AnnotationProjectionRequest,
+    ) -> Result<Option<(u64, StoredAnnotationProjection)>> {
+        let sql = format!(
+            "SELECT message_serial, annotation_type, summary_json::text AS summary_json, last_annotation_serial, updated_at_ms, xmin::text AS cache_revision FROM {} WHERE app_id = $1 AND channel = $2 AND message_serial = $3 AND annotation_type = $4",
+            self.tables.annotation_projections
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(&request.app_id)
+            .bind(&request.channel_id)
+            .bind(request.message_serial.as_str())
+            .bind(request.annotation_type.as_str())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to read annotation cache revision: {e}"))
+            })?;
+        row.map(|row| {
+            Ok((
+                row.get::<String, _>("cache_revision")
+                    .parse::<u64>()
+                    .map_err(|e| {
+                        Error::Internal(format!("Invalid annotation cache revision: {e}"))
+                    })?,
+                Self::decode_projection_row(&request.app_id, &request.channel_id, &row)?,
+            ))
+        })
+        .transpose()
     }
 
     async fn persist_projection(
@@ -232,9 +276,52 @@ impl PostgresAnnotationStore {
         transaction: &mut Transaction<'_, Postgres>,
         request: &AnnotationProjectionRequest,
         options: AnnotationProjectionOptions,
+        appended: Option<(&StoredAnnotationEvent, bool)>,
     ) -> Result<StoredAnnotationProjection> {
-        let records = self.events_in_transaction(transaction, request).await?;
-        let projection = Self::build_projection(request, records, options)?;
+        let mut cached = None;
+        if let Some((record, inserted)) = appended {
+            if let Some((revision, current)) =
+                self.cached_projection_state(transaction, request).await?
+            {
+                cached = self
+                    .projection_cache
+                    .take(request, revision, Some(&current));
+                if !inserted && let Some(value) = cached {
+                    let projection = value.accumulator.projection.clone();
+                    self.projection_cache.put(request, revision, value);
+                    return Ok(projection);
+                }
+                if let Some(value) = cached.as_mut() {
+                    if value.event_count >= MAX_PROJECTION_EVENTS {
+                        return Err(Error::BufferFull(format!(
+                            "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                        )));
+                    }
+                    if !value.append(record, None)? {
+                        cached = None;
+                    }
+                }
+            }
+        }
+        let _rebuild;
+        let projection = if let Some(value) = cached.as_ref() {
+            value.accumulator.projection.clone()
+        } else {
+            _rebuild = self.projection_cache.admit_rebuild()?;
+            let records = self.events_in_transaction(transaction, request).await?;
+            if options == AnnotationProjectionOptions::default() {
+                let events = records
+                    .into_iter()
+                    .map(|record| (record, None))
+                    .collect::<Vec<_>>();
+                let value = CachedProjection::rebuild(request, &events)?;
+                let projection = value.accumulator.projection.clone();
+                cached = Some(value);
+                projection
+            } else {
+                Self::build_projection(request, records, options)?
+            }
+        };
         let summary_json = serde_json::to_string(&projection.summary).map_err(|error| {
             Error::Internal(format!("Failed to encode annotation projection: {error}"))
         })?;
@@ -260,6 +347,11 @@ impl PostgresAnnotationStore {
             .map_err(|error| {
                 Error::Internal(format!("Failed to persist annotation projection: {error}"))
             })?;
+        if let Some(value) = cached
+            && let Some((revision, _)) = self.cached_projection_state(transaction, request).await?
+        {
+            self.projection_cache.put(request, revision, value);
+        }
         Ok(projection)
     }
 
@@ -427,6 +519,7 @@ impl AnnotationStore for PostgresAnnotationStore {
                 &mut transaction,
                 &request,
                 AnnotationProjectionOptions::default(),
+                Some((&record, inserted)),
             )
             .await?;
         transaction.commit().await.map_err(|error| {
@@ -496,6 +589,7 @@ impl AnnotationStore for PostgresAnnotationStore {
                 &mut transaction,
                 &request,
                 AnnotationProjectionOptions::default(),
+                Some((&record, inserted)),
             )
             .await?;
         transaction.commit().await.map_err(|error| {
@@ -680,7 +774,7 @@ impl AnnotationStore for PostgresAnnotationStore {
         })?;
         Self::lock_projection(&mut transaction, &request).await?;
         let projection = self
-            .persist_projection(&mut transaction, &request, options)
+            .persist_projection(&mut transaction, &request, options, None)
             .await?;
         transaction.commit().await.map_err(|error| {
             Error::Internal(format!("Failed to commit projection rebuild: {error}"))
@@ -754,6 +848,7 @@ impl AnnotationStore for PostgresAnnotationStore {
                     &mut transaction,
                     &request,
                     AnnotationProjectionOptions::default(),
+                    None,
                 )
                 .await?;
             }

@@ -20,12 +20,15 @@ use tokio::sync::Semaphore;
 use tracing::{debug, error, warn};
 
 const MAX_CONCURRENT_WEBHOOKS: usize = 20;
+const MAX_RETRYING_WEBHOOKS: usize = 128;
+const MAX_RETRY_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Parameters for creating an HTTP webhook task
 struct HttpWebhookTaskParams {
     url: url::Url,
     webhook_config: Webhook,
     permit: tokio::sync::OwnedSemaphorePermit,
+    body_permit: tokio::sync::OwnedSemaphorePermit,
     app_key: String,
     signature: String,
     body_to_send: String,
@@ -45,6 +48,8 @@ pub struct WebhookSender {
     #[cfg(feature = "lambda")]
     lambda_sender: LambdaWebhookSender,
     webhook_semaphore: Arc<Semaphore>,
+    request_semaphore: Arc<Semaphore>,
+    body_semaphore: Arc<Semaphore>,
 }
 
 impl WebhookSender {
@@ -61,7 +66,9 @@ impl WebhookSender {
             request_timeout_ms,
             #[cfg(feature = "lambda")]
             lambda_sender: LambdaWebhookSender::new(),
-            webhook_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_WEBHOOKS)),
+            webhook_semaphore: Arc::new(Semaphore::new(MAX_RETRYING_WEBHOOKS)),
+            request_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_WEBHOOKS)),
+            body_semaphore: Arc::new(Semaphore::new(MAX_RETRY_BODY_BYTES)),
         }
     }
 
@@ -199,6 +206,15 @@ impl WebhookSender {
             let filtered_body_json_string =
                 self.create_pusher_body(job.payload.time_ms, &filtered_events)?;
             let filtered_signature = signer.sign(&filtered_body_json_string);
+            if filtered_body_json_string.len() > MAX_RETRY_BODY_BYTES {
+                return Err(Error::BufferFull(
+                    "webhook body exceeds delivery byte budget".into(),
+                ));
+            }
+            let body_permit = Arc::clone(&self.body_semaphore)
+                .acquire_many_owned(filtered_body_json_string.len() as u32)
+                .await
+                .map_err(|e| Error::Queue(format!("webhook body admission closed: {e}")))?;
 
             let permit = self
                 .webhook_semaphore
@@ -211,7 +227,7 @@ impl WebhookSender {
 
             let task = self.create_webhook_task(
                 webhook_config,
-                permit,
+                (permit, body_permit),
                 app_id.clone(),
                 app_key.clone(),
                 filtered_signature,
@@ -232,17 +248,22 @@ impl WebhookSender {
     fn create_webhook_task(
         &self,
         webhook_config: &Webhook,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        admission: (
+            tokio::sync::OwnedSemaphorePermit,
+            tokio::sync::OwnedSemaphorePermit,
+        ),
         app_id: String,
         app_key: String,
         signature: String,
         body_to_send: String,
     ) -> tokio::task::JoinHandle<()> {
+        let (permit, body_permit) = admission;
         if let Some(url) = &webhook_config.url {
             let params = HttpWebhookTaskParams {
                 url: url.clone(),
                 webhook_config: webhook_config.clone(),
                 permit,
+                body_permit,
                 app_key,
                 signature,
                 body_to_send,
@@ -252,7 +273,13 @@ impl WebhookSender {
         } else if webhook_config.lambda.is_some() || webhook_config.lambda_function.is_some() {
             #[cfg(feature = "lambda")]
             {
-                self.create_lambda_webhook_task(webhook_config, permit, app_id, body_to_send)
+                self.create_lambda_webhook_task(
+                    webhook_config,
+                    permit,
+                    body_permit,
+                    app_id,
+                    body_to_send,
+                )
             }
             #[cfg(not(feature = "lambda"))]
             {
@@ -275,6 +302,7 @@ impl WebhookSender {
         params: HttpWebhookTaskParams,
     ) -> tokio::task::JoinHandle<()> {
         let client = self.client.clone();
+        let active_requests = Arc::clone(&self.request_semaphore);
         let url_str = params.url.to_string();
         let retry_policy =
             resolve_retry_policy(&self.retry_config, params.webhook_config.retry.as_ref());
@@ -291,6 +319,7 @@ impl WebhookSender {
 
         tokio::spawn(async move {
             let _permit = params.permit;
+            let _body_permit = params.body_permit;
             let _ = send_pusher_webhook(
                 &client,
                 PusherWebhookRequest {
@@ -302,6 +331,7 @@ impl WebhookSender {
                     request_timeout_ms,
                     retry_config: retry_policy,
                 },
+                Some(active_requests),
             )
             .await;
         })
@@ -312,6 +342,7 @@ impl WebhookSender {
         &self,
         webhook_config: &Webhook,
         permit: tokio::sync::OwnedSemaphorePermit,
+        body_permit: tokio::sync::OwnedSemaphorePermit,
         app_id: String,
         body_to_send: String,
     ) -> tokio::task::JoinHandle<()> {
@@ -321,6 +352,7 @@ impl WebhookSender {
 
         tokio::spawn(async move {
             let _permit = permit;
+            let _body_permit = body_permit;
             if let Err(e) = lambda_sender
                 .invoke_lambda(&webhook_clone, "batch_events", &app_id, payload_for_lambda)
                 .await
@@ -352,6 +384,8 @@ impl Clone for WebhookSender {
             #[cfg(feature = "lambda")]
             lambda_sender: self.lambda_sender.clone(),
             webhook_semaphore: self.webhook_semaphore.clone(),
+            request_semaphore: self.request_semaphore.clone(),
+            body_semaphore: self.body_semaphore.clone(),
         }
     }
 }
@@ -391,7 +425,11 @@ struct PusherWebhookRequest {
     retry_config: WebhookRetryConfig,
 }
 
-async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> Result<()> {
+async fn send_pusher_webhook(
+    client: &Client,
+    request: PusherWebhookRequest,
+    active_requests: Option<Arc<Semaphore>>,
+) -> Result<()> {
     let start = tokio::time::Instant::now();
     let request_timeout = Duration::from_millis(request.request_timeout_ms.max(1));
     let max_retry_duration = Duration::from_millis(request.retry_config.max_elapsed_time_ms.max(1));
@@ -400,6 +438,15 @@ async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> 
 
     loop {
         attempt += 1;
+        let active_permit = match &active_requests {
+            Some(semaphore) => Some(
+                Arc::clone(semaphore)
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| Error::Queue(format!("webhook active admission closed: {e}")))?,
+            ),
+            None => None,
+        };
         let result = send_pusher_webhook_once(
             client,
             &request.url,
@@ -410,6 +457,7 @@ async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> 
             request_timeout,
         )
         .await;
+        drop(active_permit);
 
         match result {
             Ok(()) => return Ok(()),
@@ -459,7 +507,13 @@ async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> 
                     error = %e,
                     "webhook delivery failed, retrying"
                 );
-                tokio::time::sleep(delay).await;
+                let jitter_per_mille = 800 + (uuid::Uuid::new_v4().as_u128() % 401) as u32;
+                let jittered_delay = (delay * jitter_per_mille / 1000)
+                    .min(Duration::from_millis(
+                        request.retry_config.max_backoff_ms.max(1),
+                    ))
+                    .min(max_retry_duration.saturating_sub(start.elapsed()));
+                tokio::time::sleep(jittered_delay).await;
                 delay = (delay * 2).min(Duration::from_millis(
                     request.retry_config.max_backoff_ms.max(1),
                 ));
@@ -499,7 +553,9 @@ async fn send_pusher_webhook_once(
                 );
                 Ok(())
             } else {
-                let _ = response.text().await;
+                // The status is sufficient for retry classification. Dropping the
+                // response avoids buffering an untrusted, potentially endless body.
+                drop(response);
                 if should_retry_status(status) {
                     debug!(
                         delivery_method = "http",
@@ -896,5 +952,65 @@ mod tests {
             filtered.is_empty(),
             "invalid channel_pattern must drop every event for the webhook"
         );
+    }
+    #[tokio::test]
+    async fn retries_release_active_capacity_and_ignore_unbounded_error_bodies() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let first_failure = Arc::new(tokio::sync::Notify::new());
+        let failure_signal = first_failure.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let failure_signal = failure_signal.clone();
+                tokio::spawn(async move {
+                    let mut request = vec![0; 8192];
+                    let bytes = socket.read(&mut request).await.unwrap();
+                    if request[..bytes].starts_with(b"POST /healthy ") {
+                        socket.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                    } else {
+                        socket.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 1000000000\r\nConnection: close\r\n\r\n").await.unwrap();
+                        failure_signal.notify_one();
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                });
+            }
+        });
+        let requests = Arc::new(Semaphore::new(1));
+        let client = Client::new();
+        let request = |path: &str, retry: bool| PusherWebhookRequest {
+            url: format!("http://{addr}/{path}"),
+            app_key: "synthetic".into(),
+            signature: "synthetic".into(),
+            json_body: "{}".into(),
+            custom_headers: AHashMap::new(),
+            request_timeout_ms: 1500,
+            retry_config: WebhookRetryConfig {
+                enabled: retry,
+                max_attempts: Some(2),
+                initial_backoff_ms: 500,
+                max_backoff_ms: 500,
+                max_elapsed_time_ms: 2500,
+            },
+        };
+        let failing_request = request("failing", true);
+        let failing = {
+            let client = client.clone();
+            let requests = requests.clone();
+            tokio::spawn(async move {
+                send_pusher_webhook(&client, failing_request, Some(requests)).await
+            })
+        };
+        first_failure.notified().await;
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            send_pusher_webhook(&client, request("healthy", false), Some(requests)),
+        )
+        .await
+        .expect("healthy request must not wait for failing response body or retry backoff")
+        .unwrap();
+        assert!(failing.await.unwrap().is_err());
+        server.abort();
     }
 }

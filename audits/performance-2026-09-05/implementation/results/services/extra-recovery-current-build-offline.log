@@ -1,0 +1,45 @@
+     Locking 40 packages to latest Rust 1.98.1 compatible versions
+      Adding aws-config v1.11.0
+      Adding aws-credential-types v1.3.0
+      Adding aws-runtime v1.9.1
+      Adding aws-sdk-lambda v1.131.0
+      Adding aws-sdk-sso v1.108.0
+      Adding aws-sdk-ssooidc v1.110.0
+      Adding aws-sdk-sts v1.113.0
+      Adding aws-sigv4 v1.5.1
+      Adding aws-smithy-async v1.3.0
+      Adding aws-smithy-eventstream v0.60.21
+      Adding aws-smithy-eventstream v0.61.2
+      Adding aws-smithy-http v0.63.6
+      Adding aws-smithy-http v0.64.0
+      Adding aws-smithy-http-client v1.4.0
+      Adding aws-smithy-json v0.62.7
+      Adding aws-smithy-json v0.63.0
+      Adding aws-smithy-observability v0.2.6
+      Adding aws-smithy-observability v0.3.0
+      Adding aws-smithy-query v0.62.0
+      Adding aws-smithy-runtime v1.14.0
+      Adding aws-smithy-runtime-api v1.15.0
+      Adding aws-smithy-runtime-api-macros v1.1.0
+      Adding aws-smithy-schema v0.1.0
+      Adding aws-smithy-schema v0.2.0
+      Adding aws-smithy-types v1.6.2
+      Adding aws-smithy-xml v0.62.0
+      Adding aws-types v1.5.0
+      Adding base64-simd v0.8.0
+      Adding bytes-utils v0.1.4
+      Adding crc32fast v1.5.1
+      Adding http v0.2.12
+      Adding http-body v0.4.6
+      Adding outref v0.5.2
+      Adding pin-utils v0.1.0
+      Adding regex-lite v0.1.9
+      Adding rustc_version v0.4.1
+      Adding semver v1.0.28
+      Adding sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+      Adding vsimd v0.8.0
+      Adding xmlparser v0.13.6
+error: failed to download `aws-sdk-sso v1.108.0`
+
+Caused by:
+  attempting to make an HTTP request, but --offline was specified

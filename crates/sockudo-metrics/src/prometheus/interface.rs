@@ -32,11 +32,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
     }
 
     fn mark_connection_error(&self, app_id: &str, error_type: &str) {
-        let tags = vec![
-            app_id.to_string(),
-            self.port.to_string(),
-            error_type.to_string(),
-        ];
+        let tags = [app_id, self.port_label.as_str(), error_type];
         self.connection_errors_total.with_label_values(&tags).inc();
 
         debug!(app_id, error_type, "metrics: connection error");
@@ -44,7 +40,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn mark_memory_pressure_rejection(&self) {
         self.memory_pressure_rejections_total
-            .with_label_values(&[&self.port.to_string()])
+            .with_label_values(&[self.port_label.as_str()])
             .inc();
     }
 
@@ -63,11 +59,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         limiter_type: &str,
         request_context: &str,
     ) {
-        let tags = vec![
-            app_id.to_string(),
-            self.port.to_string(),
-            limiter_type.to_string(),
-            request_context.to_string(),
+        let tags = [
+            app_id,
+            self.port_label.as_str(),
+            limiter_type,
+            request_context,
         ];
         self.rate_limit_checks_total.with_label_values(&tags).inc();
 
@@ -87,11 +83,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         limiter_type: &str,
         request_context: &str,
     ) {
-        let tags = vec![
-            app_id.to_string(),
-            self.port.to_string(),
-            limiter_type.to_string(),
-            request_context.to_string(),
+        let tags = [
+            app_id,
+            self.port_label.as_str(),
+            limiter_type,
+            request_context,
         ];
         self.rate_limit_triggered_total
             .with_label_values(&tags)
@@ -104,11 +100,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
     }
 
     fn mark_channel_subscription(&self, app_id: &str, channel_type: &str) {
-        let tags = vec![
-            app_id.to_string(),
-            self.port.to_string(),
-            channel_type.to_string(),
-        ];
+        let tags = [app_id, self.port_label.as_str(), channel_type];
         self.channel_subscriptions_total
             .with_label_values(&tags)
             .inc();
@@ -117,11 +109,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
     }
 
     fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str) {
-        let tags = vec![
-            app_id.to_string(),
-            self.port.to_string(),
-            channel_type.to_string(),
-        ];
+        let tags = [app_id, self.port_label.as_str(), channel_type];
         self.channel_unsubscriptions_total
             .with_label_values(&tags)
             .inc();
@@ -130,16 +118,16 @@ impl MetricsInterface for PrometheusMetricsDriver {
     }
 
     fn mark_channel_activated(&self, app_id: &str, channel_type: &str) {
-        let port = self.port.to_string();
+        let port = self.port_label.as_str();
         self.active_channels
-            .with_label_values(&[app_id, &port, channel_type])
+            .with_label_values(&[app_id, port, channel_type])
             .inc();
     }
 
     fn mark_channel_deactivated(&self, app_id: &str, channel_type: &str) {
-        let port = self.port.to_string();
+        let port = self.port_label.as_str();
         self.active_channels
-            .with_label_values(&[app_id, &port, channel_type])
+            .with_label_values(&[app_id, port, channel_type])
             .dec();
     }
 
@@ -277,7 +265,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
         };
 
         self.broadcast_latency_ms
-            .with_label_values(&[app_id, &self.port.to_string(), channel_type, bucket])
+            .with_label_values(&[app_id, self.port_label.as_str(), channel_type, bucket])
             .observe(latency_ms);
 
         debug!(
@@ -306,67 +294,67 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn mark_ai_transport_validated(&self, app_id: &str, event: &str) {
         self.ai_messages_validated_total
-            .with_label_values(&[app_id, &self.port.to_string(), event])
+            .with_label_values(&[app_id, self.port_label.as_str(), event])
             .inc();
     }
 
     fn mark_ai_transport_rejected(&self, app_id: &str, code: u32) {
         self.ai_messages_rejected_total
-            .with_label_values(&[app_id, &self.port.to_string(), &code.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str(), &code.to_string()])
             .inc();
     }
 
     fn mark_ai_transport_unparseable(&self, app_id: &str) {
         self.ai_messages_unparseable_total
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .inc();
     }
 
     fn mark_ai_run_started(&self, app_id: &str) {
         self.ai_runs_started_total
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .inc();
         self.ai_turns_started_total
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .inc();
     }
 
     fn mark_ai_run_ended(&self, app_id: &str, reason: &str) {
         self.ai_runs_ended_total
-            .with_label_values(&[app_id, &self.port.to_string(), reason])
+            .with_label_values(&[app_id, self.port_label.as_str(), reason])
             .inc();
         self.ai_turns_ended_total
-            .with_label_values(&[app_id, &self.port.to_string(), reason])
+            .with_label_values(&[app_id, self.port_label.as_str(), reason])
             .inc();
     }
 
     fn mark_ai_cancel_signal(&self, app_id: &str) {
         self.ai_cancel_signals_total
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .inc();
     }
 
     fn update_ai_active_streams(&self, app_id: &str, streams: u64) {
         self.ai_active_streams
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .set(streams as f64);
     }
 
     fn add_ai_active_streams(&self, app_id: &str, delta: i64) {
         self.ai_active_streams
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .add(delta as f64);
     }
 
     fn observe_ai_stream_duration(&self, app_id: &str, duration_seconds: f64) {
         self.ai_stream_duration_seconds
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .observe(duration_seconds);
     }
 
     fn mark_ai_stream_bytes(&self, app_id: &str, bytes: usize) {
         self.ai_stream_bytes_total
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .inc_by(bytes as f64);
     }
 
@@ -449,103 +437,112 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn mark_history_recovery_success(&self, app_id: &str, source: &str) {
         self.history_recovery_success_total
-            .with_label_values(&[app_id, &self.port.to_string(), source])
+            .with_label_values(&[app_id, self.port_label.as_str(), source])
             .inc();
     }
 
     fn mark_history_recovery_failure(&self, app_id: &str, code: &str) {
         self.history_recovery_failures_total
-            .with_label_values(&[app_id, &self.port.to_string(), code])
+            .with_label_values(&[app_id, self.port_label.as_str(), code])
             .inc();
     }
 
     fn mark_versioned_message_mutation(&self, app_id: &str, action: &str, result: &str) {
         self.versioned_message_mutations_total
-            .with_label_values(&[app_id, &self.port.to_string(), action, result])
+            .with_label_values(&[app_id, self.port_label.as_str(), action, result])
             .inc();
     }
 
     fn mark_versioned_message_retrieval(&self, app_id: &str, surface: &str, result: &str) {
         self.versioned_message_retrieval_total
-            .with_label_values(&[app_id, &self.port.to_string(), surface, result])
+            .with_label_values(&[app_id, self.port_label.as_str(), surface, result])
             .inc();
     }
 
     fn mark_versioned_history_substitution(&self, app_id: &str, result: &str) {
         self.versioned_history_substitution_total
-            .with_label_values(&[app_id, &self.port.to_string(), result])
+            .with_label_values(&[app_id, self.port_label.as_str(), result])
             .inc();
     }
 
     fn mark_ai_rollup_append_received(&self, app_id: &str) {
         self.appends_received_total
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .inc();
     }
 
     fn mark_ai_rollup_append_delivered(&self, app_id: &str) {
         self.appends_delivered_total
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .inc();
     }
 
     fn observe_ai_rollup_ratio(&self, app_id: &str, ratio: f64) {
         self.rollup_ratio
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .observe(ratio);
     }
 
     fn update_ai_rollup_active_streams(&self, app_id: &str, streams: u64) {
         self.active_streams
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .set(streams as f64);
     }
 
     fn add_ai_rollup_active_streams(&self, app_id: &str, delta: i64) {
         self.active_streams
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .add(delta as f64);
     }
 
     fn observe_ai_rollup_flush_latency(&self, app_id: &str, latency_ms: f64) {
         self.flush_latency
-            .with_label_values(&[app_id, &self.port.to_string()])
+            .with_label_values(&[app_id, self.port_label.as_str()])
             .observe(latency_ms);
     }
 
     fn mark_annotation_published(&self, channel: &str, annotation_type: &str) {
         self.annotations_published_total
-            .with_label_values(&[channel, annotation_type])
+            .with_label_values(&[
+                ChannelType::from_name(channel).as_str(),
+                annotation_summary_type(annotation_type),
+            ])
             .inc();
     }
 
     fn mark_annotation_deleted(&self, channel: &str, annotation_type: &str) {
         self.annotations_deleted_total
-            .with_label_values(&[channel, annotation_type])
+            .with_label_values(&[
+                ChannelType::from_name(channel).as_str(),
+                annotation_summary_type(annotation_type),
+            ])
             .inc();
     }
 
     fn mark_annotation_summary_delivery(&self, channel: &str) {
         self.annotation_summary_deliveries_total
-            .with_label_values(&[channel])
+            .with_label_values(&[ChannelType::from_name(channel).as_str()])
             .inc();
     }
 
     fn mark_annotation_summary_clipped(&self, channel: &str, annotation_type: &str) {
         self.annotation_summary_clipped_total
-            .with_label_values(&[channel, annotation_type])
+            .with_label_values(&[
+                ChannelType::from_name(channel).as_str(),
+                annotation_summary_type(annotation_type),
+            ])
             .inc();
     }
 
     fn mark_annotation_projection_rebuild(&self, channel: &str) {
         self.annotation_projection_rebuild_total
-            .with_label_values(&[channel])
+            .with_label_values(&[ChannelType::from_name(channel).as_str()])
             .inc();
     }
 
     fn track_annotation_projection_rebuild_duration(&self, channel: &str, duration_seconds: f64) {
         self.annotation_projection_rebuild_duration_seconds
-            .with_label_values(&[channel])
+            .with_label_values(&[ChannelType::from_name(channel).as_str()])
             .observe(duration_seconds);
     }
 
@@ -735,7 +732,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             // bounding cardinality by recording channel type instead of raw name.
             let channel_type = ChannelType::from_name(channel_name).as_str();
             self.horizontal_delta_compression_enabled
-                .with_label_values(&[app_id, &self.port.to_string(), channel_type])
+                .with_label_values(&[app_id, self.port_label.as_str(), channel_type])
                 .inc();
 
             debug!(
@@ -755,11 +752,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         let saved_bytes = original_bytes.saturating_sub(compressed_bytes);
 
         self.delta_compression_bandwidth_original
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
             .inc_by(original_bytes as f64);
 
         self.delta_compression_bandwidth_saved
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
             .inc_by(saved_bytes as f64);
 
         debug!(app_id, "metrics: delta compression bandwidth recorded");
@@ -767,7 +764,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn track_delta_compression_full_message(&self, app_id: &str, channel_name: &str) {
         self.delta_compression_full_messages
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
             .inc();
 
         debug!(app_id, "metrics: delta compression full message recorded");
@@ -775,7 +772,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn track_delta_compression_delta_message(&self, app_id: &str, channel_name: &str) {
         self.delta_compression_delta_messages
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, self.port_label.as_str(), channel_name])
             .inc();
 
         debug!(app_id, "metrics: delta compression delta message recorded");
@@ -785,5 +782,56 @@ impl MetricsInterface for PrometheusMetricsDriver {
         // Reset individual metrics counters - not fully supported by Prometheus Rust client
         // So we'll just log a message
         debug!("metrics cleared: prometheus metrics cannot be fully reset");
+    }
+}
+
+// Annotation names are user-defined. Keep the finite summarizer identity while
+// aggregating arbitrary suffix/name churn into the same series.
+fn annotation_summary_type(annotation_type: &str) -> &str {
+    match annotation_type
+        .split_once(':')
+        .and_then(|(_, suffix)| suffix.rsplit_once(".v"))
+        .map(|(summarizer, _)| summarizer)
+        .unwrap_or("custom")
+    {
+        "count" => "count",
+        "flag" => "flag",
+        "distinct" => "distinct",
+        "multiple" => "multiple",
+        "unique" => "unique",
+        "total" => "total",
+        _ => "custom",
+    }
+}
+
+#[cfg(test)]
+mod annotation_metric_tests {
+    use super::*;
+    #[tokio::test]
+    async fn annotation_churn_has_bounded_series_and_exact_aggregate_counts() {
+        let driver = PrometheusMetricsDriver::new(6001, Some("annotations_bound_")).await;
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        metrics::with_local_recorder(&recorder, || {
+            for n in 0..10_000 {
+                driver.mark_annotation_published(
+                    &format!("presence-room-{n}"),
+                    &format!("reaction-{n}:total.v1"),
+                );
+                driver.track_annotation_projection_rebuild_duration(
+                    &format!("presence-room-{n}"),
+                    0.001,
+                );
+            }
+        });
+        let rendered = recorder.handle().render();
+        let counters = rendered
+            .lines()
+            .filter(|line| line.starts_with("annotations_bound_annotations_published_total{"))
+            .collect::<Vec<_>>();
+        assert_eq!(counters.len(), 1);
+        assert!(counters[0].ends_with("10000"));
+        assert!(counters[0].contains("type=\"total\""));
+        assert!(!rendered.contains("room-"));
+        assert!(!rendered.contains("reaction-"));
     }
 }

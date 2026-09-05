@@ -1,0 +1,222 @@
+{
+  "baseline": {
+    "('65536', '1')": {
+      "elapsed_us": {
+        "median": 316.0,
+        "min": 297.0,
+        "max": 735.0
+      },
+      "allocations": {
+        "median": 198.0,
+        "min": 197.0,
+        "max": 346.0
+      },
+      "allocated_bytes": {
+        "median": 1029505.0,
+        "min": 1029195.0,
+        "max": 1577898.0
+      },
+      "retry1_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "retry2_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      }
+    },
+    "('65536', '3')": {
+      "elapsed_us": {
+        "median": 303362.0,
+        "min": 302383.0,
+        "max": 303869.0
+      },
+      "allocations": {
+        "median": 429.0,
+        "min": 428.0,
+        "max": 429.0
+      },
+      "allocated_bytes": {
+        "median": 1898474.0,
+        "min": 1898179.0,
+        "max": 1898509.0
+      },
+      "retry1_us": {
+        "median": 101449.0,
+        "min": 100485.0,
+        "max": 101737.0
+      },
+      "retry2_us": {
+        "median": 201577.0,
+        "min": 200593.0,
+        "max": 201859.0
+      }
+    },
+    "('1048576', '1')": {
+      "elapsed_us": {
+        "median": 4682.0,
+        "min": 4364.0,
+        "max": 5820.0
+      },
+      "allocations": {
+        "median": 203.0,
+        "min": 203.0,
+        "max": 204.0
+      },
+      "allocated_bytes": {
+        "median": 24164166.0,
+        "min": 24164131.0,
+        "max": 24164461.0
+      },
+      "retry1_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "retry2_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      }
+    },
+    "('1048576', '3')": {
+      "elapsed_us": {
+        "median": 311600.0,
+        "min": 310563.0,
+        "max": 312449.0
+      },
+      "allocations": {
+        "median": 447.0,
+        "min": 446.0,
+        "max": 447.0
+      },
+      "allocated_bytes": {
+        "median": 53608577.0,
+        "min": 53608267.0,
+        "max": 53608597.0
+      },
+      "retry1_us": {
+        "median": 103436.0,
+        "min": 102440.0,
+        "max": 103642.0
+      },
+      "retry2_us": {
+        "median": 203395.0,
+        "min": 202386.0,
+        "max": 203592.0
+      }
+    }
+  },
+  "after": {
+    "('65536', '1')": {
+      "elapsed_us": {
+        "median": 313.0,
+        "min": 292.0,
+        "max": 786.0
+      },
+      "allocations": {
+        "median": 189.0,
+        "min": 189.0,
+        "max": 334.0
+      },
+      "allocated_bytes": {
+        "median": 898587.0,
+        "min": 898587.0,
+        "max": 1446872.0
+      },
+      "retry1_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "retry2_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      }
+    },
+    "('65536', '3')": {
+      "elapsed_us": {
+        "median": 218357.0,
+        "min": 175211.0,
+        "max": 280409.0
+      },
+      "allocations": {
+        "median": 400.0,
+        "min": 400.0,
+        "max": 400.0
+      },
+      "allocated_bytes": {
+        "median": 1636725.0,
+        "min": 1636725.0,
+        "max": 1636725.0
+      },
+      "retry1_us": {
+        "median": 73476.0,
+        "min": 51403.0,
+        "max": 95376.0
+      },
+      "retry2_us": {
+        "median": 151550.0,
+        "min": 111516.0,
+        "max": 192576.0
+      }
+    },
+    "('1048576', '1')": {
+      "elapsed_us": {
+        "median": 4604.0,
+        "min": 4209.0,
+        "max": 5183.0
+      },
+      "allocations": {
+        "median": 195.0,
+        "min": 195.0,
+        "max": 195.0
+      },
+      "allocated_bytes": {
+        "median": 22067443.0,
+        "min": 22067443.0,
+        "max": 22067443.0
+      },
+      "retry1_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "retry2_us": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      }
+    },
+    "('1048576', '3')": {
+      "elapsed_us": {
+        "median": 238345.0,
+        "min": 165295.0,
+        "max": 297239.0
+      },
+      "allocations": {
+        "median": 418.0,
+        "min": 418.0,
+        "max": 418.0
+      },
+      "allocated_bytes": {
+        "median": 49414653.0,
+        "min": 49414653.0,
+        "max": 49414653.0
+      },
+      "retry1_us": {
+        "median": 77099.0,
+        "min": 52179.0,
+        "max": 103370.0
+      },
+      "retry2_us": {
+        "median": 159366.0,
+        "min": 103294.0,
+        "max": 198511.0
+      }
+    }
+  }
+}

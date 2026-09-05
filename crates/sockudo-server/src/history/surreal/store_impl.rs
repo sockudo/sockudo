@@ -39,6 +39,7 @@ impl HistoryStore for SurrealHistoryStore {
 
             let now_ms = sockudo_core::history::now_ms();
             let stream = StoredStreamRecord {
+                retention_revision: None,
                 app_id: app_id.to_string(),
                 channel: channel.to_string(),
                 stream_id: uuid::Uuid::new_v4().to_string(),
@@ -290,6 +291,10 @@ impl HistoryStore for SurrealHistoryStore {
 
         let now_ms = sockudo_core::history::now_ms();
         let new_stream = StoredStreamRecord {
+            retention_revision: self
+                .load_stream_raw(app_id, channel)
+                .await?
+                .and_then(|state| state.retention_revision),
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             stream_id: uuid::Uuid::new_v4().to_string(),
@@ -365,18 +370,6 @@ impl HistoryStore for SurrealHistoryStore {
                 })
                 .cloned()
                 .collect();
-            let retained_rows: Vec<EntryKeyRecord> = entries
-                .into_iter()
-                .filter(|row| match request.mode {
-                    HistoryPurgeMode::All => false,
-                    HistoryPurgeMode::BeforeSerial => {
-                        (row.serial as u64) >= request.before_serial.unwrap_or_default()
-                    }
-                    HistoryPurgeMode::BeforeTimeMs => {
-                        row.published_at_ms >= request.before_time_ms.unwrap_or_default()
-                    }
-                })
-                .collect();
             purged_messages = to_delete.len() as u64;
             purged_bytes = to_delete
                 .iter()
@@ -384,32 +377,8 @@ impl HistoryStore for SurrealHistoryStore {
                 .sum();
             self.delete_entries(app_id, channel, stream_id, &to_delete)
                 .await?;
-            if let Some(current) = self.load_stream_raw(app_id, channel).await? {
-                let retained = HistoryRetentionStats {
-                    stream_id: Some(stream_id.to_string()),
-                    retained_messages: retained_rows.len() as u64,
-                    retained_bytes: retained_rows
-                        .iter()
-                        .map(|row| row.payload_size_bytes.max(0) as u64)
-                        .sum(),
-                    oldest_serial: retained_rows.first().map(|row| row.serial as u64),
-                    newest_serial: retained_rows.last().map(|row| row.serial as u64),
-                    oldest_published_at_ms: retained_rows.first().map(|row| row.published_at_ms),
-                    newest_published_at_ms: retained_rows.last().map(|row| row.published_at_ms),
-                };
-                let updated_stream = StoredStreamRecord {
-                    retained_messages: retained.retained_messages as i64,
-                    retained_bytes: retained.retained_bytes as i64,
-                    oldest_available_serial: retained.oldest_serial.map(|value| value as i64),
-                    newest_available_serial: retained.newest_serial.map(|value| value as i64),
-                    oldest_available_published_at_ms: retained.oldest_published_at_ms,
-                    newest_available_published_at_ms: retained.newest_published_at_ms,
-                    updated_at_ms: sockudo_core::history::now_ms(),
-                    ..current
-                };
-                self.upsert_stream_raw(app_id, channel, &updated_stream)
-                    .await?;
-            }
+            self.refresh_retention_bounds(app_id, channel, stream_id)
+                .await?;
             if let Some(metrics) = self.metrics.as_ref() {
                 let retained = self.retained_stats(app_id, channel).await?;
                 metrics.update_history_retained(
@@ -452,41 +421,48 @@ impl HistoryStore for SurrealHistoryStore {
         if batch_size == 0 {
             return Ok((0, false));
         }
-        let limit = batch_size as i64;
-        let table = self.tables.entries.clone();
-        let db = self.db.clone();
-
-        // SurrealDB has no LIMIT clause on DELETE, so select ids first and
-        // then delete them — two round-trips but each is bounded by `limit`.
-        let select_sql =
-            format!("SELECT VALUE id FROM {table} WHERE published_at_ms < $cutoff LIMIT $limit");
-        let mut response = db
-            .query(select_sql)
+        let sql = format!(
+            "SELECT app_id,channel,stream_id,serial,published_at_ms,payload_size_bytes FROM {} WHERE published_at_ms<$cutoff LIMIT $limit",
+            self.tables.entries
+        );
+        let mut response = self
+            .db
+            .query(sql)
             .bind(("cutoff", before_ms))
-            .bind(("limit", limit))
+            .bind(("limit", batch_size.min(4096) as i64))
             .await
             .map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to select expired history entries in SurrealDB: {e}"
-                ))
+                Error::Internal(format!("Failed to select SurrealDB expiry batch: {e}"))
             })?;
-        let ids: Vec<surrealdb::types::RecordId> = response.take(0usize).map_err(|e| {
-            Error::Internal(format!(
-                "Failed to decode expired history entry ids in SurrealDB: {e}"
-            ))
-        })?;
-        let deleted = ids.len() as u64;
-        if ids.is_empty() {
-            return Ok((0, false));
+        #[derive(serde::Deserialize, surrealdb_types::SurrealValue)]
+        struct Expired {
+            app_id: String,
+            channel: String,
+            stream_id: String,
+            serial: i64,
+            published_at_ms: i64,
+            payload_size_bytes: i64,
         }
-        db.query("DELETE $ids")
-            .bind(("ids", ids))
-            .await
-            .map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to delete expired history entries in SurrealDB: {e}"
-                ))
-            })?;
-        Ok((deleted, deleted as i64 == limit))
+        let rows: Vec<Expired> = response.take(0usize).map_err(|e| {
+            Error::Internal(format!("Failed to decode SurrealDB expiry batch: {e}"))
+        })?;
+        let count = rows.len();
+        let mut streams =
+            std::collections::BTreeMap::<(String, String, String), Vec<EntryKeyRecord>>::new();
+        for row in rows {
+            streams
+                .entry((row.app_id, row.channel, row.stream_id))
+                .or_default()
+                .push(EntryKeyRecord {
+                    serial: row.serial,
+                    published_at_ms: row.published_at_ms,
+                    payload_size_bytes: row.payload_size_bytes,
+                });
+        }
+        let mut deleted = 0;
+        for ((app, channel, stream), rows) in streams {
+            deleted += self.delete_entries(&app, &channel, &stream, &rows).await?;
+        }
+        Ok((deleted, count >= batch_size.min(4096)))
     }
 }

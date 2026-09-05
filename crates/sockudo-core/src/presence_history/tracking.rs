@@ -74,6 +74,10 @@ impl TrackingPresenceHistoryStore {
 
 #[async_trait]
 impl PresenceHistoryStore for TrackingPresenceHistoryStore {
+    async fn purge_expired(&self, batch_size: usize) -> Result<(u64, bool)> {
+        self.inner.purge_expired(batch_size).await
+    }
+
     async fn record_transition(&self, record: PresenceHistoryTransitionRecord) -> Result<()> {
         let key = Self::channel_key(&record.app_id, &record.channel);
         let inspection_before = self

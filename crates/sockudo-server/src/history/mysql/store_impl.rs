@@ -333,6 +333,20 @@ impl HistoryStore for MySqlHistoryStore {
         let purged_messages = stats.get::<i64, _>("count") as u64;
         let purged_bytes = stats.get::<i64, _>("bytes") as u64;
 
+        let lock_sql = format!(
+            "SELECT retained_messages FROM {} WHERE app_id=? AND channel=? FOR UPDATE",
+            self.tables.streams
+        );
+        sqlx::query(sqlx::AssertSqlSafe(lock_sql.as_str()))
+            .bind(app_id)
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to lock MySQL history stream for purge: {e}"
+                ))
+            })?;
         let delete_sql = format!(
             "DELETE FROM {} WHERE app_id = ? AND channel = ?",
             self.tables.entries
@@ -442,6 +456,20 @@ impl HistoryStore for MySqlHistoryStore {
         let purged_messages = stats.get::<i64, _>("count") as u64;
         let purged_bytes = stats.get::<i64, _>("bytes") as u64;
 
+        let lock_sql = format!(
+            "SELECT retained_messages FROM {} WHERE app_id=? AND channel=? FOR UPDATE",
+            self.tables.streams
+        );
+        sqlx::query(sqlx::AssertSqlSafe(lock_sql.as_str()))
+            .bind(app_id)
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to lock MySQL history stream for purge: {e}"
+                ))
+            })?;
         let delete_sql = match request.mode {
             HistoryPurgeMode::All => format!(
                 "DELETE FROM {} WHERE app_id = ? AND channel = ?",
@@ -525,19 +553,105 @@ impl HistoryStore for MySqlHistoryStore {
         if batch_size == 0 {
             return Ok((0, false));
         }
-        let sql = format!(
-            "DELETE FROM {} WHERE published_at_ms < ? ORDER BY published_at_ms ASC LIMIT ?",
+        let select = format!(
+            "SELECT app_id,channel,stream_id,serial FROM {} WHERE published_at_ms<? ORDER BY published_at_ms ASC LIMIT ?",
             self.tables.entries
         );
-        let rows_deleted = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        let candidates = sqlx::query(sqlx::AssertSqlSafe(select.as_str()))
             .bind(before_ms)
-            .bind(batch_size as i64)
-            .execute(&self.pool)
+            .bind(batch_size.min(4096) as i64)
+            .fetch_all(&self.pool)
             .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to purge expired MySQL history rows: {e}"))
-            })?
-            .rows_affected();
-        Ok((rows_deleted, rows_deleted as usize >= batch_size))
+            .map_err(|e| Error::Internal(format!("Failed to select MySQL expiry batch: {e}")))?;
+        let candidate_count = candidates.len();
+        let mut channels =
+            std::collections::BTreeMap::<(String, String), Vec<(String, i64)>>::new();
+        for row in candidates {
+            channels
+                .entry((row.get("app_id"), row.get("channel")))
+                .or_default()
+                .push((row.get("stream_id"), row.get("serial")));
+        }
+        let mut total = 0;
+        for ((app, channel), keys) in channels {
+            let mut tx =
+                self.pool.begin().await.map_err(|e| {
+                    Error::Internal(format!("Failed to begin MySQL expiry batch: {e}"))
+                })?;
+            let lock = format!(
+                "SELECT retained_messages FROM {} WHERE app_id=? AND channel=? FOR UPDATE",
+                self.tables.streams
+            );
+            sqlx::query(sqlx::AssertSqlSafe(lock.as_str()))
+                .bind(&app)
+                .bind(&channel)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to lock MySQL expiry channel: {e}"))
+                })?;
+            let placeholders = vec!["(?,?)"; keys.len()].join(",");
+            let selected = format!(
+                "SELECT payload_size_bytes FROM {} WHERE app_id=? AND channel=? AND published_at_ms<? AND (stream_id,serial) IN ({placeholders}) FOR UPDATE",
+                self.tables.entries
+            );
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(selected.as_str()))
+                .bind(&app)
+                .bind(&channel)
+                .bind(before_ms);
+            for (stream, serial) in &keys {
+                query = query.bind(stream).bind(serial);
+            }
+            let removed = query.fetch_all(&mut *tx).await.map_err(|e| {
+                Error::Internal(format!("Failed to inspect MySQL expiry batch: {e}"))
+            })?;
+            let count = removed.len() as u64;
+            let bytes = removed
+                .iter()
+                .map(|row| row.get::<i64, _>("payload_size_bytes"))
+                .sum::<i64>();
+            let delete = format!(
+                "DELETE FROM {} WHERE app_id=? AND channel=? AND published_at_ms<? AND (stream_id,serial) IN ({placeholders})",
+                self.tables.entries
+            );
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(delete.as_str()))
+                .bind(&app)
+                .bind(&channel)
+                .bind(before_ms);
+            for (stream, serial) in keys {
+                query = query.bind(stream).bind(serial);
+            }
+            query.execute(&mut *tx).await.map_err(|e| {
+                Error::Internal(format!("Failed to remove MySQL expiry batch: {e}"))
+            })?;
+            let update = format!(
+                "UPDATE {streams} SET retained_messages=GREATEST(retained_messages-?,0),retained_bytes=GREATEST(retained_bytes-?,0),oldest_available_serial=(SELECT serial FROM {entries} WHERE app_id=? AND channel=? ORDER BY serial ASC LIMIT 1),newest_available_serial=(SELECT serial FROM {entries} WHERE app_id=? AND channel=? ORDER BY serial DESC LIMIT 1),oldest_available_published_at_ms=(SELECT published_at_ms FROM {entries} WHERE app_id=? AND channel=? ORDER BY published_at_ms ASC LIMIT 1),newest_available_published_at_ms=(SELECT published_at_ms FROM {entries} WHERE app_id=? AND channel=? ORDER BY published_at_ms DESC LIMIT 1) WHERE app_id=? AND channel=?",
+                streams = self.tables.streams,
+                entries = self.tables.entries
+            );
+            sqlx::query(sqlx::AssertSqlSafe(update.as_str()))
+                .bind(count as i64)
+                .bind(bytes)
+                .bind(&app)
+                .bind(&channel)
+                .bind(&app)
+                .bind(&channel)
+                .bind(&app)
+                .bind(&channel)
+                .bind(&app)
+                .bind(&channel)
+                .bind(&app)
+                .bind(&channel)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to account MySQL expiry batch: {e}"))
+                })?;
+            tx.commit().await.map_err(|e| {
+                Error::Internal(format!("Failed to commit MySQL expiry batch: {e}"))
+            })?;
+            total += count;
+        }
+        Ok((total, candidate_count >= batch_size.min(4096)))
     }
 }

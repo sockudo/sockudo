@@ -1,0 +1,10 @@
+
+running 5 tests
+test history::dynamodb::annotation_store::tests::two_dynamodb_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::mysql::annotation_store::tests::two_mysql_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::postgres::annotation_store::tests::two_postgres_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::scylla::annotation_store::tests::two_scylla_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::surreal::annotation_store::tests::two_surreal_nodes_keep_annotations_atomic_replayable_and_durable ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 4.09s
+

@@ -1,3 +1,5 @@
+mod encoding;
+use encoding::VersionDeletedRow;
 mod store_impl;
 
 use super::*;
@@ -25,6 +27,8 @@ struct StoredVersionMessageRec {
     channel: String,
     message_serial: String,
     latest_version_serial: String,
+    #[serde(default)]
+    state_version_serial: Option<String>,
     latest_entry_key: String,
     history_serial: i64,
     #[serde(default)]
@@ -45,6 +49,8 @@ struct StoredVersionEntryRec {
     version_serial: String,
     delivery_serial: i64,
     payload_bytes: Vec<u8>,
+    #[serde(default)]
+    text_snapshot_key: Option<String>,
     // Server-side append time (ms since epoch). Indexed for the purge worker
     // which deletes rows older than the retention cutoff in batched queries.
     created_at_ms: i64,
@@ -77,6 +83,7 @@ struct VersionStoreTables {
     messages: String,
     entries: String,
     receipts: String,
+    texts: String,
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -136,6 +143,7 @@ pub async fn create_surreal_version_store(
         messages: format!("{table_prefix}_version_messages"),
         entries: format!("{table_prefix}_version_entries"),
         receipts: format!("{table_prefix}_version_receipts"),
+        texts: format!("{table_prefix}_version_texts"),
     };
 
     let query = format!(
@@ -175,5 +183,23 @@ pub async fn create_surreal_version_store(
         ))
     })?;
 
+    db.query(format!(
+        "DEFINE TABLE IF NOT EXISTS {} SCHEMALESS; DEFINE INDEX IF NOT EXISTS {}_expiry ON TABLE {} FIELDS retain_for_receipts, updated_at_ms; DEFINE INDEX IF NOT EXISTS {}_text_ref ON TABLE {} FIELDS app_id, channel, text_snapshot_key;",
+        tables.texts, tables.texts, tables.texts, tables.entries, tables.entries,
+    )).await.map_err(|e| Error::Internal(format!("failed to initialize version text schema: {e}")))?
+        .check().map_err(|e| Error::Internal(format!("failed to initialize version text schema: {e}")))?;
     Ok(Arc::new(SurrealVersionStore { db, tables }))
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct StoredVersionTextRec {
+    app_id: String,
+    channel: String,
+    snapshot_key: String,
+    text_data: String,
+    updated_at_ms: i64,
+    retain_for_receipts: bool,
+}
+
+#[cfg(test)]
+mod tests;

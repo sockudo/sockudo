@@ -1,0 +1,1 @@
+Baseline production is unchanged. C7-only variant copies exactly the five get_latest_batch overrides; their decoding helper reads unchanged baseline JSON records (C2 format and write changes excluded). Point-read fallbacks remain baseline production. No other crate source changed. Statistics counts are separately verified and not part of this batch latency probe.

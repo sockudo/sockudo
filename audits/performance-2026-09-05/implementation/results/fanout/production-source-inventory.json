@@ -1,0 +1,214 @@
+{
+  "F1": [
+    {
+      "path": "crates/sockudo-adapter/src/local_adapter/broadcast.rs",
+      "sha256": "cfbf1b17c708200a3d3533d56e6b78934095fda9cc377eb0931fc1752876b14f"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/local_adapter/broadcast_tests.rs",
+      "sha256": "00bd908c236d0f2a2c8b59f005fd0715067b88877c7170f7de7032eca6f5d941"
+    },
+    {
+      "path": "crates/sockudo-delta/src/compression.rs",
+      "sha256": "8c5971ad15ab74383644b19a9d73251a62634bc185b276f8769cc27ccf989e1b"
+    },
+    {
+      "path": "crates/sockudo-core/src/websocket/reference.rs",
+      "sha256": "61afc46871a4b484420df2f00957eb3913711c7bc73ad81d9ed84398bc55943b"
+    }
+  ],
+  "F2": [
+    {
+      "path": "crates/sockudo-adapter/src/transports/dispatch.rs",
+      "sha256": "1c5702332b2685f19c24270c29d8983e63ebbb197f720ded54a59a4f32ec0b94"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/horizontal_transport.rs",
+      "sha256": "a0d9aee22a794291e3d04fe42ef731cd183c02f577b01fa7d0dafa44c560dc50"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/horizontal_adapter_base/core.rs",
+      "sha256": "74fcba28c92e6d5ca428df9212cddeac6d84d095027a17375567dc582bb6a4ab"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/transports/redis_transport.rs",
+      "sha256": "98e6547eba6c2a62dbbd84c0d358711c302d6b1705bf5a8930b52c52b798f588"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/transports/redis_cluster_transport.rs",
+      "sha256": "46c4222d4e5ed8eb60de8c984e036bb530387278ed114ad505f5910e1e70e259"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/transports/redis_cluster_sharded_pubsub.rs",
+      "sha256": "471871a293fe9c29c1db0750c5311704fb416f934e45ab0b2ac8518df378fee8"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/transports/nats_transport.rs",
+      "sha256": "4b632f2507a3329aec1ce9e7b950c0b7ef9264a7e00f986350c8f4f0f6589b81"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/transports/rabbitmq_transport.rs",
+      "sha256": "c09f9b8de3a44a75de1ddab127be39157778365c30ed580e8bff7fdadcba5e90"
+    }
+  ],
+  "F3": [
+    {
+      "path": "crates/sockudo-delta/src/coordination/redis_coordinator.rs",
+      "sha256": "3d9daa04268039b613f14b083aa942f73034b013bcec776d107a2ee36a986916"
+    }
+  ],
+  "F4": [
+    {
+      "path": "crates/sockudo-adapter/src/v2_broadcast.rs",
+      "sha256": "1903b61a28757f3d7ffbef7901a95394be1178d5b2a91368fdeb166946f7359b"
+    },
+    {
+      "path": "crates/sockudo-filter/src/predicate.rs",
+      "sha256": "58191ce464263c12bc9a1ffedeeb595deb86b4d32ef7871b7f51691d75c4c6ab"
+    }
+  ],
+  "F5": [
+    {
+      "path": "crates/sockudo-adapter/src/transports/kafka_transport.rs",
+      "sha256": "9038ddd266c1f05dc4e901eb2724356375af322e3c679dc9bb287f2d85da15d9"
+    },
+    {
+      "path": "crates/sockudo-core/src/options/adapter.rs",
+      "sha256": "da00c8da1358153a048143ea76447959ca7f52499e9c098d717038b1c3a8500d"
+    },
+    {
+      "path": "crates/sockudo-adapter/src/factory.rs",
+      "sha256": "e516ed9b3e6c0ee46db53313c518039165bb46430d8854641b2929c7c4f2bd86"
+    }
+  ],
+  "F6": [
+    {
+      "path": "crates/sockudo-adapter/src/handler/ai_rollup.rs",
+      "sha256": "4580c15ba1aa1d6f3815935dd8b5de8f94081ef3a6a2672d78fcfabe70eeab82"
+    }
+  ],
+  "F7": [
+    {
+      "path": "crates/sockudo-adapter/src/replay_buffer.rs",
+      "sha256": "cb3b62980480ba03a5185981dc5e27f1284996a74de910fb99b9a0ef714970a7"
+    }
+  ],
+  "F8": [
+    {
+      "path": "crates/sockudo-protocol/src/wire.rs",
+      "sha256": "c42878556df6ad60ed666f7141459ec1f81c49c38ac4f5dd49a1e2793b52cfc7"
+    }
+  ],
+  "C8": [
+    {
+      "path": "crates/sockudo-server/src/history/scylla/entries.rs",
+      "sha256": "f66380ffa57804d900930cad95cad19b90edfb06343dfcd65896a9b445a17f6d"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/scylla/store_impl.rs",
+      "sha256": "05561a418ad8c5073d89299220e192e16a92f9d632f2887ca8697a68f2cff0b5"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/scylla/page_tests.rs",
+      "sha256": "3ba9cf43767554d4cf0144d630b0bc2d00ebabd098aa072e7bc567d1b1f9c5ab"
+    }
+  ],
+  "C6": [
+    {
+      "path": "crates/sockudo-server/src/history/postgres/schema.rs",
+      "sha256": "7911972d6c0aff80f9b7aa94bd5ce8b2382046f68ad7cc3a290e2039fa8ec97a"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/postgres/writers.rs",
+      "sha256": "3a219cd174e4c2dda41f9f4cf51f29ff70e38f290f70e3116142ea4280c22be4"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/postgres/history_store_impl.rs",
+      "sha256": "c38e55581f5cf01f373f53ff52774e3f8f8197a9d72c5a49112823b7e83615eb"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/mysql/schema.rs",
+      "sha256": "d928d3c49b596f8eeff33a86585c4d79e0f7288c4b567b4010e18b9f28f28979"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/mysql/writes.rs",
+      "sha256": "a086f7aac429e909398f5fe308e9d7fc6543fe609c29642e005dd5cab66bfa5e"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/mysql/store_impl.rs",
+      "sha256": "17519575a695e3c9250efa172ba69c55998d910fc13df344f08636d6cba27654"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/mysql/mod.rs",
+      "sha256": "6f9931fd78091e1cb0f214ca6775a6caa27f9e9926fdb3d7aaee296f3cb822f7"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/dynamodb/degraded.rs",
+      "sha256": "76dee3dea7a2c367ba290b44bcbd39b581e9e5c6ccfe48042a0fca55edb81934"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/dynamodb/items.rs",
+      "sha256": "6618d0f8ab9e23a0fa7eb5ab0af8c9e6be6c271df9718bdf3153a3242962dda7"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/dynamodb/mod.rs",
+      "sha256": "9069fb5d23a3920f24df1d06eced8aa44069640a9aec6c328cb31803efb8b74f"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/dynamodb/queries.rs",
+      "sha256": "79a344dba18a016df882e8375c23b7bc2067a07a0e4cdaf735f1889aa77c58cc"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/dynamodb/store_impl.rs",
+      "sha256": "69752d37cf95e328375db39ea49323d974720323cb02b17786197108a02c09d5"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/dynamodb/writes.rs",
+      "sha256": "98fa24b2516b955ea3984375344e3a97f26a2f7a221130344792ec3503522d33"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/surreal/entries.rs",
+      "sha256": "765322c26d646e98bc3ec8d993220db80f5f0941d7fa0f32ca8734936c71ef4e"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/surreal/records.rs",
+      "sha256": "a4115575d9f079f49d254c5658da71145dc9cdf7e3fcedbdb7d474ccc1ef698d"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/surreal/resources.rs",
+      "sha256": "027506e9cbac7b58bbd2bab3e3281570bf322927ae38ee0b4274c20528fec45a"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/surreal/state.rs",
+      "sha256": "1c4ca369f7d3e0a23204dec6eeacad977d78e9a732ead9bb63e7ec704f19256f"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/surreal/store_impl.rs",
+      "sha256": "3c03f5157a7714e0995e7f2a99fa28696f536eb1ed6c14458b9d761ebb4766be"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/surreal/mod.rs",
+      "sha256": "13183a3ab32ce5ef3acec94d290ef1cffa5376610961ed073bfad2103c373a5d"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/scylla/entries.rs",
+      "sha256": "f66380ffa57804d900930cad95cad19b90edfb06343dfcd65896a9b445a17f6d"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/scylla/mod.rs",
+      "sha256": "714e7007943248617c7c0a40758975682e1490d0046924bd95d5fb6e895a8ad5"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/scylla/schema.rs",
+      "sha256": "6aeb7905aec1baff09d0251d9d6033b7aaf5db4e938a5bc3ac1b1653b2598ff4"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/scylla/store_impl.rs",
+      "sha256": "05561a418ad8c5073d89299220e192e16a92f9d632f2887ca8697a68f2cff0b5"
+    },
+    {
+      "path": "crates/sockudo-server/src/history/scylla/retention.rs",
+      "sha256": "914ee228b7df0c85544de993ddc678405a3f1820582ccde2c992a40f84ac4f2b"
+    }
+  ]
+}

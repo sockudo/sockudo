@@ -1,3 +1,4 @@
+use super::incremental::IncrementalProjection;
 use super::types::*;
 use crate::error::Result;
 use crate::history::now_ms;
@@ -19,6 +20,8 @@ pub(super) struct MemoryAnnotationState {
     pub(super) raw_by_channel:
         BTreeMap<String, BTreeMap<AnnotationSerial, Arc<StoredAnnotationEvent>>>,
     pub(super) projections: BTreeMap<String, StoredAnnotationProjection>,
+    incremental: BTreeMap<String, IncrementalProjection>,
+    create_ids: BTreeMap<String, BTreeMap<AnnotationId, Arc<StoredAnnotationEvent>>>,
 }
 
 impl MemoryAnnotationStore {
@@ -60,6 +63,63 @@ impl MemoryAnnotationStore {
             record.message_serial(),
             record.annotation_type(),
         )
+    }
+
+    fn refresh_incremental(
+        state: &mut MemoryAnnotationState,
+        request: &AnnotationProjectionRequest,
+        record: &StoredAnnotationEvent,
+        inserted: bool,
+    ) -> Result<StoredAnnotationProjection> {
+        let key = Self::request_projection_key(request);
+        let mut rebuild = !state.incremental.contains_key(&key);
+        if inserted && let Some(accumulator) = state.incremental.get_mut(&key) {
+            match accumulator.append(&record.annotation) {
+                Ok(applied) => rebuild = !applied,
+                Err(error) => {
+                    state.incremental.remove(&key);
+                    return Err(error);
+                }
+            }
+        }
+        if rebuild {
+            let accumulator = IncrementalProjection::rebuild(
+                request,
+                state
+                    .events_by_projection
+                    .get(&key)
+                    .into_iter()
+                    .flat_map(|events| events.values())
+                    .map(AsRef::as_ref),
+            )?;
+            state.incremental.insert(key.clone(), accumulator);
+        }
+        let projection = state
+            .incremental
+            .get(&key)
+            .expect("projection accumulator installed")
+            .projection
+            .clone();
+        state.projections.insert(key, projection.clone());
+        Ok(projection)
+    }
+
+    fn index_create(
+        state: &mut MemoryAnnotationState,
+        key: &str,
+        record: Arc<StoredAnnotationEvent>,
+    ) {
+        if record.annotation.action == AnnotationAction::Create {
+            let entry = state
+                .create_ids
+                .entry(key.to_owned())
+                .or_default()
+                .entry(record.annotation.id.clone())
+                .or_insert_with(|| record.clone());
+            if record.annotation.serial < entry.annotation.serial {
+                *entry = record;
+            }
+        }
     }
 
     fn projection_max_serial(
@@ -108,6 +168,11 @@ impl MemoryAnnotationStore {
     ) -> Result<StoredAnnotationProjection> {
         let projection_key = Self::request_projection_key(&request);
         let events = Self::projection_events(state, &projection_key);
+        state.incremental.remove(&projection_key);
+        state.create_ids.remove(&projection_key);
+        for event in &events {
+            Self::index_create(state, &projection_key, event.clone());
+        }
         let stored = Self::build_projection(&request, events, options)?;
         state.projections.insert(projection_key, stored.clone());
         Ok(stored)
@@ -164,28 +229,24 @@ impl AnnotationStore for MemoryAnnotationStore {
         let channel_key = Self::channel_key(&record.app_id, &record.channel_id);
         let record = Arc::new(record);
 
-        {
-            let mut state = self.state.write().await;
-            let events = state
-                .events_by_projection
-                .entry(projection_key)
-                .or_default();
-            events
-                .entry(record.annotation_serial().clone())
-                .or_insert_with(|| Arc::clone(&record));
-            state
-                .raw_by_channel
-                .entry(channel_key)
-                .or_default()
-                .entry(record.annotation_serial().clone())
-                .or_insert(record);
-        }
-
-        self.rebuild_projection_optimistic(
-            projection_request,
-            AnnotationProjectionOptions::default(),
-        )
-        .await
+        let mut state = self.state.write().await;
+        let events = state
+            .events_by_projection
+            .entry(projection_key.clone())
+            .or_default();
+        let inserted = !events.contains_key(record.annotation_serial());
+        let canonical = events
+            .entry(record.annotation_serial().clone())
+            .or_insert_with(|| record.clone())
+            .clone();
+        state
+            .raw_by_channel
+            .entry(channel_key)
+            .or_default()
+            .entry(record.annotation_serial().clone())
+            .or_insert_with(|| record.clone());
+        Self::index_create(&mut state, &projection_key, canonical.clone());
+        Self::refresh_incremental(&mut state, &projection_request, &canonical, inserted)
     }
 
     async fn append_create_idempotent(
@@ -215,58 +276,57 @@ impl AnnotationStore for MemoryAnnotationStore {
         let projection_key = Self::event_projection_key(&record);
         let channel_key = Self::channel_key(&record.app_id, &record.channel_id);
         let record = Arc::new(record);
-        let canonical_serial = {
-            let mut state = self.state.write().await;
-            if let Some(existing) =
-                state
-                    .events_by_projection
-                    .get(&projection_key)
-                    .and_then(|events| {
-                        events.values().find(|event| {
-                            event.annotation.action == AnnotationAction::Create
-                                && event.annotation.id == record.annotation.id
-                        })
-                    })
+        let mut state = self.state.write().await;
+        let existing = state
+            .create_ids
+            .get(&projection_key)
+            .and_then(|ids| ids.get(&record.annotation.id))
+            .cloned();
+        let (canonical, inserted) = if let Some(existing) = existing {
+            if existing.annotation.name != record.annotation.name
+                || existing.annotation.client_id != record.annotation.client_id
+                || existing.annotation.count != record.annotation.count
+                || existing.annotation.data != record.annotation.data
+                || existing.annotation.encoding != record.annotation.encoding
             {
-                if existing.annotation.name != record.annotation.name
-                    || existing.annotation.client_id != record.annotation.client_id
-                    || existing.annotation.count != record.annotation.count
-                    || existing.annotation.data != record.annotation.data
-                    || existing.annotation.encoding != record.annotation.encoding
-                {
-                    return Err(crate::error::Error::InvalidMessageFormat(format!(
-                        "Annotation id '{}' was already used with a different payload",
-                        record.annotation.id.as_str()
-                    )));
-                }
-                Some(existing.annotation.serial.clone())
-            } else {
-                state
-                    .events_by_projection
-                    .entry(projection_key.clone())
-                    .or_default()
-                    .insert(record.annotation_serial().clone(), Arc::clone(&record));
-                state
-                    .raw_by_channel
-                    .entry(channel_key)
-                    .or_default()
-                    .insert(record.annotation_serial().clone(), Arc::clone(&record));
-                None
+                return Err(crate::error::Error::InvalidMessageFormat(format!(
+                    "Annotation id '{}' was already used with a different payload",
+                    record.annotation.id.as_str()
+                )));
             }
+            (existing, false)
+        } else {
+            let previous = state
+                .events_by_projection
+                .entry(projection_key.clone())
+                .or_default()
+                .insert(record.annotation_serial().clone(), record.clone());
+            if previous.is_some() {
+                // A replacement at an imported serial changes any old ID index.
+                state.create_ids.remove(&projection_key);
+                let creates = state.events_by_projection[&projection_key]
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for event in creates {
+                    Self::index_create(&mut state, &projection_key, event);
+                }
+                state.incremental.remove(&projection_key);
+            }
+            state
+                .raw_by_channel
+                .entry(channel_key)
+                .or_default()
+                .insert(record.annotation_serial().clone(), record.clone());
+            Self::index_create(&mut state, &projection_key, record.clone());
+            (record.clone(), true)
         };
-
-        let projection = self
-            .rebuild_projection_optimistic(
-                projection_request,
-                AnnotationProjectionOptions::default(),
-            )
-            .await?;
+        let projection =
+            Self::refresh_incremental(&mut state, &projection_request, &canonical, inserted)?;
         Ok(AnnotationAppendOutcome {
             projection,
-            canonical_serial: canonical_serial
-                .clone()
-                .unwrap_or_else(|| record.annotation.serial.clone()),
-            inserted: canonical_serial.is_none(),
+            canonical_serial: canonical.annotation.serial.clone(),
+            inserted,
         })
     }
 
@@ -535,6 +595,8 @@ impl AnnotationStore for MemoryAnnotationStore {
         for key in affected_projection_keys {
             if !state.events_by_projection.contains_key(&key) {
                 state.projections.remove(&key);
+                state.incremental.remove(&key);
+                state.create_ids.remove(&key);
             }
         }
 

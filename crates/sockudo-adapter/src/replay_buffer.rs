@@ -86,14 +86,14 @@ impl ReplayBuffer {
     }
 
     fn new_channel_buffer(
-        max_buffer_size: usize,
+        _max_buffer_size: usize,
         stream_id: Option<String>,
         next_serial: u64,
         now: Instant,
     ) -> ChannelBuffer {
         ChannelBuffer {
             state: Mutex::new(ChannelBufferState {
-                messages: VecDeque::with_capacity(max_buffer_size),
+                messages: VecDeque::new(),
                 current_stream_id: stream_id,
                 last_touched: now,
             }),
@@ -438,5 +438,23 @@ impl ReplayBuffer {
                     && now.duration_since(state.last_touched) >= self.buffer_ttl
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_checkpoints_do_not_reserve_retention_slots() {
+        let buffer = ReplayBuffer::new(1_000_000, Duration::from_secs(120));
+        let checkpoint = buffer.current_position("app", "sparse");
+        assert_eq!(checkpoint.serial, 0);
+        assert_eq!(buffer.current_position("app", "sparse"), checkpoint);
+        let entry = buffer
+            .buffers
+            .get(&ReplayBuffer::buffer_key("app", "sparse"))
+            .unwrap();
+        assert_eq!(entry.state.lock().messages.capacity(), 0);
     }
 }

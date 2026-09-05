@@ -2261,7 +2261,7 @@ async fn clean_recovered_attach_sets_the_resumed_flag() {
 fn explicit_channel_serial_uses_durable_recovery_on_a_resumed_attach() {
     let mut options = AblyAttachOptions::from_wire(None, None);
     let recovery_gate = AblyAttachGate {
-        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        messages: vec![Arc::new(empty_protocol_message(ACTION_MESSAGE))],
         ..AblyAttachGate::default()
     };
     let mut channel_serial = Some(encode_ably_channel_serial("stream-1", 7));
@@ -2324,7 +2324,7 @@ fn resumed_attach_without_a_channel_serial_keeps_the_live_recovery_tail() {
     let mut options = AblyAttachOptions::from_wire(None, None);
     let mut channel_serial = None;
     let recovery_gate = AblyAttachGate {
-        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        messages: vec![Arc::new(empty_protocol_message(ACTION_MESSAGE))],
         ..AblyAttachGate::default()
     };
 
@@ -2352,6 +2352,7 @@ fn hot_recovery_filters_the_live_tail_after_the_explicit_boundary() {
                 channel_serial: Some(encode_ably_channel_serial("stream-1", serial)),
                 ..empty_protocol_message(ACTION_MESSAGE)
             })
+            .map(Arc::new)
             .collect(),
         ..AblyAttachGate::default()
     };
@@ -2383,10 +2384,10 @@ fn hot_recovery_fails_closed_when_the_stream_changes() {
     let mut options = AblyAttachOptions::from_wire(None, None);
     let mut channel_serial = Some(encode_ably_channel_serial("stream-1", 7));
     let recovery_gate = AblyAttachGate {
-        messages: vec![AblyProtocolMessage {
+        messages: vec![Arc::new(AblyProtocolMessage {
             channel_serial: Some(encode_ably_channel_serial("stream-2", 8)),
             ..empty_protocol_message(ACTION_MESSAGE)
-        }],
+        })],
         ..AblyAttachGate::default()
     };
 
@@ -2410,7 +2411,7 @@ fn hot_recovery_fails_closed_without_a_buffered_position() {
     let mut options = AblyAttachOptions::from_wire(None, None);
     let mut channel_serial = Some(encode_ably_channel_serial("stream-1", 7));
     let recovery_gate = AblyAttachGate {
-        messages: vec![empty_protocol_message(ACTION_MESSAGE)],
+        messages: vec![Arc::new(empty_protocol_message(ACTION_MESSAGE))],
         ..AblyAttachGate::default()
     };
 
@@ -3784,9 +3785,15 @@ fn device_identity_token_is_scoped_and_secret_verified() {
         parse_ably_device_identity_token(token.expose_secret()),
         Some(("app/one".to_string(), "device/one".to_string()))
     );
-    let hash = hash_device_identity_token(&token);
-    assert!(verify_device_identity_token(token.expose_secret(), &hash));
-    assert!(!verify_device_identity_token("wrong-token", &hash));
+    let hash = sockudo_push::hash_device_identity_token(&token);
+    assert!(sockudo_push::verify_device_identity_token(
+        token.expose_secret(),
+        &hash
+    ));
+    assert!(!sockudo_push::verify_device_identity_token(
+        "wrong-token",
+        &hash
+    ));
     assert!(!format!("{hash:?}").contains(hash.expose_secret()));
 }
 
@@ -4358,8 +4365,11 @@ async fn revocation_is_observed_by_an_independent_runtime_through_shared_cache()
     );
 }
 
+#[derive(Default)]
 struct PagedRevocationCache {
     entries: Vec<(String, String)>,
+    scans: std::sync::atomic::AtomicUsize,
+    unavailable: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -4407,6 +4417,11 @@ impl CacheManager for PagedRevocationCache {
         cursor: Option<String>,
         limit: usize,
     ) -> sockudo_core::error::Result<sockudo_core::cache::CacheScanPage> {
+        self.scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(sockudo_core::error::Error::Cache("unavailable".to_owned()));
+        }
         let start = cursor
             .as_deref()
             .and_then(|value| value.parse::<usize>().ok())
@@ -4445,7 +4460,10 @@ async fn shared_cache_channel_revocation_scan_pages_past_one_thousand_records() 
         })
         .unwrap(),
     ));
-    let cache: Arc<dyn CacheManager> = Arc::new(PagedRevocationCache { entries });
+    let cache: Arc<dyn CacheManager> = Arc::new(PagedRevocationCache {
+        entries,
+        ..Default::default()
+    });
     let hub = AblyCompatRuntime::new(AblyCompatDependencies {
         cache: Some(cache),
         ..Default::default()
@@ -5010,4 +5028,214 @@ fn msgpack_binary_payload_is_projected_to_base64_without_rejection() {
     let message = decoded.messages.unwrap().pop().unwrap();
     assert_eq!(message.encoding.as_deref(), Some("base64"));
     assert_eq!(message.data.unwrap().as_str(), Some("3q2+7w=="));
+}
+
+#[tokio::test]
+async fn active_revocation_snapshot_shares_scan_but_fresh_auth_fails_closed() {
+    use std::sync::atomic::Ordering;
+    let cache = Arc::new(PagedRevocationCache::default());
+    let runtime = AblyCompatRuntime::new(AblyCompatDependencies {
+        cache: Some(cache.clone()),
+        ..Default::default()
+    });
+    let authorization = ConnectionAuthorization {
+        generation: 1,
+        client_id: Some("client".to_owned()),
+        connection_client_id: None,
+        capabilities: None,
+        issued_ms: 100,
+        expires_ms: None,
+        credential_id: "credential".to_owned(),
+        revocable: true,
+        revocation_key: None,
+    };
+    let channels = HashMap::new();
+    let mut checks = tokio::task::JoinSet::new();
+    for _ in 0..1_000 {
+        let hub = Arc::clone(&runtime.hub);
+        let authorization = authorization.clone();
+        checks.spawn(async move {
+            hub.authorization_is_revoked_from_snapshot("app", &authorization, &HashMap::new())
+                .await
+        });
+    }
+    while let Some(result) = checks.join_next().await {
+        let revoked = result.unwrap();
+        assert!(!revoked);
+    }
+    assert_eq!(cache.scans.load(Ordering::Relaxed), 1);
+    cache.unavailable.store(true, Ordering::Relaxed);
+    // AUTH and attach consult storage immediately, regardless of active-session snapshot age.
+    assert!(
+        runtime
+            .hub
+            .authorization_is_revoked("app", &authorization, &channels)
+            .await
+    );
+    tokio::time::sleep(REVOCATION_SNAPSHOT_FRESHNESS).await;
+    let before = cache.scans.load(Ordering::Relaxed);
+    let mut checks = tokio::task::JoinSet::new();
+    for _ in 0..1_000 {
+        let hub = Arc::clone(&runtime.hub);
+        let authorization = authorization.clone();
+        checks.spawn(async move {
+            hub.authorization_is_revoked_from_snapshot("app", &authorization, &HashMap::new())
+                .await
+        });
+    }
+    while let Some(result) = checks.join_next().await {
+        let revoked = result.unwrap();
+        assert!(revoked);
+    }
+    assert_eq!(cache.scans.load(Ordering::Relaxed), before + 1);
+}
+
+#[tokio::test]
+async fn active_revocation_snapshot_observes_remote_changes_and_local_invalidation() {
+    let cache: Arc<dyn CacheManager> = Arc::new(MemoryCacheManager::new(
+        "revocation-snapshot-test".to_owned(),
+        MemoryCacheOptions::default(),
+    ));
+    let dependencies = AblyCompatDependencies {
+        cache: Some(cache),
+        ..Default::default()
+    };
+    let writer = AblyCompatRuntime::new(dependencies.clone());
+    let reader = AblyCompatRuntime::new(dependencies);
+    let mut authorization = ConnectionAuthorization {
+        generation: 1,
+        client_id: Some("client".to_owned()),
+        connection_client_id: None,
+        capabilities: None,
+        issued_ms: 100,
+        expires_ms: None,
+        credential_id: "credential".to_owned(),
+        revocable: true,
+        revocation_key: None,
+    };
+    let channels = HashMap::new();
+    assert!(
+        !reader
+            .hub
+            .authorization_is_revoked_from_snapshot("app", &authorization, &channels)
+            .await
+    );
+    assert!(
+        !writer
+            .hub
+            .authorization_is_revoked_from_snapshot("app", &authorization, &channels)
+            .await
+    );
+    writer
+        .hub
+        .store_revocation(
+            "app",
+            "clientId",
+            "client",
+            AblyRevocationRecord {
+                target_type: "clientId".to_owned(),
+                target_value: "client".to_owned(),
+                issued_before: 200,
+                applies_at: 0,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        writer
+            .hub
+            .authorization_is_revoked_from_snapshot("app", &authorization, &channels)
+            .await
+    );
+    tokio::time::sleep(REVOCATION_SNAPSHOT_FRESHNESS).await;
+    assert!(
+        reader
+            .hub
+            .authorization_is_revoked_from_snapshot("app", &authorization, &channels)
+            .await
+    );
+    authorization.issued_ms = 200;
+    authorization.generation += 1;
+    assert!(
+        !reader
+            .hub
+            .authorization_is_revoked_from_snapshot("app", &authorization, &channels)
+            .await,
+        "replacement AUTH after issuedBefore remains valid"
+    );
+}
+
+#[tokio::test]
+async fn attach_gates_share_payloads_and_ingress_reset_is_scoped() {
+    let hub = AblyCompatHub::default();
+    let mut receivers = Vec::new();
+    for channel in ["affected", "unaffected"] {
+        for session in ["first", "second"] {
+            let (sender, receiver) = AblyOutbound::channel(
+                AblyFormat::Json,
+                OutboundLimits::default(),
+                Arc::clone(&hub.metrics),
+            );
+            receivers.push(receiver);
+            let channel = AblyChannelName::parse(channel.to_owned()).unwrap();
+            hub.begin_attach(
+                "app",
+                &channel,
+                &AblyAttachment {
+                    connection_id: session,
+                    session_id: session,
+                    sender,
+                    filter: None,
+                    params: HashMap::new(),
+                    mode_flags: ABLY_DEFAULT_MODE_FLAGS,
+                    echo: true,
+                    presence: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        hub.broadcast(
+            "app",
+            channel,
+            AblyProtocolMessage {
+                channel: Some(channel.to_owned()),
+                messages: Some(vec![AblyMessage {
+                    data: Some(json!("x".repeat(16_384))),
+                    ..AblyMessage::default()
+                }]),
+                ..empty_protocol_message(ACTION_MESSAGE)
+            },
+            None,
+            None,
+        );
+        let state = hub.channel_state("app", channel);
+        let state = lock_channel_state(&state);
+        let retained: Vec<_> = state
+            .subscribers
+            .values()
+            .map(|subscriber| &subscriber.attach_gate.as_ref().unwrap().messages[0])
+            .collect();
+        assert_eq!(retained.len(), 2);
+        assert!(
+            Arc::ptr_eq(retained[0], retained[1]),
+            "compatible attach gates must share the same retained payload"
+        );
+    }
+    RealtimeEgressTap::invalidate_continuity(&hub, Some("app"), Some("affected")).unwrap();
+    let affected = AblyChannelName::parse("affected".to_owned()).unwrap();
+    assert!(
+        hub.finish_attach_gate("app", &affected, "first", None)
+            .is_err()
+    );
+    let unaffected = AblyChannelName::parse("unaffected".to_owned()).unwrap();
+    assert_eq!(
+        hub.finish_attach_gate("app", &unaffected, "first", None)
+            .unwrap()
+            .len(),
+        1
+    );
+    let state = hub.channel_state("app", "unaffected");
+    assert!(!lock_channel_state(&state).delivery_reset_required);
+    drop(receivers);
 }

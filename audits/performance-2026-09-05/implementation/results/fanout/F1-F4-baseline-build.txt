@@ -1,0 +1,46 @@
+    Blocking waiting for file lock on build directory
+   Compiling tracing v0.1.44
+   Compiling num-integer v0.1.46
+   Compiling env_filter v2.0.0
+   Compiling ordered-float v5.3.0
+   Compiling saa v5.6.0
+   Compiling rayon v1.12.0
+   Compiling env_logger v0.11.11
+   Compiling tokio v1.53.1
+   Compiling axum-core v0.5.6
+   Compiling metrics-exporter-tcp v0.11.2
+   Compiling num-bigint v0.4.8
+   Compiling metrics-util v0.20.4
+   Compiling sdd v4.8.8
+   Compiling oxidelta v0.1.4
+   Compiling scc v3.8.5
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling simple_asn1 v0.6.4
+   Compiling jsonwebtoken v11.0.0
+   Compiling criterion v0.7.0
+   Compiling tokio-util v0.7.19
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.4
+   Compiling crossfire v3.1.19
+   Compiling tokio-native-tls v0.3.1
+   Compiling tower-http v0.6.11
+   Compiling h2 v0.4.16
+   Compiling combine v4.6.7
+   Compiling hyper v1.11.0
+   Compiling redis v1.4.1
+   Compiling hyper-util v0.1.20
+   Compiling axum v0.8.9
+   Compiling hyper-tls v0.6.0
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling sockudo-ws v2.0.1
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-metrics)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-queue)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-cache)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-webhook)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-app)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-delta)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/f1-f4-baseline-instrumented/crates/sockudo-adapter)
+    Finished `release` profile [optimized] target(s) in 8m 06s
+  Executable unittests src/lib.rs (target/release/deps/sockudo_adapter-ff8e6b341bf50d05)

@@ -1,0 +1,3017 @@
+[
+  {
+    "path": "Cargo.toml",
+    "workspace": {
+      "members": [
+        "crates/sockudo-protocol",
+        "crates/sockudo-filter",
+        "crates/sockudo-core",
+        "crates/sockudo-app",
+        "crates/sockudo-cache",
+        "crates/sockudo-queue",
+        "crates/sockudo-rate-limiter",
+        "crates/sockudo-metrics",
+        "crates/sockudo-webhook",
+        "crates/sockudo-delta",
+        "crates/sockudo-push",
+        "crates/sockudo-ai-transport",
+        "crates/sockudo-ably-compat",
+        "crates/sockudo-adapter",
+        "crates/sockudo-server",
+        "crates/sockudo-simulator",
+        "benches/ai"
+      ],
+      "exclude": [
+        "server-sdks/sockudo-http-rust"
+      ],
+      "resolver": "3",
+      "package": {
+        "version": "5.0.1",
+        "edition": "2024",
+        "rust-version": "1.94",
+        "repository": "https://github.com/sockudo/sockudo",
+        "license-file": "LICENSE",
+        "readme": "README.md"
+      },
+      "dependencies": {
+        "sockudo-protocol": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-protocol"
+        },
+        "sockudo-filter": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-filter"
+        },
+        "sockudo-core": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-core"
+        },
+        "sockudo-app": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-app"
+        },
+        "sockudo-cache": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-cache"
+        },
+        "sockudo-queue": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-queue"
+        },
+        "sockudo-rate-limiter": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-rate-limiter"
+        },
+        "sockudo-metrics": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-metrics"
+        },
+        "sockudo-webhook": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-webhook"
+        },
+        "sockudo-delta": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-delta"
+        },
+        "sockudo-push": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-push"
+        },
+        "sockudo-ai-transport": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-ai-transport"
+        },
+        "sockudo-ably-compat": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-ably-compat",
+          "default-features": false
+        },
+        "sockudo-adapter": {
+          "version": "5.0.1",
+          "path": "crates/sockudo-adapter",
+          "default-features": false
+        },
+        "async-trait": "0.1.89",
+        "ahash": {
+          "version": "0.8.12",
+          "features": [
+            "serde"
+          ]
+        },
+        "aes-gcm": "0.10.3",
+        "axum": {
+          "version": "^0.8",
+          "features": [
+            "ws"
+          ]
+        },
+        "axum-extra": {
+          "version": "^0.12",
+          "features": [
+            "typed-header"
+          ]
+        },
+        "axum-server": {
+          "version": "^0.8",
+          "features": [
+            "tls-rustls"
+          ]
+        },
+        "aws-config": {
+          "version": "^1.8.10",
+          "default-features": false,
+          "features": [
+            "behavior-version-latest",
+            "credentials-process",
+            "default-https-client",
+            "rt-tokio",
+            "sso"
+          ]
+        },
+        "aws-sdk-dynamodb": {
+          "version": "1.98.0",
+          "default-features": false,
+          "features": [
+            "behavior-version-latest",
+            "default-https-client",
+            "rt-tokio"
+          ]
+        },
+        "aws-sdk-lambda": {
+          "version": "1.104.0",
+          "default-features": false,
+          "features": [
+            "behavior-version-latest",
+            "default-https-client",
+            "rt-tokio"
+          ]
+        },
+        "aws-sdk-sns": {
+          "version": "1.89.0",
+          "default-features": false,
+          "features": [
+            "behavior-version-latest",
+            "default-https-client",
+            "rt-tokio"
+          ]
+        },
+        "aws-sdk-sqs": {
+          "version": "1.89.0",
+          "default-features": false,
+          "features": [
+            "behavior-version-latest",
+            "default-https-client",
+            "rt-tokio"
+          ]
+        },
+        "async-nats": "^0.47",
+        "aws-lc-rs": "1.17.0",
+        "google-cloud-auth": "1.8.0",
+        "google-cloud-pubsub": "1.3.0",
+        "base64": "0.22",
+        "bytes": "1.10",
+        "chrono": "^0.4.42",
+        "clap": {
+          "version": "4.5.51",
+          "features": [
+            "derive"
+          ]
+        },
+        "cmake": "0.1.56",
+        "compact_str": "0.9.1",
+        "crossfire": {
+          "version": "3.1.5",
+          "features": [
+            "tokio"
+          ]
+        },
+        "dashmap": "^6.1.0",
+        "fossil-delta": "0.2.0",
+        "futures": "0.3.31",
+        "futures-util": "0.3.31",
+        "hex": "0.4.3",
+        "hmac": "0.13.0-rc.3",
+        "http": "1.3.1",
+        "httpdate": "1.0.3",
+        "http-body-util": "0.1.3",
+        "hyper": "^1.7.0",
+        "hyper-util": "^0.1.17",
+        "libc": "0.2",
+        "md5": "0.8.0",
+        "memchr": "2.7",
+        "tikv-jemallocator": "0.7",
+        "mockall": "0.13.1",
+        "moka": {
+          "version": "0.12.11",
+          "features": [
+            "future",
+            "sync"
+          ]
+        },
+        "lapin": {
+          "version": "4.3.0",
+          "default-features": false,
+          "features": [
+            "rustls",
+            "tokio"
+          ]
+        },
+        "num_cpus": "1.17.0",
+        "oxidelta": "0.1.4",
+        "parking_lot": "0.12.5",
+        "papaya": "0.2.4",
+        "metrics": "0.24.6",
+        "metrics-exporter-prometheus": {
+          "version": "0.18.3",
+          "default-features": false
+        },
+        "metrics-exporter-tcp": "0.11.2",
+        "metrics-util": "0.20.4",
+        "pulsar": {
+          "version": "6.7.2",
+          "default-features": false,
+          "features": [
+            "tokio-runtime"
+          ]
+        },
+        "rand": "0.9.2",
+        "rayon": "1.10",
+        "redis": {
+          "version": "^1",
+          "features": [
+            "tokio-comp",
+            "json",
+            "cluster",
+            "cluster-async",
+            "sentinel",
+            "tls-rustls",
+            "tokio-rustls-comp",
+            "tls-rustls-webpki-roots",
+            "tls-rustls-insecure",
+            "connection-manager"
+          ]
+        },
+        "regex": "1.12.2",
+        "rdkafka": {
+          "version": "0.39.0",
+          "default-features": false,
+          "features": [
+            "tokio",
+            "cmake-build",
+            "libz"
+          ]
+        },
+        "ring": "0.17.14",
+        "rmp-serde": "1.3.0",
+        "iggy": "0.10.0",
+        "jsonwebtoken": {
+          "version": "=11.0.0",
+          "default-features": false,
+          "features": [
+            "aws_lc_rs",
+            "use_pem"
+          ]
+        },
+        "jmespath": {
+          "version": "0.5.0",
+          "features": [
+            "sync"
+          ]
+        },
+        "reqwest": {
+          "version": "^0.12",
+          "default-features": false,
+          "features": [
+            "http2",
+            "json",
+            "native-tls",
+            "rustls-tls",
+            "rustls-tls-webpki-roots"
+          ]
+        },
+        "rustls": {
+          "version": "0.23.35",
+          "default-features": false,
+          "features": [
+            "ring",
+            "std",
+            "tls12"
+          ]
+        },
+        "scc": "3.7.3",
+        "scylla": {
+          "version": "1.3.1",
+          "features": [
+            "rustls-023"
+          ]
+        },
+        "serde": {
+          "version": "^1",
+          "features": [
+            "derive",
+            "rc"
+          ]
+        },
+        "serde-aux": "4",
+        "serde_json": "1",
+        "serde_json_path": "0.7.2",
+        "serde_urlencoded": "0.7",
+        "sha2": "0.11.0-rc.3",
+        "sockudo-ws": {
+          "version": "2.0.1",
+          "features": [
+            "axum-integration"
+          ]
+        },
+        "sonic-rs": "0.5.6",
+        "surrealdb": {
+          "version": "3.0.4",
+          "default-features": false,
+          "features": [
+            "protocol-ws",
+            "protocol-http",
+            "rustls"
+          ]
+        },
+        "surrealdb-types": "3.0.5",
+        "toml": "0.8",
+        "sqlx": {
+          "version": "0.9.0",
+          "default-features": false,
+          "features": [
+            "derive",
+            "json",
+            "macros",
+            "migrate",
+            "runtime-tokio",
+            "mysql",
+            "postgres",
+            "tls-rustls"
+          ]
+        },
+        "sysinfo": "0.37.2",
+        "thiserror": "^2.0.17",
+        "tokio": {
+          "version": "^1",
+          "features": [
+            "full",
+            "tracing"
+          ]
+        },
+        "tokio-util": "0.7",
+        "tower": "0.5.2",
+        "tower-http": {
+          "version": "^0.6.6",
+          "features": [
+            "cors"
+          ]
+        },
+        "tower-layer": "0.3.3",
+        "tower-service": "0.3.3",
+        "tracing": "0.1",
+        "tracing-subscriber": {
+          "version": "0.3",
+          "features": [
+            "fmt",
+            "env-filter",
+            "json"
+          ]
+        },
+        "url": {
+          "version": "2.5.7",
+          "features": [
+            "serde"
+          ]
+        },
+        "urlencoding": "2.1.3",
+        "uuid": {
+          "version": "1.18.1",
+          "features": [
+            "v4",
+            "fast-rng",
+            "macro-diagnostics"
+          ]
+        },
+        "web-push-native": {
+          "version": "0.4.0",
+          "default-features": false
+        },
+        "zeroize": "1.8.2",
+        "criterion": {
+          "version": "0.7.0",
+          "features": [
+            "html_reports"
+          ]
+        },
+        "proptest": "1.7.0"
+      }
+    },
+    "profile": {
+      "release": {
+        "codegen-units": 1,
+        "lto": true
+      }
+    }
+  },
+  {
+    "path": "benches/ai/Cargo.toml",
+    "package": {
+      "name": "sockudo-ai-benches",
+      "description": "Aggregate AI Transport hot-path benchmark suite for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      },
+      "publish": false
+    },
+    "dependencies": {
+      "async-trait": {
+        "workspace": true
+      },
+      "criterion": {
+        "workspace": true
+      },
+      "sockudo-ai-transport": {
+        "workspace": true
+      },
+      "sockudo-core": {
+        "workspace": true,
+        "features": [
+          "ai-transport"
+        ]
+      },
+      "sockudo-protocol": {
+        "workspace": true,
+        "features": [
+          "ai-transport"
+        ]
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      }
+    },
+    "bench": [
+      {
+        "name": "ai_hot_paths",
+        "path": "benches/ai_hot_paths.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "benches/sender/Cargo.toml",
+    "package": {
+      "name": "bench-sender",
+      "version": "0.1.0",
+      "edition": "2024",
+      "publish": false
+    },
+    "workspace": {},
+    "dependencies": {
+      "clap": {
+        "version": "4.5.51",
+        "features": [
+          "derive"
+        ]
+      },
+      "pushers": "1.5.0",
+      "sonic-rs": "0.5.6",
+      "tokio": {
+        "version": "1",
+        "features": [
+          "macros",
+          "rt-multi-thread",
+          "time"
+        ]
+      }
+    }
+  },
+  {
+    "path": "crates/sockudo-ably-compat/Cargo.toml",
+    "package": {
+      "name": "sockudo-ably-compat",
+      "description": "Opt-in Ably REST and WebSocket compatibility facade for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [],
+      "bench": [],
+      "fuzzing": [],
+      "local": [
+        "sockudo-adapter/local"
+      ],
+      "ai-transport": [
+        "sockudo-core/ai-transport",
+        "sockudo-protocol/ai-transport",
+        "sockudo-adapter/ai-transport"
+      ],
+      "delta": [
+        "sockudo-adapter/delta",
+        "dep:sockudo-delta"
+      ],
+      "recovery": [
+        "sockudo-adapter/recovery"
+      ],
+      "tag-filtering": [
+        "sockudo-adapter/tag-filtering"
+      ],
+      "push": [
+        "dep:sockudo-push"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "sockudo-protocol": {
+        "workspace": true
+      },
+      "sockudo-adapter": {
+        "workspace": true,
+        "default-features": false
+      },
+      "sockudo-delta": {
+        "workspace": true,
+        "optional": true
+      },
+      "sockudo-push": {
+        "workspace": true,
+        "optional": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "aes-gcm": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "bytes": {
+        "workspace": true
+      },
+      "chrono": {
+        "workspace": true
+      },
+      "crossfire": {
+        "workspace": true
+      },
+      "axum": {
+        "workspace": true
+      },
+      "base64": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "http": {
+        "workspace": true
+      },
+      "hmac": {
+        "workspace": true
+      },
+      "jsonwebtoken": {
+        "workspace": true
+      },
+      "sockudo-filter": {
+        "workspace": true
+      },
+      "rmp-serde": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "serde_json": {
+        "workspace": true
+      },
+      "sha2": {
+        "workspace": true
+      },
+      "sockudo-ws": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "thiserror": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "urlencoding": {
+        "workspace": true
+      },
+      "uuid": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "criterion": {
+        "workspace": true
+      },
+      "proptest": {
+        "workspace": true
+      },
+      "sockudo-cache": {
+        "workspace": true,
+        "features": [
+          "redis"
+        ]
+      }
+    },
+    "bench": [
+      {
+        "name": "wire_codec",
+        "harness": false
+      },
+      {
+        "name": "compatibility_hot_paths",
+        "harness": false,
+        "required-features": [
+          "bench"
+        ]
+      },
+      {
+        "name": "fanout_grouping",
+        "harness": false
+      },
+      {
+        "name": "realtime_retry_id",
+        "harness": false
+      },
+      {
+        "name": "stats_recording",
+        "harness": false
+      },
+      {
+        "name": "ably_vcdiff",
+        "harness": false,
+        "required-features": [
+          "delta"
+        ]
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-adapter/Cargo.toml",
+    "package": {
+      "name": "sockudo-adapter",
+      "description": "Connection adapters and horizontal scaling for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "local",
+        "v2"
+      ],
+      "local": [],
+      "ai-transport": [
+        "sockudo-core/ai-transport",
+        "sockudo-protocol/ai-transport",
+        "dep:sockudo-ai-transport"
+      ],
+      "v2": [
+        "delta",
+        "tag-filtering",
+        "recovery"
+      ],
+      "delta": [
+        "dep:sockudo-delta"
+      ],
+      "tag-filtering": [
+        "dep:sockudo-filter"
+      ],
+      "recovery": [],
+      "full": [
+        "redis",
+        "redis-cluster",
+        "nats",
+        "pulsar",
+        "rabbitmq",
+        "google-pubsub",
+        "kafka",
+        "iggy",
+        "v2"
+      ],
+      "redis": [
+        "sockudo-core/redis",
+        "dep:redis"
+      ],
+      "redis-cluster": [
+        "redis",
+        "sockudo-core/redis-cluster"
+      ],
+      "nats": [
+        "sockudo-core/nats",
+        "dep:async-nats"
+      ],
+      "pulsar": [
+        "sockudo-core/pulsar",
+        "dep:pulsar"
+      ],
+      "rabbitmq": [
+        "sockudo-core/rabbitmq",
+        "dep:lapin"
+      ],
+      "google-pubsub": [
+        "sockudo-core/google-pubsub",
+        "dep:google-cloud-auth",
+        "dep:google-cloud-pubsub"
+      ],
+      "kafka": [
+        "sockudo-core/kafka",
+        "dep:rdkafka"
+      ],
+      "iggy": [
+        "sockudo-core/iggy",
+        "dep:iggy"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "sockudo-protocol": {
+        "workspace": true
+      },
+      "sockudo-filter": {
+        "workspace": true,
+        "optional": true
+      },
+      "sockudo-delta": {
+        "workspace": true,
+        "optional": true
+      },
+      "sockudo-ai-transport": {
+        "workspace": true,
+        "optional": true
+      },
+      "sockudo-metrics": {
+        "workspace": true
+      },
+      "sockudo-webhook": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "base64": {
+        "workspace": true
+      },
+      "async-nats": {
+        "workspace": true,
+        "optional": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "bytes": {
+        "workspace": true
+      },
+      "compact_str": {
+        "workspace": true
+      },
+      "crossfire": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "futures": {
+        "workspace": true
+      },
+      "futures-util": {
+        "workspace": true
+      },
+      "google-cloud-pubsub": {
+        "workspace": true,
+        "optional": true
+      },
+      "google-cloud-auth": {
+        "workspace": true,
+        "optional": true
+      },
+      "lapin": {
+        "workspace": true,
+        "optional": true
+      },
+      "mockall": {
+        "workspace": true
+      },
+      "moka": {
+        "workspace": true
+      },
+      "num_cpus": {
+        "workspace": true
+      },
+      "parking_lot": {
+        "workspace": true
+      },
+      "pulsar": {
+        "workspace": true,
+        "optional": true
+      },
+      "rand": {
+        "workspace": true
+      },
+      "redis": {
+        "workspace": true,
+        "optional": true
+      },
+      "rdkafka": {
+        "workspace": true,
+        "optional": true
+      },
+      "iggy": {
+        "workspace": true,
+        "optional": true
+      },
+      "regex": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "sockudo-ws": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tokio-util": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "uuid": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "chrono": {
+        "workspace": true
+      },
+      "md5": {
+        "workspace": true
+      },
+      "sockudo-app": {
+        "workspace": true
+      },
+      "sockudo-cache": {
+        "workspace": true,
+        "features": [
+          "redis"
+        ]
+      },
+      "sockudo-queue": {
+        "workspace": true
+      },
+      "num_cpus": {
+        "workspace": true
+      },
+      "papaya": {
+        "workspace": true
+      },
+      "criterion": {
+        "workspace": true
+      },
+      "scc": {
+        "workspace": true
+      }
+    },
+    "bench": [
+      {
+        "name": "hot_path_replacements",
+        "path": "benches/hot_path_replacements.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-ai-transport/Cargo.toml",
+    "package": {
+      "name": "sockudo-ai-transport",
+      "description": "AI Transport rollup and streaming helpers for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "dependencies": {
+      "ahash": {
+        "workspace": true
+      },
+      "bytes": {
+        "workspace": true
+      },
+      "parking_lot": {
+        "workspace": true
+      },
+      "sockudo-core": {
+        "workspace": true,
+        "features": [
+          "ai-transport"
+        ]
+      },
+      "sockudo-protocol": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "criterion": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      }
+    },
+    "bench": [
+      {
+        "name": "rollup_engine",
+        "path": "benches/rollup_engine.rs",
+        "harness": false
+      },
+      {
+        "name": "observability",
+        "path": "benches/observability.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-app/Cargo.toml",
+    "package": {
+      "name": "sockudo-app",
+      "description": "Application manager implementations for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "local"
+      ],
+      "local": [],
+      "full": [
+        "mysql",
+        "postgres",
+        "dynamodb",
+        "surrealdb",
+        "scylladb"
+      ],
+      "mysql": [
+        "sockudo-core/mysql",
+        "dep:sqlx",
+        "dep:futures-util",
+        "dep:urlencoding",
+        "dep:regex"
+      ],
+      "postgres": [
+        "sockudo-core/postgres",
+        "dep:sqlx",
+        "dep:futures-util",
+        "dep:urlencoding",
+        "dep:regex"
+      ],
+      "dynamodb": [
+        "sockudo-core/dynamodb",
+        "dep:aws-config",
+        "dep:aws-sdk-dynamodb"
+      ],
+      "surrealdb": [
+        "sockudo-core/surrealdb",
+        "dep:surrealdb",
+        "dep:surrealdb-types",
+        "dep:regex"
+      ],
+      "scylladb": [
+        "sockudo-core/scylladb",
+        "dep:scylla",
+        "dep:futures"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "aws-config": {
+        "workspace": true,
+        "optional": true
+      },
+      "aws-sdk-dynamodb": {
+        "workspace": true,
+        "optional": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "futures": {
+        "workspace": true,
+        "optional": true
+      },
+      "futures-util": {
+        "workspace": true,
+        "optional": true
+      },
+      "moka": {
+        "workspace": true
+      },
+      "regex": {
+        "workspace": true,
+        "optional": true
+      },
+      "scylla": {
+        "workspace": true,
+        "optional": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "sqlx": {
+        "workspace": true,
+        "optional": true
+      },
+      "surrealdb": {
+        "workspace": true,
+        "optional": true
+      },
+      "surrealdb-types": {
+        "workspace": true,
+        "optional": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "urlencoding": {
+        "workspace": true,
+        "optional": true
+      }
+    },
+    "dev-dependencies": {
+      "sockudo-cache": {
+        "path": "../sockudo-cache"
+      },
+      "tokio": {
+        "workspace": true,
+        "features": [
+          "full"
+        ]
+      },
+      "url": {
+        "workspace": true
+      }
+    }
+  },
+  {
+    "path": "crates/sockudo-cache/Cargo.toml",
+    "package": {
+      "name": "sockudo-cache",
+      "description": "Cache manager implementations for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "local"
+      ],
+      "local": [],
+      "full": [
+        "redis",
+        "redis-cluster"
+      ],
+      "redis": [
+        "sockudo-core/redis",
+        "dep:redis"
+      ],
+      "redis-cluster": [
+        "redis",
+        "sockudo-core/redis-cluster"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "moka": {
+        "workspace": true
+      },
+      "redis": {
+        "workspace": true,
+        "optional": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      }
+    }
+  },
+  {
+    "path": "crates/sockudo-core/Cargo.toml",
+    "package": {
+      "name": "sockudo-core",
+      "description": "Core traits, types, error handling, and configuration for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "local"
+      ],
+      "local": [],
+      "ai-transport": [],
+      "full": [
+        "redis",
+        "redis-cluster",
+        "nats",
+        "pulsar",
+        "rabbitmq",
+        "google-pubsub",
+        "kafka",
+        "iggy",
+        "mysql",
+        "postgres",
+        "dynamodb",
+        "surrealdb",
+        "scylladb",
+        "sqs",
+        "sns",
+        "lambda"
+      ],
+      "redis": [
+        "dep:redis"
+      ],
+      "redis-cluster": [
+        "redis"
+      ],
+      "nats": [],
+      "pulsar": [],
+      "rabbitmq": [],
+      "google-pubsub": [],
+      "kafka": [],
+      "iggy": [],
+      "mysql": [],
+      "postgres": [],
+      "dynamodb": [],
+      "surrealdb": [],
+      "scylladb": [],
+      "sqs": [],
+      "sns": [],
+      "lambda": []
+    },
+    "dependencies": {
+      "sockudo-protocol": {
+        "workspace": true
+      },
+      "sockudo-filter": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "base64": {
+        "workspace": true
+      },
+      "bytes": {
+        "workspace": true
+      },
+      "chrono": {
+        "workspace": true
+      },
+      "crossfire": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "futures-util": {
+        "workspace": true
+      },
+      "hex": {
+        "workspace": true
+      },
+      "hmac": {
+        "workspace": true
+      },
+      "jsonwebtoken": {
+        "workspace": true
+      },
+      "md5": {
+        "workspace": true
+      },
+      "memchr": {
+        "workspace": true
+      },
+      "parking_lot": {
+        "workspace": true
+      },
+      "papaya": {
+        "workspace": true
+      },
+      "rand": {
+        "workspace": true
+      },
+      "redis": {
+        "workspace": true,
+        "optional": true
+      },
+      "regex": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "serde_json": "1",
+      "serde-aux": {
+        "workspace": true
+      },
+      "sha2": {
+        "workspace": true
+      },
+      "sockudo-ws": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "thiserror": {
+        "workspace": true
+      },
+      "toml": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tokio-util": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "url": {
+        "workspace": true
+      },
+      "urlencoding": {
+        "workspace": true
+      },
+      "uuid": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "criterion": {
+        "workspace": true
+      }
+    },
+    "bench": [
+      {
+        "name": "history_bench",
+        "path": "benches/history_bench.rs",
+        "harness": false
+      },
+      {
+        "name": "namespace_bench",
+        "path": "benches/namespace_bench.rs",
+        "harness": false
+      },
+      {
+        "name": "presence_registry",
+        "path": "benches/presence_registry.rs",
+        "harness": false
+      },
+      {
+        "name": "annotation_replay",
+        "path": "benches/annotation_replay.rs",
+        "harness": false
+      },
+      {
+        "name": "versioned_message_streaming",
+        "path": "benches/versioned_message_streaming.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-delta/Cargo.toml",
+    "package": {
+      "name": "sockudo-delta",
+      "description": "Delta compression for Sockudo WebSocket messages",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [],
+      "redis": [
+        "dep:redis",
+        "sockudo-core/redis"
+      ],
+      "nats": [
+        "dep:async-nats"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "async-nats": {
+        "workspace": true,
+        "optional": true
+      },
+      "base64": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "fossil-delta": {
+        "workspace": true
+      },
+      "oxidelta": {
+        "workspace": true
+      },
+      "redis": {
+        "workspace": true,
+        "optional": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "criterion": {
+        "workspace": true
+      }
+    },
+    "bench": [
+      {
+        "name": "delta_compression_bench",
+        "path": "benches/delta_compression_bench.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-filter/Cargo.toml",
+    "package": {
+      "name": "sockudo-filter",
+      "description": "Zero-allocation tag-based publication filtering for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "dependencies": {
+      "ahash": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "serde_json": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "memchr": {
+        "workspace": true
+      },
+      "jmespath": {
+        "workspace": true
+      },
+      "thiserror": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "criterion": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "proptest": {
+        "workspace": true
+      }
+    },
+    "bench": [
+      {
+        "name": "filter_bench",
+        "path": "benches/filter_bench.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-metrics/Cargo.toml",
+    "package": {
+      "name": "sockudo-metrics",
+      "description": "Metrics collection for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "chrono": {
+        "workspace": true
+      },
+      "metrics": {
+        "workspace": true
+      },
+      "metrics-exporter-prometheus": {
+        "workspace": true
+      },
+      "metrics-exporter-tcp": {
+        "workspace": true
+      },
+      "metrics-util": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      }
+    },
+    "target": {
+      "cfg(any(target_os = \"linux\", target_os = \"macos\"))": {
+        "dependencies": {
+          "libc": {
+            "workspace": true
+          }
+        }
+      }
+    },
+    "lints": {
+      "rust": {
+        "unexpected_cfgs": {
+          "level": "warn",
+          "check-cfg": [
+            "cfg(tokio_unstable)"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "path": "crates/sockudo-protocol/Cargo.toml",
+    "package": {
+      "name": "sockudo-protocol",
+      "description": "Pusher protocol message types and constants for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "dependencies": {
+      "ahash": {
+        "workspace": true
+      },
+      "prost": "0.14.1",
+      "rmp-serde": "1.3.0",
+      "serde": {
+        "workspace": true
+      },
+      "serde_bytes": "0.11",
+      "serde_json": "1",
+      "sonic-rs": {
+        "workspace": true
+      },
+      "uuid": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [],
+      "ai-transport": []
+    },
+    "dev-dependencies": {
+      "criterion": {
+        "workspace": true
+      },
+      "serde_json": "1"
+    },
+    "bench": [
+      {
+        "name": "ai_headers_bench",
+        "path": "benches/ai_headers_bench.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-push/Cargo.toml",
+    "package": {
+      "name": "sockudo-push",
+      "description": "Provider-independent push notification domain model for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "memory"
+      ],
+      "memory": [],
+      "testing": [],
+      "monolith": [],
+      "push-fcm": [
+        "dep:jsonwebtoken",
+        "dep:reqwest",
+        "jsonwebtoken/aws_lc_rs"
+      ],
+      "push-apns": [
+        "dep:reqwest"
+      ],
+      "push-webpush": [
+        "dep:reqwest",
+        "dep:web-push-native"
+      ],
+      "push-hms": [
+        "dep:reqwest"
+      ],
+      "push-wns": [
+        "dep:reqwest"
+      ],
+      "postgres": [
+        "dep:sqlx"
+      ],
+      "mysql": [
+        "dep:sqlx"
+      ],
+      "dynamodb": [
+        "dep:aws-sdk-dynamodb"
+      ],
+      "surrealdb": [
+        "dep:surrealdb",
+        "dep:surrealdb-types"
+      ],
+      "scylladb": [
+        "dep:scylla"
+      ],
+      "redis": [],
+      "redis-cluster": [
+        "redis"
+      ],
+      "nats": [],
+      "pulsar": [],
+      "rabbitmq": [],
+      "google-pubsub": [],
+      "kafka": [],
+      "iggy": [],
+      "sqs": [],
+      "sns": []
+    },
+    "example": [
+      {
+        "name": "webpush_send",
+        "required-features": [
+          "push-webpush"
+        ]
+      }
+    ],
+    "dependencies": {
+      "async-trait": {
+        "workspace": true
+      },
+      "base64": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "futures-util": {
+        "workspace": true
+      },
+      "hex": {
+        "workspace": true
+      },
+      "httpdate": {
+        "workspace": true
+      },
+      "jsonwebtoken": {
+        "workspace": true,
+        "optional": true
+      },
+      "rand": {
+        "workspace": true
+      },
+      "reqwest": {
+        "workspace": true,
+        "optional": true
+      },
+      "aws-lc-rs": {
+        "workspace": true
+      },
+      "aws-sdk-dynamodb": {
+        "workspace": true,
+        "optional": true
+      },
+      "metrics": {
+        "workspace": true
+      },
+      "scylla": {
+        "workspace": true,
+        "optional": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "sha2": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "sqlx": {
+        "workspace": true,
+        "optional": true
+      },
+      "surrealdb": {
+        "workspace": true,
+        "optional": true
+      },
+      "surrealdb-types": {
+        "workspace": true,
+        "optional": true
+      },
+      "thiserror": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "url": {
+        "workspace": true
+      },
+      "web-push-native": {
+        "workspace": true,
+        "optional": true
+      },
+      "zeroize": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "criterion": {
+        "workspace": true
+      },
+      "hmac": {
+        "workspace": true
+      },
+      "ring": {
+        "workspace": true
+      }
+    },
+    "bench": [
+      {
+        "name": "push_pipeline_bench",
+        "path": "benches/push_pipeline_bench.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-queue/Cargo.toml",
+    "package": {
+      "name": "sockudo-queue",
+      "description": "Queue manager implementations for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "local"
+      ],
+      "local": [],
+      "full": [
+        "redis",
+        "redis-cluster",
+        "nats",
+        "rabbitmq",
+        "kafka",
+        "iggy",
+        "pulsar",
+        "google-pubsub",
+        "sqs",
+        "sns"
+      ],
+      "redis": [
+        "sockudo-core/redis",
+        "dep:redis"
+      ],
+      "redis-cluster": [
+        "redis",
+        "sockudo-core/redis-cluster"
+      ],
+      "nats": [
+        "sockudo-core/nats",
+        "dep:async-nats"
+      ],
+      "rabbitmq": [
+        "sockudo-core/rabbitmq",
+        "dep:lapin"
+      ],
+      "kafka": [
+        "sockudo-core/kafka",
+        "dep:rdkafka"
+      ],
+      "iggy": [
+        "sockudo-core/iggy",
+        "dep:iggy"
+      ],
+      "pulsar": [
+        "sockudo-core/pulsar",
+        "dep:pulsar"
+      ],
+      "google-pubsub": [
+        "sockudo-core/google-pubsub",
+        "dep:google-cloud-auth",
+        "dep:google-cloud-pubsub"
+      ],
+      "sqs": [
+        "sockudo-core/sqs",
+        "dep:aws-config",
+        "dep:aws-sdk-sqs"
+      ],
+      "sns": [
+        "sockudo-core/sns",
+        "dep:aws-config",
+        "dep:aws-sdk-sns"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "aws-config": {
+        "workspace": true,
+        "optional": true
+      },
+      "aws-sdk-sns": {
+        "workspace": true,
+        "optional": true
+      },
+      "aws-sdk-sqs": {
+        "workspace": true,
+        "optional": true
+      },
+      "bytes": {
+        "workspace": true
+      },
+      "futures-util": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "async-nats": {
+        "workspace": true,
+        "optional": true
+      },
+      "chrono": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "parking_lot": {
+        "workspace": true
+      },
+      "google-cloud-auth": {
+        "workspace": true,
+        "optional": true
+      },
+      "google-cloud-pubsub": {
+        "workspace": true,
+        "optional": true
+      },
+      "lapin": {
+        "workspace": true,
+        "optional": true
+      },
+      "metrics": {
+        "workspace": true
+      },
+      "pulsar": {
+        "workspace": true,
+        "optional": true
+      },
+      "redis": {
+        "workspace": true,
+        "optional": true
+      },
+      "rdkafka": {
+        "workspace": true,
+        "optional": true
+      },
+      "iggy": {
+        "workspace": true,
+        "optional": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tokio-util": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "uuid": {
+        "workspace": true
+      }
+    },
+    "example": [
+      {
+        "name": "queue_bench",
+        "required-features": [
+          "redis",
+          "redis-cluster"
+        ]
+      }
+    ]
+  },
+  {
+    "path": "crates/sockudo-rate-limiter/Cargo.toml",
+    "package": {
+      "name": "sockudo-rate-limiter",
+      "description": "Rate limiter implementations for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "local"
+      ],
+      "local": [],
+      "full": [
+        "redis",
+        "redis-cluster"
+      ],
+      "redis": [
+        "sockudo-core/redis",
+        "dep:redis",
+        "dep:rand"
+      ],
+      "redis-cluster": [
+        "redis",
+        "sockudo-core/redis-cluster"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "sockudo-metrics": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "axum": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "futures-util": {
+        "workspace": true
+      },
+      "http": {
+        "workspace": true
+      },
+      "hyper": {
+        "workspace": true
+      },
+      "redis": {
+        "workspace": true,
+        "optional": true
+      },
+      "rand": {
+        "workspace": true,
+        "optional": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tower-layer": {
+        "workspace": true
+      },
+      "tower-service": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      }
+    }
+  },
+  {
+    "path": "crates/sockudo-server/Cargo.toml",
+    "package": {
+      "name": "sockudo",
+      "description": "A simple, fast, and secure WebSocket server for real-time applications.",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      },
+      "metadata": {
+        "binstall": {
+          "pkg-url": "https://github.com/sockudo/sockudo/releases/download/v{version}/sockudo-v{version}-{target}{archive-suffix}",
+          "pkg-fmt": "tgz",
+          "supported-targets": [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl"
+          ]
+        }
+      }
+    },
+    "features": {
+      "default": [
+        "local",
+        "v2"
+      ],
+      "versioned-messages": [],
+      "ai-transport": [
+        "sockudo-core/ai-transport",
+        "sockudo-protocol/ai-transport",
+        "sockudo-adapter/ai-transport",
+        "versioned-messages"
+      ],
+      "ably-compat": [
+        "ai-transport",
+        "push",
+        "dep:sockudo-ably-compat",
+        "sockudo-ably-compat/ai-transport",
+        "sockudo-ably-compat/recovery",
+        "sockudo-ably-compat/delta",
+        "sockudo-ably-compat/push"
+      ],
+      "local": [],
+      "v2": [
+        "delta",
+        "tag-filtering",
+        "recovery"
+      ],
+      "delta": [
+        "sockudo-adapter/delta",
+        "sockudo-delta"
+      ],
+      "tag-filtering": [
+        "sockudo-adapter/tag-filtering",
+        "sockudo-filter"
+      ],
+      "recovery": [
+        "sockudo-adapter/recovery"
+      ],
+      "push": [
+        "dep:aes-gcm",
+        "dep:base64",
+        "dep:sha2",
+        "dep:sockudo-push"
+      ],
+      "push-fcm": [
+        "push",
+        "sockudo-push/push-fcm"
+      ],
+      "push-apns": [
+        "push",
+        "sockudo-push/push-apns",
+        "dep:jsonwebtoken",
+        "jsonwebtoken/aws_lc_rs"
+      ],
+      "push-webpush": [
+        "push",
+        "sockudo-push/push-webpush"
+      ],
+      "push-hms": [
+        "push",
+        "sockudo-push/push-hms"
+      ],
+      "push-wns": [
+        "push",
+        "sockudo-push/push-wns"
+      ],
+      "monolith": [
+        "push",
+        "sockudo-push/monolith"
+      ],
+      "full": [
+        "v2",
+        "versioned-messages",
+        "ai-transport",
+        "ably-compat",
+        "push",
+        "push-fcm",
+        "push-apns",
+        "push-webpush",
+        "push-hms",
+        "push-wns",
+        "redis",
+        "redis-cluster",
+        "nats",
+        "pulsar",
+        "rabbitmq",
+        "google-pubsub",
+        "kafka",
+        "iggy",
+        "mysql",
+        "postgres",
+        "dynamodb",
+        "surrealdb",
+        "scylladb",
+        "sqs",
+        "sns",
+        "lambda"
+      ],
+      "redis": [
+        "sockudo-core/redis",
+        "sockudo-adapter/redis",
+        "sockudo-cache/redis",
+        "sockudo-queue/redis",
+        "sockudo-rate-limiter/redis",
+        "sockudo-delta?/redis",
+        "sockudo-push?/redis"
+      ],
+      "redis-cluster": [
+        "redis",
+        "sockudo-core/redis-cluster",
+        "sockudo-adapter/redis-cluster",
+        "sockudo-cache/redis-cluster",
+        "sockudo-queue/redis-cluster",
+        "sockudo-rate-limiter/redis-cluster",
+        "sockudo-push?/redis-cluster"
+      ],
+      "nats": [
+        "sockudo-core/nats",
+        "sockudo-adapter/nats",
+        "sockudo-delta?/nats",
+        "sockudo-queue/nats",
+        "sockudo-push?/nats"
+      ],
+      "pulsar": [
+        "sockudo-core/pulsar",
+        "sockudo-adapter/pulsar",
+        "sockudo-queue/pulsar",
+        "sockudo-push?/pulsar"
+      ],
+      "rabbitmq": [
+        "sockudo-core/rabbitmq",
+        "sockudo-adapter/rabbitmq",
+        "sockudo-queue/rabbitmq",
+        "sockudo-push?/rabbitmq"
+      ],
+      "google-pubsub": [
+        "sockudo-core/google-pubsub",
+        "sockudo-adapter/google-pubsub",
+        "sockudo-queue/google-pubsub",
+        "sockudo-push?/google-pubsub"
+      ],
+      "kafka": [
+        "sockudo-core/kafka",
+        "sockudo-adapter/kafka",
+        "sockudo-queue/kafka",
+        "sockudo-push?/kafka"
+      ],
+      "iggy": [
+        "sockudo-core/iggy",
+        "sockudo-adapter/iggy",
+        "sockudo-queue/iggy",
+        "sockudo-push?/iggy"
+      ],
+      "mysql": [
+        "sockudo-core/mysql",
+        "sockudo-app/mysql",
+        "dep:sqlx",
+        "dep:urlencoding",
+        "sockudo-push?/mysql"
+      ],
+      "postgres": [
+        "sockudo-core/postgres",
+        "sockudo-app/postgres",
+        "dep:sqlx",
+        "dep:urlencoding",
+        "sockudo-push?/postgres"
+      ],
+      "dynamodb": [
+        "sockudo-core/dynamodb",
+        "sockudo-app/dynamodb",
+        "dep:aws-config",
+        "dep:aws-sdk-dynamodb",
+        "sockudo-push?/dynamodb"
+      ],
+      "surrealdb": [
+        "sockudo-core/surrealdb",
+        "sockudo-app/surrealdb",
+        "dep:surrealdb",
+        "dep:surrealdb-types",
+        "sockudo-push?/surrealdb"
+      ],
+      "scylladb": [
+        "sockudo-core/scylladb",
+        "sockudo-app/scylladb",
+        "dep:scylla",
+        "sockudo-push?/scylladb"
+      ],
+      "sqs": [
+        "sockudo-core/sqs",
+        "sockudo-queue/sqs",
+        "sockudo-push?/sqs"
+      ],
+      "sns": [
+        "sockudo-core/sns",
+        "sockudo-queue/sns",
+        "sockudo-push?/sns"
+      ],
+      "lambda": [
+        "sockudo-core/lambda",
+        "sockudo-webhook/lambda"
+      ]
+    },
+    "bin": [
+      {
+        "name": "sockudo",
+        "path": "src/main.rs"
+      }
+    ],
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "sockudo-protocol": {
+        "workspace": true
+      },
+      "sockudo-filter": {
+        "workspace": true,
+        "optional": true
+      },
+      "sockudo-app": {
+        "workspace": true
+      },
+      "sockudo-cache": {
+        "workspace": true
+      },
+      "sockudo-queue": {
+        "workspace": true
+      },
+      "sockudo-rate-limiter": {
+        "workspace": true
+      },
+      "sockudo-metrics": {
+        "workspace": true
+      },
+      "sockudo-webhook": {
+        "workspace": true
+      },
+      "sockudo-delta": {
+        "workspace": true,
+        "optional": true
+      },
+      "sockudo-adapter": {
+        "workspace": true
+      },
+      "sockudo-push": {
+        "workspace": true,
+        "optional": true
+      },
+      "sockudo-ably-compat": {
+        "workspace": true,
+        "optional": true
+      },
+      "aes-gcm": {
+        "workspace": true,
+        "optional": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "axum": {
+        "workspace": true
+      },
+      "axum-server": {
+        "workspace": true
+      },
+      "clap": {
+        "workspace": true
+      },
+      "cmake": {
+        "workspace": true
+      },
+      "crossfire": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true
+      },
+      "futures-util": {
+        "workspace": true
+      },
+      "http": {
+        "workspace": true
+      },
+      "http-body-util": {
+        "workspace": true
+      },
+      "hyper": {
+        "workspace": true
+      },
+      "hyper-util": {
+        "workspace": true
+      },
+      "num_cpus": {
+        "workspace": true
+      },
+      "rustls": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "serde_json": {
+        "workspace": true
+      },
+      "serde_urlencoded": {
+        "workspace": true
+      },
+      "sockudo-ws": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "sysinfo": {
+        "workspace": true
+      },
+      "thiserror": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tokio-util": {
+        "workspace": true
+      },
+      "tower": {
+        "workspace": true
+      },
+      "tower-http": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "tracing-subscriber": {
+        "workspace": true
+      },
+      "url": {
+        "workspace": true
+      },
+      "urlencoding": {
+        "workspace": true,
+        "optional": true
+      },
+      "uuid": {
+        "workspace": true
+      },
+      "sqlx": {
+        "workspace": true,
+        "optional": true
+      },
+      "scylla": {
+        "workspace": true,
+        "optional": true
+      },
+      "surrealdb": {
+        "workspace": true,
+        "optional": true
+      },
+      "surrealdb-types": {
+        "workspace": true,
+        "optional": true
+      },
+      "aws-config": {
+        "workspace": true,
+        "optional": true
+      },
+      "aws-sdk-dynamodb": {
+        "workspace": true,
+        "optional": true
+      },
+      "jsonwebtoken": {
+        "workspace": true,
+        "optional": true
+      },
+      "base64": {
+        "workspace": true,
+        "optional": true
+      },
+      "sha2": {
+        "workspace": true,
+        "optional": true
+      }
+    },
+    "target": {
+      "cfg(not(target_env = \"msvc\"))": {
+        "dependencies": {
+          "tikv-jemallocator": {
+            "workspace": true
+          }
+        }
+      }
+    },
+    "dev-dependencies": {
+      "redis": {
+        "workspace": true
+      }
+    }
+  },
+  {
+    "path": "crates/sockudo-simulator/Cargo.toml",
+    "package": {
+      "name": "sockudo-simulator",
+      "description": "Deterministic workload simulator for Sockudo durable realtime invariants",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      },
+      "publish": false
+    },
+    "bin": [
+      {
+        "name": "sockudo-sim",
+        "path": "src/main.rs"
+      }
+    ],
+    "dependencies": {
+      "bytes": {
+        "workspace": true
+      },
+      "clap": {
+        "workspace": true
+      },
+      "rand": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "serde_json": {
+        "workspace": true
+      },
+      "sockudo-core": {
+        "workspace": true
+      },
+      "sockudo-protocol": {
+        "workspace": true
+      },
+      "sockudo-push": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "thiserror": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      }
+    }
+  },
+  {
+    "path": "crates/sockudo-webhook/Cargo.toml",
+    "package": {
+      "name": "sockudo-webhook",
+      "description": "Webhook integration for Sockudo",
+      "version": {
+        "workspace": true
+      },
+      "edition": {
+        "workspace": true
+      },
+      "rust-version": {
+        "workspace": true
+      },
+      "repository": {
+        "workspace": true
+      },
+      "license-file": {
+        "workspace": true
+      }
+    },
+    "features": {
+      "default": [
+        "local"
+      ],
+      "local": [],
+      "full": [
+        "lambda"
+      ],
+      "lambda": [
+        "sockudo-core/lambda",
+        "dep:aws-config",
+        "dep:aws-sdk-lambda",
+        "dep:dashmap"
+      ]
+    },
+    "dependencies": {
+      "sockudo-core": {
+        "workspace": true
+      },
+      "ahash": {
+        "workspace": true
+      },
+      "async-trait": {
+        "workspace": true
+      },
+      "aws-config": {
+        "workspace": true,
+        "optional": true
+      },
+      "aws-sdk-lambda": {
+        "workspace": true,
+        "optional": true
+      },
+      "chrono": {
+        "workspace": true
+      },
+      "dashmap": {
+        "workspace": true,
+        "optional": true
+      },
+      "hex": {
+        "workspace": true
+      },
+      "hmac": {
+        "workspace": true
+      },
+      "regex": {
+        "workspace": true
+      },
+      "reqwest": {
+        "workspace": true
+      },
+      "serde": {
+        "workspace": true
+      },
+      "sha2": {
+        "workspace": true
+      },
+      "sonic-rs": {
+        "workspace": true
+      },
+      "parking_lot": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true
+      },
+      "tracing": {
+        "workspace": true
+      },
+      "url": {
+        "workspace": true
+      },
+      "uuid": {
+        "workspace": true
+      }
+    },
+    "dev-dependencies": {
+      "sockudo-app": {
+        "path": "../sockudo-app"
+      },
+      "sockudo-queue": {
+        "path": "../sockudo-queue"
+      },
+      "criterion": {
+        "workspace": true
+      },
+      "futures": {
+        "workspace": true
+      },
+      "tokio": {
+        "workspace": true,
+        "features": [
+          "rt-multi-thread",
+          "macros"
+        ]
+      }
+    },
+    "bench": [
+      {
+        "name": "webhook_hot_paths",
+        "path": "benches/webhook_hot_paths.rs",
+        "harness": false
+      }
+    ]
+  },
+  {
+    "path": "fuzz/Cargo.toml",
+    "package": {
+      "name": "sockudo-fuzz",
+      "version": "0.0.0",
+      "edition": "2024",
+      "publish": false,
+      "metadata": {
+        "cargo-fuzz": true
+      }
+    },
+    "workspace": {},
+    "dependencies": {
+      "libfuzzer-sys": "0.4",
+      "serde_json": "1",
+      "sonic-rs": "0.5.6",
+      "sockudo-core": {
+        "path": "../crates/sockudo-core"
+      },
+      "sockudo-ably-compat": {
+        "path": "../crates/sockudo-ably-compat",
+        "features": [
+          "fuzzing"
+        ]
+      },
+      "sockudo-protocol": {
+        "path": "../crates/sockudo-protocol"
+      },
+      "sockudo-push": {
+        "path": "../crates/sockudo-push",
+        "default-features": false
+      }
+    },
+    "bin": [
+      {
+        "name": "ai_header_validator",
+        "path": "fuzz_targets/ai_header_validator.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "wire_message",
+        "path": "fuzz_targets/wire_message.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "capability_map",
+        "path": "fuzz_targets/capability_map.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "history_cursor",
+        "path": "fuzz_targets/history_cursor.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "push_payload_mapping",
+        "path": "fuzz_targets/push_payload_mapping.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "mutation_request",
+        "path": "fuzz_targets/mutation_request.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "wire_formats",
+        "path": "fuzz_targets/wire_formats.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "versioned_wire",
+        "path": "fuzz_targets/versioned_wire.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "message_data",
+        "path": "fuzz_targets/message_data.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "connection_state",
+        "path": "fuzz_targets/connection_state.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "ably_protocol_rest",
+        "path": "fuzz_targets/ably_protocol_rest.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "ably_channel_filter",
+        "path": "fuzz_targets/ably_channel_filter.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "ably_auth",
+        "path": "fuzz_targets/ably_auth.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      },
+      {
+        "name": "ably_continuity_state",
+        "path": "fuzz_targets/ably_continuity_state.rs",
+        "test": false,
+        "doc": false,
+        "bench": false
+      }
+    ]
+  },
+  {
+    "path": "server-sdks/sockudo-http-rust/Cargo.toml",
+    "package": {
+      "name": "sockudo-http",
+      "version": "2.2.0",
+      "edition": "2024",
+      "repository": "https://github.com/sockudo/sockudo-http-rust",
+      "description": "A Rust client for interacting with the Sockudo HTTP API",
+      "license-file": "LICENSE",
+      "metadata": {
+        "docs": {
+          "rs": {
+            "features": [
+              "encryption"
+            ],
+            "rustdoc-args": [
+              "--cfg",
+              "docsrs"
+            ]
+          }
+        }
+      }
+    },
+    "features": {
+      "default": [
+        "rustls-tls",
+        "encryption"
+      ],
+      "native-tls": [
+        "reqwest/native-tls"
+      ],
+      "rustls-tls": [
+        "reqwest/rustls-tls"
+      ],
+      "encryption": [
+        "crypto_secretbox"
+      ]
+    },
+    "dependencies": {
+      "reqwest": {
+        "version": "^0.12",
+        "default-features": false,
+        "features": [
+          "json",
+          "gzip"
+        ]
+      },
+      "serde": {
+        "version": "^1.0",
+        "features": [
+          "derive"
+        ]
+      },
+      "sonic-rs": "^0.5",
+      "tokio": {
+        "version": "1.0",
+        "features": [
+          "full"
+        ]
+      },
+      "hmac": "0.12",
+      "sha2": "0.10",
+      "base64": "0.22",
+      "thiserror": "2.0",
+      "url": "2.4",
+      "rand": "0.9.1",
+      "md5": "0.7",
+      "regex": "1.9",
+      "hex": "0.4.3",
+      "subtle": "^2.6.1",
+      "zeroize": {
+        "version": "^1",
+        "features": [
+          "zeroize_derive"
+        ]
+      },
+      "crypto_secretbox": {
+        "version": "0.2.0-pre.0",
+        "optional": true
+      }
+    },
+    "dev-dependencies": {
+      "tokio-test": "0.4"
+    },
+    "workspace": {}
+  }
+]

@@ -1,0 +1,58 @@
+   Compiling ably-auth-audit-baseline v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-baseline)
+warning: unused import: `OnceLock`
+  --> src/main.rs:10:49
+   |
+10 | use std::{collections::HashMap,sync::{Arc,Mutex,OnceLock,atomic::{AtomicU64,Ordering}},alloc::{GlobalAlloc,Layout,System},time::{Dur...
+   |                                                 ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ably-auth-audit-baseline` (bin "ably-auth-audit-baseline") generated 1 warning (run `cargo fix --bin "ably-auth-audit-baseline" -p ably-auth-audit-baseline` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1.58s
+   Compiling ably-auth-audit-a1 v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-a1)
+    Finished `release` profile [optimized] target(s) in 1.33s
+     Locking 154 packages to latest Rust 1.98.1 compatible versions
+      Adding base64 v0.22.1 (available: v0.23.1)
+   Compiling ably-auth-audit-tcp v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-tcp)
+warning: unused import: `OnceLock`
+  --> src/main.rs:10:49
+   |
+10 | use std::{collections::HashMap,sync::{Arc,Mutex,OnceLock,atomic::{AtomicU64,Ordering}},alloc::{GlobalAlloc,Layout,System},time::{Dur...
+   |                                                 ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ably-auth-audit-tcp` (bin "ably-auth-audit-tcp") generated 1 warning (run `cargo fix --bin "ably-auth-audit-tcp" -p ably-auth-audit-tcp` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1.31s
+     Locking 154 packages to latest Rust 1.98.1 compatible versions
+      Adding base64 v0.22.1 (available: v0.23.1)
+   Compiling ably-auth-audit-a1-tcp v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-a1-tcp)
+    Finished `release` profile [optimized] target(s) in 1.40s
+   Compiling ably-auth-audit-a1 v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-a1)
+    Finished `release` profile [optimized] target(s) in 1.66s
+   Compiling ably-auth-audit-a1-tcp v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-a1-tcp)
+    Finished `release` profile [optimized] target(s) in 1.48s
+   Compiling ably-auth-audit-baseline v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-baseline)
+warning: unused import: `OnceLock`
+  --> src/main.rs:10:49
+   |
+10 | use std::{collections::HashMap,sync::{Arc,Mutex,OnceLock,atomic::{AtomicU64,Ordering}},alloc::{GlobalAlloc,Layout,System},time::{Dur...
+   |                                                 ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ably-auth-audit-baseline` (bin "ably-auth-audit-baseline") generated 1 warning (run `cargo fix --bin "ably-auth-audit-baseline" -p ably-auth-audit-baseline` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1.45s
+   Compiling ably-auth-audit-tcp v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-tcp)
+warning: unused import: `OnceLock`
+  --> src/main.rs:10:49
+   |
+10 | use std::{collections::HashMap,sync::{Arc,Mutex,OnceLock,atomic::{AtomicU64,Ordering}},alloc::{GlobalAlloc,Layout,System},time::{Dur...
+   |                                                 ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ably-auth-audit-tcp` (bin "ably-auth-audit-tcp") generated 1 warning (run `cargo fix --bin "ably-auth-audit-tcp" -p ably-auth-audit-tcp` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1.44s
+   Compiling ably-auth-audit-a1-tcp v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/ably-auth-bench-a1-tcp)
+    Finished `release` profile [optimized] target(s) in 1.61s

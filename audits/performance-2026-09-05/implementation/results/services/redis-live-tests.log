@@ -1,0 +1,39 @@
+    Blocking waiting for file lock on build directory
+   Compiling futures-util v0.3.33
+   Compiling rustls v0.23.42
+   Compiling tungstenite v0.29.0
+   Compiling rustls-webpki v0.103.13
+   Compiling tokio-tungstenite v0.29.0
+   Compiling tower v0.5.3
+   Compiling axum v0.8.9
+   Compiling tokio-rustls v0.26.4
+   Compiling combine v4.6.7
+   Compiling jsonwebtoken v11.0.0
+   Compiling sockudo-ws v2.0.1
+   Compiling redis v1.4.1
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+   Compiling metrics-util v0.20.4
+   Compiling metrics-exporter-tcp v0.11.2
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.56s
+     Running tests/redis_queue_live_test.rs (target/debug/deps/redis_queue_live_test-0f7f29354954d8b9)
+
+running 1 test
+test redis_queue_is_idempotent_retries_and_settles ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+     Running tests/redis_limiter_live.rs (target/debug/deps/redis_limiter_live-57626f45fcb73e6c)
+
+running 4 tests
+test redis_limiter_admits_at_most_the_limit_concurrently ... ok
+test redis_limiter_counts_each_request_in_same_second ... ok
+test redis_limiter_removes_expired_window_entries ... ok
+test redis_limiter_retries_after_proxy_drops_idle_connections ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

@@ -1,0 +1,35 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.54s
+     Running unittests src/main.rs (target/debug/deps/sockudo-1ce900ee46723fc4)
+
+running 5 tests
+test history::maintenance_tests::c6_dynamodb_accounting ... ok
+test history::maintenance_tests::c6_mysql_accounting ... ok
+test history::maintenance_tests::c6_postgres_accounting ... ok
+test history::maintenance_tests::c6_scylla_accounting ... ok
+test history::maintenance_tests::c6_surreal_accounting ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 130 filtered out; finished in 15.82s
+
+     Running tests/clustered_durable_history_redis_test.rs (target/debug/deps/clustered_durable_history_redis_test-9b7711c74547a1e3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_v2_heartbeat_test.rs (target/debug/deps/native_v2_heartbeat_test-e968ada124c96b32)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

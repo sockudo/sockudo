@@ -75,9 +75,36 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+#[cfg(all(test, any(feature = "sqs", feature = "google-pubsub")))]
+mod cloud_retry_live_tests;
+
 /// Type alias for the Arc'd async job processor callback used across queue managers
 pub(crate) type ArcJobProcessorFn = Arc<
     Box<
         dyn Fn(JobData) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync + 'static,
     >,
 >;
+
+#[cfg(any(
+    feature = "rabbitmq",
+    feature = "iggy",
+    feature = "sqs",
+    feature = "kafka",
+    feature = "google-pubsub"
+))]
+fn broker_retry_delay(
+    config: &sockudo_core::options::QueueReliabilityConfig,
+    attempt: u32,
+) -> std::time::Duration {
+    let base = config
+        .retry_base_delay_ms
+        .saturating_mul(1_u64 << attempt.saturating_sub(1).min(63))
+        .min(config.retry_max_delay_ms);
+    let random = (uuid::Uuid::new_v4().as_u128() as u64) as f64 / u64::MAX as f64;
+    let multiplier = 1.0 + (random * 2.0 - 1.0) * config.retry_jitter;
+    std::time::Duration::from_millis(
+        ((base as f64 * multiplier) as u64)
+            .min(config.retry_max_delay_ms)
+            .max(1),
+    )
+}

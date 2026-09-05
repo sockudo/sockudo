@@ -1,0 +1,6 @@
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-ai-benches v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/benches/ai)
+    Finished `bench` profile [optimized] target(s) in 41.54s
+  Executable benches/ai_hot_paths.rs (target/release/deps/ai_hot_paths-70f6a77ecfe30018)

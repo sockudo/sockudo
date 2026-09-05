@@ -23,8 +23,6 @@ use std::sync::Arc;
 use sockudo_core::options::GooglePubSubAdapterConfig;
 #[cfg(feature = "iggy")]
 use sockudo_core::options::IggyConfig;
-#[cfg(feature = "kafka")]
-use sockudo_core::options::KafkaAdapterConfig;
 #[cfg(feature = "nats")]
 use sockudo_core::options::NatsAdapterConfig;
 #[cfg(feature = "pulsar")]
@@ -470,16 +468,7 @@ impl AdapterFactory {
             }
             #[cfg(feature = "kafka")]
             AdapterDriver::Kafka => {
-                let kafka_cfg = KafkaAdapterConfig {
-                    brokers: config.kafka.brokers.clone(),
-                    prefix: config.kafka.prefix.clone(),
-                    request_timeout_ms: config.kafka.request_timeout_ms,
-                    security_protocol: config.kafka.security_protocol.clone(),
-                    sasl_mechanism: config.kafka.sasl_mechanism.clone(),
-                    sasl_username: config.kafka.sasl_username.clone(),
-                    sasl_password: config.kafka.sasl_password.clone(),
-                    nodes_number: config.kafka.nodes_number,
-                };
+                let kafka_cfg = config.kafka.clone();
                 match KafkaAdapter::new(kafka_cfg).await {
                     Ok(mut adapter) => {
                         Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
@@ -488,7 +477,10 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
-                        if !config.fallback_to_local {
+                        if !config.fallback_to_local
+                            || config.kafka.topic_epoch.is_some()
+                            || config.kafka.partitions != 1
+                        {
                             tracing::error!(adapter = "kafka", error = %e, "failed to initialize adapter");
                             return Err(e);
                         }

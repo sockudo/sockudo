@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sockudo_core::cache::CacheManager;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, RwLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -21,6 +21,9 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
+
+#[path = "stats/cache_index.rs"]
+mod cache_index;
 
 const STATS_KEY_VERSION: &str = "stats:v1";
 const STATS_CURSOR_VERSION: u8 = 1;
@@ -486,6 +489,8 @@ pub(crate) enum StatsError {
     InvalidFixture(String),
     #[error("stats store failed: {0}")]
     Store(String),
+    #[error("stats range index needs rebuilding")]
+    IndexIncomplete,
     #[error("stats recorder is unavailable")]
     Closed,
     #[error("stats recorder queue is full")]
@@ -497,6 +502,20 @@ trait StatsStore: Send + Sync {
     async fn merge(&self, buckets: &[StatsBucket]) -> Result<(), StatsError>;
     async fn put(&self, buckets: &[StatsBucket]) -> Result<(), StatsError>;
     async fn list(&self, app_id: &str) -> Result<Vec<StatsBucket>, StatsError>;
+    async fn read_range(&self, app_id: &str, _query: &StatsQuery) -> Result<StatsRead, StatsError> {
+        let buckets = self.list(app_id).await?;
+        let horizon = buckets
+            .iter()
+            .map(|bucket| bucket.interval_id.clone())
+            .max();
+        Ok(StatsRead { buckets, horizon })
+    }
+    async fn expire(&self) {}
+}
+
+struct StatsRead {
+    buckets: Vec<StatsBucket>,
+    horizon: Option<String>,
 }
 
 struct CacheStatsStore {
@@ -574,6 +593,7 @@ impl StatsStore for CacheStatsStore {
     async fn merge(&self, buckets: &[StatsBucket]) -> Result<(), StatsError> {
         for bucket in buckets {
             self.merge_one(bucket).await?;
+            self.index_after_write(std::slice::from_ref(bucket)).await?;
         }
         Ok(())
     }
@@ -586,8 +606,21 @@ impl StatsStore for CacheStatsStore {
                 .set(&Self::bucket_key(bucket), &encoded, self.retention_seconds)
                 .await
                 .map_err(|error| StatsError::Store(error.to_string()))?;
+            self.index_after_write(std::slice::from_ref(bucket)).await?;
         }
         Ok(())
+    }
+
+    async fn read_range(&self, app_id: &str, query: &StatsQuery) -> Result<StatsRead, StatsError> {
+        if let Some(read) = self.read_indexed_range(app_id, query).await? {
+            return Ok(read);
+        }
+        let buckets = self.list(app_id).await?;
+        let horizon = buckets
+            .iter()
+            .map(|bucket| bucket.interval_id.clone())
+            .max();
+        Ok(StatsRead { buckets, horizon })
     }
 
     async fn list(&self, app_id: &str) -> Result<Vec<StatsBucket>, StatsError> {
@@ -632,51 +665,170 @@ impl StatsStore for CacheStatsStore {
     }
 }
 
-#[derive(Default)]
 struct MemoryStatsStore {
-    buckets: RwLock<BTreeMap<(String, String), StatsBucket>>,
+    state: RwLock<MemoryStatsState>,
+    retention: Duration,
+    max_scan_entries: usize,
+}
+
+#[derive(Default)]
+struct MemoryStatsState {
+    buckets: BTreeMap<(String, String), (StatsBucket, tokio::time::Instant)>,
+    deadlines: BTreeSet<(tokio::time::Instant, (String, String))>,
+}
+
+impl Default for MemoryStatsStore {
+    fn default() -> Self {
+        Self::new(400 * 24 * 60 * 60, 100_000)
+    }
+}
+
+impl MemoryStatsStore {
+    fn new(retention_seconds: u64, max_scan_entries: usize) -> Self {
+        Self {
+            state: RwLock::default(),
+            retention: Duration::from_secs(retention_seconds.max(1)),
+            max_scan_entries,
+        }
+    }
+
+    fn expire_at(&self, now: tokio::time::Instant) {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state
+            .deadlines
+            .first()
+            .is_some_and(|(deadline, _)| *deadline <= now)
+        {
+            if let Some((_, key)) = state.deadlines.pop_first() {
+                state.buckets.remove(&key);
+            }
+        }
+    }
+
+    fn write(&self, buckets: &[StatsBucket], merge: bool) {
+        self.expire_at(tokio::time::Instant::now());
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let deadline = tokio::time::Instant::now() + self.retention;
+        for bucket in buckets {
+            let key = (bucket.app_id.clone(), bucket.interval_id.clone());
+            let value = if let Some((mut previous, old_deadline)) = state.buckets.remove(&key) {
+                state.deadlines.remove(&(old_deadline, key.clone()));
+                if merge {
+                    previous.merge(bucket);
+                    previous
+                } else {
+                    bucket.clone()
+                }
+            } else {
+                bucket.clone()
+            };
+            state.buckets.insert(key.clone(), (value, deadline));
+            state.deadlines.insert((deadline, key));
+        }
+    }
 }
 
 #[async_trait]
 impl StatsStore for MemoryStatsStore {
     async fn merge(&self, buckets: &[StatsBucket]) -> Result<(), StatsError> {
-        let mut store = self
-            .buckets
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for bucket in buckets {
-            store
-                .entry((bucket.app_id.clone(), bucket.interval_id.clone()))
-                .and_modify(|current| current.merge(bucket))
-                .or_insert_with(|| bucket.clone());
-        }
+        self.write(buckets, true);
         Ok(())
     }
-
     async fn put(&self, buckets: &[StatsBucket]) -> Result<(), StatsError> {
-        let mut store = self
-            .buckets
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for bucket in buckets {
-            store.insert(
-                (bucket.app_id.clone(), bucket.interval_id.clone()),
-                bucket.clone(),
-            );
-        }
+        self.write(buckets, false);
         Ok(())
     }
-
+    async fn expire(&self) {
+        self.expire_at(tokio::time::Instant::now());
+    }
     async fn list(&self, app_id: &str) -> Result<Vec<StatsBucket>, StatsError> {
-        let store = self
-            .buckets
+        self.expire().await;
+        let state = self
+            .state
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Ok(store
-            .values()
-            .filter(|bucket| bucket.app_id == app_id)
-            .cloned()
+        Ok(state
+            .buckets
+            .range((app_id.to_owned(), String::new())..)
+            .take_while(|((app, _), _)| app == app_id)
+            .map(|(_, (bucket, _))| bucket.clone())
             .collect())
+    }
+
+    async fn read_range(&self, app_id: &str, query: &StatsQuery) -> Result<StatsRead, StatsError> {
+        self.expire().await;
+        let cursor = query.cursor.as_deref().map(decode_cursor).transpose()?;
+        if let Some(cursor) = &cursor {
+            validate_cursor(cursor, app_id, query)?;
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let app = app_id.to_owned();
+        let horizon = state
+            .buckets
+            .range((app.clone(), String::new())..=(app.clone(), "~".to_owned()))
+            .next_back()
+            .map(|((_, id), _)| id.clone());
+        let mut lower = query.start.clone().unwrap_or_default();
+        let mut upper = query
+            .end
+            .as_ref()
+            .map(|end| format!("{end}~"))
+            .unwrap_or_else(|| "~".to_owned());
+        if let Some(cursor) = &cursor {
+            upper = upper.min(format!("{}~", cursor.horizon));
+            match query.direction {
+                StatsDirection::Forwards => lower = lower.max(format!("{}~", cursor.after)),
+                StatsDirection::Backwards => upper = upper.min(cursor.after.clone()),
+            }
+        }
+        let mut buckets = Vec::new();
+        if lower > upper {
+            return Ok(StatsRead { buckets, horizon });
+        }
+        let range = state.buckets.range((app.clone(), lower)..(app, upper));
+        let mut last_unit = None;
+        let mut units = 0usize;
+        let mut visit = |bucket: &StatsBucket| -> Result<bool, StatsError> {
+            let unit = query.unit.rollup_id(&bucket.interval_id)?;
+            if last_unit.as_ref() != Some(&unit) {
+                units += 1;
+                last_unit = Some(unit);
+            }
+            if buckets.len() >= self.max_scan_entries {
+                return Err(StatsError::Store(format!(
+                    "stats query exceeded the bounded {}-interval scan",
+                    self.max_scan_entries
+                )));
+            }
+            buckets.push(bucket.clone());
+            Ok(units > query.limit)
+        };
+        match query.direction {
+            StatsDirection::Forwards => {
+                for (_, (bucket, _)) in range {
+                    if visit(bucket)? {
+                        break;
+                    }
+                }
+            }
+            StatsDirection::Backwards => {
+                for (_, (bucket, _)) in range.rev() {
+                    if visit(bucket)? {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(StatsRead { buckets, horizon })
     }
 }
 
@@ -718,7 +870,12 @@ impl StatsAggregator {
         config: StatsRuntimeConfig,
     ) -> Arc<Self> {
         let store: Arc<dyn StatsStore> = cache.map_or_else(
-            || Arc::new(MemoryStatsStore::default()) as Arc<dyn StatsStore>,
+            || {
+                Arc::new(MemoryStatsStore::new(
+                    config.retention_seconds,
+                    config.max_scan_entries,
+                )) as Arc<dyn StatsStore>
+            },
             |cache| Arc::new(CacheStatsStore::new(cache, config)) as Arc<dyn StatsStore>,
         );
         let metrics = Arc::new(StatsRuntimeMetrics {
@@ -823,7 +980,8 @@ impl StatsAggregator {
         now_ms: i64,
     ) -> Result<StatsPage, StatsError> {
         self.flush().await?;
-        let minute_buckets = self.store.list(app_id).await?;
+        let read = self.store.read_range(app_id, query).await?;
+        let minute_buckets = read.buckets;
         let mut rollups = BTreeMap::<String, StatsBucket>::new();
         for bucket in minute_buckets {
             let interval_id = query.unit.rollup_id(&bucket.interval_id)?;
@@ -844,7 +1002,11 @@ impl StatsAggregator {
         let horizon = decoded_cursor
             .as_ref()
             .map(|cursor| cursor.horizon.clone())
-            .or_else(|| rollups.keys().next_back().cloned())
+            .or_else(|| {
+                read.horizon
+                    .as_deref()
+                    .and_then(|minute| query.unit.rollup_id(minute).ok())
+            })
             .unwrap_or_default();
 
         let mut buckets = rollups
@@ -955,13 +1117,37 @@ async fn run_stats_worker(
     metrics: Arc<StatsRuntimeMetrics>,
     flush_interval: Duration,
 ) {
-    while let Ok(first) = receiver.recv().await {
+    let mut expiry_tick = tokio::time::interval(Duration::from_secs(1));
+    expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let first = tokio::select! {
+            first = receiver.recv() => match first { Ok(first) => first, Err(_) => break },
+            _ = expiry_tick.tick() => { store.expire().await; continue; }
+        };
         let should_wait_for_batch = !flush_interval.is_zero()
-            && matches!(&first, StatsCommand::Observe { .. })
+            && matches!(
+                &first,
+                StatsCommand::Observe {
+                    acknowledgement: None,
+                    ..
+                }
+            )
             && receiver.is_empty();
         let mut commands = vec![first];
         if should_wait_for_batch {
-            tokio::time::sleep(flush_interval).await;
+            let deadline = tokio::time::sleep(flush_interval);
+            tokio::pin!(deadline);
+            while commands.len() < 256 {
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    next = receiver.recv() => {
+                        let Ok(command) = next else { break; };
+                        let urgent = !matches!(&command, StatsCommand::Observe { acknowledgement: None, .. });
+                        commands.push(command);
+                        if urgent { break; }
+                    }
+                }
+            }
         }
         while commands.len() < 256 {
             match receiver.try_recv() {
@@ -1616,5 +1802,90 @@ mod tests {
         let snapshot = aggregator.snapshot();
         assert_eq!(snapshot.backlog, snapshot.queue_capacity);
         assert_eq!(snapshot.dropped, 1);
+    }
+    #[tokio::test]
+    async fn critical_stats_interrupt_optional_wait_but_wait_for_store() {
+        let aggregator = StatsAggregator::new(
+            None,
+            StatsRuntimeConfig {
+                flush_interval: Duration::from_secs(5),
+                ..config()
+            },
+        );
+        let first =
+            StatsObservation::messages("app", 1_770_134_580_000, "outbound", "realtime", 1, 4)
+                .unwrap();
+        aggregator.try_record(first).unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            aggregator.record(
+                StatsObservation::messages("app", 1_770_134_580_000, "inbound", "realtime", 1, 4)
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("critical command must interrupt optional five-second batching wait")
+        .unwrap();
+        let page = aggregator
+            .query(
+                "app",
+                &StatsQuery::parse("minute", None, None, None, None, None).unwrap(),
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items[0].entries["messages.inbound.all.messages.count"],
+            1
+        );
+        assert_eq!(
+            page.items[0].entries["messages.outbound.all.messages.count"],
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_stats_narrow_ranges_ignore_unrelated_retained_minutes() {
+        let store = MemoryStatsStore::new(60, 5);
+        let mut fixtures = Vec::new();
+        for minute in 0..60 {
+            fixtures.push(bucket_from_fixture("app", &json!({ "intervalId": format!("2026-02-03:15:{minute:02}"), "inbound": {"realtime": {"messages": {"count": 1}}} })).unwrap());
+        }
+        store.put(&fixtures).await.unwrap();
+        let query = StatsQuery::parse(
+            "minute",
+            Some("backwards"),
+            Some("2026-02-03:15:55"),
+            None,
+            Some(2),
+            None,
+        )
+        .unwrap();
+        let read = store.read_range("app", &query).await.unwrap();
+        assert_eq!(read.horizon.as_deref(), Some("2026-02-03:15:59"));
+        assert_eq!(read.buckets.len(), 3);
+        assert_eq!(read.buckets[0].interval_id, "2026-02-03:15:59");
+        assert_eq!(read.buckets[2].interval_id, "2026-02-03:15:57");
+    }
+
+    #[tokio::test]
+    async fn memory_stats_retention_refreshes_touched_buckets_and_expires_inactive_apps() {
+        let store = MemoryStatsStore::new(60, 100);
+        let first = StatsBucket::from_interval_id("old-app", "2026-01-31:23:59").unwrap();
+        let second = StatsBucket::from_interval_id("active-app", "2026-02-01:00:00").unwrap();
+        store.put(&[first, second.clone()]).await.unwrap();
+        let old_deadline = store.state.read().unwrap().deadlines.first().unwrap().0;
+        tokio::task::yield_now().await;
+        store.merge(&[second]).await.unwrap();
+        store.expire_at(old_deadline);
+        let state = store.state.read().unwrap();
+        assert!(!state.buckets.keys().any(|(app, _)| app == "old-app"));
+        assert_eq!(state.buckets.len(), 1);
+        assert_eq!(state.deadlines.len(), 1);
+        drop(state);
+        store.expire_at(old_deadline + Duration::from_secs(60));
+        assert!(store.state.read().unwrap().buckets.is_empty());
+        assert!(store.state.read().unwrap().deadlines.is_empty());
     }
 }

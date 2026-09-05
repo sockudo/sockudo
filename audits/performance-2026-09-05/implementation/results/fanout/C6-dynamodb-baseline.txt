@@ -1,0 +1,42 @@
+
+running 1 test
+test history::benchmark_tests::benchmark_history_dynamodb ... C6,cap=64,payload=128,sample=0,ns=17843734,verified=8
+C6,cap=64,payload=128,sample=1,ns=19700744,verified=8
+C6,cap=64,payload=128,sample=2,ns=17857320,verified=8
+C6,cap=64,payload=128,sample=3,ns=19278645,verified=8
+C6,cap=64,payload=128,sample=4,ns=19590385,verified=8
+C6,cap=64,payload=128,sample=5,ns=18981725,verified=8
+C6,cap=64,payload=128,sample=6,ns=23230302,verified=8
+C6,cap=64,payload=128,sample=7,ns=19309204,verified=8
+C6,cap=64,payload=128,sample=8,ns=18701756,verified=8
+C6,cap=64,payload=16384,sample=0,ns=65536957,verified=8
+C6,cap=64,payload=16384,sample=1,ns=61824593,verified=8
+C6,cap=64,payload=16384,sample=2,ns=67439061,verified=8
+C6,cap=64,payload=16384,sample=3,ns=63977019,verified=8
+C6,cap=64,payload=16384,sample=4,ns=62199882,verified=8
+C6,cap=64,payload=16384,sample=5,ns=63098459,verified=8
+C6,cap=64,payload=16384,sample=6,ns=65573847,verified=8
+C6,cap=64,payload=16384,sample=7,ns=62716347,verified=8
+C6,cap=64,payload=16384,sample=8,ns=69982967,verified=8
+C6,cap=1024,payload=128,sample=0,ns=128234369,verified=8
+C6,cap=1024,payload=128,sample=1,ns=130637400,verified=8
+C6,cap=1024,payload=128,sample=2,ns=132336910,verified=8
+C6,cap=1024,payload=128,sample=3,ns=135861660,verified=8
+C6,cap=1024,payload=128,sample=4,ns=124370359,verified=8
+C6,cap=1024,payload=128,sample=5,ns=130615909,verified=8
+C6,cap=1024,payload=128,sample=6,ns=130239507,verified=8
+C6,cap=1024,payload=128,sample=7,ns=154188527,verified=8
+C6,cap=1024,payload=128,sample=8,ns=135481402,verified=8
+C6,cap=1024,payload=16384,sample=0,ns=2723844874,verified=8
+C6,cap=1024,payload=16384,sample=1,ns=2732159552,verified=8
+C6,cap=1024,payload=16384,sample=2,ns=2735360933,verified=8
+C6,cap=1024,payload=16384,sample=3,ns=2732245225,verified=8
+C6,cap=1024,payload=16384,sample=4,ns=2739914326,verified=8
+C6,cap=1024,payload=16384,sample=5,ns=2834535305,verified=8
+C6,cap=1024,payload=16384,sample=6,ns=2796277449,verified=8
+C6,cap=1024,payload=16384,sample=7,ns=2808172234,verified=8
+C6,cap=1024,payload=16384,sample=8,ns=2791505824,verified=8
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 115 filtered out; finished in 184.93s
+

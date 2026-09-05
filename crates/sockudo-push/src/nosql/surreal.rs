@@ -309,6 +309,35 @@ impl DocumentBackend for SurrealDbDocumentBackend {
             .collect())
     }
 
+    async fn scan_app_page_by_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        start_after_pk: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        let mut response = self
+            .db
+            .query(format!(
+                "SELECT pk, sk, data FROM {} WHERE family_app = $family_app AND pk > $start_after ORDER BY pk ASC, sk ASC LIMIT $limit",
+                self.table
+            ))
+            .bind(("family_app", family_app(family, app_id)))
+            .bind(("start_after", start_after_pk.unwrap_or("").to_owned()))
+            .bind(("limit", limit.max(1)))
+            .await
+            .map_err(surreal_error)?;
+        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| StoredDocument {
+                pk: row.pk,
+                sk: row.sk,
+                data: row.data,
+            })
+            .collect())
+    }
+
     async fn delete_many(
         &self,
         family: &'static str,

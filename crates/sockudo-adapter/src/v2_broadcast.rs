@@ -205,30 +205,74 @@ pub(crate) fn apply_subscription_predicates_in_place(
     sockets: &mut Vec<WebSocketRef>,
 ) {
     #[cfg(feature = "tag-filtering")]
-    let document = sockets
-        .iter()
-        .any(|socket| matching_subscription_requires_document(socket, channel))
-        .then(|| {
-            sockudo_filter::ProjectedDocument::new_bounded(
-                &crate::message_predicate::NativeMessageProjection::from_message(message),
-                64 * 1024,
-            )
-        })
-        .transpose()
-        .unwrap_or_else(|error| {
-            tracing::warn!(error = %error, "message predicate projection failed closed");
-            None
+    {
+        use std::{cell::OnceCell, sync::Arc};
+        type EvaluationCache =
+            std::collections::HashMap<u64, Vec<(Arc<sockudo_filter::MessagePredicate>, bool)>>;
+        let mut evaluated = EvaluationCache::new();
+        let mut cached_count = 0usize;
+        let document = OnceCell::new();
+        let mut allows = |state: &sockudo_core::websocket::PerChannelState| {
+            if message.event.as_deref() == Some(sockudo_protocol::messages::ANNOTATION_EVENT_NAME)
+                && !state.annotation_subscribe
+            {
+                return false;
+            }
+            let Some(predicate) = state.predicate.as_ref().filter(|_| filtering_enabled) else {
+                return subscription_view_allows(state, message, filtering_enabled, None);
+            };
+            if let Some(bucket) = evaluated.get(&predicate.id().as_u64())
+                && let Some((_, result)) = bucket.iter().find(|(cached, _)| {
+                    Arc::ptr_eq(cached, predicate) || cached.equivalent_to(predicate)
+                })
+            {
+                return *result;
+            }
+            let result = if !predicate
+                .matches_event_and_tags(message.event.as_deref(), &message.tags)
+            {
+                false
+            } else {
+                let projection = if predicate.requires_document() {
+                    document.get_or_init(|| sockudo_filter::ProjectedDocument::new_bounded(
+                        &crate::message_predicate::NativeMessageProjection::from_message(message), 64 * 1024,
+                    ).map_err(|error| { tracing::warn!(error = %error, "message predicate projection failed closed"); error }).ok()).as_ref()
+                } else {
+                    None
+                };
+                predicate.matches_projected(message.event.as_deref(), &message.tags, projection).unwrap_or_else(|error| {
+                    tracing::warn!(predicate_id = predicate.id().as_u64(), error = %error, "subscription predicate evaluation failed closed"); false
+                })
+            };
+            if cached_count < 256 {
+                evaluated
+                    .entry(predicate.id().as_u64())
+                    .or_default()
+                    .push((Arc::clone(predicate), result));
+                cached_count += 1;
+            }
+            result
+        };
+        sockets.retain(|socket| {
+            if socket
+                .channel_state
+                .get(channel)
+                .is_some_and(|state| allows(state.value()))
+            {
+                return true;
+            }
+            socket.channel_state.iter().any(|state| {
+                let subscribed = state.key().as_ref();
+                subscribed != channel
+                    && is_wildcard_subscription_pattern(subscribed)
+                    && wildcard_pattern_matches(channel, subscribed)
+                    && allows(state.value())
+            })
         });
-
+    }
+    #[cfg(not(feature = "tag-filtering"))]
     sockets.retain(|socket| {
-        should_deliver_for_subscription(
-            socket,
-            channel,
-            message,
-            filtering_enabled,
-            #[cfg(feature = "tag-filtering")]
-            document.as_ref(),
-        )
+        should_deliver_for_subscription(socket, channel, message, filtering_enabled)
     });
 }
 

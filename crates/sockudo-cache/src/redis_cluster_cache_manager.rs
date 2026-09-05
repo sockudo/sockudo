@@ -3,10 +3,13 @@ use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::cluster_async::ClusterConnection;
 use redis::cluster_read_routing::RandomReplicaStrategy;
+use redis::cluster_routing::{Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr};
 use sockudo_core::cache::{CacheManager, CacheScanPage};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::RedisTlsOptions;
 use sockudo_core::redis_client::configure_cluster_builder;
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 /// Configuration for the Redis Cluster cache manager
@@ -174,45 +177,18 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     async fn scan_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let pattern = format!("{}:{}*", self.prefix, prefix);
-        let cache_prefix = format!("{}:", self.prefix);
-        let mut connection = self.connection.clone();
-        let mut keys = Vec::with_capacity(limit.min(64));
-
-        {
-            let mut iter: redis::AsyncIter<String> = connection
-                .scan_match(&pattern)
-                .await
-                .map_err(|e| Error::Cache(format!("Redis Cluster scan error: {e}")))?;
-
-            while let Some(key) = iter.next_item().await {
-                let key = key.map_err(|e| {
-                    Error::Cache(format!("Redis Cluster scan iteration error: {e}"))
-                })?;
-                keys.push(key);
-                if keys.len() >= limit {
-                    break;
-                }
+        let mut entries = Vec::with_capacity(limit.min(256));
+        let mut cursor = None;
+        while entries.len() < limit {
+            let page = self
+                .scan_prefix_page(prefix, cursor, limit - entries.len())
+                .await?;
+            entries.extend(page.entries.into_iter().take(limit - entries.len()));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
             }
         }
-
-        let mut entries = Vec::with_capacity(keys.len());
-        for key in keys {
-            let value: Option<String> = connection
-                .get(&key)
-                .await
-                .map_err(|e| Error::Cache(format!("Redis Cluster get error: {e}")))?;
-            if let Some(value) = value
-                && let Some(unprefixed_key) = key.strip_prefix(&cache_prefix)
-            {
-                entries.push((unprefixed_key.to_string(), value));
-            }
-        }
-
         Ok(entries)
     }
 
@@ -226,40 +202,107 @@ impl CacheManager for RedisClusterCacheManager {
             return Ok(CacheScanPage::default());
         }
 
-        let cursor = cursor
-            .as_deref()
-            .unwrap_or("0")
-            .parse::<u64>()
-            .map_err(|e| Error::Cache(format!("Redis Cluster scan cursor is invalid: {e}")))?;
+        let mut connection = self.connection.clone();
+        let (primaries, generation) = read_scan_topology(&mut connection).await?;
+        let (node_index, scan_cursor) = match cursor.as_deref() {
+            None | Some("0") => (0, 0),
+            Some(cursor) => {
+                let mut fields = cursor.split(':');
+                let version = fields.next();
+                let expected = fields.next().and_then(|value| value.parse::<u64>().ok());
+                let node = fields.next().and_then(|value| value.parse::<usize>().ok());
+                let scan = fields.next().and_then(|value| value.parse::<u64>().ok());
+                if version != Some("v1") || expected != Some(generation) || fields.next().is_some()
+                {
+                    return Err(Error::Cache(
+                        "Redis Cluster scan cursor expired or topology changed; restart scan"
+                            .into(),
+                    ));
+                }
+                match (node, scan) {
+                    (Some(node), Some(scan)) if node < primaries.len() => (node, scan),
+                    _ => return Err(Error::Cache("invalid Redis Cluster scan cursor".into())),
+                }
+            }
+        };
+        let slot = *primaries
+            .values()
+            .nth(node_index)
+            .expect("validated cluster scan primary");
         let pattern = format!("{}:{}*", self.prefix, prefix);
         let cache_prefix = format!("{}:", self.prefix);
-        let mut connection = self.connection.clone();
-        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-            .arg(cursor)
+        let mut command = redis::cmd("SCAN");
+        command
+            .arg(scan_cursor)
             .arg("MATCH")
-            .arg(&pattern)
+            .arg(pattern)
             .arg("COUNT")
-            .arg(limit)
-            .query_async(&mut connection)
+            .arg(limit.min(256));
+        let result = connection
+            .route_command(
+                command,
+                RoutingInfo::SingleNode(SingleNodeRoutingInfo::SpecificNode(Route::new(
+                    slot,
+                    SlotAddr::Master,
+                ))),
+            )
             .await
-            .map_err(|e| Error::Cache(format!("Redis Cluster scan page error: {e}")))?;
+            .map_err(|error| Error::Cache(format!("Redis Cluster scan page error: {error}")))?;
+        let (next_cursor, keys): (u64, Vec<String>) = redis::from_redis_value(result)
+            .map_err(|error| Error::Cache(format!("Redis Cluster scan result error: {error}")))?;
+        let continuation = if next_cursor != 0 {
+            Some(format!("v1:{generation}:{node_index}:{next_cursor}"))
+        } else if node_index + 1 < primaries.len() {
+            Some(format!("v1:{generation}:{}:0", node_index + 1))
+        } else {
+            None
+        };
 
         let mut entries = Vec::with_capacity(keys.len());
-        for key in keys {
-            let value: Option<String> = connection
-                .get(&key)
-                .await
-                .map_err(|e| Error::Cache(format!("Redis Cluster get error: {e}")))?;
-            if let Some(value) = value
-                && let Some(unprefixed_key) = key.strip_prefix(&cache_prefix)
-            {
-                entries.push((unprefixed_key.to_string(), value));
+        for keys in keys.chunks(256) {
+            let mut pipeline = redis::pipe();
+            for key in keys {
+                pipeline.cmd("GET").arg(key);
             }
+            let response = connection
+                .route_pipeline(
+                    pipeline,
+                    0,
+                    keys.len(),
+                    SingleNodeRoutingInfo::SpecificNode(Route::new(slot, SlotAddr::Master)),
+                )
+                .await
+                .map_err(|error| {
+                    Error::Cache(format!("Redis Cluster scan values error: {error}"))
+                })?;
+            let values: Vec<Option<String>> = response
+                .into_iter()
+                .map(redis::from_redis_value)
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|error| {
+                    Error::Cache(format!("Redis Cluster scan value decode error: {error}"))
+                })?;
+            for (key, value) in keys.iter().zip(values) {
+                if let Some(value) = value
+                    && let Some(unprefixed_key) = key.strip_prefix(&cache_prefix)
+                {
+                    entries.push((unprefixed_key.to_owned(), value));
+                }
+            }
+        }
+
+        // A topology change during the final page must also invalidate the sweep.
+        // Routing a representative slot alone cannot prove that all scanned keys
+        // remained on their original primary during resharding.
+        if read_scan_topology(&mut connection).await?.1 != generation {
+            return Err(Error::Cache(
+                "Redis Cluster topology changed during scan; restart scan".into(),
+            ));
         }
 
         Ok(CacheScanPage {
             entries,
-            next_cursor: (next_cursor != 0).then(|| next_cursor.to_string()),
+            next_cursor: continuation,
         })
     }
 
@@ -485,5 +528,116 @@ impl ClusterCacheManagerFactory {
 
         let cache_manager = RedisClusterCacheManager::new(config).await?;
         Ok(Box::new(cache_manager))
+    }
+}
+
+async fn read_scan_topology(
+    connection: &mut ClusterConnection,
+) -> Result<(BTreeMap<String, u16>, u64)> {
+    let slots: redis::Value = redis::cmd("CLUSTER")
+        .arg("SLOTS")
+        .query_async(connection)
+        .await
+        .map_err(|error| Error::Cache(format!("Redis Cluster scan topology error: {error}")))?;
+    scan_topology(slots)
+}
+
+fn scan_topology(slots: redis::Value) -> Result<(BTreeMap<String, u16>, u64)> {
+    let invalid = || Error::Cache("invalid Redis Cluster slot topology".into());
+    let redis::Value::Array(slots) = slots else {
+        return Err(invalid());
+    };
+    let mut ranges = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let redis::Value::Array(fields) = slot else {
+            return Err(invalid());
+        };
+        let (
+            Some(redis::Value::Int(start)),
+            Some(redis::Value::Int(end)),
+            Some(redis::Value::Array(primary)),
+        ) = (fields.first(), fields.get(1), fields.get(2))
+        else {
+            return Err(invalid());
+        };
+        let node_id: String = redis::from_redis_value(primary.get(2).ok_or_else(invalid)?.clone())
+            .map_err(|_| invalid())?;
+        let start = u16::try_from(*start).map_err(|_| invalid())?;
+        let end = u16::try_from(*end).map_err(|_| invalid())?;
+        if start > end || end >= 16384 || node_id.is_empty() {
+            return Err(invalid());
+        }
+        ranges.push((start, end, node_id));
+    }
+    ranges.sort_unstable();
+    let mut next = 0;
+    let mut primaries = BTreeMap::new();
+    for (start, end, node) in &ranges {
+        if *start != next {
+            return Err(invalid());
+        }
+        next = end + 1;
+        primaries.entry(node.clone()).or_insert(*start);
+    }
+    if next != 16384 {
+        return Err(invalid());
+    }
+    // Include every interval, not just the first representative slot per node:
+    // an interior slot can move while every primary's representative stays put.
+    let mut hasher = std::hash::DefaultHasher::new();
+    ranges.hash(&mut hasher);
+    Ok((primaries, hasher.finish()))
+}
+
+#[cfg(test)]
+mod scan_topology_tests {
+    use super::scan_topology;
+    use redis::Value;
+
+    fn slots(ranges: &[(i64, i64, &str)]) -> Value {
+        Value::Array(
+            ranges
+                .iter()
+                .map(|(start, end, node)| {
+                    Value::Array(vec![
+                        Value::Int(*start),
+                        Value::Int(*end),
+                        Value::Array(vec![
+                            Value::BulkString(b"127.0.0.1".to_vec()),
+                            Value::Int(6379),
+                            Value::BulkString(node.as_bytes().to_vec()),
+                        ]),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn interior_reshard_changes_generation_without_changing_representatives() {
+        let before = scan_topology(slots(&[(0, 8191, "a"), (8192, 16383, "b")])).unwrap();
+        let after_same_representatives = scan_topology(slots(&[
+            (0, 8191, "a"),
+            (8192, 8194, "b"),
+            (8195, 8195, "a"),
+            (8196, 16383, "b"),
+        ]))
+        .unwrap();
+        assert_eq!(before.0, after_same_representatives.0);
+        assert_ne!(before.1, after_same_representatives.1);
+    }
+
+    #[test]
+    fn response_order_is_irrelevant_and_partial_maps_fail_closed() {
+        let forward = scan_topology(slots(&[(0, 8191, "a"), (8192, 16383, "b")])).unwrap();
+        let reverse = scan_topology(slots(&[(8192, 16383, "b"), (0, 8191, "a")])).unwrap();
+        assert_eq!(forward, reverse);
+        for invalid in [
+            slots(&[]),
+            slots(&[(0, 1, "a")]),
+            slots(&[(0, 8192, "a"), (8192, 16383, "b")]),
+        ] {
+            assert!(scan_topology(invalid).is_err());
+        }
     }
 }

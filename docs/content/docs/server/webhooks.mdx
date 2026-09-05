@@ -126,6 +126,20 @@ function handleWebhookEvent(event: SockudoWebhookEvent) {
 
 Return a non-2xx status only when you want Sockudo to retry. If the event is valid but not useful, record it as ignored and return success.
 
+HTTP delivery has separate limits of 20 active requests and 128 admitted retry
+jobs, with at most 16 MiB of retained request bodies. A failed endpoint releases
+its active request slot during jittered backoff. Unused error response bodies
+are discarded. These limits bound an outage without changing request bodies or
+signature validation.
+
+Optional in-process batching admits at most 2,048 jobs and 16 MiB of encoded
+jobs plus charged record overhead. A full buffer returns a capacity error to
+the producer. Batches flush on size or time; a failed queue transfer retains
+the accepted batch and its stable job IDs for retry. Graceful shutdown stops
+admission and drains these batches before disconnecting the queue. A dependency
+outage may keep draining pending until the server's shutdown deadline; forced
+process termination can still lose work that has not reached a durable queue.
+
 ## Security
 
 - accept webhooks only over HTTPS

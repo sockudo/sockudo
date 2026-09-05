@@ -1,0 +1,11 @@
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.95s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_push-2578fcf1fe627aae)
+
+running 3 tests
+test crypto::tests::queued_work_is_bounded_and_cancellation_reclaims_admission ... ok
+test crypto::tests::cancelled_worker_keeps_capacity_until_crypto_finishes ... ok
+test crypto::tests::async_identity_preserves_valid_invalid_and_malformed_results ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.14s
+

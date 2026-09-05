@@ -1,8 +1,8 @@
 use crate::handler::ConnectionHandler;
 use sockudo_core::annotations::{
     Annotation, AnnotationAction, AnnotationEventLookupRequest, AnnotationEventsRequest,
-    AnnotationId, AnnotationProjectionOptions, AnnotationProjectionRequest, AnnotationSerial,
-    AnnotationSummary, AnnotationType, StoredAnnotationEvent, StoredAnnotationProjection,
+    AnnotationId, AnnotationProjectionOptions, AnnotationSerial, AnnotationSummary, AnnotationType,
+    StoredAnnotationEvent, StoredAnnotationProjection,
 };
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
@@ -81,46 +81,8 @@ impl ConnectionHandler {
             )));
         }
 
-        if let Some(id) = request.id.as_ref() {
-            let existing = self
-                .annotation_store()
-                .get_events(AnnotationEventsRequest {
-                    app_id: request.app.id.clone(),
-                    channel_id: request.channel.clone(),
-                    message_serial: request.message_serial.clone(),
-                    annotation_type: request.annotation_type.clone(),
-                })
-                .await?;
-            if let Some(original) = existing.iter().find(|record| {
-                record.annotation.action == AnnotationAction::Create && &record.annotation.id == id
-            }) {
-                if original.annotation.name != request.name
-                    || original.annotation.client_id != request.client_id
-                    || original.annotation.count != request.count
-                    || original.annotation.data != request.data
-                    || original.annotation.encoding != request.encoding
-                {
-                    return Err(Error::InvalidMessageFormat(format!(
-                        "Annotation id '{}' was already used with a different payload",
-                        id.as_str()
-                    )));
-                }
-                let projection = self
-                    .annotation_store()
-                    .rebuild_projection(AnnotationProjectionRequest {
-                        app_id: original.app_id.clone(),
-                        channel_id: original.channel_id.clone(),
-                        message_serial: original.annotation.message_serial.clone(),
-                        annotation_type: original.annotation.annotation_type.clone(),
-                    })
-                    .await?;
-                return Ok(PublishAnnotationRuntimeResult {
-                    annotation_serial: original.annotation.serial.clone(),
-                    projection,
-                });
-            }
-        }
-
+        // Every production store resolves create-ID conflicts atomically below.
+        // A full event-log preflight duplicated that work and raced other nodes.
         let serial = self
             .reserve_annotation_serial(&request.app.id, &request.channel)
             .await?;

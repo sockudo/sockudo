@@ -2,6 +2,7 @@
 use super::constants::*;
 use super::document::{DocumentBackend, DocumentPushStore};
 use super::helpers::*;
+use super::ordered::*;
 use super::publishing::document_cleanup_publish_statuses;
 use crate::cleanup::{PushCleanupCounters, PushCleanupReport, PushCleanupRequest};
 use crate::domain::{
@@ -140,6 +141,15 @@ where
         &self,
         event: OperatorInvalidationEvent,
     ) -> PushStorageResult<()> {
+        let position = format!("{:020}:{}", event.occurred_at_ms, event.event_id);
+        self.write_ordered_reference(
+            FAMILY_OPERATOR_ORDERED,
+            &event.app_id,
+            &position,
+            &event.event_id,
+            &position,
+        )
+        .await?;
         self.remember_cleanup_app(&event.app_id).await?;
         self.put_json(
             FAMILY_OPERATOR_INVALIDATION,
@@ -157,21 +167,15 @@ where
         limit: usize,
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<OperatorInvalidationEvent>> {
-        let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .scan_json::<OperatorInvalidationEvent>(FAMILY_OPERATOR_INVALIDATION, app_id)
-            .await?
-            .into_iter()
-            .map(|(_, position, event)| (position, event))
-            .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(page_from_rows(
+        self.ordered_page(
+            FAMILY_OPERATOR_INVALIDATION,
+            FAMILY_OPERATOR_ORDERED,
             app_id,
             PushCursorKind::OperatorInvalidation,
-            rows,
             limit,
-            start,
-        ))
+            cursor,
+        )
+        .await
     }
 }
 
@@ -184,16 +188,16 @@ where
         &self,
         request: PushCleanupRequest,
     ) -> PushStorageResult<PushCleanupReport> {
-        let apps = self
-            .scan_pk_json::<String>(FAMILY_CLEANUP_APP, GLOBAL_APP_ID, "apps")
-            .await?
-            .into_iter()
-            .map(|(_, _, app_id)| app_id)
-            .collect::<Vec<_>>();
+        let apps = cleanup_page(self, FAMILY_CLEANUP_APP, GLOBAL_APP_ID, 1).await?;
         let mut report = PushCleanupReport::default();
         let mut remaining = request.policy.max_deleted_per_tick;
 
-        for app_id in apps {
+        for app in apps {
+            let app_id = from_json_str::<String>(&app.data)?;
+            if remaining == 0 {
+                break;
+            }
+            super::lifecycle::cleanup(self, &app_id, &request, &mut remaining, &mut report).await?;
             if remaining == 0 {
                 break;
             }
@@ -309,18 +313,17 @@ async fn cleanup_idempotency<B>(
 where
     B: DocumentBackend,
 {
-    let rows = store
-        .scan_json::<IdempotencyRecord>(FAMILY_IDEMPOTENCY, app_id)
-        .await?;
+    let rows = cleanup_page(store, FAMILY_IDEMPOTENCY, app_id, limit).await?;
     let mut counters = PushCleanupCounters::default();
-    for (key, _, record) in rows {
+    for row in rows {
+        let record = from_json_str::<IdempotencyRecord>(&row.data)?;
         counters.scanned = counters.scanned.saturating_add(1);
         if !idempotency_record_expired(&record, now_ms) {
             continue;
         }
         if store
             .backend
-            .delete(FAMILY_IDEMPOTENCY, app_id, &key, DEFAULT_SK)
+            .compare_and_delete(FAMILY_IDEMPOTENCY, app_id, &row.pk, &row.sk, &row.data)
             .await?
         {
             counters.deleted = counters.deleted.saturating_add(1);
@@ -341,18 +344,17 @@ async fn cleanup_scheduler_locks<B>(
 where
     B: DocumentBackend,
 {
-    let rows = store
-        .scan_json::<SchedulerLock>(FAMILY_SCHEDULER_LOCK, app_id)
-        .await?;
+    let rows = cleanup_page(store, FAMILY_SCHEDULER_LOCK, app_id, limit).await?;
     let mut counters = PushCleanupCounters::default();
-    for (publish_id, _, lock) in rows {
+    for row in rows {
+        let lock = from_json_str::<SchedulerLock>(&row.data)?;
         counters.scanned = counters.scanned.saturating_add(1);
         if lock.expires_at_ms > now_ms {
             continue;
         }
         if store
             .backend
-            .delete(FAMILY_SCHEDULER_LOCK, app_id, &publish_id, DEFAULT_SK)
+            .compare_and_delete(FAMILY_SCHEDULER_LOCK, app_id, &row.pk, &row.sk, &row.data)
             .await?
         {
             counters.deleted = counters.deleted.saturating_add(1);
@@ -373,18 +375,23 @@ async fn cleanup_operator_invalidations<B>(
 where
     B: DocumentBackend,
 {
-    let rows = store
-        .scan_json::<OperatorInvalidationEvent>(FAMILY_OPERATOR_INVALIDATION, app_id)
-        .await?;
+    let rows = cleanup_page(store, FAMILY_OPERATOR_INVALIDATION, app_id, limit).await?;
     let mut counters = PushCleanupCounters::default();
-    for (event_id, position, event) in rows {
+    for row in rows {
+        let event = from_json_str::<OperatorInvalidationEvent>(&row.data)?;
         counters.scanned = counters.scanned.saturating_add(1);
         if event.occurred_at_ms >= cutoff_ms {
             continue;
         }
         if store
             .backend
-            .delete(FAMILY_OPERATOR_INVALIDATION, app_id, &event_id, &position)
+            .compare_and_delete(
+                FAMILY_OPERATOR_INVALIDATION,
+                app_id,
+                &row.pk,
+                &row.sk,
+                &row.data,
+            )
             .await?
         {
             counters.deleted = counters.deleted.saturating_add(1);
@@ -394,6 +401,52 @@ where
         }
     }
     Ok(counters)
+}
+
+/// Persist a bounded keyset walk, including when no visited records are expired.
+/// Concurrent walkers may repeat a page; canonical conditional deletes prevent lost updates.
+pub(super) async fn cleanup_page<B: DocumentBackend>(
+    store: &DocumentPushStore<B>,
+    family: &'static str,
+    app_id: &str,
+    limit: usize,
+) -> PushStorageResult<Vec<super::document::StoredDocument>> {
+    const CHECKPOINT: &str = "cleanup-walk-v1";
+    let previous = store
+        .backend
+        .get_consistent(CHECKPOINT, app_id, family, DEFAULT_SK)
+        .await?;
+    let after = previous
+        .as_deref()
+        .map(from_json_str::<(String, String)>)
+        .transpose()?;
+    let rows = store
+        .backend
+        .scan_app_page(family, app_id, after.as_ref(), limit.clamp(1, 1_000))
+        .await?;
+    if let Some(last) = rows.last() {
+        let next = to_json_string(&(&last.pk, &last.sk))?;
+        match previous {
+            Some(previous) => {
+                store
+                    .backend
+                    .compare_and_swap(CHECKPOINT, app_id, family, DEFAULT_SK, &previous, next)
+                    .await?;
+            }
+            None => {
+                store
+                    .backend
+                    .put_if_absent(CHECKPOINT, app_id, family, DEFAULT_SK, next)
+                    .await?;
+            }
+        }
+    } else if let Some(previous) = previous {
+        store
+            .backend
+            .compare_and_delete(CHECKPOINT, app_id, family, DEFAULT_SK, &previous)
+            .await?;
+    }
+    Ok(rows)
 }
 
 fn merge(target: &mut PushCleanupCounters, counters: PushCleanupCounters) {

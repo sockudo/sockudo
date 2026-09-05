@@ -473,7 +473,7 @@ impl AnnotationProjectionsForChannelRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct StoredAnnotationProjection {
     pub app_id: String,
     pub channel_id: String,

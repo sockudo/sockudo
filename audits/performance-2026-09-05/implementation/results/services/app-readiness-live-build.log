@@ -1,0 +1,50 @@
+    Blocking waiting for file lock on build directory
+   Compiling axum-core v0.5.6
+   Compiling geo v0.32.0
+   Compiling tower v0.5.3
+   Compiling aws-smithy-types v1.5.0
+   Compiling sqlx-postgres v0.9.0
+   Compiling crossfire v3.1.19
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling diskann v0.54.0
+   Compiling jsonwebtoken v11.0.0
+   Compiling scylla-cql v1.7.0
+   Compiling scylla v1.7.0
+   Compiling aws-smithy-runtime-api v1.12.3
+   Compiling aws-smithy-query v0.60.15
+   Compiling tower-http v0.6.11
+   Compiling reqwest v0.13.4
+   Compiling axum v0.8.9
+   Compiling aws-smithy-schema v0.1.0
+   Compiling aws-credential-types v1.2.14
+   Compiling aws-smithy-http v0.63.6
+   Compiling aws-smithy-observability v0.2.6
+   Compiling aws-smithy-http-client v1.1.13
+   Compiling aws-sigv4 v1.4.5
+   Compiling aws-types v1.3.16
+   Compiling aws-smithy-json v0.62.7
+   Compiling revision v0.30.0
+   Compiling aws-smithy-runtime v1.11.3
+   Compiling sqlx-macros-core v0.9.0
+   Compiling surrealdb-strand v3.2.3
+   Compiling surrealdb-collections v3.2.3
+   Compiling tonic v0.14.6
+   Compiling sockudo-ws v2.0.1
+   Compiling sqlx-macros v0.9.0
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling aws-runtime v1.7.5
+   Compiling sqlx v0.9.0
+   Compiling tonic-prost v0.14.6
+   Compiling surrealdb-protocol v0.10.2
+   Compiling aws-sdk-sso v1.102.0
+   Compiling aws-sdk-ssooidc v1.104.0
+   Compiling aws-sdk-sts v1.107.0
+   Compiling aws-sdk-dynamodb v1.116.0
+   Compiling aws-config v1.8.18
+   Compiling surrealdb-types v3.2.3
+   Compiling surrealdb-core v3.2.3
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling surrealdb v3.2.3
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 08s
+  Executable tests/readiness_live.rs (target/debug/deps/readiness_live-5fdd9613bb941208)

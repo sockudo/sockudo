@@ -1,0 +1,39 @@
+{
+  "case": "F1",
+  "baseline_commit": "5613bb291032b6b7660352974b03da9eb0646da0",
+  "profile": "release; compilation and fixture setup excluded",
+  "runs": [
+    {
+      "variant": "baseline",
+      "command": [
+        "/usr/bin/time",
+        "-v",
+        "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/binaries/f1-f4-baseline",
+        "local_adapter::broadcast::regression_tests::benchmark_shared_fanout_preparation",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "environment": {},
+      "binary_sha256": "cfb0a8901e64b7dd4768cd9d642355d4305e9349cc65906554f579a4cb681a70",
+      "exit_code": 0
+    },
+    {
+      "variant": "after",
+      "command": [
+        "/usr/bin/time",
+        "-v",
+        "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/binaries/f1-after",
+        "local_adapter::broadcast::regression_tests::benchmark_shared_fanout_preparation",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "environment": {},
+      "binary_sha256": "ec90f72aff556514b5213f6d40fd592f50ec8974dda345161a64885f80fcd1b4",
+      "exit_code": 0
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{"verified":{"repeat":0},"allocated_bytes":110301880,"allocations":4300008,"case":"S6_ws_100k","elapsed_us":29216}
+{"case":"S6_ws_100k","elapsed_us":30168,"allocations":4300005,"allocated_bytes":110301792,"verified":{"repeat":1}}
+{"allocations":4300005,"verified":{"repeat":2},"elapsed_us":30292,"case":"S6_ws_100k","allocated_bytes":110301792}
+{"allocations":4300005,"allocated_bytes":110301792,"verified":{"repeat":3},"case":"S6_ws_100k","elapsed_us":30407}
+{"case":"S6_ws_100k","elapsed_us":30426,"verified":{"repeat":4},"allocations":4300005,"allocated_bytes":110301792}
+{"allocated_bytes":2962020,"case":"S5_churn","verified":{"count":1000},"allocations":52973,"elapsed_us":1077}
+{"elapsed_us":79,"verified":{"bytes":4880,"repeat":0,"count":1000,"published":1000.0,"series":56},"allocated_bytes":54204,"case":"S5_scrape","allocations":574}
+{"verified":{"published":1000.0,"count":1000,"bytes":4880,"series":56,"repeat":1},"case":"S5_scrape","allocations":549,"allocated_bytes":49172,"elapsed_us":59}
+{"verified":{"bytes":4880,"published":1000.0,"count":1000,"repeat":2,"series":56},"elapsed_us":56,"allocated_bytes":51163,"case":"S5_scrape","allocations":550}
+{"allocations":520162,"allocated_bytes":14766328,"verified":{"count":10000},"case":"S5_churn","elapsed_us":6986}
+{"allocated_bytes":75358,"case":"S5_scrape","allocations":729,"verified":{"count":10000,"bytes":4896,"repeat":0,"series":56,"published":11000.0},"elapsed_us":70}
+{"allocations":550,"allocated_bytes":52180,"case":"S5_scrape","elapsed_us":57,"verified":{"bytes":4894,"repeat":1,"published":11000.0,"count":10000,"series":56}}
+{"verified":{"series":56,"repeat":2,"published":11000.0,"count":10000,"bytes":4894},"case":"S5_scrape","elapsed_us":54,"allocated_bytes":58989,"allocations":551}
+{"allocations":5471568,"elapsed_us":74156,"case":"S5_churn","allocated_bytes":158439816,"verified":{"count":100000}}
+{"allocated_bytes":226803,"verified":{"repeat":0,"series":56,"bytes":4911,"published":111000.0,"count":100000},"case":"S5_scrape","allocations":2310,"elapsed_us":317}
+{"allocations":550,"verified":{"bytes":4910,"series":56,"count":100000,"repeat":1,"published":111000.0},"case":"S5_scrape","elapsed_us":63,"allocated_bytes":51163}
+{"allocations":551,"allocated_bytes":58989,"case":"S5_scrape","verified":{"published":111000.0,"count":100000,"series":56,"repeat":2,"bytes":4912},"elapsed_us":62}

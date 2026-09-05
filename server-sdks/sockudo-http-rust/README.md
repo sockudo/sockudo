@@ -509,6 +509,11 @@ The `Config` struct is used to configure the Sockudo client. Create it using `Co
 | `enable_retry(enable)` | Enable/disable retry logic (default: `true`) |
 | `max_retries(max)` | Maximum retry attempts (default: `3`) |
 
+Retries reuse the exact serialized and signed request body, including the idempotency key.
+Retry delays use randomized exponential backoff between half and all of the capped delay
+(maximum 60 seconds) so concurrent clients do not all retry together. Retry eligibility and
+the maximum number of attempts are unchanged.
+
 Call `.build()` on the `ConfigBuilder` to get a `Result<Config, SockudoError>`.
 
 ## Channel History

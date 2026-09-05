@@ -49,7 +49,12 @@ where
     ) -> PushStorageResult<Page<ProviderCredential>> {
         let start = cursor_position(cursor, app_id)?;
         let rows = self
-            .scan_json::<ProviderCredential>(FAMILY_CREDENTIAL, app_id)
+            .scan_app_page_by_pk_json::<ProviderCredential>(
+                FAMILY_CREDENTIAL,
+                app_id,
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
             .map(|(credential_id, _, credential)| (credential_id, credential))
@@ -98,7 +103,12 @@ where
     ) -> PushStorageResult<Page<NotificationTemplate>> {
         let start = cursor_position(cursor, app_id)?;
         let rows = self
-            .scan_json::<NotificationTemplate>(FAMILY_TEMPLATE, app_id)
+            .scan_app_page_by_pk_json::<NotificationTemplate>(
+                FAMILY_TEMPLATE,
+                app_id,
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
             .map(|(template_id, _, template)| (template_id, template))

@@ -325,6 +325,20 @@ impl HistoryStore for PostgresHistoryStore {
             Error::Internal(format!("Failed to begin history reset transaction: {e}"))
         })?;
 
+        let lock_sql = format!(
+            "SELECT retained_messages FROM {} WHERE app_id=$1 AND channel=$2 FOR UPDATE",
+            self.tables.streams
+        );
+        sqlx::query(sqlx::AssertSqlSafe(lock_sql.as_str()))
+            .bind(app_id)
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to lock Postgres history stream for purge: {e}"
+                ))
+            })?;
         let delete_sql = format!(
             "DELETE FROM {} WHERE app_id = $1 AND channel = $2 RETURNING payload_size_bytes",
             self.tables.entries
@@ -428,6 +442,20 @@ impl HistoryStore for PostgresHistoryStore {
             Error::Internal(format!("Failed to begin history purge transaction: {e}"))
         })?;
 
+        let lock_sql = format!(
+            "SELECT retained_messages FROM {} WHERE app_id=$1 AND channel=$2 FOR UPDATE",
+            self.tables.streams
+        );
+        sqlx::query(sqlx::AssertSqlSafe(lock_sql.as_str()))
+            .bind(app_id)
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to lock Postgres history stream for purge: {e}"
+                ))
+            })?;
         let delete_sql = match request.mode {
             HistoryPurgeMode::All => format!(
                 "DELETE FROM {} WHERE app_id = $1 AND channel = $2 RETURNING payload_size_bytes",
@@ -519,22 +547,84 @@ impl HistoryStore for PostgresHistoryStore {
         if batch_size == 0 {
             return Ok((0, false));
         }
-        let sql = format!(
-            r#"
-            DELETE FROM {table} WHERE ctid IN (
-                SELECT ctid FROM {table} WHERE published_at_ms < $1 ORDER BY published_at_ms ASC LIMIT $2
-            )
-            "#,
-            table = self.tables.entries
+        let select = format!(
+            "SELECT app_id,channel,stream_id,serial FROM {} WHERE published_at_ms<$1 ORDER BY published_at_ms ASC LIMIT $2",
+            self.tables.entries
         );
-        let rows_deleted = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        let candidates = sqlx::query(sqlx::AssertSqlSafe(select.as_str()))
             .bind(before_ms)
-            .bind(batch_size as i64)
-            .execute(&self.pool)
+            .bind(batch_size.min(4096) as i64)
+            .fetch_all(&self.pool)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to purge expired history rows: {e}")))?
-            .rows_affected();
-        Ok((rows_deleted, rows_deleted as usize >= batch_size))
+            .map_err(|e| Error::Internal(format!("Failed to select expired history batch: {e}")))?;
+        let candidate_count = candidates.len();
+        let mut channels =
+            std::collections::BTreeMap::<(String, String), Vec<(String, i64)>>::new();
+        for row in candidates {
+            channels
+                .entry((row.get("app_id"), row.get("channel")))
+                .or_default()
+                .push((row.get("stream_id"), row.get("serial")));
+        }
+        let mut total = 0;
+        for ((app, channel), keys) in channels {
+            let mut tx = self.pool.begin().await.map_err(|e| {
+                Error::Internal(format!("Failed to begin history expiry batch: {e}"))
+            })?;
+            let lock = format!(
+                "SELECT retained_messages FROM {} WHERE app_id=$1 AND channel=$2 FOR UPDATE",
+                self.tables.streams
+            );
+            sqlx::query(sqlx::AssertSqlSafe(lock.as_str()))
+                .bind(&app)
+                .bind(&channel)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to lock history expiry channel: {e}"))
+                })?;
+            let (streams, serials): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
+            let delete = format!(
+                "DELETE FROM {} WHERE app_id=$1 AND channel=$2 AND published_at_ms<$3 AND (stream_id,serial) IN (SELECT * FROM UNNEST($4::text[],$5::bigint[])) RETURNING payload_size_bytes",
+                self.tables.entries
+            );
+            let removed = sqlx::query(sqlx::AssertSqlSafe(delete.as_str()))
+                .bind(&app)
+                .bind(&channel)
+                .bind(before_ms)
+                .bind(streams)
+                .bind(serials)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to remove history expiry batch: {e}"))
+                })?;
+            let count = removed.len() as u64;
+            let bytes = removed
+                .iter()
+                .map(|row| row.get::<i64, _>("payload_size_bytes"))
+                .sum::<i64>();
+            let update = format!(
+                "UPDATE {streams} SET retained_messages=GREATEST(retained_messages-$3,0),retained_bytes=GREATEST(retained_bytes-$4,0),oldest_available_serial=(SELECT serial FROM {entries} WHERE app_id=$1 AND channel=$2 ORDER BY serial ASC LIMIT 1),newest_available_serial=(SELECT serial FROM {entries} WHERE app_id=$1 AND channel=$2 ORDER BY serial DESC LIMIT 1),oldest_available_published_at_ms=(SELECT published_at_ms FROM {entries} WHERE app_id=$1 AND channel=$2 ORDER BY published_at_ms ASC LIMIT 1),newest_available_published_at_ms=(SELECT published_at_ms FROM {entries} WHERE app_id=$1 AND channel=$2 ORDER BY published_at_ms DESC LIMIT 1) WHERE app_id=$1 AND channel=$2",
+                streams = self.tables.streams,
+                entries = self.tables.entries
+            );
+            sqlx::query(sqlx::AssertSqlSafe(update.as_str()))
+                .bind(&app)
+                .bind(&channel)
+                .bind(count as i64)
+                .bind(bytes)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to account history expiry batch: {e}"))
+                })?;
+            tx.commit().await.map_err(|e| {
+                Error::Internal(format!("Failed to commit history expiry batch: {e}"))
+            })?;
+            total += count;
+        }
+        Ok((total, candidate_count >= batch_size.min(4096)))
     }
 }
 

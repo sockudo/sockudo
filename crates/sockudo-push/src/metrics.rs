@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+use metrics::{describe_counter, describe_gauge, describe_histogram};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{DeliveryOutcome, DevicePushState, PushProviderKind};
@@ -185,9 +186,48 @@ struct MetricKey {
     labels: Vec<(&'static str, String)>,
 }
 
+#[derive(Debug)]
+struct MetricSeries {
+    key: MetricKey,
+    recorder_key: metrics::Key,
+    sample: NumericSnapshot,
+}
+
+#[derive(Debug, Default)]
+struct NumericSnapshot {
+    value: f64,
+    count: u64,
+    sum: f64,
+    buckets: [u64; 11],
+}
+
+impl NumericSnapshot {
+    fn snapshot(&self) -> PushMetricSnapshot {
+        PushMetricSnapshot {
+            value: self.value,
+            count: self.count,
+            sum: self.sum,
+            buckets: if self.count == 0 {
+                BTreeMap::new()
+            } else {
+                HISTOGRAM_BUCKETS
+                    .iter()
+                    .zip(self.buckets)
+                    .filter(|(_, count)| *count > 0)
+                    .map(|(bound, count)| (bound.to_string(), count))
+                    .chain(std::iter::once(("+Inf".to_owned(), self.count)))
+                    .collect()
+            },
+        }
+    }
+}
+
+const METADATA: metrics::Metadata<'static> =
+    metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
+
 #[derive(Clone, Debug)]
 pub struct PushMetrics {
-    samples: Arc<DashMap<MetricKey, PushMetricSnapshot>>,
+    samples: Arc<DashMap<u64, Vec<MetricSeries>>>,
 }
 
 impl Default for PushMetrics {
@@ -205,27 +245,26 @@ impl PushMetrics {
     }
 
     pub fn counter(&self, name: &'static str, labels: &[(&'static str, &str)], value: u64) {
-        self.with_sample(name, labels, |sample| {
+        let key = self.with_sample(name, labels, |sample| {
             sample.value += value as f64;
         });
-        let labels = metrics_labels(labels);
-        counter!(name, &labels).increment(value);
+        metrics::with_recorder(|recorder| {
+            recorder.register_counter(&key, &METADATA).increment(value)
+        });
     }
 
     pub fn gauge(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
-        self.with_sample(name, labels, |sample| {
+        let key = self.with_sample(name, labels, |sample| {
             sample.value = value;
         });
-        let labels = metrics_labels(labels);
-        gauge!(name, &labels).set(value);
+        metrics::with_recorder(|recorder| recorder.register_gauge(&key, &METADATA).set(value));
     }
 
     pub fn add_gauge(&self, name: &'static str, labels: &[(&'static str, &str)], delta: f64) {
-        self.with_sample(name, labels, |sample| {
+        let key = self.with_sample(name, labels, |sample| {
             sample.value = (sample.value + delta).max(0.0);
         });
-        let labels = metrics_labels(labels);
-        let handle = gauge!(name, &labels);
+        let handle = metrics::with_recorder(|recorder| recorder.register_gauge(&key, &METADATA));
         if delta.is_sign_negative() {
             handle.decrement(delta.abs());
         } else {
@@ -234,20 +273,19 @@ impl PushMetrics {
     }
 
     pub fn observe(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
-        self.with_sample(name, labels, |sample| {
+        let key = self.with_sample(name, labels, |sample| {
             sample.value = value;
             sample.count = sample.count.saturating_add(1);
             sample.sum += value;
-            for bucket in HISTOGRAM_BUCKETS {
+            for (count, bucket) in sample.buckets.iter_mut().zip(HISTOGRAM_BUCKETS) {
                 if value <= *bucket {
-                    let key = bucket.to_string();
-                    *sample.buckets.entry(key).or_default() += 1;
+                    *count = count.saturating_add(1);
                 }
             }
-            *sample.buckets.entry("+Inf".to_owned()).or_default() += 1;
         });
-        let labels = metrics_labels(labels);
-        histogram!(name, &labels).record(value);
+        metrics::with_recorder(|recorder| {
+            recorder.register_histogram(&key, &METADATA).record(value)
+        });
     }
 
     pub fn publish_accepted(&self, app_id: &str, result: &str, duration: Duration) {
@@ -716,38 +754,95 @@ impl PushMetrics {
     pub fn get(&self, name: &str) -> u64 {
         self.samples
             .iter()
-            .filter(|entry| entry.key().name == name)
-            .map(|entry| entry.value().value as u64)
+            .map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|series| series.key.name == name)
+                    .map(|series| series.sample.value as u64)
+                    .sum::<u64>()
+            })
             .sum()
     }
 
     pub fn snapshot(&self) -> PushMetricSnapshotMap {
         self.samples
             .iter()
-            .map(|entry| {
-                (
-                    (entry.key().name, entry.key().labels.clone()),
-                    entry.value().clone(),
-                )
+            .flat_map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .map(|series| {
+                        (
+                            (series.key.name, series.key.labels.clone()),
+                            series.sample.snapshot(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    /// Release operator snapshots and interned labels when an app is removed.
+    /// Recorder retention continues to follow the configured exporter policy.
+    pub fn remove_app(&self, app_id: &str) {
+        self.samples.retain(|_, series| {
+            series.retain(|series| {
+                !series
+                    .key
+                    .labels
+                    .iter()
+                    .any(|(key, value)| matches!(*key, "app" | "tenant") && value == app_id)
+            });
+            !series.is_empty()
+        });
     }
 
     fn with_sample(
         &self,
         name: &'static str,
         labels: &[(&'static str, &str)],
-        update: impl FnOnce(&mut PushMetricSnapshot),
-    ) {
-        let key = MetricKey {
-            name,
-            labels: labels
-                .iter()
-                .map(|(label, value)| (*label, (*value).to_owned()))
-                .collect(),
+        update: impl FnOnce(&mut NumericSnapshot),
+    ) -> metrics::Key {
+        let mut hash = DefaultHasher::new();
+        name.hash(&mut hash);
+        labels.hash(&mut hash);
+        let mut bucket = self.samples.entry(hash.finish()).or_default();
+        let index = bucket.iter().position(|series| {
+            series.key.name == name
+                && series.key.labels.len() == labels.len()
+                && series.key.labels.iter().zip(labels).all(
+                    |((key, value), (other_key, other_value))| {
+                        key == other_key && value == other_value
+                    },
+                )
+        });
+        let series = if let Some(index) = index {
+            &mut bucket[index]
+        } else {
+            let key = MetricKey {
+                name,
+                labels: labels
+                    .iter()
+                    .map(|(key, value)| (*key, (*value).to_owned()))
+                    .collect(),
+            };
+            let recorder_key = metrics::Key::from_parts(
+                name,
+                key.labels
+                    .iter()
+                    .map(|(key, value)| metrics::Label::new(*key, value.clone()))
+                    .collect::<Vec<_>>(),
+            );
+            bucket.push(MetricSeries {
+                key,
+                recorder_key,
+                sample: NumericSnapshot::default(),
+            });
+            bucket.last_mut().expect("just inserted metric series")
         };
-        let mut sample = self.samples.entry(key).or_default();
-        update(&mut sample);
+        update(&mut series.sample);
+        series.recorder_key.clone()
     }
 }
 
@@ -772,13 +867,6 @@ fn describe_push_metrics() {
             }
         }
     });
-}
-
-fn metrics_labels(labels: &[(&'static str, &str)]) -> Vec<(String, String)> {
-    labels
-        .iter()
-        .map(|(label, value)| ((*label).to_owned(), (*value).to_owned()))
-        .collect()
 }
 
 pub fn provider_label(provider: PushProviderKind) -> &'static str {
@@ -965,6 +1053,32 @@ mod tests {
                 || labels
                     .iter()
                     .all(|(key, _)| !matches!(*key, "publish_id" | "device_id" | "token"))
+        }));
+    }
+
+    #[test]
+    fn app_removal_releases_app_and_tenant_snapshots_without_changing_other_apps() {
+        let metrics = PushMetrics::default();
+        for app in ["removed", "kept"] {
+            metrics.publish_accepted(app, "accepted", Duration::from_millis(1));
+            metrics.circuit_breaker_state(PushProviderKind::Fcm, app, true);
+        }
+        metrics.remove_app("removed");
+        let snapshot = metrics.snapshot();
+        assert!(
+            snapshot
+                .keys()
+                .all(|(_, labels)| labels.iter().all(|(_, value)| value != "removed"))
+        );
+        assert!(snapshot.keys().any(|(_, labels)| {
+            labels
+                .iter()
+                .any(|(key, value)| *key == "tenant" && value == "kept")
+        }));
+        assert!(snapshot.keys().any(|(_, labels)| {
+            labels
+                .iter()
+                .any(|(key, value)| *key == "app" && value == "kept")
         }));
     }
 }

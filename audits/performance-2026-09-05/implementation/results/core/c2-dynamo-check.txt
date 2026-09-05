@@ -1,0 +1,61 @@
+    Blocking waiting for file lock on build directory
+    Checking num-integer v0.1.46
+   Compiling rustls v0.23.42
+    Checking bytes-utils v0.1.4
+    Checking aws-smithy-types v1.5.0
+    Checking aws-smithy-async v1.2.14
+    Checking aws-smithy-runtime-api v1.12.3
+    Checking num-bigint v0.4.8
+    Checking tokio-rustls v0.26.4
+    Checking simple_asn1 v0.6.4
+    Checking aws-smithy-schema v0.1.0
+    Checking hyper-rustls v0.27.9
+    Checking jsonwebtoken v11.0.0
+    Checking aws-credential-types v1.2.14
+    Checking aws-smithy-http v0.63.6
+    Checking aws-smithy-http-client v1.1.13
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking aws-smithy-observability v0.2.6
+    Checking aws-smithy-runtime v1.11.3
+    Checking aws-types v1.3.16
+    Checking aws-sigv4 v1.4.5
+    Checking aws-runtime v1.7.5
+    Checking aws-smithy-json v0.62.7
+    Checking sqlx-core v0.9.0
+    Checking sqlx-postgres v0.9.0
+    Checking sqlx-mysql v0.9.0
+    Checking reqwest v0.12.28
+    Checking sqlx v0.9.0
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking aws-sdk-dynamodb v1.116.0
+    Checking aws-smithy-query v0.60.15
+    Checking sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+    Checking aws-sdk-sts v1.107.0
+    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+    Checking sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+    Checking aws-sdk-sso v1.102.0
+    Checking aws-sdk-ssooidc v1.104.0
+    Checking sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+    Checking sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Checking aws-config v1.8.18
+    Checking axum-server v0.8.0
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Checking sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Checking sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+error[E0282]: type annotations needed
+   --> crates/sockudo-server/src/history/dynamodb/version_store/store_impl.rs:691:53
+    |
+691 |         let record = self.decode_records(vec![bytes.as_ref().to_vec()]).await?.remove(0);
+    |                                                     ^^^^^^
+    |
+help: try using a fully qualified path to specify the expected types
+    |
+691 -         let record = self.decode_records(vec![bytes.as_ref().to_vec()]).await?.remove(0);
+691 +         let record = self.decode_records(vec![<Vec<u8> as AsRef<T>>::as_ref(&bytes).to_vec()]).await?.remove(0);
+    |
+
+For more information about this error, try `rustc --explain E0282`.
+error: could not compile `sockudo` (bin "sockudo") due to 1 previous error

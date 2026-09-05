@@ -1,0 +1,40 @@
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+warning: unused import: `VersionStore`
+ --> crates/sockudo-server/src/history/surreal/version_store/tests.rs:2:35
+  |
+2 | use sockudo_core::version_store::{VersionStore, VersionMutationResult};
+  |                                   ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sockudo` (bin "sockudo" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.07s
+     Running unittests src/main.rs (target/debug/deps/sockudo-3d03145e2c9cc262)
+
+running 3 tests
+
+thread 'history::scylla::version_store::tests::scylla_compact_versions_restart_and_fencing' (515237) panicked at crates/sockudo-server/src/history/version_storage_tests.rs:43:10:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to deserialize version batch result: Expected a single row, but got 4 rows")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test history::scylla::version_store::tests::scylla_compact_versions_restart_and_fencing ... FAILED
+
+thread 'history::surreal::version_store::tests::surreal_compact_versions_restart_and_fencing' (515238) panicked at crates/sockudo-server/src/history/version_storage_tests.rs:148:23:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to transact SurrealDB version mutation: Expected a single result output when using the ONLY keyword")
+test history::surreal::version_store::tests::surreal_compact_versions_restart_and_fencing ... FAILED
+
+thread 'history::dynamodb::version_store::tests::dynamodb_compact_versions_restart_and_fencing' (515236) panicked at crates/sockudo-server/src/history/version_storage_tests.rs:148:23:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to transact version mutation: service error")
+test history::dynamodb::version_store::tests::dynamodb_compact_versions_restart_and_fencing ... FAILED
+
+failures:
+
+failures:
+    history::dynamodb::version_store::tests::dynamodb_compact_versions_restart_and_fencing
+    history::scylla::version_store::tests::scylla_compact_versions_restart_and_fencing
+    history::surreal::version_store::tests::surreal_compact_versions_restart_and_fencing
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 172 filtered out; finished in 7.92s
+
+error: test failed, to rerun pass `-p sockudo --bin sockudo`

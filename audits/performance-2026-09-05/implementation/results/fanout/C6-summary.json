@@ -1,0 +1,230 @@
+{
+  "baseline": {
+    "postgres,cap=64,payload=128": {
+      "ns": {
+        "median": 12716838,
+        "min": 10589208,
+        "max": 14897368,
+        "samples": 9
+      }
+    },
+    "postgres,cap=64,payload=16384": {
+      "ns": {
+        "median": 12946832,
+        "min": 11716427,
+        "max": 26928029,
+        "samples": 9
+      }
+    },
+    "postgres,cap=1024,payload=128": {
+      "ns": {
+        "median": 16873411,
+        "min": 14586250,
+        "max": 18430573,
+        "samples": 9
+      }
+    },
+    "postgres,cap=1024,payload=16384": {
+      "ns": {
+        "median": 16499995,
+        "min": 15978951,
+        "max": 18683261,
+        "samples": 9
+      }
+    },
+    "mysql,cap=64,payload=128": {
+      "ns": {
+        "median": 19323580,
+        "min": 17343009,
+        "max": 21911681,
+        "samples": 9
+      }
+    },
+    "mysql,cap=64,payload=16384": {
+      "ns": {
+        "median": 356029471,
+        "min": 350818776,
+        "max": 438544687,
+        "samples": 9
+      }
+    },
+    "mysql,cap=1024,payload=128": {
+      "ns": {
+        "median": 29026424,
+        "min": 27713442,
+        "max": 29473689,
+        "samples": 9
+      }
+    },
+    "mysql,cap=1024,payload=16384": {
+      "ns": {
+        "median": 359094973,
+        "min": 355171240,
+        "max": 365437226,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=64,payload=128": {
+      "ns": {
+        "median": 19278645,
+        "min": 17843734,
+        "max": 23230302,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=64,payload=16384": {
+      "ns": {
+        "median": 63977019,
+        "min": 61824593,
+        "max": 69982967,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=1024,payload=128": {
+      "ns": {
+        "median": 130637400,
+        "min": 124370359,
+        "max": 154188527,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=1024,payload=16384": {
+      "ns": {
+        "median": 2739914326,
+        "min": 2723844874,
+        "max": 2834535305,
+        "samples": 9
+      }
+    },
+    "surreal,cap=64,payload=128": {
+      "ns": {
+        "median": 14007236,
+        "min": 13467666,
+        "max": 14434092,
+        "samples": 9
+      }
+    },
+    "surreal,cap=64,payload=16384": {
+      "ns": {
+        "median": 474311585,
+        "min": 469932712,
+        "max": 479688003,
+        "samples": 9
+      }
+    },
+    "surreal,cap=1024,payload=128": {
+      "ns": {
+        "median": 257684335,
+        "min": 254135509,
+        "max": 266571096,
+        "samples": 9
+      }
+    },
+    "surreal,cap=1024,payload=16384": {
+      "ns": {
+        "median": 6414734065,
+        "min": 6303473498,
+        "max": 6807066678,
+        "samples": 9
+      }
+    }
+  },
+  "after": {
+    "postgres,cap=64,payload=128": {
+      "ns": {
+        "median": 2217710,
+        "min": 1984940,
+        "max": 4736199,
+        "samples": 9
+      }
+    },
+    "postgres,cap=64,payload=16384": {
+      "ns": {
+        "median": 2755757,
+        "min": 2612165,
+        "max": 4878618,
+        "samples": 9
+      }
+    },
+    "postgres,cap=1024,payload=128": {
+      "ns": {
+        "median": 4035926,
+        "min": 3855985,
+        "max": 6083925,
+        "samples": 9
+      }
+    },
+    "postgres,cap=1024,payload=16384": {
+      "ns": {
+        "median": 4580314,
+        "min": 4378082,
+        "max": 6748291,
+        "samples": 9
+      }
+    },
+    "mysql,cap=64,payload=128": {
+      "ns": {
+        "median": 17511056,
+        "min": 15556072,
+        "max": 19362925,
+        "samples": 9
+      }
+    },
+    "mysql,cap=64,payload=16384": {
+      "ns": {
+        "median": 350281651,
+        "min": 346615914,
+        "max": 389008162,
+        "samples": 9
+      }
+    },
+    "mysql,cap=1024,payload=128": {
+      "ns": {
+        "median": 20966775,
+        "min": 20686125,
+        "max": 28797892,
+        "samples": 9
+      }
+    },
+    "mysql,cap=1024,payload=16384": {
+      "ns": {
+        "median": 356351659,
+        "min": 353166381,
+        "max": 413925600,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=64,payload=128": {
+      "ns": {
+        "median": 37161895,
+        "min": 34321788,
+        "max": 42367339,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=64,payload=16384": {
+      "ns": {
+        "median": 55581026,
+        "min": 52723898,
+        "max": 58979207,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=1024,payload=128": {
+      "ns": {
+        "median": 37920999,
+        "min": 35367114,
+        "max": 44431901,
+        "samples": 9
+      }
+    },
+    "dynamodb,cap=1024,payload=16384": {
+      "ns": {
+        "median": 53087475,
+        "min": 52536113,
+        "max": 54831480,
+        "samples": 9
+      }
+    }
+  }
+}

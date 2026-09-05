@@ -1,3 +1,4 @@
+mod encoding;
 mod store_impl;
 
 use sockudo_core::error::{Error, Result};
@@ -156,6 +157,10 @@ impl PostgresVersionStore {
             "ALTER TABLE {} ADD COLUMN IF NOT EXISTS is_open_stream BOOLEAN NOT NULL DEFAULT FALSE",
             self.tables.version_messages
         );
+        let alter_messages_state_version = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS state_version_serial TEXT NULL",
+            self.tables.version_messages
+        );
         let alter_entries_operation_key = format!(
             "ALTER TABLE {} ADD COLUMN IF NOT EXISTS operation_key TEXT NULL",
             self.tables.version_entries
@@ -173,7 +178,65 @@ impl PostgresVersionStore {
             self.tables.version_messages
         );
 
+        // Nullable means an existing message has not yet initialized its
+        // retained append count. Triggers also cover imports, purge, and older
+        // writers during a rolling upgrade; no eager table-wide backfill.
+        let alter_append_count = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS append_count BIGINT NULL",
+            self.tables.version_messages
+        );
+        let append_count_function = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {entries}_append_count_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF TG_OP = 'INSERT' THEN
+                    IF NEW.action = 'message.append' THEN
+                        UPDATE {messages} SET append_count = append_count + 1
+                        WHERE app_id = NEW.app_id AND channel = NEW.channel AND message_serial = NEW.message_serial AND append_count IS NOT NULL;
+                    END IF;
+                    RETURN NEW;
+                ELSE
+                    IF OLD.action = 'message.append' THEN
+                        UPDATE {messages} SET append_count = GREATEST(append_count - 1, 0)
+                        WHERE app_id = OLD.app_id AND channel = OLD.channel AND message_serial = OLD.message_serial AND append_count IS NOT NULL;
+                    END IF;
+                    RETURN OLD;
+                END IF;
+            END $$
+        "#,
+            entries = self.tables.version_entries,
+            messages = self.tables.version_messages
+        );
+        let append_count_trigger = format!(
+            r#"
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '{entries}_append_count_trg' AND tgrelid = '{entries}'::regclass) THEN
+                    CREATE TRIGGER {entries}_append_count_trg AFTER INSERT OR DELETE ON {entries}
+                    FOR EACH ROW EXECUTE FUNCTION {entries}_append_count_fn();
+                END IF;
+            END $$
+        "#,
+            entries = self.tables.version_entries
+        );
+
+        let create_text_snapshots = format!(
+            "CREATE TABLE IF NOT EXISTS {} (app_id TEXT NOT NULL, channel TEXT NOT NULL, snapshot_key TEXT NOT NULL, text_data TEXT NOT NULL, updated_at_ms BIGINT NOT NULL, PRIMARY KEY (app_id, channel, snapshot_key))",
+            self.text_table()
+        );
+        let alter_text_reference = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS text_snapshot_key TEXT NULL",
+            self.tables.version_entries
+        );
+        let text_reference_index = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_text_idx ON {0} (app_id, channel, text_snapshot_key) WHERE text_snapshot_key IS NOT NULL",
+            self.tables.version_entries
+        );
+        let text_expiry_index = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_expiry_idx ON {0} (updated_at_ms)",
+            self.text_table()
+        );
         let ddl = [
+            create_text_snapshots,
             create_version_streams,
             create_version_messages,
             create_version_entries,
@@ -185,9 +248,16 @@ impl PostgresVersionStore {
             idx_entries_created_at,
             idx_messages_updated_at,
             alter_messages_open,
+            alter_messages_state_version,
             alter_entries_operation_key,
             alter_entries_operation_fingerprint,
             idx_entries_operation,
+            alter_append_count,
+            append_count_function,
+            append_count_trigger,
+            alter_text_reference,
+            text_reference_index,
+            text_expiry_index,
         ];
 
         let mut conn = self.pool.acquire().await.map_err(|e| {
@@ -213,3 +283,6 @@ impl PostgresVersionStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

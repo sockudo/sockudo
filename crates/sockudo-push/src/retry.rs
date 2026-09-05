@@ -15,7 +15,7 @@ use crate::storage::{DynPushStore, IdempotencyRecord, SchedulerLock};
 
 const MAX_RETRY_ATTEMPTS: u32 = 100;
 const MAX_RETRY_BACKOFF_MS: u64 = 24 * 60 * 60 * 1000;
-const MAX_RETRY_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+pub(crate) const MAX_RETRY_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const RETRY_IDEMPOTENCY_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

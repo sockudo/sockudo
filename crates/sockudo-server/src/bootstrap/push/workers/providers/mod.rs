@@ -60,6 +60,7 @@ pub(super) fn start_fcm_provider_workers(
 #[cfg(all(feature = "push", feature = "monolith", not(feature = "push-hms")))]
 pub(super) fn start_hms_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
+    _store: sockudo_push::DynPushStore,
     _queue: sockudo_push::DynPushQueue,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(
@@ -71,6 +72,7 @@ pub(super) fn start_hms_provider_workers(
 #[cfg(all(feature = "push", feature = "monolith", not(feature = "push-webpush")))]
 pub(super) fn start_webpush_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
+    _store: sockudo_push::DynPushStore,
     _queue: sockudo_push::DynPushQueue,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(
@@ -82,6 +84,7 @@ pub(super) fn start_webpush_provider_workers(
 #[cfg(all(feature = "push", feature = "monolith", not(feature = "push-wns")))]
 pub(super) fn start_wns_provider_workers(
     _config: &sockudo_core::options::ServerOptions,
+    _store: sockudo_push::DynPushStore,
     _queue: sockudo_push::DynPushQueue,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     tracing::warn!(

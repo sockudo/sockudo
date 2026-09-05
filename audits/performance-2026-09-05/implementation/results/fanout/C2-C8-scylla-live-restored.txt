@@ -1,0 +1,9 @@
+
+running 4 tests
+test history::maintenance_tests::c6_scylla_accounting ... ok
+test history::scylla::page_tests::scylla_bounded_sparse_pages_preserve_every_serial_and_cursor ... ok
+test history::scylla::version_store::tests::scylla_compact_versions_restart_and_fencing ... ok
+test history::scylla::version_store::tests::scylla_raw_import_updates_atomic_latest_counts_and_preserves_compact_history ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 124 filtered out; finished in 10.15s
+

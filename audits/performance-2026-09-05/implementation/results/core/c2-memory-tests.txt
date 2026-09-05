@@ -1,0 +1,27 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.57s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-690969c8c439da9f)
+
+running 19 tests
+test version_store::tests::leased_store_discards_stale_local_range_when_reserving_after_latest ... ok
+test version_store::tests::memory_store_pages_version_history ... ok
+test version_store::tests::atomic_create_abort_before_commit_does_not_expose_recovery_gap ... ok
+test version_store::tests::memory_batch_projection_returns_latest_records_for_requested_serials ... ok
+test version_store::tests::default_batch_projection_uses_one_history_read_and_zero_row_reads ... ok
+test version_store::tests::memory_store_projects_latest_by_history_order ... ok
+test version_store::tests::atomic_mutation_id_replay_returns_original_receipt_and_rejects_payload_change ... ok
+test version_store::tests::memory_store_rejects_duplicate_channel_delivery_serial ... ok
+test version_store::tests::memory_store_rejects_invalid_append_without_corrupting_chain ... ok
+test version_store::tests::memory_store_reserves_delivery_positions_with_stable_stream_id ... ok
+test version_store::tests::memory_store_replays_in_delivery_order ... ok
+test version_store::tests::atomic_terminal_race_applies_one_terminal_append_and_rejects_the_other ... ok
+test version_store::tests::memory_store_returns_latest_visible_by_version_serial ... ok
+test version_store::tests::memory_store_replay_log_rebuilds_identical_aggregates ... ok
+test version_store::tests::shared_store_two_node_create_admission_enforces_open_stream_limit_atomically ... ok
+test version_store::tests::memory_store_aggregates_many_appends_for_latest_and_history_reads ... ok
+test version_store::tests::leased_store_reserves_gapless_serials_with_amortized_backend_calls ... ok
+test version_store::tests::memory_store_preserves_channel_delivery_order_under_concurrent_appends ... ok
+test version_store::tests::atomic_compare_and_apply_preserves_one_hundred_concurrent_append_fragments ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 346 filtered out; finished in 0.04s
+

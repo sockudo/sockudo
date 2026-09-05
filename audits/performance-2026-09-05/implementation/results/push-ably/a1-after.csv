@@ -1,0 +1,14 @@
+a1,records=128,sessions=100,rep=0,allowed=100,us=1262,p50_us=1163,p95_us=1178,p99_us=1178,allocations=1697,allocated_bytes=352633,cache_calls=10,read_bytes=23442
+a1,records=128,sessions=100,rep=1,allowed=100,us=836,p50_us=775,p95_us=789,p99_us=789,allocations=1692,allocated_bytes=351165,cache_calls=10,read_bytes=23442
+a1,records=128,sessions=100,rep=2,allowed=100,us=813,p50_us=754,p95_us=767,p99_us=769,allocations=1691,allocated_bytes=351133,cache_calls=10,read_bytes=23442
+a1,records=128,sessions=100,rep=3,allowed=100,us=871,p50_us=815,p95_us=829,p99_us=829,allocations=1712,allocated_bytes=353069,cache_calls=10,read_bytes=23442
+a1,records=128,sessions=100,rep=4,allowed=100,us=855,p50_us=801,p95_us=814,p99_us=815,allocations=1712,allocated_bytes=353069,cache_calls=10,read_bytes=23442
+a1,records=128,sessions=100,rep=5,allowed=100,us=946,p50_us=890,p95_us=904,p99_us=904,allocations=1701,allocated_bytes=352085,cache_calls=10,read_bytes=23442
+a1,records=128,sessions=100,rep=6,allowed=100,us=891,p50_us=830,p95_us=849,p99_us=850,allocations=1692,allocated_bytes=351165,cache_calls=10,read_bytes=23442
+a1,records=128,sessions=1000,rep=0,allowed=1000,us=1939,p50_us=1133,p95_us=1243,p99_us=1255,allocations=4397,allocated_bytes=1485559,cache_calls=10,read_bytes=23570
+a1,records=128,sessions=1000,rep=1,allowed=1000,us=1606,p50_us=1137,p95_us=1252,p99_us=1264,allocations=4388,allocated_bytes=1470715,cache_calls=10,read_bytes=23570
+a1,records=128,sessions=1000,rep=2,allowed=1000,us=1646,p50_us=1171,p95_us=1287,p99_us=1299,allocations=4399,allocated_bytes=1471699,cache_calls=10,read_bytes=23570
+a1,records=128,sessions=1000,rep=3,allowed=1000,us=1632,p50_us=1160,p95_us=1278,p99_us=1290,allocations=4393,allocated_bytes=1471191,cache_calls=10,read_bytes=23570
+a1,records=128,sessions=1000,rep=4,allowed=1000,us=1609,p50_us=1131,p95_us=1246,p99_us=1257,allocations=4394,allocated_bytes=1471223,cache_calls=10,read_bytes=23570
+a1,records=128,sessions=1000,rep=5,allowed=1000,us=1648,p50_us=1162,p95_us=1281,p99_us=1293,allocations=4399,allocated_bytes=1471699,cache_calls=10,read_bytes=23570
+a1,records=128,sessions=1000,rep=6,allowed=1000,us=1626,p50_us=1150,p95_us=1272,p99_us=1284,allocations=4398,allocated_bytes=1471667,cache_calls=10,read_bytes=23570

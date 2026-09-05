@@ -1,0 +1,7 @@
+
+running 2 tests
+test bootstrap::maintenance::tests::final_batch_honors_remaining_budget_and_preserves_partial_failure ... ok
+test bootstrap::maintenance::tests::progressing_empty_pages_cannot_monopolize_a_tick ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.00s
+

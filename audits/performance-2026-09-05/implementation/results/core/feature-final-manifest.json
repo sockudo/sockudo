@@ -1,0 +1,41 @@
+[
+  {
+    "command": [
+      "cargo",
+      "check",
+      "--offline",
+      "-p",
+      "sockudo",
+      "--no-default-features"
+    ],
+    "exit_code": 0,
+    "log": "minimal-feature-final.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "build",
+      "--offline",
+      "-p",
+      "sockudo",
+      "--features",
+      "full"
+    ],
+    "exit_code": 0,
+    "log": "full-feature-final.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "bench",
+      "--offline",
+      "-p",
+      "sockudo-ai-benches",
+      "--bench",
+      "ai_hot_paths",
+      "--no-run"
+    ],
+    "exit_code": 0,
+    "log": "ai-bench-build-final.txt"
+  }
+]

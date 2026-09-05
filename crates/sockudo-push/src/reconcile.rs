@@ -2,6 +2,8 @@ use crate::domain::{PublishLifecycleState, PushCursor};
 use crate::metrics::PushMetrics;
 use crate::pipeline::{DynPushQueue, PushPipelineResult, PushQueuePayload, PushQueueStage};
 use crate::storage::{DynPushStore, SchedulerLock};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 const DEFAULT_REPAIR_BATCH_SIZE: usize = 100;
 const DEFAULT_REPAIR_MIN_AGE_MS: u64 = 30_000;
@@ -55,6 +57,7 @@ pub struct PushPublishLogRepairWorker {
     owner_id: String,
     policy: PushRepairPolicy,
     metrics: PushMetrics,
+    cursors: Arc<Mutex<BTreeMap<String, PushCursor>>>,
 }
 
 impl PushPublishLogRepairWorker {
@@ -65,6 +68,7 @@ impl PushPublishLogRepairWorker {
             owner_id: owner_id.into(),
             policy: PushRepairPolicy::default(),
             metrics: PushMetrics::default(),
+            cursors: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -83,7 +87,12 @@ impl PushPublishLogRepairWorker {
         app_id: &str,
         now_ms: u64,
     ) -> PushPipelineResult<PushRepairReport> {
-        let mut cursor: Option<PushCursor> = None;
+        let mut cursor = self
+            .cursors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(app_id)
+            .cloned();
         let mut report = PushRepairReport::default();
         let batch_size = self.policy.batch_size.max(1);
 
@@ -94,6 +103,15 @@ impl PushPublishLogRepairWorker {
                 .list_publish_log_events(app_id, remaining.min(1_000), cursor)
                 .await?;
             if page.items.is_empty() {
+                let mut cursors = self
+                    .cursors
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(next) = page.next_cursor {
+                    cursors.insert(app_id.to_owned(), next);
+                } else {
+                    cursors.remove(app_id);
+                }
                 break;
             }
 
@@ -146,6 +164,17 @@ impl PushPublishLogRepairWorker {
             }
 
             cursor = page.next_cursor;
+            {
+                let mut cursors = self
+                    .cursors
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(next) = &cursor {
+                    cursors.insert(app_id.to_owned(), next.clone());
+                } else {
+                    cursors.remove(app_id);
+                }
+            }
             if cursor.is_none() {
                 break;
             }

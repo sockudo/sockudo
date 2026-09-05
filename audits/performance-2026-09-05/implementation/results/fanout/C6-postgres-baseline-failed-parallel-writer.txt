@@ -1,0 +1,11 @@
+
+running 1 test
+test history::benchmark_tests::benchmark_history_postgres ... FAILED
+
+failures:
+
+failures:
+    history::benchmark_tests::benchmark_history_postgres
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 115 filtered out; finished in 60.08s
+

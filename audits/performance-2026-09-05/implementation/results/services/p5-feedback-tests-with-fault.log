@@ -1,0 +1,25 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_push-2578fcf1fe627aae)
+
+running 16 tests
+test feedback::tests::feedback_can_refine_a_terminal_summary_without_reactivating_it ... ok
+test feedback::tests::feedback_duplicate_suppression_prevents_counter_drift ... ok
+test feedback::tests::duplicate_retryable_feedback_is_suppressed ... ok
+test feedback::tests::concurrent_feedback_updates_do_not_lose_publish_counters ... ok
+test feedback::tests::feedback_dedupe_is_scoped_by_publish_id ... ok
+test feedback::tests::redelivered_feedback_message_does_not_double_count_status ... ok
+test feedback::tests::retryable_feedback_enqueues_retry_with_original_job_context ... ok
+test batch_wire::tests::mixed_payload_groups_and_retry_feedback_survive_restart ... ok
+test feedback::tests::feedback_batch_applies_sixty_four_outcomes_with_two_status_writes ... ok
+test pipeline::tests::dispatch_and_feedback_update_status_and_device_state ... ok
+test feedback::tests::feedback_provider_transient_does_not_increment_device_failure_count ... ok
+test feedback::tests::feedback_device_transient_increments_only_that_device_failure_count ... ok
+test feedback::tests::feedback_device_terminal_deletes_only_target_and_is_idempotent ... ok
+test feedback::tests::feedback_mass_provider_auth_outage_preserves_device_registry ... ok
+test feedback::tests::feedback_replays_every_committed_boundary_without_counter_or_device_drift ... ok
+test feedback::fault_tests::partial_successor_failure_nacks_source_and_replays_only_unfinished_effects ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.38s
+

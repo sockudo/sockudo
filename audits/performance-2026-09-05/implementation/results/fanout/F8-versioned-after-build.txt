@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on build directory
+   Compiling rustls v0.23.43
+   Compiling num-integer v0.1.47
+   Compiling event-listener v5.4.2
+   Compiling futures-util v0.3.34
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-util v0.7.19
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling event-listener-strategy v0.5.4
+   Compiling num-bigint v0.4.8
+   Compiling async-lock v3.4.2
+   Compiling combine v4.6.8
+   Compiling simple_asn1 v0.6.4
+   Compiling jsonwebtoken v11.0.0
+   Compiling tower v0.5.3
+   Compiling axum v0.8.9
+   Compiling tokio-rustls v0.26.4
+   Compiling redis v1.4.1
+   Compiling sockudo-ws v2.0.1
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-fanout-probes v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/fanout-probes)
+    Finished `release` profile [optimized] target(s) in 2m 07s

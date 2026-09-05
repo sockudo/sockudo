@@ -56,6 +56,13 @@ impl MySqlPushStore {
 #[cfg(feature = "postgres")]
 #[async_trait]
 impl PushDeviceStore for PostgresPushStore {
+    async fn apply_device_feedback_once(
+        &self,
+        request: crate::storage::DeviceFeedbackRequest,
+    ) -> PushStorageResult<crate::storage::DeviceFeedbackApplied> {
+        feedback_device_pg(&self.pool, request).await
+    }
+
     async fn upsert_device(
         &self,
         device: DeviceDetails,
@@ -86,6 +93,16 @@ impl PushDeviceStore for PostgresPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<DeviceDetails>> {
         list_devices_pg(&self.pool, app_id, limit, cursor).await
+    }
+
+    async fn list_devices_by_client(
+        &self,
+        app_id: &str,
+        client_id: &str,
+        limit: usize,
+        cursor: Option<PushCursor>,
+    ) -> PushStorageResult<Page<DeviceDetails>> {
+        list_devices_by_client_pg(&self.pool, app_id, client_id, limit, cursor).await
     }
 
     async fn delete_devices_by_client(
@@ -124,6 +141,13 @@ impl PushDeviceStore for PostgresPushStore {
 #[cfg(feature = "mysql")]
 #[async_trait]
 impl PushDeviceStore for MySqlPushStore {
+    async fn apply_device_feedback_once(
+        &self,
+        request: crate::storage::DeviceFeedbackRequest,
+    ) -> PushStorageResult<crate::storage::DeviceFeedbackApplied> {
+        feedback_device_mysql(&self.pool, request).await
+    }
+
     async fn upsert_device(
         &self,
         device: DeviceDetails,
@@ -154,6 +178,16 @@ impl PushDeviceStore for MySqlPushStore {
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<DeviceDetails>> {
         list_devices_mysql(&self.pool, app_id, limit, cursor).await
+    }
+
+    async fn list_devices_by_client(
+        &self,
+        app_id: &str,
+        client_id: &str,
+        limit: usize,
+        cursor: Option<PushCursor>,
+    ) -> PushStorageResult<Page<DeviceDetails>> {
+        list_devices_by_client_mysql(&self.pool, app_id, client_id, limit, cursor).await
     }
 
     async fn delete_devices_by_client(

@@ -1,5 +1,9 @@
 use super::{HistoryTables, MYSQL_ASCII_IDENTIFIER_CHARSET};
+use crate::history::annotation_cache::{
+    AnnotationProjectionCache, CachedProjection, ProjectionReadBudget,
+};
 use async_trait::async_trait;
+use futures_util::TryStreamExt;
 use sockudo_core::annotations::{
     Annotation, AnnotationAction, AnnotationAppendOutcome, AnnotationEventLookupRequest,
     AnnotationEventsRequest, AnnotationProjection, AnnotationProjectionOptions,
@@ -24,6 +28,7 @@ const MAX_RAW_REPLAY_EVENTS: usize = 10_000;
 const MYSQL_BINARY_IDENTIFIER_CHARSET: &str = "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin";
 
 pub(in crate::history) struct MysqlAnnotationStore {
+    projection_cache: AnnotationProjectionCache,
     pool: MySqlPool,
     tables: HistoryTables,
 }
@@ -67,7 +72,11 @@ impl MysqlAnnotationStore {
             annotation_events: format!("{table_prefix}_annotation_events"),
             annotation_projections: format!("{table_prefix}_annotation_projections"),
         };
-        let store = Self { pool, tables };
+        let store = Self {
+            pool,
+            tables,
+            projection_cache: AnnotationProjectionCache::default(),
+        };
         store.ensure_tables().await?;
         Ok(store)
     }
@@ -192,6 +201,14 @@ impl MysqlAnnotationStore {
                             "Failed to initialize MySQL annotation tables: {error}"
                         ))
                     })?;
+            }
+            Self::ensure_column(&mut connection, &self.tables.annotation_projections, "cache_revision", "BIGINT NOT NULL DEFAULT 0").await?;
+            let trigger_name = format!("{}_cache_rev", self.tables.annotation_projections);
+            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME = ?")
+                .bind(&trigger_name).fetch_one(&mut *connection).await.map_err(|e| Error::Internal(format!("Failed to inspect annotation revision trigger: {e}")))?;
+            if exists == 0 {
+                let sql = format!("CREATE TRIGGER `{trigger_name}` BEFORE UPDATE ON `{}` FOR EACH ROW SET NEW.cache_revision = OLD.cache_revision + 1", self.tables.annotation_projections);
+                sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&mut *connection).await.map_err(|e| Error::Internal(format!("Failed to create annotation revision trigger: {e}")))?;
             }
             Self::ensure_column(
                 &mut connection,
@@ -330,7 +347,7 @@ impl MysqlAnnotationStore {
             Error::Internal(format!("Failed to encode annotation projection: {error}"))
         })?;
         let sql = format!(
-            "INSERT INTO `{}` (app_id, channel, message_serial, annotation_type, summary_json, last_annotation_serial, updated_at_ms) VALUES (?, ?, ?, ?, ?, NULL, ?) ON DUPLICATE KEY UPDATE updated_at_ms = VALUES(updated_at_ms)",
+            "INSERT INTO `{}` (app_id, channel, message_serial, annotation_type, summary_json, last_annotation_serial, updated_at_ms) VALUES (?, ?, ?, ?, ?, NULL, ?) ON DUPLICATE KEY UPDATE app_id = VALUES(app_id)",
             self.tables.annotation_projections
         );
         sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
@@ -357,25 +374,56 @@ impl MysqlAnnotationStore {
             "SELECT payload_bytes FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? AND annotation_type = ? ORDER BY annotation_serial ASC LIMIT ?",
             self.tables.annotation_events
         );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        let mut rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(&request.app_id)
             .bind(&request.channel_id)
             .bind(request.message_serial.as_str())
             .bind(request.annotation_type.as_str())
             .bind(i64::try_from(MAX_PROJECTION_EVENTS + 1).unwrap_or(i64::MAX))
-            .fetch_all(&mut **transaction)
-            .await
-            .map_err(|error| {
-                Error::Internal(format!("Failed to read annotation events: {error}"))
-            })?;
-        if rows.len() > MAX_PROJECTION_EVENTS {
-            return Err(Error::BufferFull(format!(
-                "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
-            )));
+            .fetch(&mut **transaction);
+        let mut budget = ProjectionReadBudget::default();
+        let mut records = Vec::new();
+        while let Some(row) = rows.try_next().await.map_err(|error| {
+            Error::Internal(format!("Failed to stream annotation events: {error}"))
+        })? {
+            if records.len() >= MAX_PROJECTION_EVENTS {
+                return Err(Error::BufferFull(format!(
+                    "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                )));
+            }
+            let payload: Vec<u8> = row.get("payload_bytes");
+            budget.add(payload.len())?;
+            records.push(Self::decode_record(&payload)?);
         }
-        rows.into_iter()
-            .map(|row| Self::decode_record(&row.get::<Vec<u8>, _>("payload_bytes")))
-            .collect()
+        Ok(records)
+    }
+
+    async fn cached_projection_state(
+        &self,
+        transaction: &mut Transaction<'_, MySql>,
+        request: &AnnotationProjectionRequest,
+    ) -> Result<Option<(u64, StoredAnnotationProjection)>> {
+        let sql = format!(
+            "SELECT message_serial, annotation_type, CAST(summary_json AS CHAR) AS summary_json, last_annotation_serial, updated_at_ms, cache_revision FROM `{}` WHERE app_id = ? AND channel = ? AND message_serial = ? AND annotation_type = ? FOR UPDATE",
+            self.tables.annotation_projections
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(&request.app_id)
+            .bind(&request.channel_id)
+            .bind(request.message_serial.as_str())
+            .bind(request.annotation_type.as_str())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to read annotation cache revision: {e}"))
+            })?;
+        row.map(|row| {
+            Ok((
+                row.get::<i64, _>("cache_revision") as u64,
+                Self::decode_projection_row(&request.app_id, &request.channel_id, &row)?,
+            ))
+        })
+        .transpose()
     }
 
     async fn persist_projection(
@@ -383,9 +431,52 @@ impl MysqlAnnotationStore {
         transaction: &mut Transaction<'_, MySql>,
         request: &AnnotationProjectionRequest,
         options: AnnotationProjectionOptions,
+        appended: Option<(&StoredAnnotationEvent, bool)>,
     ) -> Result<StoredAnnotationProjection> {
-        let records = self.events_in_transaction(transaction, request).await?;
-        let projection = Self::build_projection(request, records, options)?;
+        let mut cached = None;
+        if let Some((record, inserted)) = appended {
+            if let Some((revision, current)) =
+                self.cached_projection_state(transaction, request).await?
+            {
+                cached =
+                    self.projection_cache
+                        .take(request, revision.saturating_sub(1), Some(&current));
+                if !inserted && let Some(value) = cached {
+                    let projection = value.accumulator.projection.clone();
+                    self.projection_cache.put(request, revision, value);
+                    return Ok(projection);
+                }
+                if let Some(value) = cached.as_mut() {
+                    if value.event_count >= MAX_PROJECTION_EVENTS {
+                        return Err(Error::BufferFull(format!(
+                            "annotation projection exceeds the {MAX_PROJECTION_EVENTS} event bound"
+                        )));
+                    }
+                    if !value.append(record, None)? {
+                        cached = None;
+                    }
+                }
+            }
+        }
+        let _rebuild;
+        let projection = if let Some(value) = cached.as_ref() {
+            value.accumulator.projection.clone()
+        } else {
+            _rebuild = self.projection_cache.admit_rebuild()?;
+            let records = self.events_in_transaction(transaction, request).await?;
+            if options == AnnotationProjectionOptions::default() {
+                let events = records
+                    .into_iter()
+                    .map(|record| (record, None))
+                    .collect::<Vec<_>>();
+                let value = CachedProjection::rebuild(request, &events)?;
+                let projection = value.accumulator.projection.clone();
+                cached = Some(value);
+                projection
+            } else {
+                Self::build_projection(request, records, options)?
+            }
+        };
         let summary_json = serde_json::to_string(&projection.summary).map_err(|error| {
             Error::Internal(format!("Failed to encode annotation projection: {error}"))
         })?;
@@ -411,6 +502,11 @@ impl MysqlAnnotationStore {
             .map_err(|error| {
                 Error::Internal(format!("Failed to persist annotation projection: {error}"))
             })?;
+        if let Some(value) = cached
+            && let Some((revision, _)) = self.cached_projection_state(transaction, request).await?
+        {
+            self.projection_cache.put(request, revision, value);
+        }
         Ok(projection)
     }
 
@@ -609,6 +705,7 @@ impl AnnotationStore for MysqlAnnotationStore {
                 &mut transaction,
                 &request,
                 AnnotationProjectionOptions::default(),
+                Some((&record, inserted)),
             )
             .await?;
         transaction.commit().await.map_err(|error| {
@@ -670,6 +767,7 @@ impl AnnotationStore for MysqlAnnotationStore {
                 &mut transaction,
                 &request,
                 AnnotationProjectionOptions::default(),
+                Some((&record, inserted)),
             )
             .await?;
         transaction.commit().await.map_err(|error| {
@@ -856,7 +954,7 @@ impl AnnotationStore for MysqlAnnotationStore {
         })?;
         self.lock_projection(&mut transaction, &request).await?;
         let projection = self
-            .persist_projection(&mut transaction, &request, options)
+            .persist_projection(&mut transaction, &request, options, None)
             .await?;
         transaction.commit().await.map_err(|error| {
             Error::Internal(format!("Failed to commit projection rebuild: {error}"))
@@ -960,6 +1058,7 @@ impl AnnotationStore for MysqlAnnotationStore {
                     &mut transaction,
                     request,
                     AnnotationProjectionOptions::default(),
+                    None,
                 )
                 .await?;
             }

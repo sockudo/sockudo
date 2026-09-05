@@ -27,7 +27,7 @@ pub fn new_engine(
 pub mod total {
     use super::*;
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     pub struct TotalSummarizer {
         total: u64,
     }
@@ -93,6 +93,7 @@ pub mod total {
 pub mod flag {
     use super::*;
 
+    #[derive(Clone)]
     pub struct FlagSummarizer {
         clients: BTreeSet<String>,
         options: AnnotationProjectionOptions,
@@ -173,6 +174,7 @@ pub mod flag {
 pub mod distinct {
     use super::*;
 
+    #[derive(Clone)]
     pub struct DistinctSummarizer {
         names: BTreeMap<String, BTreeSet<String>>,
         options: AnnotationProjectionOptions,
@@ -219,6 +221,7 @@ pub mod distinct {
 pub mod unique {
     use super::*;
 
+    #[derive(Clone)]
     pub struct UniqueSummarizer {
         names: BTreeMap<String, BTreeSet<String>>,
         client_names: BTreeMap<String, String>,
@@ -276,12 +279,13 @@ pub mod unique {
 pub mod multiple {
     use super::*;
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct MultipleBucketState {
         client_counts: BTreeMap<String, u64>,
         total_unidentified: u64,
     }
 
+    #[derive(Clone)]
     pub struct MultipleSummarizer {
         names: BTreeMap<String, MultipleBucketState>,
         options: AnnotationProjectionOptions,

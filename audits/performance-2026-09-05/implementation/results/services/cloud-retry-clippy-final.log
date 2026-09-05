@@ -1,0 +1,65 @@
+    Blocking waiting for file lock on build directory
+    Checking either v1.16.0
+    Checking time v0.3.54
+    Checking futures-util v0.3.33
+    Checking futures-io v0.3.33
+    Checking tokio v1.53.1
+    Checking serde_with v3.21.0
+    Checking prost-types v0.14.4
+   Compiling rustls v0.23.42
+   Compiling google-cloud-auth v1.15.0
+    Checking rustls-webpki v0.103.13
+    Checking sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Checking sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+    Checking bytes-utils v0.1.4
+    Checking google-cloud-wkt v1.7.0
+    Checking simple_asn1 v0.6.4
+    Checking futures v0.3.33
+    Checking futures-executor v0.3.33
+    Checking opentelemetry_sdk v0.32.1
+    Checking jsonwebtoken v11.0.0
+    Checking google-cloud-rpc v1.6.0
+    Checking google-cloud-type v1.6.0
+    Checking rustls-platform-verifier v0.7.0
+    Checking tokio-util v0.7.19
+    Checking tokio-rustls v0.26.4
+    Checking aws-smithy-async v1.2.14
+    Checking tokio-stream v0.1.19
+    Checking google-cloud-gax v1.13.0
+    Checking crossfire v3.1.19
+    Checking h2 v0.4.16
+    Checking tower v0.5.3
+    Checking aws-smithy-types v1.5.0
+    Checking aws-smithy-runtime-api v1.12.3
+    Checking aws-smithy-query v0.60.15
+    Checking tower-http v0.6.11
+    Checking aws-smithy-schema v0.1.0
+    Checking aws-credential-types v1.2.14
+    Checking aws-smithy-http v0.63.6
+    Checking aws-smithy-observability v0.2.6
+    Checking aws-sigv4 v1.4.5
+    Checking aws-types v1.3.16
+    Checking aws-smithy-json v0.62.7
+    Checking hyper v1.11.0
+    Checking hyper-util v0.1.20
+    Checking hyper-rustls v0.27.9
+    Checking hyper-timeout v0.5.2
+    Checking axum v0.8.9
+    Checking aws-smithy-http-client v1.1.13
+    Checking reqwest v0.13.4
+    Checking tonic v0.14.6
+    Checking aws-smithy-runtime v1.11.3
+    Checking tonic-prost v0.14.6
+    Checking aws-runtime v1.7.5
+    Checking sockudo-ws v2.0.1
+    Checking aws-sdk-ssooidc v1.104.0
+    Checking aws-sdk-sso v1.102.0
+    Checking aws-sdk-sts v1.107.0
+    Checking aws-sdk-sqs v1.102.0
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking google-cloud-gax-internal v0.7.16
+    Checking aws-config v1.8.18
+    Checking google-cloud-iam-v1 v1.11.0
+    Checking google-cloud-pubsub v1.3.0
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 38s

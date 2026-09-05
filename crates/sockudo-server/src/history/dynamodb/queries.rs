@@ -16,6 +16,7 @@ impl DynamoDbHistoryStore {
         let response = self
             .client
             .get_item()
+            .consistent_read(true)
             .table_name(&self.tables.streams)
             .key(
                 "stream_key",
@@ -30,6 +31,51 @@ impl DynamoDbHistoryStore {
             Some(item) => Ok(Some(Self::stream_from_item(item)?)),
             None => Ok(None),
         }
+    }
+
+    pub(super) async fn query_retention_prefix(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: &str,
+        newest: bool,
+    ) -> Result<Vec<StoredEntryRecord>> {
+        let response = self
+            .client
+            .query()
+            .table_name(&self.tables.entries)
+            .key_condition_expression("stream_partition = :pk")
+            .expression_attribute_values(
+                ":pk",
+                Self::attr_string(&Self::stream_partition(app_id, channel, stream_id)),
+            )
+            .projection_expression("serial, published_at_ms, payload_size_bytes")
+            .consistent_read(true)
+            .scan_index_forward(!newest)
+            .limit(if newest { 1 } else { 25 })
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to query DynamoDB retention prefix: {e}"))
+            })?;
+        response
+            .items()
+            .iter()
+            .map(|item| {
+                Ok(StoredEntryRecord {
+                    app_id: String::new(),
+                    channel: String::new(),
+                    stream_id: String::new(),
+                    serial: Self::item_attr_u64(item, "serial")?,
+                    published_at_ms: Self::item_attr_i64(item, "published_at_ms")?,
+                    payload_size_bytes: Self::item_attr_u64(item, "payload_size_bytes")?,
+                    message_id: None,
+                    event_name: None,
+                    operation_kind: String::new(),
+                    payload_bytes: Vec::new(),
+                })
+            })
+            .collect()
     }
 
     pub(super) async fn query_entries(

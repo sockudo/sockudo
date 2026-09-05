@@ -1,0 +1,14 @@
+p1,n=1000,rep=0,returned=10,us=457
+p1,n=1000,rep=1,returned=10,us=34
+p1,n=1000,rep=2,returned=10,us=24
+p1,n=1000,rep=3,returned=10,us=19
+p1,n=1000,rep=4,returned=10,us=18
+p1,n=1000,rep=5,returned=10,us=19
+p1,n=1000,rep=6,returned=10,us=19
+p1,n=10000,rep=0,returned=10,us=35
+p1,n=10000,rep=1,returned=10,us=22
+p1,n=10000,rep=2,returned=10,us=19
+p1,n=10000,rep=3,returned=10,us=19
+p1,n=10000,rep=4,returned=10,us=19
+p1,n=10000,rep=5,returned=10,us=19
+p1,n=10000,rep=6,returned=10,us=19

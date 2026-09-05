@@ -1,3 +1,7 @@
+mod encoding;
+mod imports;
+mod metadata;
+mod projections;
 mod store_impl;
 
 use super::*;
@@ -78,16 +82,25 @@ fn version_batch_applied(result: scylla::response::query_result::QueryResult) ->
             "Failed to decode ScyllaDB version batch result: {e}"
         ))
     })?;
-    let mut columns = rows
-        .single_row::<ColumnIterator>()
-        .map_err(|e| Error::Internal(format!("Failed to deserialize version batch result: {e}")))?;
-    let applied = columns
-        .next()
-        .transpose()
-        .map_err(|e| Error::Internal(format!("Failed to read version batch result: {e}")))?
-        .and_then(|column| column.slice)
-        .is_some_and(|slice| slice.as_slice() == [1]);
-    Ok(applied)
+    let mut seen = false;
+    for row in rows
+        .rows::<ColumnIterator>()
+        .map_err(|e| Error::Internal(format!("failed to decode version batch rows: {e}")))?
+    {
+        let mut columns =
+            row.map_err(|e| Error::Internal(format!("failed to decode version batch row: {e}")))?;
+        seen = true;
+        let applied = columns
+            .next()
+            .transpose()
+            .map_err(|e| Error::Internal(format!("failed to read version batch result: {e}")))?
+            .and_then(|column| column.slice)
+            .is_some_and(|slice| slice.as_slice() == [1]);
+        if !applied {
+            return Ok(false);
+        }
+    }
+    Ok(seen)
 }
 
 #[cfg(feature = "versioned-messages")]
@@ -161,7 +174,21 @@ impl ScyllaVersionStore {
         let session = builder.build().await.map_err(|e| {
             Error::Internal(format!("Failed to connect version store to ScyllaDB: {e}"))
         })?;
-        let session = Arc::new(session);
+        Self::from_session(
+            db_config,
+            table_prefix,
+            retention_seconds,
+            Arc::new(session),
+        )
+        .await
+    }
+
+    async fn from_session(
+        db_config: &ScyllaDbSettings,
+        table_prefix: &str,
+        retention_seconds: u64,
+        session: Arc<Session>,
+    ) -> Result<Self> {
         let keyspace = if db_config.keyspace.trim().is_empty() {
             "sockudo".to_string()
         } else {
@@ -288,3 +315,6 @@ impl ScyllaVersionStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

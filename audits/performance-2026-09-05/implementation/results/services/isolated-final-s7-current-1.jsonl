@@ -1,0 +1,2 @@
+{"allocated_bytes":119048970,"verified":{"delivered":0,"accepted":2048,"rejected":97952},"allocations":1504235,"case":"S7_blocked_admission","elapsed_us":33797}
+{"delivered":2048,"accepted":2048,"case":"S7_recovered"}

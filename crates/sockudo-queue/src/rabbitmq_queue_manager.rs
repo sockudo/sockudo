@@ -188,6 +188,7 @@ impl QueueInterface for RabbitMqQueueManager {
         let running = self.running.clone();
         let prefetch = self.reliability.worker_prefetch;
         let max_attempts = self.reliability.max_attempts;
+        let reliability = self.reliability.clone();
 
         self.workers.spawn(async move {
             let mut in_flight = tokio::task::JoinSet::new();
@@ -217,6 +218,7 @@ impl QueueInterface for RabbitMqQueueManager {
                 match delivery {
                     Ok(delivery) => {
                         let callback = callback.clone();
+                        let reliability = reliability.clone();
                         let channel = consumer_channel.clone();
                         let queue_name = queue_name.clone();
                         let dead_letter_queue = dead_letter_queue.clone();
@@ -228,6 +230,7 @@ impl QueueInterface for RabbitMqQueueManager {
                                 queue_name,
                                 dead_letter_queue,
                                 max_attempts,
+                                reliability,
                             )
                             .await;
                         });
@@ -297,6 +300,7 @@ async fn process_rabbitmq_delivery(
     queue_name: String,
     dead_letter_queue: String,
     max_attempts: u32,
+    reliability: QueueReliabilityConfig,
 ) {
     match sonic_rs::from_slice::<JobData>(&delivery.data) {
         Ok(job) => match callback(job).await {
@@ -305,14 +309,19 @@ async fn process_rabbitmq_delivery(
                     error!(error = %error, "failed to ack rabbitmq queue delivery");
                 }
             }
-            Err(_) => {
-                warn!("rabbitmq queue processor failed");
+            Err(error) => {
+                warn!(error = %error, "rabbitmq queue processor failed");
                 let attempt = delivery_attempt(&delivery);
                 let (target, next_attempt) = if attempt >= max_attempts {
                     (dead_letter_queue.as_str(), attempt)
                 } else {
                     (queue_name.as_str(), attempt.saturating_add(1))
                 };
+                if attempt < max_attempts {
+                    // The broker retains the unacknowledged source while this bounded
+                    // prefetch slot waits. No per-failure detached timer or retry queue.
+                    tokio::time::sleep(crate::broker_retry_delay(&reliability, attempt)).await;
+                }
                 republish_rabbitmq_delivery(&delivery, &channel, target, next_attempt).await;
             }
         },

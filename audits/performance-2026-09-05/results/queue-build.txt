@@ -1,0 +1,7 @@
+     Locking 3 packages to latest Rust 1.98.1 compatible versions
+      Adding metrics v0.24.6
+      Adding rapidhash v4.5.1
+      Adding sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-performance-audit v0.0.0 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/diagnostics)
+    Finished `release` profile [optimized] target(s) in 5.16s

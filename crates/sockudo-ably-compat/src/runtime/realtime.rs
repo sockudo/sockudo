@@ -564,7 +564,10 @@ pub(super) async fn run_ably_realtime_socket(
         let _ = previous_session.send(AblySessionCommand::Superseded).await;
     }
     hub.session_echo.insert(session_id.clone(), echo);
-    let mut revocation_poll = tokio::time::interval(Duration::from_millis(500));
+    let mut ownership_poll = tokio::time::interval(Duration::from_millis(500));
+    ownership_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Snapshot age plus polling delay remains at most the original 500ms budget.
+    let mut revocation_poll = tokio::time::interval(REVOCATION_SNAPSHOT_FRESHNESS);
     revocation_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut renewal_hint_sent = false;
     let mut graceful_close = false;
@@ -601,12 +604,12 @@ pub(super) async fn run_ably_realtime_socket(
                     Err(_) => break,
                 }
             }
-            _ = revocation_poll.tick() => {
-                if !hub.session_is_current(&app.id, &connection_id, &session_id).await {
-                    break;
-                }
-                if authorization.revocable
-                    && hub.authorization_is_revoked(&app.id, &authorization, &attached_channels).await
+            _ = ownership_poll.tick() => {
+                if !hub.session_is_current(&app.id, &connection_id, &session_id).await { break; }
+                continue;
+            }
+            _ = revocation_poll.tick(), if authorization.revocable => {
+                if hub.authorization_is_revoked_from_snapshot(&app.id, &authorization, &attached_channels).await
                 {
                     send_protocol_disconnected(&sender, 40141, "Token revoked");
                     break;

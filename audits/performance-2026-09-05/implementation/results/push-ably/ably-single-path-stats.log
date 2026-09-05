@@ -1,0 +1,27 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.49s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_ably_compat-d2a7d4cad72de045)
+
+running 11 tests
+test stats::tests::memory_stats_retention_refreshes_touched_buckets_and_expires_inactive_apps ... ok
+test stats::tests::nonblocking_recording_never_exceeds_the_bounded_queue ... ok
+test stats::tests::critical_stats_interrupt_optional_wait_but_wait_for_store ... ok
+test stats::tests::acknowledged_observation_is_flushed_before_record_returns ... ok
+test stats::tests::fixture_ingestion_and_rollups_share_the_store_contract ... ok
+test stats::tests::live_observations_reconcile_with_worker_counters ... ok
+test stats::tests::cursor_is_interval_anchored_and_rejects_query_changes ... ok
+test stats::tests::memory_stats_narrow_ranges_ignore_unrelated_retained_minutes ... ok
+test stats::tests::cache_store_merges_concurrent_nodes_and_survives_runtime_recreation ... ok
+test stats::tests::fixture_ingestion_enforces_field_and_depth_bounds ... ok
+test stats::cache_index::tests::calendar_index_resumes_legacy_backfill_bounds_reads_and_recovers_eviction ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 184 filtered out; finished in 0.13s
+

@@ -1,0 +1,14 @@
+a3,n=1000,rep=0,returned=2,us=910,allocations=14240,allocated_bytes=1490428
+a3,n=1000,rep=1,returned=2,us=902,allocations=14240,allocated_bytes=1490428
+a3,n=1000,rep=2,returned=2,us=934,allocations=14240,allocated_bytes=1490428
+a3,n=1000,rep=3,returned=2,us=985,allocations=14240,allocated_bytes=1490428
+a3,n=1000,rep=4,returned=2,us=978,allocations=14240,allocated_bytes=1490428
+a3,n=1000,rep=5,returned=2,us=941,allocations=14240,allocated_bytes=1490428
+a3,n=1000,rep=6,returned=2,us=946,allocations=14240,allocated_bytes=1490428
+a3,n=10000,rep=0,returned=2,us=15094,allocations=141744,allocated_bytes=15697780
+a3,n=10000,rep=1,returned=2,us=14596,allocations=141743,allocated_bytes=15697740
+a3,n=10000,rep=2,returned=2,us=15792,allocations=141743,allocated_bytes=15697740
+a3,n=10000,rep=3,returned=2,us=16207,allocations=141743,allocated_bytes=15697740
+a3,n=10000,rep=4,returned=2,us=15611,allocations=141743,allocated_bytes=15697740
+a3,n=10000,rep=5,returned=2,us=15051,allocations=141743,allocated_bytes=15697740
+a3,n=10000,rep=6,returned=2,us=15799,allocations=141743,allocated_bytes=15697740

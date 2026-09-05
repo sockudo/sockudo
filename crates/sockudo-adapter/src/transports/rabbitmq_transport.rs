@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use lapin::message::Delivery;
 use lapin::options::{
-    BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, ExchangeDeclareOptions,
-    QueueBindOptions, QueueDeclareOptions,
+    BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, BasicQosOptions,
+    ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions,
 };
 use lapin::types::FieldTable;
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, ExchangeKind};
@@ -76,6 +76,14 @@ impl HorizontalTransport for RabbitMqTransport {
                 })?;
         }
 
+        publish_channel
+            .confirm_select(ConfirmSelectOptions::default())
+            .await
+            .map_err(|error| {
+                Error::Internal(format!(
+                    "Failed to enable RabbitMQ publisher confirms: {error}"
+                ))
+            })?;
         info!(
             adapter = "rabbitmq",
             broadcast_exchange = %broadcast_exchange,
@@ -166,7 +174,13 @@ impl RabbitMqTransport {
         let payload = sonic_rs::to_vec(message)
             .map_err(|e| Error::Other(format!("Failed to serialize RabbitMQ message: {e}")))?;
 
-        self.publish_channel
+        if payload.len() > 16 * 1024 * 1024 {
+            return Err(Error::InvalidMessageFormat(
+                "Horizontal frame exceeds 16 MiB ingress limit".into(),
+            ));
+        }
+        let confirmation = self
+            .publish_channel
             .basic_publish(
                 exchange.into(),
                 "".into(),
@@ -179,6 +193,11 @@ impl RabbitMqTransport {
             .await
             .map_err(|e| Error::Internal(format!("RabbitMQ publish confirmation failed: {e}")))?;
 
+        if !matches!(confirmation, lapin::Confirmation::Ack(_)) {
+            return Err(Error::Internal(
+                "RabbitMQ rejected publish admission".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -359,6 +378,12 @@ impl RabbitMqTransport {
 
     async fn declare_bound_queue(channel: &Channel, exchange: &str, kind: &str) -> Result<String> {
         channel
+            .basic_qos(64, BasicQosOptions::default())
+            .await
+            .map_err(|error| {
+                Error::Internal(format!("Failed to bound RabbitMQ prefetch: {error}"))
+            })?;
+        channel
             .exchange_declare(
                 exchange.into(),
                 ExchangeKind::Fanout,
@@ -368,6 +393,15 @@ impl RabbitMqTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to declare RabbitMQ exchange: {e}")))?;
 
+        let mut limits = FieldTable::default();
+        limits.insert(
+            "x-max-length-bytes".into(),
+            lapin::types::AMQPValue::LongLongInt(64 * 1024 * 1024),
+        );
+        limits.insert(
+            "x-overflow".into(),
+            lapin::types::AMQPValue::LongString("reject-publish".into()),
+        );
         let queue = channel
             .queue_declare(
                 "".into(),
@@ -377,7 +411,7 @@ impl RabbitMqTransport {
                     auto_delete: true,
                     ..Default::default()
                 },
-                FieldTable::default(),
+                limits,
             )
             .await
             .map_err(|e| Error::Internal(format!("Failed to declare RabbitMQ queue: {e}")))?;

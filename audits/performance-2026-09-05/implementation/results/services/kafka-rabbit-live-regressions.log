@@ -1,0 +1,14 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.76s
+     Running tests/broker_performance_live.rs (target/debug/deps/broker_performance_live-1842308e46381008)
+
+running 2 tests
+test kafka_partition_workers_preserve_app_order_and_drain_on_shutdown ... kafka_delivered=160 peak=4 elapsed_ms=1468
+ok
+test rabbit_retries_are_paced_and_keep_accepted_jobs_until_success ... rabbit_attempts=3 retry_span_ms=203
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 4.92s
+

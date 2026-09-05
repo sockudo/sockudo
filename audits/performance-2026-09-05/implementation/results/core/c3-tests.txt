@@ -1,0 +1,43 @@
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.29s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_core-690969c8c439da9f)
+
+running 33 tests
+test annotation_summarizers::total::tests::repeated_creates_increment_and_delete_decrements ... ok
+test annotation_summarizers::tests::distinct_allows_same_client_in_multiple_names ... ok
+test annotations::tests::annotation_type_parses_namespace_summarizer_and_version ... ok
+test annotation_summarizers::flag::tests::tracks_distinct_identified_clients ... ok
+test annotation_summarizers::tests::unique_moves_client_between_names ... ok
+test annotations::tests::annotation_type_rejects_unknown_summarizer ... ok
+test annotation_summarizers::tests::multiple_tracks_identified_and_unidentified_counts ... ok
+test annotations::tests::client_id_clipping_reports_only_when_over_limit ... ok
+test annotations::tests::flag_counts_each_identified_client_once ... ok
+test annotations::tests::distinct_allows_one_client_in_multiple_names ... ok
+test annotations::tests::memory_store_get_projection_repairs_stale_watermark ... ok
+test annotations::tests::memory_store_converges_under_concurrent_unique_churn ... ok
+test annotations::tests::memory_store_appends_events_and_materializes_projection ... ok
+test annotations::tests::memory_store_deduplicates_by_annotation_serial ... ok
+test annotations::tests::multiple_tracks_counts_and_removes_identified_client_contribution ... ok
+test annotations::tests::memory_store_converges_after_out_of_order_unique_events ... ok
+test annotations::tests::memory_store_filters_message_before_applying_replay_limit ... ok
+test annotations::tests::memory_store_purge_removes_events_and_stale_projection ... ok
+test annotations::tests::memory_store_list_projections_rebuilds_cold_projection_cache ... ok
+test annotations::tests::rebuild_sorts_by_serial_and_ignores_duplicate_serials ... ok
+test annotations::tests::memory_store_reports_cold_projection_cache_rebuild_count ... ok
+test annotations::tests::summary_serialization_excludes_raw_annotation_payloads ... ok
+test annotations::tests::total_counts_unidentified_and_repeated_client_events ... ok
+test annotations::tests::memory_store_replays_raw_channel_events_by_annotation_serial ... ok
+test annotations::tests::rebuild_honors_delete_tombstone_when_node_order_sorts_before_create ... ok
+test annotations::tests::validation_requires_client_for_ownership_summarizers ... ok
+test annotations::tests::unique_moves_client_between_names ... ok
+test annotations::tests::validation_requires_name_for_named_summarizers ... ok
+test app::tests::resolved_history_annotations_enabled_forces_persistence ... ok
+test capability_token::tests::annotation_capabilities_are_not_implied_by_publish_and_subscribe ... ok
+test options::server::tests::clustered_annotations_accept_every_durable_version_driver ... ok
+test websocket::tests::test_connection_capabilities_parse_hyphenated_annotation_grants ... ok
+test app::tests::deserialize_channel_annotation_flags ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 328 filtered out; finished in 0.00s
+

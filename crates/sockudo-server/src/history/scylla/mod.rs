@@ -6,8 +6,8 @@ use scylla::statement::{SerialConsistency, Statement};
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{
-    HistoryAppendRecord, HistoryCursor, HistoryDirection, HistoryDurableState, HistoryItem,
-    HistoryPage, HistoryPurgeMode, HistoryPurgeRequest, HistoryPurgeResult, HistoryQueryBounds,
+    HistoryAppendRecord, HistoryCursor, HistoryDurableState, HistoryItem, HistoryPage,
+    HistoryPurgeMode, HistoryPurgeRequest, HistoryPurgeResult, HistoryQueryBounds,
     HistoryReadRequest, HistoryResetResult, HistoryRetentionStats, HistoryRuntimeStatus,
     HistoryStore, HistoryStreamInspection, HistoryStreamRuntimeState, HistoryWriteReservation,
 };
@@ -134,7 +134,16 @@ impl ScyllaHistoryStore {
         let session = builder.build().await.map_err(|e| {
             Error::Internal(format!("Failed to connect history store to ScyllaDB: {e}"))
         })?;
-        let session = Arc::new(session);
+        Self::from_session(db_config, config, metrics, cache_manager, Arc::new(session)).await
+    }
+
+    pub(super) async fn from_session(
+        db_config: &ScyllaDbSettings,
+        config: HistoryConfig,
+        metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+        cache_manager: Option<Arc<dyn CacheManager + Send + Sync>>,
+        session: Arc<Session>,
+    ) -> Result<Self> {
         let keyspace = if db_config.keyspace.trim().is_empty() {
             "sockudo".to_string()
         } else {
@@ -197,7 +206,22 @@ impl ScyllaHistoryStore {
                 "Failed to deserialize ScyllaDB history stream row: {e}"
             ))
         })?;
-        Ok(row.map(HistoryStreamRecord::from_row))
+        let mut record = row.map(HistoryStreamRecord::from_row);
+        if let Some(record) = &mut record {
+            if let Some(state) = self
+                .load_partition_retention(app_id, channel, &record.stream_id)
+                .await?
+            {
+                let stats = state.stats(&record.stream_id);
+                record.retained_messages = stats.retained_messages;
+                record.retained_bytes = stats.retained_bytes;
+                record.oldest_serial = stats.oldest_serial;
+                record.newest_serial = stats.newest_serial;
+                record.oldest_published_at_ms = stats.oldest_published_at_ms;
+                record.newest_published_at_ms = stats.newest_published_at_ms;
+            }
+        }
+        Ok(record)
     }
 
     async fn retained_stats(&self, app_id: &str, channel: &str) -> Result<HistoryRetentionStats> {
@@ -251,6 +275,7 @@ impl ScyllaHistoryStore {
 }
 
 mod entries;
+mod retention;
 mod rows;
 use rows::*;
 mod schema;
@@ -261,14 +286,16 @@ mod store_impl;
 
 #[cfg(feature = "versioned-messages")]
 mod annotation_store;
+#[cfg(feature = "versioned-messages")]
 mod version_store;
 #[cfg(feature = "versioned-messages")]
 #[allow(unused_imports)]
 pub(super) use annotation_store::create_scylla_annotation_store;
+#[cfg(feature = "versioned-messages")]
 pub(super) use version_store::create_scylla_version_store;
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 fn validate_cql_identifier(value: &str, label: &str) -> Result<()> {
     if !value
@@ -308,4 +335,25 @@ async fn ensure_scylla_keyspace(
         ))
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod page_tests;
+
+#[cfg(test)]
+pub(super) async fn simulate_legacy_retention(
+    db: &ScyllaDbSettings,
+    config: HistoryConfig,
+    stream: &str,
+) {
+    let store = ScyllaHistoryStore::from_session(
+        db,
+        config,
+        None,
+        None,
+        tests::fixture_session().await.unwrap(),
+    )
+    .await
+    .unwrap();
+    store.session.query_unpaged(format!("UPDATE {} SET retention_revision=null,retention_count=777,retention_bytes=999 WHERE app_id='c6-app' AND channel='legacy' AND stream_id=?",store.tables.entries_fq()),(stream,)).await.unwrap();
 }

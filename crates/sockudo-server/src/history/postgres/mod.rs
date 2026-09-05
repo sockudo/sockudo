@@ -47,3 +47,20 @@ async fn unlock_postgres_schema(conn: &mut PgConnection, lock_name: &str) -> Res
         .map_err(|e| Error::Internal(format!("Failed to unlock PostgreSQL schema init: {e}")))?;
     Ok(())
 }
+
+#[cfg(test)]
+pub(super) async fn simulate_legacy_retention(
+    db: &sockudo_core::options::DatabaseConnection,
+    config: sockudo_core::options::HistoryConfig,
+) {
+    let store = PostgresHistoryStore::new(
+        db,
+        &sockudo_core::options::DatabasePooling::default(),
+        config,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {} SET retention_initialized=FALSE,retained_messages=777,retained_bytes=999 WHERE app_id='c6-app' AND channel='legacy'",store.tables.streams).as_str())).execute(&store.pool).await.unwrap();
+}

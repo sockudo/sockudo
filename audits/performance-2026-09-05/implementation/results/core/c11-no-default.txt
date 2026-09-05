@@ -1,0 +1,74 @@
+warning: unused import: `json`
+ --> src/events.rs:5:23
+  |
+5 | use sonic_rs::{Value, json};
+  |                       ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sockudo-http` (lib) generated 1 warning (run `cargo fix --lib -p sockudo-http` to apply 1 suggestion)
+warning: `sockudo-http` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/sockudo_http-046604c60c499138)
+
+running 51 tests
+test config::tests::test_config_validation ... ok
+test config::tests::test_encryption_key_validation ... ok
+test events::tests::test_trigger_params_builder_with_idempotency_key ... ok
+test events::tests::test_trigger_params_builder ... ok
+test events::tests::test_trigger_params_builder_with_tags ... ok
+test config::tests::test_config_builder ... ok
+test sockudo::tests::retry_jitter_is_bounded_and_extreme_attempts_do_not_overflow ... ok
+test events::tests::test_batch_event_builder ... ok
+test events::tests::test_batch_event_with_idempotency_key ... ok
+test events::tests::test_event_serialization_without_idempotency_key ... ok
+test events::tests::test_event_serialization_with_idempotency_key ... ok
+test auth::tests::test_get_socket_signature_for_user ... ok
+test events::tests::test_batch_event_with_tags ... ok
+test events::tests::test_event_data_conversions ... ok
+test events::tests::test_generate_idempotency_key ... ok
+test events::tests::test_batch_event_with_auto_idempotency_key ... ok
+test sockudo::tests::test_for_cluster ... ok
+test auth::tests::test_encrypted_channel_auth_without_encryption ... ok
+test sockudo::tests::test_history_params_to_map ... ok
+test events::tests::test_trigger_params_builder_with_auto_idempotency_key ... ok
+test channel::tests::test_channel_type_detection ... ok
+test channel::tests::test_channel_creation ... ok
+test sockudo::tests::test_signed_query_string_signs_lowercase_keys_but_keeps_request_keys ... ok
+test channel::tests::test_channel_name_validation ... ok
+test sockudo::tests::test_sockudo_creation ... ok
+test tests::test_build_info ... ok
+test token::tests::test_debug_redaction ... ok
+test token::tests::test_hmac_consistency ... ok
+test util::tests::test_format_duration ... ok
+test util::tests::test_is_encrypted_channel ... ok
+test util::tests::test_join_strings ... ok
+test util::tests::test_get_md5 ... ok
+test token::tests::test_sign_and_verify ... ok
+test util::tests::test_secure_compare ... ok
+test util::tests::test_to_ordered_array ... ok
+test webhook::tests::test_event_parsing ... ok
+test webhook::tests::test_event_round_trip ... ok
+test util::tests::test_validate_user_id ... ok
+test webhook::tests::test_webhook_data_parsing ... ok
+test webhook::tests::test_webhook_forward_compat_fixture ... ok
+test webhook::tests::test_webhook_data_accepts_nested_future_values ... ok
+test webhook::tests::test_webhook_validation ... ok
+test webhook::tests::test_webhook_preserves_raw_nested_future_values ... ok
+test sockudo::tests::test_channel_history_requests_expected_path_and_decodes_page ... ok
+test sockudo::tests::test_get_message_requests_expected_path_and_decodes_payload ... ok
+test sockudo::tests::test_force_reconnect_user_requests_expected_path ... ok
+test sockudo::tests::test_terminate_user_connections_requests_expected_path ... ok
+test sockudo::tests::test_authorize_channel ... ok
+test util::tests::test_validate_socket_id ... ok
+test sockudo::tests::test_force_reconnect_user_rejects_invalid_user_id ... ok
+test sockudo::tests::retries_preserve_exact_signed_body_headers_and_idempotency ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+   Doc-tests sockudo_http
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

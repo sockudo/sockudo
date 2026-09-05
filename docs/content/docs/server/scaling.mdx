@@ -68,8 +68,8 @@ For Kubernetes NATS clusters, prefer explicit StatefulSet pod DNS entries over a
       ],
       "request_timeout_ms": 5000,
       "connection_timeout_ms": 5000,
-      "subscription_capacity": 131072,
-      "client_capacity": 131072,
+      "subscription_capacity": 64,
+      "client_capacity": 64,
       "max_reconnects": 60,
       "no_echo": true
     }
@@ -78,6 +78,28 @@ For Kubernetes NATS clusters, prefer explicit StatefulSet pod DNS entries over a
 ```
 
 If `nodes_number` is set, it means expected Sockudo nodes, not NATS server replicas. Use it only when the Sockudo replica count is fixed or injected from deployment automation; otherwise leave discovery enabled.
+
+### Ingress capacity and continuity
+
+Redis, Redis Cluster, NATS, and Kafka admit horizontal work into fixed ordered workers. Broadcasts for the same app and channel retain their order. Each lane holds at most 64 MiB of admitted payload and each worker queue holds 64 records. Published horizontal frames larger than 16 MiB are rejected. Redis's callback bridge also has a 64 MiB byte budget and 256 records; it does not hide an unbounded Pub/Sub queue. Redis subscriptions use RESP3 and require Redis 6 or later; Sentinel reconnects resolve the current master again.
+
+Redis control and broadcast work have separate admission lanes. A full Pub/Sub lane cannot wait on the shared receive loop: rejected ingress closes affected subscriptions and invalidates replay continuity, requiring recovery or a fresh attach. Redis Cluster topology moves and Pub/Sub disconnects invalidate continuity as well. NATS uses 64 pending records by default and clamps `subscription_capacity` and `client_capacity` to 1–256; NATS slow-consumer events and disconnects invalidate continuity. Driver buffers remain additional bounded memory: NATS's record limit multiplies the broker's configured `max_payload`; keep that broker limit aligned with application payload limits. Kafka limits its librdkafka prefetched data queue to 64 MiB in addition to worker admission.
+
+RabbitMQ uses prefetch 64 and a 64 MiB limit on each exclusive consumer queue. Overflow rejects new publishes with publisher confirms rather than evicting accepted records. A successful confirm means broker acceptance; it does not imply that every recipient has finished processing.
+
+### Kafka partition generations
+
+Kafka defaults preserve the existing single-partition topics and legacy producer key. To distribute independent channels over partitions, explicitly choose a fresh topic generation:
+
+```toml
+[adapter.kafka]
+partitions = 8
+topic_epoch = "fanout-v2"
+```
+
+`partitions` accepts 1–256. More than one partition requires `topic_epoch`, an ASCII identifier of 1–64 letters, digits, underscores, or hyphens. Topics become `<prefix>.epoch.<topic_epoch>.broadcast`, `.requests`, and `.responses`; app/channel keys preserve order within a channel while allowing different channels to progress independently. Every Sockudo node retains its own consumer groups so horizontal broadcasts still reach every node. The Kafka queue uses the same `partitions` and `topic_epoch` options, names queues `<prefix>.queue.<name>.epoch.<epoch>`, and partitions by app ID; its workers share a consumer group. Drain queue jobs and adapter broadcasts independently before a generation transition. Startup rejects an existing generation with a different partition count and never falls back to local mode for an explicit partition generation.
+
+Changing a live topic's partition count changes key placement and can reorder messages. Use a coordinated transition: stop publishers, wait until every old node has consumed the old generation through its final watermark and drained admitted work, stop every old node, and start all nodes with the same fresh epoch and partition count before resuming publishing. Mixed epochs are separate fanout domains and must not serve one cluster. Legacy software cannot enforce an epoch it does not understand, so this is a coordinated cutover, not a rolling configuration change. Rollback requires the same publisher pause and full drain before returning every node to the previous generation. Keep old topics until retention and rollback requirements are satisfied; no migration or topic deletion happens automatically.
 
 ## Load balancing
 

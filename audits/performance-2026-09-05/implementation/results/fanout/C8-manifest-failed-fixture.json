@@ -1,0 +1,26 @@
+{
+  "profile": "release (codegen-units=1, LTO=true)",
+  "features": "default v2 + scylladb,versioned-messages",
+  "scope": "isolated production read_page and bounded Scylla query helper; fixture/session instrumentation identical",
+  "baseline_commit": "5613bb291032b6b7660352974b03da9eb0646da0",
+  "samples_per_shape": 9,
+  "fixture": "sockudo-perf-core-scylla at localhost:19042",
+  "commands": [
+    [
+      "/usr/bin/time",
+      "-v",
+      "/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/binaries/c8-baseline",
+      "history::scylla::page_tests::benchmark_scylla_bounded_history_pages",
+      "--ignored",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ]
+  ],
+  "binaries": {
+    "baseline": "e8a0d6538c1637ab5ff5253b45a6b2622af45a105a0198b64fd51e23ddc23e1d"
+  },
+  "exit_codes": {
+    "baseline": 101
+  }
+}

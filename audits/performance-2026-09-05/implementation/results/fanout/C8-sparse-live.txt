@@ -1,0 +1,80 @@
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+error[E0425]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:26:23
+   |
+26 | fn request(direction: HistoryDirection, limit: usize) -> HistoryReadRequest {
+   |                       ^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:34:23
+   |
+34 |     for direction in [HistoryDirection::OldestFirst,HistoryDirection::NewestFirst] {
+   |                       ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:34:53
+   |
+34 |     for direction in [HistoryDirection::OldestFirst,HistoryDirection::NewestFirst] {
+   |                                                     ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:41:23
+   |
+41 |         if direction==HistoryDirection::NewestFirst { expected.reverse(); }
+   |                       ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:64:27
+   |
+64 |     let mut query=request(HistoryDirection::OldestFirst,10);
+   |                           ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:81:31
+   |
+81 |             for direction in [HistoryDirection::OldestFirst,HistoryDirection::NewestFirst] {
+   |                               ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:81:61
+   |
+81 |             for direction in [HistoryDirection::OldestFirst,HistoryDirection::NewestFirst] {
+   |                                                             ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:84:35
+   |
+84 |                     if direction==HistoryDirection::OldestFirst {
+   |                                   ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:87:57
+   |
+87 | ...   let expected:Vec<u64>=if direction==HistoryDirection::OldestFirst {(count/2..count/2+limit).map(|value|value as u64).collect()...
+   |                                           ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:57:102
+   |
+57 | ...ssert!(cursor.serial>prior.serial),HistoryDirection::NewestFirst=>assert!(cursor.serial<prior.serial) }
+   |                                       ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+error[E0433]: cannot find type `HistoryDirection` in this scope
+  --> crates/sockudo-server/src/history/scylla/page_tests.rs:57:35
+   |
+57 | ...   match direction { HistoryDirection::OldestFirst=>assert!(cursor.serial>prior.serial),HistoryDirection::NewestFirst=>assert!(cu...
+   |                         ^^^^^^^^^^^^^^^^ use of undeclared type `HistoryDirection`
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `sockudo` (bin "sockudo" test) due to 11 previous errors

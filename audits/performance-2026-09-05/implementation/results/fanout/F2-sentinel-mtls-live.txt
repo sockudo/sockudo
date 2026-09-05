@@ -1,0 +1,46 @@
+
+running 4 tests
+test direct_transport_connects_with_private_ca ... 
+thread 'direct_transport_connects_with_private_ca' (444957) panicked at /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-0.23.42/src/crypto/mod.rs:249:14:
+
+Could not automatically determine the process-level CryptoProvider from Rustls crate features.
+Call CryptoProvider::install_default() before this point to select a provider manually, or make sure exactly one of the 'aws-lc-rs' and 'ring' features is enabled.
+See the documentation of the CryptoProvider type for more information.
+            
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test sentinel_resp3_delivers_authenticated_frames_and_control_replies ... 
+thread 'sentinel_resp3_delivers_authenticated_frames_and_control_replies' (444959) panicked at /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-0.23.42/src/crypto/mod.rs:249:14:
+
+Could not automatically determine the process-level CryptoProvider from Rustls crate features.
+Call CryptoProvider::install_default() before this point to select a provider manually, or make sure exactly one of the 'aws-lc-rs' and 'ring' features is enabled.
+See the documentation of the CryptoProvider type for more information.
+            
+FAILED
+test sentinel_transport_connects_and_pings ... 
+thread 'sentinel_transport_connects_and_pings' (444961) panicked at /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-0.23.42/src/crypto/mod.rs:249:14:
+
+Could not automatically determine the process-level CryptoProvider from Rustls crate features.
+Call CryptoProvider::install_default() before this point to select a provider manually, or make sure exactly one of the 'aws-lc-rs' and 'ring' features is enabled.
+See the documentation of the CryptoProvider type for more information.
+            
+FAILED
+test sentinel_transport_reports_node_count ... 
+thread 'sentinel_transport_reports_node_count' (444963) panicked at /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-0.23.42/src/crypto/mod.rs:249:14:
+
+Could not automatically determine the process-level CryptoProvider from Rustls crate features.
+Call CryptoProvider::install_default() before this point to select a provider manually, or make sure exactly one of the 'aws-lc-rs' and 'ring' features is enabled.
+See the documentation of the CryptoProvider type for more information.
+            
+FAILED
+
+failures:
+
+failures:
+    direct_transport_connects_with_private_ca
+    sentinel_resp3_delivers_authenticated_frames_and_control_replies
+    sentinel_transport_connects_and_pings
+    sentinel_transport_reports_node_count
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

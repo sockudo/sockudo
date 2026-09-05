@@ -1,0 +1,19 @@
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+error[E0609]: no field `ready` on type `QueueLagMetrics`
+   --> crates/sockudo-push/src/feedback.rs:840:71
+    |
+840 |                 queue.lag(PushQueueStage::DeadLetters).await.unwrap().ready,
+    |                                                                       ^^^^^ unknown field
+    |
+    = note: available fields are: `ready_depth`, `delayed_depth`, `inflight_depth`, `dead_letter_depth`, `oldest_ready_age_ms` ... and 2 others
+
+error[E0609]: no field `inflight` on type `QueueLagMetrics`
+   --> crates/sockudo-push/src/feedback.rs:886:18
+    |
+886 |                 .inflight,
+    |                  ^^^^^^^^ unknown field
+    |
+    = note: available fields are: `ready_depth`, `delayed_depth`, `inflight_depth`, `dead_letter_depth`, `oldest_ready_age_ms` ... and 2 others
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `sockudo-push` (lib test) due to 2 previous errors

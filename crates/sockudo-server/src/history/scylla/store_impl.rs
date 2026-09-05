@@ -163,42 +163,9 @@ impl HistoryStore for ScyllaHistoryStore {
             });
         };
 
-        let rows = self
-            .load_history_items_for_stream(
-                &request.app_id,
-                &request.channel,
-                stream_id,
-                request.direction,
-            )
-            .await?;
+        let (rows, scan_cursor) = self.load_history_page(&request, stream_id).await?;
         let filtered: Vec<HistoryItem> = rows
             .into_iter()
-            .filter(|row| {
-                request
-                    .bounds
-                    .start_serial
-                    .is_none_or(|start| row.serial as u64 >= start)
-                    && request
-                        .bounds
-                        .end_serial
-                        .is_none_or(|end| row.serial as u64 <= end)
-                    && request
-                        .bounds
-                        .start_time_ms
-                        .is_none_or(|start| row.published_at_ms >= start)
-                    && request
-                        .bounds
-                        .end_time_ms
-                        .is_none_or(|end| row.published_at_ms <= end)
-                    && request
-                        .cursor
-                        .as_ref()
-                        .is_none_or(|cursor| match request.direction {
-                            HistoryDirection::NewestFirst => (row.serial as u64) < cursor.serial,
-                            HistoryDirection::OldestFirst => (row.serial as u64) > cursor.serial,
-                        })
-            })
-            .take(request.limit + 1)
             .map(|row| HistoryItem {
                 stream_id: row.stream_id,
                 serial: row.serial as u64,
@@ -210,18 +177,20 @@ impl HistoryStore for ScyllaHistoryStore {
                 payload_bytes: row.payload_bytes.into(),
             })
             .collect();
-        let has_more = filtered.len() > request.limit;
+        let has_more = filtered.len() > request.limit || scan_cursor.is_some();
         let items: Vec<HistoryItem> = filtered.into_iter().take(request.limit).collect();
         let next_cursor = if has_more {
-            items.last().map(|item| HistoryCursor {
-                version: 1,
-                app_id: request.app_id.clone(),
-                channel: request.channel.clone(),
-                stream_id: item.stream_id.clone(),
-                serial: item.serial,
-                direction: request.direction,
-                bounds: request.bounds.clone(),
-            })
+            scan_cursor
+                .or_else(|| items.last().map(|item| item.serial))
+                .map(|serial| HistoryCursor {
+                    version: 1,
+                    app_id: request.app_id.clone(),
+                    channel: request.channel.clone(),
+                    stream_id: stream_id.to_owned(),
+                    serial,
+                    direction: request.direction,
+                    bounds: request.bounds.clone(),
+                })
         } else {
             None
         };

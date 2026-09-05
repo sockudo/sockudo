@@ -1,0 +1,34 @@
+{
+  "scope": "F4 predicate routing only",
+  "profile": "release LTO=true codegen-units=1",
+  "commands": [
+    [
+      "/usr/bin/time",
+      "-v",
+      "audits/performance-2026-09-05/implementation/binaries/f1-f4-baseline",
+      "local_adapter::broadcast::regression_tests::benchmark_equivalent_predicate_routing",
+      "--ignored",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    [
+      "/usr/bin/time",
+      "-v",
+      "audits/performance-2026-09-05/implementation/binaries/f4-after",
+      "local_adapter::broadcast::regression_tests::benchmark_equivalent_predicate_routing",
+      "--ignored",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ]
+  ],
+  "binaries": {
+    "baseline": "cfb0a8901e64b7dd4768cd9d642355d4305e9349cc65906554f579a4cb681a70",
+    "after": "5da7cbc39c5f744172aa76744ac7911d01ff7748997b6ecec196322fbf7db603"
+  },
+  "exit_codes": {
+    "baseline": 0,
+    "after": 0
+  }
+}

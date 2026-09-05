@@ -1,0 +1,94 @@
+    Blocking waiting for file lock on build directory
+    Checking sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+    Checking tungstenite v0.29.0
+    Checking simple_asn1 v0.6.4
+    Checking either v1.16.0
+   Compiling rustix v1.1.4
+    Checking quanta v0.12.6
+    Checking wait-timeout v0.2.1
+    Checking rand_xorshift v0.4.0
+    Checking openssl v0.10.81
+    Checking oxidelta v0.1.4
+    Checking redis v1.4.1
+    Checking tower-http v0.6.11
+    Checking sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+    Checking itertools v0.13.0
+    Checking rayon v1.12.0
+    Checking axum-server v0.8.0
+    Checking metrics-util v0.20.4
+    Checking jsonwebtoken v11.0.0
+    Checking tokio-tungstenite v0.29.0
+    Checking metrics-exporter-prometheus v0.18.3
+    Checking axum v0.8.9
+    Checking criterion-plot v0.6.0
+    Checking tempfile v3.27.0
+    Checking rusty-fork v0.3.1
+    Checking proptest v1.11.0
+   Compiling prost-build v0.14.4
+    Checking criterion v0.7.0
+    Checking native-tls v0.2.18
+   Compiling metrics-exporter-tcp v0.11.2
+    Checking tokio-native-tls v0.3.1
+    Checking hyper-tls v0.6.0
+    Checking reqwest v0.12.28
+    Checking sockudo-filter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-filter)
+    Checking sockudo-ws v2.0.1
+    Checking sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+    Checking sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+    Checking sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Checking sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+    Checking sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+    Checking sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+    Checking sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+    Checking sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+    Checking sockudo-simulator v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-simulator)
+    Checking sockudo-ai-benches v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/benches/ai)
+    Checking sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+    Checking sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+    Checking sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+    Checking sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+error: useless conversion to the same type: `u64`
+   --> crates/sockudo-adapter/src/local_adapter/broadcast_tests.rs:146:57
+    |
+146 |                 assert_eq!(message.delta_sequence, Some(serial.into()));
+    |                                                         ^^^^^^^^^^^^^ help: consider removing `.into()`: `serial`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+    = note: `-D clippy::useless-conversion` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::useless_conversion)]`
+
+error: manual implementation of `.is_multiple_of()`
+   --> crates/sockudo-adapter/src/local_adapter/broadcast_tests.rs:380:76
+    |
+380 |                     let include = |index: usize| !(mixed && serial == 1 && index % 2 == 0);
+    |                                                                            ^^^^^^^^^^^^^^ help: replace with: `index.is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+    = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: could not compile `sockudo-adapter` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: this `if` statement can be collapsed
+    --> crates/sockudo-ably-compat/src/runtime.rs:2705:17
+     |
+2705 | /                 if slots.len() >= REVOCATION_SNAPSHOT_APP_LIMIT {
+2706 | |                     if let Some(key) = slots.keys().next().cloned() {
+2707 | |                         slots.remove(&key);
+2708 | |                     }
+2709 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+2705 ~                 if slots.len() >= REVOCATION_SNAPSHOT_APP_LIMIT
+2706 ~                     && let Some(key) = slots.keys().next().cloned() {
+2707 |                         slots.remove(&key);
+2708 ~                     }
+     |
+
+error: could not compile `sockudo-ably-compat` (lib) due to 1 previous error
+error: could not compile `sockudo-ably-compat` (lib test) due to 1 previous error

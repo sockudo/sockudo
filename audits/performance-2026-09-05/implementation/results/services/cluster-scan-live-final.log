@@ -1,0 +1,17 @@
+    Blocking waiting for file lock on build directory
+   Compiling sockudo-protocol v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-protocol)
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 23s
+     Running tests/redis_cluster_scan_live.rs (target/debug/deps/redis_cluster_scan_live-19a9d7dd9ee51605)
+
+running 2 tests
+test cluster_scan_rejects_cursor_after_interior_slot_reassignment ... interior_slot=10924 stale_cursor_rejected=true original_owner_restored=true
+ok
+test cluster_scan_visits_every_primary_and_returns_exact_values ... cluster_scan_repeat=0 exact_rows=1024 pages=62
+cluster_scan_repeat=1 exact_rows=1024 pages=62
+cluster_scan_repeat=2 exact_rows=1024 pages=62
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+

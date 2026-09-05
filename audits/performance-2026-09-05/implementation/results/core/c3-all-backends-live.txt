@@ -1,0 +1,40 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling sockudo-core v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-core)
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-push)
+   Compiling sockudo-metrics v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-metrics)
+   Compiling sockudo-delta v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-delta)
+   Compiling sockudo-ai-transport v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ai-transport)
+   Compiling sockudo-webhook v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-webhook)
+   Compiling sockudo-cache v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-cache)
+   Compiling sockudo-app v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-app)
+   Compiling sockudo-queue v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-queue)
+   Compiling sockudo-rate-limiter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-rate-limiter)
+   Compiling sockudo-adapter v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-adapter)
+   Compiling sockudo-ably-compat v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-ably-compat)
+   Compiling sockudo v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/crates/sockudo-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.72s
+     Running unittests src/main.rs (target/debug/deps/sockudo-3d03145e2c9cc262)
+
+running 5 tests
+test history::dynamodb::annotation_store::tests::two_dynamodb_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::mysql::annotation_store::tests::two_mysql_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::postgres::annotation_store::tests::two_postgres_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::scylla::annotation_store::tests::two_scylla_nodes_allocate_and_apply_annotations_atomically ... ok
+test history::surreal::annotation_store::tests::two_surreal_nodes_keep_annotations_atomic_replayable_and_durable ... 
+thread 'history::surreal::annotation_store::tests::two_surreal_nodes_keep_annotations_atomic_replayable_and_durable' (608384) panicked at crates/sockudo-server/src/history/surreal/annotation_store.rs:1308:30:
+called `Result::unwrap()` on an `Err` value: Internal("Failed to decode SurrealDB annotation serial update: Expected a single result output when using the ONLY keyword")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'history::surreal::annotation_store::tests::two_surreal_nodes_keep_annotations_atomic_replayable_and_durable' (608384) panicked at crates/sockudo-server/src/history/surreal/annotation_store.rs:1316:51:
+called `Result::unwrap()` on an `Err` value: JoinError::Panic(Id(335), "called `Result::unwrap()` on an `Err` value: Internal(\"Failed to decode SurrealDB annotation serial update: Expected a single result output when using the ONLY keyword\")", ...)
+FAILED
+
+failures:
+
+failures:
+    history::surreal::annotation_store::tests::two_surreal_nodes_keep_annotations_atomic_replayable_and_durable
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 174 filtered out; finished in 5.17s
+
+error: test failed, to rerun pass `-p sockudo --bin sockudo`

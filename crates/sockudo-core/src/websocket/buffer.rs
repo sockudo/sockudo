@@ -168,6 +168,7 @@ impl ByteCounter {
 #[derive(Debug)]
 pub struct SizedMessage {
     pub bytes: Bytes,
+    pub wire_format: sockudo_protocol::wire::WireFormat,
     pub size: usize,
 }
 
@@ -445,8 +446,30 @@ impl SizedMessageSenderHandle {
 
 impl SizedMessage {
     #[inline]
+    pub fn prepared(bytes: Bytes, wire_format: sockudo_protocol::wire::WireFormat) -> Self {
+        Self {
+            size: bytes.len(),
+            bytes,
+            wire_format,
+        }
+    }
+
+    #[inline]
+    pub fn into_frame(self) -> Message {
+        if self.wire_format.is_binary() {
+            Message::Binary(self.bytes)
+        } else {
+            Message::Text(self.bytes)
+        }
+    }
+
+    #[inline]
     pub fn new(bytes: Bytes) -> Self {
         let size = bytes.len();
-        Self { bytes, size }
+        Self {
+            bytes,
+            size,
+            wire_format: sockudo_protocol::wire::WireFormat::Json,
+        }
     }
 }

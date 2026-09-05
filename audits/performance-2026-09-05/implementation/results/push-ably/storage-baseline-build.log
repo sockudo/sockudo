@@ -1,0 +1,186 @@
+    Blocking waiting for file lock on build directory
+   Compiling tracing v0.1.44
+   Compiling rustls v0.23.42
+   Compiling tokio v1.53.1
+   Compiling tokio-util v0.7.19
+   Compiling h2 v0.4.16
+   Compiling rayon v1.12.0
+   Compiling tower v0.5.3
+   Compiling hyper v1.11.0
+   Compiling uuid v1.24.0
+   Compiling hyper-util v0.1.20
+   Compiling fastrand v2.5.0
+   Compiling aws-smithy-types v1.5.0
+   Compiling phf_generator v0.13.1
+   Compiling aws-smithy-async v1.2.14
+   Compiling aws-smithy-runtime-api v1.12.3
+   Compiling tokio-rustls v0.26.4
+   Compiling tokio-stream v0.1.19
+   Compiling i_overlay v4.0.7
+   Compiling geo-types v0.7.19
+   Compiling hyper-rustls v0.27.9
+   Compiling string_cache_codegen v0.6.1
+   Compiling phf_codegen v0.13.1
+   Compiling geo v0.32.0
+   Compiling web_atoms v0.2.5
+   Compiling axum-core v0.5.6
+   Compiling phf_macros v0.13.1
+   Compiling axum v0.8.9
+   Compiling phf v0.13.1
+   Compiling hyper-timeout v0.5.2
+   Compiling ahash v0.8.12
+   Compiling aws-smithy-schema v0.1.0
+   Compiling bitflags v2.13.1
+   Compiling storekey v0.11.0
+   Compiling revision v0.30.0
+   Compiling tonic v0.14.6
+   Compiling markup5ever v0.39.0
+   Compiling tower-http v0.6.11
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling aws-smithy-http v0.63.6
+   Compiling tonic-prost v0.14.6
+   Compiling aws-credential-types v1.2.14
+   Compiling num-bigint v0.4.8
+   Compiling sqlx-postgres v0.9.0
+   Compiling surrealdb-protocol v0.10.2
+   Compiling sqlx-core v0.9.0
+   Compiling simple_asn1 v0.6.4
+   Compiling reqwest v0.13.4
+   Compiling sqlx-mysql v0.9.0
+   Compiling html5ever v0.39.0
+   Compiling diskann-utils v0.54.0
+   Compiling aws-smithy-http-client v1.1.13
+   Compiling aws-smithy-observability v0.2.6
+   Compiling aws-smithy-runtime v1.11.3
+   Compiling ammonia v4.1.4
+   Compiling object_store v0.13.2
+   Compiling jsonwebtoken v10.4.0
+   Compiling tungstenite v0.28.0
+   Compiling sqlx-macros-core v0.9.0
+   Compiling ndarray-stats v0.7.0
+   Compiling surrealdb-types v3.2.3
+   Compiling rand v0.10.2
+   Compiling diskann v0.54.0
+   Compiling scylla-cql-core v1.7.0
+   Compiling aws-types v1.3.16
+   Compiling aws-sigv4 v1.4.5
+   Compiling quick_cache v0.6.24
+   Compiling surrealdb-strand v3.2.3
+   Compiling surrealdb-collections v3.2.3
+   Compiling sysinfo v0.37.2
+   Compiling surrealdb-core v3.2.3
+   Compiling tokio-tungstenite v0.28.0
+   Compiling aws-runtime v1.7.5
+   Compiling scylla-cql v1.7.0
+   Compiling sqlx-macros v0.9.0
+   Compiling aws-smithy-json v0.62.7
+   Compiling aws-sdk-dynamodb v1.116.0
+   Compiling sonic-rs v0.5.8
+   Compiling criterion-plot v0.6.0
+   Compiling scylla v1.7.0
+   Compiling sqlx v0.9.0
+   Compiling plotters v0.3.7
+   Compiling criterion v0.7.0
+   Compiling surrealdb v3.2.3
+   Compiling sockudo-push v5.0.1 (/home/radud/Desktop/Code/Rust/sockudo/audits/performance-2026-09-05/implementation/variants/p4-baseline/crates/sockudo-push)
+error[E0603]: constant `MAX_RETRY_AGE_MS` is private
+  --> crates/sockudo-push/examples/storage_paths_audit.rs:60:81
+   |
+60 |    let queue=Arc::new(MemoryPushQueue::new());let old=at+2*sockudo_push::retry::MAX_RETRY_AGE_MS;ALLOCS.store(0,Ordering::Relaxed);B...
+   |                                                                                 ^^^^^^^^^^^^^^^^ private constant
+   |
+note: the constant `MAX_RETRY_AGE_MS` is defined here
+  --> crates/sockudo-push/src/retry.rs:18:1
+   |
+18 | const MAX_RETRY_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: constant `MAX_RETRY_AGE_MS` is private
+  --> crates/sockudo-push/examples/storage_paths_audit.rs:73:221
+   |
+73 | ...d_per_tick:8};let old=at+2*sockudo_push::retry::MAX_RETRY_AGE_MS;ALLOCS.store(0,Ordering::Relaxed);BYTES.store(0,Ordering::Relaxe...
+   |                                                    ^^^^^^^^^^^^^^^^ private constant
+   |
+note: the constant `MAX_RETRY_AGE_MS` is defined here
+  --> crates/sockudo-push/src/retry.rs:18:1
+   |
+18 | const MAX_RETRY_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0425]: cannot find function `now_ms` in this scope
+  --> crates/sockudo-push/examples/storage_paths_audit.rs:21:55
+   |
+21 |  let id=format!("push_audit_{}_{}",std::process::id(),now_ms());
+   |                                                       ^^^^^^ not found in this scope
+
+error[E0277]: dynamic SQL strings should be audited for possible injections
+   --> crates/sockudo-push/examples/storage_paths_audit.rs:28:128
+    |
+ 28 | ...s/003_push_lifecycle.sql"] {sqlx::raw_sql(&std::fs::read_to_string(file).unwrap()).execute(&pool).await.unwrap();}
+    |                                ------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dynamic SQL string
+    |                                |
+    |                                required by a bound introduced by this call
+    |
+    = help: the trait `SqlSafeStr` is not implemented for `&std::string::String`
+    = note: prefer literal SQL strings with bind parameters or `QueryBuilder` to add dynamic data to a query.
+            
+            To bypass this error, manually audit for potential injection vulnerabilities and wrap with `AssertSqlSafe()`.
+            For details, see the docs for `SqlSafeStr`.
+            
+    = note: this trait is only implemented for `&'static str`, not all `&str` like the compiler error may suggest
+note: required by a bound in `raw_sql`
+   --> /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlx-core-0.9.0/src/raw_sql.rs:119:26
+    |
+119 | pub fn raw_sql(sql: impl SqlSafeStr) -> RawSql {
+    |                          ^^^^^^^^^^ required by this bound in `raw_sql`
+help: consider dereferencing here
+    |
+ 28 |    for file in ["ops/migrations/postgres/001_push_schema.sql","ops/migrations/postgres/003_push_lifecycle.sql"] {sqlx::raw_sql(&*std::fs::read_to_string(file).unwrap()).execute(&pool).await.unwrap();}
+    |                                                                                                                                 +
+
+error[E0277]: dynamic SQL strings should be audited for possible injections
+   --> crates/sockudo-push/examples/storage_paths_audit.rs:37:121
+    |
+ 37 | ...ql/005_push_lifecycle.sql"]{sqlx::raw_sql(&std::fs::read_to_string(file).unwrap()).execute(&pool).await.unwrap();}
+    |                                ------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dynamic SQL string
+    |                                |
+    |                                required by a bound introduced by this call
+    |
+    = help: the trait `SqlSafeStr` is not implemented for `&std::string::String`
+    = note: prefer literal SQL strings with bind parameters or `QueryBuilder` to add dynamic data to a query.
+            
+            To bypass this error, manually audit for potential injection vulnerabilities and wrap with `AssertSqlSafe()`.
+            For details, see the docs for `SqlSafeStr`.
+            
+    = note: this trait is only implemented for `&'static str`, not all `&str` like the compiler error may suggest
+note: required by a bound in `raw_sql`
+   --> /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlx-core-0.9.0/src/raw_sql.rs:119:26
+    |
+119 | pub fn raw_sql(sql: impl SqlSafeStr) -> RawSql {
+    |                          ^^^^^^^^^^ required by this bound in `raw_sql`
+help: consider dereferencing here
+    |
+ 37 |    for file in ["ops/migrations/mysql/003_push_schema.sql","ops/migrations/mysql/005_push_lifecycle.sql"]{sqlx::raw_sql(&*std::fs::read_to_string(file).unwrap()).execute(&pool).await.unwrap();}
+    |                                                                                                                          +
+
+error[E0425]: cannot find function `now_ms` in this scope
+  --> crates/sockudo-push/examples/storage_paths_audit.rs:59:44
+   |
+59 |    let store=fixture(backend).await;let at=now_ms();seed(&store,16,at,false).await;let last=event(16,at);store.put_publish_status(st...
+   |                                            ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `now_ms` in this scope
+  --> crates/sockudo-push/examples/storage_paths_audit.rs:67:43
+   |
+67 |   let store=fixture(backend).await;let at=now_ms();seed(&store,64,at,false).await;let warm=log_page(&store).await;assert_eq!(warm.it...
+   |                                           ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `now_ms` in this scope
+  --> crates/sockudo-push/examples/storage_paths_audit.rs:72:44
+   |
+72 |    let store=fixture(backend).await;let at=now_ms();seed(&store,16,at,true).await;let last=event(16,at);store.put_publish_status(sta...
+   |                                            ^^^^^^ not found in this scope
+
+Some errors have detailed explanations: E0277, E0425, E0603.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `sockudo-push` (example "storage_paths_audit") due to 8 previous errors

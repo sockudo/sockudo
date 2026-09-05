@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use dashmap::DashSet;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
-use rdkafka::client::DefaultClientContext;
+use rdkafka::client::{ClientContext, DefaultClientContext};
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, ConsumerContext, StreamConsumer};
 use rdkafka::error::RDKafkaErrorCode;
 use rdkafka::message::Message as KafkaMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
@@ -23,6 +23,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
+
+struct QueueConsumerContext;
+impl ClientContext for QueueConsumerContext {}
+impl ConsumerContext for QueueConsumerContext {
+    fn commit_callback(
+        &self,
+        result: rdkafka::error::KafkaResult<()>,
+        _: &rdkafka::TopicPartitionList,
+    ) {
+        if let Err(error) = result {
+            warn!(error = %error, "kafka queue offset commit failed");
+        }
+    }
+}
 
 pub struct KafkaQueueManager {
     producer: FutureProducer,
@@ -46,6 +60,23 @@ impl KafkaQueueManager {
         reliability: QueueReliabilityConfig,
     ) -> Result<Self> {
         reliability.validate().map_err(Error::Config)?;
+        if !(1..=256).contains(&config.partitions)
+            || (config.partitions > 1 && config.topic_epoch.as_deref().is_none_or(str::is_empty))
+        {
+            return Err(Error::Config("partitioned Kafka queues require positive partitions and a fresh topic_epoch; drain the old generation before cutover".into()));
+        }
+        if config.topic_epoch.as_deref().is_some_and(|epoch| {
+            epoch.is_empty()
+                || epoch.len() > 64
+                || !epoch
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        }) {
+            return Err(Error::Config(
+                "Kafka topic_epoch must be 1-64 ASCII letters, digits, hyphens or underscores"
+                    .into(),
+            ));
+        }
         let producer: FutureProducer = kafka_config(&config)
             .create()
             .map_err(|e| Error::Queue(format!("Failed to create Kafka queue producer: {e}")))?;
@@ -67,11 +98,15 @@ impl KafkaQueueManager {
     }
 
     fn topic_name(&self, queue_name: &str) -> String {
-        format!(
+        let topic = format!(
             "{}.queue.{}",
             self.prefix,
             normalize_topic_prefix(queue_name)
-        )
+        );
+        match self.config.topic_epoch.as_deref() {
+            Some(epoch) => format!("{topic}.epoch.{}", normalize_topic_prefix(epoch)),
+            None => topic,
+        }
     }
 
     fn group_id(&self, queue_name: &str) -> String {
@@ -86,7 +121,11 @@ impl KafkaQueueManager {
         if self.provisioned_topics.contains(topic) {
             return Ok(());
         }
-        let topics = [NewTopic::new(topic, 1, TopicReplication::Fixed(1))];
+        let topics = [NewTopic::new(
+            topic,
+            self.config.partitions,
+            TopicReplication::Fixed(1),
+        )];
         let results = self
             .admin
             .create_topics(&topics, &AdminOptions::new())
@@ -118,20 +157,31 @@ impl KafkaQueueManager {
             let payloads = chunk
                 .iter()
                 .map(|data| {
-                    sonic_rs::to_vec(data).map_err(|e| {
-                        Error::Queue(format!("Failed to serialize Kafka queue job: {e}"))
-                    })
+                    sonic_rs::to_vec(data)
+                        .map(|payload| {
+                            (
+                                if self.config.topic_epoch.is_some() {
+                                    data.app_id.clone()
+                                } else {
+                                    String::new()
+                                },
+                                payload,
+                            )
+                        })
+                        .map_err(|e| {
+                            Error::Queue(format!("Failed to serialize Kafka queue job: {e}"))
+                        })
                 })
                 .collect::<Result<Vec<_>>>()?;
             let concurrency = payloads.len().min(self.reliability.worker_prefetch).max(1);
             stream::iter(payloads)
-                .map(|payload| {
+                .map(|(key, payload)| {
                     let producer = self.producer.clone();
                     let topic = topic.clone();
                     async move {
                         producer
                             .send(
-                                FutureRecord::to(&topic).key("").payload(&payload),
+                                FutureRecord::to(&topic).key(&key).payload(&payload),
                                 Timeout::After(timeout),
                             )
                             .await
@@ -173,143 +223,83 @@ impl QueueInterface for KafkaQueueManager {
         let topic = self.topic_name(queue_name);
         self.ensure_topic(&topic).await?;
 
-        let consumer: StreamConsumer = kafka_config(&self.config)
-            .set("group.id", self.group_id(queue_name))
-            .set("enable.auto.commit", "false")
-            .create()
-            .map_err(|e| Error::Queue(format!("Failed to create Kafka queue consumer: {e}")))?;
-        consumer
-            .subscribe(&[topic.as_str()])
-            .map_err(|e| Error::Queue(format!("Failed to subscribe Kafka queue consumer: {e}")))?;
-
         let callback: ArcJobProcessorFn = Arc::from(callback);
-        let shutdown = self.shutdown.clone();
-        let running = self.running.clone();
-        let producer = self.producer.clone();
-        let dead_letter_topic = format!("{topic}.dlq");
-        self.ensure_topic(&dead_letter_topic).await?;
-        let request_timeout = self.config.request_timeout_ms;
-        let max_attempts = self.reliability.max_attempts;
-        let retry_base_delay_ms = self.reliability.retry_base_delay_ms;
-        let retry_max_delay_ms = self.reliability.retry_max_delay_ms;
+        for _ in 0..64_usize.min(self.config.partitions as usize).max(1) {
+            let consumer: StreamConsumer<QueueConsumerContext> = kafka_config(&self.config)
+                .set("group.id", self.group_id(queue_name))
+                .set("enable.auto.commit", "false")
+                .set("enable.auto.offset.store", "false")
+                .set(
+                    "queued.min.messages",
+                    self.reliability.worker_prefetch.to_string(),
+                )
+                .set("queued.max.messages.kbytes", "16384")
+                .create_with_context(QueueConsumerContext)
+                .map_err(|e| Error::Queue(format!("Failed to create Kafka queue consumer: {e}")))?;
+            consumer.subscribe(&[topic.as_str()]).map_err(|e| {
+                Error::Queue(format!("Failed to subscribe Kafka queue consumer: {e}"))
+            })?;
 
-        self.workers.spawn(async move {
+            let callback = Arc::clone(&callback);
+            let shutdown = self.shutdown.clone();
+            let running = self.running.clone();
+            let producer = self.producer.clone();
+            let dead_letter_topic = format!("{topic}.dlq");
+            self.ensure_topic(&dead_letter_topic).await?;
+            let request_timeout = self.config.request_timeout_ms;
+            let max_attempts = self.reliability.max_attempts;
+            let reliability = self.reliability.clone();
+
+            self.workers.spawn(async move {
             let mut stream = consumer.stream();
             loop {
-                if !running.load(Ordering::Relaxed) {
-                    break;
+                if !running.load(Ordering::Relaxed) { break; }
+                let message = tokio::select! { _ = shutdown.notified() => break, message = stream.next() => message };
+                let Some(message) = message else { break; };
+                let message = match message {
+                    Ok(message) => message,
+                    Err(error) => { error!(error = %error, "kafka queue consumer error"); break; }
+                };
+                let payload = message.payload().unwrap_or_default();
+                let mut succeeded = false;
+                match sonic_rs::from_slice::<JobData>(payload) {
+                    Ok(job) => {
+                        for attempt in 1..=max_attempts {
+                            match callback(job.clone()).await {
+                                Ok(()) => { succeeded = true; break; }
+                                Err(error) => warn!(error = %error, attempt, max_attempts, "kafka queue processor failed"),
+                            }
+                            if attempt < max_attempts { tokio::time::sleep(crate::broker_retry_delay(&reliability, attempt)).await; }
+                        }
+                    }
+                    Err(error) => error!(error = %error, "failed to deserialize kafka queue job"),
                 }
-                let message = tokio::select! {
-                    _ = shutdown.notified() => break,
-                    message = stream.next() => message,
-                };
-                let Some(message) = message else {
-                    break;
-                };
-                match message {
-                    Ok(message) => {
-                        if let Some(payload) = message.payload() {
-                            match sonic_rs::from_slice::<JobData>(payload) {
-                                Ok(job) => {
-                                    let mut succeeded = false;
-                                    for attempt in 1_u32..=max_attempts {
-                                        match callback(job.clone()).await {
-                                            Ok(()) => {
-                                                succeeded = true;
-                                                break;
-                                            }
-                                            Err(_) => {
-                                                warn!(
-                                                    attempt,
-                                                    max_attempts,
-                                                    "kafka queue processor failed"
-                                                );
-                                            }
-                                        }
-                                        if attempt < max_attempts {
-                                            tokio::time::sleep(Duration::from_millis(
-                                                retry_base_delay_ms
-                                                    .saturating_mul(1_u64 << attempt.saturating_sub(1).min(63))
-                                                    .min(retry_max_delay_ms),
-                                            ))
-                                            .await;
-                                        }
-                                    }
-                                    if !succeeded {
-                                        let dlq_result = producer
-                                            .send(
-                                                FutureRecord::to(&dead_letter_topic)
-                                                    .key("")
-                                                    .payload(payload),
-                                                Timeout::After(Duration::from_millis(
-                                                    request_timeout,
-                                                )),
-                                            )
-                                            .await;
-                                        if let Err((e, _)) = dlq_result {
-                                            error!(
-                                                error = %e,
-                                                "failed to publish kafka dead-letter job"
-                                            );
-                                            continue;
-                                        }
-                                        warn!(
-                                            max_attempts,
-                                            "kafka queue job moved to dead-letter topic"
-                                        );
-                                    }
-                                    if let Err(e) =
-                                        consumer.commit_message(&message, CommitMode::Sync)
-                                    {
-                                        error!(
-                                            error = %e,
-                                            "failed to commit kafka queue message"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(
-                                        error = %e,
-                                        "failed to deserialize kafka queue job"
-                                    );
-                                    match producer
-                                        .send(
-                                            FutureRecord::to(&dead_letter_topic)
-                                                .key("")
-                                                .payload(payload),
-                                            Timeout::After(Duration::from_millis(request_timeout)),
-                                        )
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            if let Err(commit_error) = consumer
-                                                .commit_message(&message, CommitMode::Sync)
-                                            {
-                                                error!(
-                                                    error = %commit_error,
-                                                    "failed to commit malformed kafka queue message"
-                                                );
-                                            }
-                                        }
-                                        Err((publish_error, _)) => {
-                                            error!(
-                                                error = %publish_error,
-                                                "failed to publish malformed kafka queue job to dead-letter topic"
-                                            );
-                                        }
-                                    }
-                                }
+                if !succeeded {
+                    // Do not consume/commit a later offset until the failed source has
+                    // a confirmed durable successor. Retry transfer stays in this
+                    // partition-owning worker and is cancelled without committing.
+                    loop {
+                        if !running.load(Ordering::Relaxed) { return; }
+                        let result = tokio::select! {
+                            _ = shutdown.notified() => return,
+                            result = producer.send(FutureRecord::to(&dead_letter_topic).key("").payload(payload), Timeout::After(Duration::from_millis(request_timeout))) => result,
+                        };
+                        match result {
+                            Ok(_) => break,
+                            Err((error, _)) => {
+                                error!(error = %error, "failed to publish kafka dead-letter job");
+                                tokio::select! { _ = shutdown.notified() => return, _ = tokio::time::sleep(crate::broker_retry_delay(&reliability, 1)) => {} }
                             }
                         }
                     }
-                    Err(e) => {
-                        error!(error = %e, "kafka queue consumer error");
-                        break;
-                    }
+                }
+                if let Err(error) = consumer.commit_message(&message, CommitMode::Async) {
+                    error!(error = %error, "failed to enqueue kafka queue offset commit");
                 }
             }
             info!("kafka queue consumer stopped");
         });
+        }
 
         Ok(())
     }

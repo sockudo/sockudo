@@ -253,6 +253,7 @@ pub fn create_test_handlers(
     let response_collector = collector;
 
     sockudo_adapter::horizontal_transport::TransportHandlers {
+        on_ingress_gap: Arc::new(|_, _| {}),
         node_id: "test-node".to_string(),
         on_broadcast: Arc::new(move |msg| {
             let collector = broadcast_collector.clone();

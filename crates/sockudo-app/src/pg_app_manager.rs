@@ -649,6 +649,15 @@ impl AppManager for PgSQLAppManager {
         self.delete_app(app_id).await
     }
 
+    async fn has_apps(&self) -> Result<bool> {
+        let query = format!("SELECT 1 FROM {} LIMIT 1", self.config.table_name);
+        Ok(sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to check configured apps: {e}")))?
+            .is_some())
+    }
+
     async fn get_apps(&self) -> Result<Vec<App>> {
         self.get_apps().await
     }

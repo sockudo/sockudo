@@ -1,0 +1,198 @@
+{
+  "baseline": {
+    "1000,1024,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 2121439,
+      "min_ns": 2056296,
+      "max_ns": 2339912
+    },
+    "1000,1024,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 2076314,
+      "min_ns": 2028614,
+      "max_ns": 2182184
+    },
+    "1000,1024,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 3106681,
+      "min_ns": 3055285,
+      "max_ns": 3274057
+    },
+    "1000,1024,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 4469467,
+      "min_ns": 2938123,
+      "max_ns": 5365861
+    },
+    "1000,16384,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 6799230,
+      "min_ns": 6663443,
+      "max_ns": 7391148
+    },
+    "1000,16384,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 6765606,
+      "min_ns": 6498812,
+      "max_ns": 7194887
+    },
+    "1000,16384,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 8592318,
+      "min_ns": 8072426,
+      "max_ns": 9928784
+    },
+    "1000,16384,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 8458205,
+      "min_ns": 8028272,
+      "max_ns": 10107331
+    },
+    "10000,1024,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 12593440,
+      "min_ns": 12337376,
+      "max_ns": 15503409
+    },
+    "10000,1024,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 12440892,
+      "min_ns": 12224603,
+      "max_ns": 12800230
+    },
+    "10000,1024,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 25442413,
+      "min_ns": 24510963,
+      "max_ns": 30025684
+    },
+    "10000,1024,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 25465286,
+      "min_ns": 25022048,
+      "max_ns": 29819164
+    },
+    "10000,16384,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 67547715,
+      "min_ns": 65465280,
+      "max_ns": 68285681
+    },
+    "10000,16384,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 65627136,
+      "min_ns": 64130087,
+      "max_ns": 68507189
+    },
+    "10000,16384,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 88216527,
+      "min_ns": 86077675,
+      "max_ns": 89597316
+    },
+    "10000,16384,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 86743713,
+      "min_ns": 84083095,
+      "max_ns": 87725278
+    }
+  },
+  "after": {
+    "1000,1024,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 299506,
+      "min_ns": 277825,
+      "max_ns": 591177
+    },
+    "1000,1024,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 542335,
+      "min_ns": 480559,
+      "max_ns": 621254
+    },
+    "1000,1024,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 319885,
+      "min_ns": 282003,
+      "max_ns": 493242
+    },
+    "1000,1024,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 750268,
+      "min_ns": 686378,
+      "max_ns": 824197
+    },
+    "1000,16384,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 490817,
+      "min_ns": 309034,
+      "max_ns": 682660
+    },
+    "1000,16384,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 1422769,
+      "min_ns": 1376842,
+      "max_ns": 1634379
+    },
+    "1000,16384,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 415676,
+      "min_ns": 360482,
+      "max_ns": 532978
+    },
+    "1000,16384,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 1629830,
+      "min_ns": 1505776,
+      "max_ns": 2219635
+    },
+    "10000,1024,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 305267,
+      "min_ns": 268317,
+      "max_ns": 325094
+    },
+    "10000,1024,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 520022,
+      "min_ns": 487451,
+      "max_ns": 679024
+    },
+    "10000,1024,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 321648,
+      "min_ns": 289747,
+      "max_ns": 420365
+    },
+    "10000,1024,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 757511,
+      "min_ns": 668263,
+      "max_ns": 831982
+    },
+    "10000,16384,OldestFirst,1": {
+      "samples": 9,
+      "median_ns": 407701,
+      "min_ns": 321738,
+      "max_ns": 518280
+    },
+    "10000,16384,OldestFirst,100": {
+      "samples": 9,
+      "median_ns": 1532336,
+      "min_ns": 1409514,
+      "max_ns": 1946799
+    },
+    "10000,16384,NewestFirst,1": {
+      "samples": 9,
+      "median_ns": 450933,
+      "min_ns": 401790,
+      "max_ns": 510275
+    },
+    "10000,16384,NewestFirst,100": {
+      "samples": 9,
+      "median_ns": 1757501,
+      "min_ns": 1616215,
+      "max_ns": 1833725
+    }
+  }
+}

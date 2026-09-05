@@ -413,9 +413,8 @@ pub async fn trigger<D: Into<EventData>>(
                 event.extras = params.extras.clone();
             }
 
-            let event_json = sonic_rs::to_value(&event)?;
             sockudo
-                .post_with_headers("/events", &event_json, &extra_headers)
+                .post_serializable_with_headers("/events", &event, &extra_headers)
                 .await
         }
 
@@ -455,9 +454,8 @@ pub async fn trigger<D: Into<EventData>>(
             event.extras = params.extras.clone();
         }
 
-        let event_json = sonic_rs::to_value(&event)?;
         sockudo
-            .post_with_headers("/events", &event_json, &extra_headers)
+            .post_serializable_with_headers("/events", &event, &extra_headers)
             .await
     }
 }
@@ -513,13 +511,15 @@ pub async fn trigger_batch(
         }
     }
 
-    let batch_payload = json!({ "batch": batch });
+    #[derive(Serialize)]
+    struct BatchPayload<'a> { batch: &'a [BatchEvent] }
+    let batch_payload = BatchPayload { batch: &batch };
     let mut extra_headers = HashMap::new();
     if let Some(key) = idempotency_key {
         extra_headers.insert("X-Idempotency-Key".to_string(), key.to_string());
     }
     sockudo
-        .post_with_headers("/batch_events", &batch_payload, &extra_headers)
+        .post_serializable_with_headers("/batch_events", &batch_payload, &extra_headers)
         .await
 }
 

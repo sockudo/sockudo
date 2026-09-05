@@ -367,7 +367,11 @@ fn start_push_provider_workers(
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
     if config.push.webpush_enabled {
-        handles.extend(start_webpush_provider_workers(config, queue.clone()));
+        handles.extend(start_webpush_provider_workers(
+            config,
+            store.clone(),
+            queue.clone(),
+        ));
     }
 
     if config.push.apns_enabled {
@@ -387,11 +391,15 @@ fn start_push_provider_workers(
     }
 
     if config.push.hms_enabled {
-        handles.extend(start_hms_provider_workers(config, queue.clone()));
+        handles.extend(start_hms_provider_workers(
+            config,
+            store.clone(),
+            queue.clone(),
+        ));
     }
 
     if config.push.wns_enabled {
-        handles.extend(start_wns_provider_workers(config, queue));
+        handles.extend(start_wns_provider_workers(config, store.clone(), queue));
     }
     handles
 }

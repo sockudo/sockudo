@@ -108,6 +108,12 @@ impl Drop for ChannelPublishPermit {
 }
 
 pub trait RealtimeEgressTap: Send + Sync {
+    /// Fail closed after broker ingress continuity is lost. Missing scope means
+    /// every local projection may be affected and must require fresh recovery.
+    fn invalidate_continuity(&self, _app_id: Option<&str>, _channel: Option<&str>) -> Result<()> {
+        Ok(())
+    }
+
     fn has_subscribers(&self, app_id: &str, channel: &str) -> bool;
 
     fn deliver(
