@@ -21,6 +21,7 @@ use sockudo_core::options::{PushRuleConfig, PushRulePayloadMappingConfig};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_protocol::messages::ApiMessageData;
 use sockudo_push::{
+    ApnsChannelManager, ApnsChannelManagerError, ApnsChannelStoragePolicy, ApnsLiveActivityPayload,
     ChannelPushRule, ChannelSubscription, DeadLetterQueueEntry, DeadLetterQueueFilter,
     DeliveryEvent, DeviceDetails, DeviceRegistrationChange, DynPushQueue, DynPushStore,
     EncryptedSecret, FanoutRegime, IdempotencyRecord, NotificationTemplate,
@@ -300,6 +301,8 @@ pub struct PublishRequest {
     pub payload: PushPayload,
     #[serde(default)]
     pub provider_overrides: Vec<ProviderOverridePayload>,
+    /// Typed ActivityKit content. The server converts this into the exact APNs wire payload.
+    pub live_activity: Option<ApnsLiveActivityPayload>,
     #[serde(default)]
     pub sync: bool,
     pub not_before_ms: Option<u64>,
@@ -314,6 +317,106 @@ pub struct PublishAcceptedResponse {
     pub expected_recipients: u64,
     pub fanout_regime: FanoutRegime,
     pub rendered_payloads: Vec<RenderedProviderPayload>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApnsLiveActivityChannelRequest {
+    #[serde(default)]
+    pub storage_policy: ApnsChannelStoragePolicy,
+}
+
+pub async fn create_apns_live_activity_channel(
+    Path(app_id): Path<String>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(manager): Extension<Option<Arc<ApnsChannelManager>>>,
+    Json(request): Json<CreateApnsLiveActivityChannelRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let manager = manager.ok_or_else(|| {
+        AppError::FeatureDisabled("APNs Live Activity broadcast is not configured".to_owned())
+    })?;
+    let channel = manager
+        .create(request.storage_policy)
+        .await
+        .map_err(apns_channel_error)?;
+    Ok((StatusCode::CREATED, Json(channel)))
+}
+
+pub async fn get_apns_live_activity_channel(
+    Path((app_id, channel_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(manager): Extension<Option<Arc<ApnsChannelManager>>>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let manager = manager.ok_or_else(|| {
+        AppError::FeatureDisabled("APNs Live Activity broadcast is not configured".to_owned())
+    })?;
+    let channel_id =
+        SecretString::new(channel_id).map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let channel = manager.get(channel_id).await.map_err(apns_channel_error)?;
+    Ok(Json(channel))
+}
+
+pub async fn list_apns_live_activity_channels(
+    Path(app_id): Path<String>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(manager): Extension<Option<Arc<ApnsChannelManager>>>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let manager = manager.ok_or_else(|| {
+        AppError::FeatureDisabled("APNs Live Activity broadcast is not configured".to_owned())
+    })?;
+    let channels = manager.list().await.map_err(apns_channel_error)?;
+    Ok(Json(channels))
+}
+
+pub async fn delete_apns_live_activity_channel(
+    Path((app_id, channel_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(app): Extension<App>,
+    Extension(manager): Extension<Option<Arc<ApnsChannelManager>>>,
+) -> Result<impl IntoResponse, AppError> {
+    ensure_app_scope(&app_id, &app)?;
+    ensure_push_admin(&headers)?;
+    let manager = manager.ok_or_else(|| {
+        AppError::FeatureDisabled("APNs Live Activity broadcast is not configured".to_owned())
+    })?;
+    let channel_id =
+        SecretString::new(channel_id).map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    manager
+        .delete(channel_id)
+        .await
+        .map_err(apns_channel_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn apns_channel_error(error: ApnsChannelManagerError) -> AppError {
+    match error {
+        ApnsChannelManagerError::InvalidConfiguration(reason) => AppError::InvalidInput(reason),
+        ApnsChannelManagerError::Transport => {
+            AppError::ServiceUnavailable("APNs channel management transport failed".to_owned())
+        }
+        ApnsChannelManagerError::Provider {
+            status,
+            reason,
+            retry_after_ms,
+        } if status == 429 || status >= 500 => {
+            let retry_suffix = retry_after_ms
+                .map(|deadline| format!("; retry after {deadline}ms epoch"))
+                .unwrap_or_default();
+            AppError::ServiceUnavailable(format!(
+                "APNs channel management is unavailable: {reason}{retry_suffix}"
+            ))
+        }
+        ApnsChannelManagerError::Provider { reason, .. } => AppError::InvalidInput(reason),
+    }
 }
 
 pub async fn post_fcm_credential(
@@ -1006,6 +1109,7 @@ async fn accept_publish_inner(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let sync_requested = request.sync || sync_query;
+    let provider_overrides = normalize_live_activity_publish(&request)?;
     let expected_recipients =
         expected_recipients(app_id, &request.recipients, context.store).await?;
     let fast_threshold = fanout_fast_threshold();
@@ -1022,7 +1126,7 @@ async fn accept_publish_inner(
         publish_id: publish_id.clone(),
         targets: request.recipients.clone(),
         payload: request.payload.clone(),
-        provider_overrides: request.provider_overrides.clone(),
+        provider_overrides,
         not_before_ms: request.not_before_ms,
         expires_at_ms: request.expires_at_ms,
     };
@@ -1335,6 +1439,50 @@ async fn accept_publish_inner(
     ))
 }
 
+fn normalize_live_activity_publish(
+    request: &PublishRequest,
+) -> Result<Vec<ProviderOverridePayload>, AppError> {
+    let has_direct_recipient = request.recipients.iter().any(|target| {
+        matches!(
+            target,
+            PublishTarget::Recipient {
+                recipient: PushRecipient::ApnsLiveActivity { .. }
+            }
+        )
+    });
+    let has_broadcast_recipient = request.recipients.iter().any(|target| {
+        matches!(
+            target,
+            PublishTarget::Recipient {
+                recipient: PushRecipient::ApnsLiveActivityBroadcast { .. }
+            }
+        )
+    });
+    if request.live_activity.is_none() && (has_direct_recipient || has_broadcast_recipient) {
+        return Err(AppError::InvalidInput(
+            "liveActivity is required for APNs Live Activity recipients".to_owned(),
+        ));
+    }
+    let Some(live_activity) = &request.live_activity else {
+        return Ok(request.provider_overrides.clone());
+    };
+    if request
+        .provider_overrides
+        .iter()
+        .any(|override_payload| override_payload.provider == PushProviderKind::Apns)
+    {
+        return Err(AppError::InvalidInput(
+            "liveActivity cannot be combined with an APNs provider override".to_owned(),
+        ));
+    }
+    live_activity
+        .validate(has_broadcast_recipient)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let mut overrides = request.provider_overrides.clone();
+    overrides.push(live_activity.provider_override());
+    Ok(overrides)
+}
+
 async fn put_credential(
     store: DynPushStore,
     credential: ProviderCredential,
@@ -1516,6 +1664,8 @@ fn recipient_response(recipient: &PushRecipient) -> DeviceRecipientResponse {
     let transport_type = match recipient {
         PushRecipient::Fcm { .. } => "gcm",
         PushRecipient::Apns { .. } => "apns",
+        PushRecipient::ApnsLiveActivity { .. } => "apnsLiveActivity",
+        PushRecipient::ApnsLiveActivityBroadcast { .. } => "apnsLiveActivityBroadcast",
         PushRecipient::Web { .. } => "web",
         PushRecipient::Hms { .. } => "hms",
         PushRecipient::Wns { .. } => "wns",
@@ -2253,6 +2403,7 @@ pub async fn enqueue_v2_channel_push_from_extras(
         }],
         payload,
         provider_overrides: vec![],
+        live_activity: None,
         sync: false,
         not_before_ms: None,
         expires_at_ms: None,
@@ -2311,6 +2462,7 @@ pub fn build_channel_push_rule_requests(
                 }],
                 payload,
                 provider_overrides: vec![],
+                live_activity: None,
                 sync: false,
                 not_before_ms: None,
                 expires_at_ms: None,
@@ -2453,6 +2605,7 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use sockudo_push::{
+        ApnsChannelStoragePolicy, ApnsLiveActivityEvent, ApnsLiveActivityPriority,
         DevicePushDetails, DevicePushState, FormFactor, IdempotencyRecord, MemoryPushQueue,
         MemoryPushStore, NotificationTemplate, Platform, PublishIntent, PublishLifecycleState,
         PushDeviceStore, PushIdempotencyStore, PushPublishLogStore, PushPublishStatusStore,
@@ -2627,6 +2780,7 @@ mod tests {
             }],
             payload: sample_payload(),
             provider_overrides: vec![],
+            live_activity: None,
             sync: false,
             not_before_ms: None,
             expires_at_ms: None,
@@ -3304,6 +3458,106 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, AppError::ServiceUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn live_activity_broadcast_is_typed_and_durably_admitted_as_one_request() {
+        let _guard = PUSH_TEST_ENV_LOCK.lock().await;
+        let store: DynPushStore = Arc::new(MemoryPushStore::new());
+        let queue: DynPushQueue = Arc::new(MemoryPushQueue::new());
+        let admission = PushAdmissionSnapshot::testing_active([PushProviderKind::Apns]);
+        let mut request = sample_publish_request("live-broadcast");
+        request.recipients = vec![PublishTarget::Recipient {
+            recipient: PushRecipient::ApnsLiveActivityBroadcast {
+                channel_id: SecretString::new("channel_123").unwrap(),
+                storage_policy: ApnsChannelStoragePolicy::NoStorage,
+            },
+        }];
+        request.payload = PushPayload {
+            template_id: None,
+            template_data: json!({}),
+            title: None,
+            body: None,
+            icon: None,
+            sound: None,
+            collapse_key: None,
+        };
+        request.live_activity = Some(ApnsLiveActivityPayload {
+            event: ApnsLiveActivityEvent::Update,
+            timestamp: 1_725_000_000,
+            content_state: json!({"home": 3, "away": 1}),
+            attributes_type: None,
+            attributes: None,
+            alert: None,
+            stale_date: Some(1_725_000_120),
+            dismissal_date: None,
+            relevance_score: Some(0.9),
+            input_push_token: false,
+            input_push_channel: None,
+            priority: ApnsLiveActivityPriority::ConservePower,
+        });
+
+        let (_, Json(response), _) = accept_publish_inner(
+            "app-1",
+            request,
+            false,
+            &HeaderMap::new(),
+            test_publish_context(&store, &queue, &admission),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.expected_recipients, 1);
+        let apns = response
+            .rendered_payloads
+            .iter()
+            .find(|payload| payload.provider == PushProviderKind::Apns)
+            .unwrap();
+        assert_eq!(apns.payload["aps"]["event"], "update");
+        assert_eq!(apns.payload["headers"]["apns-push-type"], "liveactivity");
+        assert_eq!(
+            queue
+                .lag(PushQueueStage::PublishLog)
+                .await
+                .unwrap()
+                .ready_depth,
+            1
+        );
+    }
+
+    #[test]
+    fn live_activity_broadcast_cannot_start_an_activity() {
+        let request = PublishRequest {
+            publish_id: Some("bad-broadcast-start".to_owned()),
+            recipients: vec![PublishTarget::Recipient {
+                recipient: PushRecipient::ApnsLiveActivityBroadcast {
+                    channel_id: SecretString::new("channel_123").unwrap(),
+                    storage_policy: ApnsChannelStoragePolicy::NoStorage,
+                },
+            }],
+            payload: sample_payload(),
+            provider_overrides: vec![],
+            live_activity: Some(ApnsLiveActivityPayload {
+                event: ApnsLiveActivityEvent::Start,
+                timestamp: 1_725_000_000,
+                content_state: json!({"state": "started"}),
+                attributes_type: Some("RideAttributes".to_owned()),
+                attributes: Some(json!({"rideID": "ride-1"})),
+                alert: Some(json!({"title": "Started", "body": "Ride started"})),
+                stale_date: None,
+                dismissal_date: None,
+                relevance_score: None,
+                input_push_token: false,
+                input_push_channel: None,
+                priority: ApnsLiveActivityPriority::Immediate,
+            }),
+            sync: false,
+            not_before_ms: None,
+            expires_at_ms: None,
+        };
+
+        let error = normalize_live_activity_publish(&request).unwrap_err();
+        assert!(matches!(error, AppError::InvalidInput(_)));
     }
 
     #[tokio::test]

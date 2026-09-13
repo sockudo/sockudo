@@ -49,27 +49,39 @@ pub use dispatch::NativeWebPushCrypto;
     feature = "push-hms",
     feature = "push-wns"
 ))]
+pub use dispatch::ProviderHttpClientOptions;
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
 pub use dispatch::ReqwestProviderHttpClient;
 pub use dispatch::{
-    AcceptAllDispatcher, AdaptiveRateLimiter, ApnsDispatcher, CachedTokenProvider, CircuitState,
-    FcmDispatcher, HealthStatus, HmsDispatcher, PassthroughWebPushCrypto, ProviderAccessToken,
-    ProviderAuthError, ProviderCircuitBreaker, ProviderDispatchWorker, ProviderEndpointConfig,
-    ProviderHttpClient, ProviderHttpMethod, ProviderHttpRequest, ProviderHttpResponse,
-    ProviderTokenSource, PushDispatcher, RetryAfterDispatcher, StaticTokenSource, WebPushCrypto,
-    WebPushDispatcher, WebPushPreparedRequest, WeightedFairScheduler, WnsDispatcher,
+    AcceptAllDispatcher, AdaptiveRateLimiter, ApnsBroadcastChannel, ApnsBroadcastChannelList,
+    ApnsChannelManager, ApnsChannelManagerError, ApnsDispatcher, ApnsLiveActivityDispatchConfig,
+    CachedTokenProvider, CircuitState, FcmDispatcher, HealthStatus, HmsDispatcher,
+    PassthroughWebPushCrypto, ProviderAccessToken, ProviderAuthError, ProviderCircuitBreaker,
+    ProviderDispatchWorker, ProviderEndpointConfig, ProviderHttpClient, ProviderHttpMethod,
+    ProviderHttpRequest, ProviderHttpResponse, ProviderTokenSource, PushDispatcher,
+    RetryAfterDispatcher, StaticTokenSource, WebPushCrypto, WebPushDispatcher,
+    WebPushPreparedRequest, WeightedFairScheduler, WnsDispatcher,
 };
 pub use domain::{
-    ChannelSubscription, DEFAULT_PUSH_FANOUT_FAST_THRESHOLD, DEFAULT_PUSH_FANOUT_PAGE_SIZE,
-    DEFAULT_PUSH_FANOUT_SHARD_SIZE, DEFAULT_PUSH_PROVIDER_BATCH_SIZE,
-    DEFAULT_PUSH_RETRY_INITIAL_BACKOFF_MS, DEFAULT_PUSH_RETRY_JITTER_RATIO_PERCENT,
-    DEFAULT_PUSH_RETRY_MAX_AGE_MS, DEFAULT_PUSH_RETRY_MAX_ATTEMPTS,
-    DEFAULT_PUSH_RETRY_MAX_BACKOFF_MS, DEFAULT_PUSH_STATUS_RETENTION_DAYS,
-    DEVICE_IDENTITY_TOKEN_BYTES, DEVICE_SECRET_PBKDF2_ITERATIONS, DeadLetter, DeleteDeviceOutcome,
-    DeliveryBatch, DeliveryEvent, DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult,
-    DeviceDetails, DevicePushDetails, DevicePushState, EncryptedSecret, FanoutConfig, FanoutRegime,
-    FormFactor, MAX_APP_ID_BYTES, MAX_CURSOR_BYTES, MAX_METADATA_BYTES,
-    MAX_PROVIDER_OVERRIDE_BYTES, MAX_PUSH_BODY_BYTES, MAX_PUSH_ICON_BYTES, MAX_PUSH_TARGETS,
-    MAX_PUSH_TITLE_BYTES, MAX_RENDERED_TEMPLATE_BYTES, MAX_TEMPLATE_DATA_BYTES,
+    ApnsChannelStoragePolicy, ApnsLiveActivityEvent, ApnsLiveActivityPayload,
+    ApnsLiveActivityPriority, ChannelSubscription, DEFAULT_PUSH_FANOUT_FAST_THRESHOLD,
+    DEFAULT_PUSH_FANOUT_PAGE_SIZE, DEFAULT_PUSH_FANOUT_SHARD_SIZE,
+    DEFAULT_PUSH_PROVIDER_BATCH_SIZE, DEFAULT_PUSH_RETRY_INITIAL_BACKOFF_MS,
+    DEFAULT_PUSH_RETRY_JITTER_RATIO_PERCENT, DEFAULT_PUSH_RETRY_MAX_AGE_MS,
+    DEFAULT_PUSH_RETRY_MAX_ATTEMPTS, DEFAULT_PUSH_RETRY_MAX_BACKOFF_MS,
+    DEFAULT_PUSH_STATUS_RETENTION_DAYS, DEVICE_IDENTITY_TOKEN_BYTES,
+    DEVICE_SECRET_PBKDF2_ITERATIONS, DeadLetter, DeleteDeviceOutcome, DeliveryBatch, DeliveryEvent,
+    DeliveryFeedback, DeliveryJob, DeliveryOutcome, DeliveryResult, DeviceDetails,
+    DevicePushDetails, DevicePushState, EncryptedSecret, FanoutConfig, FanoutRegime, FormFactor,
+    MAX_APNS_BROADCAST_PAYLOAD_BYTES, MAX_APNS_PAYLOAD_BYTES, MAX_APP_ID_BYTES, MAX_CURSOR_BYTES,
+    MAX_METADATA_BYTES, MAX_PROVIDER_OVERRIDE_BYTES, MAX_PUSH_BODY_BYTES, MAX_PUSH_ICON_BYTES,
+    MAX_PUSH_TARGETS, MAX_PUSH_TITLE_BYTES, MAX_RENDERED_TEMPLATE_BYTES, MAX_TEMPLATE_DATA_BYTES,
     NotificationTemplate, Platform, ProviderCredential, ProviderCredentialMaterial, ProviderError,
     ProviderFailureClass, ProviderOverridePayload, PublishCounters, PublishIntent,
     PublishLifecycleState, PublishLogEvent, PublishStatus, PublishTarget, PushCursor,

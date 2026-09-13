@@ -44,6 +44,7 @@ export type {
   MutableMessageVersionInfo,
   MutableMessageState,
 } from './types/core/versioned_messages';
+export * from './types/core/push';
 
 export { default as Channel } from './types/core/channels/channel';
 export { default as PresenceChannel } from './types/core/channels/presence_channel';

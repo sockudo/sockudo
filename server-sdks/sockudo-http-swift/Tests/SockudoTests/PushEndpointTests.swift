@@ -63,6 +63,58 @@ final class PushEndpointTests: XCTestCase {
     XCTAssertEqual(queryItems.first(where: { $0.name == "auth_signature" })?.value, expectedSignature)
   }
 
+  func testLiveActivityChannelEndpointsEncodeOpaqueChannelID() throws {
+    let create = PushEndpointFactory.createApnsLiveActivityChannel(
+      storagePolicy: .mostRecent,
+      options: options)
+    let createRequest = try create.request(baseUrlComponents: baseComponents())
+    let createBody = try JSONSerialization.jsonObject(with: createRequest.httpBody!) as! [String: Any]
+    XCTAssertEqual(createRequest.httpMethod, "POST")
+    XCTAssertEqual(createRequest.url?.path, "/apps/123456/push/liveActivities/channels")
+    XCTAssertEqual(createBody["storagePolicy"] as? String, "mostRecent")
+    XCTAssertEqual(
+      createRequest.value(forHTTPHeaderField: "X-Sockudo-Push-Capability"),
+      "push-admin")
+
+    let get = PushEndpointFactory.getApnsLiveActivityChannel(
+      channelID: "a/b+c=",
+      options: options)
+    let getRequest = try get.request(baseUrlComponents: baseComponents())
+    XCTAssertEqual(
+      getRequest.url?.absoluteString.contains(
+        "/push/liveActivities/channels/a%2Fb%2Bc%3D?"),
+      true)
+
+    let delete = PushEndpointFactory.deleteApnsLiveActivityChannel(
+      channelID: "a/b+c=",
+      options: options)
+    let deleteRequest = try delete.request(baseUrlComponents: baseComponents())
+    XCTAssertEqual(deleteRequest.httpMethod, "DELETE")
+    XCTAssertEqual(
+      deleteRequest.url.flatMap {
+        URLComponents(url: $0, resolvingAgainstBaseURL: false)?.percentEncodedPath
+      },
+      getRequest.url.flatMap {
+        URLComponents(url: $0, resolvingAgainstBaseURL: false)?.percentEncodedPath
+      })
+  }
+
+  func testLiveActivityBuildersUseSockudoWireNames() {
+    let recipient = ApnsLiveActivity.broadcastRecipient(
+      channelID: "channel-1",
+      storagePolicy: .noStorage)
+    let payload = ApnsLiveActivity.payload(
+      event: .update,
+      timestamp: 1_725_000_000,
+      contentState: ["eta": 4],
+      priority: .conservePower)
+
+    XCTAssertEqual(recipient["transportType"] as? String, "apnsLiveActivityBroadcast")
+    XCTAssertEqual(recipient["storagePolicy"] as? String, "noStorage")
+    XCTAssertEqual(payload["event"] as? String, "update")
+    XCTAssertEqual(payload["priority"] as? String, "conservePower")
+  }
+
   private func baseComponents() -> URLComponents {
     var components = URLComponents()
     components.scheme = options.scheme

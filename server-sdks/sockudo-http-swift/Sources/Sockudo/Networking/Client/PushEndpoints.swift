@@ -19,6 +19,7 @@ struct PushEndpoint<SuccessResponse: Decodable, Body: Encodable>: APIotaCodableE
   let path: String
   let options: SockudoClientOptions
   private let additionalQueryItems: [URLQueryItem]
+  private let pathIsPercentEncoded: Bool
 
   var queryItems: [URLQueryItem]? {
     let authInfo = AuthInfo(
@@ -38,6 +39,7 @@ struct PushEndpoint<SuccessResponse: Decodable, Body: Encodable>: APIotaCodableE
     queryItems: [URLQueryItem] = [],
     capability: PushCapability,
     deviceIdentityToken: String? = nil,
+    pathIsPercentEncoded: Bool = false,
     options: SockudoClientOptions
   ) {
     var resolvedHeaders = APIClient.defaultHeaders
@@ -59,6 +61,27 @@ struct PushEndpoint<SuccessResponse: Decodable, Body: Encodable>: APIotaCodableE
     self.path = path
     self.options = options
     self.additionalQueryItems = queryItems
+    self.pathIsPercentEncoded = pathIsPercentEncoded
+  }
+
+  func request(baseUrlComponents: URLComponents) throws -> URLRequest {
+    var components = baseUrlComponents
+    if pathIsPercentEncoded {
+      components.percentEncodedPath = path
+    } else {
+      components.path = path
+    }
+    components.queryItems = queryItems
+    guard let url = components.url else {
+      throw APIotaClientError<Data>.clientSide
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = httpMethod.rawValue
+    if let httpBody {
+      request.httpBody = try encoder.encode(httpBody)
+    }
+    request.allHTTPHeaderFields = headers?.allHTTPHeaderFields
+    return request
   }
 }
 
@@ -230,6 +253,61 @@ enum PushEndpointFactory {
       httpBody: AnyCodable(request),
       capability: .admin,
       options: options)
+  }
+
+  static func createApnsLiveActivityChannel(
+    storagePolicy: ApnsChannelStoragePolicy,
+    options: SockudoClientOptions
+  ) -> PushEndpoint<ApnsBroadcastChannel, AnyCodable> {
+    PushEndpoint(
+      path: "/apps/\(options.appId)/push/liveActivities/channels",
+      httpMethod: .POST,
+      httpBody: AnyCodable(["storagePolicy": storagePolicy.rawValue]),
+      capability: .admin,
+      options: options)
+  }
+
+  static func getApnsLiveActivityChannel(
+    channelID: String,
+    options: SockudoClientOptions
+  ) -> PushEndpoint<ApnsBroadcastChannel, String> {
+    PushEndpoint(
+      path: liveActivityChannelPath(channelID: channelID, options: options),
+      httpMethod: .GET,
+      capability: .admin,
+      pathIsPercentEncoded: true,
+      options: options)
+  }
+
+  static func listApnsLiveActivityChannels(
+    options: SockudoClientOptions
+  ) -> PushEndpoint<ApnsBroadcastChannelList, String> {
+    PushEndpoint(
+      path: "/apps/\(options.appId)/push/liveActivities/channels",
+      httpMethod: .GET,
+      capability: .admin,
+      options: options)
+  }
+
+  static func deleteApnsLiveActivityChannel(
+    channelID: String,
+    options: SockudoClientOptions
+  ) -> PushEndpoint<PushIgnoredResponse, String> {
+    PushEndpoint(
+      path: liveActivityChannelPath(channelID: channelID, options: options),
+      httpMethod: .DELETE,
+      capability: .admin,
+      pathIsPercentEncoded: true,
+      options: options)
+  }
+
+  private static func liveActivityChannelPath(
+    channelID: String,
+    options: SockudoClientOptions
+  ) -> String {
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+    let encoded = channelID.addingPercentEncoding(withAllowedCharacters: allowed) ?? channelID
+    return "/apps/\(options.appId)/push/liveActivities/channels/\(encoded)"
   }
 
   static func publishPushBatch(

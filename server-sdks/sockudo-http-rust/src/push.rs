@@ -4,6 +4,69 @@ use serde::{Deserialize, Serialize};
 use sonic_rs::{JsonValueTrait, Value, json};
 use std::collections::{BTreeMap, HashMap};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApnsChannelStoragePolicy {
+    #[default]
+    NoStorage,
+    MostRecent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApnsLiveActivityEvent {
+    Start,
+    Update,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApnsLiveActivityPriority {
+    LowPower,
+    ConservePower,
+    Immediate,
+}
+
+/// The ActivityKit payload that Sockudo renders into the APNs wire format.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApnsLiveActivityPayload {
+    pub event: ApnsLiveActivityEvent,
+    pub timestamp: u64,
+    pub content_state: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attributes_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_date: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dismissal_date: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_push_token: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_push_channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<ApnsLiveActivityPriority>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApnsBroadcastChannel {
+    pub channel_id: String,
+    pub storage_policy: ApnsChannelStoragePolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApnsBroadcastChannelList {
+    pub channels: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PushCursorParams {
     pub limit: Option<u32>,
@@ -64,6 +127,10 @@ fn push_headers(capability: &str, device_identity_token: Option<&str>) -> HashMa
 
 fn push_path(path: &str) -> String {
     format!("/push{path}")
+}
+
+fn path_segment(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 impl Sockudo {
@@ -258,6 +325,59 @@ impl Sockudo {
         .await
     }
 
+    /// Creates an APNs broadcast channel for Live Activity updates.
+    pub async fn create_apns_live_activity_channel(
+        &self,
+        storage_policy: ApnsChannelStoragePolicy,
+    ) -> Result<Response> {
+        let body = sonic_rs::to_value(&sonic_rs::json!({
+            "storagePolicy": storage_policy,
+        }))
+        .map_err(SockudoError::Json)?;
+        self.post_with_headers(
+            &push_path("/liveActivities/channels"),
+            &body,
+            &push_headers("push-admin", None),
+        )
+        .await
+    }
+
+    /// Reads one APNs Live Activity broadcast channel from Apple.
+    pub async fn get_apns_live_activity_channel(&self, channel_id: &str) -> Result<Response> {
+        self.get_with_headers(
+            &push_path(&format!(
+                "/liveActivities/channels/{}",
+                path_segment(channel_id)
+            )),
+            None,
+            &push_headers("push-admin", None),
+        )
+        .await
+    }
+
+    /// Lists all APNs Live Activity broadcast channel identifiers.
+    pub async fn list_apns_live_activity_channels(&self) -> Result<Response> {
+        self.get_with_headers(
+            &push_path("/liveActivities/channels"),
+            None,
+            &push_headers("push-admin", None),
+        )
+        .await
+    }
+
+    /// Deletes one APNs Live Activity broadcast channel from Apple.
+    pub async fn delete_apns_live_activity_channel(&self, channel_id: &str) -> Result<Response> {
+        self.delete_with_headers(
+            &push_path(&format!(
+                "/liveActivities/channels/{}",
+                path_segment(channel_id)
+            )),
+            None,
+            &push_headers("push-admin", None),
+        )
+        .await
+    }
+
     pub async fn publish_push_direct(&self, request: &Value) -> Result<Response> {
         self.publish_push(request).await
     }
@@ -314,5 +434,40 @@ impl Sockudo {
             &push_headers("push-admin", None),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_activity_payload_uses_sockudo_wire_names() {
+        let payload = ApnsLiveActivityPayload {
+            event: ApnsLiveActivityEvent::Update,
+            timestamp: 1_725_000_000,
+            content_state: json!({ "eta": 4 }),
+            attributes_type: None,
+            attributes: None,
+            alert: None,
+            stale_date: Some(1_725_000_060),
+            dismissal_date: None,
+            relevance_score: None,
+            input_push_token: None,
+            input_push_channel: None,
+            priority: Some(ApnsLiveActivityPriority::ConservePower),
+        };
+        let value = sonic_rs::to_value(&payload).expect("serialize payload");
+
+        assert_eq!(value["event"], "update");
+        assert_eq!(value["contentState"]["eta"], 4);
+        assert_eq!(value["staleDate"], 1_725_000_060_u64);
+        assert_eq!(value["priority"], "conservePower");
+        assert!(value.get("attributesType").is_none());
+    }
+
+    #[test]
+    fn channel_ids_are_encoded_as_one_path_segment() {
+        assert_eq!(path_segment("a/b+c="), "a%2Fb%2Bc%3D");
     }
 }

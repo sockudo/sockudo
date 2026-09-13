@@ -75,6 +75,8 @@ struct ServerState {
     push_queue: sockudo_push::DynPushQueue,
     #[cfg(feature = "push")]
     push_admission: Arc<push::PushAdmissionSnapshot>,
+    #[cfg(all(feature = "push", feature = "push-apns"))]
+    apns_channel_manager: Option<Arc<sockudo_push::ApnsChannelManager>>,
     #[cfg(all(feature = "push", feature = "monolith"))]
     push_worker_handles: Vec<tokio::task::JoinHandle<()>>,
 }

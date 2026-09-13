@@ -215,11 +215,16 @@ let response = sockudo.publish_push(&json!({
         "title": "Order updated",
         "body": "Order ord_123 is packed"
     },
-    "idempotency_key": "push-order-ord_123-packed"
+    "publishId": "push-order-ord_123-packed"
 })).await?;
 ```
 
 Use Rust SDK push helpers for backend services that already own transactional state and need typed error handling around notification fanout.
+
+The SDK exports typed `ApnsLiveActivityPayload`, event, priority, storage-policy, and channel
+response types. Use `create/get/list/delete_apns_live_activity_channel` for iOS 18 broadcast
+channel lifecycle. See [Apple Live Activities](/docs/server/apple-live-activities) for direct and
+broadcast examples and retry semantics.
 
 ## Errors, retries, and graceful shutdown
 

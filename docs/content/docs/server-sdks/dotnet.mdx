@@ -168,12 +168,14 @@ await sockudo.ForceReconnectUserAsync("user-42")
 Terminate for immediate revocation; force reconnect when clients should obtain
 new auth or routing state.
 
-## Signed push request
+## Push and Live Activities
 
-If your .NET SDK version does not expose typed push helpers, generate a signed request for the push endpoint and send it with your preferred HTTP client.
+Current SDKs expose `PublishPushAsync<T>` and first-class
+`Create/Get/List/DeleteApnsLiveActivityChannelAsync<T>` helpers. The example below publishes a
+typed server request while the SDK handles request signing:
 
 ```csharp
-var requestBody = JsonSerializer.Serialize(new
+var result = await sockudo.PublishPushAsync<object>(new
 {
     recipients = new[]
     {
@@ -184,20 +186,13 @@ var requestBody = JsonSerializer.Serialize(new
         title = "Order updated",
         body = "Order ord_123 is packed",
     },
-    idempotency_key = "push-order-ord_123-packed",
+    publishId = "push-order-ord_123-packed",
     sync = false,
 });
-
-var request = authenticatedRequestFactory.Build(
-    PusherMethod.POST,
-    "/push/publish",
-    requestBody: requestBody
-);
-
-request.Headers.Add("X-Sockudo-Push-Capability", "push-admin");
 ```
 
-Prefer a first-class push helper when available in your SDK version; the signed request shape is the same.
+Use anonymous objects or your own records for the camel-case ActivityKit fields. See
+[Apple Live Activities](/docs/server/apple-live-activities) for direct and broadcast examples.
 
 ## Errors, retries, and application lifetime
 

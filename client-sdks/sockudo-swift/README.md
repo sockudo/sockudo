@@ -346,6 +346,30 @@ push.listChannelSubscriptions(
 }
 ```
 
+ActivityKit tokens can rotate. Keep the returned task alive and upload every replacement token to
+your authenticated backend:
+
+```swift
+let tokenTask = SockudoLiveActivityTokens.observePushTokens(for: activity) {
+    activityID, token in
+    await backend.replaceLiveActivityToken(activityID: activityID, token: token)
+}
+
+push.publishLiveActivity(
+    activityToken: currentToken,
+    payload: .init(
+        event: .update,
+        contentState: ["etaMinutes": 2],
+        priority: .conservePower
+    )
+) { result in
+    print(result)
+}
+```
+
+For iOS 18 shared-content audiences, use `createLiveActivityBroadcastChannel` and
+`publishLiveActivityBroadcast`. Broadcast channel management belongs on the trusted backend/proxy.
+
 ### Encrypted Channels
 
 `private-encrypted-*` channels use the `shared_secret` returned by your auth endpoint or custom auth handler. Payload decryption is handled automatically.

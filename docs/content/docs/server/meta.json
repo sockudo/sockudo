@@ -13,6 +13,7 @@
     "mutable-messages",
     "webhooks",
     "push-notifications",
+    "apple-live-activities",
     "push-operations",
     "mcp",
     "ai-transport-overview",

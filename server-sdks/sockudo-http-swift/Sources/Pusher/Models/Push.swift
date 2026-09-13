@@ -1,6 +1,68 @@
 import AnyCodable
 import Foundation
 
+public enum ApnsChannelStoragePolicy: String, Codable {
+  case noStorage
+  case mostRecent
+}
+
+public enum ApnsLiveActivityEvent: String {
+  case start
+  case update
+  case end
+}
+
+public enum ApnsLiveActivityPriority: String {
+  case lowPower
+  case conservePower
+  case immediate
+}
+
+public struct ApnsBroadcastChannel: Decodable {
+  public let channelID: String
+  public let storagePolicy: ApnsChannelStoragePolicy
+
+  enum CodingKeys: String, CodingKey {
+    case channelID = "channelId"
+    case storagePolicy
+  }
+}
+
+public struct ApnsBroadcastChannelList: Decodable {
+  public let channels: [String]
+}
+
+public enum ApnsLiveActivity {
+  public static func directRecipient(activityToken: String) -> [String: Any] {
+    ["transportType": "apnsLiveActivity", "activityToken": activityToken]
+  }
+
+  public static func broadcastRecipient(
+    channelID: String,
+    storagePolicy: ApnsChannelStoragePolicy = .noStorage
+  ) -> [String: Any] {
+    [
+      "transportType": "apnsLiveActivityBroadcast",
+      "channelId": channelID,
+      "storagePolicy": storagePolicy.rawValue,
+    ]
+  }
+
+  public static func payload(
+    event: ApnsLiveActivityEvent,
+    timestamp: UInt64,
+    contentState: [String: Any],
+    priority: ApnsLiveActivityPriority = .conservePower
+  ) -> [String: Any] {
+    [
+      "event": event.rawValue,
+      "timestamp": timestamp,
+      "contentState": contentState,
+      "priority": priority.rawValue,
+    ]
+  }
+}
+
 public struct PushCursorFetchOptions {
   public let limit: Int?
   public let cursor: String?

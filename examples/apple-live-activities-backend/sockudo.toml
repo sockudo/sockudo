@@ -1,0 +1,49 @@
+# Sockudo configuration for the Apple Live Activities example. Push state is in-memory,
+# APNs endpoints point at the local mock, and the mock CA is trusted through
+# push.apns.ca_certificate_path (overridden with an absolute path by run.sh).
+debug = false
+host = "127.0.0.1"
+port = 6001
+mode = "development"
+
+[adapter]
+driver = "local"
+
+# The example polls publish status aggressively; keep the HTTP API limiter out of the way.
+[rate_limiter]
+enabled = false
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "rides-app"
+key = "rides-key"
+secret = "rides-secret"
+enabled = true
+
+[push]
+storage_driver = "memory"
+queue_driver = "memory"
+apns_enabled = true
+dispatch_worker_count = 2
+dispatch_max_outbound_requests = 32
+scheduler_interval_secs = 1
+
+[push.apns]
+topic = "com.sockudo.rides"
+bundle_id = "com.sockudo.rides"
+live_activities_enabled = true
+broadcast_enabled = true
+endpoint = "https://localhost:8443"
+broadcast_endpoint = "https://localhost:8443"
+management_endpoint = "https://localhost:8443"
+default_broadcast_expiration_secs = 3600
+ca_certificate_path = "certs/ca.pem"
+
+[push.retry]
+max_attempts = 4
+initial_backoff_ms = 500
+max_backoff_ms = 2000
+respect_retry_after = true

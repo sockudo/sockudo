@@ -269,6 +269,21 @@ func application(
 
 Do not embed APNs private keys or Sockudo app secrets in the app.
 
+For Live Activities, observe the token sequence for the full lifetime because ActivityKit can
+rotate tokens:
+
+```swift
+let tokenTask = SockudoLiveActivityTokens.observePushTokens(for: activity) {
+    activityID, token in
+    await backend.replaceLiveActivityToken(activityID: activityID, token: token)
+}
+```
+
+`SockudoPushRegistration` also provides typed `publishLiveActivity`,
+`publishLiveActivityBroadcast`, and broadcast-channel management helpers for a trusted proxy.
+Those helpers must point to your authenticated backend; never place push-admin credentials in the
+app. See [Apple Live Activities](/docs/server/apple-live-activities).
+
 ## Production checklist
 
 - Use one long-lived client for the app session and disconnect it on explicit

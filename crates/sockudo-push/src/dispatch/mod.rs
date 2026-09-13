@@ -1,4 +1,5 @@
 mod apns;
+mod apns_channels;
 mod auth;
 mod fcm;
 mod http;
@@ -13,7 +14,10 @@ pub use self::webpush::{
     PassthroughWebPushCrypto, WebPushCrypto, WebPushDispatcher, WebPushPreparedRequest,
 };
 
-pub use self::apns::ApnsDispatcher;
+pub use self::apns::{ApnsDispatcher, ApnsLiveActivityDispatchConfig};
+pub use self::apns_channels::{
+    ApnsBroadcastChannel, ApnsBroadcastChannelList, ApnsChannelManager, ApnsChannelManagerError,
+};
 
 pub use self::fcm::FcmDispatcher;
 #[cfg(feature = "push-fcm")]
@@ -30,6 +34,14 @@ pub use self::auth::{
     CachedTokenProvider, ProviderAccessToken, ProviderAuthError, ProviderTokenSource,
     StaticTokenSource,
 };
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
+pub use self::http::ProviderHttpClientOptions;
 #[cfg(any(
     feature = "push-fcm",
     feature = "push-apns",

@@ -377,6 +377,47 @@ Available Vue exports:
 - `useChannel`
 - `usePresenceChannel`
 
+## Push Proxy and Apple Live Activities
+
+`SockudoPushRegistration` is exported from the root package with public TypeScript declarations.
+Point it at an authenticated application backend; never put a Sockudo app secret, APNs provider key,
+or unrestricted `push-admin` capability in browser, React Native, or NativeScript code.
+
+React Native and NativeScript applications observe ActivityKit tokens through their app-specific
+iOS bridge because `ActivityKit.Activity` is generic over the Widget Extension's custom attributes.
+Upload every push-to-start and activity-token rotation to your backend. A narrowly authorized proxy
+can then use the typed request:
+
+```ts
+import { SockudoPushRegistration } from "@sockudo/client";
+
+const push = new SockudoPushRegistration({
+  endpoint: "https://api.example.com/sockudo/push",
+  headers: async () => ({ Authorization: `Bearer ${await sessionToken()}` }),
+});
+
+await push.publishLiveActivity({
+  publishId: "ride-184-update-42",
+  recipients: [{
+    type: "recipient",
+    recipient: {
+      transportType: "apnsLiveActivity",
+      activityToken: currentActivityToken,
+    },
+  }],
+  liveActivity: {
+    event: "update",
+    timestamp: 1725000042,
+    contentState: { status: "arriving", etaMinutes: 1 },
+    priority: "conservePower",
+  },
+});
+```
+
+For one-to-many iOS 18 delivery, use `transportType: "apnsLiveActivityBroadcast"` with a channel ID
+and its immutable `storagePolicy`. Channel creation and deletion remain server-admin operations.
+See the [Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## React Native Notes
 
 - React Native build output is `dist/react-native/sockudo.js`

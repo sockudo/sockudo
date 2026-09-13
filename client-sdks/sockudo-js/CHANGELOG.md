@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+* public TypeScript declarations for push proxy APIs and typed Apple Live Activity direct and
+  broadcast publishing
+
 ## [2.2.0] - 2026-08-17
 
 ### Added

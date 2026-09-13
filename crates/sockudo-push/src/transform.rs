@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use sonic_rs::prelude::*;
-use sonic_rs::{Value, json};
+use sonic_rs::{Object, Value, json};
 use thiserror::Error;
 
 use crate::domain::{
-    MAX_APNS_PAYLOAD_BYTES, MAX_FCM_PAYLOAD_BYTES, MAX_HMS_PAYLOAD_BYTES,
+    MAX_APNS_BROADCAST_PAYLOAD_BYTES, MAX_FCM_PAYLOAD_BYTES, MAX_HMS_PAYLOAD_BYTES,
     MAX_REALTIME_PAYLOAD_BYTES, MAX_RENDERED_TEMPLATE_BYTES, MAX_WEB_PUSH_PAYLOAD_BYTES,
     MAX_WNS_PAYLOAD_BYTES, NotificationTemplate, ProviderOverridePayload, PushPayload,
     PushProviderKind, RenderedProviderPayload, validate_web_push_endpoint,
@@ -350,15 +350,7 @@ fn validate_rendered_payload_size(
     let max_bytes = provider_payload_limit(provider);
     let apns_body;
     let sized_payload = if provider == PushProviderKind::Apns {
-        apns_body = payload
-            .get("aps")
-            .map(|aps| {
-                json!({
-                    "aps": aps,
-                    "data": payload.get("data").cloned().unwrap_or_else(Value::new_null)
-                })
-            })
-            .unwrap_or_else(|| payload.clone());
+        apns_body = apns_request_payload(payload);
         &apns_body
     } else {
         payload
@@ -380,12 +372,26 @@ fn validate_rendered_payload_size(
 fn provider_payload_limit(provider: PushProviderKind) -> usize {
     match provider {
         PushProviderKind::Fcm => MAX_FCM_PAYLOAD_BYTES,
-        PushProviderKind::Apns => MAX_APNS_PAYLOAD_BYTES,
+        // Broadcast Live Activity pushes permit 5 KB. The APNs dispatcher
+        // enforces the stricter 4 KB limit for device-token destinations.
+        PushProviderKind::Apns => MAX_APNS_BROADCAST_PAYLOAD_BYTES,
         PushProviderKind::WebPush => MAX_WEB_PUSH_PAYLOAD_BYTES,
         PushProviderKind::Hms => MAX_HMS_PAYLOAD_BYTES,
         PushProviderKind::Wns => MAX_WNS_PAYLOAD_BYTES,
         PushProviderKind::Realtime => MAX_REALTIME_PAYLOAD_BYTES,
     }
+}
+
+pub(crate) fn apns_request_payload(payload: &Value) -> Value {
+    let Some(aps) = payload.get("aps") else {
+        return payload.clone();
+    };
+    let mut body = Object::new();
+    body.insert("aps", aps.clone());
+    if let Some(data) = payload.get("data") {
+        body.insert("data", data.clone());
+    }
+    body.into_value()
 }
 
 fn provider_label(provider: PushProviderKind) -> &'static str {
@@ -421,7 +427,7 @@ fn validate_apns_fields(payload: &Value) -> Result<(), PayloadTransformError> {
         });
     }
     if let Some(priority) = headers.get(&"apns-priority").and_then(Value::as_str)
-        && !matches!(priority, "5" | "10")
+        && !matches!(priority, "1" | "5" | "10")
     {
         return Err(PayloadTransformError::InvalidOverride {
             provider: "apns",

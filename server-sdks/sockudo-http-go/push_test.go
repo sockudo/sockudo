@@ -105,3 +105,74 @@ func TestPushSubscribeUsesDeviceIdentityTokenAndCursorPagination(t *testing.T) {
 		t.Fatalf("missing device identity token")
 	}
 }
+
+func TestApnsLiveActivityChannelLifecycleUsesAdminEndpoints(t *testing.T) {
+	rt := &pushRoundTripper{t: t}
+	client := &Client{
+		AppID: "10000", Key: "aaaa", Secret: "tofu", Host: "localhost",
+		HTTPClient: &http.Client{Transport: rt},
+	}
+
+	if _, err := client.CreateApnsLiveActivityChannel(ApnsChannelMostRecent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetApnsLiveActivityChannel("a/b+c="); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ListApnsLiveActivityChannels(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DeleteApnsLiveActivityChannel("a/b+c="); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := rt.bodies[0]["storagePolicy"]; got != "mostRecent" {
+		t.Fatalf("storagePolicy = %#v", got)
+	}
+	wantPaths := []string{
+		"/apps/10000/push/liveActivities/channels",
+		"/apps/10000/push/liveActivities/channels/a/b+c=",
+		"/apps/10000/push/liveActivities/channels",
+		"/apps/10000/push/liveActivities/channels/a/b+c=",
+	}
+	for i, want := range wantPaths {
+		if got := rt.requests[i].URL.Path; got != want {
+			t.Fatalf("request %d path = %q, want %q", i, got, want)
+		}
+		if rt.requests[i].Header.Get("X-Sockudo-Push-Capability") != "push-admin" {
+			t.Fatalf("request %d missing push-admin header", i)
+		}
+	}
+	if got := rt.requests[1].URL.EscapedPath(); got != "/apps/10000/push/liveActivities/channels/a%2Fb+c=" {
+		t.Fatalf("escaped channel path = %q", got)
+	}
+}
+
+func TestApnsLiveActivityTypesSerializeWireContract(t *testing.T) {
+	recipient := NewApnsLiveActivityBroadcastRecipient("channel-1", ApnsChannelNoStorage)
+	payload := ApnsLiveActivityPayload{
+		Event:        ApnsLiveActivityUpdate,
+		Timestamp:    1725000000,
+		ContentState: map[string]interface{}{"eta": 4},
+		Priority:     ApnsLiveActivityConservePower,
+	}
+	encoded, err := json.Marshal(map[string]interface{}{
+		"recipient":    recipient,
+		"liveActivity": payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	gotRecipient := decoded["recipient"].(map[string]interface{})
+	if gotRecipient["transportType"] != "apnsLiveActivityBroadcast" || gotRecipient["storagePolicy"] != "noStorage" {
+		t.Fatalf("unexpected recipient: %#v", gotRecipient)
+	}
+	gotPayload := decoded["liveActivity"].(map[string]interface{})
+	if gotPayload["event"] != "update" || gotPayload["priority"] != "conservePower" {
+		t.Fatalf("unexpected payload: %#v", gotPayload)
+	}
+}

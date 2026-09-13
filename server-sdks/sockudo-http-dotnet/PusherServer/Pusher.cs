@@ -27,6 +27,8 @@ namespace PusherServer
         private const string PushCredentialsResource = "/push/credentials";
         private const string PushCredentialResource = "/push/credentials/{0}";
         private const string PushPublishResource = "/push/publish";
+        private const string PushLiveActivityChannelsResource = "/push/liveActivities/channels";
+        private const string PushLiveActivityChannelResource = "/push/liveActivities/channels/{0}";
         private const string PushBatchPublishResource = "/push/batch/publish";
         private const string PushPublishStatusResource = "/push/publish/{0}/status";
         private const string PushScheduledResource = "/push/scheduled/{0}";
@@ -429,6 +431,33 @@ namespace PusherServer
         public Task<IGetResult<T>> PublishPushAsync<T>(object request)
         {
             return ExecutePushPostAsync<T>(PushPublishResource, WithAsyncPublishDefault(request), PushHeaders("push-admin"));
+        }
+
+        public Task<IGetResult<T>> CreateApnsLiveActivityChannelAsync<T>(string storagePolicy = "noStorage")
+        {
+            if (storagePolicy != "noStorage" && storagePolicy != "mostRecent")
+            {
+                throw new ArgumentException("storagePolicy must be noStorage or mostRecent", nameof(storagePolicy));
+            }
+
+            return ExecutePushPostAsync<T>(PushLiveActivityChannelsResource, new { storagePolicy }, PushHeaders("push-admin"));
+        }
+
+        public Task<IGetResult<T>> GetApnsLiveActivityChannelAsync<T>(string channelId)
+        {
+            ThrowArgumentExceptionIfNullOrEmpty(channelId, "channelId");
+            return ExecutePushGetAsync<T>(string.Format(PushLiveActivityChannelResource, Uri.EscapeDataString(channelId)), null, PushHeaders("push-admin"));
+        }
+
+        public Task<IGetResult<T>> ListApnsLiveActivityChannelsAsync<T>()
+        {
+            return ExecutePushGetAsync<T>(PushLiveActivityChannelsResource, null, PushHeaders("push-admin"));
+        }
+
+        public Task<IGetResult<T>> DeleteApnsLiveActivityChannelAsync<T>(string channelId)
+        {
+            ThrowArgumentExceptionIfNullOrEmpty(channelId, "channelId");
+            return ExecutePushDeleteAsync<T>(string.Format(PushLiveActivityChannelResource, Uri.EscapeDataString(channelId)), null, PushHeaders("push-admin"));
         }
 
         public Task<IGetResult<T>> PublishPushDirectAsync<T>(object request)

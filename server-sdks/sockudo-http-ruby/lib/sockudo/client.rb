@@ -479,6 +479,40 @@ module Sockudo
       post(push_path('/publish'), request.merge(sync: false), push_headers('push-admin'))
     end
 
+    # Create an APNs broadcast channel for Live Activity updates
+    def create_apns_live_activity_channel(storage_policy = 'noStorage')
+      raise Sockudo::Error, 'storage_policy must be noStorage or mostRecent' unless %w[noStorage mostRecent].include?(storage_policy)
+
+      post(
+        push_path('/liveActivities/channels'),
+        { storagePolicy: storage_policy },
+        push_headers('push-admin')
+      )
+    end
+
+    # Read one APNs Live Activity broadcast channel
+    def get_apns_live_activity_channel(channel_id)
+      get(
+        push_path("/liveActivities/channels/#{URI.encode_www_form_component(channel_id)}"),
+        {},
+        push_headers('push-admin')
+      )
+    end
+
+    # List APNs Live Activity broadcast channel identifiers
+    def list_apns_live_activity_channels
+      get(push_path('/liveActivities/channels'), {}, push_headers('push-admin'))
+    end
+
+    # Delete one APNs Live Activity broadcast channel
+    def delete_apns_live_activity_channel(channel_id)
+      delete(
+        push_path("/liveActivities/channels/#{URI.encode_www_form_component(channel_id)}"),
+        {},
+        push_headers('push-admin')
+      )
+    end
+
     # Alias of publish_push
     def publish_push_direct(request)
       publish_push(request)

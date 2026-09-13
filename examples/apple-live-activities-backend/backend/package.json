@@ -1,0 +1,13 @@
+{
+  "name": "sockudo-live-activities-backend-example",
+  "private": true,
+  "type": "module",
+  "description": "Ride-tracking backend that drives Apple Live Activities through Sockudo",
+  "scripts": {
+    "start": "node server.mjs",
+    "scenario": "node scenario.mjs"
+  },
+  "dependencies": {
+    "sockudo": "file:../../../server-sdks/sockudo-http-node"
+  }
+}

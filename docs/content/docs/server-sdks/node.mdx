@@ -197,6 +197,36 @@ const status = await sockudo.getPublishStatus(accepted.publish_id);
 
 Push helpers force async delivery with `sync: false` for production-safe fanout.
 
+For iOS 16.1+ direct Live Activities, use an `apnsLiveActivity` recipient and the typed
+`liveActivity` payload. For iOS 18 shared-content audiences, create one APNs channel and publish
+one O(1) broadcast request:
+
+```ts
+const channel = await sockudo.createApnsLiveActivityChannel("mostRecent");
+
+await sockudo.publishPush({
+  publishId: "match-90-score-3-1",
+  recipients: [{
+    type: "recipient",
+    recipient: {
+      transportType: "apnsLiveActivityBroadcast",
+      channelId: channel.channelId,
+      storagePolicy: channel.storagePolicy,
+    },
+  }],
+  payload: {},
+  liveActivity: {
+    event: "update",
+    timestamp: Math.floor(Date.now() / 1000),
+    contentState: { home: 3, away: 1 },
+    priority: "conservePower",
+  },
+});
+```
+
+See [Apple Live Activities](/docs/server/apple-live-activities) for start/end fields, storage
+policy, token rotation, sandbox endpoints, and operating limits.
+
 ## Errors, retries, and shutdown
 
 HTTP failures reject with `RequestError`, which exposes a status code for

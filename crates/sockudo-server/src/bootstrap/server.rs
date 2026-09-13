@@ -1,3 +1,5 @@
+#[cfg(all(feature = "push", feature = "push-apns"))]
+use super::push::create_apns_channel_manager;
 #[cfg(all(feature = "push", feature = "monolith"))]
 use super::push::workers::start_push_monolith_workers;
 #[cfg(feature = "push")]
@@ -774,11 +776,19 @@ impl SockudoServer {
 
         #[cfg(feature = "push")]
         let push_store = create_push_store(&config).await?;
+        #[cfg(all(feature = "push", not(feature = "push-apns")))]
+        if config.push.apns.live_activities_enabled {
+            return Err(Error::Internal(
+                "APNs Live Activities require the push-apns build feature".to_owned(),
+            ));
+        }
         #[cfg(feature = "push")]
         let push_admission =
             Arc::new(PushAdmissionSnapshot::from_config(&config, &push_store).await);
         #[cfg(feature = "push")]
         let push_queue = create_push_queue(&config, queue_manager_opt.clone(), &push_admission)?;
+        #[cfg(all(feature = "push", feature = "push-apns"))]
+        let apns_channel_manager = create_apns_channel_manager(&config, &push_store).await?;
         #[cfg(all(feature = "push", feature = "monolith"))]
         let push_worker_handles = start_push_monolith_workers(
             &config,
@@ -814,6 +824,8 @@ impl SockudoServer {
             push_queue,
             #[cfg(feature = "push")]
             push_admission,
+            #[cfg(all(feature = "push", feature = "push-apns"))]
+            apns_channel_manager,
             #[cfg(all(feature = "push", feature = "monolith"))]
             push_worker_handles,
         };

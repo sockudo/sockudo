@@ -40,6 +40,7 @@ impl CountingMetrics {
         self.new_connections.load(Ordering::SeqCst)
     }
 
+    #[cfg(target_os = "linux")]
     fn memory_pressure_rejections(&self) -> usize {
         self.memory_pressure_rejections.load(Ordering::SeqCst)
     }

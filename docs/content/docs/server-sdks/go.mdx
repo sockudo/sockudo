@@ -205,13 +205,19 @@ accepted, err := client.PublishPush(sockudo.PushPublishRequest{
         "title": "Order updated",
         "body":  "Order ord_123 is packed",
     },
-    "idempotency_key": "push-order-ord_123-packed",
+    "publishId": "push-order-ord_123-packed",
 })
 
 _ = accepted
 ```
 
 The Go push helpers sign `/push/*` requests and force async publish behavior.
+
+`ApnsLiveActivityPayload` and the direct/broadcast recipient constructors provide the typed
+ActivityKit wire contract. Manage iOS 18 broadcast channels with
+`CreateApnsLiveActivityChannel`, `GetApnsLiveActivityChannel`,
+`ListApnsLiveActivityChannels`, and `DeleteApnsLiveActivityChannel`. See
+[Apple Live Activities](/docs/server/apple-live-activities) for lifecycle rules.
 
 ## Errors and production guidance
 

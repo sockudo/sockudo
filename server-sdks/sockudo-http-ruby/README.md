@@ -299,6 +299,14 @@ Sockudo.logger = Rails.logger
 # Default: logs at INFO level to STDOUT
 ```
 
+## Apple Live Activities
+
+Use `publish_push` for direct-token and broadcast ActivityKit notifications. Manage iOS 18 APNs
+broadcast channels with `create_apns_live_activity_channel`, `get_apns_live_activity_channel`,
+`list_apns_live_activity_channels`, and `delete_apns_live_activity_channel`. Reuse `publishId` for
+safe retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## Testing
 
 ```bash

@@ -138,6 +138,72 @@ describe("Sockudo push", function () {
       .catch(done);
   });
 
+  it("manages and publishes APNs Live Activity broadcast channels", async function () {
+    nock("http://localhost", {
+      reqheaders: {
+        "x-sockudo-push-capability": "push-admin",
+      },
+    })
+      .filteringPath(signed)
+      .post(
+        "/apps/10000/push/liveActivities/channels?auth_key=aaaa&auth_timestamp=X&auth_version=1.0&body_md5=MD5&auth_signature=Y",
+        { storagePolicy: "mostRecent" },
+      )
+      .reply(201, { channelId: "channel_123", storagePolicy: "mostRecent" })
+      .post(
+        "/apps/10000/push/publish?auth_key=aaaa&auth_timestamp=X&auth_version=1.0&body_md5=MD5&auth_signature=Y",
+        {
+          recipients: [
+            {
+              type: "recipient",
+              recipient: {
+                transportType: "apnsLiveActivityBroadcast",
+                channelId: "channel_123",
+                storagePolicy: "mostRecent",
+              },
+            },
+          ],
+          payload: {},
+          liveActivity: {
+            event: "update",
+            timestamp: 1725000000,
+            contentState: { eta: 4 },
+            priority: "conservePower",
+          },
+          sync: false,
+        },
+      )
+      .reply(202, {
+        publishId: "pub_live",
+        status: "queued",
+        expectedRecipients: 1,
+        fanoutRegime: "fastPath",
+      });
+
+    const channel = await sockudo.createApnsLiveActivityChannel("mostRecent");
+    expect(channel.channelId).to.equal("channel_123");
+    const published = await sockudo.publishPush({
+      recipients: [
+        {
+          type: "recipient",
+          recipient: {
+            transportType: "apnsLiveActivityBroadcast",
+            channelId: channel.channelId,
+            storagePolicy: channel.storagePolicy,
+          },
+        },
+      ],
+      payload: {},
+      liveActivity: {
+        event: "update",
+        timestamp: 1725000000,
+        contentState: { eta: 4 },
+        priority: "conservePower",
+      },
+    });
+    expect(published.publishId).to.equal("pub_live");
+  });
+
   it("reads push status and uses cursor pagination for registry lists", function (done) {
     nock("http://localhost")
       .filteringPath(signed)

@@ -141,6 +141,12 @@ declare class Sockudo {
   getPublishStatus(publishId: string): Promise<Record<string, unknown>>;
   cancelScheduledPush(publishId: string): Promise<Response>;
   postPushDeliveryStatus(event: Sockudo.PushDeliveryStatusEvent): Promise<Record<string, unknown>>;
+  createApnsLiveActivityChannel(
+    storagePolicy?: Sockudo.ApnsChannelStoragePolicy,
+  ): Promise<Sockudo.ApnsBroadcastChannel>;
+  getApnsLiveActivityChannel(channelId: string): Promise<Sockudo.ApnsBroadcastChannel>;
+  listApnsLiveActivityChannels(): Promise<Sockudo.ApnsBroadcastChannelList>;
+  deleteApnsLiveActivityChannel(channelId: string): Promise<Response>;
 
   webhook(request: Sockudo.WebHookRequest): Sockudo.WebHook;
   createSignedQueryString(opts: Sockudo.SignedQueryStringOptions): string;
@@ -227,6 +233,12 @@ declare namespace Sockudo {
   export type PushRecipient =
     | { transportType: "gcm"; registrationToken: string }
     | { transportType: "apns"; deviceToken: string }
+    | { transportType: "apnsLiveActivity"; activityToken: string }
+    | {
+        transportType: "apnsLiveActivityBroadcast";
+        channelId: string;
+        storagePolicy?: ApnsChannelStoragePolicy;
+      }
     | { transportType: "web"; endpoint: string; p256dh: string; auth: string }
     | { transportType: "hms"; registrationToken: string }
     | { transportType: "wns"; channelUri: string };
@@ -272,6 +284,30 @@ declare namespace Sockudo {
     sound?: string;
     collapseKey?: string;
   }
+  export type ApnsChannelStoragePolicy = "noStorage" | "mostRecent";
+  export type ApnsLiveActivityEvent = "start" | "update" | "end";
+  export type ApnsLiveActivityPriority = "lowPower" | "conservePower" | "immediate";
+  export interface ApnsLiveActivityPayload {
+    event: ApnsLiveActivityEvent;
+    timestamp: number;
+    contentState: Record<string, unknown>;
+    attributesType?: string;
+    attributes?: Record<string, unknown>;
+    alert?: Record<string, unknown>;
+    staleDate?: number;
+    dismissalDate?: number;
+    relevanceScore?: number;
+    inputPushToken?: boolean;
+    inputPushChannel?: string;
+    priority?: ApnsLiveActivityPriority;
+  }
+  export interface ApnsBroadcastChannel {
+    channelId: string;
+    storagePolicy: ApnsChannelStoragePolicy;
+  }
+  export interface ApnsBroadcastChannelList {
+    channels: string[];
+  }
   export type PushPublishTarget =
     | { type: "device"; deviceId: string }
     | { type: "client"; clientId: string }
@@ -293,6 +329,7 @@ declare namespace Sockudo {
       provider: PushProviderKind;
       payload: Record<string, unknown>;
     }>;
+    liveActivity?: ApnsLiveActivityPayload;
     sync?: false;
     notBeforeMs?: number;
     expiresAtMs?: number;

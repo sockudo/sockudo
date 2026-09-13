@@ -363,6 +363,14 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
+## Apple Live Activities
+
+Use `ApnsLiveActivityPayload` and the direct/broadcast recipient constructors for typed ActivityKit
+requests. Manage iOS 18 APNs broadcast channels with `CreateApnsLiveActivityChannel`,
+`GetApnsLiveActivityChannel`, `ListApnsLiveActivityChannels`, and
+`DeleteApnsLiveActivityChannel`. Reuse `publishId` for safe retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## Testing
 
 ```sh

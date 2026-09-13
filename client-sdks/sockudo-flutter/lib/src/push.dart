@@ -49,6 +49,269 @@ class PushSubscriptionParams extends PushCursorParams {
   };
 }
 
+enum ApnsChannelStoragePolicy { noStorage, mostRecent }
+
+enum ApnsLiveActivityEvent { start, update, end }
+
+enum ApnsLiveActivityPriority { lowPower, conservePower, immediate }
+
+enum ApnsLiveActivityTokenKind { pushToStart, update }
+
+/// A token rotation emitted by the app's ActivityKit bridge.
+///
+/// Upload this value to an authenticated backend immediately. Live Activity
+/// tokens are credentials and must not be logged or stored in analytics.
+class ApnsLiveActivityTokenUpdate {
+  const ApnsLiveActivityTokenUpdate._({
+    required this.kind,
+    required this.token,
+    this.activityId,
+  });
+
+  factory ApnsLiveActivityTokenUpdate.pushToStart(String token) =>
+      ApnsLiveActivityTokenUpdate._(
+        kind: ApnsLiveActivityTokenKind.pushToStart,
+        token: token,
+      );
+
+  factory ApnsLiveActivityTokenUpdate.activity({
+    required String activityId,
+    required String token,
+  }) => ApnsLiveActivityTokenUpdate._(
+    kind: ApnsLiveActivityTokenKind.update,
+    activityId: activityId,
+    token: token,
+  );
+
+  final ApnsLiveActivityTokenKind kind;
+  final String token;
+  final String? activityId;
+
+  Map<String, Object?> toJson() {
+    if (token.trim().isEmpty) {
+      throw ArgumentError.value(token, 'token', 'must not be empty');
+    }
+    if (kind == ApnsLiveActivityTokenKind.update &&
+        (activityId == null || activityId!.trim().isEmpty)) {
+      throw ArgumentError.value(
+        activityId,
+        'activityId',
+        'is required for activity update tokens',
+      );
+    }
+    return <String, Object?>{
+      'kind': kind.name,
+      'token': token,
+      if (activityId != null) 'activityId': activityId,
+    };
+  }
+
+  static String encodeHex(Iterable<int> bytes) {
+    final output = StringBuffer();
+    for (final byte in bytes) {
+      if (byte < 0 || byte > 255) {
+        throw ArgumentError.value(byte, 'bytes', 'must contain byte values');
+      }
+      output.write(byte.toRadixString(16).padLeft(2, '0'));
+    }
+    return output.toString();
+  }
+}
+
+sealed class ApnsLiveActivityRecipient {
+  const ApnsLiveActivityRecipient();
+
+  bool get isBroadcast;
+
+  Map<String, Object?> toJson();
+}
+
+final class ApnsLiveActivityTokenRecipient extends ApnsLiveActivityRecipient {
+  const ApnsLiveActivityTokenRecipient(this.activityToken);
+
+  final String activityToken;
+
+  @override
+  bool get isBroadcast => false;
+
+  @override
+  Map<String, Object?> toJson() {
+    if (activityToken.trim().isEmpty) {
+      throw ArgumentError.value(
+        activityToken,
+        'activityToken',
+        'must not be empty',
+      );
+    }
+    return <String, Object?>{
+      'transportType': 'apnsLiveActivity',
+      'activityToken': activityToken,
+    };
+  }
+}
+
+final class ApnsLiveActivityBroadcastRecipient
+    extends ApnsLiveActivityRecipient {
+  const ApnsLiveActivityBroadcastRecipient({
+    required this.channelId,
+    this.storagePolicy = ApnsChannelStoragePolicy.noStorage,
+  });
+
+  final String channelId;
+  final ApnsChannelStoragePolicy storagePolicy;
+
+  @override
+  bool get isBroadcast => true;
+
+  @override
+  Map<String, Object?> toJson() {
+    if (channelId.trim().isEmpty) {
+      throw ArgumentError.value(channelId, 'channelId', 'must not be empty');
+    }
+    return <String, Object?>{
+      'transportType': 'apnsLiveActivityBroadcast',
+      'channelId': channelId,
+      'storagePolicy': storagePolicy.name,
+    };
+  }
+}
+
+class ApnsLiveActivityPayload {
+  const ApnsLiveActivityPayload({
+    required this.event,
+    required this.timestamp,
+    required this.contentState,
+    this.attributesType,
+    this.attributes,
+    this.alert,
+    this.staleDate,
+    this.dismissalDate,
+    this.relevanceScore,
+    this.inputPushToken = false,
+    this.inputPushChannel,
+    this.priority = ApnsLiveActivityPriority.conservePower,
+  });
+
+  final ApnsLiveActivityEvent event;
+  final int timestamp;
+  final Map<String, Object?> contentState;
+  final String? attributesType;
+  final Map<String, Object?>? attributes;
+  final Map<String, Object?>? alert;
+  final int? staleDate;
+  final int? dismissalDate;
+  final double? relevanceScore;
+  final bool inputPushToken;
+  final String? inputPushChannel;
+  final ApnsLiveActivityPriority priority;
+
+  Map<String, Object?> toJson({required bool broadcast}) {
+    _validate(broadcast: broadcast);
+    return <String, Object?>{
+      'event': event.name,
+      'timestamp': timestamp,
+      'contentState': contentState,
+      if (attributesType != null) 'attributesType': attributesType,
+      if (attributes != null) 'attributes': attributes,
+      if (alert != null) 'alert': alert,
+      if (staleDate != null) 'staleDate': staleDate,
+      if (dismissalDate != null) 'dismissalDate': dismissalDate,
+      if (relevanceScore != null) 'relevanceScore': relevanceScore,
+      if (inputPushToken) 'inputPushToken': true,
+      if (inputPushChannel != null) 'inputPushChannel': inputPushChannel,
+      'priority': priority.name,
+    };
+  }
+
+  void _validate({required bool broadcast}) {
+    if (timestamp <= 0) {
+      throw ArgumentError.value(timestamp, 'timestamp', 'must be positive');
+    }
+    if (inputPushToken && inputPushChannel != null) {
+      throw ArgumentError(
+        'inputPushToken and inputPushChannel are mutually exclusive',
+      );
+    }
+    if (inputPushChannel != null && inputPushChannel!.trim().isEmpty) {
+      throw ArgumentError.value(
+        inputPushChannel,
+        'inputPushChannel',
+        'must not be empty',
+      );
+    }
+    if (priority == ApnsLiveActivityPriority.lowPower && !broadcast) {
+      throw ArgumentError('lowPower priority is broadcast-only');
+    }
+    if (event == ApnsLiveActivityEvent.start) {
+      if (broadcast) {
+        throw ArgumentError('broadcast notifications cannot start an activity');
+      }
+      if (attributesType == null || attributesType!.trim().isEmpty) {
+        throw ArgumentError('attributesType is required for start events');
+      }
+      if (attributes == null || alert == null) {
+        throw ArgumentError(
+          'attributes and alert are required for start events',
+        );
+      }
+      if (staleDate != null || dismissalDate != null) {
+        throw ArgumentError(
+          'start events cannot include stale or dismissal dates',
+        );
+      }
+    } else if (event == ApnsLiveActivityEvent.update) {
+      if (attributesType != null ||
+          attributes != null ||
+          dismissalDate != null ||
+          inputPushToken ||
+          inputPushChannel != null) {
+        throw ArgumentError('update event contains start or end-only fields');
+      }
+    } else if (attributesType != null ||
+        attributes != null ||
+        staleDate != null ||
+        inputPushToken ||
+        inputPushChannel != null) {
+      throw ArgumentError('end event contains start or update-only fields');
+    }
+    if (relevanceScore != null &&
+        (!relevanceScore!.isFinite || relevanceScore!.isNegative)) {
+      throw ArgumentError.value(
+        relevanceScore,
+        'relevanceScore',
+        'must be finite and nonnegative',
+      );
+    }
+  }
+}
+
+class ApnsLiveActivityPublishRequest {
+  const ApnsLiveActivityPublishRequest({
+    required this.recipient,
+    required this.liveActivity,
+    this.publishId,
+    this.notBeforeMs,
+    this.expiresAtMs,
+  });
+
+  final ApnsLiveActivityRecipient recipient;
+  final ApnsLiveActivityPayload liveActivity;
+  final String? publishId;
+  final int? notBeforeMs;
+  final int? expiresAtMs;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    if (publishId != null) 'publishId': publishId,
+    'recipients': <Map<String, Object?>>[
+      <String, Object?>{'type': 'recipient', 'recipient': recipient.toJson()},
+    ],
+    'payload': const <String, Object?>{},
+    'liveActivity': liveActivity.toJson(broadcast: recipient.isBroadcast),
+    if (notBeforeMs != null) 'notBeforeMs': notBeforeMs,
+    if (expiresAtMs != null) 'expiresAtMs': expiresAtMs,
+  };
+}
+
 class SockudoPushRegistration {
   SockudoPushRegistration(this.options, {http.Client? httpClient})
     : _httpClient = httpClient ?? http.Client(),
@@ -117,6 +380,10 @@ class SockudoPushRegistration {
         '/publish',
         body: <String, Object?>{...request, 'sync': false},
       );
+
+  Future<Map<Object?, Object?>> publishLiveActivity(
+    ApnsLiveActivityPublishRequest request,
+  ) => publish(request.toJson());
 
   Future<Object?> publishBatch(List<Map<String, Object?>> requests) =>
       _requestValue(

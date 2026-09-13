@@ -82,6 +82,25 @@ namespace PusherServer.Tests.UnitTests
         }
 
         [Test]
+        public async Task apns_live_activity_channel_helpers_use_admin_endpoints()
+        {
+            await _pusher.CreateApnsLiveActivityChannelAsync<object>("mostRecent").ConfigureAwait(false);
+            await _pusher.GetApnsLiveActivityChannelAsync<object>("a/b+c=").ConfigureAwait(false);
+            await _pusher.ListApnsLiveActivityChannelsAsync<object>().ConfigureAwait(false);
+            await _pusher.DeleteApnsLiveActivityChannelAsync<object>("a/b+c=").ConfigureAwait(false);
+
+#pragma warning disable 4014
+            _restClient.Received().ExecutePostRawAsync(
+#pragma warning restore 4014
+                Arg.Is<IPusherRestRequest>(request =>
+                    request.ResourceUri.StartsWith("/apps/" + _config.AppId + "/push/liveActivities/channels?") &&
+                    request.Headers["X-Sockudo-Push-Capability"] == "push-admin" &&
+                    JObject.Parse(request.GetContentAsJsonString()).Value<string>("storagePolicy") == "mostRecent"
+                )
+            );
+        }
+
+        [Test]
         public async Task list_device_registrations_adds_cursor_pagination_query()
         {
             await _pusher.ListDeviceRegistrationsAsync<object>(new { limit = 10, cursor = "c1" }).ConfigureAwait(false);

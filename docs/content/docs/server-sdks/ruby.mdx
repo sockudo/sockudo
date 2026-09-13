@@ -185,13 +185,18 @@ accepted = sockudo.publish_push(
     title: "Order updated",
     body: "Order ord_123 is packed"
   },
-  idempotency_key: "push-order-ord_123-packed"
+  publishId: "push-order-ord_123-packed"
 )
 
 status = sockudo.get_publish_status(accepted[:publish_id])
 ```
 
 Use Rails jobs for push fanout workflows that also touch your product database.
+
+The SDK exposes `create_apns_live_activity_channel`, `get_apns_live_activity_channel`,
+`list_apns_live_activity_channels`, and `delete_apns_live_activity_channel`. Publish direct or
+broadcast ActivityKit payloads with `publish_push`; see
+[Apple Live Activities](/docs/server/apple-live-activities) for the wire-safe request shapes.
 
 ## Errors, logging, and retries
 

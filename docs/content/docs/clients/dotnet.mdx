@@ -289,6 +289,34 @@ var publish = await push.PublishAsync(
 
 The helper points at your backend proxy. Keep Sockudo app secrets on the backend.
 
+### Apple Live Activities
+
+ActivityKit runs in the iOS host and Widget Extension because its APIs use the application's custom
+`ActivityAttributes`; from .NET you reach it through a Swift binding. `Sockudo.Client` ships the
+typed pieces around it: `ApnsLiveActivityTokenUpdate` for uploading push-to-start and activity token
+rotations to your backend, and `ApnsLiveActivityPublishRequest` with
+`SockudoPushRegistration.PublishLiveActivityAsync` for proxies that let a user publish to their own
+activities.
+
+```csharp
+var update = ApnsLiveActivityTokenUpdate.Activity(activityId, ApnsLiveActivityTokenUpdate.EncodeHex(tokenBytes));
+await backend.ReplaceLiveActivityTokenAsync(update.ToJson());
+
+await push.PublishLiveActivityAsync(
+    new ApnsLiveActivityPublishRequest(
+        PublishId: "ride-184-update-42",
+        Recipient: new ApnsLiveActivityTokenRecipient(currentActivityToken),
+        LiveActivity: new ApnsLiveActivityPayload(
+            ApnsLiveActivityEvent.Update,
+            Timestamp: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ContentState: new Dictionary<string, object?> { ["status"] = "arriving", ["etaMinutes"] = 1 })));
+```
+
+The builders validate the same rules the server enforces and throw `ArgumentException` before any
+request is sent. Do not ship Sockudo app secrets, APNs provider keys, or unrestricted push-admin
+capabilities in the app. See [Apple Live Activities](/docs/server/apple-live-activities) for channel
+setup, broadcast delivery, and the complete payload contract.
+
 ## Production checklist
 
 - Register the client as a singleton or hosted-service dependency and dispose

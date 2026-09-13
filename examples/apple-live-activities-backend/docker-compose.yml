@@ -1,0 +1,26 @@
+services:
+  mock-apns:
+    image: node:24-alpine
+    container_name: sockudo-mock-apns
+    working_dir: /srv
+    command: ["node", "/srv/server.mjs"]
+    environment:
+      PORT: "8443"
+      INSPECT_PORT: "8444"
+      APNS_MOCK_BUNDLE_ID: ${APNS_MOCK_BUNDLE_ID:-com.sockudo.rides}
+      APNS_MOCK_TEAM_ID: ${APNS_MOCK_TEAM_ID:-MOCKTEAM01}
+      APNS_MOCK_KEY_ID: ${APNS_MOCK_KEY_ID:-MOCKKEY001}
+      APNS_MOCK_PUBLIC_KEY: /certs/apns-provider-public.pem
+      TLS_CERT: /certs/server.pem
+      TLS_KEY: /certs/server-key.pem
+    volumes:
+      - ./mock-apns:/srv:ro
+      - ./certs:/certs:ro
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8444/_mock/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 15

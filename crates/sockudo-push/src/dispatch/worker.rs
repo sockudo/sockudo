@@ -215,8 +215,12 @@ impl ProviderDispatchWorker {
                     result.outcome,
                     started.elapsed(),
                 );
-                if let Some(retry_after_ms) =
-                    result.error.as_ref().and_then(|error| error.retry_after_ms)
+                // Only provider throttling (429 / Retry-After) pauses the whole provider lane.
+                // Per-payload holds, such as Apple's 15-minute wait before resending a payload
+                // that received a 5xx, defer that job alone and feed the failure-count breaker.
+                if let Some(error) = result.error.as_ref()
+                    && let Some(retry_after_ms) = error.retry_after_ms
+                    && error.resolved_failure_class() == ProviderFailureClass::ProviderQuota
                 {
                     saw_retry_after = Some(retry_after_ms);
                 }

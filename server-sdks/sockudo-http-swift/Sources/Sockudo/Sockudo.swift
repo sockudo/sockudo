@@ -534,6 +534,53 @@ public class Sockudo {
     }
   }
 
+  public func createApnsLiveActivityChannel(
+    storagePolicy: ApnsChannelStoragePolicy = .noStorage,
+    callback: @escaping (Result<ApnsBroadcastChannel, SockudoError>) -> Void
+  ) {
+    apiClient.sendRequest(
+      for: PushEndpointFactory.createApnsLiveActivityChannel(
+        storagePolicy: storagePolicy,
+        options: options)
+    ) { result in
+      callback(result.mapError({ SockudoError(from: $0) }))
+    }
+  }
+
+  public func getApnsLiveActivityChannel(
+    channelID: String,
+    callback: @escaping (Result<ApnsBroadcastChannel, SockudoError>) -> Void
+  ) {
+    apiClient.sendRequest(
+      for: PushEndpointFactory.getApnsLiveActivityChannel(
+        channelID: channelID,
+        options: options)
+    ) { result in
+      callback(result.mapError({ SockudoError(from: $0) }))
+    }
+  }
+
+  public func listApnsLiveActivityChannels(
+    callback: @escaping (Result<ApnsBroadcastChannelList, SockudoError>) -> Void
+  ) {
+    apiClient.sendRequest(
+      for: PushEndpointFactory.listApnsLiveActivityChannels(options: options)
+    ) { result in
+      callback(result.mapError({ SockudoError(from: $0) }))
+    }
+  }
+
+  public func deleteApnsLiveActivityChannel(
+    channelID: String,
+    callback: @escaping (Result<PushNoContentResponse, SockudoError>) -> Void
+  ) {
+    sendNoContentRequest(
+      endpoint: PushEndpointFactory.deleteApnsLiveActivityChannel(
+        channelID: channelID,
+        options: options),
+      callback: callback)
+  }
+
   public func publishPushDirect(
     request: [String: Any],
     callback: @escaping (Result<PushPublishAcceptedResponse, SockudoError>) -> Void

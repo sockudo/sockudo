@@ -254,6 +254,14 @@ $sockudo = new Sockudo(
 );
 ```
 
+## Apple Live Activities
+
+Use `publishPush()` for direct-token and broadcast ActivityKit notifications. Manage iOS 18 APNs
+broadcast channels with `createApnsLiveActivityChannel()`, `getApnsLiveActivityChannel()`,
+`listApnsLiveActivityChannels()`, and `deleteApnsLiveActivityChannel()`. Reuse `publishId` for safe
+retries. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ## Running the Tests
 
 ```bash

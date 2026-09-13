@@ -215,13 +215,18 @@ sockudo.publishPush(request: [
         "title": "Order updated",
         "body": "Order ord_123 is packed",
     ],
-    "idempotency_key": "push-order-ord_123-packed",
+    "publishId": "push-order-ord_123-packed",
 ]) { result in
     print(result)
 }
 ```
 
 Use Swift server SDKs in trusted services, not inside untrusted client apps with app secrets.
+
+`ApnsLiveActivity` builds direct recipients, broadcast recipients, and typed event/priority
+payload dictionaries. The SDK also exposes `create/get/list/deleteApnsLiveActivityChannel`; opaque
+channel IDs are safely path-encoded. See
+[Apple Live Activities](/docs/server/apple-live-activities) for the full lifecycle.
 
 ## Errors, concurrency, and production guidance
 

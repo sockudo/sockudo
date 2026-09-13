@@ -147,6 +147,15 @@ public sealed class SockudoPushRegistration
         return RequestObjectAsync(HttpMethod.Post, "/publish", body: payload, cancellationToken: cancellationToken);
     }
 
+    /// <summary>
+    /// Publishes a validated Live Activity request through the configured proxy. The proxy is
+    /// expected to authenticate the caller and restrict publishes to that user's activities.
+    /// </summary>
+    public Task<Dictionary<string, object?>> PublishLiveActivityAsync(
+        ApnsLiveActivityPublishRequest request,
+        CancellationToken cancellationToken = default) =>
+        PublishAsync(request.ToJson(), cancellationToken);
+
     public Task<object?> PublishBatchAsync(
         IReadOnlyList<Dictionary<string, object?>> requests,
         CancellationToken cancellationToken = default)

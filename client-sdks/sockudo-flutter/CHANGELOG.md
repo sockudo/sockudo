@@ -1,3 +1,7 @@
+## Unreleased
+
+* Added typed Apple Live Activity token updates, direct and broadcast recipients, validated ActivityKit payloads, and proxy publishing helpers without forcing a native plugin dependency.
+
 ## 2.2.0 - 2026-08-17
 
 * Added bounded automatic reconnection with configurable attempt and retry-gap limits plus an explicit reconnecting state.

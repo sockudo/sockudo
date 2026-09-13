@@ -56,6 +56,22 @@ public class Matchers {
         };
     }
 
+    public static Matcher<HttpRequestBase> rawPath(final String expected) {
+        return new TypeSafeDiagnosingMatcher<HttpRequestBase>() {
+            @Override
+            public void describeTo(Description description) {
+                description.appendText("HTTP request with raw path [" + expected + "]");
+            }
+
+            @Override
+            public boolean matchesSafely(HttpRequestBase item, Description mismatchDescription) {
+                String actual = item.getURI().getRawPath();
+                mismatchDescription.appendText("value was [" + actual + "]");
+                return expected.equals(actual);
+            }
+        };
+    }
+
     public static Matcher<HttpPost> stringBody(final String expected) {
         return new TypeSafeDiagnosingMatcher<HttpPost>() {
             @Override

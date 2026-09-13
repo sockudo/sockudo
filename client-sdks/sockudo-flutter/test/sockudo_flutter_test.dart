@@ -225,6 +225,105 @@ void main() {
     },
   );
 
+  test('serializes validated direct and broadcast Live Activity requests', () {
+    final direct = ApnsLiveActivityPublishRequest(
+      publishId: 'ride-42-start',
+      recipient: const ApnsLiveActivityTokenRecipient('push-to-start-token'),
+      liveActivity: const ApnsLiveActivityPayload(
+        event: ApnsLiveActivityEvent.start,
+        timestamp: 1725000000,
+        contentState: <String, Object?>{'status': 'assigned'},
+        attributesType: 'RideAttributes',
+        attributes: <String, Object?>{'rideId': 'ride-42'},
+        alert: <String, Object?>{'title': 'Driver assigned'},
+        inputPushToken: true,
+        priority: ApnsLiveActivityPriority.immediate,
+      ),
+    ).toJson();
+
+    expect(direct['publishId'], 'ride-42-start');
+    expect((direct['recipients'] as List<Object?>).first, <String, Object?>{
+      'type': 'recipient',
+      'recipient': <String, Object?>{
+        'transportType': 'apnsLiveActivity',
+        'activityToken': 'push-to-start-token',
+      },
+    });
+    expect(direct['liveActivity'], containsPair('priority', 'immediate'));
+
+    final broadcast = ApnsLiveActivityPublishRequest(
+      publishId: 'game-7-score-2',
+      recipient: const ApnsLiveActivityBroadcastRecipient(
+        channelId: 'dHN0LWNoYW5uZWw=',
+        storagePolicy: ApnsChannelStoragePolicy.mostRecent,
+      ),
+      expiresAtMs: 1725003600000,
+      liveActivity: const ApnsLiveActivityPayload(
+        event: ApnsLiveActivityEvent.update,
+        timestamp: 1725000000,
+        contentState: <String, Object?>{'home': 2, 'away': 1},
+        priority: ApnsLiveActivityPriority.lowPower,
+      ),
+    ).toJson();
+
+    expect(
+      ((broadcast['recipients'] as List<Object?>).first
+          as Map<String, Object?>)['recipient'],
+      containsPair('storagePolicy', 'mostRecent'),
+    );
+    expect(broadcast['liveActivity'], containsPair('priority', 'lowPower'));
+  });
+
+  test('rejects invalid Live Activity combinations before proxy upload', () {
+    const broadcast = ApnsLiveActivityBroadcastRecipient(channelId: 'channel');
+    const start = ApnsLiveActivityPayload(
+      event: ApnsLiveActivityEvent.start,
+      timestamp: 1,
+      contentState: <String, Object?>{},
+      attributesType: 'Attributes',
+      attributes: <String, Object?>{},
+      alert: <String, Object?>{},
+    );
+    const directLowPower = ApnsLiveActivityPayload(
+      event: ApnsLiveActivityEvent.update,
+      timestamp: 1,
+      contentState: <String, Object?>{},
+      priority: ApnsLiveActivityPriority.lowPower,
+    );
+
+    expect(
+      () => const ApnsLiveActivityPublishRequest(
+        recipient: broadcast,
+        liveActivity: start,
+      ).toJson(),
+      throwsArgumentError,
+    );
+    expect(
+      () => const ApnsLiveActivityPublishRequest(
+        recipient: ApnsLiveActivityTokenRecipient('token'),
+        liveActivity: directLowPower,
+      ).toJson(),
+      throwsArgumentError,
+    );
+  });
+
+  test(
+    'normalizes ActivityKit token rotations without exposing them in text',
+    () {
+      final update = ApnsLiveActivityTokenUpdate.activity(
+        activityId: 'ride-42',
+        token: ApnsLiveActivityTokenUpdate.encodeHex(<int>[0, 15, 255]),
+      );
+
+      expect(update.toJson(), <String, Object?>{
+        'kind': 'update',
+        'token': '000fff',
+        'activityId': 'ride-42',
+      });
+      expect('$update', isNot(contains('000fff')));
+    },
+  );
+
   test(
     'versioned message proxy helpers send actions and decode acks',
     () async {
@@ -1606,6 +1705,144 @@ void main() {
     client.close();
   });
 
+  test('live Live Activity proxy publishes reach APNs', () async {
+    // Requires SOCKUDO_LIVE_TESTS=1 and a push proxy such as
+    // examples/apple-live-activities-backend (SOCKUDO_PUSH_PROXY_URL, default
+    // http://127.0.0.1:8787/push) in front of a Sockudo built with push-apns.
+    if (!_liveTestsEnabled()) {
+      return;
+    }
+    // flutter_test stubs HttpClient with a 400 responder; use a real client here.
+    await HttpOverrides.runWithHttpOverrides(() async {
+      final proxy =
+          Platform.environment['SOCKUDO_PUSH_PROXY_URL'] ??
+          'http://127.0.0.1:8787/push';
+      final push = SockudoPushRegistration(
+        PushRegistrationOptions(endpoint: proxy),
+      );
+      final channelResponse = await http.post(
+        Uri.parse('$proxy/liveActivities/channels'),
+        headers: <String, String>{'Content-Type': 'application/json'},
+        body: jsonEncode(<String, Object?>{'storagePolicy': 'mostRecent'}),
+      );
+      expect(channelResponse.statusCode, 200, reason: channelResponse.body);
+      final channelId =
+          (jsonDecode(channelResponse.body)
+                  as Map<String, Object?>)['channelId']
+              as String;
+      addTearDown(() async {
+        await http.delete(
+          Uri.parse(
+            '$proxy/liveActivities/channels/${Uri.encodeComponent(channelId)}',
+          ),
+        );
+      });
+
+      final runId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
+      final nowSecs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final activityToken = ApnsLiveActivityTokenUpdate.encodeHex(
+        List<int>.generate(32, (index) => (index * 7 + 3) & 0xff),
+      );
+
+      final direct = await push.publishLiveActivity(
+        ApnsLiveActivityPublishRequest(
+          publishId: 'flutter-$runId-update',
+          recipient: ApnsLiveActivityTokenRecipient(activityToken),
+          liveActivity: ApnsLiveActivityPayload(
+            event: ApnsLiveActivityEvent.update,
+            timestamp: nowSecs,
+            contentState: const <String, Object?>{
+              'status': 'arriving',
+              'etaMinutes': 1,
+            },
+            staleDate: nowSecs + 120,
+            relevanceScore: 0.9,
+          ),
+        ),
+      );
+      expect(direct['publishId'], 'flutter-$runId-update');
+      expect(direct['expectedRecipients'], 1);
+
+      final broadcast = await push.publishLiveActivity(
+        ApnsLiveActivityPublishRequest(
+          publishId: 'flutter-$runId-broadcast',
+          recipient: ApnsLiveActivityBroadcastRecipient(
+            channelId: channelId,
+            storagePolicy: ApnsChannelStoragePolicy.mostRecent,
+          ),
+          expiresAtMs: DateTime.now().millisecondsSinceEpoch + 1800 * 1000,
+          liveActivity: ApnsLiveActivityPayload(
+            event: ApnsLiveActivityEvent.end,
+            timestamp: nowSecs,
+            contentState: const <String, Object?>{'home': 3, 'away': 1},
+            dismissalDate: nowSecs + 600,
+            priority: ApnsLiveActivityPriority.lowPower,
+          ),
+        ),
+      );
+      expect(broadcast['expectedRecipients'], 1);
+
+      Future<Map<Object?, Object?>> settled(String publishId) async {
+        late Map<Object?, Object?> status;
+        final deadline = DateTime.now().add(const Duration(seconds: 20));
+        while (true) {
+          status = await push.getPublishStatus(publishId);
+          final counters = status['counters'] as Map<Object?, Object?>;
+          final done =
+              (counters['succeeded'] as int) + (counters['failed'] as int) > 0;
+          if (done || DateTime.now().isAfter(deadline)) {
+            return status;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+        }
+      }
+
+      final directStatus = await settled('flutter-$runId-update');
+      expect(
+        (directStatus['counters'] as Map<Object?, Object?>)['succeeded'],
+        1,
+        reason: 'direct: $directStatus',
+      );
+      final broadcastStatus = await settled('flutter-$runId-broadcast');
+      expect(
+        (broadcastStatus['counters'] as Map<Object?, Object?>)['succeeded'],
+        1,
+        reason: 'broadcast: $broadcastStatus',
+      );
+
+      final mock = Platform.environment['SOCKUDO_APNS_MOCK_URL'];
+      if (mock != null) {
+        final seen =
+            (jsonDecode(
+                      (await http.get(Uri.parse('$mock/_mock/requests'))).body,
+                    )
+                    as Map<String, Object?>)['requests']
+                as List<Object?>;
+        final directRequest = seen.cast<Map<String, Object?>>().firstWhere(
+          (request) => (request['path'] as String).endsWith(activityToken),
+        );
+        final headers = directRequest['headers'] as Map<String, Object?>;
+        expect(headers['apns-push-type'], 'liveactivity');
+        expect(headers['apns-priority'], '5');
+        final aps =
+            (directRequest['body'] as Map<String, Object?>)['aps']
+                as Map<String, Object?>;
+        expect(aps['event'], 'update');
+        expect(aps['relevance-score'], 0.9);
+        final broadcastRequest = seen.cast<Map<String, Object?>>().firstWhere(
+          (request) => request['headers'].toString().contains(channelId),
+        );
+        final broadcastHeaders =
+            broadcastRequest['headers'] as Map<String, Object?>;
+        expect(broadcastHeaders['apns-priority'], '1');
+        expect(
+          int.parse(broadcastHeaders['apns-expiration'] as String),
+          greaterThan(nowSecs),
+        );
+      }
+    }, _RealHttpOverrides());
+  });
+
   test('live encrypted integration decrypts payload', () async {
     if (!_liveTestsEnabled()) {
       return;
@@ -1701,6 +1938,9 @@ class RecordingHttpClient extends http.BaseClient {
 class ValueBox<T> {
   T? value;
 }
+
+/// The base class creates real sockets, bypassing flutter_test's mock HttpClient.
+class _RealHttpOverrides extends HttpOverrides {}
 
 bool _liveTestsEnabled() => Platform.environment['SOCKUDO_LIVE_TESTS'] == '1';
 

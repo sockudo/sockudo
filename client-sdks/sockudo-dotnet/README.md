@@ -248,6 +248,42 @@ var page = await push.ListChannelSubscriptionsAsync(
 Console.WriteLine(page["next_cursor"]);
 ```
 
+#### Apple Live Activities
+
+ActivityKit belongs to the iOS host application, because its APIs are generic over your app's own
+`ActivityAttributes` and the Live Activity UI is a Swift Widget Extension. From .NET (for example a
+.NET for iOS or MAUI app with a small Swift binding), observe every push-to-start and activity-token
+rotation through your native bridge and upload the typed update to your authenticated backend:
+
+```csharp
+var update = ApnsLiveActivityTokenUpdate.Activity(activityId, ApnsLiveActivityTokenUpdate.EncodeHex(tokenBytes));
+await backend.ReplaceLiveActivityTokenAsync(update.ToJson());
+```
+
+If an authenticated application proxy is allowed to publish only for the current user's activities,
+use the validated request builder. Validation mirrors the server rules (`lowPower` is broadcast-only,
+`start` requires `attributesType`, `attributes`, and `alert`, input push token and channel are
+mutually exclusive) and throws `ArgumentException` before anything is sent:
+
+```csharp
+var accepted = await push.PublishLiveActivityAsync(
+    new ApnsLiveActivityPublishRequest(
+        PublishId: "ride-184-update-42",
+        Recipient: new ApnsLiveActivityTokenRecipient(currentActivityToken),
+        LiveActivity: new ApnsLiveActivityPayload(
+            ApnsLiveActivityEvent.Update,
+            Timestamp: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ContentState: new Dictionary<string, object?> { ["status"] = "arriving", ["etaMinutes"] = 1 },
+            StaleDate: DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 120,
+            Priority: ApnsLiveActivityPriority.ConservePower)));
+```
+
+Broadcast requests use `ApnsLiveActivityBroadcastRecipient(channelId, ApnsChannelStoragePolicy.MostRecent)`
+and should carry `ExpiresAtMs`. Never embed a Sockudo app secret, APNs provider key, or unrestricted
+`push-admin` capability in the app. See the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx) for setup,
+channel lifecycle, and payload rules.
+
 ### Tag Filter Subscriptions
 
 Server-side tag filtering is a V2 feature. Only messages whose tags match the filter expression are delivered to this subscription.

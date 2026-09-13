@@ -352,6 +352,58 @@ final page = await push.listChannelSubscriptions(
 print(page['next_cursor']);
 ```
 
+#### Apple Live Activities
+
+ActivityKit belongs to the iOS host application because its APIs are generic over your app's own
+`ActivityAttributes` and its UI lives in your Widget Extension. Use your existing native bridge or
+a Flutter ActivityKit plugin to observe every push-to-start and activity-token rotation, then upload
+the typed update to your authenticated backend:
+
+```dart
+liveActivities.pushToStartTokenUpdateStream.listen((token) async {
+  final update = ApnsLiveActivityTokenUpdate.pushToStart(token);
+  await backend.replaceLiveActivityToken(update.toJson());
+});
+
+// Call this for every activityUpdateStream event that carries a new token.
+final update = ApnsLiveActivityTokenUpdate.activity(
+  activityId: activityId,
+  token: activityToken,
+);
+await backend.replaceLiveActivityToken(update.toJson());
+```
+
+The SDK deliberately does not force a particular ActivityKit plugin. Current plugins expose token
+streams with different models and may require a newer Flutter baseline than `sockudo_flutter`.
+Whichever bridge you use, keep listening for the activity's entire lifetime because Apple can rotate
+tokens at any time.
+
+If an authenticated application proxy is allowed to publish only for the current user's activities,
+use the validated request builder:
+
+```dart
+await push.publishLiveActivity(
+  ApnsLiveActivityPublishRequest(
+    publishId: 'ride-184-update-42',
+    recipient: const ApnsLiveActivityTokenRecipient(currentActivityToken),
+    liveActivity: const ApnsLiveActivityPayload(
+      event: ApnsLiveActivityEvent.update,
+      timestamp: 1725000042,
+      contentState: <String, Object?>{
+        'status': 'arriving',
+        'etaMinutes': 1,
+      },
+      priority: ApnsLiveActivityPriority.conservePower,
+    ),
+  ),
+);
+```
+
+Broadcast requests use `ApnsLiveActivityBroadcastRecipient`. Never embed a Sockudo app secret,
+APNs provider key, or unrestricted `push-admin` capability in Flutter. For complete iOS setup,
+channel lifecycle, and payload rules, see the
+[Apple Live Activities guide](../../docs/content/docs/server/apple-live-activities.mdx).
+
 ### Reconnection
 
 Unexpected disconnects emit `ConnectionState.reconnecting` and retry with a

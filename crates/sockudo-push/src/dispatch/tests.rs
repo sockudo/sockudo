@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
 use crate::domain::{
-    DeliveryJob, ProviderOverridePayload, PushPayload, PushRecipient, SecretString,
+    ApnsChannelStoragePolicy, ApnsLiveActivityEvent, ApnsLiveActivityPayload,
+    ApnsLiveActivityPriority, DeliveryJob, ProviderOverridePayload, PushPayload, PushRecipient,
+    SecretString,
 };
 use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueuePayload, PushQueueStage, QueueMessage};
 use crate::transform::render_provider_payload;
@@ -256,6 +258,279 @@ async fn cached_preview_payload_is_provider_dispatch_input() {
 }
 
 #[tokio::test]
+async fn apns_live_activity_direct_and_broadcast_requests_follow_activitykit_contract() {
+    let http = MockHttpClient::with_responses(vec![]);
+    let dispatcher = ApnsDispatcher::new(
+        "com.example.app",
+        cached_static_token("access-token", now_ms() + 600_000),
+        http,
+    )
+    .with_base_url("https://api.push.test")
+    .with_live_activities(ApnsLiveActivityDispatchConfig {
+        enabled: true,
+        broadcast_enabled: true,
+        topic: "com.example.app.push-type.liveactivity".to_owned(),
+        bundle_id: "com.example.app".to_owned(),
+        broadcast_base_url: "https://api-broadcast.push.test".to_owned(),
+        default_expiration_secs: 3_600,
+    });
+    let live_activity = ApnsLiveActivityPayload {
+        event: ApnsLiveActivityEvent::Update,
+        timestamp: 1_725_000_000,
+        content_state: json!({"driver": "nearby", "eta": 4}),
+        attributes_type: None,
+        attributes: None,
+        alert: None,
+        stale_date: Some(1_725_000_300),
+        dismissal_date: None,
+        relevance_score: Some(0.9),
+        input_push_token: false,
+        input_push_channel: None,
+        priority: ApnsLiveActivityPriority::Immediate,
+    };
+    let override_payload = live_activity.provider_override();
+
+    let mut direct = batch(PushProviderKind::Apns).jobs.remove(0);
+    direct.recipient = PushRecipient::ApnsLiveActivity {
+        activity_token: SecretString::new("aabbcc001122").unwrap(),
+    };
+    direct.rendered_payload = Some(Arc::new(
+        render_provider_payload(
+            PushProviderKind::Apns,
+            &direct.payload,
+            std::slice::from_ref(&override_payload),
+        )
+        .unwrap(),
+    ));
+    let request = dispatcher.build_request(&direct).await.unwrap();
+    assert!(request.url.ends_with("/3/device/aabbcc001122"));
+    assert_eq!(
+        request.headers["apns-topic"],
+        "com.example.app.push-type.liveactivity"
+    );
+    assert_eq!(request.headers["apns-push-type"], "liveactivity");
+    assert_eq!(request.headers["apns-priority"], "10");
+    assert_eq!(request.headers["apns-id"].len(), 36);
+    let body: Value = sonic_rs::from_slice(&request.body).unwrap();
+    assert_eq!(body["aps"]["event"].as_str(), Some("update"));
+    assert!(body.get("data").is_none());
+
+    let broadcast_override = ApnsLiveActivityPayload {
+        priority: ApnsLiveActivityPriority::LowPower,
+        ..live_activity
+    }
+    .provider_override();
+    let mut broadcast = batch(PushProviderKind::Apns).jobs.remove(0);
+    broadcast.recipient = PushRecipient::ApnsLiveActivityBroadcast {
+        channel_id: SecretString::new("channel_123").unwrap(),
+        storage_policy: ApnsChannelStoragePolicy::NoStorage,
+    };
+    broadcast.rendered_payload = Some(Arc::new(
+        render_provider_payload(
+            PushProviderKind::Apns,
+            &broadcast.payload,
+            &[broadcast_override],
+        )
+        .unwrap(),
+    ));
+    let request = dispatcher.build_request(&broadcast).await.unwrap();
+    assert_eq!(
+        request.url,
+        "https://api-broadcast.push.test/4/broadcasts/apps/com.example.app"
+    );
+    assert_eq!(request.headers["apns-channel-id"], "channel_123");
+    assert_eq!(request.headers["apns-expiration"], "0");
+    assert_eq!(request.headers["apns-priority"], "1");
+    assert_eq!(request.headers["apns-request-id"].len(), 36);
+    assert!(!request.headers.contains_key("apns-id"));
+    assert!(!request.headers.contains_key("apns-topic"));
+}
+
+#[test]
+fn apns_live_activity_broadcast_recipient_uses_camel_case_storage_policy_on_the_wire() {
+    let recipient: PushRecipient = sonic_rs::from_str(
+        r#"{"transportType":"apnsLiveActivityBroadcast","channelId":"channel_123","storagePolicy":"mostRecent"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        recipient,
+        PushRecipient::ApnsLiveActivityBroadcast {
+            channel_id: SecretString::new("channel_123").unwrap(),
+            storage_policy: ApnsChannelStoragePolicy::MostRecent,
+        }
+    );
+    let serialized: Value = sonic_rs::to_value(&recipient).unwrap();
+    assert_eq!(serialized["storagePolicy"].as_str(), Some("mostRecent"));
+    assert!(serialized.get("storage_policy").is_none());
+
+    let defaulted: PushRecipient = sonic_rs::from_str(
+        r#"{"transportType":"apnsLiveActivityBroadcast","channelId":"channel_123"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        defaulted,
+        PushRecipient::ApnsLiveActivityBroadcast {
+            storage_policy: ApnsChannelStoragePolicy::NoStorage,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn apns_live_activity_request_ids_are_stable_across_deferred_retry_batches() {
+    let dispatcher = ApnsDispatcher::new(
+        "com.example.app",
+        cached_static_token("access-token", now_ms() + 600_000),
+        MockHttpClient::with_responses(vec![]),
+    )
+    .with_live_activities(ApnsLiveActivityDispatchConfig {
+        enabled: true,
+        broadcast_enabled: true,
+        topic: "com.example.app.push-type.liveactivity".to_owned(),
+        bundle_id: "com.example.app".to_owned(),
+        broadcast_base_url: "https://api-broadcast.push.test".to_owned(),
+        default_expiration_secs: 3_600,
+    });
+    let override_payload = ApnsLiveActivityPayload {
+        event: ApnsLiveActivityEvent::Update,
+        timestamp: 1_725_000_000,
+        content_state: json!({"eta": 4}),
+        attributes_type: None,
+        attributes: None,
+        alert: None,
+        stale_date: None,
+        dismissal_date: None,
+        relevance_score: None,
+        input_push_token: false,
+        input_push_channel: None,
+        priority: ApnsLiveActivityPriority::ConservePower,
+    }
+    .provider_override();
+    let job_for = |publish_id: &str, batch_id: &str, recipient: PushRecipient| {
+        let mut job = batch(PushProviderKind::Apns).jobs.remove(0);
+        job.publish_id = publish_id.to_owned();
+        job.batch_id = batch_id.to_owned();
+        job.recipient = recipient;
+        job.rendered_payload = Some(Arc::new(
+            render_provider_payload(
+                PushProviderKind::Apns,
+                &job.payload,
+                std::slice::from_ref(&override_payload),
+            )
+            .unwrap(),
+        ));
+        job
+    };
+    let direct = || PushRecipient::ApnsLiveActivity {
+        activity_token: SecretString::new("aabbcc001122").unwrap(),
+    };
+    let broadcast = || PushRecipient::ApnsLiveActivityBroadcast {
+        channel_id: SecretString::new("channel_123").unwrap(),
+        storage_policy: ApnsChannelStoragePolicy::NoStorage,
+    };
+
+    let first = dispatcher
+        .build_request(&job_for("publish-1", "fast-batch-apns-1", direct()))
+        .await
+        .unwrap();
+    let retried = dispatcher
+        .build_request(&job_for(
+            "publish-1",
+            "fast-batch-apns-1-deferred-1725000900000",
+            direct(),
+        ))
+        .await
+        .unwrap();
+    let other_publish = dispatcher
+        .build_request(&job_for("publish-2", "fast-batch-apns-1", direct()))
+        .await
+        .unwrap();
+    assert_eq!(first.headers["apns-id"], retried.headers["apns-id"]);
+    assert_ne!(first.headers["apns-id"], other_publish.headers["apns-id"]);
+
+    let first_broadcast = dispatcher
+        .build_request(&job_for("publish-1", "fast-batch-apns-1", broadcast()))
+        .await
+        .unwrap();
+    let retried_broadcast = dispatcher
+        .build_request(&job_for(
+            "publish-1",
+            "fast-batch-apns-1-deferred-1725000900000",
+            broadcast(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        first_broadcast.headers["apns-request-id"],
+        retried_broadcast.headers["apns-request-id"]
+    );
+    assert_ne!(
+        first.headers["apns-id"],
+        first_broadcast.headers["apns-request-id"]
+    );
+}
+
+#[tokio::test]
+async fn apns_channel_manager_supports_create_read_list_and_delete() {
+    let http = MockHttpClient::with_responses(vec![
+        ProviderHttpResponse {
+            status: 201,
+            headers: BTreeMap::from([("apns-channel-id".to_owned(), "channel_123".to_owned())]),
+            body: vec![],
+        },
+        ProviderHttpResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: sonic_rs::to_vec(&json!({"message-storage-policy": 1})).unwrap(),
+        },
+        ProviderHttpResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: sonic_rs::to_vec(&json!({"channels": ["channel_123", "YWJjZA=="]})).unwrap(),
+        },
+        response(200, json!({})),
+    ]);
+    let manager = ApnsChannelManager::new(
+        "com.example.app",
+        cached_static_token("access-token", now_ms() + 600_000),
+        http.clone(),
+    )
+    .unwrap()
+    .with_base_url("https://manage.push.test:2195");
+
+    let created = manager
+        .create(ApnsChannelStoragePolicy::MostRecent)
+        .await
+        .unwrap();
+    assert_eq!(created.channel_id.expose_secret(), "channel_123");
+    let found = manager
+        .get(SecretString::new("channel_123").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(found.storage_policy, ApnsChannelStoragePolicy::MostRecent);
+    let channels = manager.list().await.unwrap();
+    assert_eq!(channels.channels.len(), 2);
+    assert_eq!(channels.channels[1].expose_secret(), "YWJjZA==");
+    manager
+        .delete(SecretString::new("channel_123").unwrap())
+        .await
+        .unwrap();
+
+    let requests = http.requests().await;
+    assert_eq!(requests[0].method, ProviderHttpMethod::Post);
+    assert_eq!(requests[1].method, ProviderHttpMethod::Get);
+    assert_eq!(requests[2].method, ProviderHttpMethod::Get);
+    assert!(requests[2].url.ends_with("/all-channels"));
+    assert_eq!(requests[3].method, ProviderHttpMethod::Delete);
+    assert_eq!(requests[1].headers["apns-channel-id"], "channel_123");
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.headers["apns-request-id"].len() == 36)
+    );
+}
+
+#[tokio::test]
 async fn auth_cache_refreshes_only_inside_five_minute_window() {
     let source = Arc::new(CountingTokenSource {
         count: AtomicUsize::new(0),
@@ -409,6 +684,24 @@ fn apns_failure_classification_keeps_topic_auth_and_quota_off_device_health() {
         ProviderFailureClass::CredentialAuth
     );
 
+    let provider_token_updates = classify_apns_response(&response(
+        429,
+        json!({"reason": "TooManyProviderTokenUpdates"}),
+    ));
+    assert_eq!(provider_token_updates.0, DeliveryOutcome::Retryable);
+    assert_eq!(
+        provider_token_updates.1.unwrap().resolved_failure_class(),
+        ProviderFailureClass::CredentialAuth
+    );
+
+    let payload_too_large =
+        classify_apns_response(&response(413, json!({"reason": "PayloadTooLarge"})));
+    assert_eq!(payload_too_large.0, DeliveryOutcome::Rejected);
+    assert_eq!(
+        payload_too_large.1.unwrap().resolved_failure_class(),
+        ProviderFailureClass::CallerPayload
+    );
+
     for (status, failure_class) in [
         (429, ProviderFailureClass::ProviderQuota),
         (500, ProviderFailureClass::ProviderTransient),
@@ -420,6 +713,13 @@ fn apns_failure_classification_keeps_topic_auth_and_quota_off_device_health() {
             failure_class
         );
     }
+
+    let before = now_ms().saturating_add(15 * 60 * 1_000);
+    let unavailable =
+        classify_apns_response(&response(503, json!({"reason": "ServiceUnavailable"})));
+    let retry_after_ms = unavailable.1.unwrap().retry_after_ms.unwrap();
+    assert!(retry_after_ms >= before);
+    assert!(retry_after_ms <= before.saturating_add(1_000));
 }
 
 #[test]
@@ -569,6 +869,102 @@ fn weighted_scheduler_downgrades_over_quota_tenants_and_caps_each_lane() {
         3
     );
     assert_ne!(order.first().map(String::as_str), Some("noisy"));
+}
+
+/// Fails the first dispatched batch with the supplied error, then accepts everything.
+struct FailOnceDispatcher {
+    inner: RecordingDispatcher,
+    error: ProviderError,
+    failed: AtomicUsize,
+}
+
+#[async_trait]
+impl PushDispatcher for FailOnceDispatcher {
+    fn provider(&self) -> PushProviderKind {
+        PushProviderKind::Fcm
+    }
+
+    async fn dispatch(&self, batch: DeliveryBatch) -> Vec<DeliveryResult> {
+        let results = self.inner.dispatch(batch).await;
+        if self.failed.fetch_add(1, Ordering::SeqCst) > 0 {
+            return results;
+        }
+        results
+            .into_iter()
+            .map(|mut result| {
+                result.outcome = DeliveryOutcome::Retryable;
+                result.provider_message_id = None;
+                result.error = Some(self.error.clone());
+                result
+            })
+            .collect()
+    }
+
+    async fn health_check(&self) -> HealthStatus {
+        self.inner.health_check().await
+    }
+}
+
+async fn run_two_publishes_with_first_failing(error: ProviderError) -> Vec<String> {
+    let queue = Arc::new(MemoryPushQueue::new());
+    let dispatcher = Arc::new(FailOnceDispatcher {
+        inner: RecordingDispatcher::default(),
+        error,
+        failed: AtomicUsize::new(0),
+    });
+    for publish_id in ["publish-1", "publish-2"] {
+        let mut batch = batch(PushProviderKind::Fcm);
+        batch.publish_id = publish_id.to_owned();
+        batch.jobs[0].publish_id = publish_id.to_owned();
+        queue
+            .produce(
+                PushQueueStage::DeliveryJobs(PushProviderKind::Fcm),
+                batch.queue_key(),
+                PushQueuePayload::DeliveryBatch(Box::new(batch)),
+            )
+            .await
+            .unwrap();
+    }
+    let mut worker =
+        ProviderDispatchWorker::new(PushProviderKind::Fcm, queue.clone(), dispatcher.clone());
+    worker.run_once("fcm").await.unwrap();
+    worker.run_once("fcm").await.unwrap();
+    dispatcher
+        .inner
+        .batches()
+        .await
+        .into_iter()
+        .map(|batch| batch.publish_id)
+        .collect()
+}
+
+#[tokio::test]
+async fn per_payload_retry_hold_does_not_open_the_provider_circuit() {
+    // Apple: "After 15 minutes, you can retry JSON payloads that receive 5XX." The hold
+    // belongs to that payload; other publishes must keep flowing.
+    let dispatched = run_two_publishes_with_first_failing(ProviderError {
+        class: "unavailable".to_owned(),
+        failure_class: ProviderFailureClass::ProviderTransient,
+        reason: Some("InternalServerError".to_owned()),
+        retry_after_ms: Some(now_ms() + 15 * 60 * 1_000),
+    })
+    .await;
+    assert_eq!(
+        dispatched,
+        vec!["publish-1".to_owned(), "publish-2".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn provider_throttle_retry_after_still_opens_the_circuit() {
+    let dispatched = run_two_publishes_with_first_failing(ProviderError {
+        class: "quota".to_owned(),
+        failure_class: ProviderFailureClass::ProviderQuota,
+        reason: Some("TooManyRequests".to_owned()),
+        retry_after_ms: Some(now_ms() + 60_000),
+    })
+    .await;
+    assert_eq!(dispatched, vec!["publish-1".to_owned()]);
 }
 
 #[tokio::test]
@@ -747,6 +1143,10 @@ fn provider_request_debug_redacts_credentials_and_tokens() {
         url: "https://push.example/send?token=secret-token".to_owned(),
         headers: BTreeMap::from([
             ("authorization".to_owned(), "Bearer secret".to_owned()),
+            (
+                "apns-channel-id".to_owned(),
+                "sensitive-broadcast-channel".to_owned(),
+            ),
             ("x-test".to_owned(), "visible".to_owned()),
         ]),
         authorization: SecretString::new("Bearer stored-secret").ok(),
@@ -755,6 +1155,7 @@ fn provider_request_debug_redacts_credentials_and_tokens() {
     let debug = format!("{request:?}");
     assert!(!debug.contains("secret-token"));
     assert!(!debug.contains("Bearer secret"));
+    assert!(!debug.contains("sensitive-broadcast-channel"));
     assert!(!debug.contains("stored-secret"));
     assert!(debug.contains("[REDACTED]"));
 }

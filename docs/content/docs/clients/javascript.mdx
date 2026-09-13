@@ -338,7 +338,43 @@ await fetch("/sockudo/push/devices", {
 });
 ```
 
-Use a server SDK to publish push after validating user and tenant policy.
+`SockudoPushRegistration` is available from the root package for authenticated application proxies.
+It includes typed direct and broadcast Apple Live Activity recipients and payloads:
+
+```ts
+import { SockudoPushRegistration } from "@sockudo/client";
+
+const push = new SockudoPushRegistration({
+  endpoint: "/sockudo/push",
+  headers: async () => ({ Authorization: `Bearer ${await sessionToken()}` }),
+});
+
+await push.publishLiveActivity({
+  publishId: "ride-184-update-42",
+  recipients: [{
+    type: "recipient",
+    recipient: {
+      transportType: "apnsLiveActivity",
+      activityToken: currentActivityToken,
+    },
+  }],
+  liveActivity: {
+    event: "update",
+    timestamp: 1725000042,
+    contentState: { status: "arriving", etaMinutes: 1 },
+    priority: "conservePower",
+  },
+});
+```
+
+React Native and NativeScript must obtain rotating ActivityKit tokens through the application's
+native iOS bridge because the attributes type belongs to the app's Widget Extension. Upload every
+rotation immediately. Use `apnsLiveActivityBroadcast` only with a server-created channel and its
+immutable storage policy. See [Apple Live Activities](/docs/server/apple-live-activities).
+
+The proxy must authenticate the caller and authorize the exact activity or channel. Use a server SDK
+for unrestricted administrative publishing; never expose the app secret, APNs provider key, or a
+blanket `push-admin` capability to client code.
 
 ## Error handling and production guidance
 

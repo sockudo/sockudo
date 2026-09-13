@@ -31,6 +31,31 @@ public class SignatureUtil {
                           final String secret,
                           final Map<String, String> extraParams) {
 
+        return uri(method, scheme, host, path, body, key, secret, extraParams, false);
+    }
+
+    static URI uriWithEncodedPath(final String method,
+                                  final String scheme,
+                                  final String host,
+                                  final String path,
+                                  final String body,
+                                  final String key,
+                                  final String secret,
+                                  final Map<String, String> extraParams) {
+
+        return uri(method, scheme, host, path, body, key, secret, extraParams, true);
+    }
+
+    private static URI uri(final String method,
+                           final String scheme,
+                           final String host,
+                           final String path,
+                           final String body,
+                           final String key,
+                           final String secret,
+                           final Map<String, String> extraParams,
+                           final boolean pathIsEncoded) {
+
         Prerequisites.noReservedKeys(extraParams);
 
         try {
@@ -48,14 +73,25 @@ public class SignatureUtil {
 
             final URIBuilder b = new URIBuilder()
                     .setScheme(scheme)
-                    .setHost(host)
-                    .setPath(path);
+                    .setHost(host);
 
             for (final Entry<String, String> e : allParams.entrySet()) {
                 b.setParameter(e.getKey(), e.getValue());
             }
 
-            return b.build();
+            if (!pathIsEncoded) {
+                return b.setPath(path).build();
+            }
+
+            // URIBuilder treats '%' as data in setPath and would double-encode an
+            // opaque APNs channel identifier. Build the signed query normally,
+            // then preserve the already percent-encoded path verbatim.
+            final URI queryUri = b.setPath("/").build();
+            final String query = queryUri.getRawQuery();
+            return URI.create(
+                    scheme + "://" + queryUri.getRawAuthority() + path
+                            + (query == null || query.isEmpty() ? "" : "?" + query)
+            );
         }
         catch (final URISyntaxException e) {
             throw new RuntimeException("Could not build URI", e);

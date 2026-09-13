@@ -21,9 +21,39 @@ export interface PushSubscriptionParams extends PushCursorParams {
 
 export type PushProviderKind = "fcm" | "apns" | "webPush" | "hms" | "wns";
 
+export type ApnsChannelStoragePolicy = "noStorage" | "mostRecent";
+
+export type ApnsLiveActivityEvent = "start" | "update" | "end";
+
+export type ApnsLiveActivityPriority = "lowPower" | "conservePower" | "immediate";
+
+export interface ApnsLiveActivityPayload {
+  event: ApnsLiveActivityEvent;
+  timestamp: number;
+  contentState: Record<string, unknown>;
+  attributesType?: string;
+  attributes?: Record<string, unknown>;
+  alert?: Record<string, unknown>;
+  staleDate?: number;
+  dismissalDate?: number;
+  relevanceScore?: number;
+  inputPushToken?: boolean;
+  inputPushChannel?: string;
+  priority?: ApnsLiveActivityPriority;
+}
+
+export type ApnsLiveActivityRecipient =
+  | { transportType: "apnsLiveActivity"; activityToken: string }
+  | {
+      transportType: "apnsLiveActivityBroadcast";
+      channelId: string;
+      storagePolicy: ApnsChannelStoragePolicy;
+    };
+
 export type PushRecipient =
   | { transportType: "gcm"; registrationToken: string }
   | { transportType: "apns"; deviceToken: string }
+  | ApnsLiveActivityRecipient
   | { transportType: "web"; endpoint: string; p256dh: string; auth: string }
   | { transportType: "hms"; registrationToken: string }
   | { transportType: "wns"; channelUri: string };
@@ -69,7 +99,8 @@ export type PushPublishTarget =
   | { type: "client"; clientId: string }
   | { type: "channel"; channel: string }
   | { type: "registeredTopic"; topic: string }
-  | { type: "userTopic"; topic: string };
+  | { type: "userTopic"; topic: string }
+  | { type: "recipient"; recipient: PushRecipient };
 
 export interface PushPublishRequest {
   publishId?: string;
@@ -79,6 +110,16 @@ export interface PushPublishRequest {
     provider: PushProviderKind;
     payload: Record<string, unknown>;
   }>;
+  liveActivity?: ApnsLiveActivityPayload;
+  notBeforeMs?: number;
+  expiresAtMs?: number;
+}
+
+export interface ApnsLiveActivityPublishRequest {
+  publishId?: string;
+  recipients: Array<{ type: "recipient"; recipient: ApnsLiveActivityRecipient }>;
+  payload?: PushPayload;
+  liveActivity: ApnsLiveActivityPayload;
   notBeforeMs?: number;
   expiresAtMs?: number;
 }
@@ -137,6 +178,10 @@ export class SockudoPushRegistration {
 
   publish(request: PushPublishRequest): Promise<unknown> {
     return this.request("POST", "/publish", { ...request, sync: false });
+  }
+
+  publishLiveActivity(request: ApnsLiveActivityPublishRequest): Promise<unknown> {
+    return this.publish({ ...request, payload: request.payload || {} });
   }
 
   publishBatch(requests: PushPublishRequest[]): Promise<unknown> {

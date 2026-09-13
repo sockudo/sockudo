@@ -82,6 +82,49 @@ namespace SockudoServer.Tests.UnitTests
         }
 
         [Test]
+        public async Task apns_live_activity_channel_helpers_use_admin_endpoints()
+        {
+            await _sockudo.CreateApnsLiveActivityChannelAsync<object>("mostRecent").ConfigureAwait(false);
+            await _sockudo.GetApnsLiveActivityChannelAsync<object>("a/b+c=").ConfigureAwait(false);
+            await _sockudo.ListApnsLiveActivityChannelsAsync<object>().ConfigureAwait(false);
+            await _sockudo.DeleteApnsLiveActivityChannelAsync<object>("a/b+c=").ConfigureAwait(false);
+
+#pragma warning disable 4014
+            _restClient.Received().ExecutePostRawAsync(
+#pragma warning restore 4014
+                Arg.Is<ISockudoRestRequest>(request =>
+                    request.ResourceUri.StartsWith("/apps/" + _config.AppId + "/push/liveActivities/channels?") &&
+                    request.Headers["X-Sockudo-Push-Capability"] == "push-admin" &&
+                    JObject.Parse(request.GetContentAsJsonString()).Value<string>("storagePolicy") == "mostRecent"
+                )
+            );
+#pragma warning disable 4014
+            _restClient.Received(2).ExecuteGetAsync<object>(
+#pragma warning restore 4014
+                Arg.Is<ISockudoRestRequest>(request =>
+                    request.ResourceUri.Contains("/push/liveActivities/channels") &&
+                    request.Headers["X-Sockudo-Push-Capability"] == "push-admin"
+                )
+            );
+#pragma warning disable 4014
+            _restClient.Received().ExecuteDeleteRawAsync(
+#pragma warning restore 4014
+                Arg.Is<ISockudoRestRequest>(request =>
+                    request.ResourceUri.Contains("/push/liveActivities/channels/a%2Fb%2Bc%3D?") &&
+                    request.Headers["X-Sockudo-Push-Capability"] == "push-admin"
+                )
+            );
+        }
+
+        [Test]
+        public void apns_live_activity_channel_policy_is_validated()
+        {
+            var ex = Assert.Throws<ArgumentException>(() =>
+                _sockudo.CreateApnsLiveActivityChannelAsync<object>("forever"));
+            Assert.That(ex.Message, Does.Contain("storagePolicy must be noStorage or mostRecent"));
+        }
+
+        [Test]
         public async Task list_device_registrations_adds_cursor_pagination_query()
         {
             await _sockudo.ListDeviceRegistrationsAsync<object>(new { limit = 10, cursor = "c1" }).ConfigureAwait(false);

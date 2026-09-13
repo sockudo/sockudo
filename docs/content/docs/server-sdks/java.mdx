@@ -216,12 +216,17 @@ payload.put("body", "Order ord_123 is packed");
 Map<String, Object> request = new HashMap<>();
 request.put("recipients", List.of(Map.of("type", "channel", "channel", "orders")));
 request.put("payload", payload);
-request.put("idempotency_key", "push-order-ord_123-packed");
+request.put("publishId", "push-order-ord_123-packed");
 
 sockudo.publishPush(request);
 ```
 
 Push helpers set `sync` to `false` and include the required Sockudo push capability header.
+
+Manage iOS 18 APNs broadcast channels with `createApnsLiveActivityChannel`,
+`getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, and
+`deleteApnsLiveActivityChannel`. Pass the typed ActivityKit fields as nested maps to
+`publishPush`; see [Apple Live Activities](/docs/server/apple-live-activities).
 
 ## Concurrency, errors, and production guidance
 

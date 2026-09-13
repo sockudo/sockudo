@@ -1,0 +1,434 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A100000000000000000001A1 /* RidesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000F1A1 /* RidesApp.swift */; };
+		A100000000000000000001A2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000F1A2 /* ContentView.swift */; };
+		A100000000000000000001A3 /* RideStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000F1A3 /* RideStore.swift */; };
+		A100000000000000000001A4 /* RideAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000F1A4 /* RideAttributes.swift */; };
+		A100000000000000000001B1 /* RideWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000F1B1 /* RideWidgetBundle.swift */; };
+		A100000000000000000001B2 /* RideLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000F1B2 /* RideLiveActivity.swift */; };
+		A100000000000000000001B4 /* RideAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000F1A4 /* RideAttributes.swift */; };
+		A100000000000000000001C1 /* RideWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A1000000000000000000E0B0 /* RideWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A100000000000000000001D1 /* SockudoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000D0A1 /* SockudoSwift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A1000000000000000000C0B0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000A000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000000000000000000A0B0;
+			remoteInfo = RideWidget;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A1000000000000000000B0A4 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A100000000000000000001C1 /* RideWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A1000000000000000000E0A0 /* RidesApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RidesApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000000000000000000E0B0 /* RideWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RideWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000000000000000000F1A1 /* RidesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesApp.swift; sourceTree = "<group>"; };
+		A1000000000000000000F1A2 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A1000000000000000000F1A3 /* RideStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideStore.swift; sourceTree = "<group>"; };
+		A1000000000000000000F1A4 /* RideAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideAttributes.swift; sourceTree = "<group>"; };
+		A1000000000000000000F1A5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000000000000000000F1A6 /* RidesApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RidesApp.entitlements; sourceTree = "<group>"; };
+		A1000000000000000000F1B1 /* RideWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideWidgetBundle.swift; sourceTree = "<group>"; };
+		A1000000000000000000F1B2 /* RideLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideLiveActivity.swift; sourceTree = "<group>"; };
+		A1000000000000000000F1B3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1000000000000000000B0A2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100000000000000000001D1 /* SockudoSwift in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000000000000000000B0B2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000009000 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000009001 /* RidesApp */,
+				A10000000000000000009002 /* RideWidget */,
+				A10000000000000000009003 /* Shared */,
+				A10000000000000000009004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000009001 /* RidesApp */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000F1A1 /* RidesApp.swift */,
+				A1000000000000000000F1A2 /* ContentView.swift */,
+				A1000000000000000000F1A3 /* RideStore.swift */,
+				A1000000000000000000F1A5 /* Info.plist */,
+				A1000000000000000000F1A6 /* RidesApp.entitlements */,
+			);
+			path = RidesApp;
+			sourceTree = "<group>";
+		};
+		A10000000000000000009002 /* RideWidget */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000F1B1 /* RideWidgetBundle.swift */,
+				A1000000000000000000F1B2 /* RideLiveActivity.swift */,
+				A1000000000000000000F1B3 /* Info.plist */,
+			);
+			path = RideWidget;
+			sourceTree = "<group>";
+		};
+		A10000000000000000009003 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000F1A4 /* RideAttributes.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		A10000000000000000009004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000E0A0 /* RidesApp.app */,
+				A1000000000000000000E0B0 /* RideWidget.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1000000000000000000A0A0 /* RidesApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000007A00 /* Build configuration list for PBXNativeTarget "RidesApp" */;
+			buildPhases = (
+				A1000000000000000000B0A1 /* Sources */,
+				A1000000000000000000B0A2 /* Frameworks */,
+				A1000000000000000000B0A3 /* Resources */,
+				A1000000000000000000B0A4 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1000000000000000000C0B1 /* PBXTargetDependency */,
+			);
+			name = RidesApp;
+			packageProductDependencies = (
+				A1000000000000000000D0A1 /* SockudoSwift */,
+			);
+			productName = RidesApp;
+			productReference = A1000000000000000000E0A0 /* RidesApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A1000000000000000000A0B0 /* RideWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000007B00 /* Build configuration list for PBXNativeTarget "RideWidget" */;
+			buildPhases = (
+				A1000000000000000000B0B1 /* Sources */,
+				A1000000000000000000B0B2 /* Frameworks */,
+				A1000000000000000000B0B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RideWidget;
+			productName = RideWidget;
+			productReference = A1000000000000000000E0B0 /* RideWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1000000000000000000A000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					A1000000000000000000A0A0 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					A1000000000000000000A0B0 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = A10000000000000000007000 /* Build configuration list for PBXProject "RidesLiveActivity" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A10000000000000000009000;
+			packageReferences = (
+				A1000000000000000000D000 /* XCLocalSwiftPackageReference "../../../client-sdks/sockudo-swift" */,
+			);
+			productRefGroup = A10000000000000000009004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1000000000000000000A0A0 /* RidesApp */,
+				A1000000000000000000A0B0 /* RideWidget */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000000000000000000B0A3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000000000000000000B0B3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000000000000000000B0A1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100000000000000000001A1 /* RidesApp.swift in Sources */,
+				A100000000000000000001A2 /* ContentView.swift in Sources */,
+				A100000000000000000001A3 /* RideStore.swift in Sources */,
+				A100000000000000000001A4 /* RideAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000000000000000000B0B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100000000000000000001B1 /* RideWidgetBundle.swift in Sources */,
+				A100000000000000000001B2 /* RideLiveActivity.swift in Sources */,
+				A100000000000000000001B4 /* RideAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1000000000000000000C0B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000000000000000000A0B0 /* RideWidget */;
+			targetProxy = A1000000000000000000C0B0 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A10000000000000000007001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A10000000000000000007002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A10000000000000000007A01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RidesApp/RidesApp.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RidesApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sockudo.rides;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SOCKUDO_BACKEND_URL = "http://127.0.0.1:8787";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		A10000000000000000007A02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RidesApp/RidesApp.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RidesApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sockudo.rides;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SOCKUDO_BACKEND_URL = "http://127.0.0.1:8787";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+		A10000000000000000007B01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RideWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sockudo.rides.RideWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		A10000000000000000007B02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RideWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sockudo.rides.RideWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A10000000000000000007000 /* Build configuration list for PBXProject "RidesLiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000007001 /* Debug */,
+				A10000000000000000007002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000007A00 /* Build configuration list for PBXNativeTarget "RidesApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000007A01 /* Debug */,
+				A10000000000000000007A02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000007B00 /* Build configuration list for PBXNativeTarget "RideWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000007B01 /* Debug */,
+				A10000000000000000007B02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A1000000000000000000D000 /* XCLocalSwiftPackageReference "../../../client-sdks/sockudo-swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../../../client-sdks/sockudo-swift";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A1000000000000000000D0A1 /* SockudoSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SockudoSwift;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A1000000000000000000A000 /* Project object */;
+}

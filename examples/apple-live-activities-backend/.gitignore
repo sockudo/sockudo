@@ -1,0 +1,6 @@
+certs/
+node_modules/
+.run/
+ios/*.xcodeproj/project.xcworkspace/
+ios/*.xcodeproj/xcuserdata/
+shots/
