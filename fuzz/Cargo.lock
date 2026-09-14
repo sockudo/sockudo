@@ -1298,9 +1298,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.3.0"
+version = "11.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
+checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -1311,6 +1311,7 @@ dependencies = [
  "serde_json",
  "signature",
  "simple_asn1",
+ "zeroize",
 ]
 
 [[package]]
@@ -2705,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-ably-compat"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "aes-gcm",
  "ahash",
@@ -2714,6 +2715,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "crossfire",
  "dashmap",
  "hmac",
  "http",
@@ -2737,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-adapter"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "ahash",
  "async-trait",
@@ -2769,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-core"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "ahash",
  "async-trait",
@@ -2808,7 +2810,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-filter"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "ahash",
  "dashmap",
@@ -2835,7 +2837,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-metrics"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2852,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-protocol"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "ahash",
  "prost",
@@ -2866,7 +2868,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-push"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -2889,7 +2891,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-webhook"
-version = "4.7.0"
+version = "5.0.1"
 dependencies = [
  "ahash",
  "async-trait",
@@ -2911,9 +2913,9 @@ dependencies = [
 
 [[package]]
 name = "sockudo-ws"
-version = "1.7.4"
+version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4acad755d1e9548ba9f2a32efeb83e18eefd25f61907cf66e7653364a40ec990"
+checksum = "d332a6a163a2386c9785dccb61e69c4addd69e591de1d7c8ad32680c96efd217"
 dependencies = [
  "axum",
  "base64",
@@ -3965,6 +3967,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "zerotrie"
