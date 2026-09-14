@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "io.sockudo"
-version = "2.2.0"
+version = "2.3.0"
 
 repositories {
     mavenCentral()
@@ -60,7 +60,7 @@ publishing {
             pom {
                 name.set("sockudo-kotlin")
                 description.set("Sockudo Kotlin client port.")
-                url.set("https://github.com/sockudo/sockudo-kotlin")
+                url.set("https://github.com/sockudo/sockudo/tree/master/client-sdks/sockudo-kotlin")
                 licenses {
                     license {
                         name.set("MIT")
@@ -74,9 +74,9 @@ publishing {
                     }
                 }
                 scm {
-                    connection.set("scm:git:https://github.com/sockudo/sockudo-kotlin.git")
-                    developerConnection.set("scm:git:ssh://git@github.com/sockudo/sockudo-kotlin.git")
-                    url.set("https://github.com/sockudo/sockudo-kotlin")
+                    connection.set("scm:git:https://github.com/sockudo/sockudo.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/sockudo/sockudo.git")
+                    url.set("https://github.com/sockudo/sockudo/tree/master/client-sdks/sockudo-kotlin")
                 }
             }
         }
