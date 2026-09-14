@@ -11,8 +11,10 @@ use self::stores::{
     create_dynamodb_push_store, create_mysql_push_store, create_postgres_push_store,
     create_scylladb_push_store, create_surrealdb_push_store,
 };
+#[cfg(all(feature = "push-apns", feature = "monolith"))]
+pub(crate) use apns_channels::apns_provider_http_options;
 #[cfg(feature = "push-apns")]
-pub(crate) use apns_channels::{apns_provider_http_options, create_apns_channel_manager};
+pub(crate) use apns_channels::create_apns_channel_manager;
 pub(crate) use capability::{PushAdmissionRejection, PushAdmissionSnapshot};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::ServerOptions;
