@@ -313,7 +313,7 @@ class LiveIntegrationTest {
             buildList {
                 add("protocol=$protocolVersion")
                 add("client=kotlin-live")
-                add("version=2.2.0")
+                add("version=2.3.0")
                 if (protocolVersion == 2) {
                     add("format=json")
                 }
