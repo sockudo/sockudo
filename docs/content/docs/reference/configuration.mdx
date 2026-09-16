@@ -212,6 +212,8 @@ network path is unavailable, messages in flight are not retained by a broker.
 
 `[database.redis]` configures the Redis connection used by the Redis adapter, cache, queue, rate limiter, and delta coordinator. Without Sentinel, `[database.redis.master_tls]` secures the direct Redis data connection for every consumer. When `sentinels` is non-empty, Sockudo connects through Redis Sentinel using a native Sentinel client (rather than a direct URL) and can secure both connection hops independently. Redis Cluster also reuses `master_tls` certificate material; the legacy `cluster.use_tls` switch continues to enable TLS with the default root store.
 
+`[database.redis.cluster]` is the canonical Redis Cluster topology for every cluster component — adapter, cache, rate limiter, delta coordinator, and queue. When `queue.driver = "redis-cluster"` and `queue.redis_cluster.nodes` is not explicitly set, the queue inherits the `database.redis.cluster` seeds (normalized with the shared cluster username/password and TLS settings). Set `queue.redis_cluster.nodes` only to override the queue's seeds independently of the rest of the deployment.
+
 | Key | Purpose |
 | --- | --- |
 | `sentinels` | List of `{ host, port }` Sentinel nodes. A non-empty list enables Sentinel mode. |
@@ -702,6 +704,13 @@ queue resolves the current primary through native Sentinel support. Sentinel and
 primary authentication/TLS settings remain independent. A `queue.redis.url_override`
 selects standalone Redis/rediss instead and intentionally disables inherited
 Sentinel discovery for that queue.
+
+When `queue.driver = "redis-cluster"`, the queue resolves its cluster seeds in
+this order: explicit `queue.redis_cluster.nodes` (normalized with the shared
+cluster auth/TLS options), then `database.redis.cluster` when the queue nodes are
+unset, then a localhost dev fallback. Leaving `queue.redis_cluster.nodes` empty
+is the recommended way to share one Redis Cluster topology across the adapter,
+cache, rate limiter, delta coordinator, and queue.
 
 Primary promotion preserves at-least-once, not exactly-once, semantics. A hard
 primary loss can redeliver callbacks that were active or prefetched when the node failed; a
