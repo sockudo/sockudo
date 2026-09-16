@@ -43,6 +43,30 @@ fn resolve_delta_coordination_backend(config: &ServerOptions) -> DeltaCoordinati
     }
 }
 
+/// Resolves the Redis Cluster seed URLs for the queue manager.
+///
+/// Precedence (mirrors the horizontal adapter's unified Redis Cluster
+/// configuration convention):
+/// 1. Explicit `queue.redis_cluster.nodes` — normalized with the shared
+///    cluster auth/TLS options so embedded credentials/TLS still apply.
+/// 2. `database.redis.cluster` (via `cluster_node_urls()`) when the queue
+///    nodes are empty but the database cluster is configured. This returns
+///    auth/TLS-normalized `rediss://user:pass@host:port` seeds.
+/// 3. Localhost dev fallback (`redis://127.0.0.1:6379`) when neither is set,
+///    preserving the historical default single-node behavior.
+fn resolve_redis_cluster_queue_nodes(config: &ServerOptions) -> Vec<String> {
+    if !config.queue.redis_cluster.nodes.is_empty() {
+        return config
+            .database
+            .redis
+            .normalize_cluster_seed_urls(&config.queue.redis_cluster.nodes);
+    }
+    if config.database.redis.has_cluster_nodes() {
+        return config.database.redis.cluster_node_urls();
+    }
+    vec!["redis://127.0.0.1:6379".to_string()]
+}
+
 impl SockudoServer {
     pub(crate) async fn new(config: ServerOptions) -> Result<Self> {
         let debug_enabled = config.debug;
@@ -398,15 +422,7 @@ impl SockudoServer {
                         )
                     }
                     QueueDriver::RedisCluster => {
-                        let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
-                            vec![
-                                "redis://127.0.0.1:7000".to_string(),
-                                "redis://127.0.0.1:7001".to_string(),
-                                "redis://127.0.0.1:7002".to_string(),
-                            ]
-                        } else {
-                            config.queue.redis_cluster.nodes.clone()
-                        };
+                        let cluster_nodes = resolve_redis_cluster_queue_nodes(&config);
 
                         let nodes_str = cluster_nodes.join(",");
 
@@ -1166,5 +1182,92 @@ impl SockudoServer {
         }
         info!("server init sequence completed");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_redis_cluster_queue_nodes;
+    use sockudo_core::options::{
+        ClusterNode, QueueConfig, RedisClusterConnection, RedisClusterQueueConfig, ServerOptions,
+    };
+
+    fn server_options_with_database_cluster(nodes: Vec<(&str, u16)>) -> ServerOptions {
+        let mut config = ServerOptions::default();
+        config.database.redis.cluster = RedisClusterConnection {
+            nodes: nodes
+                .iter()
+                .map(|(host, port)| ClusterNode {
+                    host: (*host).to_string(),
+                    port: *port,
+                })
+                .collect(),
+            username: None,
+            password: None,
+            use_tls: false,
+        };
+        config
+    }
+
+    #[test]
+    fn falls_back_to_database_cluster_when_queue_nodes_empty() {
+        let config =
+            server_options_with_database_cluster(vec![("10.0.0.1", 7000), ("10.0.0.2", 7000)]);
+
+        // queue.redis_cluster.nodes defaults to empty now.
+        assert!(config.queue.redis_cluster.nodes.is_empty());
+
+        let resolved = resolve_redis_cluster_queue_nodes(&config);
+        assert_eq!(
+            resolved,
+            vec!["redis://10.0.0.1:7000", "redis://10.0.0.2:7000"],
+            "queue must inherit database.redis.cluster seeds when queue nodes are unset"
+        );
+    }
+
+    #[test]
+    fn explicit_queue_nodes_override_database_cluster() {
+        let mut config = server_options_with_database_cluster(vec![("10.0.0.1", 7000)]);
+        config.queue.redis_cluster = RedisClusterQueueConfig {
+            nodes: vec!["redis://override.example:6380".to_string()],
+            ..RedisClusterQueueConfig::default()
+        };
+
+        let resolved = resolve_redis_cluster_queue_nodes(&config);
+        assert_eq!(
+            resolved,
+            vec!["redis://override.example:6380"],
+            "explicit queue.redis_cluster.nodes must win over database.redis.cluster"
+        );
+    }
+
+    #[test]
+    fn database_cluster_credentials_are_embedded_in_fallback_seeds() {
+        let mut config = server_options_with_database_cluster(vec![("10.0.0.1", 7000)]);
+        config.database.redis.cluster.username = Some("cluster-user".to_string());
+        config.database.redis.cluster.password = Some("s3cret".to_string());
+
+        let resolved = resolve_redis_cluster_queue_nodes(&config);
+        assert_eq!(
+            resolved,
+            vec!["redis://cluster-user:s3cret@10.0.0.1:7000"],
+            "fallback seeds must include auth/TLS normalization from cluster_node_urls()"
+        );
+    }
+
+    #[test]
+    fn localhost_dev_fallback_when_nothing_configured() {
+        let config = ServerOptions::default();
+
+        assert!(config.queue.redis_cluster.nodes.is_empty());
+        assert!(!config.database.redis.has_cluster_nodes());
+
+        let resolved = resolve_redis_cluster_queue_nodes(&config);
+        assert_eq!(resolved, vec!["redis://127.0.0.1:6379"]);
+    }
+
+    #[test]
+    fn queue_config_default_has_empty_cluster_nodes() {
+        assert!(QueueConfig::default().redis_cluster.nodes.is_empty());
     }
 }

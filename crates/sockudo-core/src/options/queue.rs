@@ -15,7 +15,7 @@ impl Default for RedisClusterQueueConfig {
         Self {
             concurrency: 5,
             prefix: Some("sockudo_queue:".to_string()),
-            nodes: vec!["redis://127.0.0.1:6379".to_string()],
+            nodes: Vec::new(),
             request_timeout_ms: 5000,
         }
     }
@@ -221,6 +221,13 @@ mod tests {
     fn redis_queue_default_response_timeout_is_failover_budget() {
         assert_eq!(RedisQueueConfig::default().response_timeout_ms, 5000);
         assert_eq!(RedisClusterQueueConfig::default().request_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn redis_cluster_queue_default_nodes_is_empty() {
+        // Empty default lets `is_empty()` act as the "not explicitly set" signal
+        // so the queue bootstrap can fall back to `database.redis.cluster`.
+        assert!(RedisClusterQueueConfig::default().nodes.is_empty());
     }
 
     #[test]
