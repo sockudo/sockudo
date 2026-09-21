@@ -53,7 +53,7 @@ sockudo-mcp = { version = "5.0.1", path = "crates/sockudo-mcp", default-features
 # External dependencies (shared versions)
 async-trait = "0.1.89"
 ahash = { version = "0.8.12", features = ["serde"] }
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.1"
 axum = { version = "^0.8", features = ["ws"] }
 axum-extra = { version = "^0.12", features = ["typed-header"] }
 axum-server = { version = "^0.8", features = ["tls-rustls"] }
