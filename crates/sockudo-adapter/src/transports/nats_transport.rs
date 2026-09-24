@@ -207,20 +207,19 @@ impl HorizontalTransport for NatsTransport {
         // server/client errors) once metrics are available.
         let metrics_driver: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>> =
             Arc::new(OnceLock::new());
-        let event_metrics = metrics_driver.clone();
 
         // Build NATS Options
         let mut nats_options = NatsOptions::new()
             .retry_on_initial_connect()
-            .event_callback(move |event| {
-                let event_metrics = event_metrics.clone();
-                async move {
+            .event_callback({
+                let event_metrics = metrics_driver.clone();
+                move |event| {
                     let record = |event_name: &str| {
                         if let Some(metrics) = event_metrics.get() {
                             metrics.mark_nats_event(event_name);
                         }
                     };
-                    match event {
+                    match &event {
                         async_nats::Event::Connected => {
                             record("connected");
                             info!(adapter = "nats", "connection established");
@@ -241,10 +240,18 @@ impl HorizontalTransport for NatsTransport {
                             record("server_error");
                             error!(adapter = "nats", error = %err, "server error");
                         }
-                        async_nats::Event::ClientError(ref err) => match err {
+                        async_nats::Event::ClientError(err) => match err {
                             async_nats::ClientError::MaxReconnects => {
                                 record("max_reconnects");
                                 error!(adapter = "nats", "max reconnects exhausted");
+                            }
+                            async_nats::ClientError::ServerNotInPool => {
+                                record("server_not_in_pool");
+                                warn!(
+                                    adapter = "nats",
+                                    retryable = true,
+                                    "server not in connection pool"
+                                );
                             }
                             async_nats::ClientError::Other(msg) => {
                                 record("client_error");
@@ -268,6 +275,7 @@ impl HorizontalTransport for NatsTransport {
                             warn!(adapter = "nats", retryable = true, "connection closed");
                         }
                     }
+                    std::future::ready(())
                 }
             });
 
