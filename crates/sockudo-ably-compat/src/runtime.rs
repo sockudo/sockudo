@@ -35,7 +35,7 @@ use axum::{
 };
 use base64::Engine as _;
 use dashmap::DashMap;
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::{Hmac, Mac};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

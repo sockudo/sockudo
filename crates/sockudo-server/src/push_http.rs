@@ -2278,11 +2278,10 @@ fn encrypted_secret(raw: &str) -> Result<EncryptedSecret, AppError> {
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|error| AppError::InternalError(format!("invalid credential key: {error}")))?;
     let nonce_bytes = credential_nonce_bytes();
-    let encrypted = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), raw.as_bytes())
-        .map_err(|error| {
-            AppError::InternalError(format!("failed to encrypt credential material: {error}"))
-        })?;
+    let nonce = Nonce::from(nonce_bytes);
+    let encrypted = cipher.encrypt(&nonce, raw.as_bytes()).map_err(|error| {
+        AppError::InternalError(format!("failed to encrypt credential material: {error}"))
+    })?;
     let mut envelope = Vec::with_capacity(nonce_bytes.len() + encrypted.len());
     envelope.extend_from_slice(&nonce_bytes);
     envelope.extend_from_slice(&encrypted);
@@ -2316,8 +2315,10 @@ pub(crate) fn decrypt_credential_secret(secret: &EncryptedSecret) -> Result<Stri
             .ok_or_else(|| "encrypted credential envelope is too short".to_owned())?;
         let cipher =
             Aes256Gcm::new_from_slice(&key).map_err(|error| format!("invalid key: {error}"))?;
+        let nonce = Nonce::try_from(nonce_bytes)
+            .map_err(|_| "encrypted credential envelope has invalid nonce".to_owned())?;
         let plaintext = cipher
-            .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|error| format!("failed to decrypt credential material: {error}"))?;
         return String::from_utf8(plaintext)
             .map_err(|error| format!("credential material is not valid UTF-8: {error}"));

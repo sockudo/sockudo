@@ -3121,10 +3121,11 @@ fn compact_jwe_decrypts_nested_jwt_and_rejects_tampering() {
     );
     let key = Sha256::digest(b"secret");
     let cipher = <Aes256Gcm as AeadKeyInit>::new_from_slice(&key).unwrap();
-    let nonce = [7_u8; 12];
+    let nonce_bytes = [7_u8; 12];
+    let nonce = Nonce::from(nonce_bytes);
     let encrypted = cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &nonce,
             Payload {
                 msg: nested.as_bytes(),
                 aad: protected.as_bytes(),
@@ -3135,7 +3136,7 @@ fn compact_jwe_decrypts_nested_jwt_and_rejects_tampering() {
     let token = format!(
         "{}..{}.{}.{}",
         protected,
-        general_purpose::URL_SAFE_NO_PAD.encode(nonce),
+        general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes),
         general_purpose::URL_SAFE_NO_PAD.encode(&encrypted[..split]),
         general_purpose::URL_SAFE_NO_PAD.encode(&encrypted[split..]),
     );

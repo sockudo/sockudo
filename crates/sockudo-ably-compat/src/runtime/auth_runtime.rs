@@ -1308,9 +1308,10 @@ pub(super) fn decrypt_ably_compact_jwe(
     let key = Sha256::digest(secret.as_bytes());
     let cipher = <Aes256Gcm as AeadKeyInit>::new_from_slice(&key)
         .map_err(|_| AblyAuthError::invalid_credentials())?;
+    let nonce = Nonce::try_from(iv.as_slice()).map_err(|_| AblyAuthError::invalid_credentials())?;
     let plaintext = cipher
         .decrypt(
-            Nonce::from_slice(&iv),
+            &nonce,
             Payload {
                 msg: &ciphertext,
                 aad: protected.as_bytes(),
