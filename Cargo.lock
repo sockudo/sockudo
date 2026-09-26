@@ -3228,7 +3228,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
+ "windows-link 0.1.3",
  "windows-result 0.4.1",
 ]
 
@@ -3385,7 +3385,7 @@ dependencies = [
  "hmac 0.13.0",
  "http 1.5.0",
  "jiff",
- "jsonwebtoken 11.0.0",
+ "jsonwebtoken 11.1.0",
  "reqwest 0.13.5",
  "rustc_version",
  "rustls",
@@ -4109,7 +4109,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -4623,9 +4623,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "11.0.0"
+version = "11.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
+checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -4641,9 +4641,9 @@ dependencies = [
 
 [[package]]
 name = "lapin"
-version = "4.11.0"
+version = "4.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24b99d8cdfe3f6223f9f75e35e7510a8662767bee27c1cf870d503fc3bb2428a"
+checksum = "7b86b2a46f42a1d565c7ba327e03725708c1ff212baa4c271cec291e265ae542"
 dependencies = [
  "amq-protocol",
  "async-rs",
@@ -7118,9 +7118,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.3.0"
+version = "3.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b88db56b8ae316560e9e868b6b978ea940f27cb883323fc90e07435e44158f5c"
+checksum = "5b6317cd8c13e3ec9033cf2aa5aa92cd743f0f4f8a93cddc42ea0ae6ce3b8898"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7563,9 +7563,9 @@ dependencies = [
 
 [[package]]
 name = "scylla"
-version = "1.8.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1163ef6fae8e222c156962532de31aa1cd19a83782c4eb196aab7fc76aebdae"
+checksum = "29eebcb7e34257f8ce01aaa1469644825bd4b4995d401c362be65d994e3feaa3"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -7580,6 +7580,8 @@ dependencies = [
  "rustls",
  "scylla-cql",
  "scylla-cql-core",
+ "serde",
+ "serde_json",
  "smallvec",
  "socket2 0.6.5",
  "thiserror",
@@ -7591,9 +7593,9 @@ dependencies = [
 
 [[package]]
 name = "scylla-cql"
-version = "1.8.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86d9ae8618f958fedff008180f2237f6c9fe51a8e1e3496910fb3bb7f4b12816"
+checksum = "a398b0e78fb3872c4d5afc74e461d6b80dd69d030e13ddc7442e5f32c482e0da"
 dependencies = [
  "byteorder",
  "bytes",
@@ -7611,9 +7613,9 @@ dependencies = [
 
 [[package]]
 name = "scylla-cql-core"
-version = "1.8.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d98bb372cbdf09b575488a9493d2e5b3812c034353cb066e33ac0c386992eeb"
+checksum = "72ca9de2eb08d04a9c85002ac179c51353c91152cd2cd58fc3d7cbc1eee8ab16"
 dependencies = [
  "byteorder",
  "bytes",
@@ -7626,9 +7628,9 @@ dependencies = [
 
 [[package]]
 name = "scylla-macros"
-version = "1.8.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc72604b7e5e759ca0e766f7324f0e1286e776fb154b6f8b658b89daf2e220ef"
+checksum = "c82c9c67cb4912cefc8cb2a68ebdcbe0273b66510c2bb06581ae6b68d98498aa"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",
@@ -8104,7 +8106,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "jsonwebtoken 11.0.0",
+ "jsonwebtoken 11.1.0",
  "metrics",
  "num_cpus",
  "opentelemetry",
@@ -8170,7 +8172,7 @@ dependencies = [
  "dashmap",
  "hmac 0.13.0",
  "http 1.5.0",
- "jsonwebtoken 11.0.0",
+ "jsonwebtoken 11.1.0",
  "proptest",
  "rmp-serde",
  "serde",
@@ -8328,7 +8330,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac 0.13.0",
- "jsonwebtoken 11.0.0",
+ "jsonwebtoken 11.1.0",
  "md5",
  "memchr",
  "papaya",
@@ -8464,7 +8466,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "httpdate",
- "jsonwebtoken 11.0.0",
+ "jsonwebtoken 11.1.0",
  "metrics",
  "opentelemetry",
  "rand 0.9.5",
@@ -8590,9 +8592,9 @@ dependencies = [
 
 [[package]]
 name = "sockudo-ws"
-version = "2.0.1"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d332a6a163a2386c9785dccb61e69c4addd69e591de1d7c8ad32680c96efd217"
+checksum = "e204e0c225008d46b707d6113dfadfefba400cef3636f6fd50ac6d263631f83f"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -10399,7 +10401,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
 dependencies = [
  "windows-collections",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-future",
  "windows-link 0.1.3",
  "windows-numerics",
@@ -10411,7 +10413,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -10428,25 +10430,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement",
- "windows-interface",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
-]
-
-[[package]]
 name = "windows-future"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
  "windows-threading",
 ]
@@ -10491,7 +10480,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
 ]
 
