@@ -12,6 +12,10 @@ permissions:
   issues: write
   pull-requests: write
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -201,13 +205,14 @@ jobs:
           docker port $(docker ps -q -f "name=postgres-test") || true
           docker port $(docker ps -q -f "name=dynamodb-test") || true
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Restore all-features build cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
         run: cargo test --verbose --all-features
@@ -277,11 +282,10 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+      - name: Install security tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
 
       - name: Security audit
         # Ignored advisories are configured in .cargo/audit.toml.
@@ -412,6 +416,10 @@ jobs:
           tags: sockudo/ai-transport-ci:${{ matrix.name }}
           build-args: |
             SOCKUDO_FEATURES=${{ matrix.features }}
+          cache-from: |
+            type=gha,scope=ci-ai-${{ matrix.name }}
+            type=gha,scope=docker-amd64
+          cache-to: type=gha,mode=max,scope=ci-ai-${{ matrix.name }}
 
   # =============================================================================
   # AI Transport Benchmark Regression Guard
