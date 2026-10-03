@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- During graceful shutdown, `/apps/{appId}/events` and `/apps/{appId}/batch_events` requests on
+  a node without a horizontal adapter are rejected with HTTP 503, code `draining`, and
+  `Retry-After` set to `shutdown_grace_period` (at least one second). Previously they were
+  acknowledged with 200 while the node's sockets were closing, so the event reached no
+  subscriber and the publisher could not tell. Publishers can now retry against a healthy
+  instance. Requests admitted before the shutdown signal are unaffected.
+
 ## [5.1.0] - 2026-09-30
 
 Protocol V1 Pusher compatibility is unchanged. All new capabilities are opt-in and keep their

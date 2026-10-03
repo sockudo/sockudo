@@ -93,6 +93,27 @@ pub(super) fn idempotency_ttl(app: &App, handler: &ConnectionHandler) -> u64 {
         .ttl_seconds
 }
 
+/// Without a horizontal adapter a publish reaches subscribers only through this node's sockets,
+/// which a draining server closes with 4200. A publish accepted then would be acknowledged and
+/// delivered to nobody, so it is refused with 503 `draining`; `Retry-After` is the configured
+/// grace period. The running adapter is checked, not the configured driver, because a failed
+/// horizontal adapter falls back to the local one.
+fn reject_publish_while_draining(handler: &ConnectionHandler) -> Result<(), AppError> {
+    let options = handler.server_options();
+    if handler.is_accepting()
+        || options.server_role.is_api()
+        || handler
+            .connection_manager()
+            .as_horizontal_adapter()
+            .is_some()
+    {
+        return Ok(());
+    }
+    Err(AppError::Draining {
+        retry_after_seconds: options.shutdown_grace_period.max(1),
+    })
+}
+
 fn requires_realtime_counts(info: Option<&str>) -> bool {
     info.wants_user_count() || info.wants_subscription_count()
 }
@@ -124,6 +145,7 @@ pub async fn events(
         / 1_000_000.0;
 
     // Checked before the idempotency claim so a rejected request never poisons the key slot.
+    reject_publish_while_draining(&handler)?;
     if handler.server_options().server_role.is_api()
         && requires_realtime_counts(event_payload.info.as_deref())
     {
@@ -400,6 +422,7 @@ pub async fn batch_events(
         / 1_000_000.0;
 
     // Checked before the idempotency claim so a rejected request never poisons the key slot.
+    reject_publish_while_draining(&handler)?;
     if handler.server_options().server_role.is_api()
         && batch_message_payload
             .batch

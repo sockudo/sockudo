@@ -145,7 +145,10 @@ Operational recommendations:
 On SIGTERM or SIGINT, Sockudo:
 
 1. Reports not ready: `/up` and `/ready` return 503 `DRAINING` and new WebSocket upgrades are
-   rejected with 503. The listener stays open and HTTP API requests are still served.
+   rejected with 503. The listener stays open and HTTP API requests are still served, except
+   publishes (`/events`, `/batch_events`) on a node without a horizontal adapter: those return
+   503 `draining` with `Retry-After`, because no subscriber can receive them there any more.
+   Publishers can retry them against a healthy instance.
 2. Closes existing connections immediately with code 4200 so clients reconnect right away
    instead of waiting for the grace period or a load-balancer cutoff.
 3. Keeps the listener open for `shutdown_grace_period` seconds so load balancers finish
