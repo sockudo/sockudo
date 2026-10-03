@@ -19,6 +19,7 @@ use sockudo_core::{
     options::{MemoryCacheOptions, ServerOptions},
 };
 use sockudo_protocol::messages::{ApiMessageData, BatchPusherApiMessage, PusherApiMessage};
+use std::sync::atomic::AtomicBool;
 use std::{sync::Arc, time::Duration};
 
 struct UnavailableCache;
@@ -347,4 +348,120 @@ async fn oversized_batch_is_rejected_before_its_idempotency_key_is_claimed() {
             .unwrap(),
         None
     );
+}
+
+fn draining_handler(
+    cache: Arc<dyn CacheManager + Send + Sync>,
+    shutdown_grace_period: u64,
+) -> Arc<ConnectionHandler> {
+    let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+    let adapter =
+        Arc::new(LocalAdapter::new()) as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+    let options = ServerOptions {
+        shutdown_grace_period,
+        ..ServerOptions::default()
+    };
+    Arc::new(
+        ConnectionHandlerBuilder::new(app_manager, adapter, cache, options)
+            .running(Arc::new(AtomicBool::new(false)))
+            .build(),
+    )
+}
+
+async fn assert_draining(response: axum::response::Response, retry_after: &str) {
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers()[axum::http::header::RETRY_AFTER],
+        retry_after
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    use sonic_rs::JsonValueTrait;
+    let body: sonic_rs::Value = sonic_rs::from_slice(&body).unwrap();
+    assert_eq!(body["code"].as_str(), Some("draining"));
+    assert_eq!(body["status"].as_u64(), Some(503));
+}
+
+#[tokio::test]
+async fn publish_is_refused_while_draining_without_claiming_its_idempotency_key() {
+    let cache = Arc::new(MemoryCacheManager::new(
+        "drain-test".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let result = events(
+        Path("app-1".to_string()),
+        Query(empty_event_query()),
+        Extension(test_app()),
+        #[cfg(feature = "push")]
+        test_push_store(),
+        #[cfg(feature = "push")]
+        test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
+        State(draining_handler(cache.clone(), 10)),
+        HeaderMap::new(),
+        Uri::from_static("/apps/app-1/events"),
+        RawQuery(None),
+        Json(event("during-drain")),
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("a draining local node must not acknowledge a publish"),
+        Err(error) => error,
+    };
+    assert_draining(error.into_response(), "10").await;
+    assert!(
+        cache
+            .get(&idempotency_cache_key("app-1", "during-drain"))
+            .await
+            .unwrap()
+            .is_none(),
+        "the retry must not find a claimed idempotency key"
+    );
+}
+
+#[tokio::test]
+async fn batch_publish_is_refused_while_draining_with_at_least_one_second_retry() {
+    let cache = Arc::new(MemoryCacheManager::new(
+        "drain-test".to_string(),
+        MemoryCacheOptions::default(),
+    ));
+    let mut headers = HeaderMap::new();
+    headers.insert("x-idempotency-key", "batch-during-drain".parse().unwrap());
+    let result = batch_events(
+        Path("app-1".to_string()),
+        Query(empty_event_query()),
+        Extension(test_app()),
+        #[cfg(feature = "push")]
+        test_push_store(),
+        #[cfg(feature = "push")]
+        test_push_queue(),
+        #[cfg(feature = "push")]
+        test_push_admission(),
+        State(draining_handler(cache.clone(), 0)),
+        headers,
+        Uri::from_static("/apps/app-1/batch_events"),
+        RawQuery(None),
+        Json(BatchPusherApiMessage {
+            batch: vec![event("batch-event-during-drain")],
+        }),
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("a draining local node must not acknowledge a batch"),
+        Err(error) => error,
+    };
+    assert_draining(error.into_response(), "1").await;
+    for key in [
+        batch_idempotency_cache_key("app-1", "batch-during-drain"),
+        idempotency_cache_key("app-1", "batch-event-during-drain"),
+    ] {
+        assert!(
+            cache.get(&key).await.unwrap().is_none(),
+            "the retry must not find a claimed idempotency key"
+        );
+    }
 }

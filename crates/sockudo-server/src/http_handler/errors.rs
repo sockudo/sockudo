@@ -46,6 +46,8 @@ pub enum AppError {
     },
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
+    #[error("Server is draining")]
+    Draining { retry_after_seconds: u64 },
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
     #[error("Invalid input: {0}")]
@@ -123,6 +125,11 @@ impl IntoResponse for AppError {
                 "service_unavailable",
                 msg.clone(),
             ),
+            AppError::Draining { .. } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "draining",
+                "Server is draining".to_string(),
+            ),
             AppError::PayloadTooLarge(msg) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "payload_too_large",
@@ -160,6 +167,9 @@ impl IntoResponse for AppError {
             | AppError::Backpressure {
                 retry_after_seconds,
                 ..
+            }
+            | AppError::Draining {
+                retry_after_seconds,
             } => {
                 if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
                     response.headers_mut().insert(header::RETRY_AFTER, value);
