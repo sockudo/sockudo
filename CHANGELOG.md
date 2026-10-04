@@ -10,6 +10,10 @@
   acknowledged with 200 while the node's sockets were closing, so the event reached no
   subscriber and the publisher could not tell. Publishers can now retry against a healthy
   instance. Requests admitted before the shutdown signal are unaffected.
+- OpenTelemetry exports the configured `service_name`. The SDK's default resource detector ran
+  after the configured attributes and replaced the name with `unknown_service:sockudo` whenever
+  `OTEL_SERVICE_NAME` was unset. `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` still take
+  precedence over the configuration, in that order.
 
 ## [5.1.0] - 2026-09-30
 

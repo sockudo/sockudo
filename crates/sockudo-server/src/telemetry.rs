@@ -16,9 +16,7 @@ use opentelemetry_sdk::logs::{
 };
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::{BaggagePropagator, TraceContextPropagator};
-use opentelemetry_sdk::resource::{
-    EnvResourceDetector, SdkProvidedResourceDetector, TelemetryResourceDetector,
-};
+use opentelemetry_sdk::resource::{EnvResourceDetector, TelemetryResourceDetector};
 use opentelemetry_sdk::trace::{
     BatchConfigBuilder as TraceBatchConfigBuilder, BatchSpanProcessor, SdkTracer, SdkTracerProvider,
 };
@@ -344,6 +342,25 @@ impl Extractor for MapExtractor<'_> {
 }
 
 fn resource(config: &OpenTelemetryConfig, service_instance_id: &str) -> Resource {
+    build_resource(
+        config,
+        service_instance_id,
+        std::env::var("OTEL_SERVICE_NAME").ok(),
+    )
+}
+
+/// The resource every signal is exported with.
+///
+/// Precedence, lowest to highest: Sockudo's configuration (`service_name`, `resource_attributes`, ...), then
+/// `OTEL_RESOURCE_ATTRIBUTES`, then `OTEL_SERVICE_NAME` - the order the OpenTelemetry spec gives the two env
+/// variables. `SdkProvidedResourceDetector` is deliberately not used: all it contributes is `service.name`,
+/// falling back to `unknown_service:<executable>`, and run after the configured attributes that fallback
+/// replaced the configured `service_name` whenever `OTEL_SERVICE_NAME` was unset.
+fn build_resource(
+    config: &OpenTelemetryConfig,
+    service_instance_id: &str,
+    otel_service_name: Option<String>,
+) -> Resource {
     let mut attributes = config
         .resource_attributes
         .iter()
@@ -367,13 +384,16 @@ fn resource(config: &OpenTelemetryConfig, service_instance_id: &str) -> Resource
         ));
     }
 
-    Resource::builder_empty()
-        .with_attributes(attributes)
-        .with_detector(Box::new(SdkProvidedResourceDetector))
+    let mut builder = Resource::builder_empty()
         .with_detector(Box::new(TelemetryResourceDetector))
-        // Standard OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES win over Sockudo fallbacks.
-        .with_detector(Box::new(EnvResourceDetector::new()))
-        .build()
+        .with_attributes(attributes)
+        // Standard OTEL_RESOURCE_ATTRIBUTES wins over Sockudo's configured values...
+        .with_detector(Box::new(EnvResourceDetector::new()));
+    // ...and OTEL_SERVICE_NAME wins over both, as the spec requires.
+    if let Some(name) = otel_service_name.filter(|name| !name.trim().is_empty()) {
+        builder = builder.with_attribute(KeyValue::new("service.name", name));
+    }
+    builder.build()
 }
 
 fn trace_batch_config(config: &OpenTelemetryConfig) -> opentelemetry_sdk::trace::BatchConfig {
@@ -597,5 +617,41 @@ mod tests {
         let error = parse_transport(Some("zipkin"), Signal::Traces).unwrap_err();
         assert!(error.contains("unsupported OTLP protocol"));
         assert!(error.contains("traces"));
+    }
+
+    fn service_name(resource: &Resource) -> Option<String> {
+        resource
+            .get(&opentelemetry::Key::new("service.name"))
+            .map(|value| value.to_string())
+    }
+
+    #[test]
+    fn configured_service_name_is_not_replaced_by_the_sdk_fallback() {
+        let config = OpenTelemetryConfig {
+            service_name: "realtime-api".to_string(),
+            ..OpenTelemetryConfig::default()
+        };
+        let resource = build_resource(&config, "", None);
+        assert_eq!(service_name(&resource).as_deref(), Some("realtime-api"));
+    }
+
+    #[test]
+    fn otel_service_name_env_wins_over_configuration() {
+        let config = OpenTelemetryConfig {
+            service_name: "realtime-api".to_string(),
+            ..OpenTelemetryConfig::default()
+        };
+        let resource = build_resource(&config, "", Some("from-env".to_string()));
+        assert_eq!(service_name(&resource).as_deref(), Some("from-env"));
+    }
+
+    #[test]
+    fn blank_otel_service_name_falls_back_to_configuration() {
+        let config = OpenTelemetryConfig {
+            service_name: "realtime-api".to_string(),
+            ..OpenTelemetryConfig::default()
+        };
+        let resource = build_resource(&config, "", Some("  ".to_string()));
+        assert_eq!(service_name(&resource).as_deref(), Some("realtime-api"));
     }
 }
