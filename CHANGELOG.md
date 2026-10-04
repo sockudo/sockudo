@@ -14,6 +14,9 @@
   after the configured attributes and replaced the name with `unknown_service:sockudo` whenever
   `OTEL_SERVICE_NAME` was unset. `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` still take
   precedence over the configuration, in that order.
+- OpenTelemetry no longer exports a root span for every readiness probe (`/up`, `/ready`) and
+  Prometheus scrape (`/metrics`). The HTTP server span already skipped these paths, but the `up`
+  and `metrics` handlers opened `info` spans of their own; they are now `debug`.
 
 ## [5.1.0] - 2026-09-30
 
