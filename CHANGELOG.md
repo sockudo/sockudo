@@ -17,6 +17,16 @@
 - OpenTelemetry no longer exports a root span for every readiness probe (`/up`, `/ready`) and
   Prometheus scrape (`/metrics`). The HTTP server span already skipped these paths, but the `up`
   and `metrics` handlers opened `info` spans of their own; they are now `debug`.
+- Release builds export the horizontal adapter's consumer spans (`sockudo broadcast receive`,
+  `sockudo request receive`), so a publish's trace now continues on the nodes that deliver it.
+  They were `trace` spans, and builds that include surrealdb (the `full` feature, and so the
+  official images) cap `tracing` at DEBUG through surrealdb's `release_max_level_debug`, which
+  compiled them out. They are now `debug`. They also skip messages a node drops unprocessed (its
+  own, and requests targeted at another node) and the cluster's periodic upkeep (heartbeats, and
+  channel-count gossip with `aggregate_counts`), each of which would otherwise start a new root
+  trace on every node. The filter directive Sockudo adds when traces are enabled is now
+  `sockudo_telemetry=debug`, which also removes a startup warning about TRACE directives that
+  are disabled statically.
 
 ## [5.1.0] - 2026-09-30
 
