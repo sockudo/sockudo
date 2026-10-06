@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument, debug, error, info, warn};
 
 struct DisconnectPresenceLease<'a> {
     member: Option<&'a PresenceMemberInfo>,
@@ -367,7 +367,37 @@ impl ConnectionHandler {
         .await
     }
 
+    /// Runs the cleanup in its own task and waits for it. Cleanup marks the connection
+    /// `disconnecting` and then awaits locks, presence and the adapter, so a caller cancelled part
+    /// way (an aborted timeout task, a dropped future) left the connection in the adapter and its
+    /// channels for good: every later disconnect returned early on `disconnecting`. Dropping a
+    /// JoinHandle only detaches the task, so the cleanup finishes whatever happens to the caller.
     async fn handle_disconnect_with_presence_timeout(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        presence_ungraceful_timeout_seconds: u64,
+    ) -> Result<()> {
+        let handler = self.clone();
+        let app_id = app_id.to_string();
+        let socket_id = *socket_id;
+        tokio::spawn(
+            async move {
+                handler
+                    .run_disconnect_cleanup(
+                        &app_id,
+                        &socket_id,
+                        presence_ungraceful_timeout_seconds,
+                    )
+                    .await
+            }
+            .in_current_span(),
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("disconnect cleanup task failed: {e}")))?
+    }
+
+    async fn run_disconnect_cleanup(
         &self,
         app_id: &str,
         socket_id: &SocketId,
