@@ -1033,14 +1033,19 @@ impl ConnectionHandler {
                         } else if matches!(&e, Error::ConnectionClosed(_)) {
                             debug!(socket_id = %socket_id, error = %e, "socket message handling stopped");
                             break;
+                        } else if matches!(
+                            &e,
+                            Error::Auth(_) | Error::InvalidSignature | Error::InvalidKey
+                        ) {
+                            warn!(socket_id = %socket_id, error = %e, "socket message rejected by authentication");
                         } else {
                             error!(socket_id = %socket_id, error = %e, "socket message handling failed");
-                            // Send pusher:error for non-fatal errors
-                            if let Err(send_err) =
-                                self.send_error(&app_config.id, socket_id, &e, None).await
-                            {
-                                error!(socket_id = %socket_id, error = %send_err, "socket error response send failed");
-                            }
+                        }
+                        // Send pusher:error for non-fatal errors
+                        if let Err(send_err) =
+                            self.send_error(&app_config.id, socket_id, &e, None).await
+                        {
+                            error!(socket_id = %socket_id, error = %send_err, "socket error response send failed");
                         }
                     }
                 }
