@@ -189,7 +189,10 @@ impl FallbackCacheManager {
         let mut failed = 0;
 
         for (key, value, ttl) in entries {
-            let ttl_seconds = ttl.map(|d| d.as_secs()).unwrap_or(0);
+            // Round up so a sub-second remainder does not become 0 (no expiry) in the primary.
+            let ttl_seconds = ttl
+                .map(|d| d.as_secs() + u64::from(d.subsec_nanos() > 0))
+                .unwrap_or(0);
             match primary.set(&key, &value, ttl_seconds).await {
                 Ok(()) => synced += 1,
                 Err(e) => {
@@ -742,7 +745,8 @@ mod tests {
                 "key3" => assert_eq!(value, "value3"),
                 _ => panic!("Unexpected key: {}", key),
             }
-            assert_eq!(ttl, Some(Duration::from_secs(60)));
+            let ttl = ttl.expect("entry has a ttl");
+            assert!(ttl <= Duration::from_secs(60) && ttl > Duration::from_secs(55));
         }
     }
 

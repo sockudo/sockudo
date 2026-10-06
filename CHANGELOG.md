@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- The memory cache driver honors the TTL passed with each write. It ignored it and kept every
+  entry for the cache-wide `cache.memory.ttl` (300 seconds by default), so short-lived keys
+  outlived their purpose: `GET /apps/{appId}/channels` served a listing cached for 2 seconds for
+  up to five minutes (for example `filter_by_prefix=presence-` kept returning no channels after
+  presence channels existed), and idempotency claims, orphan claims, and counters lasted longer
+  than requested. `cache.memory.ttl` is now the default for writes without a TTL and the upper
+  bound for longer ones; with both at 0 an entry does not expire, as with Redis. The cache's
+  `ttl()` reports an entry's remaining TTL instead of the cache-wide value, and entries synced
+  from the fallback memory cache to a recovered primary keep their remaining TTL.
 - During graceful shutdown, `/apps/{appId}/events` and `/apps/{appId}/batch_events` requests on
   a node without a horizontal adapter are rejected with HTTP 503, code `draining`, and
   `Retry-After` set to `shutdown_grace_period` (at least one second). Previously they were
