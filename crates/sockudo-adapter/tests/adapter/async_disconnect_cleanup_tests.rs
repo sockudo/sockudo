@@ -497,3 +497,123 @@ async fn close_returns_when_writer_dies_before_flushing_it() {
         .expect("connection lock must be free again");
     assert!(conn.cancellation_token().is_cancelled());
 }
+
+/// Queues for the connection lock in a loop (tokio's Mutex is FIFO, so every lock another task
+/// requests is pending) and records when the connection gets marked `disconnecting`.
+fn contend_for_connection_lock(
+    conn: sockudo_core::websocket::WebSocketRef,
+) -> (
+    Arc<std::sync::atomic::AtomicBool>,
+    Arc<std::sync::atomic::AtomicBool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let marked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let contender = {
+        let stop = stop.clone();
+        let marked = marked.clone();
+        tokio::spawn(async move {
+            while !stop.load(Ordering::SeqCst) {
+                let guard = conn.inner.lock().await;
+                if guard.state.disconnecting {
+                    marked.store(true, Ordering::SeqCst);
+                }
+                tokio::task::yield_now().await;
+                drop(guard);
+            }
+        })
+    };
+    (stop, marked, contender)
+}
+
+/// Starts `handle_disconnect` in a task and aborts that task once the connection is marked
+/// `disconnecting` and the cleanup is parked on the contended lock.
+async fn cancel_disconnect_caller_mid_cleanup(
+    handler: &ConnectionHandler,
+    conn: &sockudo_core::websocket::WebSocketRef,
+    socket_id: SocketId,
+) {
+    let (stop, marked, contender) = contend_for_connection_lock(conn.clone());
+    let caller = {
+        let handler = handler.clone();
+        tokio::spawn(async move { handler.handle_disconnect(APP_ID, &socket_id).await })
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !marked.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("disconnect must mark the connection");
+    caller.abort();
+    let _ = caller.await;
+    stop.store(true, Ordering::SeqCst);
+    contender.await.unwrap();
+}
+
+/// Regression: cleanup marks the connection `disconnecting` before it awaits anything, so a caller
+/// cancelled after that point (an aborted timeout task, a dropped future) left the connection in
+/// the adapter for good: every later disconnect returned early on `disconnecting`.
+#[tokio::test(flavor = "current_thread")]
+async fn async_disconnect_completes_when_its_caller_is_cancelled() {
+    let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(10);
+    let metrics = Arc::new(CountingMetrics::new());
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(make_app()).await.unwrap();
+    let adapter = Arc::new(LocalAdapter::new());
+    adapter.init().await;
+    let handler = ConnectionHandler::builder(
+        app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(NullCacheManager),
+        ServerOptions::default(),
+    )
+    .local_adapter(adapter.clone())
+    .cleanup_queue(CleanupSender::Direct(tx))
+    .metrics(metrics.clone() as Arc<dyn MetricsInterface + Send + Sync>)
+    .build();
+
+    let (socket_id, _client) = add_v1_socket(&adapter, &app_manager).await;
+    let conn = adapter.get_connection(&socket_id, APP_ID).await.unwrap();
+    cancel_disconnect_caller_mid_cleanup(&handler, &conn, socket_id).await;
+
+    let task = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("cleanup must finish after its caller is cancelled")
+        .expect("cleanup queue must remain open");
+    assert_eq!(task.socket_id, socket_id);
+    assert_eq!(metrics.disconnections(), 1);
+    assert!(conn.cancellation_token().is_cancelled());
+}
+
+/// Same as above for the synchronous cleanup path (no cleanup queue).
+#[tokio::test(flavor = "current_thread")]
+async fn sync_disconnect_completes_when_its_caller_is_cancelled() {
+    let metrics = Arc::new(CountingMetrics::new());
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(make_app()).await.unwrap();
+    let adapter = Arc::new(LocalAdapter::new());
+    adapter.init().await;
+    let handler = ConnectionHandler::builder(
+        app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(NullCacheManager),
+        ServerOptions::default(),
+    )
+    .local_adapter(adapter.clone())
+    .metrics(metrics.clone() as Arc<dyn MetricsInterface + Send + Sync>)
+    .build();
+
+    let (socket_id, _client) = add_v1_socket(&adapter, &app_manager).await;
+    let conn = adapter.get_connection(&socket_id, APP_ID).await.unwrap();
+    cancel_disconnect_caller_mid_cleanup(&handler, &conn, socket_id).await;
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.get_connection(&socket_id, APP_ID).await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup must remove the connection after its caller is cancelled");
+    assert_eq!(metrics.disconnections(), 1);
+}

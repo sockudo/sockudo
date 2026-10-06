@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- Connections no longer leak after a Protocol V1 pong timeout (close 4201). Disconnect cleanup
+  marks a connection `disconnecting` and then awaits; the activity-timeout task ran it inline
+  and aborted itself on the way, so cleanup could stop half-done. The connection then
+  stayed in the adapter and its presence channels for good: `sockudo_connected` drifted above
+  the real socket count, memory grew with it, and presence channels kept ghost members whose
+  `member_removed` never fired. Disconnect cleanup now runs in its own task, so it finishes even
+  when its caller is cancelled. `tests/load/pong-timeout-leak.mjs` reproduces the leak (13 of
+  24,000 timed-out connections on 5.1.0 with the Redis adapter, none after the fix).
 - During graceful shutdown, `/apps/{appId}/events` and `/apps/{appId}/batch_events` requests on
   a node without a horizontal adapter are rejected with HTTP 503, code `draining`, and
   `Retry-After` set to `shutdown_grace_period` (at least one second). Previously they were
