@@ -390,7 +390,9 @@ pub async fn ready(
 }
 
 /// GET /up or /up/{app_id}
-#[instrument(skip(handler), fields(app_id = field::Empty))]
+// `debug`, matching `telemetry::trace_http_request`, which already skips the probe paths: at `info`
+// every readiness probe exported a root span to OpenTelemetry.
+#[instrument(level = "debug", skip(handler), fields(app_id = field::Empty))]
 pub async fn up(
     app_id: Option<Path<String>>,
     State(handler): State<Arc<ConnectionHandler>>,
@@ -478,9 +480,10 @@ pub async fn up(
         HealthStatus::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "NOT_FOUND"),
     };
 
-    if handler.metrics().is_some() {
-        let response_size = status_text.len();
-        record_api_metrics(&handler, &app_id_str, 0, response_size).await;
+    // Directly, not through `record_api_metrics`: that helper opens its own `info` span, which
+    // would export as a root span on every probe now that `up` opens none at the default level.
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_api_message(&app_id_str, 0, status_text.len());
     }
 
     let response_val = axum::http::Response::builder()
@@ -503,7 +506,8 @@ pub async fn fallback_404(uri: Uri) -> impl IntoResponse {
 }
 
 /// GET /metrics (Prometheus format)
-#[instrument(skip(handler), fields(service = "metrics_exporter"))]
+// `debug` for the same reason as `up`: at `info` every Prometheus scrape exported a root span.
+#[instrument(level = "debug", skip(handler), fields(service = "metrics_exporter"))]
 pub async fn metrics(
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {

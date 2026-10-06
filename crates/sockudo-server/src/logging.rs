@@ -234,8 +234,11 @@ fn resolved_filter(
 fn with_telemetry_span_filter(mut filter: String, telemetry_traces_enabled: bool) -> String {
     if telemetry_traces_enabled {
         // Keep explicit instrumentation spans independent from local log verbosity. The formatter
-        // does not emit span lifecycle events, so this does not turn trace-level logs on.
-        filter.push_str(",sockudo_telemetry=trace");
+        // does not emit span lifecycle events, so this does not turn debug-level logs on.
+        // `debug`, not `trace`: it is the most verbose level these spans use, and the highest a
+        // release build with surrealdb compiles in (`tracing/release_max_level_debug`). Asking for
+        // `trace` there printed a startup warning to remove a Cargo feature Sockudo does not set.
+        filter.push_str(",sockudo_telemetry=debug");
     }
     filter
 }
@@ -285,7 +288,7 @@ mod tests {
     fn telemetry_spans_are_independent_from_local_log_verbosity() {
         assert_eq!(
             with_telemetry_span_filter("warn".to_string(), true),
-            "warn,sockudo_telemetry=trace"
+            "warn,sockudo_telemetry=debug"
         );
         assert_eq!(
             with_telemetry_span_filter("warn".to_string(), false),
