@@ -79,6 +79,7 @@ async fn test_default_should_skip_horizontal_communication_is_true() -> Result<(
 
     let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config.clone()).await?;
     adapter.cluster_health_enabled = true;
+    adapter.settle_discovery_for_test();
 
     assert!(
         adapter.should_skip_horizontal_communication().await,

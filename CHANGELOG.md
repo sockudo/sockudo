@@ -37,6 +37,13 @@
 
 ### Fixed
 
+- A newly started Sockudo node with cluster health enabled no longer drops its cross-node
+  broadcasts until a peer's heartbeat arrives. A node learns about peers only from their
+  heartbeats, so for up to one heartbeat interval (10 s by default) it counted itself as the
+  only node and took the single-node shortcut. Peers then missed every event published through
+  it, with any horizontal adapter. Peers now answer a new node's heartbeat immediately, a node
+  starts heartbeating only once its listeners are up, and a node with no known peers keeps
+  publishing until a full node timeout passes without hearing one.
 - Connections no longer leak after a Protocol V1 pong timeout (close 4201). Disconnect cleanup
   marks a connection `disconnecting` and then awaits; the activity-timeout task ran it inline
   and aborted itself on the way, so cleanup could stop half-done. The connection then

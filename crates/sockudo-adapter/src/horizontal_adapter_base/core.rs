@@ -8,6 +8,26 @@ use super::*;
 /// dead node in the leader's heartbeat map indefinitely, with nothing logged.
 const NODE_DEAD_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A heartbeat from `node_id`, for every node or, with `target`, for one node only.
+fn heartbeat_request(node_id: &str, target: Option<String>) -> RequestBody {
+    RequestBody {
+        request_id: generate_request_id(),
+        node_id: node_id.to_string(),
+        app_id: "cluster".to_string(),
+        request_type: RequestType::Heartbeat,
+        channel: None,
+        socket_id: None,
+        user_id: None,
+        user_info: None,
+        timestamp: Some(current_timestamp()),
+        dead_node_id: None,
+        target_node_id: target,
+        reply_to: None,
+        trace_context: crate::telemetry::current_context(),
+        channels: None,
+    }
+}
+
 impl<T: HorizontalTransport + 'static> HorizontalAdapterBase<T>
 where
     T::Config: TransportConfig,
@@ -50,6 +70,8 @@ where
             realtime_egress_tap: Arc::new(OnceLock::new()),
             idempotency_ttl: AtomicU64::new(120),
             is_running: Arc::new(AtomicBool::new(true)),
+            discovery_settles_at: OnceLock::new(),
+            discovery_settled: AtomicBool::new(false),
         })
     }
 
@@ -439,11 +461,6 @@ where
     pub async fn start_listeners(&self) -> Result<()> {
         self.horizontal.start_request_cleanup();
 
-        // Start cluster health system only if enabled
-        if self.cluster_health_enabled {
-            self.start_cluster_health_system().await;
-        }
-
         // Set up transport handlers
         let horizontal_arc = self.horizontal.clone();
 
@@ -717,6 +734,18 @@ where
                         let node_id = horizontal_clone.node_id.clone();
 
                         tokio::spawn(async move {
+                            // Answer at once instead of at our next periodic heartbeat: until
+                            // the new node hears from a peer it believes it is alone.
+                            if let Err(e) = transport_for_task
+                                .publish_request(&heartbeat_request(
+                                    &node_id,
+                                    Some(new_node_id.clone()),
+                                ))
+                                .await
+                            {
+                                warn!(node_id = %new_node_id, error = %e, "failed to answer new node heartbeat");
+                            }
+
                             let mut hasher = ahash::AHasher::default();
                             node_id.hash(&mut hasher);
                             let stagger_ms = hasher.finish() % PRESENCE_SYNC_STAGGER_MAX_MS;
@@ -757,11 +786,21 @@ where
         };
 
         self.transport.start_listeners(handlers).await?;
+
+        // Start cluster health only once the listeners are up: the first heartbeat goes out at
+        // once, and peers answer it immediately.
+        if self.cluster_health_enabled {
+            self.start_cluster_health_system().await;
+        }
         Ok(())
     }
 
     /// Start cluster health monitoring system
     pub async fn start_cluster_health_system(&self) {
+        let _ = self
+            .discovery_settles_at
+            .set(Instant::now() + Duration::from_millis(self.node_timeout_ms));
+
         let heartbeat_interval_ms = self.heartbeat_interval_ms;
         let node_timeout_ms = self.node_timeout_ms;
 
@@ -901,24 +940,10 @@ where
                     break;
                 }
 
-                let heartbeat_request = RequestBody {
-                    request_id: generate_request_id(),
-                    node_id: node_id.clone(),
-                    app_id: "cluster".to_string(),
-                    request_type: RequestType::Heartbeat,
-                    channel: None,
-                    socket_id: None,
-                    user_id: None,
-                    user_info: None,
-                    timestamp: Some(current_timestamp()),
-                    dead_node_id: None,
-                    target_node_id: None,
-                    reply_to: None,
-                    trace_context: crate::telemetry::current_context(),
-                    channels: None,
-                };
-
-                if let Err(e) = transport.publish_request(&heartbeat_request).await {
+                if let Err(e) = transport
+                    .publish_request(&heartbeat_request(&node_id, None))
+                    .await
+                {
                     error!(error = %e, "failed to send heartbeat");
                 }
             }

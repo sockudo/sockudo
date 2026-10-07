@@ -74,6 +74,10 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     idempotency_ttl: AtomicU64,
     // Shared run flag for background loops so dropping the adapter stops heartbeats/cleanup tasks.
     is_running: Arc<AtomicBool>,
+    // When this node may first conclude that it is alone. Set when cluster health discovery
+    // starts. See `discovery_settled`.
+    discovery_settles_at: OnceLock<Instant>,
+    discovery_settled: AtomicBool,
 }
 
 /// Check if we should skip horizontal communication (single node optimization)
@@ -96,11 +100,38 @@ impl<T: HorizontalTransport> HorizontalAdapterBase<T> {
     /// This is determined by checking if cluster health is enabled and
     /// if the effective node count is 1 or less.
     pub async fn should_skip_horizontal_communication(&self) -> bool {
-        if self.api_only {
+        if self.api_only || !self.discovery_settled() {
             return false;
         }
         should_skip_horizontal_communication_impl(self.cluster_health_enabled, &self.horizontal)
             .await
+    }
+
+    /// Whether this node has listened for peers long enough to trust an empty heartbeat map.
+    ///
+    /// A node learns about a peer only from that peer's heartbeats, so right after startup it
+    /// knows of no one even when peers exist. Taking the single-node shortcut then would drop
+    /// its broadcasts until the first heartbeat arrived. Until `node_timeout_ms` has passed
+    /// since discovery started (the same window after which a silent peer is declared dead),
+    /// a node with no known peers keeps publishing; at worst that sends a few messages
+    /// nobody consumes.
+    fn discovery_settled(&self) -> bool {
+        if self.discovery_settled.load(Ordering::Relaxed) {
+            return true;
+        }
+        let settled = self
+            .discovery_settles_at
+            .get()
+            .is_some_and(|settles_at| Instant::now() >= *settles_at);
+        if settled {
+            self.discovery_settled.store(true, Ordering::Relaxed);
+        }
+        settled
+    }
+
+    /// Treat peer discovery as complete, so an empty heartbeat map means a single node at once.
+    pub fn settle_discovery_for_test(&self) {
+        self.discovery_settled.store(true, Ordering::Relaxed);
     }
 }
 

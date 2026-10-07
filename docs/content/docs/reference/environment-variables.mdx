@@ -508,7 +508,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `CLEANUP_MAX_RETRY_ATTEMPTS` | Cleanup retry limit. |
 | `CLUSTER_HEALTH_ENABLED` | Enables cluster health tracking. |
 | `CLUSTER_HEALTH_HEARTBEAT_INTERVAL` | Cluster heartbeat interval. |
-| `CLUSTER_HEALTH_NODE_TIMEOUT` | Node timeout before a peer is considered stale. |
+| `CLUSTER_HEALTH_NODE_TIMEOUT` | Node timeout before a peer is considered stale. A newly started node also keeps publishing cross-node for this long before it treats an empty peer list as a single-node deployment. |
 | `CLUSTER_HEALTH_CLEANUP_INTERVAL` | Cleanup interval for cluster health state. |
 
 ## WebSocket and Protocol V2 features
