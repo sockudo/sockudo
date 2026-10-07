@@ -23,8 +23,6 @@ use std::sync::Arc;
 
 #[cfg(feature = "google-pubsub")]
 use sockudo_core::options::GooglePubSubAdapterConfig;
-#[cfg(feature = "iggy")]
-use sockudo_core::options::IggyConfig;
 #[cfg(feature = "kafka")]
 use sockudo_core::options::KafkaAdapterConfig;
 #[cfg(feature = "nats")]
@@ -549,46 +547,26 @@ impl AdapterFactory {
                 }
             }
             #[cfg(feature = "iggy")]
-            AdapterDriver::Iggy => {
-                let iggy_cfg = IggyConfig {
-                    connection_string: config.iggy.connection_string.clone(),
-                    username: config.iggy.username.clone(),
-                    password: config.iggy.password.clone(),
-                    consumer_name: config.iggy.consumer_name.clone(),
-                    stream: config.iggy.stream.clone(),
-                    topic_prefix: config.iggy.topic_prefix.clone(),
-                    queue_topic_prefix: config.iggy.queue_topic_prefix.clone(),
-                    consumer_group_prefix: config.iggy.consumer_group_prefix.clone(),
-                    request_timeout_ms: config.iggy.request_timeout_ms,
-                    poll_interval_ms: config.iggy.poll_interval_ms,
-                    poll_batch_size: config.iggy.poll_batch_size,
-                    partitions_count: config.iggy.partitions_count,
-                    partition_id: config.iggy.partition_id,
-                    auto_create: config.iggy.auto_create,
-                    start_from_latest: config.iggy.start_from_latest,
-                    nodes_number: config.iggy.nodes_number,
-                };
-                match IggyAdapter::new(iggy_cfg).await {
-                    Ok(mut adapter) => {
-                        Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
-                        let adapter = Arc::new(adapter);
-                        let typed = TypedAdapter::Iggy(adapter.clone());
-                        Ok((adapter, typed))
-                    }
-                    Err(e) => {
-                        if !config.fallback_to_local {
-                            tracing::error!(adapter = "iggy", error = %e, "failed to initialize adapter");
-                            return Err(e);
-                        }
-                        warn!(adapter = "iggy", error = %e, "failed to initialize adapter, falling back to local");
-                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
-                            config.buffer_multiplier_per_cpu,
-                        ));
-                        let typed = TypedAdapter::Local(local_adapter.clone());
-                        Ok((local_adapter, typed))
-                    }
+            AdapterDriver::Iggy => match IggyAdapter::new(config.iggy.clone()).await {
+                Ok(mut adapter) => {
+                    Self::configure_horizontal_adapter(&mut adapter, config, api_only).await?;
+                    let adapter = Arc::new(adapter);
+                    let typed = TypedAdapter::Iggy(adapter.clone());
+                    Ok((adapter, typed))
                 }
-            }
+                Err(e) => {
+                    if !config.fallback_to_local {
+                        tracing::error!(adapter = "iggy", error = %e, "failed to initialize adapter");
+                        return Err(e);
+                    }
+                    warn!(adapter = "iggy", error = %e, "failed to initialize adapter, falling back to local");
+                    let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                        config.buffer_multiplier_per_cpu,
+                    ));
+                    let typed = TypedAdapter::Local(local_adapter.clone());
+                    Ok((local_adapter, typed))
+                }
+            },
             AdapterDriver::Local => {
                 info!(adapter = "local", "adapter initialized");
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(

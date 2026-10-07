@@ -6,12 +6,15 @@ use bytes::Bytes;
 use dashmap::DashSet;
 use futures_util::StreamExt;
 use iggy::prelude::{
-    AutoCommit, Client, CompressionAlgorithm, ConsumerGroupClient, HeaderKey, HeaderValue,
-    IggyClient, IggyDuration, IggyError, IggyExpiry, IggyMessage, IggyProducer, MaxTopicSize,
-    Partitioning, StreamClient, SystemClient, TopicClient, UserClient,
+    AutoCommit, Client, ClusterClient, ClusterNodeRole, ClusterNodeStatus, CompressionAlgorithm,
+    ConsumerGroupClient, Durability, HeaderKey, HeaderValue, IggyClient, IggyDuration, IggyError,
+    IggyExpiry, IggyMessage, IggyProducer, MaxTopicSize, Partitioning, StreamClient, SystemClient,
+    TopicClient, TopicCreateOptions, UserClient,
 };
 use sockudo_core::error::{Error, Result};
-use sockudo_core::options::{IggyConfig, QueueReliabilityConfig};
+use sockudo_core::options::{
+    IggyConfig, IggyConnectionCandidate, IggyDurability, QueueReliabilityConfig,
+};
 use sockudo_core::queue::{
     QueueBackendKind, QueueCapabilities, QueueInterface, QueueJobId, QueueJobRequest,
 };
@@ -20,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, warn};
@@ -58,6 +62,7 @@ impl IggyQueueManager {
         reliability.validate().map_err(Error::Config)?;
         let client = Arc::new(connect_client(&config).await?);
         let stream = normalize_name(&config.stream, "sockudo");
+        log_cluster_topology(&client, &config).await;
         ensure_stream(&client, &config, &stream).await?;
         Ok(Self {
             client,
@@ -329,12 +334,71 @@ async fn connect_client(config: &IggyConfig) -> Result<IggyClient> {
         ));
     }
 
-    let client = IggyClient::from_connection_string(&config.connection_string)
+    let candidates = config.connection_candidates().map_err(Error::Queue)?;
+    // Seeds only bootstrap the connection; once connected, the SDK learns the cluster roster,
+    // follows the leader, and fails over on its own. With one candidate, the SDK's
+    // reconnection policy governs the dial as it always has.
+    let bounded = candidates.len() > 1;
+    let mut last_error = None;
+    for candidate in &candidates {
+        match connect_candidate(config, candidate, bounded).await {
+            Ok(client) => return Ok(client),
+            Err(error) => {
+                if bounded {
+                    warn!(queue = "iggy", node = %candidate.address, error = %error, "cluster seed unreachable");
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        Error::Queue("No Apache Iggy cluster node could be reached".to_string())
+    }))
+}
+
+async fn connect_candidate(
+    config: &IggyConfig,
+    candidate: &IggyConnectionCandidate,
+    bounded: bool,
+) -> Result<IggyClient> {
+    let connect_timeout = Duration::from_millis(config.connect_timeout_ms);
+    if bounded && candidate.is_tcp() {
+        // The SDK redials a refused node until its retry policy gives up, which would spend
+        // the whole connect timeout on a seed that is plainly down. A bare TCP dial fails
+        // that seed in milliseconds and moves on.
+        match timeout(connect_timeout, TcpStream::connect(&candidate.address)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                return Err(Error::Queue(format!(
+                    "Apache Iggy node {} is unreachable: {error}",
+                    candidate.address
+                )));
+            }
+            Err(_) => {
+                return Err(Error::Queue(format!(
+                    "Apache Iggy node {} did not accept a connection within {} ms",
+                    candidate.address, config.connect_timeout_ms
+                )));
+            }
+        }
+    }
+
+    let client = IggyClient::from_connection_string(&candidate.connection_string)
         .map_err(|e| Error::Queue(format!("Invalid Apache Iggy connection string: {e}")))?;
-    client
-        .connect()
-        .await
-        .map_err(|e| Error::Queue(format!("Failed to connect to Apache Iggy: {e}")))?;
+    let connected = if bounded {
+        timeout(connect_timeout, client.connect())
+            .await
+            .unwrap_or(Err(IggyError::CannotEstablishConnection))
+    } else {
+        client.connect().await
+    };
+    if let Err(error) = connected {
+        let _ = client.shutdown().await;
+        return Err(Error::Queue(format!(
+            "Failed to connect to Apache Iggy at {}: {error}",
+            candidate.address
+        )));
+    }
 
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
         client
@@ -344,6 +408,37 @@ async fn connect_client(config: &IggyConfig) -> Result<IggyClient> {
     }
 
     Ok(client)
+}
+
+/// Logs the Apache Iggy cluster roster this client joined. Informational only: the SDK
+/// handles leader redirection, failover, and consumer-group rejoin.
+async fn log_cluster_topology(client: &IggyClient, config: &IggyConfig) {
+    match with_timeout(config, client.get_cluster_metadata()).await {
+        Ok(metadata) => {
+            let leader = metadata.nodes.iter().find(|node| {
+                node.role == ClusterNodeRole::Leader && node.status == ClusterNodeStatus::Healthy
+            });
+            info!(
+                queue = "iggy",
+                cluster = %metadata.name,
+                nodes = metadata.nodes.len(),
+                leader = leader.map_or("none", |node| node.name.as_str()),
+                durability = %config.durability,
+                consumer_offset_durability = %config.consumer_offset_durability,
+                "cluster topology discovered"
+            );
+        }
+        Err(error) => {
+            debug!(queue = "iggy", error = %error, "cluster metadata unavailable");
+        }
+    }
+}
+
+fn to_iggy_durability(durability: IggyDurability) -> Durability {
+    match durability {
+        IggyDurability::Replicated => Durability::Replicated,
+        IggyDurability::Persisted => Durability::Persisted,
+    }
 }
 
 async fn build_queue_consumer(
@@ -407,18 +502,16 @@ async fn ensure_topic(
                 "Apache Iggy topic '{topic}' does not exist and auto_create is false"
             )));
         }
-        match client
-            .create_topic(
-                &stream_id,
-                topic,
-                config.partitions_count,
-                CompressionAlgorithm::default(),
-                None,
-                IggyExpiry::NeverExpire,
-                MaxTopicSize::Unlimited,
-            )
-            .await
-        {
+        let options = TopicCreateOptions {
+            partitions_count: Some(config.partitions_count),
+            compression_algorithm: Some(CompressionAlgorithm::default()),
+            message_expiry: Some(IggyExpiry::NeverExpire),
+            max_topic_size: Some(MaxTopicSize::Unlimited),
+            durability: to_iggy_durability(config.durability),
+            consumer_offset_durability: to_iggy_durability(config.consumer_offset_durability),
+            ..Default::default()
+        };
+        match client.create_topic(&stream_id, topic, &options).await {
             Ok(_) | Err(IggyError::TopicNameAlreadyExists(_, _)) => {}
             Err(error) => return Err(to_queue_error(error)),
         }
@@ -515,25 +608,15 @@ async fn build_queue_producer(
     stream: &str,
     topic: &str,
 ) -> Result<iggy::prelude::IggyProducer> {
-    let mut builder = client
+    // Topics are created only by `ensure_topic`, so the configured durability always applies.
+    ensure_topic(client, config, stream, topic).await?;
+    let producer = client
         .producer(stream, topic)
         .map_err(to_queue_error)?
-        .partitioning(Partitioning::balanced());
-
-    builder = if config.auto_create {
-        builder.create_topic_if_not_exists(
-            config.partitions_count,
-            None,
-            IggyExpiry::NeverExpire,
-            MaxTopicSize::Unlimited,
-        )
-    } else {
-        builder
-            .do_not_create_stream_if_not_exists()
-            .do_not_create_topic_if_not_exists()
-    };
-
-    let producer = builder.build();
+        .partitioning(Partitioning::balanced())
+        .do_not_create_stream_if_not_exists()
+        .do_not_create_topic_if_not_exists()
+        .build();
     with_timeout(config, producer.init()).await?;
     Ok(producer)
 }
@@ -665,6 +748,13 @@ fn validate_config(config: &IggyConfig) -> Result<()> {
     if config.username.is_some() != config.password.is_some() {
         return Err(Error::Queue(
             "Apache Iggy username and password must be configured together".to_string(),
+        ));
+    }
+    config.connection_candidates().map_err(Error::Queue)?;
+    if !config.cluster_seeds.is_empty() && config.connect_timeout_ms == 0 {
+        return Err(Error::Queue(
+            "Apache Iggy connect_timeout_ms must be greater than 0 when cluster_seeds is set"
+                .to_string(),
         ));
     }
     if config.partitions_count == 0 {

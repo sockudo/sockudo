@@ -457,7 +457,15 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `KAFKA_SASL_PASSWORD` | Kafka SASL password. |
 | `KAFKA_REQUEST_TIMEOUT_MS` | Kafka request timeout. |
 | `KAFKA_NODES_NUMBER` | Expected Kafka node count. |
-| `IGGY_CONNECTION_STRING` | Apache Iggy connection string. |
+| `IGGY_CONNECTION_STRING` | Apache Iggy connection string; the first node dialed. Its credentials and query options apply to every cluster seed. |
+| `IGGY_CLUSTER_SEEDS` | Comma-separated extra Apache Iggy replicas (`host:port`) tried in order when an earlier node is unreachable. Bootstrap only; the SDK then fails over using the cluster roster. |
+| `IGGY_CONNECT_TIMEOUT_MS` | Bound on each initial dial while cluster seeds are set (default: `10000`). |
+| `IGGY_DURABILITY` | Message durability for topics Sockudo creates: `replicated` (default) or `persisted`. |
+| `ADAPTER_IGGY_DURABILITY` | Adapter-specific message durability. |
+| `QUEUE_IGGY_DURABILITY` | Queue-specific message durability. |
+| `IGGY_CONSUMER_OFFSET_DURABILITY` | Consumer-offset durability for topics Sockudo creates: `replicated` (default) or `persisted`. |
+| `ADAPTER_IGGY_CONSUMER_OFFSET_DURABILITY` | Adapter-specific consumer-offset durability. |
+| `QUEUE_IGGY_CONSUMER_OFFSET_DURABILITY` | Queue-specific consumer-offset durability. |
 | `IGGY_USERNAME` | Apache Iggy username. |
 | `IGGY_PASSWORD` | Apache Iggy password. |
 | `IGGY_CONSUMER_NAME` | Apache Iggy consumer name. |
@@ -470,6 +478,13 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `IGGY_POLL_BATCH_SIZE` | Apache Iggy poll batch size. |
 | `IGGY_PARTITIONS_COUNT` | Shared Apache Iggy partition count. |
 | `ADAPTER_IGGY_PARTITIONS_COUNT` | Adapter-specific Apache Iggy partition count. |
+| `QUEUE_IGGY_PARTITIONS_COUNT` | Queue-specific Apache Iggy partition count. |
+| `IGGY_PARTITION_ID` | Shared Apache Iggy partition ID. |
+| `ADAPTER_IGGY_PARTITION_ID` | Adapter-specific Apache Iggy partition ID. |
+| `QUEUE_IGGY_PARTITION_ID` | Queue-specific Apache Iggy partition ID. |
+| `IGGY_AUTO_CREATE` | Auto-create Apache Iggy streams and topics. |
+| `IGGY_START_FROM_LATEST` | Start adapter consumption from latest messages. |
+| `IGGY_NODES_NUMBER` | Expected Sockudo node count for horizontal request aggregation (not the Iggy replica count). |
 | `OMQ_BIND_ENDPOINT` | OMQ subscriber bind endpoint for this node. |
 | `OMQ_CONNECT_ENDPOINTS` | Comma-separated OMQ peer subscriber endpoints. |
 | `OMQ_PREFIX` | OMQ transport topic prefix. |
@@ -478,13 +493,6 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `OMQ_IO_THREADS` | OMQ data-plane IO threads. |
 | `OMQ_SEND_HWM` | OMQ publisher high-water mark in messages. |
 | `OMQ_RECV_HWM` | OMQ subscriber high-water mark in messages. |
-| `QUEUE_IGGY_PARTITIONS_COUNT` | Queue-specific Apache Iggy partition count. |
-| `IGGY_PARTITION_ID` | Shared Apache Iggy partition ID. |
-| `ADAPTER_IGGY_PARTITION_ID` | Adapter-specific Apache Iggy partition ID. |
-| `QUEUE_IGGY_PARTITION_ID` | Queue-specific Apache Iggy partition ID. |
-| `IGGY_AUTO_CREATE` | Auto-create Apache Iggy streams and topics. |
-| `IGGY_START_FROM_LATEST` | Start adapter consumption from latest messages. |
-| `IGGY_NODES_NUMBER` | Expected Apache Iggy node count. |
 
 ## Cleanup and cluster health
 

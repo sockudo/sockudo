@@ -141,6 +141,24 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
             .clone_from(&connection_string);
         options.queue.iggy.connection_string = connection_string;
     }
+    if let Ok(seeds) = std::env::var("IGGY_CLUSTER_SEEDS") {
+        let seeds: Vec<String> = seeds
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        options.adapter.iggy.cluster_seeds.clone_from(&seeds);
+        options.queue.iggy.cluster_seeds = seeds;
+    }
+    options.adapter.iggy.connect_timeout_ms = parse_env::<u64>(
+        "IGGY_CONNECT_TIMEOUT_MS",
+        options.adapter.iggy.connect_timeout_ms,
+    );
+    options.queue.iggy.connect_timeout_ms = parse_env::<u64>(
+        "IGGY_CONNECT_TIMEOUT_MS",
+        options.queue.iggy.connect_timeout_ms,
+    );
     if let Ok(username) = std::env::var("IGGY_USERNAME") {
         let username = (!username.is_empty()).then_some(username);
         options.adapter.iggy.username.clone_from(&username);
@@ -226,6 +244,28 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.adapter.iggy.nodes_number = Some(nodes);
         options.queue.iggy.nodes_number = Some(nodes);
     }
+    options.adapter.iggy.durability = parse_env::<IggyDurability>(
+        "ADAPTER_IGGY_DURABILITY",
+        parse_env::<IggyDurability>("IGGY_DURABILITY", options.adapter.iggy.durability),
+    );
+    options.queue.iggy.durability = parse_env::<IggyDurability>(
+        "QUEUE_IGGY_DURABILITY",
+        parse_env::<IggyDurability>("IGGY_DURABILITY", options.queue.iggy.durability),
+    );
+    options.adapter.iggy.consumer_offset_durability = parse_env::<IggyDurability>(
+        "ADAPTER_IGGY_CONSUMER_OFFSET_DURABILITY",
+        parse_env::<IggyDurability>(
+            "IGGY_CONSUMER_OFFSET_DURABILITY",
+            options.adapter.iggy.consumer_offset_durability,
+        ),
+    );
+    options.queue.iggy.consumer_offset_durability = parse_env::<IggyDurability>(
+        "QUEUE_IGGY_CONSUMER_OFFSET_DURABILITY",
+        parse_env::<IggyDurability>(
+            "IGGY_CONSUMER_OFFSET_DURABILITY",
+            options.queue.iggy.consumer_offset_durability,
+        ),
+    );
 
     // --- OMQ Adapter ---
     if let Ok(endpoint) = std::env::var("OMQ_BIND_ENDPOINT") {

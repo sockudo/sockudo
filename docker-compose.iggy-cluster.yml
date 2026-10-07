@@ -1,0 +1,272 @@
+# =============================================================================
+# Sockudo + Apache Iggy VSR cluster test stack
+# =============================================================================
+#
+# Three Apache Iggy 0.9 replicas form one VSR cluster (tolerates one failed
+# replica); three Sockudo nodes use it as the horizontal adapter and queue.
+#
+#   docker compose -f docker-compose.iggy-cluster.yml up -d --build
+#   node scripts/e2e_iggy_multinode_verify.mjs
+#
+# Failover drill: stop the replica the Sockudo logs name as leader
+# ("cluster topology discovered"), then re-run the verify script.
+#
+#   docker compose -f docker-compose.iggy-cluster.yml stop iggy-1
+#
+# Iggy constraints that shape this file:
+#   - every replica loads the same roster; `--replica-id` picks its own entry.
+#   - `cluster.nodes[*].ip` must be a literal IP, so replicas get static IPs.
+#   - root credentials are mandatory once the cluster is enabled.
+#   - the replica auth shared secret must be at least 32 bytes. Replace it
+#     outside local testing.
+
+name: sockudo-iggy-cluster
+
+x-sockudo-build: &sockudo-build
+  image: sockudo:iggy-cluster-dev
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+    args:
+      SOCKUDO_FEATURES: "iggy"
+
+x-sockudo-common-env: &sockudo-common-env
+  RUST_LOG: "info,sockudo=debug"
+  DEBUG: "true"
+  HOST: "0.0.0.0"
+  APP_MANAGER_DRIVER: "memory"
+  ADAPTER_DRIVER: "iggy"
+  CACHE_DRIVER: "memory"
+  # Cross-node idempotency and Ably compatibility need a shared cache
+  # (redis or redis-cluster); this test stack keeps cache node-local.
+  IDEMPOTENCY_ENABLED: "false"
+  SOCKUDO_ABLY_COMPAT_ENABLED: "false"
+  QUEUE_DRIVER: "iggy"
+  RATE_LIMITER_DRIVER: "memory"
+  METRICS_ENABLED: "true"
+  METRICS_HOST: "0.0.0.0"
+  METRICS_PROMETHEUS_PREFIX: "sockudo_"
+  CORS_CREDENTIALS: "false"
+  # Bootstrap from any replica; the SDK then learns the roster, follows the
+  # leader, and fails over across replicas on its own.
+  IGGY_CONNECTION_STRING: "iggy://iggy:iggy@iggy-1:8090"
+  IGGY_CLUSTER_SEEDS: "iggy-2:8090,iggy-3:8090"
+  IGGY_CONNECT_TIMEOUT_MS: "10000"
+  IGGY_DURABILITY: "replicated"
+  QUEUE_IGGY_DURABILITY: "persisted"
+  IGGY_STREAM: "sockudo"
+  IGGY_TOPIC_PREFIX: "sockudo-adapter"
+  IGGY_QUEUE_TOPIC_PREFIX: "sockudo-queue"
+  IGGY_CONSUMER_GROUP_PREFIX: "sockudo-workers"
+  IGGY_REQUEST_TIMEOUT_MS: "5000"
+  IGGY_POLL_INTERVAL_MS: "50"
+  IGGY_POLL_BATCH_SIZE: "100"
+  ADAPTER_IGGY_PARTITIONS_COUNT: "1"
+  QUEUE_IGGY_PARTITIONS_COUNT: "3"
+  IGGY_AUTO_CREATE: "true"
+  IGGY_START_FROM_LATEST: "false"
+  IGGY_NODES_NUMBER: "3"
+  CLUSTER_HEALTH_ENABLED: "true"
+  SHUTDOWN_GRACE_PERIOD: "2"
+  SOCKUDO_DEFAULT_APP_ID: "demo-app"
+  SOCKUDO_DEFAULT_APP_KEY: "demo-key"
+  SOCKUDO_DEFAULT_APP_SECRET: "demo-secret"
+  SOCKUDO_DEFAULT_APP_ENABLED: "true"
+  SOCKUDO_ENABLE_CLIENT_MESSAGES: "true"
+  SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS: "1000"
+  SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND: "100"
+  SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND: "100"
+  SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION: "false"
+  SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS: "false"
+
+x-sockudo-common: &sockudo-common
+  <<: *sockudo-build
+  restart: unless-stopped
+  volumes:
+    - ./config:/app/config:ro
+  depends_on:
+    iggy-1:
+      condition: service_healthy
+    iggy-2:
+      condition: service_healthy
+    iggy-3:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:$${PORT}/up/demo-app >/dev/null"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 20s
+  networks:
+    - sockudo-iggy-cluster
+
+x-iggy-node: &iggy-node
+  image: apache/iggy:0.9.0
+  restart: unless-stopped
+  cap_add:
+    - SYS_NICE
+  security_opt:
+    - seccomp:unconfined
+  ulimits:
+    memlock:
+      soft: -1
+      hard: -1
+
+x-iggy-cluster-env: &iggy-cluster-env
+  IGGY_ROOT_USERNAME: "iggy"
+  IGGY_ROOT_PASSWORD: "iggy"
+  IGGY_PATH: "/local_data"
+  # The default "numa:auto" allocation fails on hosts without NUMA memory
+  # binding (Docker Desktop, most VMs), and replicas sharing a host should not
+  # pin the same cores.
+  IGGY_SHARDING_CPU_ALLOCATION: "2"
+  IGGY_SHARDING_PIN_CORES: "false"
+  IGGY_TCP_ADDRESS: "0.0.0.0:8090"
+  IGGY_QUIC_ADDRESS: "0.0.0.0:8080"
+  IGGY_HTTP_ENABLED: "true"
+  IGGY_HTTP_ADDRESS: "0.0.0.0:3000"
+  IGGY_WEBSOCKET_ADDRESS: "0.0.0.0:8092"
+  IGGY_CLUSTER_ENABLED: "true"
+  IGGY_CLUSTER_NAME: "sockudo-iggy-cluster"
+  IGGY_CLUSTER_AUTH_ENABLED: "true"
+  IGGY_CLUSTER_AUTH_SHARED_SECRET: "sockudo-local-iggy-cluster-secret-change-me"
+  IGGY_CLUSTER_NODES_0_NAME: "iggy-1"
+  IGGY_CLUSTER_NODES_0_IP: "172.29.10.11"
+  IGGY_CLUSTER_NODES_0_REPLICA_ID: "0"
+  IGGY_CLUSTER_NODES_0_PORTS_TCP: "8090"
+  IGGY_CLUSTER_NODES_0_PORTS_QUIC: "8080"
+  IGGY_CLUSTER_NODES_0_PORTS_HTTP: "3000"
+  IGGY_CLUSTER_NODES_0_PORTS_WEBSOCKET: "8092"
+  IGGY_CLUSTER_NODES_0_PORTS_TCP_REPLICA: "9090"
+  IGGY_CLUSTER_NODES_1_NAME: "iggy-2"
+  IGGY_CLUSTER_NODES_1_IP: "172.29.10.12"
+  IGGY_CLUSTER_NODES_1_REPLICA_ID: "1"
+  IGGY_CLUSTER_NODES_1_PORTS_TCP: "8090"
+  IGGY_CLUSTER_NODES_1_PORTS_QUIC: "8080"
+  IGGY_CLUSTER_NODES_1_PORTS_HTTP: "3000"
+  IGGY_CLUSTER_NODES_1_PORTS_WEBSOCKET: "8092"
+  IGGY_CLUSTER_NODES_1_PORTS_TCP_REPLICA: "9090"
+  IGGY_CLUSTER_NODES_2_NAME: "iggy-3"
+  IGGY_CLUSTER_NODES_2_IP: "172.29.10.13"
+  IGGY_CLUSTER_NODES_2_REPLICA_ID: "2"
+  IGGY_CLUSTER_NODES_2_PORTS_TCP: "8090"
+  IGGY_CLUSTER_NODES_2_PORTS_QUIC: "8080"
+  IGGY_CLUSTER_NODES_2_PORTS_HTTP: "3000"
+  IGGY_CLUSTER_NODES_2_PORTS_WEBSOCKET: "8092"
+  IGGY_CLUSTER_NODES_2_PORTS_TCP_REPLICA: "9090"
+
+services:
+  iggy-1:
+    <<: *iggy-node
+    container_name: sockudo-iggy-cluster-1
+    command: ["--replica-id", "0"]
+    environment:
+      <<: *iggy-cluster-env
+    healthcheck:
+      test: ["CMD", "iggy", "--tcp-server-address", "172.29.10.11:8090", "--credentials-username", "iggy", "--credentials-password", "iggy", "ping", "--count", "1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    ports:
+      - "18091:8090" # Iggy TCP
+    volumes:
+      - iggy-1-data:/local_data
+    networks:
+      sockudo-iggy-cluster:
+        ipv4_address: 172.29.10.11
+
+  iggy-2:
+    <<: *iggy-node
+    container_name: sockudo-iggy-cluster-2
+    command: ["--replica-id", "1"]
+    environment:
+      <<: *iggy-cluster-env
+    healthcheck:
+      test: ["CMD", "iggy", "--tcp-server-address", "172.29.10.12:8090", "--credentials-username", "iggy", "--credentials-password", "iggy", "ping", "--count", "1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    ports:
+      - "18092:8090" # Iggy TCP
+    volumes:
+      - iggy-2-data:/local_data
+    networks:
+      sockudo-iggy-cluster:
+        ipv4_address: 172.29.10.12
+
+  iggy-3:
+    <<: *iggy-node
+    container_name: sockudo-iggy-cluster-3
+    command: ["--replica-id", "2"]
+    environment:
+      <<: *iggy-cluster-env
+    healthcheck:
+      test: ["CMD", "iggy", "--tcp-server-address", "172.29.10.13:8090", "--credentials-username", "iggy", "--credentials-password", "iggy", "ping", "--count", "1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    ports:
+      - "18093:8090" # Iggy TCP
+    volumes:
+      - iggy-3-data:/local_data
+    networks:
+      sockudo-iggy-cluster:
+        ipv4_address: 172.29.10.13
+
+  sockudo-node1:
+    <<: *sockudo-common
+    container_name: sockudo-iggy-cluster-node1
+    environment:
+      <<: *sockudo-common-env
+      INSTANCE_PROCESS_ID: "sockudo-iggy-cluster-node1"
+      IGGY_CONSUMER_NAME: "sockudo-iggy-cluster-node1"
+      PORT: "6001"
+      METRICS_PORT: "9601"
+    ports:
+      - "6001:6001"
+      - "9601:9601"
+
+  sockudo-node2:
+    <<: *sockudo-common
+    container_name: sockudo-iggy-cluster-node2
+    environment:
+      <<: *sockudo-common-env
+      INSTANCE_PROCESS_ID: "sockudo-iggy-cluster-node2"
+      IGGY_CONSUMER_NAME: "sockudo-iggy-cluster-node2"
+      PORT: "6002"
+      METRICS_PORT: "9602"
+    ports:
+      - "6002:6002"
+      - "9602:9602"
+
+  sockudo-node3:
+    <<: *sockudo-common
+    container_name: sockudo-iggy-cluster-node3
+    environment:
+      <<: *sockudo-common-env
+      INSTANCE_PROCESS_ID: "sockudo-iggy-cluster-node3"
+      IGGY_CONSUMER_NAME: "sockudo-iggy-cluster-node3"
+      PORT: "6003"
+      METRICS_PORT: "9603"
+    ports:
+      - "6003:6003"
+      - "9603:9603"
+
+networks:
+  sockudo-iggy-cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.10.0/24
+
+volumes:
+  iggy-1-data:
+    driver: local
+  iggy-2-data:
+    driver: local
+  iggy-3-data:
+    driver: local

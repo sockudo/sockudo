@@ -49,6 +49,9 @@ request_timeout_ms = 5000
 
 [adapter.iggy]
 connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
+# Extra Iggy cluster replicas ("host:port") tried when the node above is down.
+cluster_seeds = []
+connect_timeout_ms = 10000
 consumer_name = ""
 stream = "sockudo"
 topic_prefix = "sockudo-adapter"
@@ -59,6 +62,9 @@ partitions_count = 1
 partition_id = 0
 auto_create = true
 start_from_latest = true
+# VSR durability for topics Sockudo creates: "replicated" or "persisted".
+durability = "replicated"
+consumer_offset_durability = "replicated"
 
 [adapter.omq]
 bind_endpoint = "tcp://127.0.0.1:5556"
@@ -402,6 +408,8 @@ request_timeout_ms = 5000
 
 [queue.iggy]
 connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
+cluster_seeds = []
+connect_timeout_ms = 10000
 consumer_name = ""
 stream = "sockudo"
 queue_topic_prefix = "sockudo-queue"
@@ -412,6 +420,8 @@ poll_batch_size = 100
 partitions_count = 1
 partition_id = 0
 auto_create = true
+durability = "replicated"
+consumer_offset_durability = "replicated"
 
 [rate_limiter]
 enabled = false
