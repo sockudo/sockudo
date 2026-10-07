@@ -98,9 +98,18 @@ QUEUE_IGGY_DURABILITY=persisted
 
 After it connects, the Iggy SDK learns the full roster from cluster metadata,
 reconnects to the leader, fails over to the surviving replicas when its node
-disappears, and rejoins queue consumer groups. Fanout keeps flowing through a
-leader loss once the cluster elects a new primary; in-flight publishes during
-that window can fail with a timeout and follow the normal adapter error path.
+disappears, and rejoins queue consumer groups.
+
+Losing the Iggy leader pauses writes until the surviving replicas elect a new
+one. A crashed or partitioned leader is noticed only after Iggy's
+`cluster.heartbeat_timeout` (5 s by default, 2 s minimum), so expect roughly
+6 to 9 seconds without cross-node fanout. Publishes wait through that window
+for up to `failover_timeout_ms` (15 s by default) and then complete; local
+subscribers on the publishing node are served immediately as always. `/up` on
+every Sockudo node can return 503 for the same window, so keep readiness probes
+tolerant of about 10 seconds of failures; the Kubernetes defaults are. Lowering
+`heartbeat_timeout` shortens the pause at the cost of spurious elections on
+loaded hosts.
 
 Each replica must advertise an address Sockudo can reach: the Iggy roster
 (`cluster.nodes[*].ip` or `advertised_address`) is what the SDK dials during

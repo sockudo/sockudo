@@ -8,8 +8,11 @@
   cluster leader, fails over to the surviving replicas when its node disappears, routes polls
   and offset commits to the partition primary, and rejoins queue consumer groups after
   membership loss. `cluster_seeds` (`IGGY_CLUSTER_SEEDS`) lists extra replicas tried in order
-  when the `connection_string` node is down at startup, each bounded by `connect_timeout_ms`
-  (`IGGY_CONNECT_TIMEOUT_MS`, default 10 s). `durability` and `consumer_offset_durability`
+  when the `connection_string` node is down at startup; `connect_timeout_ms`
+  (`IGGY_CONNECT_TIMEOUT_MS`, default 2 s) bounds the TCP dial to each. `failover_timeout_ms`
+  (`IGGY_FAILOVER_TIMEOUT_MS`, default 15 s) lets broadcast and queue publishes, and sign-in to
+  a reachable seed, wait out a leader election instead of failing. `durability` and
+  `consumer_offset_durability`
   (`IGGY_DURABILITY`, `IGGY_CONSUMER_OFFSET_DURABILITY`, with `ADAPTER_`/`QUEUE_` overrides)
   choose `replicated` (default) or `persisted` for topics Sockudo creates. Both components log
   the discovered cluster topology at startup. `docker-compose.iggy-cluster.yml` runs three Iggy
@@ -26,6 +29,11 @@
   allocation fails on Docker Desktop.
 - Sockudo now creates every Iggy topic it uses itself, with the configured durability, instead
   of letting the producer create it with SDK defaults.
+- Iggy publishes, health checks, and producer setup run on their own task. A timeout, or a
+  caller that goes away, ends the wait but never cancels the SDK call. A cancelled call that was
+  signing in after a dropped connection left the client permanently disconnected: with a
+  three-replica cluster and the leader killed, a Sockudo node failed every cross-node publish
+  until restarted.
 
 ### Fixed
 

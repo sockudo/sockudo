@@ -51,7 +51,8 @@ request_timeout_ms = 5000
 connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
 # Extra Iggy cluster replicas ("host:port") tried when the node above is down.
 cluster_seeds = []
-connect_timeout_ms = 10000
+connect_timeout_ms = 2000
+failover_timeout_ms = 15000
 consumer_name = ""
 stream = "sockudo"
 topic_prefix = "sockudo-adapter"
@@ -409,7 +410,8 @@ request_timeout_ms = 5000
 [queue.iggy]
 connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
 cluster_seeds = []
-connect_timeout_ms = 10000
+connect_timeout_ms = 2000
+failover_timeout_ms = 15000
 consumer_name = ""
 stream = "sockudo"
 queue_topic_prefix = "sockudo-queue"

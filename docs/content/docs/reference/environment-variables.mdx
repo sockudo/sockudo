@@ -459,7 +459,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `KAFKA_NODES_NUMBER` | Expected Kafka node count. |
 | `IGGY_CONNECTION_STRING` | Apache Iggy connection string; the first node dialed. Its credentials and query options apply to every cluster seed. |
 | `IGGY_CLUSTER_SEEDS` | Comma-separated extra Apache Iggy replicas (`host:port`) tried in order when an earlier node is unreachable. Bootstrap only; the SDK then fails over using the cluster roster. |
-| `IGGY_CONNECT_TIMEOUT_MS` | Bound on each initial dial while cluster seeds are set (default: `10000`). |
+| `IGGY_CONNECT_TIMEOUT_MS` | Bound on the TCP dial to each node while cluster seeds are set (default: `2000`). |
+| `IGGY_FAILOVER_TIMEOUT_MS` | How long broadcast and queue publishes, and sign-in to a reachable seed, wait for an Apache Iggy leader election or failover (default: `15000`). |
 | `IGGY_DURABILITY` | Message durability for topics Sockudo creates: `replicated` (default) or `persisted`. |
 | `ADAPTER_IGGY_DURABILITY` | Adapter-specific message durability. |
 | `QUEUE_IGGY_DURABILITY` | Queue-specific message durability. |

@@ -100,6 +100,7 @@ mod tests {
     const IGGY_CLUSTER_ENV_KEYS: &[&str] = &[
         "IGGY_CLUSTER_SEEDS",
         "IGGY_CONNECT_TIMEOUT_MS",
+        "IGGY_FAILOVER_TIMEOUT_MS",
         "IGGY_DURABILITY",
         "ADAPTER_IGGY_DURABILITY",
         "QUEUE_IGGY_DURABILITY",
@@ -254,6 +255,7 @@ mod tests {
             &[
                 ("IGGY_CLUSTER_SEEDS", " iggy-2:8090, ,iggy-3:8090 "),
                 ("IGGY_CONNECT_TIMEOUT_MS", "2500"),
+                ("IGGY_FAILOVER_TIMEOUT_MS", "20000"),
                 ("IGGY_DURABILITY", "persisted"),
                 ("ADAPTER_IGGY_DURABILITY", "replicated"),
                 ("IGGY_CONSUMER_OFFSET_DURABILITY", "replicated"),
@@ -269,6 +271,8 @@ mod tests {
         assert_eq!(options.queue.iggy.cluster_seeds, seeds);
         assert_eq!(options.adapter.iggy.connect_timeout_ms, 2500);
         assert_eq!(options.queue.iggy.connect_timeout_ms, 2500);
+        assert_eq!(options.adapter.iggy.failover_timeout_ms, 20_000);
+        assert_eq!(options.queue.iggy.failover_timeout_ms, 20_000);
         assert_eq!(options.adapter.iggy.durability, IggyDurability::Replicated);
         assert_eq!(options.queue.iggy.durability, IggyDurability::Persisted);
         assert_eq!(

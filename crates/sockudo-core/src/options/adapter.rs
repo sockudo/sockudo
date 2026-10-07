@@ -173,9 +173,13 @@ pub struct IggyConfig {
     /// connected, the SDK learns the full roster from cluster metadata, follows the leader,
     /// and fails over across the roster on its own.
     pub cluster_seeds: Vec<String>,
-    /// Bound on each initial dial when `cluster_seeds` is non-empty, so one dead seed
-    /// cannot stall startup. Without seeds the SDK's own reconnection policy applies.
+    /// Bound on the TCP dial to each node while `cluster_seeds` is non-empty, so a dead seed
+    /// is skipped quickly. Without seeds the SDK's own reconnection policy applies.
     pub connect_timeout_ms: u64,
+    /// How long a broadcast or queue publish, or the sign-in to a reachable seed, waits for
+    /// the Iggy cluster to elect a leader or fail over before giving up. Must outlast the
+    /// cluster's `heartbeat_timeout` plus its election.
+    pub failover_timeout_ms: u64,
     pub username: Option<String>,
     pub password: Option<String>,
     pub consumer_name: Option<String>,
@@ -438,7 +442,8 @@ impl Default for IggyConfig {
         Self {
             connection_string: "iggy://iggy:iggy@127.0.0.1:8090".to_string(),
             cluster_seeds: Vec::new(),
-            connect_timeout_ms: 10_000,
+            connect_timeout_ms: 2_000,
+            failover_timeout_ms: 15_000,
             username: None,
             password: None,
             consumer_name: None,
@@ -605,7 +610,7 @@ mod tests {
         assert!("quorum".parse::<IggyDurability>().is_err());
 
         let config: IggyConfig = sonic_rs::from_str(
-            r#"{"durability":"persisted","cluster_seeds":["iggy-2:8090"],"connect_timeout_ms":2500}"#,
+            r#"{"durability":"persisted","cluster_seeds":["iggy-2:8090"],"connect_timeout_ms":2500,"failover_timeout_ms":20000}"#,
         )
         .unwrap();
         assert_eq!(config.durability, IggyDurability::Persisted);
@@ -615,5 +620,6 @@ mod tests {
         );
         assert_eq!(config.cluster_seeds, vec!["iggy-2:8090".to_string()]);
         assert_eq!(config.connect_timeout_ms, 2500);
+        assert_eq!(config.failover_timeout_ms, 20_000);
     }
 }

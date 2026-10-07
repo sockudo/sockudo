@@ -159,6 +159,14 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "IGGY_CONNECT_TIMEOUT_MS",
         options.queue.iggy.connect_timeout_ms,
     );
+    options.adapter.iggy.failover_timeout_ms = parse_env::<u64>(
+        "IGGY_FAILOVER_TIMEOUT_MS",
+        options.adapter.iggy.failover_timeout_ms,
+    );
+    options.queue.iggy.failover_timeout_ms = parse_env::<u64>(
+        "IGGY_FAILOVER_TIMEOUT_MS",
+        options.queue.iggy.failover_timeout_ms,
+    );
     if let Ok(username) = std::env::var("IGGY_USERNAME") {
         let username = (!username.is_empty()).then_some(username);
         options.adapter.iggy.username.clone_from(&username);

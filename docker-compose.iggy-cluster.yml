@@ -8,10 +8,12 @@
 #   docker compose -f docker-compose.iggy-cluster.yml up -d --build
 #   node scripts/e2e_iggy_multinode_verify.mjs
 #
-# Failover drill: stop the replica the Sockudo logs name as leader
-# ("cluster topology discovered"), then re-run the verify script.
+# Failover drill: hard-kill the replica the Sockudo logs name as leader
+# ("cluster topology discovered") while a steady publish stream runs. It
+# reports lost, rejected, and duplicate deliveries.
 #
-#   docker compose -f docker-compose.iggy-cluster.yml stop iggy-1
+#   KILL_COMMAND="docker kill sockudo-iggy-cluster-1" \
+#     node scripts/e2e_iggy_failover_drill.mjs
 #
 # Iggy constraints that shape this file:
 #   - every replica loads the same roster; `--replica-id` picks its own entry.
@@ -52,7 +54,8 @@ x-sockudo-common-env: &sockudo-common-env
   # leader, and fails over across replicas on its own.
   IGGY_CONNECTION_STRING: "iggy://iggy:iggy@iggy-1:8090"
   IGGY_CLUSTER_SEEDS: "iggy-2:8090,iggy-3:8090"
-  IGGY_CONNECT_TIMEOUT_MS: "10000"
+  IGGY_CONNECT_TIMEOUT_MS: "2000"
+  IGGY_FAILOVER_TIMEOUT_MS: "15000"
   IGGY_DURABILITY: "replicated"
   QUEUE_IGGY_DURABILITY: "persisted"
   IGGY_STREAM: "sockudo"
