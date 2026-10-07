@@ -13,6 +13,14 @@ fn live_iggy_config() -> IggyConfig {
     IggyConfig {
         connection_string: std::env::var("SOCKUDO_IGGY_TEST_CONNECTION_STRING")
             .unwrap_or_else(|_| "iggy://iggy:iggy@127.0.0.1:18090".to_string()),
+        cluster_seeds: std::env::var("SOCKUDO_IGGY_TEST_CLUSTER_SEEDS")
+            .map(|seeds| {
+                seeds
+                    .split(',')
+                    .map(|seed| seed.trim().to_string())
+                    .collect()
+            })
+            .unwrap_or_default(),
         stream: format!("sockudo-live-{suffix}"),
         queue_topic_prefix: format!("sockudo-live-queue-{suffix}"),
         consumer_group_prefix: format!("sockudo-live-workers-{suffix}"),

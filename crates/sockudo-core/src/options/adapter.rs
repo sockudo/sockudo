@@ -168,6 +168,18 @@ pub struct KafkaAdapterConfig {
 #[serde(default)]
 pub struct IggyConfig {
     pub connection_string: String,
+    /// Additional Apache Iggy cluster nodes (`host:port`) dialed in order when the
+    /// `connection_string` node is unreachable. They only bootstrap the connection: once
+    /// connected, the SDK learns the full roster from cluster metadata, follows the leader,
+    /// and fails over across the roster on its own.
+    pub cluster_seeds: Vec<String>,
+    /// Bound on the TCP dial to each node while `cluster_seeds` is non-empty, so a dead seed
+    /// is skipped quickly. Without seeds the SDK's own reconnection policy applies.
+    pub connect_timeout_ms: u64,
+    /// How long a broadcast or queue publish, or the sign-in to a reachable seed, waits for
+    /// the Iggy cluster to elect a leader or fail over before giving up. Must outlast the
+    /// cluster's `heartbeat_timeout` plus its election.
+    pub failover_timeout_ms: u64,
     pub username: Option<String>,
     pub password: Option<String>,
     pub consumer_name: Option<String>,
@@ -183,6 +195,135 @@ pub struct IggyConfig {
     pub auto_create: bool,
     pub start_from_latest: bool,
     pub nodes_number: Option<u32>,
+    /// Message durability for topics Sockudo auto-creates on a VSR cluster.
+    pub durability: IggyDurability,
+    /// Consumer-offset durability for topics Sockudo auto-creates on a VSR cluster.
+    pub consumer_offset_durability: IggyDurability,
+}
+
+/// Apache Iggy VSR topic durability policy. Single-node servers accept both values.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum IggyDurability {
+    /// Quorum commit and local application, without an extra stable-storage barrier.
+    #[default]
+    Replicated,
+    /// Quorum commit backed by recoverable stable-storage copies at the required quorum.
+    Persisted,
+}
+
+impl IggyDurability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Replicated => "replicated",
+            Self::Persisted => "persisted",
+        }
+    }
+}
+
+impl std::fmt::Display for IggyDurability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for IggyDurability {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "replicated" => Ok(Self::Replicated),
+            "persisted" => Ok(Self::Persisted),
+            _ => Err(format!(
+                "Unknown Apache Iggy durability '{s}', expected 'replicated' or 'persisted'"
+            )),
+        }
+    }
+}
+
+/// One Apache Iggy node to dial during bootstrap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IggyConnectionCandidate {
+    /// The `host:port` dialed. Safe to log.
+    pub address: String,
+    /// Full connection string, including credentials. Never log it.
+    pub connection_string: String,
+}
+
+impl IggyConnectionCandidate {
+    /// Whether the candidate uses the TCP transport, the only one a plain TCP
+    /// reachability probe can check.
+    pub fn is_tcp(&self) -> bool {
+        self.connection_string.starts_with("iggy://")
+            || self.connection_string.starts_with("iggy+tcp://")
+    }
+}
+
+impl IggyConfig {
+    /// Nodes to dial in order: `connection_string` first, then one per `cluster_seeds`
+    /// entry. Each seed reuses the credentials and query options of `connection_string`
+    /// with only the `host:port` swapped.
+    pub fn connection_candidates(&self) -> Result<Vec<IggyConnectionCandidate>, String> {
+        let (scheme, rest) = self
+            .connection_string
+            .split_once("://")
+            .ok_or_else(|| "Apache Iggy connection_string must include a scheme".to_string())?;
+        let (authority, query) = match rest.split_once('?') {
+            Some((authority, query)) => (authority, Some(query)),
+            None => (rest, None),
+        };
+        let (credentials, primary) = match authority.rsplit_once('@') {
+            Some((credentials, host)) => (Some(credentials), host),
+            None => (None, authority),
+        };
+
+        let mut candidates = vec![IggyConnectionCandidate {
+            address: primary.to_string(),
+            connection_string: self.connection_string.clone(),
+        }];
+        for seed in &self.cluster_seeds {
+            let seed = seed.trim();
+            validate_iggy_seed(seed)?;
+            if candidates
+                .iter()
+                .any(|candidate| candidate.address.eq_ignore_ascii_case(seed))
+            {
+                continue;
+            }
+
+            let mut connection_string = format!("{scheme}://");
+            if let Some(credentials) = credentials {
+                connection_string.push_str(credentials);
+                connection_string.push('@');
+            }
+            connection_string.push_str(seed);
+            if let Some(query) = query {
+                connection_string.push('?');
+                connection_string.push_str(query);
+            }
+            candidates.push(IggyConnectionCandidate {
+                address: seed.to_string(),
+                connection_string,
+            });
+        }
+        Ok(candidates)
+    }
+}
+
+fn validate_iggy_seed(seed: &str) -> Result<(), String> {
+    let valid = !seed.is_empty()
+        && !seed.contains(['/', '@', '?', '#', ','])
+        && !seed.chars().any(char::is_whitespace)
+        && seed
+            .rsplit_once(':')
+            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid Apache Iggy cluster seed '{seed}', expected host:port"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +441,9 @@ impl Default for IggyConfig {
     fn default() -> Self {
         Self {
             connection_string: "iggy://iggy:iggy@127.0.0.1:8090".to_string(),
+            cluster_seeds: Vec::new(),
+            connect_timeout_ms: 2_000,
+            failover_timeout_ms: 15_000,
             username: None,
             password: None,
             consumer_name: None,
@@ -315,6 +459,8 @@ impl Default for IggyConfig {
             auto_create: true,
             start_from_latest: true,
             nodes_number: None,
+            durability: IggyDurability::Replicated,
+            consumer_offset_durability: IggyDurability::Replicated,
         }
     }
 }
@@ -336,10 +482,144 @@ impl Default for OmqAdapterConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::IggyConfig;
+    use super::{IggyConfig, IggyConnectionCandidate, IggyDurability};
 
     #[test]
     fn iggy_polling_defaults_to_low_latency_interval() {
         assert_eq!(IggyConfig::default().poll_interval_ms, 5);
+    }
+
+    #[test]
+    fn iggy_candidates_without_seeds_is_the_connection_string() {
+        let config = IggyConfig::default();
+        assert_eq!(
+            config.connection_candidates().unwrap(),
+            vec![IggyConnectionCandidate {
+                address: "127.0.0.1:8090".to_string(),
+                connection_string: config.connection_string.clone(),
+            }]
+        );
+    }
+
+    #[test]
+    fn iggy_seeds_reuse_credentials_and_options() {
+        let config = IggyConfig {
+            connection_string: "iggy://user:p%40ss@iggy-1:8090?reconnection_retries=5&tls=true"
+                .to_string(),
+            cluster_seeds: vec![" iggy-2:8090 ".to_string(), "10.0.0.3:8091".to_string()],
+            ..Default::default()
+        };
+        let candidates = config.connection_candidates().unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.address.as_str())
+                .collect::<Vec<_>>(),
+            vec!["iggy-1:8090", "iggy-2:8090", "10.0.0.3:8091"]
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.connection_string.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "iggy://user:p%40ss@iggy-1:8090?reconnection_retries=5&tls=true",
+                "iggy://user:p%40ss@iggy-2:8090?reconnection_retries=5&tls=true",
+                "iggy://user:p%40ss@10.0.0.3:8091?reconnection_retries=5&tls=true",
+            ]
+        );
+    }
+
+    #[test]
+    fn iggy_seeds_skip_duplicates_of_known_nodes() {
+        let config = IggyConfig {
+            connection_string: "iggy+tcp://iggy:iggy@Iggy-1:8090".to_string(),
+            cluster_seeds: vec![
+                "iggy-1:8090".to_string(),
+                "iggy-2:8090".to_string(),
+                "IGGY-2:8090".to_string(),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            config
+                .connection_candidates()
+                .unwrap()
+                .into_iter()
+                .map(|candidate| candidate.connection_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "iggy+tcp://iggy:iggy@Iggy-1:8090".to_string(),
+                "iggy+tcp://iggy:iggy@iggy-2:8090".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn iggy_candidates_report_tcp_transport() {
+        for (connection_string, tcp) in [
+            ("iggy://iggy:iggy@iggy-1:8090", true),
+            ("iggy+tcp://iggy:iggy@iggy-1:8090", true),
+            ("iggy+quic://iggy:iggy@iggy-1:8080", false),
+            ("iggy+ws://iggy:iggy@iggy-1:8092", false),
+        ] {
+            let candidate = IggyConnectionCandidate {
+                address: "iggy-1:8090".to_string(),
+                connection_string: connection_string.to_string(),
+            };
+            assert_eq!(candidate.is_tcp(), tcp, "{connection_string}");
+        }
+    }
+
+    #[test]
+    fn iggy_seeds_reject_values_that_are_not_host_port() {
+        for seed in [
+            "",
+            "iggy-2",
+            ":8090",
+            "iggy-2:port",
+            "iggy-2:70000",
+            "iggy://iggy-2:8090",
+            "user@iggy-2:8090",
+            "iggy-2:8090,iggy-3:8090",
+            "iggy 2:8090",
+        ] {
+            let config = IggyConfig {
+                cluster_seeds: vec![seed.to_string()],
+                ..Default::default()
+            };
+            assert!(
+                config.connection_candidates().is_err(),
+                "seed {seed:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn iggy_durability_parses_and_round_trips() {
+        assert_eq!(IggyConfig::default().durability, IggyDurability::Replicated);
+        assert_eq!(
+            IggyConfig::default().consumer_offset_durability,
+            IggyDurability::Replicated
+        );
+        assert_eq!(
+            " Persisted ".parse::<IggyDurability>().unwrap(),
+            IggyDurability::Persisted
+        );
+        assert_eq!(IggyDurability::Persisted.to_string(), "persisted");
+        assert!("quorum".parse::<IggyDurability>().is_err());
+
+        let config: IggyConfig = sonic_rs::from_str(
+            r#"{"durability":"persisted","cluster_seeds":["iggy-2:8090"],"connect_timeout_ms":2500,"failover_timeout_ms":20000}"#,
+        )
+        .unwrap();
+        assert_eq!(config.durability, IggyDurability::Persisted);
+        assert_eq!(
+            config.consumer_offset_durability,
+            IggyDurability::Replicated
+        );
+        assert_eq!(config.cluster_seeds, vec!["iggy-2:8090".to_string()]);
+        assert_eq!(config.connect_timeout_ms, 2500);
+        assert_eq!(config.failover_timeout_ms, 20_000);
     }
 }

@@ -4,20 +4,30 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt};
 use iggy::prelude::{
-    AutoCommit, Client, CompressionAlgorithm, Consumer, ConsumerOffsetClient, IggyClient,
-    IggyDuration, IggyError, IggyExpiry, IggyMessage, IggyProducer, MaxTopicSize, Partitioning,
-    PollingStrategy, StreamClient, SystemClient, TopicClient, UserClient,
+    AutoCommit, Client, ClusterClient, ClusterNodeRole, ClusterNodeStatus, CompressionAlgorithm,
+    Consumer, ConsumerOffsetClient, Durability, IggyClient, IggyDuration, IggyError, IggyExpiry,
+    IggyMessage, IggyProducer, MaxTopicSize, NonZeroIggyDuration, Partitioning, PollingStrategy,
+    StreamClient, SystemClient, TopicClient, TopicCreateOptions, UserClient,
 };
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
-use sockudo_core::options::IggyConfig;
+use sockudo_core::options::{IggyConfig, IggyConnectionCandidate, IggyDurability};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::Notify;
+use tokio::net::TcpStream;
+use tokio::sync::{Notify, Semaphore};
 use tokio::time::{sleep, timeout};
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
+
+/// Most Iggy calls allowed to keep running after their caller stopped waiting. See
+/// [`run_detached`].
+const MAX_DETACHED_CALLS: usize = 10_000;
+static DETACHED_CALLS: Semaphore = Semaphore::const_new(MAX_DETACHED_CALLS);
+
+/// Pause between producer send attempts while the cluster fails over.
+const SEND_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 pub struct IggyTransport {
     client: Arc<IggyClient>,
@@ -59,9 +69,7 @@ impl HorizontalTransport for IggyTransport {
         let request_topic = format!("{prefix}-requests");
         let response_topic = format!("{prefix}-responses");
 
-        ensure_topic(&client, &config, &stream, &broadcast_topic).await?;
-        ensure_topic(&client, &config, &stream, &request_topic).await?;
-        ensure_topic(&client, &config, &stream, &response_topic).await?;
+        log_cluster_topology(&client, &config).await;
         let broadcast_producer =
             Arc::new(build_producer(&client, &config, &stream, &broadcast_topic).await?);
         let request_producer =
@@ -98,15 +106,31 @@ impl HorizontalTransport for IggyTransport {
     }
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
-        publish_message(&self.config, &self.broadcast_producer, message).await
+        // Broadcasts carry fanout, so they wait out a leader election instead of failing.
+        publish_message(
+            &self.broadcast_producer,
+            message,
+            self.config.failover_timeout_ms,
+        )
+        .await
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
-        publish_message(&self.config, &self.request_producer, request).await
+        publish_message(
+            &self.request_producer,
+            request,
+            self.config.request_timeout_ms,
+        )
+        .await
     }
 
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
-        publish_message(&self.config, &self.response_producer, response).await
+        publish_message(
+            &self.response_producer,
+            response,
+            self.config.request_timeout_ms,
+        )
+        .await
     }
 
     async fn start_listeners(&self, handlers: TransportHandlers) -> Result<()> {
@@ -135,9 +159,12 @@ impl HorizontalTransport for IggyTransport {
     }
 
     async fn check_health(&self) -> Result<()> {
-        with_timeout(&self.config, self.client.ping())
-            .await
-            .map_err(|e| Error::Internal(format!("Apache Iggy health check failed: {e}")))
+        let client = self.client.clone();
+        run_detached(self.config.request_timeout_ms, async move {
+            client.ping().await
+        })
+        .await
+        .map_err(|e| Error::Internal(format!("Apache Iggy health check failed: {e}")))
     }
 
     fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
@@ -340,7 +367,7 @@ impl IggyTransport {
                 {
                     Ok(producer) => {
                         retry_attempt = 0;
-                        producer
+                        Arc::new(producer)
                     }
                     Err(error) => {
                         warn!(adapter = "iggy", error = %error, retryable = true, "response producer initialization failed");
@@ -418,7 +445,11 @@ impl IggyTransport {
                 if let Err(error) = consumer.shutdown().await {
                     warn!(adapter = "iggy", error = %error, "request consumer shutdown failed");
                 }
-                response_producer.shutdown().await;
+                // A response publish still running detached keeps its own handle; it is
+                // dropped when that publish settles.
+                if let Ok(response_producer) = Arc::try_unwrap(response_producer) {
+                    response_producer.shutdown().await;
+                }
                 if let Err(error) = client.shutdown().await {
                     warn!(adapter = "iggy", error = %error, "request listener client shutdown failed");
                 }
@@ -464,7 +495,7 @@ where
 
 async fn process_request_message(
     config: &IggyConfig,
-    response_producer: &IggyProducer,
+    response_producer: &Arc<IggyProducer>,
     metrics: &OnceLock<Arc<dyn MetricsInterface + Send + Sync>>,
     handler: &Arc<
         dyn Fn(RequestBody) -> crate::horizontal_transport::BoxFuture<'static, Result<ResponseBody>>
@@ -478,10 +509,15 @@ async fn process_request_message(
     let mut should_commit = false;
     match sonic_rs::from_slice::<RequestBody>(&received.message.payload) {
         Ok(request) => match handler(request).await {
-            Ok(response) => match publish_message(config, response_producer, &response).await {
-                Ok(()) => should_commit = true,
-                Err(error) => warn!(adapter = "iggy", error = %error, "response publish failed"),
-            },
+            Ok(response) => {
+                match publish_message(response_producer, &response, config.request_timeout_ms).await
+                {
+                    Ok(()) => should_commit = true,
+                    Err(error) => {
+                        warn!(adapter = "iggy", error = %error, "response publish failed")
+                    }
+                }
+            }
             Err(
                 Error::OwnRequestIgnored | Error::RequestNotForThisNode | Error::NoResponseNeeded,
             ) => {
@@ -588,12 +624,77 @@ async fn connect_client(config: &IggyConfig) -> Result<IggyClient> {
         ));
     }
 
-    let client = IggyClient::from_connection_string(&config.connection_string)
+    let candidates = config.connection_candidates().map_err(Error::Config)?;
+    // Seeds only bootstrap the connection; once connected, the SDK learns the cluster roster,
+    // follows the leader, and fails over on its own. With one candidate, the SDK's
+    // reconnection policy governs the dial as it always has.
+    let bounded = candidates.len() > 1;
+    let mut last_error = None;
+    for candidate in &candidates {
+        match connect_candidate(config, candidate, bounded).await {
+            Ok(client) => return Ok(client),
+            Err(error) => {
+                if bounded {
+                    warn!(adapter = "iggy", node = %candidate.address, error = %error, "cluster seed unreachable");
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        Error::Internal("No Apache Iggy cluster node could be reached".to_string())
+    }))
+}
+
+async fn connect_candidate(
+    config: &IggyConfig,
+    candidate: &IggyConnectionCandidate,
+    bounded: bool,
+) -> Result<IggyClient> {
+    let connect_timeout = Duration::from_millis(config.connect_timeout_ms);
+    if bounded && candidate.is_tcp() {
+        // The SDK redials a refused node until its retry policy gives up, which would spend
+        // the whole connect timeout on a seed that is plainly down. A bare TCP dial fails
+        // that seed in milliseconds and moves on.
+        match timeout(connect_timeout, TcpStream::connect(&candidate.address)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                return Err(Error::Internal(format!(
+                    "Apache Iggy node {} is unreachable: {error}",
+                    candidate.address
+                )));
+            }
+            Err(_) => {
+                return Err(Error::Internal(format!(
+                    "Apache Iggy node {} did not accept a connection within {} ms",
+                    candidate.address, config.connect_timeout_ms
+                )));
+            }
+        }
+    }
+
+    let client = IggyClient::from_connection_string(&candidate.connection_string)
         .map_err(|e| Error::Internal(format!("Invalid Apache Iggy connection string: {e}")))?;
-    client
-        .connect()
+    let connected = if bounded {
+        // The node answered the dial, so a slow sign-in means the cluster is electing a
+        // leader. Every other seed waits on the same election, so give it the failover
+        // budget rather than moving on. Cancelling here is safe: the client is discarded.
+        timeout(
+            Duration::from_millis(config.failover_timeout_ms),
+            client.connect(),
+        )
         .await
-        .map_err(|e| Error::Internal(format!("Failed to connect to Apache Iggy: {e}")))?;
+        .unwrap_or(Err(IggyError::CannotEstablishConnection))
+    } else {
+        client.connect().await
+    };
+    if let Err(error) = connected {
+        let _ = client.shutdown().await;
+        return Err(Error::Internal(format!(
+            "Failed to connect to Apache Iggy at {}: {error}",
+            candidate.address
+        )));
+    }
 
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
         client
@@ -605,33 +706,65 @@ async fn connect_client(config: &IggyConfig) -> Result<IggyClient> {
     Ok(client)
 }
 
+/// Logs the Apache Iggy cluster roster this client joined. Informational only: the SDK
+/// handles leader redirection and failover, and a single-node server reports one node.
+async fn log_cluster_topology(client: &Arc<IggyClient>, config: &IggyConfig) {
+    let metadata_client = client.clone();
+    let metadata = run_detached(config.request_timeout_ms, async move {
+        metadata_client.get_cluster_metadata().await
+    })
+    .await;
+    match metadata {
+        Ok(metadata) => {
+            let leader = metadata.nodes.iter().find(|node| {
+                node.role == ClusterNodeRole::Leader && node.status == ClusterNodeStatus::Healthy
+            });
+            info!(
+                adapter = "iggy",
+                cluster = %metadata.name,
+                nodes = metadata.nodes.len(),
+                leader = leader.map_or("none", |node| node.name.as_str()),
+                durability = %config.durability,
+                consumer_offset_durability = %config.consumer_offset_durability,
+                "cluster topology discovered"
+            );
+        }
+        Err(error) => {
+            debug!(adapter = "iggy", error = %error, "cluster metadata unavailable");
+        }
+    }
+}
+
+fn to_iggy_durability(durability: IggyDurability) -> Durability {
+    match durability {
+        IggyDurability::Replicated => Durability::Replicated,
+        IggyDurability::Persisted => Durability::Persisted,
+    }
+}
+
 async fn build_producer(
     client: &IggyClient,
     config: &IggyConfig,
     stream: &str,
     topic: &str,
 ) -> Result<IggyProducer> {
-    let mut builder = client
+    // Topics are created only by `ensure_topic`, so the configured durability always applies.
+    ensure_topic(client, config, stream, topic).await?;
+    let producer = client
         .producer(stream, topic)
         .map_err(to_iggy_error)?
-        .partitioning(Partitioning::balanced());
-
-    builder = if config.auto_create {
-        builder.create_topic_if_not_exists(
-            config.partitions_count,
-            None,
-            IggyExpiry::ServerDefault,
-            MaxTopicSize::ServerDefault,
+        .partitioning(Partitioning::balanced())
+        .do_not_create_stream_if_not_exists()
+        .do_not_create_topic_if_not_exists()
+        .send_retries(
+            Some(send_retry_count(config)),
+            NonZeroIggyDuration::new(SEND_RETRY_INTERVAL).ok(),
         )
-    } else {
-        builder
-            .do_not_create_stream_if_not_exists()
-            .do_not_create_topic_if_not_exists()
-    };
-
-    let producer = builder.build();
-    with_timeout(config, producer.init()).await?;
-    Ok(producer)
+        .build();
+    run_detached(config.request_timeout_ms, async move {
+        producer.init().await.map(|()| producer)
+    })
+    .await
 }
 
 async fn build_consumer(
@@ -739,18 +872,16 @@ async fn ensure_topic(
                 "Apache Iggy topic '{topic}' does not exist and auto_create is false"
             )));
         }
-        match client
-            .create_topic(
-                &stream_id,
-                topic,
-                config.partitions_count,
-                CompressionAlgorithm::default(),
-                None,
-                IggyExpiry::ServerDefault,
-                MaxTopicSize::ServerDefault,
-            )
-            .await
-        {
+        let options = TopicCreateOptions {
+            partitions_count: Some(config.partitions_count),
+            compression_algorithm: Some(CompressionAlgorithm::default()),
+            message_expiry: Some(IggyExpiry::ServerDefault),
+            max_topic_size: Some(MaxTopicSize::ServerDefault),
+            durability: to_iggy_durability(config.durability),
+            consumer_offset_durability: to_iggy_durability(config.consumer_offset_durability),
+            ..Default::default()
+        };
+        match client.create_topic(&stream_id, topic, &options).await {
             Ok(_) | Err(IggyError::TopicNameAlreadyExists(_, _)) => {}
             Err(error) => return Err(to_iggy_error(error)),
         }
@@ -760,9 +891,9 @@ async fn ensure_topic(
 }
 
 async fn publish_message<T: serde::Serialize>(
-    config: &IggyConfig,
-    producer: &IggyProducer,
+    producer: &Arc<IggyProducer>,
     message: &T,
+    timeout_ms: u64,
 ) -> Result<()> {
     let payload = sonic_rs::to_vec(message)
         .map_err(|e| Error::Other(format!("Failed to serialize Apache Iggy message: {e}")))?;
@@ -770,12 +901,54 @@ async fn publish_message<T: serde::Serialize>(
         .payload(Bytes::from(payload))
         .build()
         .map_err(to_iggy_error)?;
-    with_timeout(config, producer.send_one(message))
+    let producer = producer.clone();
+    run_detached(timeout_ms, async move { producer.send_one(message).await })
         .await
         .map_err(|e| Error::Internal(format!("Failed to publish Apache Iggy message: {e}")))?;
 
     trace!(adapter = "iggy", "message published to transport");
     Ok(())
+}
+
+/// Runs an SDK call on its own task and waits at most `timeout_ms` for it.
+///
+/// Timing out abandons the wait, never the call. The SDK reconnects and signs in inside
+/// whichever request first meets a dead connection, and on a cluster that sign-in waits out
+/// the leader election. Dropping that request mid-sign-in leaves the shared client
+/// half-connected for good: its producers report it disconnected and nothing reconnects it.
+/// The same holds when the caller itself is dropped, such as an HTTP request whose client
+/// went away. The permit bounds how many abandoned calls can pile up while the cluster is
+/// unreachable; past it, calls fail at once.
+async fn run_detached<T, F>(timeout_ms: u64, call: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = std::result::Result<T, IggyError>> + Send + 'static,
+{
+    let permit = DETACHED_CALLS.try_acquire().map_err(|_| {
+        Error::Internal(format!(
+            "Apache Iggy has {MAX_DETACHED_CALLS} calls pending; rejecting new ones until they settle"
+        ))
+    })?;
+    let task = tokio::spawn(async move {
+        let _permit = permit;
+        call.await
+    });
+    match timeout(Duration::from_millis(timeout_ms), task).await {
+        Ok(Ok(result)) => result.map_err(to_iggy_error),
+        Ok(Err(error)) => Err(Error::Internal(format!("Apache Iggy call failed: {error}"))),
+        Err(_) => Err(Error::Internal(format!(
+            "Apache Iggy request timed out after {timeout_ms} ms"
+        ))),
+    }
+}
+
+/// Send attempts that fit the failover budget, so the SDK keeps retrying through an
+/// election for about as long as the caller is willing to wait.
+fn send_retry_count(config: &IggyConfig) -> u32 {
+    let interval_ms = SEND_RETRY_INTERVAL.as_millis() as u64;
+    u32::try_from(config.failover_timeout_ms.div_ceil(interval_ms))
+        .unwrap_or(u32::MAX)
+        .max(1)
 }
 
 async fn with_timeout<F, T>(config: &IggyConfig, future: F) -> Result<T>
@@ -807,6 +980,18 @@ fn validate_config(config: &IggyConfig) -> Result<()> {
     if config.username.is_some() != config.password.is_some() {
         return Err(Error::Config(
             "Apache Iggy username and password must be configured together".to_string(),
+        ));
+    }
+    config.connection_candidates().map_err(Error::Config)?;
+    if config.failover_timeout_ms == 0 {
+        return Err(Error::Config(
+            "Apache Iggy failover_timeout_ms must be greater than 0".to_string(),
+        ));
+    }
+    if !config.cluster_seeds.is_empty() && config.connect_timeout_ms == 0 {
+        return Err(Error::Config(
+            "Apache Iggy connect_timeout_ms must be greater than 0 when cluster_seeds is set"
+                .to_string(),
         ));
     }
     if config.partitions_count == 0 {
@@ -898,7 +1083,58 @@ fn to_iggy_error(error: IggyError) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::PendingOffsets;
+    use super::{PendingOffsets, run_detached, send_retry_count};
+    use iggy::prelude::IggyError;
+    use sockudo_core::options::IggyConfig;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn timed_out_call_still_runs_to_completion() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = finished.clone();
+
+        let result = run_detached(20, async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flag.store(true, Ordering::SeqCst);
+            Ok::<_, IggyError>(())
+        })
+        .await;
+
+        assert!(result.is_err(), "the caller stops waiting at the timeout");
+        assert!(!finished.load(Ordering::SeqCst));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "an abandoned SDK call must not be cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_call_returns_its_result() {
+        assert_eq!(
+            run_detached(1_000, async { Ok::<_, IggyError>(7) })
+                .await
+                .unwrap(),
+            7
+        );
+        assert!(
+            run_detached(1_000, async { Err::<(), _>(IggyError::Disconnected) })
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn send_retries_span_the_failover_budget() {
+        let mut config = IggyConfig::default();
+        assert_eq!(send_retry_count(&config), 30);
+        config.failover_timeout_ms = 1;
+        assert_eq!(send_retry_count(&config), 1);
+        config.failover_timeout_ms = u64::MAX;
+        assert_eq!(send_retry_count(&config), u32::MAX);
+    }
 
     #[test]
     fn pending_offsets_keep_only_highest_offset_per_partition() {

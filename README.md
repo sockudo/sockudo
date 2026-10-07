@@ -31,7 +31,7 @@ TypeScript AI Transport SDK.
 - Protocol V2 with `sockudo:` events, serials, message IDs, recovery, rewind, tags, deltas, and
   mutable message events.
 - Horizontal fanout through Redis, Redis Cluster, NATS, RabbitMQ, Google Pub/Sub, Kafka, Pulsar, and
-  Apache Iggy.
+  Apache Iggy (single node or replicated VSR cluster).
 - Durable history, hot replay buffers, two-tier recovery, `until_attach` history reads, and
   degraded/reset-required continuity state.
 - Versioned mutable messages with create, update, delete, append, summary, latest-visible reads, and

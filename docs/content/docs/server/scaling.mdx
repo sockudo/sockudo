@@ -33,7 +33,7 @@ At minimum, a production cluster has:
 | RabbitMQ | Enterprise messaging and routing patterns. |
 | Pulsar | Multi-tenant stream workloads. |
 | Google Pub/Sub | Managed GCP fanout. |
-| Apache Iggy | High-throughput persistent log workloads. |
+| Apache Iggy | High-throughput persistent log workloads, with replicated VSR clusters. |
 
 ### NATS notes
 
@@ -78,6 +78,46 @@ For Kubernetes NATS clusters, prefer explicit StatefulSet pod DNS entries over a
 ```
 
 If `nodes_number` is set, it means expected Sockudo nodes, not NATS server replicas. Use it only when the Sockudo replica count is fixed or injected from deployment automation; otherwise leave discovery enabled.
+
+### Apache Iggy cluster notes
+
+Sockudo supports Apache Iggy 0.9 VSR clusters for both the adapter and the
+queue. Run at least three Iggy replicas: three tolerate one failed replica, five
+tolerate two. A two-replica cluster cannot make progress after either fails.
+
+Point Sockudo at one replica and list the others as seeds, so a node that is
+down at startup does not block bootstrap:
+
+```bash
+ADAPTER_DRIVER=iggy
+QUEUE_DRIVER=iggy
+IGGY_CONNECTION_STRING=iggy://iggy:secret@iggy-1.internal:8090
+IGGY_CLUSTER_SEEDS=iggy-2.internal:8090,iggy-3.internal:8090
+QUEUE_IGGY_DURABILITY=persisted
+```
+
+After it connects, the Iggy SDK learns the full roster from cluster metadata,
+reconnects to the leader, fails over to the surviving replicas when its node
+disappears, and rejoins queue consumer groups.
+
+Losing the Iggy leader pauses writes until the surviving replicas elect a new
+one. A crashed or partitioned leader is noticed only after Iggy's
+`cluster.heartbeat_timeout` (5 s by default, 2 s minimum), so expect roughly
+6 to 9 seconds without cross-node fanout. Publishes wait through that window
+for up to `failover_timeout_ms` (15 s by default) and then complete; local
+subscribers on the publishing node are served immediately as always. `/up` on
+every Sockudo node can return 503 for the same window, so keep readiness probes
+tolerant of about 10 seconds of failures; the Kubernetes defaults are. Lowering
+`heartbeat_timeout` shortens the pause at the cost of spurious elections on
+loaded hosts.
+
+Each replica must advertise an address Sockudo can reach: the Iggy roster
+(`cluster.nodes[*].ip` or `advertised_address`) is what the SDK dials during
+failover, not the seed hostnames. `IGGY_NODES_NUMBER` counts Sockudo nodes, not
+Iggy replicas. See
+[configuration](/docs/reference/configuration#apache-iggy-adapter-and-queue)
+for durability and reconnection tuning, and `docker-compose.iggy-cluster.yml`
+for a local three-replica stack.
 
 ## Load balancing
 

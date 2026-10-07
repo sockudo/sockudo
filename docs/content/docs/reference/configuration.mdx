@@ -290,6 +290,105 @@ OMQ uses transport topics derived from `prefix`: broadcast, request, response,
 and per-node request topics. The adapter is not persistent; if a process or
 network path is unavailable, messages in flight are not retained by a broker.
 
+## Apache Iggy adapter and queue
+
+`adapter.driver = "iggy"` and `queue.driver = "iggy"` use Apache Iggy (build with
+the `iggy` Cargo feature). Sockudo ships the Iggy Rust SDK 0.11, which speaks
+the Iggy 0.9 server wire protocol: run Iggy server 0.9 or newer. Older 0.8.x
+servers are not wire-compatible, and Iggy 0.9 starts from a fresh data
+directory. An Iggy 0.9 server that binds a wildcard address (`0.0.0.0`) also
+needs `node.advertised_address` (`IGGY_NODE_ADVERTISED_ADDRESS`) set to the
+address clients dial.
+
+The same settings work for a single Iggy server and for a Viewstamped
+Replication (VSR) cluster. Against a cluster, the SDK reads the cluster roster
+after sign-in, follows the current leader, fails over to the surviving replicas
+when its node disappears, routes consumer polls and offset commits to the
+partition primary, and rejoins consumer groups after membership loss. No
+Sockudo setting is needed for any of that.
+
+```toml
+[adapter]
+driver = "iggy"
+
+[adapter.iggy]
+connection_string = "iggy://iggy:iggy@iggy-1.internal:8090"
+# Extra replicas tried in order when the connection_string node is down at startup.
+cluster_seeds = ["iggy-2.internal:8090", "iggy-3.internal:8090"]
+connect_timeout_ms = 2000
+failover_timeout_ms = 15000
+consumer_name = ""
+stream = "sockudo"
+topic_prefix = "sockudo-adapter"
+request_timeout_ms = 5000
+poll_interval_ms = 5
+poll_batch_size = 100
+partitions_count = 1
+partition_id = 0
+auto_create = true
+start_from_latest = true
+durability = "replicated"
+consumer_offset_durability = "replicated"
+
+[queue]
+driver = "iggy"
+
+[queue.iggy]
+connection_string = "iggy://iggy:iggy@iggy-1.internal:8090"
+cluster_seeds = ["iggy-2.internal:8090", "iggy-3.internal:8090"]
+connect_timeout_ms = 2000
+failover_timeout_ms = 15000
+stream = "sockudo"
+queue_topic_prefix = "sockudo-queue"
+consumer_group_prefix = "sockudo-workers"
+partitions_count = 3
+durability = "persisted"
+consumer_offset_durability = "replicated"
+```
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `connection_string` | `iggy://iggy:iggy@127.0.0.1:8090` | First node to dial. Its credentials and query options apply to every seed. |
+| `cluster_seeds` | `[]` | Extra `host:port` replicas, tried in order when an earlier one cannot be reached. They only bootstrap the connection; afterwards the SDK fails over using the roster the cluster advertises. |
+| `connect_timeout_ms` | `2000` | Bound on the TCP dial to each node while `cluster_seeds` is non-empty. A seed that refuses, cannot be resolved, or does not accept within this bound is skipped. Without seeds the SDK's own reconnection policy applies, as before. |
+| `failover_timeout_ms` | `15000` | How long a broadcast or queue publish, and the sign-in to a seed that accepted the dial, wait for the cluster to elect a leader or fail over before giving up. Keep it above Iggy's `cluster.heartbeat_timeout` (5 s by default) plus the election. Cross-node requests and health checks keep `request_timeout_ms`. |
+| `durability` | `replicated` | Message durability for topics Sockudo creates. `replicated` acknowledges after a VSR quorum commit; `persisted` also waits for recoverable stable-storage copies at that quorum. |
+| `consumer_offset_durability` | `replicated` | Same choice for consumer offsets stored on those topics. |
+
+Durability applies only to topics Sockudo creates (`auto_create = true`); it
+does not change existing topics. Single-node servers accept both values.
+
+The connection string's query options tune the SDK's failover:
+`reconnection_retries` (passes over the known nodes, default `unlimited`),
+`reconnection_interval` (default `1s`), `reestablish_after` (default `5s`), and
+`heartbeat_interval` (default `5s`), plus `tls`, `tls_domain`, `tls_ca_file`,
+and `nodelay`. For example,
+`iggy://iggy:secret@iggy-1:8090?reconnection_interval=500ms&heartbeat_interval=2s`.
+
+`nodes_number` is the number of **Sockudo** nodes the adapter waits on for
+request/response fan-in, not the number of Iggy replicas.
+
+A publish that runs out of time stops waiting, but its Iggy call keeps running
+to completion in the background. The SDK reconnects and signs in inside
+whichever call first meets a dead connection, and cancelling that call
+mid-sign-in would leave the shared client permanently disconnected. As a result,
+a publish reported as failed can still be delivered once the cluster recovers,
+and a retry after a reconnect can deliver a message twice: Iggy deduplicates
+retries only within one connection session. Protocol V2 clients drop duplicates
+by `message_id`. At most 10,000 abandoned calls run at once per component;
+beyond that, new calls fail immediately until the backlog drains.
+
+The adapter and queue health checks ping the connected Iggy node. The SDK keeps
+every client on the leader, so when the leader crashes, every Sockudo node's
+`/up` can return 503 until the election finishes (6 to 9 seconds with Iggy's
+defaults in testing). Size readiness probes to ride that out: Kubernetes'
+defaults (`periodSeconds: 10`, `failureThreshold: 3`) already do. Each
+component logs `cluster topology discovered` at startup with the cluster name,
+roster size, and current leader.
+
+`docker-compose.iggy-cluster.yml` runs a three-replica Iggy cluster with three
+Sockudo nodes for local failover testing.
+
 ## Redis connections, Sentinel, and TLS
 
 `[database.redis]` configures the Redis connection used by the Redis adapter, cache, queue, rate limiter, and delta coordinator. Without Sentinel, `[database.redis.master_tls]` secures the direct Redis data connection for every consumer. When `sentinels` is non-empty, Sockudo connects through Redis Sentinel using a native Sentinel client (rather than a direct URL) and can secure both connection hops independently. Redis Cluster also reuses `master_tls` certificate material; the legacy `cluster.use_tls` switch continues to enable TLS with the default root store.

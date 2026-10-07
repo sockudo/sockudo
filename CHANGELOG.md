@@ -2,8 +2,48 @@
 
 ## Unreleased
 
+### Added
+
+- Apache Iggy VSR cluster support for the `iggy` adapter and queue. The Iggy SDK now follows the
+  cluster leader, fails over to the surviving replicas when its node disappears, routes polls
+  and offset commits to the partition primary, and rejoins queue consumer groups after
+  membership loss. `cluster_seeds` (`IGGY_CLUSTER_SEEDS`) lists extra replicas tried in order
+  when the `connection_string` node is down at startup; `connect_timeout_ms`
+  (`IGGY_CONNECT_TIMEOUT_MS`, default 2 s) bounds the TCP dial to each. `failover_timeout_ms`
+  (`IGGY_FAILOVER_TIMEOUT_MS`, default 15 s) lets broadcast and queue publishes, and sign-in to
+  a reachable seed, wait out a leader election instead of failing. `durability` and
+  `consumer_offset_durability`
+  (`IGGY_DURABILITY`, `IGGY_CONSUMER_OFFSET_DURABILITY`, with `ADAPTER_`/`QUEUE_` overrides)
+  choose `replicated` (default) or `persisted` for topics Sockudo creates. Both components log
+  the discovered cluster topology at startup. `docker-compose.iggy-cluster.yml` runs three Iggy
+  replicas with three Sockudo nodes.
+
+### Changed
+
+- **Breaking for `iggy` deployments:** the Iggy SDK moves from 0.10 to 0.11, which requires
+  Apache Iggy server 0.9 or newer. Iggy 0.8.x servers and 0.9 servers do not share a wire
+  protocol, and Iggy 0.9 starts from a fresh data directory, so upgrade the Iggy servers before
+  rolling out this Sockudo release. The bundled compose files pin `apache/iggy:0.9.0`, set
+  `IGGY_PATH` (0.9 renamed `IGGY_SYSTEM_PATH`), set `IGGY_NODE_ADVERTISED_ADDRESS` (0.9 refuses
+  a wildcard bind without one), and use a fixed shard count because the 0.9 default NUMA
+  allocation fails on Docker Desktop.
+- Sockudo now creates every Iggy topic it uses itself, with the configured durability, instead
+  of letting the producer create it with SDK defaults.
+- Iggy publishes, health checks, and producer setup run on their own task. A timeout, or a
+  caller that goes away, ends the wait but never cancels the SDK call. A cancelled call that was
+  signing in after a dropped connection left the client permanently disconnected: with a
+  three-replica cluster and the leader killed, a Sockudo node failed every cross-node publish
+  until restarted.
+
 ### Fixed
 
+- A newly started Sockudo node with cluster health enabled no longer drops its cross-node
+  broadcasts until a peer's heartbeat arrives. A node learns about peers only from their
+  heartbeats, so for up to one heartbeat interval (10 s by default) it counted itself as the
+  only node and took the single-node shortcut. Peers then missed every event published through
+  it, with any horizontal adapter. Peers now answer a new node's heartbeat immediately, a node
+  starts heartbeating only once its listeners are up, and a node with no known peers keeps
+  publishing until a full node timeout passes without hearing one.
 - Connections no longer leak after a Protocol V1 pong timeout (close 4201). Disconnect cleanup
   marks a connection `disconnecting` and then awaits; the activity-timeout task ran it inline
   and aborted itself on the way, so cleanup could stop half-done. The connection then
