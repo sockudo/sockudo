@@ -221,8 +221,13 @@ above the longest expected interval between application or heartbeat traffic, wi
 network path.
 
 If the proxy adds entries to `X-Forwarded-For`, configure `RATE_LIMITER_API_TRUST_HOPS` and
-`RATE_LIMITER_WS_TRUST_HOPS` to the exact trusted proxy count. Never trust a client-supplied chain
-from the public internet.
+`RATE_LIMITER_WS_TRUST_HOPS`. These are an offset from the right-hand end of the chain, not a count
+of proxies: `1` selects the last entry, which is the proxy itself, so one proxy that appends the
+client address needs `2`. Counting from the right is what makes a client-supplied chain harmless -
+prepended entries shift the offset away from the client, they cannot reach it - but the count must
+match the real path. If it does not, extraction falls back to the socket peer, which behind a proxy
+is the proxy, putting every client into one rate-limit bucket. Sockudo warns once when the
+configured offset yields no usable address.
 
 ## One host versus several
 
