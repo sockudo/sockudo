@@ -81,6 +81,7 @@ nodes = []
 prefix = "sockudo_adapter:"
 request_timeout_ms = 5000
 use_connection_manager = true
+pubsub_ping_interval_ms = 10000
 
 [adapter.cluster_health]
 enabled = true

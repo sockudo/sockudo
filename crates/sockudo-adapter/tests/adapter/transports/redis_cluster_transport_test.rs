@@ -29,6 +29,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         use_connection_manager: false,
         use_sharded_pubsub: false,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -42,6 +43,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         use_connection_manager: false,
         use_sharded_pubsub: false,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -58,6 +60,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         use_connection_manager: true, // Enable connection manager
         use_sharded_pubsub: false,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -76,6 +79,7 @@ async fn test_redis_cluster_invalid_config() {
         use_connection_manager: false,
         use_sharded_pubsub: false,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     };
 
     let result = RedisClusterTransport::new(config).await;
@@ -93,6 +97,7 @@ async fn test_redis_cluster_invalid_config() {
         use_connection_manager: false,
         use_sharded_pubsub: false,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     };
 
     let result = tokio::time::timeout(
@@ -415,6 +420,7 @@ async fn test_redis_cluster_node_count_is_real_time_conditional() {
         use_connection_manager: false,
         use_sharded_pubsub: true,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     };
     let Ok(transport_sharded) = RedisClusterTransport::new(config_sharded).await else {
         return; // Skip if Redis Cluster not available
@@ -475,6 +481,7 @@ async fn test_redis_cluster_reply_channel_format() {
         use_connection_manager: false,
         use_sharded_pubsub: false,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     };
     let Ok(transport) = RedisClusterTransport::new(config).await else {
         return; // Skip if Redis Cluster not available

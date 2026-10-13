@@ -1,16 +1,18 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use crate::transports::redis_client::RedisClient;
+use crate::transports::redis_pubsub_probe::{PubSubProbeFailure, pubsub_connection_lost};
 use async_trait::async_trait;
 use futures::StreamExt;
 use redis::AsyncCommands;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
-use sockudo_core::options::{RedisTlsOptions, SentinelSpec};
+use sockudo_core::options::{DEFAULT_REDIS_PUBSUB_PING_INTERVAL_MS, RedisTlsOptions, SentinelSpec};
 use sockudo_core::redis_client::RedisClientOptions;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
@@ -27,6 +29,8 @@ pub struct RedisAdapterConfig {
     pub sentinel: Option<SentinelSpec>,
     /// TLS settings for a direct Redis data connection.
     pub tls: RedisTlsOptions,
+    /// Interval between PINGs on the pub/sub connection; `0` disables the liveness probe.
+    pub pubsub_ping_interval_ms: u64,
 }
 
 impl Default for RedisAdapterConfig {
@@ -38,6 +42,7 @@ impl Default for RedisAdapterConfig {
             cluster_mode: false,
             sentinel: None,
             tls: RedisTlsOptions::default(),
+            pubsub_ping_interval_ms: DEFAULT_REDIS_PUBSUB_PING_INTERVAL_MS,
         }
     }
 }
@@ -60,6 +65,7 @@ pub struct RedisTransport {
     response_channel: String,
     prefix: String,
     reply_channel: String,
+    pubsub_ping_interval: Duration,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
@@ -98,6 +104,7 @@ impl HorizontalTransport for RedisTransport {
             response_channel,
             prefix: config.prefix.clone(),
             reply_channel,
+            pubsub_ping_interval: Duration::from_millis(config.pubsub_ping_interval_ms),
             metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
@@ -248,6 +255,7 @@ impl HorizontalTransport for RedisTransport {
         let response_channel = self.response_channel.clone();
         let node_channel = format!("{}:#node:{}", self.prefix, handlers.node_id);
         let reply_channel = self.reply_channel.clone();
+        let pubsub_ping_interval = self.pubsub_ping_interval;
         let metrics = self.metrics.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
@@ -324,18 +332,31 @@ impl HorizontalTransport for RedisTransport {
                     "transport subscriptions established"
                 );
 
-                let mut message_stream = pubsub.on_message();
+                let (ping_sink, mut message_stream) = pubsub.split();
+                let liveness = pubsub_connection_lost(pubsub_ping_interval, move || {
+                    let mut sink = ping_sink.clone();
+                    async move { sink.ping::<()>().await }
+                });
+                tokio::pin!(liveness);
                 let mut connection_broken = false;
                 let mut primary_moved = false;
+                let mut probe_failure = None;
 
                 loop {
                     if !is_running.load(Ordering::Relaxed) {
                         break;
                     }
                     let next_msg = tokio::select! {
+                        // A reset that fails the probe also ends the message stream; poll the
+                        // probe first so the reconnect is attributed to it.
+                        biased;
                         _ = shutdown.notified() => break,
                         _ = master_changes.changed() => {
                             primary_moved = true;
+                            break;
+                        }
+                        failure = &mut liveness => {
+                            probe_failure = Some(failure);
                             break;
                         }
                         msg = message_stream.next() => msg,
@@ -436,6 +457,24 @@ impl HorizontalTransport for RedisTransport {
                         adapter = "redis",
                         "redis sentinel primary changed, resubscribing"
                     );
+                } else if let Some(failure) = probe_failure {
+                    if let Some(metrics) = metrics.get() {
+                        metrics.mark_horizontal_transport_reconnection("redis");
+                    }
+                    match failure {
+                        PubSubProbeFailure::Failed(e) => warn!(
+                            adapter = "redis",
+                            error = %e,
+                            retryable = true,
+                            "pub/sub liveness ping failed, resubscribing"
+                        ),
+                        PubSubProbeFailure::TimedOut => warn!(
+                            adapter = "redis",
+                            timeout_ms = pubsub_ping_interval.as_millis() as u64,
+                            retryable = true,
+                            "pub/sub liveness ping timed out, resubscribing"
+                        ),
+                    }
                 } else if connection_broken {
                     if let Some(metrics) = metrics.get() {
                         metrics.mark_horizontal_transport_reconnection("redis");
@@ -563,6 +602,7 @@ impl Clone for RedisTransport {
             response_channel: self.response_channel.clone(),
             prefix: self.prefix.clone(),
             reply_channel: self.reply_channel.clone(),
+            pubsub_ping_interval: self.pubsub_ping_interval,
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
@@ -644,5 +684,134 @@ mod tests {
         assert_eq!(accepted.load(Ordering::SeqCst), 3);
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
+    }
+
+    #[derive(Default)]
+    struct FakeRedisCounters {
+        subscribes: AtomicUsize,
+        pubsub_pings: AtomicUsize,
+    }
+
+    /// Minimal RESP2 server. The first connection that subscribes stops answering PING, like a
+    /// subscriber socket whose Redis vanished without a FIN or RST; later ones answer normally.
+    async fn spawn_fake_redis(
+        first_subscriber_goes_silent: bool,
+    ) -> (String, Arc<FakeRedisCounters>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let counters = Arc::new(FakeRedisCounters::default());
+        let server_counters = counters.clone();
+        let server = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                let counters = server_counters.clone();
+                connections.spawn(async move {
+                    let mut socket = BufReader::new(socket);
+                    let mut silent = false;
+                    let mut subscribed = false;
+                    loop {
+                        let mut line = String::new();
+                        if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            break;
+                        }
+                        let count: usize = line.trim().strip_prefix('*').unwrap().parse().unwrap();
+                        let mut args = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            line.clear();
+                            socket.read_line(&mut line).await.unwrap();
+                            let len: usize =
+                                line.trim().strip_prefix('$').unwrap().parse().unwrap();
+                            let mut arg = vec![0; len + 2];
+                            socket.read_exact(&mut arg).await.unwrap();
+                            arg.truncate(len);
+                            args.push(arg);
+                        }
+                        let mut response = Vec::new();
+                        match args[0].as_slice() {
+                            b"SUBSCRIBE" => {
+                                let previous = counters.subscribes.fetch_add(1, Ordering::SeqCst);
+                                silent = first_subscriber_goes_silent && previous == 0;
+                                subscribed = true;
+                                for (index, channel) in args[1..].iter().enumerate() {
+                                    response.extend_from_slice(b"*3\r\n$9\r\nsubscribe\r\n");
+                                    response.extend_from_slice(
+                                        format!("${}\r\n", channel.len()).as_bytes(),
+                                    );
+                                    response.extend_from_slice(channel);
+                                    response.extend_from_slice(
+                                        format!("\r\n:{}\r\n", index + 1).as_bytes(),
+                                    );
+                                }
+                            }
+                            b"PING" if subscribed => {
+                                counters.pubsub_pings.fetch_add(1, Ordering::SeqCst);
+                                if !silent {
+                                    response.extend_from_slice(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n");
+                                }
+                            }
+                            b"PING" => response.extend_from_slice(b"+PONG\r\n"),
+                            _ => response.extend_from_slice(b"+OK\r\n"),
+                        }
+                        if socket.get_mut().write_all(&response).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (format!("redis://{address}"), counters, server)
+    }
+
+    fn noop_handlers() -> TransportHandlers {
+        TransportHandlers {
+            node_id: "probe-test".to_string(),
+            on_broadcast: Arc::new(|_| Box::pin(async {})),
+            on_request: Arc::new(|_| Box::pin(async { Err(Error::Other("not used".to_string())) })),
+            on_response: Arc::new(|_| Box::pin(async {})),
+        }
+    }
+
+    #[tokio::test]
+    async fn silent_subscriber_connection_is_replaced_and_resubscribed() {
+        let (url, counters, server) = spawn_fake_redis(true).await;
+        let transport = RedisTransport::new(RedisAdapterConfig {
+            url,
+            pubsub_ping_interval_ms: 50,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        transport.start_listeners(noop_handlers()).await.unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while counters.subscribes.load(Ordering::SeqCst) < 2 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "listener never resubscribed after its PING went unanswered"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(transport);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn answered_pings_keep_the_subscription() {
+        let (url, counters, server) = spawn_fake_redis(false).await;
+        let transport = RedisTransport::new(RedisAdapterConfig {
+            url,
+            pubsub_ping_interval_ms: 50,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        transport.start_listeners(noop_handlers()).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(counters.pubsub_pings.load(Ordering::SeqCst) >= 3);
+        assert_eq!(counters.subscribes.load(Ordering::SeqCst), 1);
+        drop(transport);
+        server.abort();
     }
 }

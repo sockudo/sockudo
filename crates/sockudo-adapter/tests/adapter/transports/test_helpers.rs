@@ -23,6 +23,7 @@ pub fn get_redis_config() -> RedisAdapterConfig {
         cluster_mode: false,
         sentinel: None,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     }
 }
 
@@ -40,6 +41,7 @@ pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
         use_connection_manager: false, // Disable for grokzen cluster compatibility
         use_sharded_pubsub: false,     // Use standard pub/sub for tests
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     }
 }
 

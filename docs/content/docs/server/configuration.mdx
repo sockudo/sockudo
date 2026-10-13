@@ -91,9 +91,18 @@ fast_presence_transitions = false
 host = "redis"
 port = 6379
 prefix = "sockudo"
+pubsub_ping_interval_ms = 10000
 ```
 
 Use a shared adapter for every multi-node deployment. Local memory adapters are intentionally process-local.
+
+`pubsub_ping_interval_ms` (under `[adapter.redis]` and `[adapter.cluster]`, default `10000`) is how
+often each node PINGs its Redis subscriber connection. A subscriber connection only reads, so when
+Redis goes away without closing it (a network partition, or a managed instance resized or replaced
+behind the same address) it would otherwise wait forever while publishing keeps working, and the
+node silently stops receiving events from its peers. When a PING fails or gets no answer within one
+interval, the node logs a warning, increments `sockudo_horizontal_transport_reconnections_total`,
+and resubscribes. Set it to `0` to disable the probe.
 
 `enable_socket_counting` keeps the adapter's request/reply socket-count path enabled by default.
 `aggregate_counts` is off by default; enable it when you want each node to maintain gossiped

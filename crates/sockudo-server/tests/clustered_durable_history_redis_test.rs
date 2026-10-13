@@ -235,6 +235,7 @@ async fn build_redis_node(
         cluster_mode: false,
         sentinel: None,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     })
     .await
     .unwrap();

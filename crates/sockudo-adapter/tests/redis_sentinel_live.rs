@@ -104,6 +104,7 @@ fn transport_config(test_name: &str) -> RedisAdapterConfig {
         cluster_mode: false,
         sentinel: connection.sentinel_spec(),
         tls: connection.master_tls,
+        pubsub_ping_interval_ms: 10_000,
     }
 }
 
@@ -125,6 +126,7 @@ fn direct_transport_config(test_name: &str) -> RedisAdapterConfig {
         cluster_mode: false,
         sentinel: None,
         tls: connection.master_tls,
+        pubsub_ping_interval_ms: 10_000,
     }
 }
 

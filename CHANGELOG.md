@@ -37,6 +37,17 @@
 
 ### Fixed
 
+- A Sockudo node using the `redis` or `redis-cluster` adapter no longer goes permanently deaf
+  to its peers when Redis disappears without closing the connection and comes back on the same
+  address, as during a managed Redis resize or a network partition. The subscriber connection
+  only reads, so nothing ever failed on it, while publish connections reconnected on their next
+  write: each node kept publishing but received nothing, saw no peer heartbeats, answered
+  `/channels` from local data only, and stopped delivering cross-node broadcasts until it was
+  restarted. Sentinel's resubscribe on primary change did not cover it. The subscriber
+  connection is now PINGed every `pubsub_ping_interval_ms` (`[adapter.redis]` and
+  `[adapter.cluster]`, default 10 s, `0` disables). A PING that fails or gets no answer within
+  one interval logs a warning, increments `sockudo_horizontal_transport_reconnections_total`,
+  and resubscribes.
 - A newly started Sockudo node with cluster health enabled no longer drops its cross-node
   broadcasts until a peer's heartbeat arrives. A node learns about peers only from their
   heartbeats, so for up to one heartbeat interval (10 s by default) it counted itself as the

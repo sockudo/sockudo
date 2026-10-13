@@ -35,6 +35,9 @@ pub struct AdapterConfig {
     pub fast_presence_transitions: bool,
 }
 
+/// Default interval between PINGs on Redis subscriber connections.
+pub const DEFAULT_REDIS_PUBSUB_PING_INTERVAL_MS: u64 = 10_000;
+
 fn default_aggregate_counts() -> bool {
     false
 }
@@ -86,6 +89,9 @@ pub struct RedisAdapterConfig {
     pub redis_pub_options: AHashMap<String, sonic_rs::Value>,
     pub redis_sub_options: AHashMap<String, sonic_rs::Value>,
     pub cluster_mode: bool,
+    /// How often the pub/sub connection is PINGed, in milliseconds. A PING that fails or gets
+    /// no answer within one interval makes the node reconnect and resubscribe. `0` disables it.
+    pub pubsub_ping_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +105,10 @@ pub struct RedisClusterAdapterConfig {
     pub use_sharded_pubsub: bool,
     /// TLS settings for cluster data connections and shard listeners.
     pub tls: super::RedisTlsOptions,
+    /// How often each shard subscriber connection is PINGed, in milliseconds. A PING that fails
+    /// or gets no answer within one interval makes the shard listener reconnect and resubscribe.
+    /// `0` disables it.
+    pub pubsub_ping_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,6 +357,7 @@ impl Default for RedisAdapterConfig {
             redis_pub_options: AHashMap::new(),
             redis_sub_options: AHashMap::new(),
             cluster_mode: false,
+            pubsub_ping_interval_ms: DEFAULT_REDIS_PUBSUB_PING_INTERVAL_MS,
         }
     }
 }
@@ -360,6 +371,7 @@ impl Default for RedisClusterAdapterConfig {
             use_connection_manager: true,
             use_sharded_pubsub: false,
             tls: super::RedisTlsOptions::default(),
+            pubsub_ping_interval_ms: DEFAULT_REDIS_PUBSUB_PING_INTERVAL_MS,
         }
     }
 }
