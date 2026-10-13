@@ -143,9 +143,10 @@ impl ConnectionHandler {
                                     timeout_seconds = PONG_TIMEOUT,
                                     "pong timeout reached, forcing cleanup"
                                 );
-                                let _ = ws
-                                    .close(4201, "Pong reply not received in time".to_string())
-                                    .await;
+                                let _ = Box::pin(
+                                    ws.close(4201, "Pong reply not received in time".to_string()),
+                                )
+                                .await;
                                 drop(ws);
                                 handler.spawn_disconnect(
                                     &app_id_clone,
