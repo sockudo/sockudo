@@ -12,7 +12,7 @@ use rmcp::model::{
     CompleteResult, CompletionInfo, Extensions, GetPromptRequestParams, GetPromptResponse,
     Implementation, InitializeResult, JsonObject, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, Reference, ServerCapabilities, ServerInfo,
+    ReadResourceRequestParams, ReadResourceResponse, Reference, ServerCapabilities,
 };
 use rmcp::service::{NotificationContext, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
@@ -440,7 +440,7 @@ impl SockudoMcp {
 }
 
 impl ServerHandler for SockudoMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> InitializeResult {
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
