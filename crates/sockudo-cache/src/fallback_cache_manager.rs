@@ -189,7 +189,16 @@ impl FallbackCacheManager {
         let mut failed = 0;
 
         for (key, value, ttl) in entries {
-            let ttl_seconds = ttl.map(|d| d.as_secs()).unwrap_or(0);
+            let ttl_seconds = if ttl.is_some() {
+                // Earlier primary writes may have consumed the snapshot's remaining TTL.
+                let Some(remaining) = fallback.ttl(&key).await? else {
+                    continue;
+                };
+                // Round up so a sub-second remainder does not become 0 (no expiry).
+                remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
+            } else {
+                0
+            };
             match primary.set(&key, &value, ttl_seconds).await {
                 Ok(()) => synced += 1,
                 Err(e) => {
@@ -539,6 +548,8 @@ mod tests {
     struct MockCache {
         should_fail: Arc<TokioMutex<bool>>,
         data: Arc<TokioMutex<std::collections::HashMap<String, String>>>,
+        set_ttls: Arc<TokioMutex<Vec<u64>>>,
+        set_delay: Duration,
     }
 
     impl MockCache {
@@ -546,6 +557,8 @@ mod tests {
             Self {
                 should_fail: Arc::new(TokioMutex::new(false)),
                 data: Arc::new(TokioMutex::new(std::collections::HashMap::new())),
+                set_ttls: Arc::new(TokioMutex::new(Vec::new())),
+                set_delay: Duration::ZERO,
             }
         }
 
@@ -571,7 +584,7 @@ mod tests {
             Ok(self.data.lock().await.get(key).cloned())
         }
 
-        async fn set(&self, key: &str, value: &str, _ttl_seconds: u64) -> Result<()> {
+        async fn set(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
             if *self.should_fail.lock().await {
                 return Err(Error::Cache("Mock failure".to_string()));
             }
@@ -579,6 +592,10 @@ mod tests {
                 .lock()
                 .await
                 .insert(key.to_string(), value.to_string());
+            self.set_ttls.lock().await.push(ttl_seconds);
+            if !self.set_delay.is_zero() {
+                tokio::time::sleep(self.set_delay).await;
+            }
             Ok(())
         }
 
@@ -713,6 +730,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sync_rechecks_remaining_ttl_before_each_write() {
+        let mut mock = MockCache::new();
+        mock.set_delay = Duration::from_millis(1_100);
+        let set_ttls = Arc::clone(&mock.set_ttls);
+        let manager = FallbackCacheManager::new(Box::new(mock), MemoryCacheOptions::default());
+        {
+            let fallback = manager.fallback.lock().await;
+            for key in ["first", "second", "third"] {
+                fallback.set(key, "value", 2).await.unwrap();
+            }
+        }
+
+        let mut primary = manager.primary.lock().await;
+        manager
+            .sync_fallback_to_primary(&mut primary)
+            .await
+            .unwrap();
+
+        // One write consumes over a second. The second gets only its remaining TTL,
+        // and the third must not be copied after its two-second deadline has passed.
+        assert_eq!(*set_ttls.lock().await, vec![2, 1]);
+    }
+
+    #[tokio::test]
+    async fn sync_preserves_subsecond_and_nonexpiring_ttls() {
+        let mock = MockCache::new();
+        let set_ttls = Arc::clone(&mock.set_ttls);
+        let manager = FallbackCacheManager::new(
+            Box::new(mock),
+            MemoryCacheOptions {
+                ttl: 0,
+                ..MemoryCacheOptions::default()
+            },
+        );
+        {
+            let fallback = manager.fallback.lock().await;
+            fallback.set("short", "value", 1).await.unwrap();
+            fallback.set("permanent", "value", 0).await.unwrap();
+        }
+
+        let mut primary = manager.primary.lock().await;
+        manager
+            .sync_fallback_to_primary(&mut primary)
+            .await
+            .unwrap();
+
+        let mut ttls = set_ttls.lock().await.clone();
+        ttls.sort_unstable();
+        assert_eq!(ttls, vec![0, 1]);
+    }
+
+    #[tokio::test]
     async fn test_memory_cache_get_all_entries() {
         let options = MemoryCacheOptions {
             ttl: 60,
@@ -742,7 +811,8 @@ mod tests {
                 "key3" => assert_eq!(value, "value3"),
                 _ => panic!("Unexpected key: {}", key),
             }
-            assert_eq!(ttl, Some(Duration::from_secs(60)));
+            let ttl = ttl.expect("entry has a ttl");
+            assert!(ttl <= Duration::from_secs(60) && ttl > Duration::from_secs(55));
         }
     }
 
