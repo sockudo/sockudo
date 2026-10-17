@@ -267,15 +267,20 @@ impl WebhookIntegration {
         self.batching_stop.cancel();
         self.batching_tasks.close();
         self.batching_tasks.wait().await;
-        let count = Self::drain_batched_webhooks(
+        let flush_result = Self::drain_batched_webhooks(
             &self.batched_webhooks,
             &self.queue_manager,
             self.config.batching.size.max(1),
         )
-        .await?;
+        .await;
+        if let Err(error) = &flush_result {
+            warn!(error = %error, "failed to enqueue final webhook batch");
+        }
 
         // Memory queues cannot preserve ready jobs across process exit. Broker-backed
         // queues retain queued work; waiting for their global depth would include peers.
+        // A batch can be partially accepted before enqueue fails, so drain accepted
+        // jobs within the caller's budget before returning the original flush error.
         if let Some(queue) = &self.queue_manager
             && queue.driver.backend() == sockudo_core::queue::QueueBackendKind::Memory
         {
@@ -287,7 +292,7 @@ impl WebhookIntegration {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
-        Ok(count)
+        flush_result
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -1046,6 +1051,97 @@ mod tests {
         queue.release.add_permits(1);
         assert!(integration.shutdown().await.is_err());
         assert!(queue.jobs.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn final_flush_drains_accepted_memory_jobs_before_returning_capacity_error() {
+        let driver =
+            MemoryQueueManager::new_with_config(sockudo_core::options::QueueReliabilityConfig {
+                memory_capacity: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        // Attach the real queue without starting a processor or interval task, so
+        // the final flush deterministically accepts one job and rejects the next.
+        let mut integration = WebhookIntegration::new(
+            WebhookConfig {
+                enabled: false,
+                batching: BatchingConfig {
+                    enabled: true,
+                    size: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Arc::new(MemoryAppManager::new()),
+            None,
+        )
+        .await
+        .unwrap();
+        integration.config.enabled = true;
+        integration.queue_manager = Some(Arc::new(QueueManager::new(Box::new(driver.clone()))));
+        for user in ["accepted", "rejected"] {
+            integration
+                .send_member_removed(&removal_app(), "presence-room", user)
+                .await
+                .unwrap();
+        }
+
+        let shutdown = integration.shutdown();
+        tokio::pin!(shutdown);
+        assert!(
+            futures::poll!(&mut shutdown).is_pending(),
+            "a partial enqueue failure must still wait for accepted ready jobs"
+        );
+        assert_eq!(
+            driver.stats(WEBHOOK_QUEUE_NAME).await.unwrap().ready,
+            Some(1)
+        );
+
+        let (started, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        driver
+            .process_queue(
+                WEBHOOK_QUEUE_NAME,
+                Box::new({
+                    let release = release.clone();
+                    move |job| {
+                        let release = release.clone();
+                        let started = started.clone();
+                        Box::pin(async move {
+                            started.send(job).unwrap();
+                            release.acquire().await.unwrap().forget();
+                            Ok(())
+                        })
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        let job = tokio::time::timeout(Duration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.payload.events[0]["user_id"], json!("accepted"));
+        assert_eq!(
+            driver.stats(WEBHOOK_QUEUE_NAME).await.unwrap().active,
+            Some(1)
+        );
+        assert!(
+            futures::poll!(&mut shutdown).is_pending(),
+            "shutdown must also wait for the accepted job to finish processing"
+        );
+        release.add_permits(1);
+        let error = tokio::time::timeout(Duration::from_secs(2), &mut shutdown)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(error, Error::BufferFull(_)));
+        driver.disconnect().await.unwrap();
+        let stats = driver.stats(WEBHOOK_QUEUE_NAME).await.unwrap();
+        assert_eq!(stats.ready, Some(0));
+        assert_eq!(stats.active, Some(0));
+        assert_eq!(stats.completed, Some(1));
     }
 
     #[tokio::test]

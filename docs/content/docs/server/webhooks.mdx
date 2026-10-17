@@ -77,6 +77,8 @@ reconnect check still delays the webhook by 3 seconds.
 This drain has a budget of `queue.reliability.shutdown_timeout_ms`
 (`QUEUE_SHUTDOWN_TIMEOUT_MS`, default 30000), separate from `shutdown_grace_period`. The memory
 queue must finish its queued work before shutdown because it cannot retain jobs after exit.
+If the final batch is only partly accepted, shutdown still drains accepted memory-queue jobs
+within that budget before returning the enqueue error.
 Broker-backed queues only need the final jobs enqueued before their normal worker shutdown;
 pending durable jobs can be processed later.
 
