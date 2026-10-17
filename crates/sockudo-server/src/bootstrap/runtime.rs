@@ -775,6 +775,8 @@ mod tests {
             "adapter": {"driver": "local"},
             "cache": {"driver": "memory"},
             "queue": {"driver": "memory"},
+            // CI enables push; this local fixture explicitly opts into memory drivers.
+            "push": {"storage_driver": "memory", "queue_driver": "memory", "allow_memory_drivers": true},
             "metrics": {"enabled": false},
             "rate_limiter": {"enabled": false},
             "cleanup": {"async_enabled": false},

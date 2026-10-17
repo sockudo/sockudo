@@ -59,6 +59,8 @@ async fn shutdown_case(
         "host": "127.0.0.1", "port": address.port(), "shutdown_grace_period": grace,
         "adapter": {"driver": "local"}, "cache": {"driver": "memory"},
         "queue": {"driver": "memory", "reliability": {"shutdown_timeout_ms": drain_ms}},
+        // The child also needs the local-only opt-in when CI builds with push enabled.
+        "push": {"storage_driver": "memory", "queue_driver": "memory", "allow_memory_drivers": true},
         "rate_limiter": {"enabled": false}, "metrics": {"enabled": false},
         "presence": {"v2_ungraceful_timeout_seconds": lease},
         "cleanup": {"async_enabled": async_cleanup, "worker_threads": 2},
