@@ -74,6 +74,13 @@ impl CleanupWorker {
                 biased;
 
                 _ = cancel_token.cancelled() => {
+                    // Producers have stopped; consume queued tasks before the final batch.
+                    while let Ok(task) = receiver.try_recv() {
+                        batch.push(task);
+                        if batch.len() >= self.config.batch_size {
+                            self.process_batch(&mut batch).await;
+                        }
+                    }
                     if !batch.is_empty() {
                         info!(task_count = batch.len(), shutdown_reason = "cancelled", "processing final cleanup batch");
                         self.process_batch(&mut batch).await;
@@ -551,6 +558,74 @@ mod tests {
             },
             None,
         )
+    }
+
+    #[tokio::test]
+    async fn cancellation_drains_queued_disconnects_with_senders_still_alive() {
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager.create_app(make_app()).await.unwrap();
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(8);
+        let mut sockets = Vec::new();
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            let socket_id = SocketId::new();
+            let (writer, client) = make_ws_pair().await;
+            clients.push(client);
+            adapter
+                .add_socket(
+                    socket_id,
+                    writer,
+                    APP_ID,
+                    app_manager.clone(),
+                    WebSocketBufferConfig::default(),
+                    ProtocolVersion::V1,
+                    WireFormat::Json,
+                    true,
+                    sockudo_protocol::AppendMode::Delta,
+                )
+                .await
+                .unwrap();
+            adapter
+                .add_to_channel(APP_ID, "public-feed", &socket_id)
+                .await
+                .unwrap();
+            tx.send(DisconnectTask {
+                socket_id,
+                app_id: APP_ID.to_string(),
+                subscribed_channels: vec!["public-feed".to_string()],
+                user_id: None,
+                cause: sockudo_core::websocket::DisconnectCause::Unknown,
+                timestamp: Instant::now(),
+                connection_info: None,
+                presence_ungraceful_timeout_seconds: 0,
+            })
+            .await
+            .unwrap();
+            sockets.push(socket_id);
+        }
+        let worker = make_worker_with_app_manager(adapter.clone(), app_manager);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        // Cancellation wins before any receives. The final partial batch must still run.
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            worker.run_with_cancellation(rx, cancel),
+        )
+        .await
+        .expect("worker should finish without waiting for senders to drop");
+        for socket_id in sockets {
+            assert!(adapter.get_connection(&socket_id, APP_ID).await.is_none());
+            assert!(
+                !adapter
+                    .is_in_channel(APP_ID, "public-feed", &socket_id)
+                    .await
+                    .unwrap()
+            );
+        }
+        drop(tx);
+        drop(clients);
     }
 
     #[tokio::test]

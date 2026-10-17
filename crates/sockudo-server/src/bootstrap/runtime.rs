@@ -557,7 +557,27 @@ impl SockudoServer {
         self.state.running.store(false, Ordering::SeqCst);
         self.handler.shutdown_ai_workers().await;
 
-        // Tell cluster peers this node is leaving and no responses are expected.
+        // Connections were already closed with 4200 by the first shutdown
+        // signal; this covers direct stop() callers that skip the signal path.
+        self.close_all_connections().await;
+
+        // Keep adapters, caches and queue workers alive until every disconnect producer
+        // has finished. Presence leases retain their reconnect suppression deadlines.
+        let drain_timeout =
+            Duration::from_millis(self.config.queue.reliability.shutdown_timeout_ms);
+        match tokio::time::timeout(drain_timeout, self.drain_shutdown_webhooks()).await {
+            Ok(Ok(job_count)) => info!(job_count, "shutdown webhook drain completed"),
+            Ok(Err(error)) => error!(error = %error, "shutdown webhook drain failed"),
+            Err(error) => warn!(
+                error = %error,
+                timeout_ms = self.config.queue.reliability.shutdown_timeout_ms,
+                "shutdown webhook drain timed out, pending lifecycle events may be lost"
+            ),
+        }
+        self.state.cleanup_cancellation.cancel();
+
+        // Keep this node's presence visible to peers until its leases and reconnect
+        // checks finish. NodeDead removes its replicated presence from peer registries.
         if !self.config.server_role.is_api()
             && let Err(e) = self
                 .state
@@ -566,14 +586,6 @@ impl SockudoServer {
                 .await
         {
             warn!(error = %e, "failed to announce node departure");
-        }
-
-        // Connections were already closed with 4200 by the first shutdown
-        // signal; this covers direct stop() callers that skip the signal path.
-        self.close_all_connections().await;
-
-        if self.state.cleanup_worker_handles.is_some() {
-            info!("Cleanup system will shutdown when server process ends");
         }
 
         #[cfg(all(feature = "push", feature = "monolith"))]
@@ -592,13 +604,13 @@ impl SockudoServer {
         self.state.delta_compression.stop_cleanup_task().await;
 
         // Disconnect from backend services
-        if let Err(e) = self.state.cache_manager.disconnect().await {
-            warn!(error = %e, "error disconnecting cache manager");
-        }
         if let Some(queue_manager_arc) = &self.state.queue_manager
             && let Err(e) = queue_manager_arc.disconnect().await
         {
             warn!(error = %e, "error disconnecting queue manager");
+        }
+        if let Err(e) = self.state.cache_manager.disconnect().await {
+            warn!(error = %e, "error disconnecting cache manager");
         }
 
         // Clean up Unix socket file if it exists (with race condition handling)
@@ -620,6 +632,22 @@ impl SockudoServer {
 
         info!("Server stopped");
         Ok(())
+    }
+
+    async fn drain_shutdown_webhooks(&self) -> Result<usize> {
+        self.handler.drain_connection_cleanup().await;
+        self.state.cleanup_cancellation.cancel();
+        let workers = std::mem::take(&mut *self.state.cleanup_worker_handles.lock().await);
+        for worker in workers {
+            worker
+                .await
+                .map_err(|error| Error::Internal(format!("cleanup worker failed: {error}")))?;
+        }
+        self.handler
+            .presence_manager()
+            .drain_pending_removals()
+            .await;
+        self.state.webhooks_integration.shutdown().await
     }
 }
 

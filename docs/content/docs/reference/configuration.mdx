@@ -869,6 +869,10 @@ memory_capacity = 100000
 max_batch_size = 1000
 ```
 
+`shutdown_timeout_ms` bounds the lifecycle/webhook drain after the listener grace period and
+also the subsequent queue worker shutdown. These are separate budgets; reserve time for both
+in your process supervisor. See [shutdown delivery](/docs/server/webhooks#shutdown-delivery).
+
 Broker-backed queues use native bulk/pipelined publishing rather than the
 compatibility loop: NATS and RabbitMQ pipeline acknowledgements, Kafka feeds
 librdkafka concurrently, Iggy and Pulsar use their producer batch APIs, Google

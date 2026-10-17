@@ -65,7 +65,7 @@ serde = { workspace = true }
 sockudo-ws = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 uuid = { workspace = true }

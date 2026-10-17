@@ -9,8 +9,10 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sonic_rs::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::time::interval;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{Instrument, debug, error, warn};
 
 const WEBHOOK_QUEUE_NAME: &str = "webhooks";
@@ -112,6 +114,12 @@ pub struct WebhookIntegration {
     batched_webhooks: Arc<Mutex<Vec<JobData>>>,
     queue_manager: Option<Arc<QueueManager>>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
+    deferred_tasks: TaskTracker,
+    enqueue_tasks: TaskTracker,
+    batching_tasks: TaskTracker,
+    batching_stop: CancellationToken,
+    closed: AtomicBool,
+    deferred_closed: AtomicBool,
 }
 
 impl WebhookIntegration {
@@ -125,6 +133,12 @@ impl WebhookIntegration {
             batched_webhooks: Arc::new(Mutex::new(Vec::new())),
             queue_manager: None,
             app_manager,
+            deferred_tasks: TaskTracker::new(),
+            enqueue_tasks: TaskTracker::new(),
+            batching_tasks: TaskTracker::new(),
+            batching_stop: CancellationToken::new(),
+            closed: AtomicBool::new(false),
+            deferred_closed: AtomicBool::new(false),
         };
 
         if integration.config.enabled {
@@ -183,35 +197,97 @@ impl WebhookIntegration {
         let batched_webhooks_clone = self.batched_webhooks.clone();
         let batch_duration = self.config.batching.duration;
         let batch_size = self.config.batching.size.max(1);
+        let stop = self.batching_stop.clone();
 
-        tokio::spawn(async move {
+        self.batching_tasks.spawn(async move {
             let mut interval = interval(Duration::from_millis(batch_duration));
             loop {
-                interval.tick().await;
-                let jobs_to_process = {
-                    let mut batched = batched_webhooks_clone.lock();
-                    std::mem::take(&mut *batched)
-                };
-
-                if jobs_to_process.is_empty() {
-                    continue;
+                tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => break,
+                    _ = interval.tick() => {}
                 }
-                debug!(
-                    job_count = jobs_to_process.len(),
-                    "processing batched webhook jobs"
-                );
-
-                if let Some(qm) = &queue_manager_clone {
-                    let batches = Self::merge_jobs_for_queue(jobs_to_process, batch_size);
-                    if let Err(e) = qm.add_batch_to_queue(WEBHOOK_QUEUE_NAME, batches).await {
-                        error!(
-                            error = %e,
-                            "failed to enqueue batched webhook jobs"
-                        );
-                    }
+                // Finish an in-flight enqueue before honoring shutdown.
+                if let Err(error) = Self::drain_batched_webhooks(
+                    &batched_webhooks_clone,
+                    &queue_manager_clone,
+                    batch_size,
+                )
+                .await
+                {
+                    error!(error = %error, "failed to enqueue batched webhook jobs");
                 }
             }
         });
+    }
+
+    /// Track delayed lifecycle producers so shutdown can preserve their normal deadlines.
+    pub fn spawn_deferred(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        let token = self.deferred_tasks.token();
+        if self.deferred_closed.load(Ordering::Acquire) {
+            warn!("deferred webhook rejected after shutdown");
+            return;
+        }
+        tokio::spawn(async move {
+            let _token = token;
+            future.await;
+        });
+    }
+
+    async fn drain_batched_webhooks(
+        buffer: &Mutex<Vec<JobData>>,
+        queue: &Option<Arc<QueueManager>>,
+        batch_size: usize,
+    ) -> Result<usize> {
+        let jobs = std::mem::take(&mut *buffer.lock());
+        let count = jobs.len();
+        if count != 0 {
+            let queue = queue
+                .as_ref()
+                .ok_or_else(|| Error::Queue("webhook queue unavailable".into()))?;
+            queue
+                .add_batch_to_queue(
+                    WEBHOOK_QUEUE_NAME,
+                    Self::merge_jobs_for_queue(jobs, batch_size),
+                )
+                .await?;
+        }
+        Ok(count)
+    }
+
+    /// Drain producers, join the interval task, then flush the final batch. Call after
+    /// socket cleanup and presence leases have drained. The caller must bound this wait.
+    pub async fn shutdown(&self) -> Result<usize> {
+        self.deferred_closed.store(true, Ordering::Release);
+        self.deferred_tasks.close();
+        self.deferred_tasks.wait().await;
+        self.closed.store(true, Ordering::Release);
+        self.enqueue_tasks.close();
+        self.enqueue_tasks.wait().await;
+        self.batching_stop.cancel();
+        self.batching_tasks.close();
+        self.batching_tasks.wait().await;
+        let count = Self::drain_batched_webhooks(
+            &self.batched_webhooks,
+            &self.queue_manager,
+            self.config.batching.size.max(1),
+        )
+        .await?;
+
+        // Memory queues cannot preserve ready jobs across process exit. Broker-backed
+        // queues retain queued work; waiting for their global depth would include peers.
+        if let Some(queue) = &self.queue_manager
+            && queue.driver.backend() == sockudo_core::queue::QueueBackendKind::Memory
+        {
+            loop {
+                let stats = queue.driver.stats(WEBHOOK_QUEUE_NAME).await?;
+                if stats.ready == Some(0) && stats.active == Some(0) && stats.delayed == Some(0) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        Ok(count)
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -219,6 +295,10 @@ impl WebhookIntegration {
     }
 
     async fn add_webhook(&self, mut job_data: JobData) -> Result<()> {
+        let _enqueue = self.enqueue_tasks.token();
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::Queue("webhook integration is shutting down".into()));
+        }
         if !self.is_enabled() {
             return Ok(());
         }
@@ -241,6 +321,10 @@ impl WebhookIntegration {
     /// AI lifecycle traffic bypasses the optional in-process batching vector so
     /// producer backpressure and queue retry policy remain authoritative.
     async fn add_bounded_webhook(&self, mut job_data: JobData) -> Result<()> {
+        let _enqueue = self.enqueue_tasks.token();
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::Queue("webhook integration is shutting down".into()));
+        }
         if !self.is_enabled() {
             return Ok(());
         }
@@ -833,6 +917,174 @@ mod tests {
     use sockudo_core::app::{AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
     use sockudo_core::webhook_types::{JobData, JobPayload, Webhook, WebhookFilter};
     use sockudo_queue::MemoryQueueManager;
+
+    struct ControlledQueue {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Semaphore,
+        jobs: Mutex<Vec<JobData>>,
+        fail: AtomicBool,
+    }
+
+    struct ControlledDriver(Arc<ControlledQueue>);
+
+    #[async_trait::async_trait]
+    impl QueueInterface for ControlledDriver {
+        async fn add_to_queue(&self, _: &str, job: JobData) -> Result<()> {
+            self.0.entered.notify_one();
+            self.0.release.acquire().await.unwrap().forget();
+            if self.0.fail.load(Ordering::Acquire) {
+                return Err(Error::Queue("injected enqueue failure".into()));
+            }
+            self.0.jobs.lock().push(job);
+            Ok(())
+        }
+        async fn process_queue(&self, _: &str, _: JobProcessorFnAsync) -> Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn check_health(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn controlled_queue() -> Arc<ControlledQueue> {
+        Arc::new(ControlledQueue {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+            jobs: Mutex::new(Vec::new()),
+            fail: AtomicBool::new(false),
+        })
+    }
+
+    async fn batched_integration(queue: Arc<ControlledQueue>) -> Arc<WebhookIntegration> {
+        Arc::new(
+            WebhookIntegration::new(
+                WebhookConfig {
+                    batching: BatchingConfig {
+                        enabled: true,
+                        duration: 60_000,
+                        size: 100,
+                    },
+                    ..Default::default()
+                },
+                Arc::new(MemoryAppManager::new()),
+                Some(Arc::new(QueueManager::new(Box::new(ControlledDriver(
+                    queue,
+                ))))),
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    fn removal_app() -> App {
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["member_removed".into()],
+            ..Default::default()
+        }]);
+        app
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_in_flight_interval_enqueue_before_the_final_flush() {
+        let queue = controlled_queue();
+        let integration = batched_integration(queue.clone()).await;
+        integration
+            .send_member_removed(&removal_app(), "presence-room", "first")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), queue.entered.notified())
+            .await
+            .unwrap();
+        integration
+            .send_member_removed(&removal_app(), "presence-room", "last")
+            .await
+            .unwrap();
+        let shutdown = tokio::spawn({
+            let integration = integration.clone();
+            async move { integration.shutdown().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !shutdown.is_finished(),
+            "an in-flight enqueue must be joined"
+        );
+        queue.release.add_permits(2);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), shutdown)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            1
+        );
+        assert_eq!(queue.jobs.lock().len(), 2);
+        assert!(
+            integration
+                .send_member_removed(&removal_app(), "presence-room", "late")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn final_flush_propagates_enqueue_failure() {
+        let queue = controlled_queue();
+        let integration = batched_integration(queue.clone()).await;
+        // Stop the ticker deterministically so only shutdown can enqueue this job.
+        integration.batching_stop.cancel();
+        integration.batching_tasks.close();
+        integration.batching_tasks.wait().await;
+        integration
+            .send_member_removed(&removal_app(), "presence-room", "user")
+            .await
+            .unwrap();
+        queue.fail.store(true, Ordering::Release);
+        queue.release.add_permits(1);
+        assert!(integration.shutdown().await.is_err());
+        assert!(queue.jobs.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_a_deferred_producer_then_flushes_its_event() {
+        let queue = controlled_queue();
+        let integration = batched_integration(queue.clone()).await;
+        let (release, wait) = tokio::sync::oneshot::channel();
+        integration.spawn_deferred({
+            let integration = integration.clone();
+            async move {
+                wait.await.unwrap();
+                integration
+                    .send_member_removed(&removal_app(), "presence-room", "user")
+                    .await
+                    .unwrap();
+            }
+        });
+        let shutdown = tokio::spawn({
+            let integration = integration.clone();
+            async move { integration.shutdown().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!shutdown.is_finished());
+        queue.release.add_permits(1);
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(queue.jobs.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_of_an_empty_buffer_is_idempotent() {
+        let integration = batched_integration(controlled_queue()).await;
+        assert_eq!(integration.shutdown().await.unwrap(), 0);
+        assert_eq!(integration.shutdown().await.unwrap(), 0);
+    }
 
     fn create_test_queue_manager() -> Arc<QueueManager> {
         let driver = MemoryQueueManager::new();

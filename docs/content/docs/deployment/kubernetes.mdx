@@ -198,7 +198,7 @@ startupProbe:
   timeoutSeconds: 3
   failureThreshold: 30
 
-terminationGracePeriodSeconds: 45
+terminationGracePeriodSeconds: 120
 
 pdb:
   enabled: true
@@ -364,7 +364,8 @@ Set:
 
 - a PodDisruptionBudget that leaves enough connection capacity online
 - zone or host topology spread
-- a termination grace period longer than `SHUTDOWN_GRACE_PERIOD`
+- a termination grace period covering listener grace, webhook drain, queue worker shutdown,
+  and teardown
 - a rollout `maxUnavailable` compatible with the PDB and remaining socket capacity
 - load-balancer deregistration or endpoint propagation time inside the drain budget
 
@@ -373,8 +374,10 @@ with code 4200 so clients reconnect right away, and keeps the listener open for
 `SHUTDOWN_GRACE_PERIOD` seconds while `/ready` returns 503 `DRAINING`. Set
 `SHUTDOWN_GRACE_PERIOD` above the readiness probe's
 `periodSeconds × failureThreshold` plus endpoint propagation time, and keep
-`terminationGracePeriodSeconds` above `SHUTDOWN_GRACE_PERIOD` plus the time needed to close
-connections.
+`terminationGracePeriodSeconds` above `SHUTDOWN_GRACE_PERIOD` plus twice
+`QUEUE_SHUTDOWN_TIMEOUT_MS / 1000`, with additional time for connection and backend teardown.
+The two budgets cover [webhook draining](/docs/server/webhooks#shutdown-delivery) and queue worker
+shutdown. An early SIGKILL can lose buffered lifecycle events.
 
 `strategy` is passed through to the Deployment. Left unset, Kubernetes applies its default of
 `maxUnavailable: 25%` / `maxSurge: 25%`, which takes a quarter of the connection capacity offline

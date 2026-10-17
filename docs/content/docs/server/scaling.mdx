@@ -192,7 +192,19 @@ On SIGTERM or SIGINT, Sockudo:
 2. Closes existing connections immediately with code 4200 so clients reconnect right away
    instead of waiting for the grace period or a load-balancer cutoff.
 3. Keeps the listener open for `shutdown_grace_period` seconds so load balancers finish
-   deregistration without connection-refused errors, then disconnects from backends and exits.
+   deregistration without connection-refused errors.
+4. Waits for connection cleanup, pending presence leases, and delayed lifecycle webhook
+   producers, then flushes the remaining webhook batch. This phase has a separate budget of
+   `queue.reliability.shutdown_timeout_ms` (30 seconds by default). Presence leases and
+   reconnect checks retain their normal timing; shutdown does not force an early departure.
+5. Drains local memory-queue work before disconnecting the queue and other backends. Broker
+   queues retain their enqueued jobs and apply their normal worker shutdown budget.
+
+Allow the process supervisor enough time for the listener grace, lifecycle drain, queue worker
+shutdown, and connection/backend teardown. The two drain phases can each use
+`queue.reliability.shutdown_timeout_ms`. An exhausted lifecycle budget logs a warning that
+pending events may be lost; a forced process kill cannot flush in-memory events. See
+[shutdown webhook delivery](/docs/server/webhooks#shutdown-delivery).
 
 Set `shutdown_grace_period` to cover your load balancer's deregistration time (for a
 readiness probe, roughly `periodSeconds × failureThreshold` plus endpoint propagation). Keep

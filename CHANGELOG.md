@@ -37,6 +37,13 @@
 
 ### Fixed
 
+- Graceful shutdown waits for socket cleanup, presence leases, and delayed lifecycle webhooks
+  before flushing the final webhook batch and stopping queue/cache dependencies. Previously,
+  `member_removed` could disappear when its normal lease/delay or batch interval outlasted the
+  listener grace period. The drain uses a separate `queue.reliability.shutdown_timeout_ms`
+  budget (30 seconds by default), retains normal reconnect suppression, waits for memory-queue
+  work to finish, and warns when the budget expires. Process supervisor timeouts must cover
+  this drain and queue worker shutdown in addition to listener grace and teardown.
 - The memory cache driver honors the TTL passed with each write. It ignored it and kept every
   entry for the cache-wide `cache.memory.ttl` (300 seconds by default), so short-lived keys
   outlived their purpose: `GET /apps/{appId}/channels` served a listing cached for 2 seconds for

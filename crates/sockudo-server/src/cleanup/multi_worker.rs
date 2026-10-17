@@ -15,6 +15,7 @@ pub struct MultiWorkerCleanupSystem {
     senders: Vec<CleanupSenderHandle>,
     worker_handles: Vec<tokio::task::JoinHandle<()>>,
     config: CleanupConfig,
+    cancellation: tokio_util::sync::CancellationToken,
 }
 
 impl MultiWorkerCleanupSystem {
@@ -35,6 +36,7 @@ impl MultiWorkerCleanupSystem {
 
         let mut senders = Vec::with_capacity(num_workers);
         let mut worker_handles = Vec::with_capacity(num_workers);
+        let cancellation = tokio_util::sync::CancellationToken::new();
 
         for worker_id in 0..num_workers {
             let (sender, receiver) = mpsc::bounded_async(config.queue_buffer_size);
@@ -50,9 +52,12 @@ impl MultiWorkerCleanupSystem {
                 metrics.clone(),
             );
 
+            let worker_cancellation = cancellation.clone();
             let handle = tokio::spawn(async move {
                 info!(worker_id = worker_id, "cleanup worker starting");
-                worker.run(receiver).await;
+                worker
+                    .run_with_cancellation(receiver, worker_cancellation)
+                    .await;
                 info!(worker_id = worker_id, "cleanup worker stopped");
             });
 
@@ -70,6 +75,7 @@ impl MultiWorkerCleanupSystem {
             senders,
             worker_handles,
             config,
+            cancellation,
         }
     }
 
@@ -85,6 +91,11 @@ impl MultiWorkerCleanupSystem {
         } else {
             None
         }
+    }
+
+    /// Stop receiving new work and drain queued tasks once producers have finished.
+    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.cancellation.clone()
     }
 
     /// Get worker handles for shutdown
