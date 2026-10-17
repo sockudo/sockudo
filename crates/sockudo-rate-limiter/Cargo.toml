@@ -32,3 +32,6 @@ tokio = { workspace = true }
 tower-layer = { workspace = true }
 tower-service = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

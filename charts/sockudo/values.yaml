@@ -114,9 +114,11 @@ config:
     enabled: true
     apiMaxRequests: 100
     apiWindowSeconds: 60
+    # -- X-Forwarded-For position from the right; 0 ignores both forwarding headers
     apiTrustHops: 0
     wsMaxRequests: 20
     wsWindowSeconds: 60
+    # -- X-Forwarded-For position from the right; 0 ignores both forwarding headers
     wsTrustHops: 0
 
   # -- Metrics settings

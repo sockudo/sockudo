@@ -37,6 +37,12 @@
 
 ### Fixed
 
+- Rate limiting ignores both forwarding headers when `trust_hops = 0`. Deployments that
+  previously relied on `X-Real-IP` at zero must explicitly configure trusted proxy forwarding
+  and restrict direct server access. Short, invalid, or duplicated forwarded chains fall back
+  to the socket peer; diagnostics contain no header contents. Proxy examples now distinguish
+  NGINX's one appended entry from Google's two appended entries.
+
 - The memory cache driver honors the TTL passed with each write. It ignored it and kept every
   entry for the cache-wide `cache.memory.ttl` (300 seconds by default), so short-lived keys
   outlived their purpose: `GET /apps/{appId}/channels` served a listing cached for 2 seconds for

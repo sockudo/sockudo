@@ -402,6 +402,13 @@ identical across controllers.
 
 ## Ingress and load balancers
 
+The production example's `apiTrustHops: 1` and `wsTrustHops: 1` assume an ingress such as NGINX
+that appends one client address to `X-Forwarded-For`. These values select the client's position
+from the right, not a universal proxy count. A Google external Application Load Balancer directly
+in front of Sockudo appends two addresses and needs `2`. Restrict pod access to trusted ingress
+sources before enabling either value. The default `0` ignores both `X-Forwarded-For` and
+`X-Real-IP`; see [client IP extraction](/docs/reference/configuration#rate-limiter-client-ip).
+
 Confirm all layers:
 
 - accept HTTP/1.1 WebSocket upgrades

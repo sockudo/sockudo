@@ -261,6 +261,37 @@ the same durable push store used by native push APIs.
 | `[queue]` | Webhook and push background work. |
 | `[rate_limiter]` | Request, connection, event, and push limits. |
 
+## Rate limiter client IP
+
+`rate_limiter.api_rate_limit.trust_hops` and
+`rate_limiter.websocket_rate_limit.trust_hops` select the client's **one-based position from the
+right** of `X-Forwarded-For`, not a number of proxy machines. The Helm equivalents are
+`config.rateLimiter.apiTrustHops` and `wsTrustHops`.
+
+| Path directly in front of Sockudo | Header after the proxy appends its entries | Value |
+| --- | --- | --- |
+| NGINX using `$proxy_add_x_forwarded_for` | `<untrusted-prefix>, <client>` | `1` |
+| Google external Application Load Balancer | `<untrusted-prefix>, <client>, <load-balancer>` | `2` |
+| No trusted proxy | Headers ignored; socket peer used | `0` (default) |
+
+Only enable a positive value when network access to Sockudo is restricted to trusted proxies,
+and each proxy sanitizes or appends the appropriate forwarding headers. Extra intermediaries
+can change the required value. Choosing too large an offset can select client-supplied data;
+hop counting does not authenticate the immediate peer.
+
+With a positive value, Sockudo uses `X-Real-IP` only when `X-Forwarded-For` is absent. The trusted
+proxy must overwrite `X-Real-IP`. A malformed, duplicated, or too-short `X-Forwarded-For` header
+falls back directly to the socket peer, even if `X-Real-IP` is present. Invalid or duplicated
+`X-Real-IP` also falls back. A warning is emitted once per extractor and contains only the
+configured offset, entry count, and failure reason. All accepted IPs are normalized before
+use as rate-limit keys.
+
+**Migration:** `0` now ignores **both** forwarding headers. Earlier versions honored
+`X-Real-IP` even at `0`, allowing directly connected clients to choose their rate-limit bucket.
+Deployments relying on a trusted proxy's `X-Real-IP` must explicitly configure a positive value
+for each enabled limiter and restrict direct access to the server. Without this configuration,
+proxied clients share the socket peer's bucket.
+
 ## OMQ adapter
 
 `adapter.driver = "omq"` enables brokerless horizontal fanout over OMQ PUB/SUB.
