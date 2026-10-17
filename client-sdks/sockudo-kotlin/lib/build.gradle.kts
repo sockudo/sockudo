@@ -3,13 +3,14 @@ import java.util.Base64
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.animalsniffer)
     `java-library`
     `maven-publish`
     signing
 }
 
 group = "io.sockudo"
-version = "2.3.0"
+version = "2.3.1"
 
 repositories {
     mavenCentral()
@@ -30,6 +31,12 @@ dependencies {
     testImplementation(libs.coroutines.test)
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.okhttp.mockwebserver)
+
+    signature(libs.android.api26.signature) {
+        artifact {
+            type = "signature"
+        }
+    }
 }
 
 java {
@@ -49,6 +56,12 @@ kotlin {
 
 tasks.named<Test>("test") {
     useJUnitPlatform()
+}
+
+// Fail on JDK APIs missing from Android API 26, the minimum supported Android version.
+animalsniffer {
+    sourceSets = listOf(project.sourceSets.main.get())
+    failWithoutSignatures = true
 }
 
 publishing {

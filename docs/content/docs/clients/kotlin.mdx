@@ -6,7 +6,7 @@ icon: Smartphone
 
 `sockudo-kotlin` is the official Android and JVM realtime SDK. It uses OkHttp for WebSockets and exposes the same channel model as other Sockudo clients.
 
-The current package targets JVM 23 and uses Protocol V2 by default. Set
+The current package targets JVM 17, supports Android API 26+ (Android 8.0+), and uses Protocol V2 by default. Set
 `protocolVersion = 1` only when strict Pusher Protocol V1 compatibility is
 required.
 
@@ -16,7 +16,7 @@ Install the published package from Maven Central:
 
 ```kotlin
 dependencies {
-    implementation("io.sockudo:sockudo-kotlin:2.3.0")
+    implementation("io.sockudo:sockudo-kotlin:2.3.1")
 }
 ```
 
@@ -26,7 +26,7 @@ For Maven projects:
 <dependency>
   <groupId>io.sockudo</groupId>
   <artifactId>sockudo-kotlin</artifactId>
-  <version>2.3.0</version>
+  <version>2.3.1</version>
 </dependency>
 ```
 
