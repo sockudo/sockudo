@@ -1,8 +1,9 @@
 use sockudo_adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
-use sockudo_adapter::horizontal_adapter::RequestType;
+use sockudo_adapter::horizontal_adapter::{RequestBody, RequestType};
 use sockudo_adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_core::error::Result;
+use sockudo_core::options::ClusterHealthConfig;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use std::time::Duration;
 
@@ -18,6 +19,8 @@ async fn test_single_node_skips_broadcast() -> Result<()> {
     };
 
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config.clone()).await?;
+    // These tests cover a node that already knows it is alone.
+    adapter.settle_discovery_for_test();
     adapter.init().await;
     adapter.start_listeners().await?;
 
@@ -129,6 +132,8 @@ async fn test_single_node_skips_requests() -> Result<()> {
     };
 
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config.clone()).await?;
+    // These tests cover a node that already knows it is alone.
+    adapter.settle_discovery_for_test();
     adapter.start_listeners().await?;
 
     // Send a horizontal request
@@ -239,6 +244,8 @@ async fn test_single_node_skips_presence_broadcasts() -> Result<()> {
     };
 
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config.clone()).await?;
+    // These tests cover a node that already knows it is alone.
+    adapter.settle_discovery_for_test();
     adapter.start_listeners().await?;
 
     // Broadcast presence join
@@ -376,6 +383,8 @@ async fn test_transition_single_to_multi_node() -> Result<()> {
     };
 
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config.clone()).await?;
+    // These tests cover a node that already knows it is alone.
+    adapter.settle_discovery_for_test();
     adapter.start_listeners().await?;
 
     let message = PusherMessage {
@@ -440,6 +449,8 @@ async fn test_should_skip_horizontal_communication() -> Result<()> {
     };
 
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config.clone()).await?;
+    // These tests cover a node that already knows it is alone.
+    adapter.settle_discovery_for_test();
 
     // Should skip with single node
     let should_skip = adapter.should_skip_horizontal_communication().await;
@@ -490,6 +501,165 @@ async fn test_dead_node_optimization() -> Result<()> {
 
     assert_eq!(dead_nodes.len(), 1, "Should detect 1 dead node");
     assert_eq!(dead_nodes[0], "dead-node");
+
+    Ok(())
+}
+
+fn test_broadcast_message() -> PusherMessage {
+    PusherMessage {
+        channel: Some("test-channel".to_string()),
+        event: Some("test-event".to_string()),
+        data: Some(MessageData::String("test message".to_string())),
+        name: None,
+        user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
+        message_id: None,
+        stream_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
+    }
+}
+
+/// A node that just started knows no peers yet, even when they exist: it learns about each
+/// one from that peer's heartbeats. It must keep broadcasting until discovery settles,
+/// rather than dropping fanout as if it were alone.
+#[tokio::test]
+async fn test_fresh_node_broadcasts_before_discovery_settles() -> Result<()> {
+    let config = MockConfig {
+        node_states: vec![MockNodeState::new("single-node")],
+        ..Default::default()
+    };
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    adapter.start_listeners().await?;
+
+    assert_eq!(adapter.horizontal.get_effective_node_count().await, 1);
+    assert!(!adapter.should_skip_horizontal_communication().await);
+
+    adapter
+        .send(
+            "test-channel",
+            test_broadcast_message(),
+            None,
+            "test-app",
+            None,
+        )
+        .await?;
+    assert_eq!(
+        adapter.transport.get_published_broadcasts().await.len(),
+        1,
+        "a node still discovering peers must publish its broadcasts"
+    );
+
+    Ok(())
+}
+
+/// Once a full node timeout passes with no peer heard, the node is alone and takes the
+/// single-node shortcut again.
+#[tokio::test]
+async fn test_node_skips_once_discovery_settles_without_peers() -> Result<()> {
+    let config = MockConfig {
+        node_states: vec![MockNodeState::new("single-node")],
+        ..Default::default()
+    };
+    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    adapter
+        .set_cluster_health(&ClusterHealthConfig {
+            enabled: true,
+            heartbeat_interval_ms: 50,
+            node_timeout_ms: 200,
+            cleanup_interval_ms: 100,
+        })
+        .await?;
+    adapter.start_listeners().await?;
+
+    assert!(!adapter.should_skip_horizontal_communication().await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(adapter.should_skip_horizontal_communication().await);
+
+    adapter
+        .send(
+            "test-channel",
+            test_broadcast_message(),
+            None,
+            "test-app",
+            None,
+        )
+        .await?;
+    assert_eq!(adapter.transport.get_published_broadcasts().await.len(), 0);
+
+    Ok(())
+}
+
+/// A node answers a new peer's heartbeat at once with a heartbeat addressed to it, so the
+/// new node learns about its peers immediately instead of at their next periodic heartbeat.
+#[tokio::test]
+async fn test_new_node_heartbeat_gets_an_immediate_reply() -> Result<()> {
+    let config = MockConfig {
+        node_states: vec![MockNodeState::new("node-1")],
+        ..Default::default()
+    };
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    adapter.start_listeners().await?;
+
+    let heartbeat = RequestBody {
+        request_id: "heartbeat-from-new-node".to_string(),
+        node_id: "new-node".to_string(),
+        app_id: "cluster".to_string(),
+        request_type: RequestType::Heartbeat,
+        channel: None,
+        socket_id: None,
+        user_id: None,
+        user_info: None,
+        timestamp: None,
+        dead_node_id: None,
+        target_node_id: None,
+        channels: None,
+        reply_to: None,
+        trace_context: Default::default(),
+    };
+    let _ = adapter.transport.deliver_request(heartbeat.clone()).await;
+
+    let is_reply = |request: &RequestBody| {
+        request.request_type == RequestType::Heartbeat
+            && request.node_id == adapter.node_id
+            && request.target_node_id.as_deref() == Some("new-node")
+    };
+    let mut replies = 0;
+    for _ in 0..50 {
+        replies = adapter
+            .transport
+            .get_published_requests()
+            .await
+            .iter()
+            .filter(|request| is_reply(request))
+            .count();
+        if replies > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        replies, 1,
+        "the new node must get one heartbeat back at once"
+    );
+    assert_eq!(adapter.horizontal.get_effective_node_count().await, 2);
+
+    // A known node's heartbeat is not answered again.
+    let _ = adapter.transport.deliver_request(heartbeat).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let replies = adapter
+        .transport
+        .get_published_requests()
+        .await
+        .iter()
+        .filter(|request| is_reply(request))
+        .count();
+    assert_eq!(replies, 1);
 
     Ok(())
 }

@@ -19,6 +19,8 @@ pub mod redis_cluster_sharded_pubsub;
 #[cfg(feature = "redis-cluster")]
 pub mod redis_cluster_transport;
 #[cfg(feature = "redis")]
+pub(crate) mod redis_pubsub_probe;
+#[cfg(feature = "redis")]
 pub mod redis_transport;
 
 #[cfg(feature = "google-pubsub")]

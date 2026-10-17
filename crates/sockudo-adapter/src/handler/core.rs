@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument, debug, error, info, warn};
 
 struct DisconnectPresenceLease<'a> {
     member: Option<&'a PresenceMemberInfo>,
@@ -64,8 +64,15 @@ impl ConnectionHandler {
         // Extract channel name from message
         let channel_name = self.extract_channel_from_unsubscribe_message(message)?;
 
-        // Get user ID before unsubscribing (for presence channels)
-        let user_id = self.get_user_id_for_socket(socket_id, app_config).await?;
+        // Capture the channel's identity before unsubscribe clears its membership.
+        // The connection's user_id may belong to signin or another presence channel.
+        let member = if channel_name.starts_with("presence-") {
+            self.connection_manager
+                .get_presence_member(&app_config.id, &channel_name, socket_id)
+                .await
+        } else {
+            None
+        };
 
         // CRITICAL: Clear delta compression state BEFORE unsubscribing from channel.
         // This prevents race condition where a message broadcast arrives between unsubscribe
@@ -83,7 +90,7 @@ impl ConnectionHandler {
             &socket_id.to_string(),
             &channel_name,
             &app_config.id,
-            user_id.as_deref(),
+            member.as_ref().map(|member| member.user_id.as_str()),
         )
         .await?;
 
@@ -109,8 +116,8 @@ impl ConnectionHandler {
         }
 
         // Handle presence channel member removal
-        if channel_name.starts_with("presence-")
-            && let Some(user_id_str) = user_id
+        if leave_response.left
+            && let Some(member) = member
         {
             let presence_history_policy = app_config
                 .resolved_presence_history(&channel_name, &self.server_options().presence_history);
@@ -124,7 +131,7 @@ impl ConnectionHandler {
                     self.metrics.as_ref(),
                     app_config,
                     &channel_name,
-                    &user_id_str,
+                    &member.user_id,
                     Some(socket_id),
                     sockudo_core::presence_history::PresenceHistoryEventCause::Disconnect,
                     None,
@@ -367,7 +374,37 @@ impl ConnectionHandler {
         .await
     }
 
+    /// Runs the cleanup in its own task and waits for it. Cleanup marks the connection
+    /// `disconnecting` and then awaits locks, presence and the adapter, so a caller cancelled part
+    /// way (an aborted timeout task, a dropped future) left the connection in the adapter and its
+    /// channels for good: every later disconnect returned early on `disconnecting`. Dropping a
+    /// JoinHandle only detaches the task, so the cleanup finishes whatever happens to the caller.
     async fn handle_disconnect_with_presence_timeout(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        presence_ungraceful_timeout_seconds: u64,
+    ) -> Result<()> {
+        let handler = self.clone();
+        let app_id = app_id.to_string();
+        let socket_id = *socket_id;
+        tokio::spawn(
+            async move {
+                handler
+                    .run_disconnect_cleanup(
+                        &app_id,
+                        &socket_id,
+                        presence_ungraceful_timeout_seconds,
+                    )
+                    .await
+            }
+            .in_current_span(),
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("disconnect cleanup task failed: {e}")))?
+    }
+
+    async fn run_disconnect_cleanup(
         &self,
         app_id: &str,
         socket_id: &SocketId,
@@ -655,7 +692,6 @@ impl ConnectionHandler {
                 socket_id,
                 &app_config,
                 &subscribed_channels,
-                &user_id,
                 &presence_members,
                 presence_ungraceful_timeout_seconds,
             )
@@ -722,7 +758,6 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
         subscribed_channels: &HashSet<String>,
-        user_id: &Option<String>,
         presence_members: &HashMap<String, PresenceMemberInfo>,
         presence_ungraceful_timeout_seconds: u64,
     ) -> Result<()> {
@@ -765,7 +800,6 @@ impl ConnectionHandler {
                                 self.handle_post_unsubscribe_webhooks(
                                     app_config,
                                     channel_name,
-                                    user_id,
                                     *remaining_connections,
                                     socket_id,
                                     DisconnectPresenceLease {
@@ -805,13 +839,12 @@ impl ConnectionHandler {
         &self,
         app_config: &App,
         channel_str: &str,
-        user_id: &Option<String>,
         current_sub_count: usize,
         socket_id: &SocketId,
         presence_lease: DisconnectPresenceLease<'_>,
     ) -> Result<()> {
         if channel_str.starts_with("presence-") {
-            if let Some(disconnected_user_id) = user_id {
+            if let Some(member) = presence_lease.member {
                 let presence_history_policy = app_config.resolved_presence_history(
                     channel_str,
                     &self.server_options().presence_history,
@@ -826,13 +859,11 @@ impl ConnectionHandler {
                         self.metrics.as_ref(),
                         app_config,
                         channel_str,
-                        disconnected_user_id,
+                        &member.user_id,
                         Some(socket_id),
                         sockudo_core::presence_history::PresenceHistoryEventCause::Disconnect,
                         None,
-                        presence_lease
-                            .member
-                            .and_then(|member| member.user_info.clone()),
+                        member.user_info.clone(),
                         presence_lease.timeout_seconds,
                         Some(presence_history_policy.retention()),
                     )

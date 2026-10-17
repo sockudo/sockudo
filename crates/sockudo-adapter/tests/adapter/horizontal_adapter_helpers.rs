@@ -206,6 +206,21 @@ impl MockTransport {
         *self.healthy.lock().await
     }
 
+    /// Hand `request` to this node's request listener, as if a peer had published it.
+    pub async fn deliver_request(
+        &self,
+        request: sockudo_adapter::horizontal_adapter::RequestBody,
+    ) -> Result<ResponseBody> {
+        let on_request = self
+            .handlers
+            .lock()
+            .await
+            .as_ref()
+            .map(|handlers| handlers.on_request.clone())
+            .ok_or_else(|| Error::Internal("listeners not started".to_string()))?;
+        on_request(request).await
+    }
+
     /// Get access to published requests for testing
     pub async fn get_published_requests(
         &self,

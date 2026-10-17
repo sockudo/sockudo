@@ -69,7 +69,7 @@ services:
       - adapter-benchmark
 
   iggy:
-    image: apache/iggy:latest@sha256:99b42016a898381d4bab3c2d4613456eb04ad06a7a0688314823d798a685636b
+    image: apache/iggy:0.9.0@sha256:b35fc2841964f2962a5f164d33b3ae3a9de99a66920defd3cd8a1c039470602d
     profiles: ["iggy"]
     restart: "no"
     cap_add:
@@ -84,10 +84,15 @@ services:
       IGGY_ROOT_USERNAME: "iggy"
       IGGY_ROOT_PASSWORD: "iggy"
       IGGY_TCP_ADDRESS: "0.0.0.0:8090"
+      # Iggy 0.9 rejects a wildcard bind unless it knows the address clients dial.
+      IGGY_NODE_ADVERTISED_ADDRESS: "iggy"
       IGGY_HTTP_ENABLED: "true"
       IGGY_HTTP_ADDRESS: "0.0.0.0:3000"
       IGGY_QUIC_ADDRESS: "0.0.0.0:8080"
-      IGGY_SYSTEM_PATH: "/local_data"
+      IGGY_PATH: "/local_data"
+      # "numa:auto" (the 0.9 default) fails where NUMA memory binding is
+      # unavailable, such as Docker Desktop.
+      IGGY_SHARDING_CPU_ALLOCATION: "2"
     volumes:
       - iggy-benchmark-data:/local_data
     ports:

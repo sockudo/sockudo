@@ -1,0 +1,33 @@
+# Minimal server for tests/load/pong-timeout-leak.mjs: short activity timeout, no
+# connection rate limit. ADAPTER_DRIVER=redis also needs CACHE_DRIVER=redis.
+host = "127.0.0.1"
+port = 6001
+mode = "production"
+activity_timeout = 5
+
+[adapter]
+driver = "${ADAPTER_DRIVER:-local}"
+
+[adapter.redis]
+url = "${REDIS_URL:-redis://127.0.0.1:6379}"
+
+[app_manager]
+driver = "memory"
+
+[[app_manager.array.apps]]
+id = "app-id"
+key = "app-key"
+secret = "app-secret"
+enabled = true
+
+[app_manager.array.apps.policy.limits]
+max_connections = 1000000
+
+[metrics]
+enabled = true
+driver = "prometheus"
+host = "127.0.0.1"
+port = 9601
+
+[rate_limiter]
+enabled = false

@@ -334,6 +334,7 @@ impl HorizontalTransport for RedisClusterTransport {
         let response_channel = self.response_channel.clone();
         let nodes = self.config.nodes.clone();
         let tls = self.config.tls.clone();
+        let pubsub_ping_interval = Duration::from_millis(self.config.pubsub_ping_interval_ms);
         let use_sharded_pubsub = self.use_sharded_pubsub;
         // Clone the publish connection for use in handlers (cheap, thread-safe)
         let publish_connection = self.publish_connection.clone();
@@ -373,6 +374,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         is_running.clone(),
                         shutdown.clone(),
                         tls.clone(),
+                        pubsub_ping_interval,
                     )
                 } else {
                     use crate::transports::redis_cluster_sharded_pubsub::ShardedSubscriber;
@@ -384,6 +386,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         is_running.clone(),
                         shutdown.clone(),
                         tls.clone(),
+                        pubsub_ping_interval,
                     )
                 };
 

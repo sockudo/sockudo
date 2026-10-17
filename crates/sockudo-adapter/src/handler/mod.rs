@@ -678,7 +678,9 @@ impl ConnectionHandler {
         initial_token: Option<String>,
     ) -> Result<()> {
         // Early validation and setup
-        let app_config = match self.validate_and_get_app(&app_key).await {
+        // Large sub-futures here are boxed: they run once or briefly, and inline they would be
+        // reserved for the whole lifetime of every connection's future.
+        let app_config = match Box::pin(self.validate_and_get_app(&app_key)).await {
             Ok(app) => app,
             Err(e) => {
                 // Track application validation errors
@@ -768,7 +770,7 @@ impl ConnectionHandler {
         let socket_id = SocketId::new();
         tracing::Span::current().record("app_id", app_config.id.as_str());
         tracing::Span::current().record("socket_id", socket_id.to_string());
-        self.initialize_socket_with_quota_check(
+        Box::pin(self.initialize_socket_with_quota_check(
             socket_id,
             socket_tx,
             &app_config,
@@ -778,19 +780,18 @@ impl ConnectionHandler {
                 echo_messages,
                 append_mode,
             },
-        )
+        ))
         .await?;
 
         let mut live_connection = self.capacity.track();
         // Wrapped in an async block so any early return still reaches cleanup_socket below.
         let result = async {
             // Setup rate limiting if needed
-            self.setup_rate_limiting(&socket_id, &app_config).await?;
-            self.setup_message_rate_limiting(&socket_id, &app_config)
-                .await?;
+            Box::pin(self.setup_rate_limiting(&socket_id, &app_config)).await?;
+            Box::pin(self.setup_message_rate_limiting(&socket_id, &app_config)).await?;
 
             if let Some(token) = initial_token.as_deref() {
-                let auth_result = async {
+                let auth_result = Box::pin(async {
                     if protocol_version != ProtocolVersion::V2 {
                         return Err(Error::Auth(
                             "capability tokens require protocol V2".to_string(),
@@ -799,39 +800,37 @@ impl ConnectionHandler {
                     let context = self.validate_connection_token(&app_config, token).await?;
                     self.apply_connection_token(&socket_id, &app_config, context, false)
                         .await
-                }
+                })
                 .await;
 
                 if let Err(error) = auth_result {
-                    let _ = self
-                        .send_error(&app_config.id, &socket_id, &error, None)
-                        .await;
-                    let _ = self
-                        .close_connection(
-                            &socket_id,
-                            &app_config,
-                            error.close_code(),
-                            &error.to_string(),
-                        )
-                        .await;
+                    let _ =
+                        Box::pin(self.send_error(&app_config.id, &socket_id, &error, None)).await;
+                    let _ = Box::pin(self.close_connection(
+                        &socket_id,
+                        &app_config,
+                        error.close_code(),
+                        &error.to_string(),
+                    ))
+                    .await;
                     return Err(error);
                 }
             }
 
             // Get the cancellation token so the reader loop can be cancelled
             // when the connection is cleaned up (e.g., ghost connection timeout)
-            let shutdown_token = self
-                .connection_manager
-                .get_connection(&socket_id, &app_config.id)
-                .await
-                .map(|conn| conn.cancellation_token());
+            let shutdown_token = Box::pin(
+                self.connection_manager
+                    .get_connection(&socket_id, &app_config.id),
+            )
+            .await
+            .map(|conn| conn.cancellation_token());
 
             // Send connection established
-            self.send_connection_established(&app_config.id, &socket_id)
-                .await?;
+            Box::pin(self.send_connection_established(&app_config.id, &socket_id)).await?;
 
             // Setup timeouts
-            self.setup_initial_timeouts(&socket_id, &app_config).await?;
+            Box::pin(self.setup_initial_timeouts(&socket_id, &app_config)).await?;
 
             // Main message loop
             self.run_message_loop(
@@ -846,7 +845,7 @@ impl ConnectionHandler {
         .await;
 
         live_connection.release();
-        self.cleanup_socket(&socket_id, &app_config).await;
+        Box::pin(self.cleanup_socket(&socket_id, &app_config)).await;
 
         result
     }
@@ -992,16 +991,19 @@ impl ConnectionHandler {
                     ) =>
                 {
                     live_connection.release();
-                    if let Some(connection) = self
-                        .connection_manager
-                        .get_connection(socket_id, &app_config.id)
-                        .await
-                    {
-                        let mut connection = connection.inner.lock().await;
-                        connection
-                            .state
-                            .record_disconnect_cause(DisconnectCause::ActivityTimeout);
-                    }
+                    Box::pin(async {
+                        if let Some(connection) = self
+                            .connection_manager
+                            .get_connection(socket_id, &app_config.id)
+                            .await
+                        {
+                            let mut connection = connection.inner.lock().await;
+                            connection
+                                .state
+                                .record_disconnect_cause(DisconnectCause::ActivityTimeout);
+                        }
+                    })
+                    .await;
                     warn!(
                         socket_id = %socket_id,
                         error = %e,
@@ -1016,36 +1018,40 @@ impl ConnectionHandler {
                     live_connection.release();
                     debug!(socket_id = %socket_id, "socket close frame received");
                     // Cleanup drops the split halves; let the Close reply leave first.
-                    sockudo_core::websocket::finish_peer_close(&mut reader).await;
-                    self.handle_disconnect(&app_config.id, socket_id).await?;
+                    Box::pin(sockudo_core::websocket::finish_peer_close(&mut reader)).await;
+                    Box::pin(self.handle_disconnect(&app_config.id, socket_id)).await?;
                     break;
                 }
                 Message::Text(_) | Message::Binary(_) => {
-                    if let Err(e) = self
-                        .handle_message(message, socket_id, app_config.clone())
-                        .await
+                    if let Err(e) =
+                        Box::pin(self.handle_message(message, socket_id, app_config.clone())).await
                     {
                         if e.is_fatal() {
                             live_connection.release();
                             error!(socket_id = %socket_id, error = %e, "socket message handling failed");
-                            self.handle_fatal_error(socket_id, app_config, &e).await?;
+                            Box::pin(self.handle_fatal_error(socket_id, app_config, &e)).await?;
                             break;
                         } else if matches!(&e, Error::ConnectionClosed(_)) {
                             debug!(socket_id = %socket_id, error = %e, "socket message handling stopped");
                             break;
+                        } else if matches!(
+                            &e,
+                            Error::Auth(_) | Error::InvalidSignature | Error::InvalidKey
+                        ) {
+                            warn!(socket_id = %socket_id, error = %e, "socket message rejected by authentication");
                         } else {
                             error!(socket_id = %socket_id, error = %e, "socket message handling failed");
-                            // Send pusher:error for non-fatal errors
-                            if let Err(send_err) =
-                                self.send_error(&app_config.id, socket_id, &e, None).await
-                            {
-                                error!(socket_id = %socket_id, error = %send_err, "socket error response send failed");
-                            }
+                        }
+                        // Send pusher:error for non-fatal errors
+                        if let Err(send_err) =
+                            Box::pin(self.send_error(&app_config.id, socket_id, &e, None)).await
+                        {
+                            error!(socket_id = %socket_id, error = %send_err, "socket error response send failed");
                         }
                     }
                 }
                 Message::Ping(_) => {
-                    self.handle_ping_frame(socket_id, app_config).await?;
+                    Box::pin(self.handle_ping_frame(socket_id, app_config)).await?;
                 }
                 Message::Pong(_) => {
                     trace!(socket_id = %socket_id, "websocket control frame handled");

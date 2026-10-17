@@ -5,6 +5,7 @@
 //! grouping channels by hash slot, and opening a direct (non-cluster)
 //! connection to each shard master. Inspired by `go-redis` and `fred.rs`.
 
+use crate::transports::redis_pubsub_probe::{PubSubProbeFailure, pubsub_connection_lost};
 use crossfire::mpsc;
 use redis::cluster_routing::Slot;
 use sockudo_core::error::{Error, Result};
@@ -371,6 +372,7 @@ pub(crate) struct ShardListenerParams {
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     refresh_notify: Arc<Notify>,
     tls: RedisTlsOptions,
+    ping_interval: Duration,
 }
 
 /// Long-running task for one shard master.
@@ -514,9 +516,41 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
         }
         reconnection_count = 0;
 
+        let ping_conn = conn.clone();
+        let liveness = pubsub_connection_lost(params.ping_interval, move || {
+            let mut conn = ping_conn.clone();
+            async move { redis::cmd("PING").exec_async(&mut conn).await }
+        });
+        tokio::pin!(liveness);
+
         loop {
             let recv = tokio::select! {
+                // A reset that fails the probe also closes the push channel; poll the probe
+                // first so the reconnect is attributed to it.
+                biased;
                 _ = params.shutdown.notified() => break 'outer,
+                failure = &mut liveness => {
+                    if let Some(m) = params.metrics.get() {
+                        m.mark_horizontal_transport_reconnection(params.mode.metrics_transport());
+                    }
+                    match failure {
+                        PubSubProbeFailure::Failed(e) => warn!(
+                            adapter = "redis_cluster",
+                            shard = %params.shard_addr,
+                            error = %e,
+                            retryable = true,
+                            "shard liveness ping failed, resubscribing"
+                        ),
+                        PubSubProbeFailure::TimedOut => warn!(
+                            adapter = "redis_cluster",
+                            shard = %params.shard_addr,
+                            timeout_ms = params.ping_interval.as_millis() as u64,
+                            retryable = true,
+                            "shard liveness ping timed out, resubscribing"
+                        ),
+                    }
+                    break;
+                }
                 msg = internal_rx.recv() => msg,
             };
 
@@ -592,6 +626,7 @@ pub(crate) struct ShardedSubscriber {
     shutdown: Arc<Notify>,
     refresh_notify: Arc<Notify>,
     tls: RedisTlsOptions,
+    ping_interval: Duration,
 }
 
 impl ShardedSubscriber {
@@ -603,6 +638,7 @@ impl ShardedSubscriber {
         is_running: Arc<AtomicBool>,
         shutdown: Arc<Notify>,
         tls: RedisTlsOptions,
+        ping_interval: Duration,
     ) -> Self {
         Self::with_mode(
             channels,
@@ -612,6 +648,7 @@ impl ShardedSubscriber {
             is_running,
             shutdown,
             tls,
+            ping_interval,
         )
     }
 
@@ -622,6 +659,7 @@ impl ShardedSubscriber {
         is_running: Arc<AtomicBool>,
         shutdown: Arc<Notify>,
         tls: RedisTlsOptions,
+        ping_interval: Duration,
     ) -> Self {
         Self::with_mode(
             channels,
@@ -631,9 +669,11 @@ impl ShardedSubscriber {
             is_running,
             shutdown,
             tls,
+            ping_interval,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn with_mode(
         channels: Vec<String>,
         seed_urls: Vec<String>,
@@ -642,6 +682,7 @@ impl ShardedSubscriber {
         is_running: Arc<AtomicBool>,
         shutdown: Arc<Notify>,
         tls: RedisTlsOptions,
+        ping_interval: Duration,
     ) -> Self {
         Self {
             channels,
@@ -652,6 +693,7 @@ impl ShardedSubscriber {
             shutdown,
             refresh_notify: Arc::new(Notify::new()),
             tls,
+            ping_interval,
         }
     }
 
@@ -736,6 +778,7 @@ impl ShardedSubscriber {
                     metrics: self.metrics.clone(),
                     refresh_notify: self.refresh_notify.clone(),
                     tls: self.tls.clone(),
+                    ping_interval: self.ping_interval,
                 };
                 let readiness_channels = params.channels.clone();
                 shard_map.insert(
@@ -781,6 +824,7 @@ impl ShardedSubscriber {
         let username_clone = username.clone();
         let mode = self.mode;
         let tls = self.tls.clone();
+        let ping_interval = self.ping_interval;
 
         let refresh_task = tokio::spawn(async move {
             loop {
@@ -855,6 +899,7 @@ impl ShardedSubscriber {
                         metrics: metrics_clone.clone(),
                         refresh_notify: refresh_notify_clone.clone(),
                         tls: tls.clone(),
+                        ping_interval,
                     };
                     sh.insert(new_str, tokio::spawn(shard_listener_loop(params)));
                 }

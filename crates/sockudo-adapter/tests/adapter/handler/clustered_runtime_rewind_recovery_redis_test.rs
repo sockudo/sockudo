@@ -292,6 +292,7 @@ async fn build_redis_node_with_version_store_cache_and_tap(
         cluster_mode: false,
         sentinel: None,
         tls: Default::default(),
+        pubsub_ping_interval_ms: 10_000,
     })
     .await
     .unwrap();

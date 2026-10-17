@@ -97,6 +97,17 @@ mod tests {
         "SOCKUDO_OTEL_PROPAGATION_BAGGAGE",
         "OTEL_SERVICE_NAME",
     ];
+    const IGGY_CLUSTER_ENV_KEYS: &[&str] = &[
+        "IGGY_CLUSTER_SEEDS",
+        "IGGY_CONNECT_TIMEOUT_MS",
+        "IGGY_FAILOVER_TIMEOUT_MS",
+        "IGGY_DURABILITY",
+        "ADAPTER_IGGY_DURABILITY",
+        "QUEUE_IGGY_DURABILITY",
+        "IGGY_CONSUMER_OFFSET_DURABILITY",
+        "ADAPTER_IGGY_CONSUMER_OFFSET_DURABILITY",
+        "QUEUE_IGGY_CONSUMER_OFFSET_DURABILITY",
+    ];
 
     struct EnvGuard {
         previous: Vec<(&'static str, Option<String>)>,
@@ -232,6 +243,45 @@ mod tests {
         assert_eq!(
             options.rate_limiter.websocket_rate_limit.trust_hops,
             Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn iggy_cluster_env_overrides_apply_to_adapter_and_queue() {
+        use super::IggyDurability;
+
+        let _env = EnvGuard::isolated(
+            IGGY_CLUSTER_ENV_KEYS,
+            &[
+                ("IGGY_CLUSTER_SEEDS", " iggy-2:8090, ,iggy-3:8090 "),
+                ("IGGY_CONNECT_TIMEOUT_MS", "2500"),
+                ("IGGY_FAILOVER_TIMEOUT_MS", "20000"),
+                ("IGGY_DURABILITY", "persisted"),
+                ("ADAPTER_IGGY_DURABILITY", "replicated"),
+                ("IGGY_CONSUMER_OFFSET_DURABILITY", "replicated"),
+                ("QUEUE_IGGY_CONSUMER_OFFSET_DURABILITY", "persisted"),
+            ],
+        );
+        let mut options = ServerOptions::default();
+
+        options.override_from_env().await.unwrap();
+
+        let seeds = vec!["iggy-2:8090".to_string(), "iggy-3:8090".to_string()];
+        assert_eq!(options.adapter.iggy.cluster_seeds, seeds);
+        assert_eq!(options.queue.iggy.cluster_seeds, seeds);
+        assert_eq!(options.adapter.iggy.connect_timeout_ms, 2500);
+        assert_eq!(options.queue.iggy.connect_timeout_ms, 2500);
+        assert_eq!(options.adapter.iggy.failover_timeout_ms, 20_000);
+        assert_eq!(options.queue.iggy.failover_timeout_ms, 20_000);
+        assert_eq!(options.adapter.iggy.durability, IggyDurability::Replicated);
+        assert_eq!(options.queue.iggy.durability, IggyDurability::Persisted);
+        assert_eq!(
+            options.adapter.iggy.consumer_offset_durability,
+            IggyDurability::Replicated
+        );
+        assert_eq!(
+            options.queue.iggy.consumer_offset_durability,
+            IggyDurability::Persisted
         );
     }
 
