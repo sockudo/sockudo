@@ -233,7 +233,7 @@ impl ConnectionHandler {
             let cm = Arc::clone(&self.connection_manager);
             let app = app_config.clone();
             let channel = channel_name.to_string();
-            tokio::spawn(async move {
+            webhook_integration.spawn_deferred(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 let count = cm.get_channel_socket_count(&app.id, &channel).await;
                 if count == 0 {
@@ -388,20 +388,21 @@ impl ConnectionHandler {
         let handler = self.clone();
         let app_id = app_id.to_string();
         let socket_id = *socket_id;
-        tokio::spawn(
-            async move {
-                handler
-                    .run_disconnect_cleanup(
-                        &app_id,
-                        &socket_id,
-                        presence_ungraceful_timeout_seconds,
-                    )
-                    .await
-            }
-            .in_current_span(),
-        )
-        .await
-        .map_err(|e| Error::Internal(format!("disconnect cleanup task failed: {e}")))?
+        self.disconnect_tasks
+            .spawn(
+                async move {
+                    handler
+                        .run_disconnect_cleanup(
+                            &app_id,
+                            &socket_id,
+                            presence_ungraceful_timeout_seconds,
+                        )
+                        .await
+                }
+                .in_current_span(),
+            )
+            .await
+            .map_err(|e| Error::Internal(format!("disconnect cleanup task failed: {e}")))?
     }
 
     async fn run_disconnect_cleanup(
@@ -894,7 +895,7 @@ impl ConnectionHandler {
             let cm = Arc::clone(&self.connection_manager);
             let app = app_config.clone();
             let channel = channel_str.to_string();
-            tokio::spawn(async move {
+            webhook_integration.spawn_deferred(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 let count = cm.get_channel_socket_count(&app.id, &channel).await;
                 if count == 0 {

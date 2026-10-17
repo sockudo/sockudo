@@ -178,6 +178,8 @@ pub struct ConnectionHandler {
     server_options: Arc<ServerOptions>,
     capacity: Arc<readiness::Capacity>,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
+    socket_tasks: tokio_util::task::TaskTracker,
+    disconnect_tasks: tokio_util::task::TaskTracker,
     cleanup_consecutive_failures: Arc<AtomicUsize>,
     cleanup_circuit_breaker_opened_at: Arc<AtomicU64>,
     #[cfg(feature = "delta")]
@@ -419,6 +421,8 @@ impl ConnectionHandlerBuilder {
             server_options: Arc::new(self.server_options),
             capacity: Arc::new(readiness::Capacity::default()),
             cleanup_queue: self.cleanup_queue,
+            socket_tasks: tokio_util::task::TaskTracker::new(),
+            disconnect_tasks: tokio_util::task::TaskTracker::new(),
             cleanup_consecutive_failures: Arc::new(AtomicUsize::new(0)),
             cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "delta")]
@@ -504,6 +508,14 @@ fn start_ai_stream_orphan_worker(
 }
 
 impl ConnectionHandler {
+    /// Wait for socket readers and their detached disconnect producers after admission closes.
+    pub async fn drain_connection_cleanup(&self) {
+        self.socket_tasks.close();
+        self.socket_tasks.wait().await;
+        self.disconnect_tasks.close();
+        self.disconnect_tasks.wait().await;
+    }
+
     fn remove_socket_limiters(&self, socket_id: &SocketId) {
         self.client_event_limiters.remove(socket_id);
         self.message_limiters.remove(socket_id);
@@ -678,6 +690,10 @@ impl ConnectionHandler {
         initial_token: Option<String>,
     ) -> Result<()> {
         // Early validation and setup
+        let _socket_task = self.socket_tasks.token();
+        if !self.is_accepting() {
+            return Err(Error::ConnectionClosed("server shutting down".into()));
+        }
         // Large sub-futures here are boxed: they run once or briefly, and inline they would be
         // reserved for the whole lifetime of every connection's future.
         let app_config = match Box::pin(self.validate_and_get_app(&app_key)).await {
@@ -784,6 +800,15 @@ impl ConnectionHandler {
         .await?;
 
         let mut live_connection = self.capacity.track();
+        // A validated upgrade can finish registration after the shutdown snapshot.
+        if !self.is_accepting() {
+            let close_result = self
+                .close_connection(&socket_id, &app_config, 4200, "Server shutting down")
+                .await;
+            live_connection.release();
+            self.cleanup_socket(&socket_id, &app_config).await;
+            return close_result;
+        }
         // Wrapped in an async block so any early return still reaches cleanup_socket below.
         let result = async {
             // Setup rate limiting if needed

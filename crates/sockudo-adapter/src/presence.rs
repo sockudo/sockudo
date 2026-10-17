@@ -30,6 +30,7 @@ fn presence_lock_key(app_id: &str, channel: &str, user_id: &str) -> CompactStrin
 type PresenceLockMap = DashMap<CompactString, Arc<Mutex<()>>, ahash::RandomState>;
 
 struct PendingRemovalTask {
+    _drain_guard: tokio_util::task::task_tracker::TaskTrackerToken,
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     presence_history_enabled: bool,
@@ -54,6 +55,7 @@ pub struct PresenceManager {
     pending_removal_count: Arc<AtomicUsize>,
     pending_removal_worker_started: AtomicBool,
     pending_removal_notify: Arc<Notify>,
+    pending_removals: tokio_util::task::TaskTracker,
 }
 
 impl Default for PresenceManager {
@@ -70,7 +72,15 @@ impl PresenceManager {
             pending_removal_count: Arc::new(AtomicUsize::new(0)),
             pending_removal_worker_started: AtomicBool::new(false),
             pending_removal_notify: Arc::new(Notify::new()),
+            pending_removals: tokio_util::task::TaskTracker::new(),
         }
+    }
+
+    /// Wait for pending leases without shortening reconnect suppression windows.
+    /// Call only after disconnect producers and cleanup workers have drained.
+    pub async fn drain_pending_removals(&self) {
+        self.pending_removals.close();
+        self.pending_removals.wait().await;
     }
 
     fn get_presence_lock(&self, lock_key: &CompactString) -> Arc<Mutex<()>> {
@@ -541,6 +551,7 @@ impl PresenceManager {
                                 .schedule_pending_removal(
                                     ungraceful_timeout_seconds,
                                     PendingRemovalTask {
+                                        _drain_guard: self.pending_removals.token(),
                                         connection_manager: Arc::clone(connection_manager),
                                         presence_history_store: Arc::clone(&presence_history_store),
                                         presence_history_enabled,
@@ -658,7 +669,7 @@ impl PresenceManager {
                 let app = app_config.clone();
                 let ch = channel.to_string();
                 let uid = user_id.to_string();
-                tokio::spawn(async move {
+                webhook_integration.spawn_deferred(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     let still_gone = match Self::user_has_other_connections_in_presence_channel(
                         cm, &app.id, &ch, &uid, None,
@@ -949,7 +960,7 @@ impl PresenceManager {
             let app = app_config.clone();
             let ch = channel.to_string();
             let uid = user_id.to_string();
-            tokio::spawn(async move {
+            webhook_integration.spawn_deferred(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 let still_gone = match Self::user_has_other_connections_in_presence_channel(
                     cm, &app.id, &ch, &uid, None,
@@ -1187,6 +1198,70 @@ mod tests {
             retention_window_seconds: 3600,
             max_events_per_channel: None,
             max_bytes_per_channel: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_preserves_reconnect_suppression() {
+        use sockudo_core::queue::QueueInterface;
+        use sockudo_core::webhook_types::Webhook;
+        use sockudo_webhook::{WebhookConfig, integration::QueueManager};
+
+        // Zero exercises the delayed webhook; one exercises the presence lease.
+        for lease in [0, 1] {
+            let manager = PresenceManager::new();
+            let adapter = Arc::new(TestAdapter::new(vec![0, 1]));
+            let connection_manager: Arc<dyn ConnectionManager + Send + Sync> = adapter.clone();
+            let queue = sockudo_queue::MemoryQueueManager::new();
+            let webhooks = Arc::new(
+                WebhookIntegration::new(
+                    WebhookConfig::default(),
+                    Arc::new(sockudo_app::memory_app_manager::MemoryAppManager::new()),
+                    Some(Arc::new(QueueManager::new(Box::new(queue.clone())))),
+                )
+                .await
+                .unwrap(),
+            );
+            let mut app = test_app();
+            app.policy.webhooks = Some(vec![Webhook {
+                event_types: vec!["member_removed".into()],
+                ..Default::default()
+            }]);
+            manager
+                .handle_member_removed(
+                    &connection_manager,
+                    Arc::new(MemoryPresenceHistoryStore::new(Default::default())),
+                    false,
+                    Some(&webhooks),
+                    None,
+                    &app,
+                    "presence-room",
+                    "reconnected-user",
+                    None,
+                    PresenceHistoryEventCause::Disconnect,
+                    None,
+                    lease,
+                    None,
+                )
+                .await
+                .unwrap();
+
+            tokio::time::timeout(Duration::from_secs(5), async {
+                manager.drain_pending_removals().await;
+                webhooks.shutdown().await.unwrap();
+            })
+            .await
+            .expect("drain must finish after the normal reconnect check");
+
+            assert!(
+                adapter.counts.lock().unwrap().is_empty(),
+                "reconnect must be rechecked before drain finishes"
+            );
+            let stats = queue.stats("webhooks").await.unwrap();
+            assert_eq!(stats.ready, Some(0));
+            assert_eq!(stats.completed, Some(0));
+            assert_eq!(stats.dead_letter, Some(0));
+            queue.disconnect().await.unwrap();
         }
     }
 

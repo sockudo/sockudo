@@ -63,7 +63,8 @@ struct ServerState {
     push_acceptance_rate_limiter: Arc<dyn RateLimiter + Send + Sync>,
     debug_enabled: bool,
     cleanup_queue: Option<CleanupSender>,
-    cleanup_worker_handles: Option<Vec<tokio::task::JoinHandle<()>>>,
+    cleanup_worker_handles: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    cleanup_cancellation: tokio_util::sync::CancellationToken,
     cleanup_config: CleanupConfig,
     #[cfg(feature = "delta")]
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,

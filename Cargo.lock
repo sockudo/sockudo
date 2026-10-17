@@ -7625,6 +7625,7 @@ dependencies = [
  "sockudo-queue",
  "sonic-rs",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-opentelemetry 0.33.0",
  "url",

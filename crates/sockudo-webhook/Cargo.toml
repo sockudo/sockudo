@@ -33,6 +33,7 @@ sha2 = { workspace = true }
 sonic-rs = { workspace = true }
 parking_lot = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 url = { workspace = true }

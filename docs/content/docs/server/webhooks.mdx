@@ -65,6 +65,29 @@ the same channel-specific identity.
 
 `member_updated` is emitted for Protocol V2 `sockudo:presence_update` frames. Its payload includes `channel`, `user_id`, and `user_info` with the latest member data.
 
+## Shutdown delivery
+
+Graceful shutdown closes client connections promptly, but keeps webhook dependencies available
+while their cleanup finishes. After the listener grace period, Sockudo waits for cleanup workers,
+pending presence leases, and delayed `member_removed` and `channel_vacated` producers. It then
+joins any in-flight batch enqueue and flushes the final buffer, even if the configured batch
+interval has not elapsed. A V2 presence lease remains 15 seconds by default; the subsequent
+reconnect check still delays the webhook by 3 seconds.
+
+This drain has a budget of `queue.reliability.shutdown_timeout_ms`
+(`QUEUE_SHUTDOWN_TIMEOUT_MS`, default 30000), separate from `shutdown_grace_period`. The memory
+queue must finish its queued work before shutdown because it cannot retain jobs after exit.
+If the final batch is only partly accepted, shutdown still drains accepted memory-queue jobs
+within that budget before returning the enqueue error.
+Broker-backed queues only need the final jobs enqueued before their normal worker shutdown;
+pending durable jobs can be processed later.
+
+Keep the webhook receiver and queue/cache dependencies available during a rollout. Enqueue
+failures are logged, and an exhausted drain budget warns that pending lifecycle events may be
+lost. A hard kill or unavailable receiver can still prevent delivery. Allow your supervisor
+enough time for both this drain and the queue worker shutdown budget, in addition to listener
+grace and teardown. See [rolling deploys](/docs/server/scaling#rolling-deploys).
+
 ## Push webhooks
 
 Push provider status callbacks and push lifecycle webhooks are core to operating notifications. Use them to reconcile provider outcomes with Sockudo publish status.

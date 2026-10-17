@@ -557,7 +557,27 @@ impl SockudoServer {
         self.state.running.store(false, Ordering::SeqCst);
         self.handler.shutdown_ai_workers().await;
 
-        // Tell cluster peers this node is leaving and no responses are expected.
+        // Connections were already closed with 4200 by the first shutdown
+        // signal; this covers direct stop() callers that skip the signal path.
+        self.close_all_connections().await;
+
+        // Keep adapters, caches and queue workers alive until every disconnect producer
+        // has finished. Presence leases retain their reconnect suppression deadlines.
+        let drain_timeout =
+            Duration::from_millis(self.config.queue.reliability.shutdown_timeout_ms);
+        match tokio::time::timeout(drain_timeout, self.drain_shutdown_webhooks()).await {
+            Ok(Ok(job_count)) => info!(job_count, "shutdown webhook drain completed"),
+            Ok(Err(error)) => error!(error = %error, "shutdown webhook drain failed"),
+            Err(error) => warn!(
+                error = %error,
+                timeout_ms = self.config.queue.reliability.shutdown_timeout_ms,
+                "shutdown webhook drain timed out, pending lifecycle events may be lost"
+            ),
+        }
+        self.state.cleanup_cancellation.cancel();
+
+        // Keep this node's presence visible to peers until its leases and reconnect
+        // checks finish. NodeDead removes its replicated presence from peer registries.
         if !self.config.server_role.is_api()
             && let Err(e) = self
                 .state
@@ -566,14 +586,6 @@ impl SockudoServer {
                 .await
         {
             warn!(error = %e, "failed to announce node departure");
-        }
-
-        // Connections were already closed with 4200 by the first shutdown
-        // signal; this covers direct stop() callers that skip the signal path.
-        self.close_all_connections().await;
-
-        if self.state.cleanup_worker_handles.is_some() {
-            info!("Cleanup system will shutdown when server process ends");
         }
 
         #[cfg(all(feature = "push", feature = "monolith"))]
@@ -592,13 +604,13 @@ impl SockudoServer {
         self.state.delta_compression.stop_cleanup_task().await;
 
         // Disconnect from backend services
-        if let Err(e) = self.state.cache_manager.disconnect().await {
-            warn!(error = %e, "error disconnecting cache manager");
-        }
         if let Some(queue_manager_arc) = &self.state.queue_manager
             && let Err(e) = queue_manager_arc.disconnect().await
         {
             warn!(error = %e, "error disconnecting queue manager");
+        }
+        if let Err(e) = self.state.cache_manager.disconnect().await {
+            warn!(error = %e, "error disconnecting cache manager");
         }
 
         // Clean up Unix socket file if it exists (with race condition handling)
@@ -620,6 +632,30 @@ impl SockudoServer {
 
         info!("Server stopped");
         Ok(())
+    }
+
+    async fn drain_shutdown_webhooks(&self) -> Result<usize> {
+        self.handler.drain_connection_cleanup().await;
+        self.state.cleanup_cancellation.cancel();
+        let workers = std::mem::take(&mut *self.state.cleanup_worker_handles.lock().await);
+        let mut worker_error = None;
+        for (worker_id, worker) in workers.into_iter().enumerate() {
+            if let Err(error) = worker.await {
+                warn!(worker_id, error = %error, "cleanup worker failed during shutdown");
+                worker_error.get_or_insert(error);
+            }
+        }
+        // A failed worker must not discard work produced by healthy workers. Finish
+        // the remaining drain within the caller's budget before reporting its error.
+        self.handler
+            .presence_manager()
+            .drain_pending_removals()
+            .await;
+        let job_count = self.state.webhooks_integration.shutdown().await?;
+        match worker_error {
+            Some(error) => Err(Error::Internal(format!("cleanup worker failed: {error}"))),
+            None => Ok(job_count),
+        }
     }
 }
 
@@ -712,9 +748,149 @@ fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri
 mod tests {
     use super::*;
     use axum::routing::get;
+    use sockudo_core::app::{App, AppPolicy};
+    use sockudo_core::webhook_types::Webhook;
     use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
+
+    async fn assert_worker_failure_still_drains_webhooks(cancel_worker: bool) {
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let receiver = Router::new().route(
+            "/hook",
+            axum::routing::post({
+                let delivered = delivered.clone();
+                move |axum::Json(body): axum::Json<serde_json::Value>| {
+                    let delivered = delivered.clone();
+                    async move {
+                        delivered.lock().unwrap().push(body);
+                    }
+                }
+            }),
+        );
+        let receiver = tokio::spawn(async move { axum::serve(listener, receiver).await.unwrap() });
+        let config = serde_json::from_value(serde_json::json!({
+            "adapter": {"driver": "local"},
+            "cache": {"driver": "memory"},
+            "queue": {"driver": "memory"},
+            // CI enables push; this local fixture explicitly opts into memory drivers.
+            "push": {"storage_driver": "memory", "queue_driver": "memory", "allow_memory_drivers": true},
+            "metrics": {"enabled": false},
+            "rate_limiter": {"enabled": false},
+            "cleanup": {"async_enabled": false},
+            "webhooks": {"batching": {"enabled": true, "duration": 60_000, "size": 100}}
+        }))
+        .unwrap();
+        let server = SockudoServer::new(config).await.unwrap();
+        server.state.running.store(false, Ordering::SeqCst);
+        let app = App::from_policy(
+            "drain-test".into(),
+            "key".into(),
+            "secret".into(),
+            true,
+            AppPolicy {
+                webhooks: Some(vec![Webhook {
+                    url: Some(format!("http://{addr}/hook").parse().unwrap()),
+                    event_types: vec!["member_removed".into()],
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        server
+            .state
+            .app_manager
+            .create_app(app.clone())
+            .await
+            .unwrap();
+        let failed_worker = if cancel_worker {
+            let worker = tokio::spawn(std::future::pending::<()>());
+            worker.abort();
+            worker
+        } else {
+            tokio::spawn(async { panic!("injected cleanup worker failure") })
+        };
+        while !failed_worker.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let (finish_worker, worker_release) = tokio::sync::oneshot::channel();
+        let (finish_producer, producer_release) = tokio::sync::oneshot::channel();
+        let (worker_finished, worker_done) = tokio::sync::oneshot::channel();
+        let healthy_worker = tokio::spawn({
+            let webhooks = server.state.webhooks_integration.clone();
+            let app = app.clone();
+            async move {
+                worker_release.await.unwrap();
+                webhooks.spawn_deferred({
+                    let webhooks = webhooks.clone();
+                    async move {
+                        producer_release.await.unwrap();
+                        webhooks
+                            .send_member_removed(&app, "presence-room", "healthy-user")
+                            .await
+                            .unwrap();
+                    }
+                });
+                worker_finished.send(()).unwrap();
+            }
+        });
+        *server.state.cleanup_worker_handles.lock().await = vec![failed_worker, healthy_worker];
+
+        let mut drain = std::pin::pin!(server.drain_shutdown_webhooks());
+        assert!(
+            futures_util::poll!(&mut drain).is_pending(),
+            "a failed worker must not skip the healthy worker"
+        );
+        finish_worker.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), worker_done)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            futures_util::poll!(&mut drain).is_pending(),
+            "the healthy worker's deferred producer must also drain"
+        );
+        finish_producer.send(()).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(2), &mut drain)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("cleanup worker failed"));
+        {
+            let jobs = delivered.lock().unwrap();
+            assert_eq!(
+                jobs.len(),
+                1,
+                "the final batch must reach the receiver before returning the worker error"
+            );
+            assert_eq!(
+                jobs[0]["events"][0]["user_id"].as_str(),
+                Some("healthy-user")
+            );
+        }
+        assert!(
+            server
+                .state
+                .webhooks_integration
+                .send_member_removed(&app, "presence-room", "late-user")
+                .await
+                .is_err()
+        );
+        server.stop().await.unwrap();
+        receiver.abort();
+    }
+
+    #[tokio::test]
+    async fn panicked_cleanup_worker_does_not_skip_webhook_drain() {
+        assert_worker_failure_still_drains_webhooks(false).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_cleanup_worker_does_not_skip_webhook_drain() {
+        assert_worker_failure_still_drains_webhooks(true).await;
+    }
 
     async fn ready_status_line(addr: SocketAddr) -> std::io::Result<String> {
         let mut stream = TcpStream::connect(addr).await?;

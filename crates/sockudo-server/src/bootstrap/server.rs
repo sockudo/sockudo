@@ -622,7 +622,7 @@ impl SockudoServer {
             )));
         }
 
-        let (cleanup_queue, cleanup_worker_handles) =
+        let (cleanup_queue, cleanup_worker_handles, cleanup_cancellation) =
             if !config.server_role.is_api() && cleanup_config.async_enabled {
                 let presence_cleanup = PresenceCleanupContext {
                     history_store: Arc::clone(&presence_history_store),
@@ -647,12 +647,13 @@ impl SockudoServer {
                         CleanupSender::Multi(multi_worker_system.get_sender())
                     };
 
+                let cancellation = multi_worker_system.cancellation_token();
                 let worker_handles = multi_worker_system.get_worker_handles();
 
                 info!("multi-worker cleanup system initialized");
-                (Some(cleanup_sender), Some(worker_handles))
+                (Some(cleanup_sender), worker_handles, cancellation)
             } else {
-                (None, None)
+                (None, Vec::new(), tokio_util::sync::CancellationToken::new())
             };
 
         // Initialize delta compression manager
@@ -829,7 +830,8 @@ impl SockudoServer {
             push_acceptance_rate_limiter: push_acceptance_rate_limiter_instance.clone(),
             debug_enabled,
             cleanup_queue,
-            cleanup_worker_handles,
+            cleanup_worker_handles: tokio::sync::Mutex::new(cleanup_worker_handles),
+            cleanup_cancellation,
             cleanup_config,
             #[cfg(feature = "delta")]
             delta_compression: delta_compression_manager.clone(),

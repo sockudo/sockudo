@@ -98,7 +98,7 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 | `HOST` | Main HTTP and WebSocket bind host. |
 | `PORT` | Main HTTP and WebSocket bind port. |
 | `ACTIVITY_TIMEOUT` | Pusher protocol activity timeout. |
-| `SHUTDOWN_GRACE_PERIOD` | Seconds to keep the listener open after SIGTERM/SIGINT before closing existing connections. During this window `/up`, `/ready`, and `/accept-traffic` return 503 `DRAINING` and new WebSocket upgrades are rejected with 503. HTTP API requests are still served. A second signal ends the window early. |
+| `SHUTDOWN_GRACE_PERIOD` | Seconds to keep the listener open after SIGTERM/SIGINT. Existing WebSockets close promptly with 4200; during this window `/up`, `/ready`, and `/accept-traffic` return 503 `DRAINING` and new upgrades are rejected with 503. HTTP API requests are still served. A second signal ends the window early. The [webhook drain](/docs/server/webhooks#shutdown-delivery) follows this window. |
 | `USER_AUTHENTICATION_TIMEOUT` | Timeout used by user authentication flows. |
 | `SOCKUDO_MAX_CONNECTIONS` | Per-node WebSocket connection limit. `0` disables. |
 | `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. |
@@ -396,7 +396,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `QUEUE_STALLED_BATCH_SIZE` | Maximum expired/due jobs recovered by one Redis atomic claim. Defaults to `100`. |
 | `QUEUE_WORKER_POLL_INTERVAL_MS` | Worker recovery poll and delayed-delivery promotion bound. Defaults to `500`. |
 | `QUEUE_WORKER_PREFETCH` | Maximum jobs processed concurrently or prefetched per worker for bounded broker I/O. SQS FIFO stays serial. Defaults to `16`. |
-| `QUEUE_SHUTDOWN_TIMEOUT_MS` | Graceful worker drain timeout. Defaults to `30000`. |
+| `QUEUE_SHUTDOWN_TIMEOUT_MS` | Budget for draining connection cleanup, presence leases, and webhooks after listener grace; also the separate queue worker shutdown timeout. Defaults to `30000` per phase. See [shutdown delivery](/docs/server/webhooks#shutdown-delivery). |
 | `QUEUE_COMPLETED_RETENTION` | Completed Redis job metadata retained per queue. `0` removes immediately. Defaults to `1000`. |
 | `QUEUE_FAILED_RETENTION` | Dead-letter jobs retained per queue. Defaults to `10000`. |
 | `QUEUE_EVENT_RETENTION` | Approximate Redis lifecycle event-stream retention. Defaults to `10000`. |

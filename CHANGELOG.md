@@ -37,6 +37,13 @@
 
 ### Fixed
 
+- Graceful shutdown waits for socket cleanup, presence leases, and delayed lifecycle webhooks
+  before flushing the final webhook batch and stopping queue/cache dependencies. Previously,
+  `member_removed` could disappear when its normal lease/delay or batch interval outlasted the
+  listener grace period. The drain uses a separate `queue.reliability.shutdown_timeout_ms`
+  budget (30 seconds by default), retains normal reconnect suppression, waits for memory-queue
+  work to finish, and warns when the budget expires. Process supervisor timeouts must cover
+  this drain and queue worker shutdown in addition to listener grace and teardown.
 - Rate limiting ignores both forwarding headers when `trust_hops = 0`. Deployments that
   previously relied on `X-Real-IP` at zero must explicitly configure trusted proxy forwarding
   and restrict direct server access. Short, invalid, or duplicated forwarded chains fall back

@@ -52,7 +52,7 @@ ExecStart=/usr/local/bin/sockudo --config /etc/sockudo/config.toml
 Restart=on-failure
 RestartSec=2s
 LimitNOFILE=1048576
-TimeoutStopSec=45s
+TimeoutStopSec=90s
 KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
@@ -69,8 +69,11 @@ LockPersonality=true
 WantedBy=multi-user.target
 ```
 
-Set `TimeoutStopSec` longer than `shutdown_grace_period`. Add `ReadWritePaths=` only when a selected
-feature genuinely writes to local disk. A stricter security directive may need adjustment for a
+Set `TimeoutStopSec` above `shutdown_grace_period` plus twice
+`queue.reliability.shutdown_timeout_ms / 1000`, with additional time for connection and backend
+teardown. The two budgets cover [webhook draining](/docs/server/webhooks#shutdown-delivery) and
+queue worker shutdown. Add `ReadWritePaths=` only when a selected
+feature writes to local disk. A stricter security directive may need adjustment for a
 provider SDK or a TLS key path; keep any exception narrow.
 
 ```bash
@@ -253,7 +256,8 @@ local islands.
 1. Remove the host from load-balancer readiness.
 2. Wait for the balancer's deregistration delay or connection drain policy.
 3. Stop Sockudo with `systemctl stop sockudo`.
-4. Allow `TimeoutStopSec` to cover Sockudo's configured shutdown grace.
+4. Allow `TimeoutStopSec` to cover Sockudo's listener grace, webhook drain, queue worker shutdown,
+   and teardown.
 5. Replace the binary and configuration atomically.
 6. Start the service, wait for `/up/<app-id>`, then restore load-balancer membership.
 
