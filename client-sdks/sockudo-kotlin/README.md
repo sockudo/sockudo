@@ -23,6 +23,7 @@ Official Kotlin client for Sockudo.
 
 - Java 17 or higher
 - Kotlin 1.9+
+- Android API 26+ (Android 8.0+); the build fails on any JDK API missing from that level
 
 ## Installation
 
@@ -30,7 +31,7 @@ Install the published package from Maven Central:
 
 ```kotlin
 dependencies {
-    implementation("io.sockudo:sockudo-kotlin:2.3.0")
+    implementation("io.sockudo:sockudo-kotlin:2.3.1")
 }
 ```
 
@@ -40,7 +41,7 @@ For Maven projects:
 <dependency>
   <groupId>io.sockudo</groupId>
   <artifactId>sockudo-kotlin</artifactId>
-  <version>2.3.0</version>
+  <version>2.3.1</version>
 </dependency>
 ```
 

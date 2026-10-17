@@ -121,7 +121,7 @@ object QueryString {
                 "${percentEncode(key)}=${percentEncode(value.stringValue)}"
             }
 
-    private fun percentEncode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
+    private fun percentEncode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
 }
 
 internal class EventDispatcher(

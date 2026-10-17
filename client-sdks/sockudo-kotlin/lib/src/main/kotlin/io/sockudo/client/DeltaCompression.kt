@@ -52,7 +52,7 @@ private class ChannelState(
             val cache = conflationCaches.getOrPut(key) { mutableListOf() }
             cache += CachedMessage(message, sequence)
             while (cache.size > maxMessagesPerKey) {
-                cache.removeFirst()
+                cache.removeAt(0)
             }
             if (conflationKey == null) {
                 conflationKey = "enabled"

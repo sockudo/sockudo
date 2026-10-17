@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1 - 2026-10-17
+
+- Fixed a `NoSuchMethodError` crash on Android 12 and below (API < 33) on every connect and push registration: URL encoding used `URLEncoder.encode(String, Charset)`, which Android only added in API 33.
+- Fixed a `NoSuchMethodError` crash on Android 14 and below (API < 35) when delta-compression conflation caches evicted entries: `MutableList.removeFirst()` bound to the JDK 21 `java.util.List.removeFirst()`.
+- Added an Animal Sniffer build check against the Android API 26 surface so JDK APIs missing on Android fail the build. Documented Android API 26+ as the minimum.
+
 ## 2.3.0 - 2026-09-14
 
 - Added Pusher-style connection/error listeners (`SockudoConnectionEventListener`, `SockudoError`) while preserving the raw Pusher-compatible `state_change` event.
