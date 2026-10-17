@@ -10,8 +10,11 @@ use sockudo_core::rate_limiter::{RateLimitResult, RateLimiter};
 use sonic_rs::json;
 use std::{
     fmt,
-    net::SocketAddr,
-    sync::Arc,
+    net::{IpAddr, SocketAddr},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
 };
 use tower_layer::Layer;
@@ -264,43 +267,67 @@ pub trait KeyExtractor: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct IpKeyExtractor {
     trust_hops: usize,
+    warned_invalid_forwarding: Arc<AtomicBool>,
 }
 
 impl IpKeyExtractor {
     pub fn new(trust_hops: usize) -> Self {
-        Self { trust_hops }
+        Self {
+            trust_hops,
+            warned_invalid_forwarding: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     fn get_ip<B>(&self, req: &HyperRequest<B>) -> Option<String> {
-        if self.trust_hops > 0
-            && let Some(value) = req.headers().get("x-forwarded-for")
-            && let Ok(forwarded_str) = value.to_str()
-        {
-            let ips: Vec<&str> = forwarded_str.split(',').map(str::trim).collect();
-            let client_ip_index = ips.len().saturating_sub(self.trust_hops);
-            if let Some(ip_str) = ips.get(client_ip_index) {
-                if ip_str.parse::<std::net::IpAddr>().is_ok() {
-                    return Some(ip_str.to_string());
+        // A zero offset means direct exposure: neither forwarding header is trusted.
+        if self.trust_hops > 0 {
+            let forwarded = req.headers().get_all("x-forwarded-for");
+            let mut values = forwarded.iter();
+            if let Some(value) = values.next() {
+                // Do not silently select a different chain when duplicate fields disagree.
+                if values.next().is_some() {
+                    self.warn_invalid_forwarding(0, "multiple_headers");
+                } else if let Ok(chain) = value.to_str() {
+                    let entry_count = chain.split(',').count();
+                    if let Some(index) = entry_count.checked_sub(self.trust_hops) {
+                        if let Some(ip) = chain
+                            .split(',')
+                            .nth(index)
+                            .and_then(|entry| entry.trim().parse::<IpAddr>().ok())
+                        {
+                            return Some(ip.to_string());
+                        }
+                        self.warn_invalid_forwarding(entry_count, "invalid_selected_address");
+                    } else {
+                        self.warn_invalid_forwarding(entry_count, "short_chain");
+                    }
+                } else {
+                    self.warn_invalid_forwarding(0, "invalid_header");
                 }
-            } else if let Some(ip_str) = ips.first()
-                && ip_str.parse::<std::net::IpAddr>().is_ok()
-            {
-                return Some(ip_str.to_string());
-            }
-        }
-
-        if let Some(value) = req.headers().get("x-real-ip")
-            && let Ok(real_ip_str) = value.to_str()
-        {
-            let real_ip = real_ip_str.trim();
-            if real_ip.parse::<std::net::IpAddr>().is_ok() {
-                return Some(real_ip.to_string());
+                // An unusable XFF chain must not fall through to another supplied identity.
+            } else if let Some(value) = req.headers().get("x-real-ip") {
+                if req.headers().get_all("x-real-ip").iter().count() == 1
+                    && let Ok(value) = value.to_str()
+                    && let Ok(ip) = value.trim().parse::<IpAddr>()
+                {
+                    return Some(ip.to_string());
+                }
+                self.warn_invalid_forwarding(0, "invalid_real_ip");
             }
         }
 
         req.extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ConnectInfo(addr)| addr.ip().to_string())
+    }
+
+    fn warn_invalid_forwarding(&self, entry_count: usize, reason: &'static str) {
+        if !self.warned_invalid_forwarding.swap(true, Ordering::Relaxed) {
+            warn!(
+                trust_hops = self.trust_hops,
+                entry_count, reason, "forwarded client ip unavailable, using socket peer"
+            );
+        }
     }
 }
 
@@ -387,5 +414,148 @@ fn add_rate_limit_headers(
             value = result.reset_after,
             "Failed to convert rate limit reset_after value for header X-RateLimit-Reset/Retry-After"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(headers: &[(&str, &str)]) -> HyperRequest<()> {
+        let mut request = HyperRequest::builder().body(()).unwrap();
+        for (name, value) in headers {
+            request.headers_mut().append(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        request.extensions_mut().insert(ConnectInfo(
+            "198.51.100.20:1234".parse::<SocketAddr>().unwrap(),
+        ));
+        request
+    }
+
+    #[test]
+    fn forwarded_address_selection_respects_the_configured_proxy_shape() {
+        for (hops, chain, expected) in [
+            (1, "203.0.113.7", "203.0.113.7"),
+            (1, "192.0.2.99, 203.0.113.7", "203.0.113.7"),
+            (2, "203.0.113.7, 198.51.100.1", "203.0.113.7"),
+            (2, "192.0.2.99, 203.0.113.7, 198.51.100.1", "203.0.113.7"),
+            (1, " 2001:0db8:0:0:0:0:0:1 ", "2001:db8::1"),
+        ] {
+            assert_eq!(
+                IpKeyExtractor::new(hops)
+                    .extract(&request(&[("x-forwarded-for", chain)]))
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn zero_trust_ignores_both_forwarding_headers() {
+        assert_eq!(
+            IpKeyExtractor::default()
+                .extract(&request(&[
+                    ("x-forwarded-for", "192.0.2.99"),
+                    ("x-real-ip", "192.0.2.98"),
+                ]))
+                .unwrap(),
+            "198.51.100.20"
+        );
+    }
+
+    #[test]
+    fn malformed_or_short_chains_fall_back_to_socket_not_real_ip() {
+        for (hops, chain) in [
+            (3, "192.0.2.99"),
+            (2, "invalid, 203.0.113.7"),
+            (1, ""),
+            (1, "203.0.113.7,"),
+        ] {
+            assert_eq!(
+                IpKeyExtractor::new(hops)
+                    .extract(&request(&[
+                        ("x-forwarded-for", chain),
+                        ("x-real-ip", "192.0.2.98"),
+                    ]))
+                    .unwrap(),
+                "198.51.100.20"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_proxy_trust_allows_real_ip_only_without_forwarded_for() {
+        assert_eq!(
+            IpKeyExtractor::new(1)
+                .extract(&request(&[("x-real-ip", "2001:0db8::1")]))
+                .unwrap(),
+            "2001:db8::1"
+        );
+    }
+
+    #[test]
+    fn duplicate_forwarding_fields_fall_back_to_socket() {
+        for name in ["x-forwarded-for", "x-real-ip"] {
+            assert_eq!(
+                IpKeyExtractor::new(1)
+                    .extract(&request(&[(name, "192.0.2.99"), (name, "203.0.113.7")]))
+                    .unwrap(),
+                "198.51.100.20"
+            );
+        }
+    }
+
+    #[test]
+    fn non_text_forwarding_header_falls_back_to_socket() {
+        let mut req = request(&[("x-real-ip", "192.0.2.98")]);
+        req.headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_bytes(&[0xff]).unwrap());
+        assert_eq!(
+            IpKeyExtractor::new(1).extract(&req).unwrap(),
+            "198.51.100.20"
+        );
+    }
+
+    #[test]
+    fn absent_forwarding_headers_use_socket_peer() {
+        assert_eq!(
+            IpKeyExtractor::new(1).extract(&request(&[])).unwrap(),
+            "198.51.100.20"
+        );
+    }
+
+    #[test]
+    fn invalid_forwarding_warning_is_shared_and_does_not_log_header_contents() {
+        #[derive(Clone)]
+        struct Writer(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = Writer(output.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let extractor = IpKeyExtractor::new(1);
+            let req = request(&[("x-forwarded-for", "private-header-content")]);
+            extractor.extract(&req).unwrap();
+            extractor.clone().extract(&req).unwrap();
+        });
+        let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert_eq!(output.matches("forwarded client ip unavailable").count(), 1);
+        assert!(output.contains("invalid_selected_address"));
+        assert!(!output.contains("private-header-content"));
     }
 }

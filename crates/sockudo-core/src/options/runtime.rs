@@ -370,6 +370,8 @@ pub struct RateLimit {
     pub max_requests: u32,
     pub window_seconds: u64,
     pub identifier: Option<String>,
+    /// One-based position from the right of X-Forwarded-For. Zero (or unset)
+    /// ignores forwarding headers. Positive values require a trusted proxy path.
     pub trust_hops: Option<u32>,
 }
 
