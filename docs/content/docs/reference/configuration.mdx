@@ -767,6 +767,21 @@ Collector failures are fail-open: export uses bounded queues and does not change
 `/live`, or `/up`. Invalid static settings are still rejected during startup. Stable traces,
 metrics, and logs are supported; OpenTelemetry profiles are not.
 
+## Memory cache expiration
+
+The `memory` cache driver honors the TTL supplied by each write. `cache.memory.ttl`
+(default `300` seconds) is both the default for writes with a zero TTL and the
+maximum for writes with a longer TTL. Set it to `0` to remove that maximum; a
+write with a zero TTL then creates a nonexpiring entry. Capacity eviction and
+process restarts can still remove entries.
+
+Overwriting an entry resets its expiry. Incrementing an existing counter with a
+zero TTL preserves its current expiry. Reading an entry does not extend its TTL.
+
+The same rules apply to the memory fallback used during a Redis outage. Recovery
+skips entries that expired while synchronization was in progress and copies live
+entries with their remaining TTL, rounded up to whole seconds for Redis.
+
 ## Example production skeleton
 
 ```toml

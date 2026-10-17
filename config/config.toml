@@ -369,6 +369,7 @@ stats_cas_retries = 8
 driver = "memory"
 
 [cache.memory]
+# Default and maximum per-entry TTL in seconds; 0 removes the default and cap.
 ttl = 300
 cleanup_interval = 60
 max_capacity = 10000
