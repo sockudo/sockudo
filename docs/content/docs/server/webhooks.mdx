@@ -56,6 +56,13 @@ Presence lifecycle events are:
 - `member_updated`
 - `member_removed`
 
+Presence lifecycle events use the `user_id` authorized for that channel in
+`channel_data`. One socket can have different member IDs in different presence
+channels, independently of its sign-in identity. On unsubscribe or disconnect,
+`member_removed` identifies the member that joined that channel, and is emitted
+only after that member's last connection leaves. The client presence event uses
+the same channel-specific identity.
+
 `member_updated` is emitted for Protocol V2 `sockudo:presence_update` frames. Its payload includes `channel`, `user_id`, and `user_info` with the latest member data.
 
 ## Push webhooks

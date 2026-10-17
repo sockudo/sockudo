@@ -1,4 +1,5 @@
 use crate::mocks::connection_handler_mock::MockCacheManager;
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::handler::ConnectionHandler;
@@ -7,9 +8,13 @@ use sockudo_adapter::local_adapter::LocalAdapter;
 use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppManager, AppPolicy};
 use sockudo_core::options::ServerOptions;
+use sockudo_core::queue::QueueInterface;
 use sockudo_core::token::Token;
+use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync, Webhook};
 use sockudo_core::websocket::{SocketId, UserInfo, WebSocket, WebSocketBufferConfig, WebSocketRef};
+use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_protocol::{ProtocolVersion, WireFormat};
+use sockudo_webhook::integration::{QueueManager, WebhookConfig, WebhookIntegration};
 use sockudo_ws::axum_integration;
 use sockudo_ws::client::WebSocketClient;
 use sockudo_ws::{Config as WsConfig, Http1, Message as WsMessage, WebSocketStream};
@@ -76,6 +81,35 @@ struct PresenceHarness {
     adapter: Arc<LocalAdapter>,
     app_manager: Arc<MemoryAppManager>,
     app: App,
+    webhook_events: tokio::sync::mpsc::UnboundedReceiver<sonic_rs::Value>,
+}
+
+struct CapturingWebhookQueue(tokio::sync::mpsc::UnboundedSender<sonic_rs::Value>);
+
+#[async_trait]
+impl QueueInterface for CapturingWebhookQueue {
+    async fn add_to_queue(&self, _: &str, data: JobData) -> sockudo_core::error::Result<()> {
+        for event in data.payload.events {
+            self.0.send(event).unwrap();
+        }
+        Ok(())
+    }
+
+    async fn process_queue(
+        &self,
+        _: &str,
+        _: JobProcessorFnAsync,
+    ) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&self) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
+
+    async fn check_health(&self) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
 }
 
 async fn make_presence_harness() -> PresenceHarness {
@@ -84,12 +118,28 @@ async fn make_presence_harness() -> PresenceHarness {
         "presence-key".to_string(),
         "presence-secret".to_string(),
         true,
-        AppPolicy::default(),
+        AppPolicy {
+            webhooks: Some(vec![Webhook {
+                event_types: vec!["member_added".to_string(), "member_removed".to_string()],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        },
     );
     let app_manager = Arc::new(MemoryAppManager::new());
     app_manager.create_app(app.clone()).await.unwrap();
     let adapter = Arc::new(LocalAdapter::new());
     adapter.init().await;
+    let (webhook_sender, webhook_events) = tokio::sync::mpsc::unbounded_channel();
+    let webhooks = WebhookIntegration::new(
+        WebhookConfig::default(),
+        app_manager.clone(),
+        Some(Arc::new(QueueManager::new(Box::new(
+            CapturingWebhookQueue(webhook_sender),
+        )))),
+    )
+    .await
+    .unwrap();
     let handler = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
         adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
@@ -97,6 +147,7 @@ async fn make_presence_harness() -> PresenceHarness {
         ServerOptions::default(),
     )
     .local_adapter(adapter.clone())
+    .webhook_integration(Arc::new(webhooks))
     .build();
 
     PresenceHarness {
@@ -104,6 +155,7 @@ async fn make_presence_harness() -> PresenceHarness {
         adapter,
         app_manager,
         app,
+        webhook_events,
     }
 }
 
@@ -181,6 +233,270 @@ async fn recv_event(
     })
     .await
     .unwrap_or_else(|_| panic!("timed out waiting for {event}"))
+}
+
+async fn subscribe_presence(
+    harness: &PresenceHarness,
+    socket: &SocketId,
+    client: &mut TestClient,
+    channel: &str,
+    user_id: &str,
+) {
+    harness
+        .handler
+        .handle_subscribe_request(
+            socket,
+            &harness.app,
+            presence_request(harness, socket, channel, user_id),
+        )
+        .await
+        .unwrap();
+    recv_event(client, "pusher_internal:subscription_succeeded").await;
+}
+
+async fn unsubscribe_presence(harness: &PresenceHarness, socket: &SocketId, channel: &str) {
+    let message = sonic_rs::from_str::<PusherMessage>(
+        &sonic_rs::json!({
+            "event": "pusher:unsubscribe",
+            "data": {"channel": channel},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    harness
+        .handler
+        .handle_unsubscribe(socket, &message, &harness.app)
+        .await
+        .unwrap();
+}
+
+fn assert_presence_event(message: &PusherMessage, channel: &str, user_id: &str) {
+    assert_eq!(message.channel.as_deref(), Some(channel));
+    let data = match message.data.as_ref().expect("presence event data") {
+        MessageData::String(data) => sonic_rs::from_str::<sonic_rs::Value>(data).unwrap(),
+        MessageData::Json(data) => data.clone(),
+        other => panic!("unexpected presence data: {other:?}"),
+    };
+    assert_eq!(data["user_id"].as_str(), Some(user_id));
+}
+
+async fn assert_removed_webhooks(harness: &mut PresenceHarness, expected: &[(&str, &str)]) {
+    let mut removed = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while removed.len() < expected.len() {
+            let event = harness.webhook_events.recv().await.unwrap();
+            if event["name"].as_str() == Some("member_removed") {
+                removed.push((
+                    event["channel"].as_str().unwrap().to_string(),
+                    event["user_id"].as_str().unwrap().to_string(),
+                ));
+            }
+        }
+    })
+    .await
+    .expect("member_removed webhooks must be queued");
+    removed.sort();
+    let mut expected: Vec<_> = expected
+        .iter()
+        .map(|(ch, uid)| (ch.to_string(), uid.to_string()))
+        .collect();
+    expected.sort();
+    assert_eq!(removed, expected);
+}
+
+async fn channel_identity_lifecycle(disconnect: bool, signin: bool) {
+    let mut harness = make_presence_harness().await;
+    let (anna, mut anna_client) = add_presence_socket(&harness).await;
+    let (watcher, mut watcher_client) = add_presence_socket(&harness).await;
+    if signin {
+        harness
+            .handler
+            .update_connection_with_user_info(
+                &anna,
+                &harness.app,
+                &UserInfo {
+                    id: "signed-in-anna".to_string(),
+                    watchlist: None,
+                    info: None,
+                    capabilities: None,
+                    meta: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let memberships = [
+        ("presence-pipeline-3", "anna:tab1"),
+        ("presence-channel-111", "anna"),
+    ];
+    for (channel, user_id) in memberships {
+        subscribe_presence(&harness, &anna, &mut anna_client, channel, user_id).await;
+        subscribe_presence(&harness, &watcher, &mut watcher_client, channel, "watcher").await;
+    }
+
+    if disconnect {
+        harness
+            .handler
+            .handle_disconnect(&harness.app.id, &anna)
+            .await
+            .unwrap();
+        let mut removed = Vec::new();
+        for _ in memberships {
+            let message = recv_event(&mut watcher_client, "pusher_internal:member_removed").await;
+            let channel = message.channel.as_deref().unwrap();
+            let (_, user_id) = memberships.iter().find(|(ch, _)| *ch == channel).unwrap();
+            assert_presence_event(&message, channel, user_id);
+            removed.push(channel.to_string());
+        }
+        removed.sort();
+        assert_eq!(removed, vec!["presence-channel-111", "presence-pipeline-3"]);
+        harness
+            .handler
+            .handle_disconnect(&harness.app.id, &anna)
+            .await
+            .unwrap();
+    } else {
+        // Leave the second channel first, matching issue #483.
+        for (channel, user_id) in memberships.into_iter().rev() {
+            unsubscribe_presence(&harness, &anna, channel).await;
+            let message = recv_event(&mut watcher_client, "pusher_internal:member_removed").await;
+            assert_presence_event(&message, channel, user_id);
+            unsubscribe_presence(&harness, &anna, channel).await;
+        }
+    }
+    for (channel, user_id) in memberships {
+        assert!(
+            !harness
+                .adapter
+                .get_channel_members(&harness.app.id, channel)
+                .await
+                .unwrap()
+                .contains_key(user_id)
+        );
+    }
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), watcher_client.next())
+            .await
+            .is_err(),
+        "duplicate cleanup must not emit another member_removed"
+    );
+    assert_removed_webhooks(&mut harness, &memberships).await;
+    assert!(
+        harness.webhook_events.try_recv().is_err(),
+        "duplicate cleanup must not queue another webhook"
+    );
+}
+
+#[tokio::test]
+async fn unsubscribe_uses_channel_presence_identity() {
+    channel_identity_lifecycle(false, false).await;
+}
+
+#[tokio::test]
+async fn disconnect_uses_channel_presence_identity() {
+    channel_identity_lifecycle(true, false).await;
+}
+
+#[tokio::test]
+async fn signin_does_not_replace_channel_presence_identity_on_unsubscribe() {
+    channel_identity_lifecycle(false, true).await;
+}
+
+#[tokio::test]
+async fn signin_does_not_replace_channel_presence_identity_on_disconnect() {
+    channel_identity_lifecycle(true, true).await;
+}
+
+#[tokio::test]
+async fn channel_presence_identity_waits_for_last_connection() {
+    let mut harness = make_presence_harness().await;
+    let (anna, mut anna_client) = add_presence_socket(&harness).await;
+    let (other, mut other_client) = add_presence_socket(&harness).await;
+    let (watcher, mut watcher_client) = add_presence_socket(&harness).await;
+    subscribe_presence(
+        &harness,
+        &anna,
+        &mut anna_client,
+        "presence-pipeline-3",
+        "anna:tab1",
+    )
+    .await;
+    subscribe_presence(
+        &harness,
+        &anna,
+        &mut anna_client,
+        "presence-channel-111",
+        "anna",
+    )
+    .await;
+    subscribe_presence(
+        &harness,
+        &other,
+        &mut other_client,
+        "presence-pipeline-3",
+        "anna:tab2",
+    )
+    .await;
+    subscribe_presence(
+        &harness,
+        &other,
+        &mut other_client,
+        "presence-channel-111",
+        "anna",
+    )
+    .await;
+    subscribe_presence(
+        &harness,
+        &watcher,
+        &mut watcher_client,
+        "presence-channel-111",
+        "watcher",
+    )
+    .await;
+    unsubscribe_presence(&harness, &anna, "presence-channel-111").await;
+    let mut member_added_count = 0;
+    while let Ok(event) = harness.webhook_events.try_recv() {
+        if event["name"].as_str() == Some("member_added")
+            && event["channel"].as_str() == Some("presence-channel-111")
+            && event["user_id"].as_str() == Some("anna")
+        {
+            member_added_count += 1;
+        }
+    }
+    assert_eq!(
+        member_added_count, 1,
+        "only the first connection emits member_added"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), watcher_client.next())
+            .await
+            .is_err(),
+        "another socket still holds this channel's member identity"
+    );
+    assert!(
+        harness
+            .adapter
+            .get_channel_members(&harness.app.id, "presence-channel-111")
+            .await
+            .unwrap()
+            .contains_key("anna")
+    );
+    harness
+        .handler
+        .handle_disconnect(&harness.app.id, &other)
+        .await
+        .unwrap();
+    let removed = recv_event(&mut watcher_client, "pusher_internal:member_removed").await;
+    assert_presence_event(&removed, "presence-channel-111", "anna");
+    assert_removed_webhooks(
+        &mut harness,
+        &[
+            ("presence-channel-111", "anna"),
+            ("presence-pipeline-3", "anna:tab2"),
+        ],
+    )
+    .await;
+    assert!(harness.webhook_events.try_recv().is_err());
 }
 
 async fn make_signin_harness(initial_user_id: Option<&str>) -> SigninHarness {

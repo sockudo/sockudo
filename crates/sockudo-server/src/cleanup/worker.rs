@@ -264,24 +264,23 @@ impl CleanupWorker {
     ) -> Vec<WebhookEvent> {
         let mut events = Vec::new();
 
-        if let Some(info) = info
-            && let Some(user_id) = &task.user_id
-        {
+        if let Some(info) = info {
             for channel in &info.presence_channels {
+                // Socket authentication and presence membership can use different IDs.
+                let Some(member) = info.presence_members.get(channel) else {
+                    continue;
+                };
                 events.push(WebhookEvent {
                     event_type: "member_removed".to_string(),
                     app_id: task.app_id.clone(),
                     channel: channel.clone(),
-                    user_id: Some(user_id.clone()),
+                    user_id: Some(member.user_id.clone()),
                     socket_id: Some(task.socket_id),
                     data: sonic_rs::json!({
-                        "user_id": user_id,
+                        "user_id": member.user_id,
                         "socket_id": task.socket_id.to_string()
                     }),
-                    presence_user_info: info
-                        .presence_members
-                        .get(channel)
-                        .and_then(|member| member.user_info.clone()),
+                    presence_user_info: member.user_info.clone(),
                     presence_ungraceful_timeout_seconds: task.presence_ungraceful_timeout_seconds,
                 });
             }
@@ -555,6 +554,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_events_use_channel_presence_identity() {
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+        let worker = make_worker(adapter);
+        let memberships = [
+            ("presence-pipeline-3", "anna:tab1"),
+            ("presence-channel-111", "anna"),
+        ];
+        for user_id in [Some("signed-in-anna".to_string()), None] {
+            let info = ConnectionCleanupInfo {
+                presence_channels: vec![
+                    "presence-pipeline-3".to_string(),
+                    "presence-channel-111".to_string(),
+                    "presence-missing".to_string(),
+                ],
+                presence_members: memberships
+                    .iter()
+                    .map(|(channel, user_id)| {
+                        (
+                            channel.to_string(),
+                            PresenceMemberInfo {
+                                user_id: user_id.to_string(),
+                                user_info: Some(sonic_rs::json!({"name": user_id})),
+                            },
+                        )
+                    })
+                    .collect(),
+                auth_info: None,
+            };
+            let task = DisconnectTask {
+                socket_id: SocketId::new(),
+                app_id: APP_ID.to_string(),
+                subscribed_channels: info.presence_channels.clone(),
+                user_id,
+                cause: sockudo_core::websocket::DisconnectCause::TransportError,
+                timestamp: Instant::now(),
+                connection_info: Some(info),
+                presence_ungraceful_timeout_seconds: 1,
+            };
+            let events = worker
+                .prepare_webhook_events(&task, task.connection_info.as_ref())
+                .await;
+            let removed: Vec<_> = events
+                .iter()
+                .filter(|event| event.event_type == "member_removed")
+                .collect();
+            assert_eq!(
+                removed.len(),
+                memberships.len(),
+                "missing channel membership must not invent a leave identity"
+            );
+            for (event, (channel, user_id)) in removed.iter().zip(memberships) {
+                assert_eq!(event.channel, channel);
+                assert_eq!(event.user_id.as_deref(), Some(user_id));
+                assert_eq!(event.data["user_id"].as_str(), Some(user_id));
+                assert_eq!(
+                    event.presence_user_info.as_ref().unwrap()["name"].as_str(),
+                    Some(user_id)
+                );
+                assert_eq!(event.presence_ungraceful_timeout_seconds, 1);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn disconnect_cleanup_retains_then_emits_presence_leave_without_webhooks() {
         let adapter = Arc::new(LocalAdapter::new());
         adapter.init().await;
@@ -610,7 +674,7 @@ mod tests {
             .unwrap();
         {
             let mut guard = leaving_connection.inner.lock().await;
-            guard.state.user_id = Some("leaving-user".to_string());
+            guard.state.user_id = Some("signed-in-user".to_string());
         }
         adapter.add_user(leaving_connection).await.unwrap();
 
@@ -639,7 +703,7 @@ mod tests {
             socket_id: leaving_socket,
             app_id: APP_ID.to_string(),
             subscribed_channels: vec!["presence-room".to_string()],
-            user_id: Some("leaving-user".to_string()),
+            user_id: Some("signed-in-user".to_string()),
             cause: sockudo_core::websocket::DisconnectCause::TransportError,
             timestamp: Instant::now(),
             connection_info: Some(ConnectionCleanupInfo {

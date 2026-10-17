@@ -64,6 +64,7 @@ fn insert_live_socket(
 }
 
 fn insert_presence(namespace: &Namespace, socket_id: SocketId, channel: &str, user_id: &str) {
+    namespace.add_channel_to_socket(channel, &socket_id);
     namespace
         .presence_data
         .entry(socket_id)

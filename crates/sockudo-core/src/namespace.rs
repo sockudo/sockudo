@@ -659,18 +659,19 @@ impl Namespace {
     ) -> Result<usize> {
         let mut count = 0;
 
-        if let Some(user_sockets_ref) = self.users.get(user_id) {
-            for entry in user_sockets_ref.iter() {
+        // The user routing index tracks socket-wide identity, which can differ
+        // from the member ID authorized for this presence channel.
+        if let Some(channel_sockets) = self.channels.get(channel) {
+            for entry in channel_sockets.iter() {
                 let socket_id = entry.key();
                 if excluding_socket == Some(socket_id) {
                     continue;
                 }
-                if self
-                    .presence_data
-                    .get(socket_id)
-                    .map(|m| m.contains_key(channel))
-                    .unwrap_or(false)
-                {
+                if self.presence_data.get(socket_id).is_some_and(|members| {
+                    members
+                        .get(channel)
+                        .is_some_and(|member| member.user_id == user_id)
+                }) {
                     count += 1;
                 }
             }
@@ -738,6 +739,72 @@ mod tests {
     use sockudo_ws::client::WebSocketClient;
     use std::sync::Arc;
     use tokio::net::{TcpListener, TcpStream};
+
+    #[test]
+    fn presence_connection_count_uses_channel_member_ids() {
+        let namespace = Namespace::new("presence-count".to_string());
+        let first = SocketId::new();
+        let second = SocketId::new();
+        let third = SocketId::new();
+        for (socket, routing_id, member_id) in [
+            (first, "anna:tab1", "anna"),
+            (second, "anna:tab2", "anna"),
+            (third, "anna", "bob"),
+        ] {
+            namespace.add_channel_to_socket("presence-room", &socket);
+            namespace
+                .users
+                .entry(routing_id.to_string())
+                .or_default()
+                .insert(socket);
+            namespace.presence_data.entry(socket).or_default().insert(
+                "presence-room".to_string(),
+                crate::channel::PresenceMemberInfo {
+                    user_id: member_id.to_string(),
+                    user_info: None,
+                },
+            );
+        }
+        assert_eq!(
+            namespace
+                .count_user_connections_in_channel("anna", "presence-room", None)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            namespace
+                .count_user_connections_in_channel("anna", "presence-room", Some(&first))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            namespace
+                .count_user_connections_in_channel("bob", "presence-room", None)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            namespace
+                .count_user_connections_in_channel("anna:tab1", "presence-room", None)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            namespace
+                .count_user_connections_in_channel("anna", "presence-missing", None)
+                .unwrap(),
+            0
+        );
+
+        // Channel removal can precede cleanup of the presence mirror and routing index.
+        namespace.remove_channel_from_socket("presence-room", &second);
+        assert_eq!(
+            namespace
+                .count_user_connections_in_channel("anna", "presence-room", Some(&first))
+                .unwrap(),
+            0
+        );
+    }
 
     #[derive(Clone)]
     struct TestAppManager {
