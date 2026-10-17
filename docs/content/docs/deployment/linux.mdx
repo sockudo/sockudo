@@ -224,8 +224,17 @@ above the longest expected interval between application or heartbeat traffic, wi
 network path.
 
 If the proxy adds entries to `X-Forwarded-For`, configure `RATE_LIMITER_API_TRUST_HOPS` and
-`RATE_LIMITER_WS_TRUST_HOPS` to the exact trusted proxy count. Never trust a client-supplied chain
-from the public internet.
+`RATE_LIMITER_WS_TRUST_HOPS` to the client's one-based position from the right of that header.
+For the NGINX configuration above, use `1`: `$proxy_add_x_forwarded_for` appends the client's
+address, so a client-supplied prefix is ignored. Other platforms can append more than one entry;
+Google's external Application Load Balancer appends `<client>, <load-balancer>`, requiring `2`
+when it connects directly to Sockudo. Validate the actual path rather than counting proxy machines.
+
+Only enable forwarding-header trust when direct access to Sockudo is restricted to your proxies
+and those proxies sanitize or append the headers. A hop count does not authenticate the socket
+peer. With `0`, both `X-Forwarded-For` and `X-Real-IP` are ignored. Invalid or short chains fall
+back to the socket peer, with a once-only warning containing no header values. See
+[client IP extraction](/docs/reference/configuration#rate-limiter-client-ip) for migration details.
 
 ## One host versus several
 
