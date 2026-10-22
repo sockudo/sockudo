@@ -1633,6 +1633,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+ "loom",
 ]
 
 [[package]]
@@ -2406,6 +2407,19 @@ dependencies = [
  "hashbag",
  "left-right",
  "smallvec",
+]
+
+[[package]]
+name = "fanring"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a0a001924e64ade2c902a95dae33873344f5406798209408f19ae2504b6671a"
+dependencies = [
+ "arc-swap",
+ "atomic-waker",
+ "concurrent-queue",
+ "loom",
+ "yring",
 ]
 
 [[package]]
@@ -4617,11 +4631,13 @@ dependencies = [
 
 [[package]]
 name = "omq-proto"
-version = "0.26.1"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6420a63f80eac3235364674f61f3b4a00dbb283354402192406cd22a96b31cd1"
+checksum = "337547271c06b86531c7a110515f13997cdfc2c4356a3e36d93840ab7dee9d86"
 dependencies = [
  "bytes",
+ "concurrent-queue",
+ "loom",
  "patricia_tree",
  "rand 0.10.3",
  "smallvec",
@@ -4630,18 +4646,52 @@ dependencies = [
 ]
 
 [[package]]
-name = "omq-tokio"
-version = "0.21.4"
+name = "omq-proto"
+version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "448ae8e795f28e2f6ca624ff883ab1ebb3054c10aa8f46a72542e7f6b3b1f721"
+checksum = "6d2ac66d70d8926efe5818f2f1b9dcbd191e0cc4c53df41677e622ca7faeb760"
+dependencies = [
+ "bytes",
+ "concurrent-queue",
+ "loom",
+ "patricia_tree",
+ "rand 0.10.3",
+ "smallvec",
+ "socket2",
+ "thiserror",
+]
+
+[[package]]
+name = "omq-shm"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad2195121b4f240c4f0c4ba6884a266d3e876baea211238b5f9b32b36b2a9b32"
 dependencies = [
  "arc-swap",
  "bytes",
  "concurrent-queue",
+ "omq-proto 0.34.0",
+ "rand 0.10.3",
+ "rustix",
+]
+
+[[package]]
+name = "omq-tokio"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87363a8459c436ed113b7abcdbbd786f28615a758aee95f6daf20bb99e6f8dbe"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "concurrent-queue",
+ "crossbeam-utils",
+ "fanring",
  "futures",
  "libc",
- "omq-proto",
+ "omq-proto 0.33.0",
+ "omq-shm",
  "parking_lot 0.12.5",
+ "pin-project-lite",
  "rand 0.10.3",
  "rustc-hash",
  "smallvec",
