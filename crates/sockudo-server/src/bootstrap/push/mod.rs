@@ -93,6 +93,14 @@ pub(crate) fn create_push_queue(
             backend
         ))
     })?;
+    if queue_manager.backend() == sockudo_core::queue::QueueBackendKind::Sqs
+        && !queue_manager.capabilities().delayed_delivery
+    {
+        return Err(Error::Internal(
+            "push queue cannot use an SQS FIFO queue: FIFO queues have no per-message delay, which push needs for scheduled sends and retries; set queue.sqs.fifo=false (QUEUE_SQS_FIFO=false)"
+                .to_owned(),
+        ));
+    }
     Ok(Arc::new(QueueManagerPushQueue::new(
         backend,
         queue_manager,
