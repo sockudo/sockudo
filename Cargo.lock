@@ -4777,6 +4777,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-http"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "302249bd8ee804789faaa7b5b2cbf79bc61cb864714079c644e3828af5b7e811"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "opentelemetry 0.33.1",
+]
+
+[[package]]
 name = "opentelemetry-otlp"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4785,7 +4797,7 @@ dependencies = [
  "flate2",
  "http",
  "opentelemetry 0.32.0",
- "opentelemetry-http",
+ "opentelemetry-http 0.32.0",
  "opentelemetry-proto",
  "opentelemetry_sdk 0.32.1",
  "prost 0.14.4",
@@ -7199,7 +7211,7 @@ dependencies = [
  "num_cpus",
  "opentelemetry 0.32.0",
  "opentelemetry-appender-tracing",
- "opentelemetry-http",
+ "opentelemetry-http 0.33.1",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions 0.32.1",
  "opentelemetry_sdk 0.32.1",
