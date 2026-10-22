@@ -50,8 +50,9 @@ and webhook work, so process supervisor timeouts may need to grow.
 - The official Docker images build with Rust 1.99. Dependencies are updated, including `rustls`
   0.23.46 for a `cargo deny` advisory, `rustls-webpki` 0.103.16 and `webpki-roots` /
   `webpki-root-certs` 1.0.10 so TLS clients no longer trust distrusted emSign intermediates
-  (RUSTSEC-2026-0381, RUSTSEC-2026-0382, RUSTSEC-2026-0383), `redis` 1.7.1, `tokio` 1.53.2, `hyper` 1.12, `rmcp` 3.5,
-  `lapin` 4.12, `scylla` 1.9, `surrealdb` 3.3, and `google-cloud-pubsub` 1.6.
+  (RUSTSEC-2026-0381, RUSTSEC-2026-0382, RUSTSEC-2026-0383), `redis` 1.7.1, `tokio` 1.54, `hyper` 1.12, `rmcp` 3.6,
+  `lapin` 4.12, `scylla` 1.9, `surrealdb` 3.3.4, `google-cloud-pubsub` 1.7, and the AWS SDK
+  (`aws-config` 1.13). `cargo audit` now passes with no ignored advisories.
 
 ### Fixed
 
