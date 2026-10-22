@@ -25,7 +25,7 @@ exclude = [
 resolver = "3"
 
 [workspace.package]
-version = "5.1.0"
+version = "5.2.0"
 edition = "2024"
 rust-version = "1.95"
 repository = "https://github.com/sockudo/sockudo"
@@ -34,21 +34,21 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Internal crates
-sockudo-protocol = { version = "5.1.0", path = "crates/sockudo-protocol" }
-sockudo-filter = { version = "5.1.0", path = "crates/sockudo-filter" }
-sockudo-core = { version = "5.1.0", path = "crates/sockudo-core" }
-sockudo-app = { version = "5.1.0", path = "crates/sockudo-app" }
-sockudo-cache = { version = "5.1.0", path = "crates/sockudo-cache" }
-sockudo-queue = { version = "5.1.0", path = "crates/sockudo-queue" }
-sockudo-rate-limiter = { version = "5.1.0", path = "crates/sockudo-rate-limiter" }
-sockudo-metrics = { version = "5.1.0", path = "crates/sockudo-metrics" }
-sockudo-webhook = { version = "5.1.0", path = "crates/sockudo-webhook" }
-sockudo-delta = { version = "5.1.0", path = "crates/sockudo-delta" }
-sockudo-push = { version = "5.1.0", path = "crates/sockudo-push" }
-sockudo-ai-transport = { version = "5.1.0", path = "crates/sockudo-ai-transport" }
-sockudo-ably-compat = { version = "5.1.0", path = "crates/sockudo-ably-compat", default-features = false }
-sockudo-adapter = { version = "5.1.0", path = "crates/sockudo-adapter", default-features = false }
-sockudo-mcp = { version = "5.1.0", path = "crates/sockudo-mcp", default-features = false }
+sockudo-protocol = { version = "5.2.0", path = "crates/sockudo-protocol" }
+sockudo-filter = { version = "5.2.0", path = "crates/sockudo-filter" }
+sockudo-core = { version = "5.2.0", path = "crates/sockudo-core" }
+sockudo-app = { version = "5.2.0", path = "crates/sockudo-app" }
+sockudo-cache = { version = "5.2.0", path = "crates/sockudo-cache" }
+sockudo-queue = { version = "5.2.0", path = "crates/sockudo-queue" }
+sockudo-rate-limiter = { version = "5.2.0", path = "crates/sockudo-rate-limiter" }
+sockudo-metrics = { version = "5.2.0", path = "crates/sockudo-metrics" }
+sockudo-webhook = { version = "5.2.0", path = "crates/sockudo-webhook" }
+sockudo-delta = { version = "5.2.0", path = "crates/sockudo-delta" }
+sockudo-push = { version = "5.2.0", path = "crates/sockudo-push" }
+sockudo-ai-transport = { version = "5.2.0", path = "crates/sockudo-ai-transport" }
+sockudo-ably-compat = { version = "5.2.0", path = "crates/sockudo-ably-compat", default-features = false }
+sockudo-adapter = { version = "5.2.0", path = "crates/sockudo-adapter", default-features = false }
+sockudo-mcp = { version = "5.2.0", path = "crates/sockudo-mcp", default-features = false }
 
 # External dependencies (shared versions)
 async-trait = "0.1.89"

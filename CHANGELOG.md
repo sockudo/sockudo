@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [5.2.0] - 2026-10-22
+
+Protocol V1 Pusher compatibility is unchanged. The `iggy` driver needs Apache Iggy server 0.9 or
+newer (see Changed); every other new capability is opt-in. Graceful shutdown now drains presence
+and webhook work, so process supervisor timeouts may need to grow.
+
 ### Added
 
 - Apache Iggy VSR cluster support for the `iggy` adapter and queue. The Iggy SDK now follows the
@@ -34,6 +40,16 @@
   signing in after a dropped connection left the client permanently disconnected: with a
   three-replica cluster and the leader killed, a Sockudo node failed every cross-node publish
   until restarted.
+- On SIGTERM, existing WebSocket connections are closed with 4200 immediately, before
+  `shutdown_grace_period` starts, while the listener stays open for the grace period. 5.1.0 sent
+  the 4200 only after the grace period, so a pod killed during the drain window (SIGKILL at
+  `terminationGracePeriodSeconds`, OOM, node failure) or behind a load balancer with a shorter
+  deregistration delay never delivered it, and clients did not reconnect right away.
+- Authentication failures on incoming socket messages (bad signature, unknown key) are logged at
+  `warn` instead of `error`. The client still receives `pusher:error` and keeps its connection.
+- The official Docker images build with Rust 1.99. Dependencies are updated, including `rustls`
+  0.23.46 for a `cargo deny` advisory, `redis` 1.7.1, `tokio` 1.53.2, `hyper` 1.12, `rmcp` 3.5,
+  `lapin` 4.12, `scylla` 1.9, `surrealdb` 3.3, and `google-cloud-pubsub` 1.6.
 
 ### Fixed
 
@@ -108,6 +124,18 @@
   trace on every node. The filter directive Sockudo adds when traces are enabled is now
   `sockudo_telemetry=debug`, which also removes a startup warning about TRACE directives that
   are disabled statically.
+- Presence channels report the member a socket joined each channel with when it leaves. A socket
+  that joined `presence-a` as `anna:tab1` and `presence-b` as `anna` reported the socket-wide ID on
+  unsubscribe and disconnect, so `member_removed` webhooks could not be matched to their join and
+  Pusher clients kept a stale member. Remaining connections are counted per channel membership,
+  preserving first-join/last-leave across tabs with different identities, and a repeated
+  unsubscribe emits a leave only when a subscription was actually removed.
+
+### Performance
+
+- Idle WebSocket connections use about 43% less resident memory (68 KiB to 39 KiB per connection
+  with 10,000 idle connections). Setup, message handling, error, and disconnect steps are boxed,
+  so their state is allocated only while they run instead of for the life of the connection.
 
 ## [5.1.0] - 2026-09-30
 

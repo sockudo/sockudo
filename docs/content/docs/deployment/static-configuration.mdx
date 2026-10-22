@@ -261,7 +261,7 @@ Mount a read-only file into the published container and replace the default comm
 ```bash
 docker run --rm \
   --mount type=bind,src="$PWD/config.toml",dst=/app/config/production.toml,readonly \
-  ghcr.io/sockudo/sockudo:5.1.0 \
+  ghcr.io/sockudo/sockudo:5.2.0 \
   sockudo --config /app/config/production.toml
 ```
 
