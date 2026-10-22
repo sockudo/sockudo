@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Push queue message IDs are now random (`push-<uuid>`) instead of a per-process counter. Nodes
+  sharing a push queue backend, or a node restarted while its earlier jobs were still queued,
+  handed out the same IDs; the Redis backend rejected the second enqueue with `queue job ID ...
+  already exists with a different payload` (surfacing as intermittent push publish `500`s,
+  failing planner and dispatch ticks, and later queue-age `429`s), and deduplicating backends
+  such as the memory queue and SQS FIFO silently dropped the second job.
+
 ## [5.2.0] - 2026-10-22
 
 Protocol V1 Pusher compatibility is unchanged. The `iggy` driver needs Apache Iggy server 0.9 or
