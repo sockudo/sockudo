@@ -23,7 +23,7 @@ Usage:
   install.sh [--version <version>] [--bin-dir <directory>]
 
 Options:
-  --version <version>    Install a specific release (for example, 5.1.0).
+  --version <version>    Install a specific release (for example, 5.2.0).
   --bin-dir <directory>  Install into this directory.
   -h, --help             Show this help.
 

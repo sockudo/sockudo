@@ -43,7 +43,7 @@ Pin the binary version in deployments:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSfL \
   https://sockudo.io/install.sh \
-  | sh -s -- --version 5.1.0
+  | sh -s -- --version 5.2.0
 ```
 
 Choose another writable installation directory with `--bin-dir`:
@@ -75,7 +75,7 @@ cargo install sockudo --locked
 Pin a release or enable the same production-oriented features you would use from source:
 
 ```bash
-cargo install sockudo --version 5.1.0 --locked
+cargo install sockudo --version 5.2.0 --locked
 cargo install sockudo --locked --features "redis,postgres,push"
 ```
 
@@ -95,8 +95,8 @@ docker pull sockudo/sockudo:latest
 Use versioned tags for production rollouts:
 
 ```bash
-docker pull ghcr.io/sockudo/sockudo:5.1.0
-docker pull sockudo/sockudo:5.1.0
+docker pull ghcr.io/sockudo/sockudo:5.2.0
+docker pull sockudo/sockudo:5.2.0
 ```
 
 Start a local container with an in-memory app and Prometheus metrics exposed:
