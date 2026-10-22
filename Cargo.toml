@@ -124,7 +124,7 @@ metrics-exporter-tcp = "0.11.2"
 metrics-util = "0.20.4"
 opentelemetry = { version = "0.32.0", default-features = false, features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = { version = "0.32.0", default-features = false, features = ["experimental_metadata_attributes", "experimental_span_attributes"] }
-opentelemetry-http = { version = "0.32.0", default-features = false }
+opentelemetry-http = { version = "0.33.1", default-features = false }
 opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
   "grpc-tonic",
   "gzip-http",
