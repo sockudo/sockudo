@@ -717,6 +717,9 @@ external key refs default to unset and are omitted from the checked block.
 
 `storage_driver = "memory"` and `queue_driver = "memory"` are node-local development drivers. In
 `mode = "production"`, Sockudo rejects them unless `allow_memory_drivers = true` is set explicitly.
+Push queue work runs on the shared `[queue]` backend. On SQS it needs a standard queue
+(`queue.sqs.fifo = false`): FIFO queues have no per-message delay, so Sockudo refuses to start push
+on them. SQS caps delays at 15 minutes; longer push delays are re-deferred when the job arrives.
 Push publish admission also requires a healthy queue, a safe store, local pipeline workers, and
 local provider-worker capability. Raw provider-specific recipients require the matching provider
 worker before the request is accepted; shard-path publishes also require a local shard worker.

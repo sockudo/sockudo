@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Push queue work can run on standard SQS queues (`QUEUE_DRIVER=sqs`). The push queue attached a
+  deduplication key to every job, which standard SQS rejects (`SQS deduplication keys require a
+  FIFO queue`), so every push enqueue failed. It now sends the key only to backends that
+  deduplicate. Delays longer than SQS's 15-minute limit (scheduled sends, long provider
+  retry-after) are sent as 15 minutes, and a job that arrives before its `not_before` time goes
+  back to SQS for the rest of the wait, counted in `sockudo_push_queue_local_requeued_total` with
+  `reason="not_before_deferred"`.
+- SQS FIFO queues are rejected for push at startup. FIFO queues have no per-message delay, so
+  scheduled sends, nacks with a retry time and local-capacity requeues all failed with `SQS FIFO
+  queues do not support per-message delay`. The SQS driver now reports `delayed_delivery = false`
+  for FIFO queues.
+
 ## [5.2.0] - 2026-10-22
 
 Protocol V1 Pusher compatibility is unchanged. The `iggy` driver needs Apache Iggy server 0.9 or
