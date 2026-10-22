@@ -502,6 +502,10 @@ impl QueueManagerPushQueue {
         retry_at_ms: Option<u64>,
         reason: &'static str,
     ) -> sockudo_push::PushQueueResult<()> {
+        // The backend still holds the original job until this handler returns, so the successor
+        // needs its own ID: reusing it with a new attempt is a different payload under the same
+        // job ID, which Redis and the memory queue reject and deduplicating backends drop.
+        envelope.message_id = next_message_id();
         envelope.attempt = envelope.attempt.saturating_add(1);
         envelope.not_before_ms = retry_at_ms;
         self.metrics
@@ -1399,6 +1403,27 @@ mod tests {
             consume_publish_log_keys(&after_restart, 2).await,
             ["app-1:publish-a", "app-1:publish-b"]
         );
+    }
+
+    #[tokio::test]
+    async fn nacked_message_is_requeued_while_the_backend_still_holds_the_original() {
+        let stage = PushQueueStage::PublishLog;
+        let manager = test_queue_manager();
+        let queue = test_queue_on(&manager, stage);
+        let first_id = produce_publish_log(&queue, "publish-a").await;
+
+        let first = next_message(&queue, stage).await;
+        assert_eq!(first.attempt, 1);
+        queue
+            .nack(first.ack, Some(push_queue_now_ms().saturating_add(50)))
+            .await
+            .unwrap();
+
+        let retried = next_message(&queue, stage).await;
+        assert_eq!(retried.key, "app-1:publish-a");
+        assert_eq!(retried.attempt, 2);
+        assert_ne!(retried.message_id, first_id);
+        queue.ack(retried.ack).await.unwrap();
     }
 
     fn test_queue(ownership: QueueManagerPushQueueStageOwnership) -> QueueManagerPushQueue {

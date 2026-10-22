@@ -10,6 +10,12 @@
   already exists with a different payload` (surfacing as intermittent push publish `500`s,
   failing planner and dispatch ticks, and later queue-age `429`s), and deduplicating backends
   such as the memory queue and SQS FIFO silently dropped the second job.
+- Nacked or locally deferred push queue jobs are requeued under a new message ID. Reusing the
+  original ID while the backend still held that job made Redis and the memory queue reject the
+  requeue, so the backend retried the original on its own backoff instead: the requested retry
+  time and push `attempt` were ignored, and deferrals (scheduled provider retries, open circuit
+  breakers, rate limiting) used up backend attempts until the job moved to the backend
+  dead-letter queue, outside the push dead-letter list and replay API.
 
 ## [5.2.0] - 2026-10-22
 
