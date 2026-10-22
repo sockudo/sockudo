@@ -192,10 +192,12 @@ impl SqsQueueManager {
                         .to_string(),
                 ));
             }
-            if options.delay_ms > 900_000 {
-                return Err(Error::Queue(
-                    "SQS delay_ms must not exceed 900000 (15 minutes)".to_string(),
-                ));
+            if let Some(max_delay_ms) = QueueBackendKind::Sqs.max_delay_ms()
+                && options.delay_ms > max_delay_ms
+            {
+                return Err(Error::Queue(format!(
+                    "SQS delay_ms must not exceed {max_delay_ms} (15 minutes)"
+                )));
             }
             if self.config.fifo && options.delay_ms > 0 {
                 return Err(Error::Queue(
@@ -454,7 +456,7 @@ impl QueueInterface for SqsQueueManager {
         QueueCapabilities {
             consume: true,
             acknowledgements: true,
-            delayed_delivery: true,
+            delayed_delivery: !self.config.fifo,
             retries: true,
             dead_letter: false,
             deduplication: self.config.fifo,
@@ -615,5 +617,109 @@ where
 impl Drop for SqsQueueManager {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A queue URL prefix skips the GetQueueUrl round trip, so these exercise the
+    // per-job validation in `send_jobs` without reaching SQS.
+    async fn offline_manager(fifo: bool) -> SqsQueueManager {
+        SqsQueueManager::new(SqsQueueConfig {
+            region: "us-east-1".to_string(),
+            queue_url_prefix: Some("http://127.0.0.1:1/000000000000/".to_string()),
+            endpoint_url: Some("http://127.0.0.1:1".to_string()),
+            fifo,
+            ..SqsQueueConfig::default()
+        })
+        .await
+        .unwrap()
+    }
+
+    fn job() -> JobData {
+        JobData {
+            job_id: None,
+            app_key: "test-key".to_string(),
+            app_id: "test-id".to_string(),
+            app_secret: "test-secret".to_string(),
+            trace_context: Default::default(),
+            payload: sockudo_core::webhook_types::JobPayload::default(),
+            original_signature: "signature".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn standard_queue_rejects_deduplication_keys() {
+        let error = offline_manager(false)
+            .await
+            .enqueue(
+                "push.publish.v1",
+                job(),
+                QueueJobOptions {
+                    deduplication_key: Some("push.publish.v1:push-1".to_string()),
+                    ..QueueJobOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("require a FIFO queue"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fifo_queue_rejects_per_message_delay() {
+        let error = offline_manager(true)
+            .await
+            .enqueue(
+                "push.publish.v1",
+                job(),
+                QueueJobOptions {
+                    delay_ms: 1_000,
+                    ..QueueJobOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("do not support per-message delay"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delays_beyond_fifteen_minutes_are_rejected() {
+        let error = offline_manager(false)
+            .await
+            .enqueue(
+                "push.publish.v1",
+                job(),
+                QueueJobOptions {
+                    delay_ms: 900_001,
+                    ..QueueJobOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("must not exceed 900000"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn capabilities_match_send_validation() {
+        let standard = offline_manager(false).await.capabilities();
+        assert!(standard.delayed_delivery);
+        assert!(!standard.deduplication);
+
+        let fifo = offline_manager(true).await.capabilities();
+        assert!(!fifo.delayed_delivery);
+        assert!(fifo.deduplication);
     }
 }

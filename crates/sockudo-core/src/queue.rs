@@ -89,6 +89,17 @@ impl QueueBackendKind {
             Self::Sns => "sns",
         }
     }
+
+    /// Longest per-job `delay_ms` the backend accepts natively, when it is bounded.
+    /// Callers needing a later delivery must re-defer once the job arrives.
+    #[must_use]
+    pub const fn max_delay_ms(self) -> Option<u64> {
+        match self {
+            // SQS caps `DelaySeconds` at 900.
+            Self::Sqs => Some(900_000),
+            _ => None,
+        }
+    }
 }
 
 /// Machine-readable backend behavior. Unsupported operations must fail instead
