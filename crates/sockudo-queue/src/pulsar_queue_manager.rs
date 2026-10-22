@@ -358,3 +358,98 @@ fn normalize_topic_prefix(prefix: &str) -> String {
         })
         .collect::<String>()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    #[ignore = "requires SOCKUDO_PULSAR_QUEUE_TEST_URL"]
+    async fn immediate_and_delayed_jobs_are_delivered_on_time() {
+        let url = std::env::var("SOCKUDO_PULSAR_QUEUE_TEST_URL")
+            .expect("SOCKUDO_PULSAR_QUEUE_TEST_URL is required");
+        let manager = PulsarQueueManager::new(PulsarAdapterConfig {
+            url,
+            prefix: format!("sockudo-test-{}", uuid::Uuid::new_v4().simple()),
+            ..PulsarAdapterConfig::default()
+        })
+        .await
+        .expect("Pulsar queue manager should connect");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        manager
+            .process_queue(
+                "jobs",
+                Box::new(move |job: JobData| {
+                    let tx = tx.clone();
+                    Box::pin(async move {
+                        let _ = tx.send((job.job_id, Instant::now()));
+                        Ok(())
+                    })
+                }),
+            )
+            .await
+            .expect("consumer should start");
+        // The Shared subscription exists once the consumer is built; jobs published
+        // before it would not be delivered to it.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let started = Instant::now();
+        let delayed = manager
+            .enqueue(
+                "jobs",
+                JobData::default(),
+                QueueJobOptions {
+                    job_id: Some("delayed".to_string()),
+                    delay_ms: 3_000,
+                    ..QueueJobOptions::default()
+                },
+            )
+            .await
+            .expect("a delayed enqueue should succeed");
+        assert_eq!(delayed.0, "delayed");
+        manager
+            .enqueue(
+                "jobs",
+                JobData::default(),
+                QueueJobOptions {
+                    job_id: Some("immediate".to_string()),
+                    ..QueueJobOptions::default()
+                },
+            )
+            .await
+            .expect("an immediate enqueue should succeed");
+        manager
+            .add_to_queue(
+                "jobs",
+                JobData {
+                    job_id: Some("legacy".to_string()),
+                    ..JobData::default()
+                },
+            )
+            .await
+            .expect("add_to_queue should succeed");
+
+        let mut arrivals = std::collections::HashMap::new();
+        while arrivals.len() < 3 {
+            let (job_id, at) = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+                .await
+                .expect("all jobs should arrive")
+                .expect("consumer should stay open");
+            arrivals.insert(job_id.unwrap_or_default(), at.duration_since(started));
+        }
+        manager.disconnect().await.unwrap();
+
+        assert!(
+            arrivals["immediate"] < Duration::from_secs(2),
+            "{arrivals:?}"
+        );
+        assert!(arrivals["legacy"] < Duration::from_secs(2), "{arrivals:?}");
+        assert!(
+            arrivals["delayed"] >= Duration::from_millis(2_900),
+            "{arrivals:?}"
+        );
+        assert!(arrivals["delayed"] < Duration::from_secs(8), "{arrivals:?}");
+        eprintln!("pulsar arrivals: {arrivals:?}");
+    }
+}
