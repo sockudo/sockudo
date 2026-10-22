@@ -15,6 +15,22 @@
   scheduled sends, nacks with a retry time and local-capacity requeues all failed with `SQS FIFO
   queues do not support per-message delay`. The SQS driver now reports `delayed_delivery = false`
   for FIFO queues.
+- The Pulsar queue driver no longer reports every enqueue as failed. It called `send_batch()` on a
+  producer built without batching, which always returns `not a batching producer` after the
+  messages were already sent, so webhook and push callers saw errors for delivered jobs and
+  retried them.
+- The Pulsar queue driver supports per-job delay (`delay_ms`) through Pulsar's native delayed
+  delivery and reports `delayed_delivery = true`, so push scheduled sends and retries run on
+  `QUEUE_DRIVER=pulsar`.
+- Push refuses to start on queue backends without per-message delay (`nats`, `rabbitmq`, `kafka`,
+  `iggy`, `google-pubsub`). Every delayed push enqueue (scheduled sends, retries, nacks,
+  local-capacity requeues) failed there with `queue backend X does not implement Queue v2 job
+  options`; before the deduplication fix above, every push enqueue did.
+- Push refuses to start when `push.queue_driver` does not match `queue.driver`. Push queue work
+  always ran on the `[queue]` backend, so `PUSH_QUEUE_DRIVER=sqs` with `QUEUE_DRIVER=redis` ran
+  push on Redis while reporting SQS. The shipped `config/config.toml` paired
+  `push.queue_driver = "redis"` with `queue.driver = "memory"`; it now sets
+  `push.queue_driver = "memory"`, which is node-local like the queue it ran on before.
 
 ## [5.2.0] - 2026-10-22
 
