@@ -717,10 +717,12 @@ external key refs default to unset and are omitted from the checked block.
 
 `storage_driver = "memory"` and `queue_driver = "memory"` are node-local development drivers. In
 `mode = "production"`, Sockudo rejects them unless `allow_memory_drivers = true` is set explicitly.
-Push queue work runs on the shared `[queue]` backend, so `push.queue_driver` must name the same
-driver as `queue.driver`; Sockudo refuses to start when they differ. Push needs per-message delays
-for scheduled sends and retries, so it runs only on `redis` (including Sentinel), `redis-cluster`,
-standard `sqs` and `pulsar`. Sockudo refuses to start push on `nats`, `rabbitmq`, `kafka`, `iggy`,
+With `push.queue_driver = "memory"`, push uses a separate node-local queue and does not require
+`queue.driver` to match. Broker-backed push queue work runs on the shared `[queue]` backend, so
+`push.queue_driver` must name the same driver as `queue.driver`; Sockudo refuses to start when they
+differ. Push needs per-message delays for scheduled sends and retries, so supported broker drivers
+are `redis` (including Sentinel), `redis-cluster`, standard `sqs` and `pulsar`.
+Sockudo refuses to start push on `nats`, `rabbitmq`, `kafka`, `iggy`,
 `google-pubsub` and SQS FIFO queues (`queue.sqs.fifo = true`), which have no per-message delay.
 SQS caps delays at 15 minutes; longer push delays are re-deferred when the job arrives.
 Push publish admission also requires a healthy queue, a safe store, local pipeline workers, and
