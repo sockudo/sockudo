@@ -717,9 +717,14 @@ external key refs default to unset and are omitted from the checked block.
 
 `storage_driver = "memory"` and `queue_driver = "memory"` are node-local development drivers. In
 `mode = "production"`, Sockudo rejects them unless `allow_memory_drivers = true` is set explicitly.
-Push queue work runs on the shared `[queue]` backend. On SQS it needs a standard queue
-(`queue.sqs.fifo = false`): FIFO queues have no per-message delay, so Sockudo refuses to start push
-on them. SQS caps delays at 15 minutes; longer push delays are re-deferred when the job arrives.
+With `push.queue_driver = "memory"`, push uses a separate node-local queue and does not require
+`queue.driver` to match. Broker-backed push queue work runs on the shared `[queue]` backend, so
+`push.queue_driver` must name the same driver as `queue.driver`; Sockudo refuses to start when they
+differ. Push needs per-message delays for scheduled sends and retries, so supported broker drivers
+are `redis` (including Sentinel), `redis-cluster`, standard `sqs` and `pulsar`.
+Sockudo refuses to start push on `nats`, `rabbitmq`, `kafka`, `iggy`,
+`google-pubsub` and SQS FIFO queues (`queue.sqs.fifo = true`), which have no per-message delay.
+SQS caps delays at 15 minutes; longer push delays are re-deferred when the job arrives.
 Push publish admission also requires a healthy queue, a safe store, local pipeline workers, and
 local provider-worker capability. Raw provider-specific recipients require the matching provider
 worker before the request is accepted; shard-path publishes also require a local shard worker.
@@ -928,6 +933,10 @@ Queue v2 options are fail-closed. A broker that cannot honor per-job delay,
 deduplication, or attempt overrides returns an error instead of silently
 discarding the option. SQS standard queues support delays up to 15 minutes;
 SQS FIFO queues support stable IDs/deduplication but not per-message delay.
+Pulsar supports per-job delay through native delayed delivery (`deliverAt`) on the
+Shared subscription Sockudo's workers use; the broker's `delayedDeliveryEnabled`
+must stay on (the default). NATS, RabbitMQ, Kafka, Iggy and Google Pub/Sub reject
+per-job delay.
 
 The Redis drivers use a new `:v2:{queue-id}:*` key namespace. All keys for one
 logical queue share a Redis Cluster hash tag, so enqueue, claim, ack, retry,

@@ -95,9 +95,10 @@ cleanup_interval_ms = 10000
 # memory is node-local and loses push state on restart or dead-node loss.
 # Use a durable storage driver for production and clustered push.
 storage_driver = "mysql"
-# memory is node-local and cannot survive queue owner loss. Durable queue driver
-# values mirror [queue].driver.
-queue_driver = "redis"
+# memory is node-local and cannot survive queue owner loss. A broker driver must
+# name the same driver as [queue].driver (Sockudo refuses to start otherwise) and
+# support per-message delay: redis, redis-cluster, sqs (standard queue) or pulsar.
+queue_driver = "memory"
 # Production mode rejects memory push storage/queues unless this is explicitly
 # set true for local/dev acknowledgment.
 allow_memory_drivers = false

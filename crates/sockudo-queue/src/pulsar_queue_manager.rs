@@ -1,5 +1,5 @@
 use crate::ArcJobProcessorFn;
-use crate::broker_batch::prepare_default_batch;
+use crate::broker_batch::prepare_delayed_batch;
 use crate::worker_registry::WorkerRegistry;
 use async_trait::async_trait;
 use futures_util::{StreamExt, future::try_join_all};
@@ -8,7 +8,8 @@ use pulsar::{Authentication, Consumer, Producer, Pulsar, SubType, TokioExecutor}
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{PulsarAdapterConfig, QueueReliabilityConfig};
 use sockudo_core::queue::{
-    QueueBackendKind, QueueCapabilities, QueueInterface, QueueJobId, QueueJobRequest,
+    QueueBackendKind, QueueCapabilities, QueueInterface, QueueJobId, QueueJobOptions,
+    QueueJobRequest,
 };
 use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::sync::Arc;
@@ -120,7 +121,9 @@ impl PulsarQueueManager {
             .map_err(|e| Error::Queue(format!("Failed to create Pulsar queue consumer: {e}")))
     }
 
-    async fn publish_batch(&self, queue_name: &str, jobs: Vec<JobData>) -> Result<()> {
+    /// Publishes `(job, delay_ms)` pairs. A non-zero delay sets Pulsar's `deliver_at_time`,
+    /// which the broker honours for the Shared subscription `process_queue` uses.
+    async fn publish_batch(&self, queue_name: &str, jobs: Vec<(JobData, u64)>) -> Result<()> {
         if jobs.is_empty() {
             return Ok(());
         }
@@ -130,22 +133,34 @@ impl PulsarQueueManager {
         for chunk in jobs.chunks(self.reliability.max_batch_size) {
             let payloads = chunk
                 .iter()
-                .map(|data| {
-                    sonic_rs::to_vec(data).map_err(|e| {
-                        Error::Queue(format!("Failed to serialize Pulsar queue job: {e}"))
-                    })
+                .map(|(data, delay_ms)| {
+                    sonic_rs::to_vec(data)
+                        .map(|payload| (payload, *delay_ms))
+                        .map_err(|e| {
+                            Error::Queue(format!("Failed to serialize Pulsar queue job: {e}"))
+                        })
                 })
                 .collect::<Result<Vec<_>>>()?;
             let receipts = {
                 // Pulsar's producer is mutable; this per-topic lock serializes only
-                // construction of its native batch and is released before receipts wait.
+                // the sends and is released before receipts wait. The producer does not
+                // batch (batched messages drop `deliver_at_time`), so each send goes out
+                // on its own and there is no batch to flush.
                 let mut producer = producer.lock().await;
-                let receipts = producer.send_all(payloads).await.map_err(|e| {
-                    Error::Queue(format!("Failed to enqueue Pulsar queue batch: {e}"))
-                })?;
-                producer.send_batch().await.map_err(|e| {
-                    Error::Queue(format!("Failed to flush Pulsar queue batch: {e}"))
-                })?;
+                let mut receipts = Vec::with_capacity(payloads.len());
+                for (payload, delay_ms) in payloads {
+                    let mut message = producer.create_message().with_content(payload);
+                    if delay_ms > 0 {
+                        message = message
+                            .delay(std::time::Duration::from_millis(delay_ms))
+                            .map_err(|e| {
+                                Error::Queue(format!("Invalid Pulsar queue job delay: {e}"))
+                            })?;
+                    }
+                    receipts.push(message.send_non_blocking().await.map_err(|e| {
+                        Error::Queue(format!("Failed to enqueue Pulsar queue job: {e}"))
+                    })?);
+                }
                 receipts
             };
             try_join_all(receipts)
@@ -159,11 +174,24 @@ impl PulsarQueueManager {
 #[async_trait]
 impl QueueInterface for PulsarQueueManager {
     async fn add_to_queue(&self, queue_name: &str, data: JobData) -> Result<()> {
-        self.publish_batch(queue_name, vec![data]).await
+        self.publish_batch(queue_name, vec![(data, 0)]).await
     }
 
     async fn add_batch_to_queue(&self, queue_name: &str, data: Vec<JobData>) -> Result<()> {
-        self.publish_batch(queue_name, data).await
+        self.publish_batch(queue_name, data.into_iter().map(|job| (job, 0)).collect())
+            .await
+    }
+
+    async fn enqueue(
+        &self,
+        queue_name: &str,
+        data: JobData,
+        options: QueueJobOptions,
+    ) -> Result<QueueJobId> {
+        self.enqueue_batch(queue_name, vec![QueueJobRequest { data, options }])
+            .await?
+            .pop()
+            .ok_or_else(|| Error::Queue("Pulsar enqueue returned no job id".to_string()))
     }
 
     async fn enqueue_batch(
@@ -171,8 +199,12 @@ impl QueueInterface for PulsarQueueManager {
         queue_name: &str,
         jobs: Vec<QueueJobRequest>,
     ) -> Result<Vec<QueueJobId>> {
-        let prepared = prepare_default_batch(self.backend(), jobs)?;
-        self.publish_batch(queue_name, prepared.data).await?;
+        let prepared = prepare_delayed_batch(self.backend(), jobs)?;
+        self.publish_batch(
+            queue_name,
+            prepared.data.into_iter().zip(prepared.delays_ms).collect(),
+        )
+        .await?;
         Ok(prepared.ids)
     }
 
@@ -277,7 +309,8 @@ impl QueueInterface for PulsarQueueManager {
         QueueCapabilities {
             consume: true,
             acknowledgements: true,
-            delayed_delivery: false,
+            // `deliver_at_time`, honoured for the Shared subscription used by `process_queue`.
+            delayed_delivery: true,
             retries: true,
             dead_letter: true,
             deduplication: false,
@@ -324,4 +357,99 @@ fn normalize_topic_prefix(prefix: &str) -> String {
             }
         })
         .collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    #[ignore = "requires SOCKUDO_PULSAR_QUEUE_TEST_URL"]
+    async fn immediate_and_delayed_jobs_are_delivered_on_time() {
+        let url = std::env::var("SOCKUDO_PULSAR_QUEUE_TEST_URL")
+            .expect("SOCKUDO_PULSAR_QUEUE_TEST_URL is required");
+        let manager = PulsarQueueManager::new(PulsarAdapterConfig {
+            url,
+            prefix: format!("sockudo-test-{}", uuid::Uuid::new_v4().simple()),
+            ..PulsarAdapterConfig::default()
+        })
+        .await
+        .expect("Pulsar queue manager should connect");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        manager
+            .process_queue(
+                "jobs",
+                Box::new(move |job: JobData| {
+                    let tx = tx.clone();
+                    Box::pin(async move {
+                        let _ = tx.send((job.job_id, Instant::now()));
+                        Ok(())
+                    })
+                }),
+            )
+            .await
+            .expect("consumer should start");
+        // The Shared subscription exists once the consumer is built; jobs published
+        // before it would not be delivered to it.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let started = Instant::now();
+        let delayed = manager
+            .enqueue(
+                "jobs",
+                JobData::default(),
+                QueueJobOptions {
+                    job_id: Some("delayed".to_string()),
+                    delay_ms: 3_000,
+                    ..QueueJobOptions::default()
+                },
+            )
+            .await
+            .expect("a delayed enqueue should succeed");
+        assert_eq!(delayed.0, "delayed");
+        manager
+            .enqueue(
+                "jobs",
+                JobData::default(),
+                QueueJobOptions {
+                    job_id: Some("immediate".to_string()),
+                    ..QueueJobOptions::default()
+                },
+            )
+            .await
+            .expect("an immediate enqueue should succeed");
+        manager
+            .add_to_queue(
+                "jobs",
+                JobData {
+                    job_id: Some("legacy".to_string()),
+                    ..JobData::default()
+                },
+            )
+            .await
+            .expect("add_to_queue should succeed");
+
+        let mut arrivals = std::collections::HashMap::new();
+        while arrivals.len() < 3 {
+            let (job_id, at) = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+                .await
+                .expect("all jobs should arrive")
+                .expect("consumer should stay open");
+            arrivals.insert(job_id.unwrap_or_default(), at.duration_since(started));
+        }
+        manager.disconnect().await.unwrap();
+
+        assert!(
+            arrivals["immediate"] < Duration::from_secs(2),
+            "{arrivals:?}"
+        );
+        assert!(arrivals["legacy"] < Duration::from_secs(2), "{arrivals:?}");
+        assert!(
+            arrivals["delayed"] >= Duration::from_millis(2_900),
+            "{arrivals:?}"
+        );
+        assert!(arrivals["delayed"] < Duration::from_secs(8), "{arrivals:?}");
+        eprintln!("pulsar arrivals: {arrivals:?}");
+    }
 }
