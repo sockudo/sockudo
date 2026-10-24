@@ -11,7 +11,27 @@ features = [
 ]
 
 [advisories]
-ignore = []
+# opentelemetry-otlp 0.32.0 pins zstd 0.13, so the OTLP HTTP exporter links
+# zstd 0.13.3 / zstd-safe 7.3.0. Every 0.13.x release carries the advisories
+# below; the fix is zstd 0.14.3 / zstd-safe 8.2.0. Upstream applied it
+# (opentelemetry-rust PR #3819) but has not released a crate with it yet, so no
+# registry-only resolution exists.
+#
+# Exposure: the exporter only calls `zstd::bulk::{compress, decompress}`. The
+# affected APIs are the streaming encoder/decoder, `Seekable`, `InBuffer` and
+# `OutBuffer`, none of which the exporter reaches. The gRPC path is already on
+# the fixed line: tonic 0.14.8 links zstd 0.14.3.
+#
+# Only the vulnerability-severity advisories are listed here; cargo-deny does
+# not gate the remaining zstd-safe "unsound" advisories, and listing them would
+# report them as not encountered. `.cargo/audit.toml` carries the full set.
+#
+# Remove these once a release with the bump ships.
+ignore = [
+    "RUSTSEC-2026-0391", # zstd 0.13.3, stream reuse leaks data
+    "RUSTSEC-2026-0398", # zstd-safe 7.3.0, Seekable Vec length
+    "RUSTSEC-2026-0403", # zstd-safe 7.3.0, legacy frame uninitialized memory
+]
 
 [licenses]
 allow = [
