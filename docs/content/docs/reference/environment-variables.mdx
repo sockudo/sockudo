@@ -387,7 +387,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `QUEUE_REDIS_CONCURRENCY` | Redis queue worker concurrency. |
 | `QUEUE_REDIS_PREFIX` | Redis queue key prefix. |
 | `QUEUE_REDIS_RESPONSE_TIMEOUT_MS` | Redis queue command response timeout in milliseconds. Defaults to `5000` so Sentinel failover invalidates stale primary connections promptly; set to `0` to disable the client-side deadline. |
-| `QUEUE_MAX_ATTEMPTS` | Maximum Queue v2 deliveries before dead-lettering. Defaults to `5`. |
+| `QUEUE_MAX_ATTEMPTS` | Maximum Queue v2 deliveries before dead-lettering. Defaults to `5`. On SQS, used only when the queue has no redrive policy; otherwise `maxReceiveCount` applies. |
 | `QUEUE_RETRY_BASE_DELAY_MS` | Initial retry delay. Defaults to `1000`. |
 | `QUEUE_RETRY_MAX_DELAY_MS` | Maximum exponential retry delay. Defaults to `60000`. |
 | `QUEUE_RETRY_JITTER` | Symmetric retry jitter fraction from `0.0` to `1.0`. Defaults to `0.2`. |
@@ -398,7 +398,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `QUEUE_WORKER_PREFETCH` | Maximum jobs processed concurrently or prefetched per worker for bounded broker I/O. SQS FIFO stays serial. Defaults to `16`. |
 | `QUEUE_SHUTDOWN_TIMEOUT_MS` | Budget for draining connection cleanup, presence leases, and webhooks after listener grace; also the separate queue worker shutdown timeout. Defaults to `30000` per phase. See [shutdown delivery](/docs/server/webhooks#shutdown-delivery). |
 | `QUEUE_COMPLETED_RETENTION` | Completed Redis job metadata retained per queue. `0` removes immediately. Defaults to `1000`. |
-| `QUEUE_FAILED_RETENTION` | Dead-letter jobs retained per queue. Defaults to `10000`. |
+| `QUEUE_FAILED_RETENTION` | Dead-letter jobs retained per queue. Defaults to `10000`. Not used by SQS. |
 | `QUEUE_EVENT_RETENTION` | Approximate Redis lifecycle event-stream retention. Defaults to `10000`. |
 | `QUEUE_DEDUPLICATION_TTL_MS` | Application deduplication-key lifetime. Defaults to `300000`. |
 | `QUEUE_MEMORY_CAPACITY` | Maximum outstanding jobs per in-memory logical queue. Capacity errors fail closed. Defaults to `100000`. |
@@ -406,6 +406,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `REDIS_CLUSTER_QUEUE_REQUEST_TIMEOUT_MS` | Redis Cluster queue command request timeout in milliseconds. Set to `0` to disable the cluster client deadline. |
 | `QUEUE_SQS_REGION` | SQS region. |
 | `QUEUE_SQS_VISIBILITY_TIMEOUT` | SQS visibility timeout. |
+| `QUEUE_SQS_REQUIRE_REDRIVE_POLICY` | Fail startup when the SQS webhooks queue has no `RedrivePolicy`. Defaults to `false`: a missing policy is logged and `QUEUE_MAX_ATTEMPTS` bounds delivery. |
 | `QUEUE_SQS_MAX_MESSAGES` | SQS receive batch size. |
 | `QUEUE_SQS_WAIT_TIME_SECONDS` | SQS long-poll wait time. |
 | `QUEUE_SQS_CONCURRENCY` | SQS worker concurrency. |

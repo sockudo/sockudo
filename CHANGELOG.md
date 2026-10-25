@@ -10,6 +10,23 @@
   upgrades the transitive `crypto-bigint` dependency from 0.5.5 to 0.7.9 and
   `ctutils` to 0.4.5, clearing RUSTSEC-2026-0387 and RUSTSEC-2026-0385 timing
   side-channel advisories.
+- Failed webhook deliveries are now retried by the queue backend instead of
+  being acknowledged and lost. All drivers apply their normal retry and
+  dead-letter policy (`queue.reliability.max_attempts`, default 5). Receivers
+  may see duplicate POSTs when one of several endpoints fails; make them
+  idempotent.
+- SQS: failed jobs are released with exponential backoff
+  (`queue.reliability.retry_*`) instead of immediately. This also applies to
+  push stage queues on SQS. At startup Sockudo reads the `webhooks` queue's
+  `RedrivePolicy`. With one, `maxReceiveCount` bounds delivery. Without one,
+  Sockudo logs a warning and deletes a failing job after `max_attempts`
+  receives. Set `QUEUE_SQS_REQUIRE_REDRIVE_POLICY=true` to fail startup instead.
+- SQS: a failed visibility renewal no longer aborts the in-flight delivery.
+
+### Security
+
+- Webhook transport errors no longer include the endpoint URL in logs or
+  propagated errors.
 
 ## [5.2.0] - 2026-10-22
 

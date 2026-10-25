@@ -80,7 +80,9 @@ queue must finish its queued work before shutdown because it cannot retain jobs 
 If the final batch is only partly accepted, shutdown still drains accepted memory-queue jobs
 within that budget before returning the enqueue error.
 Broker-backed queues only need the final jobs enqueued before their normal worker shutdown;
-pending durable jobs can be processed later.
+pending durable jobs can be processed later. With the memory driver, a webhook endpoint that
+fails delivery now leaves the job in the delayed state for its retry backoff, so graceful
+shutdown waits for those retries within the drain budget.
 
 Keep the webhook receiver and queue/cache dependencies available during a rollout. Enqueue
 failures are logged, and an exhausted drain budget warns that pending lifecycle events may be
@@ -155,6 +157,14 @@ function handleWebhookEvent(event: SockudoWebhookEvent) {
 ## Retry behavior
 
 Return a non-2xx status only when you want Sockudo to retry. If the event is valid but not useful, record it as ignored and return success.
+
+Sockudo retries a failed delivery in-process for `webhooks.retry.max_elapsed_time_ms`
+(default 5 minutes). If it still fails, the queue job is retried by the queue
+backend and dead-lettered after its attempt limit. On SQS that limit is the
+queue's `maxReceiveCount`, or `queue.reliability.max_attempts` when no redrive
+policy exists. Delivery is at-least-once: when one endpoint fails, a retried job
+re-POSTs the same batch to endpoints that already succeeded. Make receivers
+idempotent.
 
 ## Security
 

@@ -38,7 +38,7 @@ The TCP exporter has bounded buffering by default. When buffers fill, event samp
 | Fanout | adapter publish latency, adapter receive latency, duplicate suppression |
 | Recovery | resume successes, resume failures, replay counts, buffer misses |
 | History | writes, reads, retention purges, cursor errors |
-| Webhooks | queued, delivered, failed, retried, dead-lettered |
+| Webhooks | queued, delivered, failed |
 | Push | accepted, scheduled, dispatched, provider errors, publish status outcomes |
 
 When `ably-compat` is enabled, two lock-free operator snapshots supplement Prometheus:
