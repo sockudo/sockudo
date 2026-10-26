@@ -56,7 +56,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
@@ -79,7 +79,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
 
   # =============================================================================
   # Lint and Format Check
@@ -107,7 +107,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
@@ -282,7 +282,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
@@ -436,7 +436,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
@@ -542,7 +542,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
@@ -582,7 +582,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
@@ -716,7 +716,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
