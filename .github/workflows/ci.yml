@@ -15,6 +15,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Incremental artifacts bloat the shared cache and its restore time.
+  CARGO_INCREMENTAL: 0
 
 concurrency:
   # Cancel superseded runs on the same PR/branch instead of stacking them;
