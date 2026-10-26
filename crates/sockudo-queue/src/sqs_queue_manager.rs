@@ -78,6 +78,13 @@ impl SqsQueueManager {
         })
     }
 
+    /// Resolves the queue URL and records the redrive state. Split from the
+    /// trait hook so strict-mode wrapping can stay in one place.
+    async fn validate_queue_delivery(&self, queue_name: &str) -> Result<()> {
+        let queue_url = self.get_queue_url(queue_name).await?;
+        self.validate_redrive_policy(queue_name, &queue_url).await
+    }
+
     /// Get or create the URL for a queue
     async fn get_queue_url(&self, queue_name: &str) -> Result<String> {
         if let Some(url) = self.queue_urls.read().unwrap().get(queue_name).cloned() {
@@ -318,9 +325,10 @@ impl SqsQueueManager {
                     queue = %queue_name,
                     error_code = error.code().unwrap_or(""),
                     max_attempts = self.reliability.max_attempts,
-                    "cannot read sqs redrive policy; failed jobs are deleted after max_attempts"
+                    "cannot read sqs redrive policy; failed jobs are retried with backoff \
+                     and never deleted until the policy can be read"
                 );
-                self.record_redrive(queue_name, Redrive::Missing);
+                self.record_redrive(queue_name, Redrive::Unreadable);
                 return Ok(());
             }
         };
@@ -388,8 +396,12 @@ impl SqsQueueManager {
                 }) => Some(*max_receive_count),
                 _ => None,
             },
+            // An unreadable policy is treated as absent for the attempt bound
+            // (no redrive known), but `exhausted` still refuses to delete so a
+            // real policy with a higher `maxReceiveCount` cannot be undercut.
             drop_after: matches!(redrive, Some(Redrive::Missing))
                 .then_some(self.reliability.max_attempts),
+            unreadable: matches!(redrive, Some(Redrive::Unreadable)),
         }
     }
 
@@ -605,8 +617,20 @@ impl QueueInterface for SqsQueueManager {
     async fn validate_delivery_guarantees(&self, queue_name: &str) -> Result<()> {
         // Without a prefix this creates the queue first. A Sockudo-created queue has
         // no RedrivePolicy, so it runs with the max_attempts fallback unless required.
-        let queue_url = self.get_queue_url(queue_name).await?;
-        self.validate_redrive_policy(queue_name, &queue_url).await
+        // Strict mode treats any failure here — including queue setup — as fatal:
+        // the operator asked to fail closed, not to run with disabled webhooks.
+        // Error text stays AWS-code-only: the SDK Display may embed the queue URL.
+        if self.config.require_redrive_policy {
+            match self.validate_queue_delivery(queue_name).await {
+                Ok(()) => Ok(()),
+                Err(Error::Config(error)) => Err(Error::Config(error)),
+                Err(error) => Err(Error::Config(format!(
+                    "SQS queue {queue_name} validation failed: {error}"
+                ))),
+            }
+        } else {
+            self.validate_queue_delivery(queue_name).await
+        }
     }
 
     fn backend(&self) -> QueueBackendKind {
@@ -864,12 +888,17 @@ struct ReleasePolicy {
     /// Receives after which the driver deletes the message itself. Set only for a
     /// validated queue without a `RedrivePolicy`, from `reliability.max_attempts`.
     drop_after: Option<u32>,
+    /// The policy could not be read at startup: never delete, redrive may still
+    /// exist with a higher `maxReceiveCount` than `max_attempts`.
+    unreadable: bool,
 }
 
 impl ReleasePolicy {
     fn exhausted(self, attempt: u32) -> bool {
-        self.drop_after
-            .is_some_and(|max_attempts| attempt >= max_attempts)
+        !self.unreadable
+            && self
+                .drop_after
+                .is_some_and(|max_attempts| attempt >= max_attempts)
     }
 
     fn final_receive(self, attempt: u32) -> bool {
@@ -924,6 +953,10 @@ enum Redrive {
     },
     /// No usable policy: the driver deletes after `reliability.max_attempts`.
     Missing,
+    /// A policy may exist but could not be read (`GetQueueAttributes` failed).
+    /// The driver retries with backoff and never deletes: deleting could race
+    /// SQS's own redrive when `maxReceiveCount` exceeds `max_attempts`.
+    Unreadable,
 }
 
 /// SQS requires a DLQ in the source queue's account and region, so only the
@@ -955,11 +988,16 @@ mod tests {
         }
     }
 
-    fn release(max_receive_count: Option<u32>, drop_after: Option<u32>) -> ReleasePolicy {
+    fn release(
+        max_receive_count: Option<u32>,
+        drop_after: Option<u32>,
+        unreadable: bool,
+    ) -> ReleasePolicy {
         ReleasePolicy {
             retry: retry(1_000, 0.0),
             max_receive_count,
             drop_after,
+            unreadable,
         }
     }
 
@@ -1051,23 +1089,31 @@ mod tests {
     #[test]
     fn release_policy_bounds_each_redrive_state() {
         // No RedrivePolicy: the driver deletes at max_attempts.
-        let missing = release(None, Some(5));
+        let missing = release(None, Some(5), false);
         assert!(!missing.exhausted(4));
         assert!(missing.exhausted(5));
         assert!(!missing.final_receive(5));
         assert_eq!(missing.attempt_limit(), 5);
 
         // Operator policy: SQS moves the message; the driver never deletes it.
-        let policy = release(Some(3), None);
+        let policy = release(Some(3), None, false);
         assert!(!policy.exhausted(100));
         assert!(!policy.final_receive(2));
         assert!(policy.final_receive(3));
         assert_eq!(policy.attempt_limit(), 3);
 
         // Never validated (push stages): backoff only.
-        let unvalidated = release(None, None);
+        let unvalidated = release(None, None, false);
         assert!(!unvalidated.exhausted(u32::MAX));
         assert!(!unvalidated.final_receive(u32::MAX));
         assert_eq!(unvalidated.attempt_limit(), 0);
+
+        // Unreadable policy: a policy may exist with a higher maxReceiveCount
+        // than max_attempts, so the driver never deletes and SQS still redrives.
+        let unreadable = release(None, Some(5), true);
+        assert!(!unreadable.exhausted(5));
+        assert!(!unreadable.exhausted(u32::MAX));
+        assert!(!unreadable.final_receive(5));
+        assert_eq!(unreadable.attempt_limit(), 5);
     }
 }
