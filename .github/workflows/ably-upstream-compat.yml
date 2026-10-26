@@ -38,6 +38,8 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-ably-upstream-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ably-upstream-
 
       - name: Install system dependencies
         run: |

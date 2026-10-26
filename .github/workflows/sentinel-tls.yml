@@ -34,13 +34,15 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-sentinel-tls-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Install system dependencies
         run: |
