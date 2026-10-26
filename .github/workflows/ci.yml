@@ -41,6 +41,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+        id: toolchain
 
       - name: Install system dependencies
         run: |
@@ -55,9 +56,9 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       # Compile everything CI jobs run later (tests, clippy, bench binaries)
       # in one shared pass. Fingerprints land in target/ and are reused by
@@ -78,7 +79,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
 
   # =============================================================================
   # Lint and Format Check
@@ -96,6 +97,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+        id: toolchain
 
       - name: Restore build cache
         uses: actions/cache/restore@v6
@@ -105,9 +107,9 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Install system dependencies
         run: |
@@ -146,6 +148,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+        id: toolchain
 
       - name: Free runner disk space
         run: |
@@ -277,10 +280,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Run tests
         run: cargo test --verbose --all-features
@@ -349,6 +353,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+        id: toolchain
 
       - name: Install cargo-audit and cargo-deny
         # Prebuilt release binaries instead of compiling both crates from
@@ -357,15 +362,15 @@ jobs:
         with:
           tool: cargo-audit,cargo-deny
 
-      - name: Restore cargo registry cache
-        uses: actions/cache/restore@v6
+      - name: Cache advisory database
+        # cargo-audit reads only Cargo.lock and its advisory DB; a rolling
+        # DB cache avoids downloading the full git history on cold runs.
+        uses: actions/cache@v6
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            advisory-db-${{ runner.os }}-
 
       - name: Security audit
         # Ignored advisories are configured in .cargo/audit.toml.
@@ -416,6 +421,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+        id: toolchain
 
       - name: Install system dependencies
         run: |
@@ -428,10 +434,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -520,6 +527,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+        id: toolchain
 
       - name: Install system dependencies
         run: |
@@ -532,10 +540,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Run AI Transport benchmark guard
         run: scripts/ai-transport-bench-guard.sh
@@ -558,6 +567,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+        id: toolchain
 
       - name: Install system dependencies
         run: |
@@ -570,10 +580,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target/release
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Resolve benchmark revisions
         id: benchmark-revisions
@@ -685,6 +696,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+        id: toolchain
 
       - name: Install Node.js
         uses: actions/setup-node@v7
@@ -702,10 +714,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Run Rust AIT-S conformance tests
         run: cargo test -p sockudo-ai-transport --test ait_s_conformance --test ait_s_coverage

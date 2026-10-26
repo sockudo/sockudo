@@ -30,6 +30,7 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        id: toolchain
         with:
           toolchain: stable
 
@@ -39,10 +40,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-
+            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Install system dependencies
         run: |
