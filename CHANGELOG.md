@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- Web Push VAPID signing and RFC 8291 payload encryption no longer go through
+  `web-push-native`; `sockudo-push` now uses `p256` 0.14 and `ece-native` 0.5
+  directly (same wire format, `aes128gcm` content encoding unchanged). This
+  upgrades the transitive `crypto-bigint` dependency from 0.5.5 to 0.7.9 and
+  `ctutils` to 0.4.5, clearing RUSTSEC-2026-0387 and RUSTSEC-2026-0385 timing
+  side-channel advisories.
+
 ## [5.2.0] - 2026-10-22
 
 Protocol V1 Pusher compatibility is unchanged. The `iggy` driver needs Apache Iggy server 0.9 or

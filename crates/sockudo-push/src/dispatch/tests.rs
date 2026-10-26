@@ -1164,16 +1164,13 @@ fn provider_request_debug_redacts_credentials_and_tokens() {
 #[tokio::test]
 async fn native_web_push_crypto_encrypts_and_signs_request() {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use web_push_native::p256::{
-        SecretKey,
-        elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
-    };
+    use p256::elliptic_curve::{Generate, sec1::ToSec1Point};
 
-    let ua_secret = SecretKey::random(&mut OsRng);
+    let ua_secret = p256::SecretKey::generate();
     let ua_public = ua_secret.public_key();
     let auth_bytes = [7u8; 16];
     let p256dh =
-        SecretString::new(URL_SAFE_NO_PAD.encode(ua_public.to_encoded_point(false).as_bytes()))
+        SecretString::new(URL_SAFE_NO_PAD.encode(ua_public.to_sec1_point(false).as_bytes()))
             .unwrap();
     let auth = SecretString::new(URL_SAFE_NO_PAD.encode(auth_bytes)).unwrap();
     let vapid_private = SecretString::new(URL_SAFE_NO_PAD.encode([1u8; 32])).unwrap();
@@ -1200,8 +1197,9 @@ async fn native_web_push_crypto_encrypts_and_signs_request() {
     assert!(authorization.expose_secret().starts_with("vapid t="));
     assert!(!String::from_utf8_lossy(&prepared.body).contains("Hello"));
 
-    let auth = web_push_native::Auth::clone_from_slice(&auth_bytes);
-    let decrypted = web_push_native::decrypt(prepared.body, &ua_secret, &auth).unwrap();
+    let auth: [u8; 16] = auth_bytes;
+    let decrypted =
+        super::webpush::decrypt_webpush_payload(prepared.body, &ua_secret, &auth).unwrap();
     assert_eq!(decrypted, payload);
 }
 
