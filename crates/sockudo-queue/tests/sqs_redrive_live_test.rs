@@ -247,13 +247,14 @@ async fn sockudo_created_queue_starts_in_fallback_mode() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires SOCKUDO_SQS_TEST_ENDPOINT_URL (ElasticMQ or LocalStack)"]
 async fn strict_mode_fails_when_queue_setup_fails() {
-    // A prefix at an unreachable endpoint makes GetQueueUrl (and CreateQueue)
-    // fail. Strict mode must surface this as a fatal config error, not fall
-    // back to disabled webhooks.
+    // No prefix and an unreachable endpoint: get_queue_url must call
+    // GetQueueUrl (then CreateQueue) and fail. Strict mode must surface that
+    // setup failure as a fatal config error, not fall back to disabled
+    // webhooks. The endpoint, not the prefix, must be unreachable so the
+    // failure comes from queue setup, not GetQueueAttributes.
     let source = unique("strict-setup");
-    let unreachable = "http://127.0.0.1:1";
     let config = SqsQueueConfig {
-        queue_url_prefix: Some(format!("{unreachable}/")),
+        endpoint_url: Some("http://127.0.0.1:1".to_string()),
         require_redrive_policy: true,
         ..sqs_config(None, true)
     };
