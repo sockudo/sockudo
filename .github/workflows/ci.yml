@@ -16,12 +16,19 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+concurrency:
+  # Cancel superseded runs on the same PR/branch instead of stacking them;
+  # pushes to protected branches are never cancelled mid-flight.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # =============================================================================
-  # Lint and Format Check
+  # Prebuild: compile the dependency graph once per Cargo.lock so every job
+  # restores a warm target/ instead of recompiling ~700 crates.
   # =============================================================================
-  lint:
-    name: Lint and Format
+  prebuild:
+    name: Prebuild dependency cache
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -33,14 +40,72 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
+
+      - name: Restore build cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
+
+      # Compile everything CI jobs run later (tests, clippy, bench binaries)
+      # in one shared pass. Fingerprints land in target/ and are reused by
+      # every downstream job with the same toolchain and lockfile.
+      - name: Prebuild workspace test and clippy artifacts
+        run: |
+          cargo test --workspace --all-features --all-targets --no-run
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo bench -p sockudo-push --bench push_pipeline_bench --no-run
+          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths --no-run
+
+      - name: Save build cache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+
+  # =============================================================================
+  # Lint and Format Check
+  # =============================================================================
+  lint:
+    name: Lint and Format
+    runs-on: ubuntu-24.04
+    needs: [prebuild]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Restore build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Install system dependencies
         run: |
@@ -59,6 +124,8 @@ jobs:
           shellcheck install.sh
 
       - name: Run clippy
+        # Fingerprints prebuilt by the prebuild job; clippy only re-lints
+        # crates whose sources changed in this PR.
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # =============================================================================
@@ -67,6 +134,7 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-24.04
+    needs: [prebuild]
 
     steps:
       - name: Checkout repository
@@ -201,13 +269,16 @@ jobs:
           docker port $(docker ps -q -f "name=postgres-test") || true
           docker port $(docker ps -q -f "name=dynamodb-test") || true
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Restore build cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Run tests
         run: cargo test --verbose --all-features
@@ -277,11 +348,22 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      - name: Install cargo-audit and cargo-deny
+        # Prebuilt release binaries instead of compiling both crates from
+        # source (~4.5 min on every run).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+      - name: Restore cargo registry cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Security audit
         # Ignored advisories are configured in .cargo/audit.toml.
@@ -296,6 +378,7 @@ jobs:
   ai-release-feature-matrix:
     name: AI Transport Release Feature Matrix (${{ matrix.name }})
     runs-on: ubuntu-24.04
+    needs: [prebuild]
     strategy:
       fail-fast: false
       matrix:
@@ -337,14 +420,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Restore shared build cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-ai-release-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -410,6 +495,10 @@ jobs:
           target: runtime
           push: false
           tags: sockudo/ai-transport-ci:${{ matrix.name }}
+          # Cache dependency layers across runs; the Dockerfile already
+          # compiles dependencies from dummy sources as a separate layer.
+          cache-from: type=gha,scope=ai-docker-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=ai-docker-${{ matrix.name }}
           build-args: |
             SOCKUDO_FEATURES=${{ matrix.features }}
 
@@ -419,6 +508,7 @@ jobs:
   ai-benchmark-regression:
     name: AI Transport Benchmark Regression
     runs-on: ubuntu-24.04
+    needs: [prebuild]
 
     steps:
       - name: Checkout repository
@@ -434,14 +524,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Restore shared build cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-ai-bench-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Run AI Transport benchmark guard
         run: scripts/ai-transport-bench-guard.sh
@@ -452,6 +544,7 @@ jobs:
   ably-compat-benchmark-regression:
     name: Ably Compatibility Benchmark Regression
     runs-on: ubuntu-24.04
+    needs: [prebuild]
 
     steps:
       - name: Checkout repository
@@ -469,16 +562,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
 
-      - name: Cache cargo dependencies and benchmark build outputs
-        uses: actions/cache@v6
+      - name: Restore shared build cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target/release
-          key: ${{ runner.os }}-cargo-ably-build-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ably-build-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Resolve benchmark revisions
         id: benchmark-revisions
@@ -580,6 +673,7 @@ jobs:
   ai-conformance:
     name: AI Transport Conformance
     runs-on: ubuntu-24.04
+    needs: [prebuild]
 
     steps:
       - name: Checkout repository
@@ -600,14 +694,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Restore shared build cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-ai-conformance-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-prebuild-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prebuild-
 
       - name: Run Rust AIT-S conformance tests
         run: cargo test -p sockudo-ai-transport --test ait_s_conformance --test ait_s_coverage
@@ -621,7 +717,7 @@ jobs:
   manual-build-info:
     name: 🔨 Manual Build Instructions
     runs-on: ubuntu-24.04
-    needs: [lint, test, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ably-compat-benchmark-regression, ai-conformance]
+    needs: [prebuild, lint, test, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ably-compat-benchmark-regression, ai-conformance]
     steps:
       - name: Post build instructions
         uses: actions/github-script@v9
