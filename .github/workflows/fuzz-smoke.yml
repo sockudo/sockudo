@@ -36,7 +36,25 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # Cached prebuilt/binary install; rebuilds from source only on cache
+        # miss (cargo-fuzz has no prebuilt release manifest).
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-fuzz
+          locked: true
+
+      - name: Restore fuzz corpus and target cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            fuzz/target
+            fuzz/corpus
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-
 
       - name: AI header validator smoke
         run: cargo fuzz run ai_header_validator -- -max_total_time=10
@@ -55,6 +73,18 @@ jobs:
 
       - name: Mutation request parser smoke
         run: cargo fuzz run mutation_request -- -max_total_time=10
+
+      - name: Save fuzz corpus and target cache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            fuzz/target
+            fuzz/corpus
+          key: ${{ runner.os }}-cargo-fuzz-${{ github.run_id }}
 
       - name: Upload fuzz crash artifacts
         if: failure()

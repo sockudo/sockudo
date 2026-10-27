@@ -629,6 +629,17 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server-sdks/sockudo-http-rust/target
+          key: ${{ runner.os }}-cargo-rust-sdk-${{ hashFiles('server-sdks/sockudo-http-rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-rust-sdk-
+
       - name: Verify package
         run: |
           cargo fmt --all -- --check
