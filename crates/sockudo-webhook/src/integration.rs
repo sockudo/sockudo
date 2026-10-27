@@ -103,6 +103,10 @@ impl QueueManager {
         self.driver.check_health().await
     }
 
+    pub async fn validate_delivery_guarantees(&self, queue_name: &str) -> Result<()> {
+        self.driver.validate_delivery_guarantees(queue_name).await
+    }
+
     pub async fn replay_dead_letters(&self, queue_name: &str, limit: u32) -> Result<u64> {
         self.driver.replay_dead_letters(queue_name, limit).await
     }
@@ -182,6 +186,9 @@ impl WebhookIntegration {
             )
         });
 
+        queue_manager
+            .validate_delivery_guarantees(WEBHOOK_QUEUE_NAME)
+            .await?;
         queue_manager
             .process_queue(WEBHOOK_QUEUE_NAME, processor)
             .await?;

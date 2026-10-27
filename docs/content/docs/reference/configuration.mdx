@@ -917,9 +917,39 @@ every job.
 Google Pub/Sub, and standard SQS queues. SQS FIFO batches remain serial to
 preserve message-group order. `max_attempts` configures NATS delivery limits,
 Kafka and Iggy retry/DLQ transitions, RabbitMQ republish/DLQ transitions, and
-Pulsar's native dead-letter policy. SQS retry/dead-letter limits remain an AWS
-queue redrive-policy concern; Sockudo does not advertise a DLQ unless it owns
-that policy.
+Pulsar's native dead-letter policy. SQS dead-lettering uses an operator-managed
+redrive policy; Sockudo never creates an SQS DLQ. Before consuming the
+`webhooks` queue, Sockudo reads its `RedrivePolicy`. If one exists,
+`maxReceiveCount` bounds delivery and the queue reports `dead_letter`
+capability. If none exists, Sockudo logs a warning at startup and deletes a
+failing job after `queue.reliability.max_attempts` receives. Set
+`queue.sqs.require_redrive_policy = true`
+(`QUEUE_SQS_REQUIRE_REDRIVE_POLICY=true`) to fail startup instead. Push stage
+queues are not validated.
+
+Terraform example (DLQ retention must exceed the source queue's: for standard
+queues, SQS keeps the original enqueue timestamp when it moves a message, so a
+shorter DLQ retention can expire it immediately):
+
+```hcl
+resource "aws_sqs_queue" "webhooks_dlq" {
+  name                      = "sockudo-webhooks-dlq"
+  message_retention_seconds = 1209600 # 14 days
+}
+
+resource "aws_sqs_queue" "webhooks" {
+  name                      = "sockudo-webhooks"
+  message_retention_seconds = 345600 # 4 days
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.webhooks_dlq.arn
+    maxReceiveCount     = 3
+  })
+}
+```
+
+FIFO note: with FIFO, the DLQ must also be FIFO, and one failing job blocks its
+message group (the whole queue with the default single `message_group_id`) until
+redrive or the fallback delete. Prefer a standard queue for webhooks.
 
 Queue v2 options are fail-closed. A broker that cannot honor per-job delay,
 deduplication, or attempt overrides returns an error instead of silently

@@ -518,6 +518,15 @@ impl SockudoServer {
                 }
                 Arc::new(integration)
             }
+            // Reached only with `require_redrive_policy = true` (or another invalid
+            // config): fail the rollout instead of silently disabling webhooks.
+            Err(error @ Error::Config(_)) => {
+                error!(
+                    error = %error,
+                    "webhook queue does not meet required delivery guarantees"
+                );
+                return Err(error);
+            }
             Err(e) => {
                 warn!(error = %e, "webhook integration initialization failed, using disabled instance");
                 let disabled_config = WebhookConfig {

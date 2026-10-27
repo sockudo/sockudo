@@ -201,6 +201,15 @@ pub trait QueueInterface: Send + Sync {
     /// an error requests retry according to backend/configured policy.
     async fn process_queue(&self, queue_name: &str, callback: JobProcessorFnAsync) -> Result<()>;
 
+    /// Verifies backend-specific delivery guarantees before a queue is consumed.
+    ///
+    /// Backends that own retry and dead-letter handling keep the default. SQS
+    /// records whether an operator-managed `RedrivePolicy` exists and fails only
+    /// when `queue.sqs.require_redrive_policy` is set.
+    async fn validate_delivery_guarantees(&self, _queue_name: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Stops claiming new jobs and drains or releases in-flight deliveries.
     /// This operation must never delete durable shared queue contents.
     async fn disconnect(&self) -> Result<()>;
