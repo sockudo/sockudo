@@ -24,10 +24,6 @@ env:
   # keep symbol names; only file/line detail is lost.
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
-  # Only refs every PR can restore from may write the cache: the protected
-  # branches seed it, and a manual dispatch is an explicit opt-in for seeding a
-  # branch under test. PR runs are read-only so they cannot evict the entry.
-  CARGO_CACHE_MODE: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/beta'))) && 'restore-and-save' || 'restore' }}
   # Live service endpoints, matching docker-compose.test.yml.
   DATABASE_REDIS_HOST: localhost
   DATABASE_REDIS_PORT: 16379
@@ -85,9 +81,9 @@ jobs:
           cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Save shared build cache
-        # Only on a miss: a hit means this exact key is already stored and the
-        # incremental rebuild lives in the PR's own ephemeral target/.
-        if: env.CARGO_CACHE_MODE == 'restore-and-save' && steps.setup.outputs.cache-hit != 'true'
+        # Only on a miss: a hit means this exact key is already stored, and the
+        # incremental rebuild lives in each job's own ephemeral target/.
+        if: steps.setup.outputs.cache-mode == 'restore-and-save' && steps.setup.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |

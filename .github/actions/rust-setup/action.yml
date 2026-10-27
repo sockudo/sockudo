@@ -29,10 +29,32 @@ outputs:
   cache-hit:
     description: "'true' when the exact cache key was restored."
     value: ${{ steps.restore.outputs.cache-hit }}
+  cache-mode:
+    description: "'restore-and-save' when this ref is allowed to write the shared cache."
+    value: ${{ steps.mode.outputs.mode }}
 
 runs:
   using: composite
   steps:
+    # Only refs that every PR can restore from may write the cache. Caches are
+    # scoped to the ref that created them, so PR runs writing their own copy
+    # would only burn quota and evict the entry the whole repo depends on. A
+    # manual dispatch is an explicit opt-in for seeding a branch under test.
+    - name: Resolve shared cache policy
+      id: mode
+      shell: bash
+      run: |
+        mode=restore
+        case "${GITHUB_EVENT_NAME}" in
+          workflow_dispatch) mode=restore-and-save ;;
+          push)
+            case "${GITHUB_REF}" in
+              refs/heads/master | refs/heads/main | refs/heads/develop | refs/heads/beta) mode=restore-and-save ;;
+            esac
+            ;;
+        esac
+        echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
     - name: Install Rust toolchain
       id: toolchain
       uses: dtolnay/rust-toolchain@stable
