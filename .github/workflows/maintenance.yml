@@ -29,15 +29,8 @@ jobs:
       - name: Run security audit
         run: |
           set -euo pipefail
-          cargo audit \
-            --ignore RUSTSEC-2026-0049 \
-            --ignore RUSTSEC-2025-0134 \
-            --json > security_audit.json || true
-
-          cargo audit \
-            --ignore RUSTSEC-2026-0049 \
-            --ignore RUSTSEC-2025-0134 \
-            > security_report.txt || true
+          cargo audit --json > security_audit.json || true
+          cargo audit > security_report.txt || true
 
       - name: Check for security issues
         id: security_check

@@ -10,6 +10,15 @@
   upgrades the transitive `crypto-bigint` dependency from 0.5.5 to 0.7.9 and
   `ctutils` to 0.4.5, clearing RUSTSEC-2026-0387 and RUSTSEC-2026-0385 timing
   side-channel advisories.
+- OTLP `zstd` compression stays available. The exporter still links `zstd`
+  0.13.3 / `zstd-safe` 7.3.0 through `opentelemetry-otlp` 0.32.0, so
+  RUSTSEC-2026-0391 and RUSTSEC-2026-0395 through RUSTSEC-2026-0406 are
+  ignored until a release with the upstream fix (zstd 0.14.3,
+  opentelemetry-rust PR #3819) ships: the three vulnerability-severity
+  advisories in `deny.toml`, the full set in `.cargo/audit.toml`. Only
+  `zstd::bulk::{compress, decompress}` is reached; the affected streaming,
+  `Seekable`, `InBuffer` and `OutBuffer` APIs are not used, and the gRPC path
+  already uses the fixed line via `tonic` 0.14.8.
 - Failed webhook deliveries are now retried by the queue backend instead of
   being acknowledged and lost. All drivers apply their normal retry and
   dead-letter policy (`queue.reliability.max_attempts`, default 5). Receivers

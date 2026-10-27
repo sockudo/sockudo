@@ -1,0 +1,30 @@
+# cargo-audit config. deny.toml carries the vulnerability-severity subset that
+# cargo-deny gates on; this file lists every advisory cargo-audit reports for
+# the same zstd 0.13 line so its report stays quiet.
+#
+# opentelemetry-otlp 0.32.0 pins zstd 0.13, so the OTLP HTTP exporter links
+# zstd 0.13.3 / zstd-safe 7.3.0. The fix is zstd 0.14.3 / zstd-safe 8.2.0,
+# applied upstream (opentelemetry-rust PR #3819) but not released yet.
+#
+# Exposure: the exporter only calls `zstd::bulk::{compress, decompress}`. The
+# affected APIs are the streaming encoder/decoder, `Seekable`, `InBuffer` and
+# `OutBuffer`, none of which the exporter reaches. The gRPC path is already on
+# the fixed line: tonic 0.14.8 links zstd 0.14.3.
+#
+# Remove these once a release with the bump ships.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0391", # zstd 0.13.3
+    "RUSTSEC-2026-0395", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0396", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0397", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0398", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0399", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0400", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0401", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0402", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0403", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0404", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0405", # zstd-safe 7.3.0
+    "RUSTSEC-2026-0406", # zstd-safe 7.3.0
+]
