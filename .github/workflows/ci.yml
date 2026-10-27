@@ -397,11 +397,15 @@ jobs:
 
   # =============================================================================
   # AI Transport Benchmark Regression Guard
+  #
+  # The two benchmark guards are the longest jobs in the pipeline, so they are
+  # deliberately not gated on prebuild: they restore the same shared cache and
+  # start at t=0 instead of paying the prebuild serialization on top of their
+  # own base/head measurements.
   # =============================================================================
   ai-benchmark-regression:
     name: AI Transport Benchmark Regression
     runs-on: ubuntu-24.04
-    needs: [prebuild]
     timeout-minutes: 30
 
     steps:
@@ -422,7 +426,6 @@ jobs:
   ably-compat-benchmark-regression:
     name: Ably Compatibility Benchmark Regression
     runs-on: ubuntu-24.04
-    needs: [prebuild]
     timeout-minutes: 30
 
     steps:
