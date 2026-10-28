@@ -20,7 +20,7 @@ impl ConnectionHandler {
             let connection_manager = &self.connection_manager;
             if let Some(connection) = connection_manager.get_connection(socket_id, app_id).await {
                 let mut conn_locked = connection.inner.lock().await;
-                conn_locked.state.status = sockudo_core::websocket::ConnectionStatus::Active;
+                conn_locked.state.mark_alive();
             } else {
                 tracing::warn!(socket_id = %socket_id, "ping received for unknown socket");
             }
@@ -38,7 +38,7 @@ impl ConnectionHandler {
             let mut conn_locked = connection.inner.lock().await;
             // Note: activity timestamp is already updated by handle_message() for ALL messages
             // We just need to reset connection status to Active when we receive a pong
-            conn_locked.state.status = sockudo_core::websocket::ConnectionStatus::Active;
+            conn_locked.state.mark_alive();
         } else {
             tracing::warn!(socket_id = %socket_id, "pong received for unknown socket");
         }

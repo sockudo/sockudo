@@ -31,6 +31,14 @@
   Sockudo logs a warning and deletes a failing job after `max_attempts`
   receives. Set `QUEUE_SQS_REQUIRE_REDRIVE_POLICY=true` to fail startup instead.
 - SQS: a failed visibility renewal no longer aborts the in-flight delivery.
+- A client's reply to the server's Close frame no longer removes the socket
+  from presence immediately. The last-leave webhook now waits out the presence
+  lease (`presence.v2_ungraceful_timeout_seconds` for Protocol V2,
+  `presence.ungraceful_timeout_seconds` for V1, which defaults to 0), as it
+  already did when the reader was cancelled first; which one won was a race.
+  A client that closes on its own still leaves at once.
+- A ping or pong received after the server sent its Close frame no longer marks
+  the connection active again, which allowed sends after the Close.
 
 ### Fixed
 

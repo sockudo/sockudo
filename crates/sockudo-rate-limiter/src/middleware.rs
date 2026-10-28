@@ -435,8 +435,21 @@ mod tests {
         request
     }
 
+    // `tracing` caches callsite interest process-wide, so a sibling test that
+    // emits this `warn!` from another thread can leave the callsite cached as
+    // disabled and drop the event the capture test expects to see. Serialize
+    // every test in this module that reaches that callsite.
+    static WARN_CALLSITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn warn_callsite() -> std::sync::MutexGuard<'static, ()> {
+        WARN_CALLSITE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn forwarded_address_selection_respects_the_configured_proxy_shape() {
+        let _guard = warn_callsite();
         for (hops, chain, expected) in [
             (1, "203.0.113.7", "203.0.113.7"),
             (1, "192.0.2.99, 203.0.113.7", "203.0.113.7"),
@@ -468,6 +481,7 @@ mod tests {
 
     #[test]
     fn malformed_or_short_chains_fall_back_to_socket_not_real_ip() {
+        let _guard = warn_callsite();
         for (hops, chain) in [
             (3, "192.0.2.99"),
             (2, "invalid, 203.0.113.7"),
@@ -488,6 +502,7 @@ mod tests {
 
     #[test]
     fn explicit_proxy_trust_allows_real_ip_only_without_forwarded_for() {
+        let _guard = warn_callsite();
         assert_eq!(
             IpKeyExtractor::new(1)
                 .extract(&request(&[("x-real-ip", "2001:0db8::1")]))
@@ -498,6 +513,7 @@ mod tests {
 
     #[test]
     fn duplicate_forwarding_fields_fall_back_to_socket() {
+        let _guard = warn_callsite();
         for name in ["x-forwarded-for", "x-real-ip"] {
             assert_eq!(
                 IpKeyExtractor::new(1)
@@ -510,6 +526,7 @@ mod tests {
 
     #[test]
     fn non_text_forwarding_header_falls_back_to_socket() {
+        let _guard = warn_callsite();
         let mut req = request(&[("x-real-ip", "192.0.2.98")]);
         req.headers_mut()
             .insert("x-forwarded-for", HeaderValue::from_bytes(&[0xff]).unwrap());
@@ -529,6 +546,7 @@ mod tests {
 
     #[test]
     fn invalid_forwarding_warning_is_shared_and_does_not_log_header_contents() {
+        let _guard = warn_callsite();
         #[derive(Clone)]
         struct Writer(Arc<std::sync::Mutex<Vec<u8>>>);
         impl std::io::Write for Writer {
