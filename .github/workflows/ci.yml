@@ -52,12 +52,25 @@ concurrency:
 
 jobs:
   # =============================================================================
-  # Prebuild: compile the dependency graph once per Cargo.lock so every job
+  # Cache seeder: compiles the dependency graph once per Cargo.lock so every PR
   # restores a warm target/ instead of recompiling ~700 crates.
+  #
+  # Nothing depends on this job. Gating the pipeline on it added its duration to
+  # every run while saving the downstream jobs nothing they would not have done
+  # in parallel: they restore the same archive and rebuild only the crates this
+  # commit touched. GitHub-hosted minutes are free for this repository, so wall
+  # clock is the only thing worth optimising.
   # =============================================================================
-  prebuild:
-    name: Prebuild dependency cache
+  seed-cache:
+    name: Seed dependency cache
     runs-on: ubuntu-24.04
+    # Caches are scoped to the ref that created them, so only refs every PR can
+    # restore from may write the shared cache. A manual dispatch is an explicit
+    # opt-in for seeding a branch under test. Everything inside this job is
+    # therefore allowed to save; no other job writes the cache at all.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(fromJSON('["refs/heads/master","refs/heads/main","refs/heads/develop","refs/heads/beta"]'), github.ref)
     timeout-minutes: 45
     steps:
       - name: Checkout repository
@@ -83,7 +96,7 @@ jobs:
       - name: Save shared build cache
         # Only on a miss: a hit means this exact key is already stored, and the
         # incremental rebuild lives in each job's own ephemeral target/.
-        if: steps.setup.outputs.cache-mode == 'restore-and-save' && steps.setup.outputs.cache-hit != 'true'
+        if: steps.setup.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -98,7 +111,6 @@ jobs:
   lint:
     name: Lint and Format
     runs-on: ubuntu-24.04
-    needs: [prebuild]
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -138,7 +150,6 @@ jobs:
   test:
     name: Test Suite (${{ matrix.name }})
     runs-on: ubuntu-24.04
-    needs: [prebuild]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -212,7 +223,6 @@ jobs:
   push-feature-matrix:
     name: Push Feature Matrix
     runs-on: ubuntu-24.04
-    needs: [prebuild]
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -276,7 +286,6 @@ jobs:
   ai-release-feature-matrix:
     name: AI Transport Release Feature Matrix (${{ matrix.name }})
     runs-on: ubuntu-24.04
-    needs: [prebuild]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -574,7 +583,7 @@ jobs:
   manual-build-info:
     name: 🔨 Manual Build Instructions
     runs-on: ubuntu-24.04
-    needs: [prebuild, lint, test, push-feature-matrix, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ably-compat-benchmark-regression, ai-conformance]
+    needs: [lint, test, push-feature-matrix, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ably-compat-benchmark-regression, ai-conformance]
     steps:
       - name: Post build instructions
         uses: actions/github-script@v9
