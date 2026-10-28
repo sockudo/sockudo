@@ -371,6 +371,13 @@ jobs:
 
   # =============================================================================
   # AI Transport Docker Feature Builds
+  #
+  # Kept alongside docker.yml even though it also builds an image: docker.yml
+  # builds `full,monolith`, which includes ai-transport, so it cannot prove the
+  # image builds *without* it, and it cannot prove ai-transport links in a
+  # narrow graph. With the layer cache in the registry these cost ~20 s each and
+  # run in parallel with everything else, so the coverage is cheaper than the
+  # argument for dropping it.
   # =============================================================================
   ai-docker-feature-builds:
     name: AI Transport Docker Feature Builds (${{ matrix.name }})
