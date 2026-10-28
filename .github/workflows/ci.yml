@@ -71,11 +71,8 @@ jobs:
           components: rustfmt, clippy
           apt-packages: libpq-dev libmariadb-dev
 
-      # --all-targets also covers the bench binaries the guards build.
-      - name: Prebuild workspace test and clippy artifacts
-        run: |
-          cargo test --workspace --all-features --all-targets --no-run
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Prebuild every cached job's artifacts
+        run: scripts/ci/prebuild.sh
 
       - name: Save shared build cache
         if: steps.setup.outputs.cache-hit != 'true'
@@ -129,22 +126,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Partition of the 18 workspace members, balanced by test count.
-        include:
-          - name: transport
-            packages: -p sockudo-adapter
-          - name: core
-            packages: -p sockudo-core -p sockudo-protocol
-          - name: storage
-            packages: >-
-              -p sockudo-push -p sockudo-ai-transport -p sockudo-ai-benches
-              -p sockudo-app -p sockudo-queue -p sockudo-cache -p sockudo-delta
-              -p sockudo-rate-limiter -p sockudo-metrics -p sockudo-filter
-              -p sockudo-webhook
-          - name: server
-            packages: >-
-              -p sockudo -p sockudo-ably-compat -p sockudo-mcp
-              -p sockudo-simulator
+        # Package lists live in scripts/ci/test-shards.sh, shared with the seeder.
+        name: [transport, core, storage, server]
 
     steps:
       - name: Checkout repository
@@ -177,7 +160,11 @@ jobs:
         run: bash scripts/ci/wait-for-test-services.sh
 
       - name: Run tests
-        run: cargo test --all-features ${{ matrix.packages }}
+        env:
+          SHARD: ${{ matrix.name }}
+        run: |
+          # shellcheck disable=SC2046 # one word per package flag
+          cargo test --all-features $(scripts/ci/test-shards.sh "$SHARD")
 
       - name: Cleanup test services
         if: always()
@@ -229,13 +216,18 @@ jobs:
         with:
           tool: cargo-audit,cargo-deny
 
+      - name: Resolve advisory database cache week
+        id: advisory-week
+        run: echo "value=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
       - name: Cache advisory database
-        # cargo-audit reads only Cargo.lock and its advisory DB; a rolling
-        # DB cache avoids downloading the full git history on cold runs.
+        # cargo-audit refreshes the cached clone in place. One key per ISO
+        # week: a per-run key stored a new entry every run, and a fixed key
+        # would never save again after its first hit.
         uses: actions/cache@v6
         with:
           path: ~/.cargo/advisory-db
-          key: advisory-db-${{ runner.os }}-${{ github.run_id }}
+          key: advisory-db-${{ runner.os }}-${{ steps.advisory-week.outputs.value }}
           restore-keys: |
             advisory-db-${{ runner.os }}-
 
@@ -358,6 +350,18 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Registry, not type=gha: mode=max layers are multi-GB and evict cargo.
+      - name: Resolve layer cache write policy
+        id: layer-cache
+        run: |
+          # Only protected refs write the shared layers. A PR carries its own
+          # Cargo.lock, so its export replaces the layers every other PR
+          # imports and they all recompile the whole graph.
+          if [[ "$GITHUB_REF" =~ ^refs/heads/(master|main|develop|beta)$ ]]; then
+            echo "cache-to=type=registry,ref=ghcr.io/sockudo/sockudo:buildcache-ci-${{ matrix.name }},mode=max,ignore-error=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cache-to=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
@@ -367,7 +371,7 @@ jobs:
           push: false
           tags: sockudo/ai-transport-ci:${{ matrix.name }}
           cache-from: type=registry,ref=ghcr.io/sockudo/sockudo:buildcache-ci-${{ matrix.name }}
-          cache-to: type=registry,ref=ghcr.io/sockudo/sockudo:buildcache-ci-${{ matrix.name }},mode=max,ignore-error=true
+          cache-to: ${{ steps.layer-cache.outputs.cache-to }}
           build-args: |
             SOCKUDO_FEATURES=${{ matrix.features }}
             CARGO_BUILD_JOBS=4

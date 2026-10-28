@@ -42,11 +42,13 @@ runs:
         components: ${{ inputs.components }}
 
     # Lockfile-hashed key; the prefix restore-key lets a bump reuse target/.
+    # The seeder saves only on a miss, so the key also hashes its prebuild
+    # plan: changing the plan forces one fresh save.
     - name: Resolve cache key
       id: key
       shell: bash
       run: |
-        echo "value=${RUNNER_OS}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}" >> "$GITHUB_OUTPUT"
+        echo "value=${RUNNER_OS}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('scripts/ci/prebuild.sh', 'scripts/ci/test-shards.sh') }}" >> "$GITHUB_OUTPUT"
 
     - name: Install system dependencies
       if: inputs.install-base-apt == 'true' || inputs.apt-packages != ''

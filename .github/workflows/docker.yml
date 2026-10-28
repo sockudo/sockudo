@@ -83,9 +83,14 @@ jobs:
           - name: amd64
             arch: linux/amd64
             runner: ubuntu-24.04
+            # Part of the buildcache-amd64 layer key (the Dockerfile sets it as
+            # ENV before the dependency build): keep it equal to Build Test Image's.
+            jobs: 4
           - name: arm64
             arch: linux/arm64
             runner: ubuntu-24.04-arm
+            # Dockerfile default.
+            jobs: 2
     
     steps:
       - name: Checkout repository
@@ -116,6 +121,8 @@ jobs:
           platforms: ${{ matrix.platform.arch }}
           push: true
           provenance: false
+          build-args: |
+            CARGO_BUILD_JOBS=${{ matrix.platform.jobs }}
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform.name }}-temp
             sockudo/sockudo:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform.name }}-temp
@@ -214,7 +221,18 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [prepare]
     if: github.event_name == 'pull_request'
-    
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -239,7 +257,17 @@ jobs:
           file: ./Dockerfile
           load: true
           tags: sockudo:test
+          # Must equal the amd64 publish build's `jobs` to hit buildcache-amd64.
+          build-args: |
+            CARGO_BUILD_JOBS=4
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:buildcache-amd64
+
+      # The image is already loaded here; testing it in a separate job would
+      # need a second full build, since a loaded image does not leave the job.
+      - name: Smoke test image
+        uses: ./.github/actions/docker-smoke-test
+        with:
+          image: sockudo:test
 
   # =============================================================================
   # Test Docker Image
@@ -247,9 +275,9 @@ jobs:
   test:
     name: Test Docker Image
     runs-on: ubuntu-24.04
-    needs: [prepare, build-test, docker-manifest]
-    if: always() && (needs.build-test.result == 'success' || needs.docker-manifest.result == 'success')
-    
+    needs: [prepare, docker-manifest]
+    if: github.event_name != 'pull_request'
+
     services:
       redis:
         image: redis:7-alpine
@@ -265,61 +293,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build or pull test image
+      - name: Pull test image
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # For PR: build locally
-            docker build -t sockudo:test .
-          else
-            # For push: pull the built image
-            docker pull ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.branch_tag }}
-            docker tag ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.branch_tag }} sockudo:test
-          fi
+          docker pull ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.branch_tag }}
+          docker tag ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.branch_tag }} sockudo:test
 
-      - name: Test basic functionality
-        run: |
-          echo "Testing Docker image functionality..."
-          
-          # Start container
-          docker run -d --name sockudo-test \
-            --network host \
-            -e RUST_LOG=info \
-            -e DATABASE_REDIS_HOST=localhost \
-            -e DATABASE_REDIS_PORT=6379 \
-            -e SOCKUDO_DEFAULT_APP_ENABLED=true \
-            sockudo:test
-          
-          # Wait for startup
-          sleep 15
-          
-          # Test health endpoint
-          if curl -f http://localhost:6001/up/app-id; then
-            echo "✅ Health check passed"
-          else
-            echo "❌ Health check failed"
-            docker logs sockudo-test
-            exit 1
-          fi
-          
-          # Test metrics endpoint
-          if curl -f http://localhost:9601/metrics > /dev/null; then
-            echo "✅ Metrics endpoint accessible"
-          else
-            echo "❌ Metrics endpoint failed"
-            docker logs sockudo-test
-            exit 1
-          fi
-          
-          echo "✅ All tests passed!"
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker stop sockudo-test || true
-          docker rm sockudo-test || true
+      - name: Smoke test image
+        uses: ./.github/actions/docker-smoke-test
+        with:
+          image: sockudo:test
 
   # =============================================================================
   # Security Scan
