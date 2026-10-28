@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Start the docker-compose.test.yml stack and block until every service answers.
-#
-# Every Rust test shard needs the same live backends, so this lives in one place
-# instead of being copy-pasted into each CI job.
+# Start docker-compose.test.yml and block until every backend answers.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

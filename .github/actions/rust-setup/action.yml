@@ -41,9 +41,7 @@ runs:
         toolchain: stable
         components: ${{ inputs.components }}
 
-    # One key for every Rust job. The lockfile hash keeps it content-addressed;
-    # the prefix restore-key lets a lockfile bump reuse the previous target/ so
-    # only the changed crates recompile.
+    # Lockfile-hashed key; the prefix restore-key lets a bump reuse target/.
     - name: Resolve cache key
       id: key
       shell: bash

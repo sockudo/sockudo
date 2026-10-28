@@ -18,10 +18,7 @@ env:
   RUST_BACKTRACE: 1
   # Incremental artifacts bloat the shared cache and its restore time.
   CARGO_INCREMENTAL: 0
-  # Debuginfo is ~75% of every compiled object in this workspace and nothing in
-  # CI reads it. Dropping it shrinks the shared target/ cache roughly 4x, which
-  # is the single largest per-job cost, and shortens every link step. Backtraces
-  # keep symbol names; only file/line detail is lost.
+  # Debuginfo is ~75% of each object here and no CI consumer reads it.
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   # Live service endpoints, matching docker-compose.test.yml.
@@ -52,22 +49,12 @@ concurrency:
 
 jobs:
   # =============================================================================
-  # Cache seeder: compiles the dependency graph once per Cargo.lock so every PR
-  # restores a warm target/ instead of recompiling ~700 crates.
-  #
-  # Nothing depends on this job. Gating the pipeline on it added its duration to
-  # every run while saving the downstream jobs nothing they would not have done
-  # in parallel: they restore the same archive and rebuild only the crates this
-  # commit touched. GitHub-hosted minutes are free for this repository, so wall
-  # clock is the only thing worth optimising.
+  # Cache seeder. Nothing depends on it.
   # =============================================================================
   seed-cache:
     name: Seed dependency cache
     runs-on: ubuntu-24.04
-    # Caches are scoped to the ref that created them, so only refs every PR can
-    # restore from may write the shared cache. A manual dispatch is an explicit
-    # opt-in for seeding a branch under test. Everything inside this job is
-    # therefore allowed to save; no other job writes the cache at all.
+    # Caches are scoped per ref; only refs every PR can read may write.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(fromJSON('["refs/heads/master","refs/heads/main","refs/heads/develop","refs/heads/beta"]'), github.ref)
@@ -84,18 +71,13 @@ jobs:
           components: rustfmt, clippy
           apt-packages: libpq-dev libmariadb-dev
 
-      # Compile everything CI jobs run later (tests, clippy, bench binaries) in
-      # one shared pass. Fingerprints land in target/ and are reused by every
-      # downstream job with the same toolchain and lockfile. `--all-targets`
-      # covers the benches that the benchmark guards and the push job build.
+      # --all-targets also covers the bench binaries the guards build.
       - name: Prebuild workspace test and clippy artifacts
         run: |
           cargo test --workspace --all-features --all-targets --no-run
           cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Save shared build cache
-        # Only on a miss: a hit means this exact key is already stored, and the
-        # incremental rebuild lives in each job's own ephemeral target/.
         if: steps.setup.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -135,17 +117,10 @@ jobs:
           shellcheck install.sh
 
       - name: Run clippy
-        # Fingerprints prebuilt by the prebuild job; clippy only re-lints crates
-        # whose sources changed in this PR.
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # =============================================================================
-  # Test Suite
-  #
-  # Sharded by crate group so the wall clock is bounded by the slowest shard
-  # instead of the sum of every integration suite. Every shard runs the same
-  # `--all-features` graph and the same live backends as the single job it
-  # replaces; the union of the shards is the full workspace.
+  # Test Suite (sharded; union of the shards is the whole workspace)
   # =============================================================================
   test:
     name: Test Suite (${{ matrix.name }})
@@ -154,8 +129,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Partition of the 18 workspace members, balanced by test count
-        # (605 / 543 / 484 / 485 as of this change).
+        # Partition of the 18 workspace members, balanced by test count.
         include:
           - name: transport
             packages: -p sockudo-adapter
@@ -177,8 +151,6 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Ensure runner disk headroom
-        # The cached target/ is ~4x smaller since debuginfo is disabled; only
-        # reclaim the preinstalled toolchains when the runner is actually tight.
         run: |
           df -h /
           avail_gib=$(df -Pk / | awk 'NR==2 { print int($4 / 1048576) }')
@@ -215,10 +187,7 @@ jobs:
           docker system prune -f || true
 
   # =============================================================================
-  # Push Feature Matrix
-  #
-  # `cargo test --all-features` proves the union compiles; this proves each push
-  # provider and storage backend also compiles on its own.
+  # Push Feature Matrix (each provider and storage set compiles alone)
   # =============================================================================
   push-feature-matrix:
     name: Push Feature Matrix
@@ -235,9 +204,6 @@ jobs:
           components: clippy
           apt-packages: libpq-dev libmariadb-dev
 
-      # No `--all-features` pass here: prebuild already compiled it for every
-      # workspace member, and the clippy below covers the provider plus storage
-      # union. What is left to prove is that each half compiles on its own.
       - name: Check push feature matrix
         run: |
           cargo check -p sockudo-push --features push-fcm,push-apns,push-webpush,push-hms,push-wns
@@ -311,8 +277,6 @@ jobs:
             args: "--no-default-features --features v2,ai-transport,nats"
             targets: ""
             check_default_no_ai: false
-          # The full graph is the only entry that also covers benches and
-          # examples; prebuild already does that for --all-features.
           - name: full
             args: "--no-default-features --features full"
             targets: "--all-targets"
@@ -333,13 +297,7 @@ jobs:
           components: clippy
           apt-packages: libpq-dev libmariadb-dev
 
-      # `cargo test --no-run` is the codegen proof for this feature graph and
-      # clippy the lint proof; a separate `cargo check` would only repeat the
-      # metadata pass. Formatting is checked once, in the lint job.
-      #
-      # Benches and examples are only built for the `full` entry: building them
-      # seven more times proves nothing extra, because prebuild already lints
-      # and compiles every target of the workspace-wide feature graph.
+      # --all-targets only on the `full` entry; the seeder already covers it.
       - name: Build tests for feature graph
         run: cargo test -p sockudo ${{ matrix.targets }} --no-run ${{ matrix.args }}
 
@@ -370,14 +328,7 @@ jobs:
         run: scripts/ai-transport-ga-gate.sh ci-evidence
 
   # =============================================================================
-  # AI Transport Docker Feature Builds
-  #
-  # Kept alongside docker.yml even though it also builds an image: docker.yml
-  # builds `full,monolith`, which includes ai-transport, so it cannot prove the
-  # image builds *without* it, and it cannot prove ai-transport links in a
-  # narrow graph. With the layer cache in the registry these cost ~20 s each and
-  # run in parallel with everything else, so the coverage is cheaper than the
-  # argument for dropping it.
+  # AI Transport Docker Feature Builds (docker.yml only covers full,monolith)
   # =============================================================================
   ai-docker-feature-builds:
     name: AI Transport Docker Feature Builds (${{ matrix.name }})
@@ -406,8 +357,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Layer cache lives in the registry, not in the Actions cache: `mode=max`
-      # image layers are multi-GB and were evicting the shared cargo cache.
+      # Registry, not type=gha: mode=max layers are multi-GB and evict cargo.
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
@@ -424,11 +374,6 @@ jobs:
 
   # =============================================================================
   # AI Transport Benchmark Regression Guard
-  #
-  # The two benchmark guards are the longest jobs in the pipeline, so they are
-  # deliberately not gated on prebuild: they restore the same shared cache and
-  # start at t=0 instead of paying the prebuild serialization on top of their
-  # own base/head measurements.
   # =============================================================================
   ai-benchmark-regression:
     name: AI Transport Benchmark Regression
@@ -525,8 +470,7 @@ jobs:
         run: |
           set -euo pipefail
           cp -R target/criterion target/criterion-initial
-          # Re-measure both revisions so runner load or CPU frequency drift
-          # cannot make a repeated head-only sample look reproducible.
+          # Re-measure both revisions: a head-only repeat cannot rule out drift.
           git checkout --detach "$BASE_SHA"
           rm -rf target/criterion
           cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --save-baseline confirmation-base
@@ -561,11 +505,7 @@ jobs:
           if-no-files-found: error
 
   # =============================================================================
-  # AI Transport Protocol Conformance
-  #
-  # The Rust AIT-S suites (ait_s_conformance, ait_s_coverage) are integration
-  # tests of sockudo-ai-transport, so the Test Suite shards already run them.
-  # Only the Node golden transcripts need a separate job.
+  # AI Transport Protocol Conformance (Rust AIT-S suites run in the test shards)
   # =============================================================================
   ai-conformance:
     name: AI Transport Conformance
