@@ -225,9 +225,11 @@ jobs:
           components: clippy
           apt-packages: libpq-dev libmariadb-dev
 
+      # No `--all-features` pass here: prebuild already compiled it for every
+      # workspace member, and the clippy below covers the provider plus storage
+      # union. What is left to prove is that each half compiles on its own.
       - name: Check push feature matrix
         run: |
-          cargo check -p sockudo-push --all-features
           cargo check -p sockudo-push --features push-fcm,push-apns,push-webpush,push-hms,push-wns
           cargo check -p sockudo-push --features dynamodb,surrealdb,scylladb,postgres,mysql
           cargo clippy -p sockudo-push --all-targets --features push-fcm,push-apns,push-webpush,push-hms,push-wns,dynamodb,surrealdb,scylladb,postgres,mysql -- -D warnings
@@ -282,24 +284,33 @@ jobs:
         include:
           - name: default-no-ai
             args: ""
+            targets: ""
             check_default_no_ai: true
           - name: ai-transport-alone
             args: "--no-default-features --features ai-transport"
+            targets: ""
             check_default_no_ai: false
           - name: ai-transport-redis
             args: "--no-default-features --features v2,ai-transport,redis"
+            targets: ""
             check_default_no_ai: false
           - name: ai-transport-redis-cluster
             args: "--no-default-features --features v2,ai-transport,redis-cluster"
+            targets: ""
             check_default_no_ai: false
           - name: ai-transport-nats
             args: "--no-default-features --features v2,ai-transport,nats"
+            targets: ""
             check_default_no_ai: false
+          # The full graph is the only entry that also covers benches and
+          # examples; prebuild already does that for --all-features.
           - name: full
             args: "--no-default-features --features full"
+            targets: "--all-targets"
             check_default_no_ai: false
           - name: no-default-pusher
             args: "--no-default-features"
+            targets: ""
             check_default_no_ai: false
 
     steps:
@@ -316,11 +327,15 @@ jobs:
       # `cargo test --no-run` is the codegen proof for this feature graph and
       # clippy the lint proof; a separate `cargo check` would only repeat the
       # metadata pass. Formatting is checked once, in the lint job.
+      #
+      # Benches and examples are only built for the `full` entry: building them
+      # seven more times proves nothing extra, because prebuild already lints
+      # and compiles every target of the workspace-wide feature graph.
       - name: Build tests for feature graph
-        run: cargo test -p sockudo --all-targets --no-run ${{ matrix.args }}
+        run: cargo test -p sockudo ${{ matrix.targets }} --no-run ${{ matrix.args }}
 
       - name: Clippy feature graph
-        run: cargo clippy -p sockudo --all-targets ${{ matrix.args }} -- -D warnings
+        run: cargo clippy -p sockudo ${{ matrix.targets }} ${{ matrix.args }} -- -D warnings
 
       - name: Assert default graph excludes AI Transport
         if: matrix.check_default_no_ai
