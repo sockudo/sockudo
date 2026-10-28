@@ -436,9 +436,9 @@ mod tests {
     }
 
     // `tracing` caches callsite interest process-wide, so a sibling test that
-    // emits this `warn!` from another thread can leave the callsite cached as
-    // disabled and drop the event the capture test expects to see. Serialize
-    // every test in this module that reaches that callsite.
+    // reaches `warn_invalid_forwarding` from another thread can leave its
+    // callsite cached as disabled and drop the event the capture test expects.
+    // Every test in this module that reaches it takes this lock.
     static WARN_CALLSITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn warn_callsite() -> std::sync::MutexGuard<'static, ()> {

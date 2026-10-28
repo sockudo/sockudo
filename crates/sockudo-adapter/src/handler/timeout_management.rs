@@ -295,7 +295,6 @@ impl ConnectionHandler {
         let conn_manager = &self.connection_manager;
         if let Some(conn) = conn_manager.get_connection(socket_id, &app_config.id).await {
             let mut ws = conn.inner.lock().await;
-            // Reset connection status to Active when we receive a ping (client is alive)
             ws.state.mark_alive();
         }
 

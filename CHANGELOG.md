@@ -37,11 +37,11 @@
   `presence.ungraceful_timeout_seconds` for V1, which defaults to 0), as it
   already did when the reader was cancelled first; which one won was a race.
   A client that closes on its own still leaves at once.
-- A ping or pong received after the server sent its Close frame no longer marks
-  the connection active again, which allowed sends after the Close.
 
 ### Fixed
 
+- A ping or pong received after the server sent its Close frame no longer marks
+  the connection active again, which allowed sends after the Close.
 - Push queue work can run on standard SQS queues (`QUEUE_DRIVER=sqs`). The push queue attached a
   deduplication key to every job, which standard SQS rejects (`SQS deduplication keys require a
   FIFO queue`), so every push enqueue failed. It now sends the key only to backends that

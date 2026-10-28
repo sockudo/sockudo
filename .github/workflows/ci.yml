@@ -71,43 +71,8 @@ jobs:
           components: rustfmt, clippy
           apt-packages: libpq-dev libmariadb-dev
 
-      - name: Prebuild workspace test and clippy artifacts
-        run: |
-          cargo test --workspace --all-features --all-targets --no-run
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      # Each shard resolves features over its own subset of members, so the
-      # workspace-wide artifacts above never match them and all four shards
-      # recompile the shared dependencies. Seed their exact commands.
-      # Keep in sync with the Test Suite matrix.
-      - name: Prebuild shard artifacts
-        run: |
-          cargo test --all-features -p sockudo-adapter --no-run
-          cargo test --all-features -p sockudo-core -p sockudo-protocol --no-run
-          cargo test --all-features \
-            -p sockudo-push -p sockudo-ai-transport -p sockudo-ai-benches \
-            -p sockudo-app -p sockudo-queue -p sockudo-cache -p sockudo-delta \
-            -p sockudo-rate-limiter -p sockudo-metrics -p sockudo-filter \
-            -p sockudo-webhook --no-run
-          cargo test --all-features \
-            -p sockudo -p sockudo-ably-compat -p sockudo-mcp -p sockudo-simulator --no-run
-
-      # `cargo test --all-targets` compiles the bench binaries in the test
-      # profile; the guards run `cargo bench`, whose artifacts land in
-      # target/release and are written by nothing else. Without them every
-      # guard run recompiles the whole dependency graph.
-      - name: Prebuild benchmark artifacts
-        run: |
-          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths --no-run
-          cargo bench -p sockudo-ai-benches --bench ai_hot_paths --no-run
-
-      # Ably upstream compatibility builds the server on every PR with this
-      # narrow feature set, which resolves differently from --all-features and
-      # recompiled 159 crates. Keep in sync with ably-upstream-compat.yml.
-      - name: Prebuild compatibility server graph
-        run: |
-          cargo build -p sockudo \
-            --features v2,ai-transport,ably-compat,redis,postgres,push,monolith
+      - name: Prebuild every cached job's artifacts
+        run: scripts/ci/prebuild.sh
 
       - name: Save shared build cache
         if: steps.setup.outputs.cache-hit != 'true'
@@ -161,22 +126,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Partition of the 18 workspace members, balanced by test count.
-        include:
-          - name: transport
-            packages: -p sockudo-adapter
-          - name: core
-            packages: -p sockudo-core -p sockudo-protocol
-          - name: storage
-            packages: >-
-              -p sockudo-push -p sockudo-ai-transport -p sockudo-ai-benches
-              -p sockudo-app -p sockudo-queue -p sockudo-cache -p sockudo-delta
-              -p sockudo-rate-limiter -p sockudo-metrics -p sockudo-filter
-              -p sockudo-webhook
-          - name: server
-            packages: >-
-              -p sockudo -p sockudo-ably-compat -p sockudo-mcp
-              -p sockudo-simulator
+        # Package lists live in scripts/ci/test-shards.sh, shared with the seeder.
+        name: [transport, core, storage, server]
 
     steps:
       - name: Checkout repository
@@ -209,7 +160,11 @@ jobs:
         run: bash scripts/ci/wait-for-test-services.sh
 
       - name: Run tests
-        run: cargo test --all-features ${{ matrix.packages }}
+        env:
+          SHARD: ${{ matrix.name }}
+        run: |
+          # shellcheck disable=SC2046 # one word per package flag
+          cargo test --all-features $(scripts/ci/test-shards.sh "$SHARD")
 
       - name: Cleanup test services
         if: always()
@@ -266,12 +221,9 @@ jobs:
         run: echo "value=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
       - name: Cache advisory database
-        # cargo-audit reads only Cargo.lock and its advisory DB; the cached
-        # clone avoids downloading the full git history, and cargo-audit
-        # refreshes it in place. A per-run key stacked a new 46 MB entry on
-        # every run: 21 entries and 0.97 GB of the 10 GB cache quota. A fixed
-        # key never saves again after its first hit, so every run would fetch
-        # a growing delta; a weekly key refreshes the snapshot once a week.
+        # cargo-audit refreshes the cached clone in place. One key per ISO
+        # week: a per-run key stored a new entry every run, and a fixed key
+        # would never save again after its first hit.
         uses: actions/cache@v6
         with:
           path: ~/.cargo/advisory-db

@@ -1,8 +1,6 @@
 name: Docker smoke test
 description: >-
   Start a built image and assert that the health and metrics endpoints answer.
-  Shared by the pull-request build and the push-time publish so neither path
-  needs a second image build to test the first one.
 
 inputs:
   image:

@@ -352,7 +352,8 @@ impl ConnectionHandler {
     /// Disconnect after the peer's Close frame. A Close that answers this node's own Close frame
     /// is not a voluntary leave: it keeps the presence lease so the last-leave webhook waits for a
     /// reconnect elsewhere. It races the reader's cancellation, which already takes the ungraceful
-    /// path, so both orderings must agree. Any other peer Close is a leave.
+    /// path, so both orderings must agree. During drain any server Close counts, not only the
+    /// shutdown one. Any other peer Close is a leave.
     pub async fn handle_peer_close(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         let answers_server_close = !self.is_accepting()
             && match self
