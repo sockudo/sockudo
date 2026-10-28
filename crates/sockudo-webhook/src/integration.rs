@@ -110,6 +110,14 @@ impl QueueManager {
     pub async fn replay_dead_letters(&self, queue_name: &str, limit: u32) -> Result<u64> {
         self.driver.replay_dead_letters(queue_name, limit).await
     }
+
+    pub fn backend(&self) -> sockudo_core::queue::QueueBackendKind {
+        self.driver.backend()
+    }
+
+    pub fn capabilities(&self) -> sockudo_core::queue::QueueCapabilities {
+        self.driver.capabilities()
+    }
 }
 
 /// Webhook integration for processing events

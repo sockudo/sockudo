@@ -32,11 +32,40 @@
   receives. Set `QUEUE_SQS_REQUIRE_REDRIVE_POLICY=true` to fail startup instead.
 - SQS: a failed visibility renewal no longer aborts the in-flight delivery.
 
+### Fixed
+
+- Push queue work can run on standard SQS queues (`QUEUE_DRIVER=sqs`). The push queue attached a
+  deduplication key to every job, which standard SQS rejects (`SQS deduplication keys require a
+  FIFO queue`), so every push enqueue failed. It now sends the key only to backends that
+  deduplicate. Delays longer than SQS's 15-minute limit (scheduled sends, long provider
+  retry-after) are sent as 15 minutes, and a job that arrives before its `not_before` time goes
+  back to SQS for the rest of the wait, counted in `sockudo_push_queue_local_requeued_total` with
+  `reason="not_before_deferred"`.
+- SQS FIFO queues are rejected for push at startup. FIFO queues have no per-message delay, so
+  scheduled sends, nacks with a retry time and local-capacity requeues all failed with `SQS FIFO
+  queues do not support per-message delay`. The SQS driver now reports `delayed_delivery = false`
+  for FIFO queues.
+- The Pulsar queue driver no longer reports every enqueue as failed. It called `send_batch()` on a
+  producer built without batching, which always returns `not a batching producer` after the
+  messages were already sent, so webhook and push callers saw errors for delivered jobs and
+  retried them.
+- The Pulsar queue driver supports per-job delay (`delay_ms`) through Pulsar's native delayed
+  delivery and reports `delayed_delivery = true`, so push scheduled sends and retries run on
+  `QUEUE_DRIVER=pulsar`.
+- Push refuses to start on queue backends without per-message delay (`nats`, `rabbitmq`, `kafka`,
+  `iggy`, `google-pubsub`). Every delayed push enqueue (scheduled sends, retries, nacks,
+  local-capacity requeues) failed there with `queue backend X does not implement Queue v2 job
+  options`; before the deduplication fix above, every push enqueue did.
+- Push refuses to start when `push.queue_driver` does not match `queue.driver`. Push queue work
+  always ran on the `[queue]` backend, so `PUSH_QUEUE_DRIVER=sqs` with `QUEUE_DRIVER=redis` ran
+  push on Redis while reporting SQS. The shipped `config/config.toml` paired
+  `push.queue_driver = "redis"` with `queue.driver = "memory"`; it now sets
+  `push.queue_driver = "memory"`, which is node-local like the queue it ran on before.
+
 ### Security
 
 - Webhook transport errors no longer include the endpoint URL in logs or
   propagated errors.
-
 ## [5.2.0] - 2026-10-22
 
 Protocol V1 Pusher compatibility is unchanged. The `iggy` driver needs Apache Iggy server 0.9 or

@@ -65,6 +65,10 @@ In `mode = "production"`, `storage_driver = "memory"` and `queue_driver = "memor
 unless `allow_memory_drivers = true` or `PUSH_ALLOW_MEMORY_DRIVERS=true` is set explicitly. Memory
 drivers are node-local and lose state on restart or dead-node loss.
 
+A broker `queue_driver` runs on the shared `[queue]` backend and must match `queue.driver`. Push
+needs per-message delays, so it starts only on `redis`, `redis-cluster`, standard `sqs` and
+`pulsar`; see [push queue backends](/docs/reference/configuration#push) for details.
+
 Readiness failures return `503`. Queue pressure returns `429` with `Retry-After`. Quota rejection
 persists a terminal `quota_exceeded` publish status and idempotency record without appending publish
 log work or enqueueing the pipeline.
