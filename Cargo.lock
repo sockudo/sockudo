@@ -1632,6 +1632,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+ "loom",
 ]
 
 [[package]]
@@ -2422,6 +2423,19 @@ dependencies = [
  "hashbag",
  "left-right",
  "smallvec",
+]
+
+[[package]]
+name = "fanring"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a0a001924e64ade2c902a95dae33873344f5406798209408f19ae2504b6671a"
+dependencies = [
+ "arc-swap",
+ "atomic-waker",
+ "concurrent-queue",
+ "loom",
+ "yring",
 ]
 
 [[package]]
@@ -4467,6 +4481,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nkeys"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4634,11 +4660,13 @@ dependencies = [
 
 [[package]]
 name = "omq-proto"
-version = "0.26.1"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6420a63f80eac3235364674f61f3b4a00dbb283354402192406cd22a96b31cd1"
+checksum = "760309f754c2b07416c2308ed8b197b0740b00bfc86429779c5fa94328137e50"
 dependencies = [
  "bytes",
+ "concurrent-queue",
+ "loom",
  "patricia_tree",
  "rand 0.10.3",
  "smallvec",
@@ -4647,18 +4675,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "omq-tokio"
-version = "0.21.4"
+name = "omq-shm"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "448ae8e795f28e2f6ca624ff883ab1ebb3054c10aa8f46a72542e7f6b3b1f721"
+checksum = "6260a33fb1dd016196403037e3fc56f3f149f8811d0420c2a5e6069ce30f4954"
 dependencies = [
  "arc-swap",
  "bytes",
  "concurrent-queue",
+ "omq-proto",
+ "rand 0.10.3",
+ "rustix",
+]
+
+[[package]]
+name = "omq-tokio"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16b151797a2374b0ad2faa0e88cd903a49eb001765bde6f63f0c4bb636bbb02f"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "concurrent-queue",
+ "crossbeam-utils",
+ "fanring",
  "futures",
  "libc",
+ "nix",
  "omq-proto",
+ "omq-shm",
  "parking_lot 0.12.5",
+ "pin-project-lite",
  "rand 0.10.3",
  "rustc-hash",
  "smallvec",
