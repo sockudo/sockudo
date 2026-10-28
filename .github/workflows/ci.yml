@@ -11,12 +11,35 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Incremental artifacts bloat the shared cache and its restore time.
   CARGO_INCREMENTAL: 0
+  # Debuginfo is ~75% of each object here and no CI consumer reads it.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  # Live service endpoints, matching docker-compose.test.yml.
+  DATABASE_REDIS_HOST: localhost
+  DATABASE_REDIS_PORT: 16379
+  REDIS_CLUSTER_NODES: localhost:7001,localhost:7002,localhost:7003
+  NATS_SERVERS: nats://localhost:14222,nats://localhost:14223
+  DATABASE_MYSQL_HOST: localhost
+  DATABASE_MYSQL_PORT: 13306
+  DATABASE_MYSQL_USERNAME: root
+  DATABASE_MYSQL_PASSWORD: root123
+  DATABASE_MYSQL_DATABASE: sockudo
+  SCYLLADB_NODES: localhost:19042
+  SCYLLADB_KEYSPACE: sockudo_test
+  DATABASE_POSTGRES_HOST: localhost
+  DATABASE_POSTGRES_PORT: 15432
+  DATABASE_POSTGRES_USERNAME: postgres
+  DATABASE_POSTGRES_PASSWORD: postgres123
+  DATABASE_POSTGRES_DATABASE: sockudo_test
+  DYNAMODB_ENDPOINT: http://localhost:18000
+  DYNAMODB_REGION: us-east-1
 
 concurrency:
   # Cancel superseded runs on the same PR/branch instead of stacking them;
@@ -26,60 +49,43 @@ concurrency:
 
 jobs:
   # =============================================================================
-  # Prebuild: compile the dependency graph once per Cargo.lock so every job
-  # restores a warm target/ instead of recompiling ~700 crates.
+  # Cache seeder. Nothing depends on it.
   # =============================================================================
-  prebuild:
-    name: Prebuild dependency cache
+  seed-cache:
+    name: Seed dependency cache
     runs-on: ubuntu-24.04
+    # Caches are scoped per ref; only refs every PR can read may write.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(fromJSON('["refs/heads/master","refs/heads/main","refs/heads/develop","refs/heads/beta"]'), github.ref)
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust and restore shared cache
+        id: setup
+        uses: ./.github/actions/rust-setup
         with:
-          toolchain: stable
+          cache: restore
           components: rustfmt, clippy
-        id: toolchain
+          apt-packages: libpq-dev libmariadb-dev
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
-
-      - name: Restore build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
-
-      # Compile everything CI jobs run later (tests, clippy, bench binaries)
-      # in one shared pass. Fingerprints land in target/ and are reused by
-      # every downstream job with the same toolchain and lockfile.
+      # --all-targets also covers the bench binaries the guards build.
       - name: Prebuild workspace test and clippy artifacts
         run: |
           cargo test --workspace --all-features --all-targets --no-run
           cargo clippy --workspace --all-targets --all-features -- -D warnings
-          cargo bench -p sockudo-push --bench push_pipeline_bench --no-run
-          cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths --no-run
 
-      - name: Save build cache
-        if: always()
+      - name: Save shared build cache
+        if: steps.setup.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ steps.setup.outputs.cache-key }}
 
   # =============================================================================
   # Lint and Format Check
@@ -87,34 +93,17 @@ jobs:
   lint:
     name: Lint and Format
     runs-on: ubuntu-24.04
-    needs: [prebuild]
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust and restore shared cache
+        uses: ./.github/actions/rust-setup
         with:
-          toolchain: stable
+          cache: restore
           components: rustfmt, clippy
-        id: toolchain
-
-      - name: Restore build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev shellcheck
+          apt-packages: shellcheck
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -128,208 +117,67 @@ jobs:
           shellcheck install.sh
 
       - name: Run clippy
-        # Fingerprints prebuilt by the prebuild job; clippy only re-lints
-        # crates whose sources changed in this PR.
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # =============================================================================
-  # Test Suite
+  # Test Suite (sharded; union of the shards is the whole workspace)
   # =============================================================================
   test:
-    name: Test Suite
+    name: Test Suite (${{ matrix.name }})
     runs-on: ubuntu-24.04
-    needs: [prebuild]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Partition of the 18 workspace members, balanced by test count.
+        include:
+          - name: transport
+            packages: -p sockudo-adapter
+          - name: core
+            packages: -p sockudo-core -p sockudo-protocol
+          - name: storage
+            packages: >-
+              -p sockudo-push -p sockudo-ai-transport -p sockudo-ai-benches
+              -p sockudo-app -p sockudo-queue -p sockudo-cache -p sockudo-delta
+              -p sockudo-rate-limiter -p sockudo-metrics -p sockudo-filter
+              -p sockudo-webhook
+          - name: server
+            packages: >-
+              -p sockudo -p sockudo-ably-compat -p sockudo-mcp
+              -p sockudo-simulator
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-        id: toolchain
-
-      - name: Free runner disk space
+      - name: Ensure runner disk headroom
         run: |
-          echo "Disk usage before cleanup:"
-          df -h
-
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /opt/hostedtoolcache/go \
-            /opt/hostedtoolcache/Python
-
+          df -h /
+          avail_gib=$(df -Pk / | awk 'NR==2 { print int($4 / 1048576) }')
+          echo "free_gib=$avail_gib"
+          if [ "$avail_gib" -lt 20 ]; then
+            sudo rm -rf \
+              /usr/local/lib/android \
+              /usr/share/dotnet \
+              /opt/ghc \
+              /opt/hostedtoolcache/CodeQL \
+              /opt/hostedtoolcache/go \
+              /opt/hostedtoolcache/Python
+          fi
           docker system prune -af || true
+          df -h /
 
-          echo "Disk usage after cleanup:"
-          df -h
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev mysql-client postgresql-client
-
-      - name: Start test services with docker-compose
-        run: |
-          # Start all test services using the exact same configuration
-          docker compose -f docker-compose.test.yml up -d
-
-          # Wait for services to be healthy
-          echo "Waiting for services to be ready..."
-
-          # Wait for Redis instances
-          for i in {1..60}; do
-            if docker exec $(docker ps -q -f "name=redis-test") redis-cli ping &> /dev/null; then
-              echo "Redis test is ready!"
-              break
-            fi
-            echo "Waiting for Redis test... ($i/60)"
-            sleep 2
-          done
-
-          # Wait for Redis Cluster
-          for i in {1..60}; do
-            if docker exec $(docker ps -q -f "name=redis-cluster") redis-cli -p 7003 ping &> /dev/null; then
-              echo "Redis cluster is ready!"
-              break
-            fi
-            echo "Waiting for Redis cluster... ($i/60)"
-            sleep 2
-          done
-
-          # Wait for NATS instances
-          for i in {1..60}; do
-            if curl -f http://localhost:18222/varz &> /dev/null; then
-              echo "NATS-1 is ready!"
-              break
-            fi
-            echo "Waiting for NATS-1... ($i/60)"
-            sleep 2
-          done
-
-          for i in {1..60}; do
-            if curl -f http://localhost:18223/varz &> /dev/null; then
-              echo "NATS-2 is ready!"
-              break
-            fi
-            echo "Waiting for NATS-2... ($i/60)"
-            sleep 2
-          done
-
-          # Wait for MySQL test instance
-          for i in {1..60}; do
-            if mysql -h 127.0.0.1 -P 13306 -u root -proot123 -e "SELECT 1" &> /dev/null; then
-              echo "MySQL test is ready!"
-              break
-            fi
-            echo "Waiting for MySQL test... ($i/60)"
-            sleep 2
-          done
-
-          # Wait for ScyllaDB test instance
-          for i in {1..120}; do
-            if docker exec $(docker ps -q -f "name=scylladb-test") nodetool status | grep -q "UN"; then
-              echo "ScyllaDB test is ready!"
-              break
-            fi
-            echo "Waiting for ScyllaDB test... ($i/120)"
-            sleep 2
-          done
-
-          # Wait for PostgreSQL test instance
-          for i in {1..60}; do
-            if PGPASSWORD=postgres123 psql -h 127.0.0.1 -p 15432 -U postgres -d sockudo_test -c "SELECT 1" &> /dev/null; then
-              echo "PostgreSQL test is ready!"
-              break
-            fi
-            echo "Waiting for PostgreSQL test... ($i/60)"
-            sleep 2
-          done
-
-          # Wait for DynamoDB Local
-          for i in {1..30}; do
-            if curl -s http://localhost:18000 | grep -q 'MissingAuthenticationToken'; then
-              echo "DynamoDB Local is ready!"
-              break
-            fi
-            echo "Waiting for DynamoDB Local... ($i/30)"
-            sleep 2
-          done
-
-      - name: Show running services
-        run: |
-          echo "=== Running Docker containers ==="
-          docker ps
-          echo "=== Port bindings ==="
-          docker port $(docker ps -q -f "name=redis-test") || true
-          docker port $(docker ps -q -f "name=redis-cluster") || true
-          docker port $(docker ps -q -f "name=nats-1") || true
-          docker port $(docker ps -q -f "name=nats-2") || true
-          docker port $(docker ps -q -f "name=mysql-test") || true
-          docker port $(docker ps -q -f "name=scylladb-test") || true
-          docker port $(docker ps -q -f "name=postgres-test") || true
-          docker port $(docker ps -q -f "name=dynamodb-test") || true
-
-      - name: Restore build cache
-        uses: actions/cache/restore@v6
+      - name: Set up Rust and restore shared cache
+        uses: ./.github/actions/rust-setup
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
+          cache: restore
+          apt-packages: libpq-dev libmariadb-dev mysql-client postgresql-client
+
+      - name: Start test services
+        run: bash scripts/ci/wait-for-test-services.sh
 
       - name: Run tests
-        run: cargo test --verbose --all-features
-        env:
-          # Redis configurations (matching docker-compose.test.yml)
-          DATABASE_REDIS_HOST: localhost
-          DATABASE_REDIS_PORT: 16379
-
-          # Redis Cluster configuration (matching docker-compose.test.yml)
-          REDIS_CLUSTER_NODES: localhost:7001,localhost:7002,localhost:7003
-
-          # NATS configuration (matching docker-compose.test.yml)
-          NATS_SERVERS: nats://localhost:14222,nats://localhost:14223
-
-          # MySQL configurations (matching docker-compose.test.yml)
-          DATABASE_MYSQL_HOST: localhost
-          DATABASE_MYSQL_PORT: 13306
-          DATABASE_MYSQL_USERNAME: root
-          DATABASE_MYSQL_PASSWORD: root123
-          DATABASE_MYSQL_DATABASE: sockudo
-
-          # ScyllaDB configurations (matching docker-compose.test.yml)
-          SCYLLADB_NODES: localhost:19042
-          SCYLLADB_KEYSPACE: sockudo_test
-
-          # PostgreSQL configurations (matching docker-compose.test.yml)
-          DATABASE_POSTGRES_HOST: localhost
-          DATABASE_POSTGRES_PORT: 15432
-          DATABASE_POSTGRES_USERNAME: postgres
-          DATABASE_POSTGRES_PASSWORD: postgres123
-          DATABASE_POSTGRES_DATABASE: sockudo_test
-
-          # DynamoDB Local configurations (matching docker-compose.test.yml)
-          DYNAMODB_ENDPOINT: http://localhost:18000
-          DYNAMODB_REGION: us-east-1
-
-      - name: Check push feature matrix
-        run: |
-          cargo check -p sockudo-push --all-features
-          cargo check -p sockudo-push --features push-fcm,push-apns,push-webpush,push-hms,push-wns
-          cargo check -p sockudo-push --features dynamodb,surrealdb,scylladb,postgres,mysql
-          cargo clippy -p sockudo-push --all-targets --features push-fcm,push-apns,push-webpush,push-hms,push-wns,dynamodb,surrealdb,scylladb,postgres,mysql -- -D warnings
-
-      - name: Check push benchmarks compile
-        run: cargo bench -p sockudo-push --bench push_pipeline_bench --no-run
+        run: cargo test --all-features ${{ matrix.packages }}
 
       - name: Cleanup test services
         if: always()
@@ -339,21 +187,40 @@ jobs:
           docker system prune -f || true
 
   # =============================================================================
+  # Push Feature Matrix (each provider and storage set compiles alone)
+  # =============================================================================
+  push-feature-matrix:
+    name: Push Feature Matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust and restore shared cache
+        uses: ./.github/actions/rust-setup
+        with:
+          cache: restore
+          components: clippy
+          apt-packages: libpq-dev libmariadb-dev
+
+      - name: Check push feature matrix
+        run: |
+          cargo check -p sockudo-push --features push-fcm,push-apns,push-webpush,push-hms,push-wns
+          cargo check -p sockudo-push --features dynamodb,surrealdb,scylladb,postgres,mysql
+          cargo clippy -p sockudo-push --all-targets --features push-fcm,push-apns,push-webpush,push-hms,push-wns,dynamodb,surrealdb,scylladb,postgres,mysql -- -D warnings
+
+  # =============================================================================
   # Security Audit
   # =============================================================================
   security:
     name: Security Audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-        id: toolchain
 
       - name: Install cargo-audit and cargo-deny
         # Prebuilt release binaries instead of compiling both crates from
@@ -385,72 +252,57 @@ jobs:
   ai-release-feature-matrix:
     name: AI Transport Release Feature Matrix (${{ matrix.name }})
     runs-on: ubuntu-24.04
-    needs: [prebuild]
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: default-no-ai
             args: ""
+            targets: ""
             check_default_no_ai: true
           - name: ai-transport-alone
             args: "--no-default-features --features ai-transport"
+            targets: ""
             check_default_no_ai: false
           - name: ai-transport-redis
             args: "--no-default-features --features v2,ai-transport,redis"
+            targets: ""
             check_default_no_ai: false
           - name: ai-transport-redis-cluster
             args: "--no-default-features --features v2,ai-transport,redis-cluster"
+            targets: ""
             check_default_no_ai: false
           - name: ai-transport-nats
             args: "--no-default-features --features v2,ai-transport,nats"
+            targets: ""
             check_default_no_ai: false
           - name: full
             args: "--no-default-features --features full"
+            targets: "--all-targets"
             check_default_no_ai: false
           - name: no-default-pusher
             args: "--no-default-features"
+            targets: ""
             check_default_no_ai: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust and restore shared cache
+        uses: ./.github/actions/rust-setup
         with:
-          toolchain: stable
-          components: rustfmt, clippy
-        id: toolchain
+          cache: restore
+          components: clippy
+          apt-packages: libpq-dev libmariadb-dev
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
-
-      - name: Restore shared build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check feature graph
-        run: cargo check -p sockudo ${{ matrix.args }}
-
+      # --all-targets only on the `full` entry; the seeder already covers it.
       - name: Build tests for feature graph
-        run: cargo test -p sockudo --all-targets --no-run ${{ matrix.args }}
+        run: cargo test -p sockudo ${{ matrix.targets }} --no-run ${{ matrix.args }}
 
       - name: Clippy feature graph
-        run: cargo clippy -p sockudo --all-targets ${{ matrix.args }} -- -D warnings
+        run: cargo clippy -p sockudo ${{ matrix.targets }} ${{ matrix.args }} -- -D warnings
 
       - name: Assert default graph excludes AI Transport
         if: matrix.check_default_no_ai
@@ -466,6 +318,7 @@ jobs:
   ai-ga-evidence:
     name: AI Transport GA Evidence
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -475,11 +328,12 @@ jobs:
         run: scripts/ai-transport-ga-gate.sh ci-evidence
 
   # =============================================================================
-  # AI Transport Docker Feature Builds
+  # AI Transport Docker Feature Builds (docker.yml only covers full,monolith)
   # =============================================================================
   ai-docker-feature-builds:
     name: AI Transport Docker Feature Builds (${{ matrix.name }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -496,6 +350,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Log in to GHCR for the layer cache
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Registry, not type=gha: mode=max layers are multi-GB and evict cargo.
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
@@ -504,12 +366,11 @@ jobs:
           target: runtime
           push: false
           tags: sockudo/ai-transport-ci:${{ matrix.name }}
-          # Cache dependency layers across runs; the Dockerfile already
-          # compiles dependencies from dummy sources as a separate layer.
-          cache-from: type=gha,scope=ai-docker-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=ai-docker-${{ matrix.name }}
+          cache-from: type=registry,ref=ghcr.io/sockudo/sockudo:buildcache-ci-${{ matrix.name }}
+          cache-to: type=registry,ref=ghcr.io/sockudo/sockudo:buildcache-ci-${{ matrix.name }},mode=max,ignore-error=true
           build-args: |
             SOCKUDO_FEATURES=${{ matrix.features }}
+            CARGO_BUILD_JOBS=4
 
   # =============================================================================
   # AI Transport Benchmark Regression Guard
@@ -517,34 +378,16 @@ jobs:
   ai-benchmark-regression:
     name: AI Transport Benchmark Regression
     runs-on: ubuntu-24.04
-    needs: [prebuild]
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust and restore shared cache
+        uses: ./.github/actions/rust-setup
         with:
-          toolchain: stable
-        id: toolchain
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
-
-      - name: Restore shared build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
+          cache: restore
 
       - name: Run AI Transport benchmark guard
         run: scripts/ai-transport-bench-guard.sh
@@ -555,7 +398,7 @@ jobs:
   ably-compat-benchmark-regression:
     name: Ably Compatibility Benchmark Regression
     runs-on: ubuntu-24.04
-    needs: [prebuild]
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -563,28 +406,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust and restore shared cache
+        uses: ./.github/actions/rust-setup
         with:
-          toolchain: stable
-        id: toolchain
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
-
-      - name: Restore shared build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
+          cache: restore
 
       - name: Resolve benchmark revisions
         id: benchmark-revisions
@@ -645,8 +470,7 @@ jobs:
         run: |
           set -euo pipefail
           cp -R target/criterion target/criterion-initial
-          # Re-measure both revisions so runner load or CPU frequency drift
-          # cannot make a repeated head-only sample look reproducible.
+          # Re-measure both revisions: a head-only repeat cannot rule out drift.
           git checkout --detach "$BASE_SHA"
           rm -rf target/criterion
           cargo bench -p sockudo-ably-compat --features bench --bench compatibility_hot_paths -- --noplot --save-baseline confirmation-base
@@ -681,47 +505,21 @@ jobs:
           if-no-files-found: error
 
   # =============================================================================
-  # AI Transport Protocol Conformance
+  # AI Transport Protocol Conformance (Rust AIT-S suites run in the test shards)
   # =============================================================================
   ai-conformance:
     name: AI Transport Conformance
     runs-on: ubuntu-24.04
-    needs: [prebuild]
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-        id: toolchain
-
       - name: Install Node.js
         uses: actions/setup-node@v7
         with:
           node-version: "22"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
-
-      - name: Restore shared build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
-
-      - name: Run Rust AIT-S conformance tests
-        run: cargo test -p sockudo-ai-transport --test ait_s_conformance --test ait_s_coverage
 
       - name: Validate Node golden transcripts and forward-compat fixtures
         run: AIT_CONFORMANCE_OFFLINE=1 scripts/ai-conformance-node.sh
@@ -732,7 +530,7 @@ jobs:
   manual-build-info:
     name: 🔨 Manual Build Instructions
     runs-on: ubuntu-24.04
-    needs: [prebuild, lint, test, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ably-compat-benchmark-regression, ai-conformance]
+    needs: [lint, test, push-feature-matrix, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ably-compat-benchmark-regression, ai-conformance]
     steps:
       - name: Post build instructions
         uses: actions/github-script@v9

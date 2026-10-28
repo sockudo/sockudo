@@ -1,0 +1,80 @@
+name: Rust CI setup
+description: >-
+  Install the Rust toolchain and the system build dependencies, then restore the
+  shared cargo registry + target cache that every Rust job in this repository
+  reuses. The cache key and hit state are exposed so a job can save it once its
+  work is done.
+
+inputs:
+  cache:
+    description: "restore | none"
+    required: false
+    default: restore
+  components:
+    description: "Extra rustup components, comma separated (e.g. rustfmt, clippy)."
+    required: false
+    default: ""
+  apt-packages:
+    description: "Extra apt packages installed on top of the base build dependencies."
+    required: false
+    default: ""
+  install-base-apt:
+    description: "Install the standard C build dependencies required by the workspace."
+    required: false
+    default: "true"
+
+outputs:
+  cache-key:
+    description: "Key of the shared cargo/target cache."
+    value: ${{ steps.key.outputs.value }}
+  cache-hit:
+    description: "'true' when the exact cache key was restored."
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      id: toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: ${{ inputs.components }}
+
+    # Lockfile-hashed key; the prefix restore-key lets a bump reuse target/.
+    - name: Resolve cache key
+      id: key
+      shell: bash
+      run: |
+        echo "value=${RUNNER_OS}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}" >> "$GITHUB_OUTPUT"
+
+    - name: Install system dependencies
+      if: inputs.install-base-apt == 'true' || inputs.apt-packages != ''
+      shell: bash
+      env:
+        EXTRA_PACKAGES: ${{ inputs.apt-packages }}
+        INSTALL_BASE: ${{ inputs.install-base-apt }}
+      run: |
+        packages=()
+        if [ "$INSTALL_BASE" = "true" ]; then
+          packages+=(pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev)
+        fi
+        if [ -n "$EXTRA_PACKAGES" ]; then
+          # shellcheck disable=SC2206 # word splitting is intentional
+          packages+=($EXTRA_PACKAGES)
+        fi
+        sudo apt-get update
+        sudo apt-get install -y "${packages[@]}"
+
+    - name: Restore shared build cache
+      id: restore
+      if: inputs.cache == 'restore'
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ steps.key.outputs.value }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-prebuild-${{ steps.toolchain.outputs.cachekey }}-
