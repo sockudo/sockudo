@@ -15,6 +15,8 @@ pub mod rabbitmq_transport;
 #[cfg(feature = "redis")]
 pub mod redis_client;
 #[cfg(feature = "redis-cluster")]
+pub(crate) mod redis_cluster_broadcast;
+#[cfg(feature = "redis-cluster")]
 pub mod redis_cluster_sharded_pubsub;
 #[cfg(feature = "redis-cluster")]
 pub mod redis_cluster_transport;

@@ -109,6 +109,91 @@ pub struct RedisClusterAdapterConfig {
     /// or gets no answer within one interval makes the shard listener reconnect and resubscribe.
     /// `0` disables it.
     pub pubsub_ping_interval_ms: u64,
+    /// Broadcast channel layout; see `ClusterBroadcastMode`. Default `legacy`.
+    pub broadcast_mode: ClusterBroadcastMode,
+    /// Bucket channels per broadcast. Set to the cluster's shard count. Ignored in `legacy`.
+    /// Must be identical on every node while any node publishes or subscribes buckets.
+    pub broadcast_buckets: u16,
+}
+
+/// Upper bound for `adapter.cluster.broadcast_buckets` (each broadcast is published once per bucket).
+pub const MAX_CLUSTER_BROADCAST_BUCKETS: u16 = 64;
+
+/// Redis Cluster broadcast channel layout. Move one step at a time, letting each
+/// rollout finish fleet-wide before the next: legacy → publish_both →
+/// subscribe_bucket → bucketed. Any adjacent pair can run side by side.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterBroadcastMode {
+    /// Publish and subscribe the single `{prefix}:#broadcast` channel.
+    #[default]
+    Legacy,
+    /// Publish to the legacy channel and every bucket; subscribe the legacy channel.
+    PublishBoth,
+    /// Publish to the legacy channel and every bucket; subscribe this node's bucket.
+    SubscribeBucket,
+    /// Publish to every bucket; subscribe this node's bucket.
+    Bucketed,
+}
+
+impl ClusterBroadcastMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::PublishBoth => "publish_both",
+            Self::SubscribeBucket => "subscribe_bucket",
+            Self::Bucketed => "bucketed",
+        }
+    }
+}
+
+impl std::fmt::Display for ClusterBroadcastMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ClusterBroadcastMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Ok(Self::Legacy),
+            "publish_both" => Ok(Self::PublishBoth),
+            "subscribe_bucket" => Ok(Self::SubscribeBucket),
+            "bucketed" => Ok(Self::Bucketed),
+            _ => Err(format!(
+                "Unknown cluster broadcast mode '{s}', expected 'legacy', 'publish_both', 'subscribe_bucket' or 'bucketed'"
+            )),
+        }
+    }
+}
+
+impl RedisClusterAdapterConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.broadcast_buckets == 0 || self.broadcast_buckets > MAX_CLUSTER_BROADCAST_BUCKETS {
+            return Err(format!(
+                "adapter.cluster.broadcast_buckets must be between 1 and {MAX_CLUSTER_BROADCAST_BUCKETS}"
+            ));
+        }
+        if self.broadcast_mode != ClusterBroadcastMode::Legacy {
+            if !self.use_sharded_pubsub {
+                // Plain PUBLISH is replicated to every cluster node, so buckets would only multiply traffic.
+                return Err(
+                    "adapter.cluster.broadcast_mode requires adapter.cluster.use_sharded_pubsub=true"
+                        .to_string(),
+                );
+            }
+            if self.prefix.contains(['{', '}']) {
+                // A brace in the prefix becomes the hash tag and pins every bucket to one slot.
+                return Err(
+                    "adapter.cluster.prefix must not contain '{' or '}' when adapter.cluster.broadcast_mode is not legacy"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,6 +457,8 @@ impl Default for RedisClusterAdapterConfig {
             use_sharded_pubsub: false,
             tls: super::RedisTlsOptions::default(),
             pubsub_ping_interval_ms: DEFAULT_REDIS_PUBSUB_PING_INTERVAL_MS,
+            broadcast_mode: ClusterBroadcastMode::Legacy,
+            broadcast_buckets: 3,
         }
     }
 }
@@ -494,7 +581,7 @@ impl Default for OmqAdapterConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{IggyConfig, IggyConnectionCandidate, IggyDurability};
+    use super::{ClusterBroadcastMode, IggyConfig, IggyConnectionCandidate, IggyDurability};
 
     #[test]
     fn iggy_polling_defaults_to_low_latency_interval() {
@@ -633,5 +720,25 @@ mod tests {
         assert_eq!(config.cluster_seeds, vec!["iggy-2:8090".to_string()]);
         assert_eq!(config.connect_timeout_ms, 2500);
         assert_eq!(config.failover_timeout_ms, 20_000);
+    }
+
+    #[test]
+    fn cluster_broadcast_mode_parses_and_round_trips() {
+        for mode in [
+            ClusterBroadcastMode::Legacy,
+            ClusterBroadcastMode::PublishBoth,
+            ClusterBroadcastMode::SubscribeBucket,
+            ClusterBroadcastMode::Bucketed,
+        ] {
+            assert_eq!(mode.as_str().parse::<ClusterBroadcastMode>().unwrap(), mode);
+            assert_eq!(mode.to_string(), mode.as_str());
+        }
+        assert_eq!(
+            " Subscribe_Bucket "
+                .parse::<ClusterBroadcastMode>()
+                .unwrap(),
+            ClusterBroadcastMode::SubscribeBucket
+        );
+        assert!("buckets".parse::<ClusterBroadcastMode>().is_err());
     }
 }

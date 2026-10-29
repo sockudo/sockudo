@@ -287,6 +287,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `DATABASE_REDIS_CLUSTER_USE_TLS` | Enables TLS for Redis Cluster with the default root store; use the master-TLS variables for private CA or mTLS material. |
 | `REDIS_CLUSTER_QUEUE_CONCURRENCY` | Redis Cluster queue worker concurrency. |
 | `REDIS_CLUSTER_QUEUE_PREFIX` | Redis Cluster queue key prefix. |
+| `ADAPTER_CLUSTER_BROADCAST_MODE` | Redis Cluster broadcast channel layout: `legacy` (default), `publish_both`, `subscribe_bucket`, or `bucketed`. |
+| `ADAPTER_CLUSTER_BROADCAST_BUCKETS` | Broadcast channels per broadcast in Redis Cluster, 1–64 (default: `3`). Set to the cluster's shard count. |
 
 ## SQL and app storage
 
