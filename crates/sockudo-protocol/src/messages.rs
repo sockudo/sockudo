@@ -1149,6 +1149,18 @@ impl From<Value> for MessageData {
     }
 }
 
+/// Metrics classification of a frame written to a WebSocket.
+///
+/// `Data` frames are application or presence deliveries and feed
+/// `ws_messages_sent_total`. `Control` frames are protocol traffic (pong, acks,
+/// errors, auth) and carry a bounded `frame_type` label for
+/// `ws_control_frames_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameKind {
+    Data,
+    Control(&'static str),
+}
+
 impl PusherMessage {
     pub fn is_protocol_ping_or_pong(&self) -> bool {
         let Some(event) = self.event.as_deref() else {
@@ -1159,6 +1171,54 @@ impl PusherMessage {
             ProtocolVersion::parse_any_protocol_event(event),
             Some(("ping", _)) | Some(("pong", _))
         )
+    }
+
+    /// Classify this message for delivery metrics.
+    ///
+    /// Prefixes are normalised, so `pusher:`, `pusher_internal:`, `sockudo:` and
+    /// `sockudo_internal:` forms of the same event classify identically. Every
+    /// protocol-prefixed event is control traffic unless it carries an
+    /// application or presence payload; unknown protocol events fall into
+    /// `Control("other")` so new protocol frames cannot inflate deliveries.
+    pub fn frame_kind(&self) -> FrameKind {
+        use crate::protocol_version::*;
+
+        let Some(event) = self.event.as_deref() else {
+            return FrameKind::Data;
+        };
+        let Some((canonical, _)) = ProtocolVersion::parse_any_protocol_event(event) else {
+            // User events and client-* events.
+            return FrameKind::Data;
+        };
+        match canonical {
+            // Protocol-prefixed events that are deliveries.
+            CANONICAL_MEMBER_ADDED
+            | CANONICAL_MEMBER_REMOVED
+            | CANONICAL_PRESENCE_UPDATE
+            | CANONICAL_DELTA => FrameKind::Data,
+            // ANNOTATION_EVENT_NAME and MESSAGE_SUMMARY_EVENT_NAME.
+            "annotation" | "message" => FrameKind::Data,
+            // sockudo:message.{create,update,delete,append}.
+            c if c.starts_with("message.") => FrameKind::Data,
+            // Control frames.
+            CANONICAL_PONG => FrameKind::Control("pong"),
+            CANONICAL_ERROR | CANONICAL_SUBSCRIPTION_ERROR | CANONICAL_RESUME_FAILED => {
+                FrameKind::Control("error")
+            }
+            CANONICAL_CONNECTION_ESTABLISHED => FrameKind::Control("connection_established"),
+            CANONICAL_SUBSCRIPTION_SUCCEEDED | CANONICAL_RESUME_SUCCESS | "rewind_complete" => {
+                FrameKind::Control("ack")
+            }
+            CANONICAL_SIGNIN_SUCCESS | CANONICAL_AUTH_SUCCESS | CANONICAL_TOKEN_EXPIRED => {
+                FrameKind::Control("auth")
+            }
+            CANONICAL_CACHE_MISS => FrameKind::Control("cache_miss"),
+            CANONICAL_DELTA_COMPRESSION_ENABLED | CANONICAL_DELTA_CACHE_SYNC => {
+                FrameKind::Control("delta_negotiation")
+            }
+            CANONICAL_CHANNEL_HISTORY => FrameKind::Control("history"),
+            _ => FrameKind::Control("other"),
+        }
     }
 
     pub fn connection_established(socket_id: String, activity_timeout: u64) -> Self {
@@ -1717,10 +1777,84 @@ impl<T: AsRef<str>> InfoQueryParser for Option<T> {
 mod tests {
     use super::{
         AI_HEADER_RUN_ID, AiExtras, AnnotationEventAction, AnnotationEventData,
-        AnnotationSummaryEnvelope, MessageData, MessageExtras, MessageSummaryData, PusherMessage,
+        AnnotationSummaryEnvelope, FrameKind, MessageData, MessageExtras, MessageSummaryData,
+        PusherMessage,
     };
     use sonic_rs::JsonValueTrait;
     use std::collections::{BTreeMap, HashMap};
+
+    fn message_with_event(event: Option<&str>) -> PusherMessage {
+        let mut message: PusherMessage = sonic_rs::from_str("{}").unwrap();
+        message.event = event.map(str::to_string);
+        message
+    }
+
+    #[test]
+    fn frame_kind_classifies_control_frames_in_every_prefix_form() {
+        let control = [
+            ("pong", false, "pong"),
+            ("error", false, "error"),
+            ("subscription_error", true, "error"),
+            ("resume_failed", false, "error"),
+            ("connection_established", false, "connection_established"),
+            ("subscription_succeeded", true, "ack"),
+            ("resume_success", false, "ack"),
+            ("rewind_complete", false, "ack"),
+            ("signin_success", false, "auth"),
+            ("auth_success", false, "auth"),
+            ("token_expired", false, "auth"),
+            ("cache_miss", false, "cache_miss"),
+            ("delta_compression_enabled", false, "delta_negotiation"),
+            ("delta_cache_sync", false, "delta_negotiation"),
+            ("channel_history", false, "history"),
+            ("subscription_count", true, "other"),
+            ("foo", false, "other"),
+        ];
+        for (canonical, internal, expected) in control {
+            let prefixes: [&str; 2] = if internal {
+                ["pusher_internal:", "sockudo_internal:"]
+            } else {
+                ["pusher:", "sockudo:"]
+            };
+            for prefix in prefixes {
+                let event = format!("{prefix}{canonical}");
+                assert_eq!(
+                    message_with_event(Some(&event)).frame_kind(),
+                    FrameKind::Control(expected),
+                    "{event}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_kind_keeps_application_and_presence_payloads_as_data() {
+        for event in [
+            Some("pusher_internal:member_added"),
+            Some("sockudo_internal:member_added"),
+            Some("pusher_internal:member_removed"),
+            Some("sockudo_internal:member_removed"),
+            Some("pusher_internal:presence_update"),
+            Some("sockudo:presence_update"),
+            Some("pusher:delta"),
+            Some("sockudo:delta"),
+            Some("sockudo:message.create"),
+            Some("sockudo:message.update"),
+            Some("sockudo:message.delete"),
+            Some("sockudo:message.append"),
+            Some("sockudo_internal:annotation"),
+            Some("sockudo_internal:message"),
+            Some("order-created"),
+            Some("client-typing"),
+            None,
+        ] {
+            assert_eq!(
+                message_with_event(event).frame_kind(),
+                FrameKind::Data,
+                "{event:?}"
+            );
+        }
+    }
 
     #[test]
     fn api_message_data_accepts_json_with_both_deserializers() {
