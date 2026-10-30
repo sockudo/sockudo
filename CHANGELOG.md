@@ -13,8 +13,21 @@
   once, so move one step per rollout. Non-legacy modes require
   `use_sharded_pubsub = true` and a prefix without `{` or `}`. Env overrides:
   `ADAPTER_CLUSTER_BROADCAST_MODE`, `ADAPTER_CLUSTER_BROADCAST_BUCKETS`.
+- Metrics: `sockudo_ws_control_frames_total{frame_type}` counts control frames
+  (pong, acks, errors, auth, cache miss, delta negotiation, history) sent
+  through the connection handler, and `sockudo_ws_message_bytes` is a
+  histogram of published message size (64 B to 1 MiB buckets), observed once
+  per message on the origin node.
 
 ### Changed
+
+- `sockudo_ws_messages_sent_total` now counts application deliveries on every
+  node. Before, only the node that received the publish counted, and only its
+  own sockets, so horizontal deployments undercounted fan-out. Control frames
+  such as `pusher:pong` and `subscription_succeeded` are no longer counted as
+  messages. Expect the rate, and `sockudo_socket_transmitted_bytes`, to jump
+  after upgrading on multi-node deployments. A publisher built without a local
+  adapter no longer counts cluster-wide recipients.
 
 - The Redis Cluster adapter transport no longer sets `RandomReplicaStrategy`
   read routing. It issues no read commands, so the setting only opened idle

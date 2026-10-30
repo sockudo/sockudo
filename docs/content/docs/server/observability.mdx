@@ -41,6 +41,28 @@ The TCP exporter has bounded buffering by default. When buffers fill, event samp
 | Webhooks | queued, delivered, failed |
 | Push | accepted, scheduled, dispatched, provider errors, publish status outcomes |
 
+### WebSocket delivery metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `sockudo_ws_messages_sent_total` | counter | `app_id`, `port` | Application messages addressed to connections. Each node counts only its own local recipients, so `sum` across nodes is the cluster delivery total. Control frames are excluded. |
+| `sockudo_ws_control_frames_total` | counter | `app_id`, `port`, `frame_type` | Control frames sent through the connection handler. `frame_type` is one of `pong`, `error`, `connection_established`, `ack`, `auth`, `cache_miss`, `delta_negotiation`, `history`, `other`. |
+| `sockudo_ws_message_bytes` | histogram | `app_id`, `port` | Serialized size of each published application message, buckets 64 B to 1 MiB. |
+| `sockudo_socket_transmitted_bytes` | counter | `app_id`, `port` | Bytes addressed to connections (message size × recipients). |
+
+How these are counted:
+
+- Deliveries are counted at address time, before the socket write. Delta conflation and tag
+  filtering can still skip individual writes, so the counter can slightly exceed actual writes.
+  This matches Pusher's addressed-delivery semantics.
+- `sockudo_ws_message_bytes` is observed once per published message on the origin node, never on
+  receiving nodes or per recipient. It is a per-message size distribution; use
+  `sockudo_socket_transmitted_bytes` for total bytes. A Prometheus histogram cannot report `max`.
+- Presence `member_added`, `member_removed` and `presence_update` events are counted on remote
+  nodes but not on the node that handled the join or leave.
+- Server-initiated `pusher:ping` frames are not counted in `sockudo_ws_control_frames_total`.
+- A watch on `frame_type="other"` flags new protocol events that need a named `frame_type`.
+
 When `ably-compat` is enabled, two lock-free operator snapshots supplement Prometheus:
 
 - `/operator/stats/ably-runtime` reports queued messages/bytes, overflow and continuity loss,

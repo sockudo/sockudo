@@ -687,6 +687,21 @@ where
                             );
                         }
 
+                        // Count this node's deliveries. The publisher counts only its own
+                        // local sockets, and own broadcasts returned early above, so each
+                        // delivery is counted exactly once cluster-wide. No size observation
+                        // here: the size histogram is fed once per message on the origin node.
+                        if send_result.is_ok()
+                            && local_recipient_count > 0
+                            && let Some(metrics) = horizontal_lock.metrics.get()
+                        {
+                            metrics.mark_ws_messages_sent_batch(
+                                &broadcast.app_id,
+                                broadcast.message.len(),
+                                local_recipient_count,
+                            );
+                        }
+
                         // Track broadcast latency metrics using helper function
                         let metrics_ref = horizontal_lock.metrics.get().cloned();
 
