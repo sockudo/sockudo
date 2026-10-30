@@ -99,6 +99,7 @@ jobs:
           npm ci --ignore-scripts
           npm run build:node
           npm run build:push
+          npm run build:packages
         working-directory: .upstream/ably-js
 
       - name: Record source revisions
@@ -155,7 +156,7 @@ jobs:
 
           cd .upstream/ably-js
           mapfile -d '' test_files < <(
-            find test/unit test/rest test/realtime \
+            find packages/core-impl/test/unit packages/core-impl/test/rest packages/core-impl/test/realtime \
               -type f -name '*.test.js' \
               ! -name 'liveobjects.test.js' \
               ! -name 'transports.test.js' \
@@ -163,6 +164,10 @@ jobs:
           )
           printf 'Selected %s ably-js files from main\n' "${#test_files[@]}"
           printf '%s\n' "${test_files[@]}"
+          if [ "${#test_files[@]}" -eq 0 ]; then
+            echo "::error::no ably-js tests matched; upstream layout changed again"
+            exit 1
+          fi
 
           harness_only_excludes='realtime/init node_transports|rest/fallbacks Should use the primary domain as the first attempted for every connection attempt|rest/init Init without any tls key should enable tls'
           CI=true \
