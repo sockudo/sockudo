@@ -329,6 +329,8 @@ impl AdapterFactory {
                     use_sharded_pubsub: config.cluster.use_sharded_pubsub,
                     tls: db_config.redis.cluster_tls_options(),
                     pubsub_ping_interval_ms: config.cluster.pubsub_ping_interval_ms,
+                    broadcast_mode: config.cluster.broadcast_mode,
+                    broadcast_buckets: config.cluster.broadcast_buckets,
                 };
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(mut adapter) => {

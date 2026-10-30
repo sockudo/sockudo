@@ -104,6 +104,32 @@ node silently stops receiving events from its peers. When a PING fails or gets n
 interval, the node logs a warning, increments `sockudo_horizontal_transport_reconnections_total`,
 and resubscribes. Set it to `0` to disable the probe.
 
+### Redis Cluster broadcast bucketing
+
+Without bucketing every broadcast is published to one channel, which hashes to a single slot and
+therefore a single shard primary. That primary carries the whole fleet's broadcast egress.
+
+`broadcast_buckets` (under `[adapter.cluster]`, 1–64, default `3`) splits each broadcast across that
+many channel variants, each pinned to a different slot range with a hash tag, and every node
+subscribes to exactly one bucket. Set it to the cluster's shard count. Bucketing requires
+`use_sharded_pubsub = true` and a `prefix` without `{` or `}`; configure the same values on every
+node.
+
+`broadcast_mode` sequences a live migration, one rollout at a time:
+
+| Mode | Publishes to | Subscribes to |
+| --- | --- | --- |
+| `legacy` (default) | the single `#broadcast` channel | `#broadcast` |
+| `publish_both` | `#broadcast` and every bucket | `#broadcast` |
+| `subscribe_bucket` | `#broadcast` and every bucket | this node's bucket |
+| `bucketed` | every bucket | this node's bucket |
+
+Any adjacent pair of modes delivers each broadcast exactly once to every node, so move
+`legacy → publish_both → subscribe_bucket → bucketed` and let each rollout finish fleet-wide before
+the next. To change `broadcast_buckets`, step back to `publish_both`, change the count, then move
+forward again. Both knobs have environment overrides, `ADAPTER_CLUSTER_BROADCAST_MODE` and
+`ADAPTER_CLUSTER_BROADCAST_BUCKETS`.
+
 `enable_socket_counting` keeps the adapter's request/reply socket-count path enabled by default.
 `aggregate_counts` is off by default; enable it when you want each node to maintain gossiped
 cluster-wide channel counts for local count reads.

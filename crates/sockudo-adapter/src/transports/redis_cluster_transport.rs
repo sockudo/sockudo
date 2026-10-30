@@ -1,7 +1,7 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
+use crate::transports::redis_cluster_broadcast::BroadcastTopology;
 use async_trait::async_trait;
-use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::RedisClusterAdapterConfig;
@@ -63,7 +63,7 @@ pub struct RedisClusterTransport {
     publish_connection: ClusterConnection,
     /// Dedicated connection for health checks to avoid contention with publish operations
     health_check_connection: ClusterConnection,
-    broadcast_channel: String,
+    broadcast: Arc<BroadcastTopology>,
     request_channel: String,
     response_channel: String,
     config: RedisClusterAdapterConfig,
@@ -76,14 +76,48 @@ pub struct RedisClusterTransport {
     owner_count: Arc<AtomicUsize>,
 }
 
+impl RedisClusterTransport {
+    /// Publish one broadcast payload to a single channel, with its own retry budget.
+    async fn publish_broadcast_to(&self, channel: &str, payload: &str) -> Result<()> {
+        let mut retry_delay = 100u64;
+        const MAX_RETRIES: u32 = 3;
+        const MAX_RETRY_DELAY: u64 = 1000;
+        for attempt in 0..=MAX_RETRIES {
+            let mut conn = self.publish_connection.clone();
+            let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
+                conn.spublish(channel, payload).await
+            } else {
+                conn.publish(channel, payload).await
+            };
+            match publish_result {
+                Ok(()) => {
+                    if attempt > 0 {
+                        debug!(adapter = "redis_cluster", channel = %channel, attempt, "broadcast publish succeeded on retry");
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt == MAX_RETRIES {
+                        return Err(Error::Redis(format!(
+                            "Failed to publish broadcast after {MAX_RETRIES} retries: {e}"
+                        )));
+                    }
+                    warn!(adapter = "redis_cluster", channel = %channel, attempt = attempt + 1, error = %e, retryable = true, "broadcast publish failed");
+                    tokio::time::sleep(Duration::from_millis(retry_delay)).await;
+                    retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                }
+            }
+        }
+        unreachable!("Retry loop should have returned");
+    }
+}
+
 #[async_trait]
 impl HorizontalTransport for RedisClusterTransport {
     type Config = RedisClusterAdapterConfig;
 
     async fn new(config: Self::Config) -> Result<Self> {
-        let builder = ClusterClientBuilder::new(config.nodes.clone())
-            .retries(3)
-            .read_routing_strategy(RandomReplicaStrategy);
+        let builder = ClusterClientBuilder::new(config.nodes.clone()).retries(3);
         let client = configure_cluster_builder(builder, &config.tls)
             .await?
             .build()
@@ -99,7 +133,18 @@ impl HorizontalTransport for RedisClusterTransport {
         let health_check_connection =
             sockudo_core::redis_client::cluster_connect_with_retry(&client).await?;
 
-        let broadcast_channel = format!("{}:#broadcast", config.prefix);
+        let broadcast = Arc::new(BroadcastTopology::new(
+            &config.prefix,
+            config.broadcast_mode,
+            config.broadcast_buckets,
+        )?);
+        info!(
+            adapter = "redis_cluster",
+            broadcast_mode = %config.broadcast_mode,
+            broadcast_buckets = config.broadcast_buckets,
+            publish_channel_count = broadcast.publish_channels().len(),
+            "broadcast topology configured"
+        );
         let request_channel = format!("{}:#requests", config.prefix);
         let response_channel = format!("{}:#responses", config.prefix);
         let prefix = config.prefix.clone();
@@ -129,7 +174,7 @@ impl HorizontalTransport for RedisClusterTransport {
             client,
             publish_connection,
             health_check_connection,
-            broadcast_channel,
+            broadcast,
             request_channel,
             response_channel,
             config,
@@ -145,49 +190,17 @@ impl HorizontalTransport for RedisClusterTransport {
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
         let broadcast_json = sonic_rs::to_string(message)?;
-
-        // Retry logic with exponential backoff using persistent connection
-        let mut retry_delay = 100u64; // Start with 100ms
-        const MAX_RETRIES: u32 = 3;
-        const MAX_RETRY_DELAY: u64 = 1000; // Max 1 second
-
-        for attempt in 0..=MAX_RETRIES {
-            // Clone the connection (cheap, thread-safe per redis-rs docs)
-            let mut conn = self.publish_connection.clone();
-
-            // Use SPUBLISH for sharded pub/sub if enabled, otherwise standard PUBLISH
-            let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
-                conn.spublish(&self.broadcast_channel, &broadcast_json)
-                    .await
-            } else {
-                conn.publish(&self.broadcast_channel, &broadcast_json).await
-            };
-
-            match publish_result {
-                Ok(_) => {
-                    if attempt > 0 {
-                        debug!(
-                            adapter = "redis_cluster",
-                            attempt, "broadcast publish succeeded on retry"
-                        );
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    if attempt == MAX_RETRIES {
-                        return Err(Error::Redis(format!(
-                            "Failed to publish broadcast after {} retries: {e}",
-                            MAX_RETRIES
-                        )));
-                    }
-                    warn!(adapter = "redis_cluster", attempt = attempt + 1, error = %e, retryable = true, "broadcast publish failed");
-                    tokio::time::sleep(Duration::from_millis(retry_delay)).await;
-                    retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
-                }
-            }
+        match self.broadcast.publish_channels() {
+            [channel] => self.publish_broadcast_to(channel, &broadcast_json).await,
+            channels => futures::future::join_all(
+                channels
+                    .iter()
+                    .map(|channel| self.publish_broadcast_to(channel, &broadcast_json)),
+            )
+            .await
+            .into_iter()
+            .collect::<Result<()>>(),
         }
-
-        unreachable!("Retry loop should have returned");
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
@@ -329,7 +342,15 @@ impl HorizontalTransport for RedisClusterTransport {
 
     async fn start_listeners(&self, handlers: TransportHandlers) -> Result<()> {
         // Clone needed values for the async task
-        let broadcast_channel = self.broadcast_channel.clone();
+        let broadcast_channel = self
+            .broadcast
+            .subscribe_channel(&handlers.node_id)
+            .to_owned();
+        info!(
+            adapter = "redis_cluster",
+            broadcast_channel = %broadcast_channel,
+            "broadcast subscription selected"
+        );
         let request_channel = self.request_channel.clone();
         let response_channel = self.response_channel.clone();
         let nodes = self.config.nodes.clone();
@@ -728,7 +749,7 @@ impl Clone for RedisClusterTransport {
             client: self.client.clone(),
             publish_connection: self.publish_connection.clone(),
             health_check_connection: self.health_check_connection.clone(),
-            broadcast_channel: self.broadcast_channel.clone(),
+            broadcast: self.broadcast.clone(),
             request_channel: self.request_channel.clone(),
             response_channel: self.response_channel.clone(),
             config: self.config.clone(),

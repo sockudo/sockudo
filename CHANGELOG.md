@@ -2,8 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- Redis Cluster adapter: broadcast bucketing spreads broadcast fan-out across
+  shards. `adapter.cluster.broadcast_buckets` (1–64, default `3`, set to the
+  shard count) publishes each broadcast to one hash-tagged channel per bucket,
+  and each node subscribes to exactly one. `adapter.cluster.broadcast_mode`
+  (`legacy` default, `publish_both`, `subscribe_bucket`, `bucketed`) sequences
+  the live migration; any adjacent pair of modes delivers each broadcast exactly
+  once, so move one step per rollout. Non-legacy modes require
+  `use_sharded_pubsub = true` and a prefix without `{` or `}`. Env overrides:
+  `ADAPTER_CLUSTER_BROADCAST_MODE`, `ADAPTER_CLUSTER_BROADCAST_BUCKETS`.
+
 ### Changed
 
+- The Redis Cluster adapter transport no longer sets `RandomReplicaStrategy`
+  read routing. It issues no read commands, so the setting only opened idle
+  connections to every replica.
 - Web Push VAPID signing and RFC 8291 payload encryption no longer go through
   `web-push-native`; `sockudo-push` now uses `p256` 0.14 and `ece-native` 0.5
   directly (same wire format, `aes128gcm` content encoding unchanged). This

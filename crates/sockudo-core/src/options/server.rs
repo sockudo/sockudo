@@ -195,6 +195,9 @@ impl ServerOptions {
                 &self.versioned_messages,
             )?;
         }
+        if self.adapter.driver == AdapterDriver::RedisCluster {
+            self.adapter.cluster.validate()?;
+        }
         let clustered = self.adapter.driver != AdapterDriver::Local;
         let shared_cache = matches!(
             self.cache.driver,
@@ -472,6 +475,39 @@ mod tests {
     #[test]
     fn default_health_check_timeout_leaves_probe_headroom() {
         assert_eq!(ServerOptions::default().health_check_timeout_ms, 2000);
+    }
+
+    #[test]
+    fn cluster_broadcast_configuration_is_validated() {
+        let mut options = ServerOptions::default();
+        options.adapter.driver = AdapterDriver::RedisCluster;
+        // Default idempotency requires a shared cache, unrelated to broadcast validation.
+        options.idempotency.enabled = false;
+
+        options.adapter.cluster.broadcast_buckets = 0;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "adapter.cluster.broadcast_buckets must be between 1 and 64"
+        );
+
+        options.adapter.cluster.broadcast_buckets = 3;
+        options.adapter.cluster.broadcast_mode = ClusterBroadcastMode::Bucketed;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "adapter.cluster.broadcast_mode requires adapter.cluster.use_sharded_pubsub=true"
+        );
+
+        options.adapter.cluster.use_sharded_pubsub = true;
+        options.adapter.cluster.prefix = "a{b}".to_string();
+        options.adapter.cluster.broadcast_mode = ClusterBroadcastMode::PublishBoth;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "adapter.cluster.prefix must not contain '{' or '}' when adapter.cluster.broadcast_mode is not legacy"
+        );
+
+        options.adapter.cluster.prefix = RedisClusterAdapterConfig::default().prefix;
+        options.adapter.cluster.broadcast_mode = ClusterBroadcastMode::Bucketed;
+        assert!(options.validate().is_ok(), "{:?}", options.validate().err());
     }
 
     #[test]
