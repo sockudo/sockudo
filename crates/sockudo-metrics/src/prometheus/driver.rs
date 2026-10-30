@@ -2,7 +2,7 @@ use super::handles::{CounterVec, Gauge, GaugeVec, HistogramVec};
 use super::options::TcpExporterOptions;
 use super::recorder::{
     END_TO_END_LATENCY_HISTOGRAM_BUCKETS, INTERNAL_LATENCY_HISTOGRAM_BUCKETS,
-    ResolvedTcpExporterOptions, install_prometheus_recorder,
+    ResolvedTcpExporterOptions, WS_MESSAGE_BYTES_HISTOGRAM_BUCKETS, install_prometheus_recorder,
 };
 use metrics::{describe_counter, describe_gauge, describe_histogram};
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -119,6 +119,8 @@ pub struct PrometheusMetricsDriver {
     pub(super) socket_bytes_transmitted: CounterVec,
     pub(super) ws_messages_received: CounterVec,
     pub(super) ws_messages_sent: CounterVec,
+    pub(super) ws_control_frames: CounterVec,
+    pub(super) ws_message_bytes: HistogramVec,
     pub(super) http_bytes_received: CounterVec,
     pub(super) http_bytes_transmitted: CounterVec,
     pub(super) http_calls_received: CounterVec,
@@ -415,7 +417,32 @@ impl PrometheusMetricsDriver {
         let ws_messages_sent = register_counter_vec!(
             Opts::new(
                 format!("{prefix}ws_messages_sent_total"),
-                "The total amount of WS messages sent to the connections from the server"
+                "Application messages addressed to WS connections, counted on the node that \
+                 owns each connection (sum across nodes for cluster deliveries). Control frames \
+                 are excluded (see ws_control_frames_total). Counted before the write, so delta \
+                 conflation and tag filtering can make it slightly exceed actual socket writes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ws_control_frames = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ws_control_frames_total"),
+                "WS control frames sent to connections through the handler, by frame type. \
+                 Server-initiated pings are not included"
+            ),
+            &["app_id", "port", "frame_type"]
+        )
+        .unwrap();
+
+        let ws_message_bytes = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}ws_message_bytes"),
+                "Serialized size of published application messages in bytes, observed once per \
+                 message on the origin node (not per recipient). Use socket_transmitted_bytes \
+                 for total bytes",
+                WS_MESSAGE_BYTES_HISTOGRAM_BUCKETS.to_vec()
             ),
             &["app_id", "port"]
         )
@@ -1240,6 +1267,8 @@ impl PrometheusMetricsDriver {
             socket_bytes_transmitted,
             ws_messages_received,
             ws_messages_sent,
+            ws_control_frames,
+            ws_message_bytes,
             http_bytes_received,
             http_bytes_transmitted,
             http_calls_received,

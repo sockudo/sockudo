@@ -25,7 +25,9 @@ use sockudo_core::versioned_messages::{
 };
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::generate_message_id;
-use sockudo_protocol::messages::{AI_ERROR_PAYLOAD_TOO_LARGE, PusherMessage, is_ai_event};
+use sockudo_protocol::messages::{
+    AI_ERROR_PAYLOAD_TOO_LARGE, FrameKind, PusherMessage, is_ai_event,
+};
 use sockudo_protocol::versioned_messages::{
     MessageAction as ProtocolMessageAction, MessageVersionMetadata, apply_runtime_metadata,
     extract_runtime_action, extract_runtime_message_serial, set_runtime_append_fragment,
@@ -173,6 +175,8 @@ impl ConnectionHandler {
     ) -> Result<()> {
         // Calculate message size for metrics
         let message_size = sonic_rs::to_string(&message).unwrap_or_default().len();
+        // Classify before `message` is moved into the connection manager.
+        let frame_kind = message.frame_kind();
 
         // Send the message (lock-free - all ConnectionManager methods are &self)
         let result = self
@@ -184,7 +188,13 @@ impl ConnectionHandler {
         if result.is_ok()
             && let Some(ref metrics) = self.metrics
         {
-            metrics.mark_ws_message_sent(app_id, message_size);
+            match frame_kind {
+                FrameKind::Control(frame_type) => metrics.mark_ws_control_frame(app_id, frame_type),
+                FrameKind::Data => {
+                    metrics.mark_ws_message_sent(app_id, message_size);
+                    metrics.observe_ws_message_size(app_id, message_size);
+                }
+            }
         }
 
         result
@@ -727,17 +737,16 @@ impl ConnectionHandler {
 
         // Get the number of sockets in the channel before sending and send the message
         let (result, target_socket_count) = {
-            // Use local-only socket count — this value is only used for metrics, not
-            // broadcast correctness. Avoids the distributed adapter round-trip (e.g.
-            // cross-region NATS request/reply latency).
-            let socket_count = if let Some(ref local_adapter) = self.local_adapter {
-                local_adapter
-                    .get_channel_socket_count(&app_config.id, channel)
-                    .await
-            } else {
-                self.connection_manager
-                    .get_channel_socket_count(&app_config.id, channel)
-                    .await
+            // Count local recipients only. Remote nodes count their own deliveries when
+            // they apply the broadcast, so a cluster-wide count here would double count.
+            // Without a local adapter local and remote cannot be separated, so count 0.
+            let socket_count = match &self.local_adapter {
+                Some(local_adapter) => {
+                    local_adapter
+                        .get_channel_socket_count(&app_config.id, channel)
+                        .await
+                }
+                None => 0,
             };
 
             // Adjust for excluded socket
@@ -761,6 +770,14 @@ impl ConnectionHandler {
 
             (result, target_socket_count)
         };
+
+        if result.is_ok()
+            && let Some(metrics) = &self.metrics
+        {
+            // One size observation per published message, independent of how many
+            // recipients this node holds; receivers never observe it.
+            metrics.observe_ws_message_size(&app_config.id, message_size);
+        }
 
         // Track metrics if message was sent successfully
         if result.is_ok()

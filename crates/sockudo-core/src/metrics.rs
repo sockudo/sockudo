@@ -65,11 +65,25 @@ pub trait MetricsInterface: Send + Sync {
         sent_message_size: usize,
     );
 
-    /// Handle a new WS client message event being sent
+    /// Count an application message addressed to one connection.
+    ///
+    /// Control frames (pong, acks, errors, auth) go to [`Self::mark_ws_control_frame`].
     fn mark_ws_message_sent(&self, app_id: &str, sent_message_size: usize);
 
-    /// Handle multiple WS client messages being sent (batch update for performance)
+    /// Count application messages addressed to `count` local connections.
+    ///
+    /// Every node counts only its own local recipients, so the cluster-wide sum is
+    /// the delivery total. Counted before the write: delta conflation and tag
+    /// filtering can still skip individual writes.
     fn mark_ws_messages_sent_batch(&self, app_id: &str, sent_message_size: usize, count: usize);
+
+    /// Count a control frame (pong, ack, error, auth, ...) written to a connection.
+    /// `frame_type` is a bounded label from `PusherMessage::frame_kind`.
+    fn mark_ws_control_frame(&self, _app_id: &str, _frame_type: &str) {}
+
+    /// Observe the serialized size of one published application message.
+    /// Recorded once per message on the origin node, never per recipient.
+    fn observe_ws_message_size(&self, _app_id: &str, _size: usize) {}
 
     /// Handle a new WS client message being received
     fn mark_ws_message_received(&self, app_id: &str, message_size: usize);
