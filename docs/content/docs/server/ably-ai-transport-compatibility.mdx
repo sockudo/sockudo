@@ -39,7 +39,9 @@ unit and JSON/MsgPack integration suites, and the complete AI Transport unit
 and integration suites. The structurally defined exceptions are the two Live
 Objects files, the multi-transport file, the Comet inventory assertion, and two
 local-routing TLS/port assertions. The Go and AI Transport suites have no test
-exclusions.
+exclusions. A second gate installs the newest published `ably`,
+`@ably/pubsub-device`, `@ably/pubsub-server`, and `@ably/ai-transport` packages
+and runs the local smoke harness against them.
 
 Fresh pinned source-build evidence is green: Node defaults are 575/575,
 strict completeness is 250/250, Chromium defaults are 574/574 with no browser
@@ -548,9 +550,9 @@ The targets read these environment variables:
 
 `make ably-ai-demo` runs two headless demos:
 
-1. A stock `@ably/ai-transport@0.4.0` chat demo using
-   `@ably/ai-transport/vercel`, pinned `ably@2.21.0`, and Sockudo as the
-   configured endpoint.
+1. A stock `@ably/ai-transport@0.10.0` chat demo using `createTransport` with
+   the `@ably/ai-transport/vercel` codec, pinned `ably@2.30.0`, and Sockudo as
+   the configured endpoint.
 2. A recovery/history demo that disconnects during an AI output stream, appends
    additional fragments while offline, reconnects with an Ably recovery key, and
    verifies that only missed fragments replay and the final aggregate is intact.

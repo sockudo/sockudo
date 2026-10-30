@@ -1,16 +1,21 @@
 # Ably Compatibility Smoke And Demo Harness
 
-This harness points the unmodified Ably JavaScript SDK, and one stock
-`@ably/ai-transport` smoke demo, at a local Sockudo server.
+This harness points the unmodified Ably JavaScript SDKs, and one stock
+`@ably/ai-transport` smoke demo, at a local Sockudo server. Ably publishes two
+SDK lines: the `ably` package, which `@ably/ai-transport` still peers on, and
+the 3.x `@ably/pubsub-device` and `@ably/pubsub-server` packages. Both are
+covered.
 
 Required local service:
 
 ```bash
-cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push" -- \
+PUSH_STORAGE_DRIVER=memory PUSH_QUEUE_DRIVER=memory PUSH_ALLOW_MEMORY_DRIVERS=true \
+  cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push" -- \
   --config config/config.toml
 ```
 
-The default `config/config.toml` app credentials match the harness defaults:
+The push overrides are needed because the default config selects a `mysql` push
+store. The default `config/config.toml` app credentials match the harness defaults:
 `app-key:app-secret`. AI Transport channels must match `private-ai-`. The Ably
 facade is not present unless the server is built with Cargo feature
 `ably-compat`.
@@ -24,7 +29,7 @@ Environment variables:
 | `ABLY_PORT` | `6001` | Sockudo HTTP/WebSocket port. |
 | `ABLY_TLS` | `false` | Set `true` for TLS endpoints. |
 | `ABLY_CLIENT_ID` | script-specific | Client identity stamped by the Ably SDK. |
-| `ABLY_AGENT_CLIENT_ID` | `sockudo-ably-ait-agent` | Agent identity for the stock AIT chat demo. |
+| `ABLY_AGENT_CLIENT_ID` | unset | Agent identity for the stock AIT chat demo. |
 | `ABLY_CHANNEL` | generated | Override the test/demo channel. |
 | `ABLY_DEMO_PROMPT` | `Say hello from Sockudo AI Transport.` | Prompt text for the stock AIT chat demo. |
 | `ABLY_PROTOCOL_RUN_ID` | timestamp | Stable suffix for protocol discovery channels and client IDs. |
@@ -37,6 +42,7 @@ Environment variables:
 cd tests/ably-compat
 npm ci
 npm run smoke
+npm run pubsub:v3
 npm run multi-key
 npm run protocol:discovery
 npm run pubsub:chat
@@ -57,18 +63,23 @@ make ably-ai-demo
 `npm run smoke` verifies that the Ably SDK connects, attaches, subscribes,
 publishes, receives the same message, reads history, and detaches.
 
+`npm run pubsub:v3` does the same across the Ably 3.x clients: a
+`@ably/pubsub-device` client and a `@ably/pubsub-server` realtime client exchange
+messages on one channel, and a `@ably/pubsub-server` HTTP client publishes and
+reads history.
+
 `npm run multi-key` consumes the generated six-key conformance fixture. It
 proves that a capability-scoped key can publish and enter presence while the
 primary key observes the same live delivery, history, and presence state, and
 that a subscribe-only key cannot publish. Generate the fixture by provisioning
 the upstream `ably-common` test app through the local sandbox, which starts a
 dedicated Sockudo for it (`test-app-setup.json` ships in an `ably-js` checkout
-under `test/common/ably-common/test-resources/`):
+under `packages/core-impl/test/common/ably-common/test-resources/`):
 
 ```bash
 node tests/ably-compat/upstream-sandbox.mjs --sockudo-bin target/debug/sockudo \
   --config config/config.toml --listen 127.0.0.1:9080 &
-jq .post_apps <ably-js>/test/common/ably-common/test-resources/test-app-setup.json |
+jq .post_apps <ably-js>/packages/core-impl/test/common/ably-common/test-resources/test-app-setup.json |
   curl -s -X POST -H 'content-type: application/json' --data @- \
     http://127.0.0.1:9080/apps > /tmp/ably-test-app.json
 cd tests/ably-compat
@@ -102,10 +113,11 @@ methods that the Ably AI Transport encoder calls: `appendMessage`,
 `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and
 `history`.
 
-The stock AI Transport chat demo uses `@ably/ai-transport@0.4.0` and
-`@ably/ai-transport/vercel` against Sockudo. It creates a client session, sends
-one Vercel-style user message, creates an agent run, streams text chunks, ends
-the run, and asserts that the client view sees the assistant response.
+The stock AI Transport chat demo uses `@ably/ai-transport@0.10.0` and the
+`@ably/ai-transport/vercel` codec against Sockudo. A client and an agent each
+create a transport on one channel. The client sends a Vercel-style user message,
+the agent receives it and pipes text chunks back, and the client asserts that it
+received the whole reply.
 
 The recovery harness captures an Ably SDK recovery key during a streamed AI
 response, publishes additional append mutations while that client is offline,

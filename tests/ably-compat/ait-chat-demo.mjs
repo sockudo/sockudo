@@ -1,6 +1,6 @@
 import * as Ably from 'ably';
-import { createAgentSession, createClientSession, UIMessageCodec } from '@ably/ai-transport/vercel';
-import { Invocation } from '@ably/ai-transport';
+import { createTransport } from '@ably/ai-transport';
+import { createVercelCodec } from '@ably/ai-transport/vercel';
 import assert from 'node:assert/strict';
 
 const endpoint = process.env.ABLY_ENDPOINT ?? '127.0.0.1';
@@ -8,8 +8,7 @@ const port = Number(process.env.ABLY_PORT ?? '6001');
 const tls = process.env.ABLY_TLS === 'true';
 const key = process.env.ABLY_KEY ?? 'app-key:app-secret';
 const clientId = process.env.ABLY_CLIENT_ID ?? 'sockudo-ably-ait-client';
-// Agent runs without an identified triggering input use the stock SDK's empty
-// run-client-id sentinel. Keep the connection itself unidentified so this
+// Keep the agent connection unidentified unless asked otherwise, so this
 // exercises the real unknown-owner protocol path.
 const agentClientId = process.env.ABLY_AGENT_CLIENT_ID;
 const channelName = process.env.ABLY_CHANNEL ?? `private-ai-ably-chat-${Date.now()}`;
@@ -74,29 +73,10 @@ function textFromMessage(message) {
     .join('');
 }
 
-function waitForView(view, predicate, label) {
-  const initial = view.getMessages();
-  if (predicate(initial)) {
-    return Promise.resolve(initial);
-  }
-  return withTimeout(
-    new Promise((resolve) => {
-      const unsubscribe = view.on('update', () => {
-        const messages = view.getMessages();
-        if (predicate(messages)) {
-          unsubscribe();
-          resolve(messages);
-        }
-      });
-    }),
-    label,
-  );
-}
-
 const clientRealtime = createRealtime(clientId);
 const agentRealtime = createRealtime(agentClientId);
-let clientSession;
-let agentSession;
+let clientTransport;
+let agentTransport;
 
 try {
   clientRealtime.connect();
@@ -104,35 +84,57 @@ try {
   await withTimeout(onceConnection(clientRealtime, 'connected'), 'client connect');
   await withTimeout(onceConnection(agentRealtime, 'connected'), 'agent connect');
 
-  clientSession = createClientSession({
+  // A codec holds decoder state, so the two sides of this one process need one each.
+  clientTransport = createTransport({
     client: clientRealtime,
     channelName,
+    codec: createVercelCodec(),
   });
-  agentSession = createAgentSession({
+  agentTransport = createTransport({
     client: agentRealtime,
     channelName,
+    codec: createVercelCodec(),
   });
 
-  await withTimeout(clientSession.connect(), 'client session connect');
-  await withTimeout(agentSession.connect(), 'agent session connect');
+  const inbound = withTimeout(
+    new Promise((resolve) => {
+      agentTransport.subscribe(({ event }) => {
+        if (event?.type === 'user-message') resolve(event.message);
+      });
+    }),
+    'agent observed the prompt',
+  );
+  const reply = withTimeout(
+    new Promise((resolve) => {
+      let text = '';
+      clientTransport.subscribe(({ event }) => {
+        if (event?.type === 'text-delta') text += event.delta;
+        if (event?.type === 'finish') resolve(text);
+      });
+    }),
+    'client observed the reply',
+  );
+  await withTimeout(
+    clientRealtime.channels.get(channelName).whenState('attached'),
+    'client attach',
+  );
+  await withTimeout(agentRealtime.channels.get(channelName).whenState('attached'), 'agent attach');
 
-  const input = UIMessageCodec.createUserMessage({
-    id: `user-${Date.now()}`,
-    role: 'user',
-    parts: [{ type: 'text', text: prompt }],
-  });
-  const clientRun = await withTimeout(clientSession.view.send(input), 'client send');
-  const invocation = Invocation.fromJSON(clientRun.toInvocation().toJSON());
-  const agentRun = agentSession.createRun(invocation, {
-    runId: `run-${Date.now()}`,
-    invocationId: `invoke-${Date.now()}`,
-  });
+  const requestId = `user-${Date.now()}`;
+  const { serial } = await withTimeout(
+    clientTransport.send(
+      {
+        type: 'user-message',
+        message: { id: requestId, role: 'user', parts: [{ type: 'text', text: prompt }] },
+      },
+      { headers: { requestId } },
+    ),
+    'client send',
+  );
+  assert.equal(textFromMessage(await inbound), prompt);
 
-  await withTimeout(agentRun.start(), 'agent run start');
-  await withTimeout(clientRun.started, 'client observed run start');
-
-  const streamResult = await withTimeout(
-    agentRun.pipe(
+  await withTimeout(
+    agentTransport.pipe(
       streamChunks([
         { type: 'start', messageId: `assistant-${Date.now()}` },
         { type: 'text-start', id: 'answer' },
@@ -141,29 +143,13 @@ try {
         { type: 'text-end', id: 'answer' },
         { type: 'finish', finishReason: 'stop' },
       ]),
+      { headers: { requestId } },
     ),
     'agent stream',
   );
-  assert.equal(streamResult.reason, 'complete');
-  await withTimeout(agentRun.end({ reason: 'complete' }), 'agent run end');
 
-  const messages = await waitForView(
-    clientSession.view,
-    (items) =>
-      items.some(
-        (item) =>
-          item.message.role === 'assistant' &&
-          textFromMessage(item.message).includes('Sockudo via stock @ably/ai-transport'),
-      ),
-    'assistant message projection',
-  );
-  const assistant = messages
-    .map((item) => item.message)
-    .find((message) => message.role === 'assistant');
-
-  assert.ok(assistant, 'assistant message projected into the client view');
-  const text = textFromMessage(assistant);
-  assert.match(text, /Sockudo via stock @ably\/ai-transport/);
+  const text = await reply;
+  assert.equal(text, 'Hello from Sockudo via stock @ably/ai-transport.');
 
   console.log(
     JSON.stringify({
@@ -172,14 +158,14 @@ try {
       port,
       tls,
       channel: channelName,
-      runId: agentRun.runId,
-      inputEventId: clientRun.inputEventId,
+      requestId,
+      inputSerial: serial,
       assistantText: text,
     }),
   );
 } finally {
-  await clientSession?.close().catch(() => {});
-  await agentSession?.close().catch(() => {});
+  await clientTransport?.close().catch(() => {});
+  await agentTransport?.close().catch(() => {});
   clientRealtime.close();
   agentRealtime.close();
 }
