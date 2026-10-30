@@ -80,7 +80,9 @@ Go unit and JSON/MsgPack integration, and complete AI Transport suites against t
 Realtime is forced to WebSocket; Live Objects and multiple/non-WebSocket transport coverage are
 excluded. Three named ably-js SDK/harness-only assertions are also excluded: the Comet inventory
 and two default TLS/port checks overridden by local routing. The Go and AI Transport suites have no
-test exclusions.
+test exclusions. Pull requests also install the newest published `ably`, `@ably/pubsub-device`,
+`@ably/pubsub-server`, and `@ably/ai-transport` packages and run the local smoke harness against
+them, so a release that has not reached an upstream `main` test yet is still covered.
 
 Pinned Node, browser, strict-upstream-pending, Go, and AI Transport manifests remain the source of
 reproducible release evidence. Upstream-default pending results are audited and executed separately,

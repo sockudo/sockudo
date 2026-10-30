@@ -169,7 +169,8 @@ jobs:
             exit 1
           fi
 
-          harness_only_excludes='realtime/init node_transports|rest/fallbacks Should use the primary domain as the first attempted for every connection attempt|rest/init Init without any tls key should enable tls'
+          # Anchored on the test title alone: upstream renames describe groups.
+          harness_only_excludes=' node_transports$| Should use the primary domain as the first attempted for every connection attempt$| Init without any tls key should enable tls$'
           CI=true \
           ABLY_LOCAL_SANDBOX_URL=http://127.0.0.1:9080 \
           ABLY_TEST_TRANSPORTS=web_socket \
@@ -461,5 +462,97 @@ jobs:
             ${{ runner.temp }}/ably-ai-transport-js-sandbox.log
             ${{ runner.temp }}/ably-ai-transport-js-servers
             ${{ runner.temp }}/ably-ai-transport-js-unit.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  ably-published-sdks:
+    name: Ably published SDKs (latest)
+    needs: build-sockudo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Download server binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sockudo-ably-compat-${{ github.run_id }}
+          path: .artifacts
+
+      - name: Install newest published SDKs
+        shell: bash
+        run: |
+          tar -xzf "${GITHUB_WORKSPACE}/.artifacts/sockudo-ably-compat.tar.gz" -C "${GITHUB_WORKSPACE}"
+          cd tests/ably-compat
+          npm ci --ignore-scripts
+          npm install --no-save --ignore-scripts \
+            ably@latest @ably/ai-transport@latest @ably/pubsub-device@latest @ably/pubsub-server@latest
+          npm ls --depth=0 ably @ably/ai-transport @ably/pubsub-device @ably/pubsub-server \
+            | tee "${RUNNER_TEMP}/ably-published-sdks-versions.txt"
+          {
+            echo "# Ably published SDKs"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/ably-published-sdks-versions.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run smoke harness
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          server_log="${RUNNER_TEMP}/ably-published-sdks-server.log"
+          PUSH_STORAGE_DRIVER=memory \
+          PUSH_QUEUE_DRIVER=memory \
+          PUSH_ALLOW_MEMORY_DRIVERS=true \
+          "${GITHUB_WORKSPACE}/target/debug/sockudo" --config config/config.toml >"${server_log}" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "${server_pid}" 2>/dev/null || true
+            wait "${server_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:6001/time; then
+              break
+            fi
+            if ! kill -0 "${server_pid}" 2>/dev/null; then
+              tail -n 100 "${server_log}"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --output /dev/null http://127.0.0.1:6001/time || {
+            tail -n 100 "${server_log}"
+            exit 1
+          }
+
+          cd tests/ably-compat
+          {
+            npm test
+            npm run pubsub:chat
+            npm run ait:chat
+          } 2>&1 | tee "${RUNNER_TEMP}/ably-published-sdks.log"
+
+      - name: Upload compatibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ably-published-sdks-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ably-published-sdks.log
+            ${{ runner.temp }}/ably-published-sdks-server.log
+            ${{ runner.temp }}/ably-published-sdks-versions.txt
           if-no-files-found: warn
           retention-days: 7

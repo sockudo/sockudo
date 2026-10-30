@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "npm run smoke && npm run ait:mutable && npm run ait:recovery",
+    "test": "npm run smoke && npm run pubsub:v3 && npm run ait:mutable && npm run ait:recovery",
     "smoke": "node smoke.mjs",
+    "pubsub:v3": "node pubsub-v3-smoke.mjs",
     "multi-key": "node multi-key.mjs",
     "protocol:discovery": "node protocol-discovery.mjs",
     "pubsub:chat": "node pubsub-chat-smoke.mjs",
@@ -16,8 +17,10 @@
     "demo:recovery-history": "node ait-recovery.mjs"
   },
   "dependencies": {
-    "@ably/ai-transport": "0.4.0",
-    "ably": "2.23.0",
+    "@ably/ai-transport": "0.10.0",
+    "@ably/pubsub-device": "3.0.0",
+    "@ably/pubsub-server": "3.0.0",
+    "ably": "2.30.0",
     "ai": "^6.0.137"
   },
   "engines": {
