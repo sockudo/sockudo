@@ -38,7 +38,7 @@ jobs:
       - name: Install cargo-fuzz
         # Cached prebuilt/binary install; rebuilds from source only on cache
         # miss (cargo-fuzz has no prebuilt release manifest).
-        uses: taiki-e/cache-cargo-install-action@v2
+        uses: taiki-e/cache-cargo-install-action@v3
         with:
           tool: cargo-fuzz
           locked: true
