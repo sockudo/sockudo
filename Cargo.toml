@@ -225,7 +225,7 @@ p256 = { version = "0.14.0", features = ["ecdh"] }
 zeroize = "1.8.2"
 
 # Dev dependencies
-criterion = { version = "0.7.0", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.7.0"
 
 [profile.release]
