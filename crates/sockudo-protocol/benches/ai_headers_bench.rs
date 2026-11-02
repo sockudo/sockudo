@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use sockudo_protocol::messages::{
-    AI_EVENT_INPUT, AiExtras, MessageExtras, PusherMessage, is_ai_event,
+    AI_EVENT_INPUT, AiCodec, AiExtras, MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::json;
 use std::collections::HashMap;
@@ -17,10 +17,10 @@ fn sample_ai_extras() -> MessageExtras {
                 ("role".to_string(), "assistant".to_string()),
                 ("stream".to_string(), "true".to_string()),
             ])),
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "content-type".to_string(),
                 "application/json".to_string(),
-            )])),
+            )]))),
         }),
         ..Default::default()
     }

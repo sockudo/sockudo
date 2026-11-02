@@ -13,7 +13,7 @@ use sockudo_core::versioned_messages::{
 };
 use sockudo_core::websocket::ConnectionCapabilities;
 use sockudo_protocol::messages::{
-    AI_EVENT_INPUT, AiExtras, MessageData, MessageExtras, PusherMessage, is_ai_event,
+    AI_EVENT_INPUT, AiCodec, AiExtras, MessageData, MessageExtras, PusherMessage, is_ai_event,
 };
 use sockudo_protocol::versioned_messages::{
     MessageAction, MessageVersionMetadata, apply_runtime_metadata, set_runtime_append_fragment,
@@ -172,10 +172,10 @@ fn sample_ai_extras() -> MessageExtras {
                 ("role".to_string(), "assistant".to_string()),
                 ("stream".to_string(), "true".to_string()),
             ])),
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "content-type".to_string(),
                 "application/json".to_string(),
-            )])),
+            )]))),
         }),
         ..Default::default()
     }

@@ -148,7 +148,7 @@ AI metadata is a convention over the existing `extras` field:
 }
 ```
 
-`extras.ai.transport` and `extras.ai.codec` are string-to-string maps. Per tier: at most 32 keys and keys at most 64 bytes. Transport keys match `[a-z0-9-]+`; codec keys match `[A-Za-z0-9_-]+` for Ably/Vercel codec fields such as `providerMetadata`. Transport values and ordinary codec values are limited to 256 bytes of valid UTF-8; `extras.ai.codec.providerMetadata` is limited to 8 KiB. Unknown transport keys are rejected. Codec keys are not semantically interpreted but still obey tier limits.
+`extras.ai.transport` is a string-to-string map. `extras.ai.codec` is either a string-to-string map (Sockudo codec headers) or a single string (the Ably AI Transport codec id, e.g. `"vercel-ai-sdk-ui-message"`, which Ably's decoders match exactly and Sockudo relays verbatim). Per map tier: at most 32 keys and keys at most 64 bytes. Transport keys match `[a-z0-9-]+`; codec keys match `[A-Za-z0-9_-]+` for Ably/Vercel codec fields such as `providerMetadata`. Transport values and ordinary codec values are limited to 256 bytes of valid UTF-8; `extras.ai.codec.providerMetadata` is limited to 8 KiB. A codec id string is limited to 256 bytes and is otherwise not validated. Unknown transport keys are rejected. Codec keys are not semantically interpreted but still obey tier limits. Protobuf carries a codec id in `ai.codec_id` (tag 4), mutually exclusive with the `ai.codec` map.
 
 Additional keys directly under `extras.ai` are preserved as opaque JSON metadata,
 including Ably AI Transport 0.9's `type`, `fields`, `stream`, and `ends`. They
@@ -511,7 +511,7 @@ AIT-S53 [NEW] `ai-transport` Cargo feature is propagated through `sockudo-server
 AIT-S54 [NEW] `[ai_transport].enabled` gates all AI validation and behavior.
 AIT-S55 [NEW] AI events are exactly `ai-input`, `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, `ai-cancel`.
 AIT-S56 [NEW] `extras.ai.transport` validates known key registry only.
-AIT-S57 [NEW] `extras.ai.codec` is opaque but bounded.
+AIT-S57 [NEW] `extras.ai.codec` is opaque but bounded: a bounded map tier or a codec id string of at most 256 bytes, relayed in the shape received.
 AIT-S58 [NEW] Transport/codec tiers reject more than 32 keys.
 AIT-S59 [NEW] AI header keys reject values over 64 bytes or outside `[a-z0-9-]+`.
 AIT-S60 [NEW] AI transport header values and ordinary codec values reject values over 256 bytes; `extras.ai.codec.providerMetadata` rejects values over 8 KiB.

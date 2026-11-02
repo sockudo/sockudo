@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
 use std::collections::{BTreeMap, HashMap};
 
-use crate::messages::{AiExtras, ExtrasValue, MessageData, MessageExtras, PusherMessage};
+use crate::messages::{AiCodec, AiExtras, ExtrasValue, MessageData, MessageExtras, PusherMessage};
 use crate::versioned_messages::{MessageAction, MessageVersionMetadata, VersionedRealtimeMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -283,6 +283,10 @@ struct ProtoAiExtras {
     codec: HashMap<String, String>,
     #[prost(map = "string, string", tag = "3")]
     opaque_json: HashMap<String, String>,
+    /// Ably AI Transport codec id; set instead of `codec` when the message
+    /// carried a string under `extras.ai.codec`.
+    #[prost(string, optional, tag = "4")]
+    codec_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -297,7 +301,7 @@ struct MsgpackMessageExtras {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MsgpackAiExtras {
     transport: Option<HashMap<String, String>>,
-    codec: Option<HashMap<String, String>>,
+    codec: Option<AiCodec>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     opaque: BTreeMap<String, serde_json::Value>,
 }
@@ -671,9 +675,15 @@ impl From<MessageExtras> for MsgpackMessageExtras {
 
 impl From<AiExtras> for ProtoAiExtras {
     fn from(value: AiExtras) -> Self {
+        let (codec, codec_id) = match value.codec {
+            Some(AiCodec::Headers(headers)) => (headers, None),
+            Some(AiCodec::Id(id)) => (HashMap::new(), Some(id)),
+            None => (HashMap::new(), None),
+        };
         Self {
             transport: value.transport.unwrap_or_default(),
-            codec: value.codec.unwrap_or_default(),
+            codec,
+            codec_id,
             opaque_json: value
                 .opaque
                 .into_iter()
@@ -735,9 +745,17 @@ impl TryFrom<ProtoAiExtras> for AiExtras {
     type Error = String;
 
     fn try_from(value: ProtoAiExtras) -> Result<Self, Self::Error> {
+        let codec = match (value.codec_id, value.codec.is_empty()) {
+            (Some(_), false) => {
+                return Err("extras.ai.codec cannot be both an id and headers".to_string());
+            }
+            (Some(id), true) => Some(AiCodec::Id(id)),
+            (None, false) => Some(AiCodec::Headers(value.codec)),
+            (None, true) => None,
+        };
         Ok(Self {
             transport: (!value.transport.is_empty()).then_some(value.transport),
-            codec: (!value.codec.is_empty()).then_some(value.codec),
+            codec,
             opaque: value
                 .opaque_json
                 .into_iter()
@@ -944,28 +962,37 @@ mod tests {
 
     #[test]
     fn ai_codec_metadata_round_trips_in_all_wire_formats() {
-        let ai: AiExtras = serde_json::from_value(serde_json::json!({
-            "transport": { "run-id": "run-1" },
-            "codec": { "format": "test" },
-            "type": "text-delta",
-            "fields": { "id": "m1", "nested": [null, true, { "count": 3 }] },
-            "stream": true,
-            "ends": "message-1"
-        }))
-        .unwrap();
-        let mut message = sample_versioned_message();
-        message.message.extras.as_mut().unwrap().ai = Some(ai);
-        for format in [
-            WireFormat::Json,
-            WireFormat::MessagePack,
-            WireFormat::Protobuf,
+        // Sockudo writes a codec header map; Ably AI Transport writes its codec id.
+        for codec in [
+            serde_json::json!({ "format": "test" }),
+            serde_json::json!("openai-responses"),
         ] {
-            let bytes = serialize_message(&message.message, format).unwrap();
-            let decoded = deserialize_message(&bytes, format).unwrap();
-            assert_eq!(decoded.extras, message.message.extras, "{format:?}");
-            let bytes = serialize_versioned_message(&message, format).unwrap();
-            let decoded = deserialize_versioned_message(&bytes, format).unwrap();
-            assert_eq!(decoded.message.extras, message.message.extras, "{format:?}");
+            let ai: AiExtras = serde_json::from_value(serde_json::json!({
+                "transport": { "run-id": "run-1" },
+                "codec": codec,
+                "type": "text-delta",
+                "fields": { "id": "m1", "nested": [null, true, { "count": 3 }] },
+                "stream": true,
+                "ends": "message-1"
+            }))
+            .unwrap();
+            let mut message = sample_versioned_message();
+            message.message.extras.as_mut().unwrap().ai = Some(ai);
+            for format in [
+                WireFormat::Json,
+                WireFormat::MessagePack,
+                WireFormat::Protobuf,
+            ] {
+                let bytes = serialize_message(&message.message, format).unwrap();
+                let decoded = deserialize_message(&bytes, format).unwrap();
+                assert_eq!(decoded.extras, message.message.extras, "{format:?} {codec}");
+                let bytes = serialize_versioned_message(&message, format).unwrap();
+                let decoded = deserialize_versioned_message(&bytes, format).unwrap();
+                assert_eq!(
+                    decoded.message.extras, message.message.extras,
+                    "{format:?} {codec}"
+                );
+            }
         }
     }
 
@@ -977,9 +1004,22 @@ mod tests {
                 transport: HashMap::new(),
                 codec: HashMap::new(),
                 opaque_json: HashMap::from([(key.to_string(), raw.to_string())]),
+                codec_id: None,
             });
             assert!(deserialize_message(&proto.encode_to_vec(), WireFormat::Protobuf).is_err());
         }
+    }
+
+    #[test]
+    fn protobuf_rejects_ai_codec_id_alongside_codec_headers() {
+        let mut proto = ProtoPusherMessage::from(sample_message());
+        proto.extras.as_mut().unwrap().ai = Some(ProtoAiExtras {
+            transport: HashMap::new(),
+            codec: HashMap::from([("format".to_string(), "test".to_string())]),
+            opaque_json: HashMap::new(),
+            codec_id: Some("openai-responses".to_string()),
+        });
+        assert!(deserialize_message(&proto.encode_to_vec(), WireFormat::Protobuf).is_err());
     }
 
     #[test]

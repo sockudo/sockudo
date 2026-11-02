@@ -7,7 +7,7 @@ use sockudo_core::{
     app::AppPolicy, options::MemoryCacheOptions, versioned_messages::MessageAction,
 };
 use sockudo_protocol::messages::AiHeaderLimits;
-use sockudo_protocol::messages::{AiExtras, MessageExtras};
+use sockudo_protocol::messages::{AiCodec, AiExtras, MessageExtras};
 use sockudo_protocol::versioned_messages::apply_runtime_metadata;
 use sockudo_ws::{
     Config as WsConfig, Http1, Stream as WsStream, WebSocketStream, axum_integration::WebSocket,
@@ -173,6 +173,58 @@ fn publish_preserves_upstream_ai_codec_metadata() {
         .unwrap();
     decoded.validate_ai_headers().unwrap();
     assert_eq!(ably_extras_from_message_extras(&decoded), Some(extras));
+}
+
+#[test]
+fn publish_preserves_upstream_ai_codec_id_verbatim() {
+    // Ably AI Transport decoders skip any message whose `extras.ai.codec` is not
+    // exactly their codec id, so the string must come back unchanged.
+    let extras = json!({
+        "ai": {
+            "codec": "vercel-ai-sdk-ui-message",
+            "type": "text-delta",
+            "fields": { "id": "m1" },
+            "stream": true
+        }
+    });
+    let message = AblyMessage {
+        name: Some("ai".to_string()),
+        extras: Some(extras.clone()),
+        ..AblyMessage::default()
+    };
+    validate_ably_publish_message(&message, false, AiHeaderLimits::default()).unwrap();
+    let decoded = ably_extras_to_message_extras(message.extras)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        decoded
+            .ai
+            .as_ref()
+            .and_then(|ai| ai.codec.as_ref())
+            .and_then(AiCodec::id),
+        Some("vercel-ai-sdk-ui-message")
+    );
+    assert_eq!(decoded.ai_codec_headers(), None);
+    assert_eq!(ably_extras_from_message_extras(&decoded), Some(extras));
+}
+
+#[test]
+fn publish_rejects_ai_codec_that_is_neither_id_nor_headers() {
+    for codec in [json!(42), json!(["openai-responses"]), json!({ "k": 1 })] {
+        let message = AblyMessage {
+            extras: Some(json!({ "ai": { "codec": codec } })),
+            ..AblyMessage::default()
+        };
+        assert!(
+            validate_ably_publish_message(&message, false, AiHeaderLimits::default()).is_err(),
+            "accepted extras.ai.codec = {codec}"
+        );
+    }
+    let oversized = AblyMessage {
+        extras: Some(json!({ "ai": { "codec": "x".repeat(257) } })),
+        ..AblyMessage::default()
+    };
+    assert!(validate_ably_publish_message(&oversized, false, AiHeaderLimits::default()).is_err());
 }
 
 #[test]
@@ -4998,10 +5050,10 @@ fn append_projection_uses_delta_for_mutations_and_aggregate_for_history() {
             ai: Some(AiExtras {
                 opaque: Default::default(),
                 transport: None,
-                codec: Some(HashMap::from([(
+                codec: Some(AiCodec::Headers(HashMap::from([(
                     "status".to_string(),
                     "complete".to_string(),
-                )])),
+                )]))),
             }),
             ..Default::default()
         }),
