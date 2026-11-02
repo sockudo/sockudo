@@ -89,6 +89,9 @@ mod presence_lock_scope_tests;
 mod connected_gauge_regression_tests;
 
 #[cfg(test)]
+mod delivery_metrics_tests;
+
+#[cfg(test)]
 mod server_capacity_tests;
 
 #[cfg(test)]

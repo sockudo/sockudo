@@ -188,6 +188,20 @@ impl MetricsInterface for PrometheusMetricsDriver {
         );
     }
 
+    fn mark_ws_control_frame(&self, app_id: &str, frame_type: &str) {
+        let port = self.port.to_string();
+        self.ws_control_frames
+            .with_label_values(&[app_id, &port, frame_type])
+            .inc();
+    }
+
+    fn observe_ws_message_size(&self, app_id: &str, size: usize) {
+        let port = self.port.to_string();
+        self.ws_message_bytes
+            .with_label_values(&[app_id, &port])
+            .observe(size as f64);
+    }
+
     fn mark_ws_message_received(&self, app_id: &str, message_size: usize) {
         let tags = self.get_tags(app_id);
         self.socket_bytes_received
