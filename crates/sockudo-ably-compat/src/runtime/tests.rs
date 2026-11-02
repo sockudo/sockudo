@@ -177,8 +177,8 @@ fn publish_preserves_upstream_ai_codec_metadata() {
 
 #[test]
 fn publish_preserves_upstream_ai_codec_id_verbatim() {
-    // Ably AI Transport decoders skip any message whose `extras.ai.codec` is not
-    // exactly their codec id, so the string must come back unchanged.
+    // An Ably decoder skips any message whose `extras.ai.codec` is not its own
+    // codec id, so the id must round-trip verbatim.
     let extras = json!({
         "ai": {
             "codec": "vercel-ai-sdk-ui-message",
@@ -210,14 +210,30 @@ fn publish_preserves_upstream_ai_codec_id_verbatim() {
 
 #[test]
 fn publish_rejects_ai_codec_that_is_neither_id_nor_headers() {
-    for codec in [json!(42), json!(["openai-responses"]), json!({ "k": 1 })] {
+    for (codec, expected) in [
+        (
+            json!(42),
+            "expected a codec id string or a string-to-string map",
+        ),
+        (
+            json!(["openai-responses"]),
+            "expected a codec id string or a string-to-string map",
+        ),
+        (
+            json!({ "k": 1 }),
+            "extras.ai.codec header 'k' must be a string",
+        ),
+    ] {
         let message = AblyMessage {
             extras: Some(json!({ "ai": { "codec": codec } })),
             ..AblyMessage::default()
         };
+        let error = validate_ably_publish_message(&message, false, AiHeaderLimits::default())
+            .unwrap_err()
+            .to_string();
         assert!(
-            validate_ably_publish_message(&message, false, AiHeaderLimits::default()).is_err(),
-            "accepted extras.ai.codec = {codec}"
+            error.contains(expected),
+            "error for extras.ai.codec = {codec} was '{error}'"
         );
     }
     let oversized = AblyMessage {
@@ -229,8 +245,7 @@ fn publish_rejects_ai_codec_that_is_neither_id_nor_headers() {
 
 #[test]
 fn publish_preserves_null_header_values() {
-    // Ably admits string, number, boolean and null under extras.headers, and
-    // Ably AI Transport forwards a caller's null header unchanged.
+    // A null header value round-trips through publish and delivery unchanged.
     let extras = json!({
         "headers": { "trace": null, "tenant": "acme", "retry": false }
     });

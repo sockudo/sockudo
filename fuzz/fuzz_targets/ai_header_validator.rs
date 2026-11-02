@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use sockudo_protocol::messages::{
     AI_CODEC_PROVIDER_METADATA_MAX_BYTES, AI_TRANSPORT_KEY_MAX_BYTES, AI_TRANSPORT_TIER_LIMIT,
-    AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, MessageExtras,
+    AI_TRANSPORT_VALUE_MAX_BYTES, AiCodec, AiExtras, MessageExtras,
 };
 use std::collections::HashMap;
 
@@ -30,40 +30,55 @@ fuzz_target!(|data: &[u8]| {
 
     let mut transport = HashMap::new();
     let mut codec = HashMap::new();
+    let mut codec_id = None;
     for pair in input.split('&').take(40) {
         let Some((key, value)) = pair.split_once('=') else {
             continue;
         };
-        if let Some(key) = key.strip_prefix("codec.") {
+        if key == "codec" {
+            codec_id = Some(value.to_string());
+        } else if let Some(key) = key.strip_prefix("codec.") {
             codec.insert(key.to_string(), value.to_string());
         } else {
             transport.insert(key.to_string(), value.to_string());
         }
     }
 
+    // A bare `codec=` pair selects the Ably codec id shape; otherwise the
+    // `codec.*` pairs form the Sockudo header tier.
+    let codec_value = match codec_id.clone() {
+        Some(id) => AiCodec::Id(id),
+        None => AiCodec::Headers(codec.clone()),
+    };
     let extras = MessageExtras {
         ai: Some(AiExtras {
             transport: Some(transport.clone()),
-            codec: Some(codec.clone()),
+            codec: Some(codec_value),
             ..Default::default()
         }),
         ..Default::default()
     };
     let result = extras.validate_ai_headers();
+    let codec_exceeds_bound = match codec_id.as_deref() {
+        Some(id) => id.len() > AI_TRANSPORT_VALUE_MAX_BYTES,
+        None => {
+            codec.len() > AI_TRANSPORT_TIER_LIMIT
+                || codec.iter().any(|(key, value)| {
+                    key.len() > AI_TRANSPORT_KEY_MAX_BYTES
+                        || value.len()
+                            > if key == "providerMetadata" {
+                                AI_CODEC_PROVIDER_METADATA_MAX_BYTES
+                            } else {
+                                AI_TRANSPORT_VALUE_MAX_BYTES
+                            }
+                })
+        }
+    };
     let exceeds_public_bound = transport.len() > AI_TRANSPORT_TIER_LIMIT
-        || codec.len() > AI_TRANSPORT_TIER_LIMIT
         || transport.iter().any(|(key, value)| {
             key.len() > AI_TRANSPORT_KEY_MAX_BYTES || value.len() > AI_TRANSPORT_VALUE_MAX_BYTES
         })
-        || codec.iter().any(|(key, value)| {
-            key.len() > AI_TRANSPORT_KEY_MAX_BYTES
-                || value.len()
-                    > if key == "providerMetadata" {
-                        AI_CODEC_PROVIDER_METADATA_MAX_BYTES
-                    } else {
-                        AI_TRANSPORT_VALUE_MAX_BYTES
-                    }
-        });
+        || codec_exceeds_bound;
     if exceeds_public_bound {
         assert!(
             result.is_err(),

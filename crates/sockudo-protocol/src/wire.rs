@@ -291,8 +291,7 @@ struct ProtoAiExtras {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MsgpackMessageExtras {
-    /// A null header is a native msgpack nil, which every SDK decoder already
-    /// reads as a null or absent value.
+    /// A null header encodes as native msgpack nil, not as a new tagged kind.
     headers: Option<HashMap<String, Option<MsgpackExtrasValue>>>,
     ephemeral: Option<bool>,
     idempotency_key: Option<String>,
@@ -647,8 +646,8 @@ impl From<MsgpackMessageData> for MessageData {
 impl From<MessageExtras> for ProtoMessageExtras {
     fn from(value: MessageExtras) -> Self {
         Self {
-            // Protobuf has no null header value and the SDK protobuf decoders
-            // read an unknown value as an empty string, so null headers are omitted.
+            // Protobuf has no null header value; the key is omitted rather than
+            // mapped to a sentinel.
             headers: value
                 .headers
                 .unwrap_or_default()
@@ -1119,8 +1118,7 @@ mod tests {
 
     #[test]
     fn null_header_is_native_messagepack_nil() {
-        // SDK msgpack decoders read nil as null; a new `kind` tag would reach
-        // them as an opaque array instead.
+        // The null is native msgpack nil, not a new tagged kind.
         let bytes =
             serialize_message(&message_with_null_header(), WireFormat::MessagePack).unwrap();
         let wire: MsgpackPusherMessage = deserialize_msgpack_exact(&bytes).unwrap();

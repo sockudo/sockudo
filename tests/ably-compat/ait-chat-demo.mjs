@@ -1,6 +1,6 @@
-import * as Ably from 'ably';
 import { createTransport } from '@ably/ai-transport';
 import { createVercelCodec } from '@ably/ai-transport/vercel';
+import { createRealtimeClient } from '@ably/pubsub-server';
 import assert from 'node:assert/strict';
 
 const endpoint = process.env.ABLY_ENDPOINT ?? '127.0.0.1';
@@ -52,7 +52,8 @@ function createRealtime(clientIdValue) {
     autoConnect: false,
   };
   if (clientIdValue) options.clientId = clientIdValue;
-  return new Ably.Realtime(options);
+  // `createTransport` accepts a Pub/Sub v3 client, so the harness creates one.
+  return createRealtimeClient(options);
 }
 
 function streamChunks(chunks) {
