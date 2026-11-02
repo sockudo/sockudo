@@ -14,7 +14,7 @@ use sockudo_protocol::messages::{
     AI_EVENT_CANCEL, AI_EVENT_INPUT, AI_EVENT_LEGACY_TURN_END, AI_EVENT_LEGACY_TURN_START,
     AI_EVENT_OUTPUT, AI_EVENT_RUN_END, AI_EVENT_RUN_RESUME, AI_EVENT_RUN_START,
     AI_EVENT_RUN_SUSPEND, AI_TRANSPORT_KEY_MAX_BYTES, AI_TRANSPORT_TIER_LIMIT,
-    AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, MessageData, MessageExtras, PusherMessage,
+    AI_TRANSPORT_VALUE_MAX_BYTES, AiCodec, AiExtras, MessageData, MessageExtras, PusherMessage,
     is_ai_client_publish_event, is_ai_event,
 };
 use sockudo_protocol::versioned_messages::{
@@ -62,10 +62,10 @@ fn ai_extras(headers: &[(&str, &str)]) -> MessageExtras {
                     .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
                     .collect(),
             ),
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "content-type".to_string(),
                 "text/plain".to_string(),
-            )])),
+            )]))),
         }),
         ..Default::default()
     }

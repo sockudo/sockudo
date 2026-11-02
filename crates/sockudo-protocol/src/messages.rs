@@ -1,5 +1,6 @@
 use ahash::AHashMap;
 use serde::de::Error as _;
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sonic_rs::prelude::*;
@@ -159,12 +160,15 @@ pub fn is_ai_agent_publish_event(event: &str) -> bool {
 
 /// Allowed value types for extras.headers.
 /// Flat only — no Object or Array variant so nesting is structurally impossible.
+/// A null header value. Ably admits `null` under `extras.headers` alongside
+/// strings, numbers and booleans.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ExtrasValue {
     String(String),
     Number(f64),
     Bool(bool),
+    Null,
 }
 
 /// Structured metadata envelope for V2-specific message features.
@@ -213,13 +217,97 @@ pub struct MessageExtras {
     pub opaque: BTreeMap<String, serde_json::Value>,
 }
 
+/// The value of `extras.ai.codec`, which two conventions share.
+///
+/// Sockudo AI Transport writes a tier of codec headers as a string-to-string
+/// map (`providerMetadata`, `finishReason`, ...). Ably AI Transport
+/// (AITRFC-032) writes the id of the codec that encoded the message as a
+/// string (`"vercel-ai-sdk-ui-message"`); an Ably decoder skips any message
+/// whose id differs. The server accepts either shape and re-emits the shape
+/// it received.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum AiCodec {
+    /// Ably AI Transport: the id of the codec that encoded the message.
+    Id(String),
+    /// Sockudo AI Transport: the codec header tier.
+    Headers(HashMap<String, String>),
+}
+
+/// A malformed value reports the key and the two accepted shapes, rather than
+/// a variant-matching failure that names neither.
+impl<'de> Deserialize<'de> for AiCodec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(AiCodecVisitor)
+    }
+}
+
+struct AiCodecVisitor;
+
+impl<'de> Visitor<'de> for AiCodecVisitor {
+    type Value = AiCodec;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a codec id string or a string-to-string map")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(AiCodec::Id(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(AiCodec::Id(value))
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut headers = HashMap::with_capacity(map.size_hint().unwrap_or(0));
+        while let Some(key) = map.next_key::<String>()? {
+            let value = map.next_value::<String>().map_err(|_| {
+                serde::de::Error::custom(format!("extras.ai.codec header '{key}' must be a string"))
+            })?;
+            headers.insert(key, value);
+        }
+        Ok(AiCodec::Headers(headers))
+    }
+}
+
+impl AiCodec {
+    #[inline]
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Id(id) => Some(id),
+            Self::Headers(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn headers(&self) -> Option<&HashMap<String, String>> {
+        match self {
+            Self::Headers(headers) => Some(headers),
+            Self::Id(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiExtras {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub codec: Option<HashMap<String, String>>,
+    pub codec: Option<AiCodec>,
 
     /// Opaque codec metadata, including Ably AI Transport's `type`, nested
     /// `fields`, `stream`, and `ends`. Native transport/codec headers remain
@@ -534,9 +622,13 @@ impl MessageExtras {
             .map(AiTransportHeaders::new)
     }
 
+    /// Returns the Sockudo codec header tier; `None` for an Ably codec id.
     #[inline]
     pub fn ai_codec_headers(&self) -> Option<&HashMap<String, String>> {
-        self.ai.as_ref().and_then(|ai| ai.codec.as_ref())
+        self.ai
+            .as_ref()
+            .and_then(|ai| ai.codec.as_ref())
+            .and_then(AiCodec::headers)
     }
 
     pub fn validate_ai_headers(&self) -> Result<(), AiHeaderValidationError> {
@@ -569,8 +661,10 @@ impl MessageExtras {
             }
         }
 
-        if let Some(codec) = ai.codec.as_ref() {
-            validate_ai_codec_tier(codec)?;
+        match ai.codec.as_ref() {
+            Some(AiCodec::Headers(codec)) => validate_ai_codec_tier(codec)?,
+            Some(AiCodec::Id(id)) => validate_ai_codec_id(id)?,
+            None => {}
         }
 
         Ok(())
@@ -665,6 +759,17 @@ fn validate_ai_codec_tier(codec: &HashMap<String, String>) -> Result<(), AiHeade
         }
     }
 
+    Ok(())
+}
+
+/// An Ably AI Transport codec id is opaque: its charset and its empty value
+/// belong to Ably, so only the length is bounded.
+fn validate_ai_codec_id(id: &str) -> Result<(), AiHeaderValidationError> {
+    if id.len() > AI_TRANSPORT_VALUE_MAX_BYTES {
+        return Err(AiHeaderValidationError::too_large(format!(
+            "extras.ai.codec exceeds {AI_TRANSPORT_VALUE_MAX_BYTES} bytes"
+        )));
+    }
     Ok(())
 }
 
@@ -1604,7 +1709,7 @@ impl PusherMessage {
             .and_then(MessageExtras::ai_transport_headers)
     }
 
-    /// Returns the AI codec header tier, if present.
+    /// Returns the Sockudo codec header tier; `None` for an Ably codec id.
     pub fn ai_codec_headers(&self) -> Option<&HashMap<String, String>> {
         self.extras
             .as_ref()

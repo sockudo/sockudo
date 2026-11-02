@@ -6,7 +6,7 @@ use sockudo_protocol::messages::{
     AI_HEADER_RUN_CLIENT_ID, AI_HEADER_RUN_CONTINUE, AI_HEADER_RUN_ID,
     AI_HEADER_STEER_CODEC_MESSAGE_IDS, AI_HEADER_STEER_CODEC_MESSAGE_IDS_MAX_BYTES,
     AI_HEADER_STEP_CLIENT_ID, AI_HEADER_STEP_START_SERIAL, AI_HEADER_SUPERSEDES,
-    AI_TRANSPORT_VALUE_MAX_BYTES, AiExtras, AiHeaderLimits, ExtrasValue, MessageData,
+    AI_TRANSPORT_VALUE_MAX_BYTES, AiCodec, AiExtras, AiHeaderLimits, ExtrasValue, MessageData,
     MessageExtras, PusherMessage, is_ai_event,
 };
 use sonic_rs::prelude::*;
@@ -139,10 +139,10 @@ fn test_ai_transport_headers_are_borrowed_views() {
         ai: Some(AiExtras {
             opaque: Default::default(),
             transport: Some(transport),
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "encoding".to_string(),
                 "json".to_string(),
-            )])),
+            )]))),
         }),
         ..Default::default()
     };
@@ -217,12 +217,12 @@ fn test_ai_codec_headers_accept_ably_camel_case_keys() {
                 AI_HEADER_RUN_ID.to_string(),
                 "run-1".to_string(),
             )])),
-            codec: Some(HashMap::from([
+            codec: Some(AiCodec::Headers(HashMap::from([
                 ("messageId".to_string(), "msg-1".to_string()),
                 ("finishReason".to_string(), "stop".to_string()),
                 ("providerMetadata".to_string(), "{}".to_string()),
                 ("toolCallId".to_string(), "tool-1".to_string()),
-            ])),
+            ]))),
         }),
         ..Default::default()
     };
@@ -245,10 +245,10 @@ fn test_ai_codec_provider_metadata_accepts_ably_sized_payloads() {
                 AI_HEADER_RUN_ID.to_string(),
                 "run-1".to_string(),
             )])),
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "providerMetadata".to_string(),
                 provider_metadata,
-            )])),
+            )]))),
         }),
         ..Default::default()
     };
@@ -262,10 +262,10 @@ fn test_ai_codec_provider_metadata_remains_bounded() {
         ai: Some(AiExtras {
             opaque: Default::default(),
             transport: None,
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "providerMetadata".to_string(),
                 "x".repeat(AI_CODEC_PROVIDER_METADATA_MAX_BYTES + 1),
-            )])),
+            )]))),
         }),
         ..Default::default()
     };
@@ -285,10 +285,10 @@ fn test_ai_codec_other_values_stay_small() {
         ai: Some(AiExtras {
             opaque: Default::default(),
             transport: None,
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "finishReason".to_string(),
                 "x".repeat(AI_TRANSPORT_VALUE_MAX_BYTES + 1),
-            )])),
+            )]))),
         }),
         ..Default::default()
     };
@@ -305,10 +305,10 @@ fn test_ai_codec_headers_reject_unsafe_keys() {
         ai: Some(AiExtras {
             opaque: Default::default(),
             transport: None,
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "message.id".to_string(),
                 "msg-1".to_string(),
-            )])),
+            )]))),
         }),
         ..Default::default()
     };

@@ -29,7 +29,7 @@ use sockudo_core::versioned_messages::{
 };
 use sockudo_core::websocket::{ConnectionCapabilities, SocketId, UserInfo, WebSocketBufferConfig};
 use sockudo_protocol::messages::{
-    AiExtras, ApiMessageData, MessageData, MessageExtras, PusherApiMessage, PusherMessage,
+    AiCodec, AiExtras, ApiMessageData, MessageData, MessageExtras, PusherApiMessage, PusherMessage,
 };
 use sockudo_protocol::{ProtocolVersion, WireFormat};
 #[cfg(feature = "push")]
@@ -414,10 +414,10 @@ pub(crate) fn ai_extras(status: &str) -> MessageExtras {
         ai: Some(AiExtras {
             opaque: Default::default(),
             transport: Some(HashMap::from([("status".to_string(), status.to_string())])),
-            codec: Some(HashMap::from([(
+            codec: Some(AiCodec::Headers(HashMap::from([(
                 "content-type".to_string(),
                 "text/plain".to_string(),
-            )])),
+            )]))),
         }),
         ..Default::default()
     }

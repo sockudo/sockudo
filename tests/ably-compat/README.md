@@ -2,9 +2,10 @@
 
 This harness points the unmodified Ably JavaScript SDKs, and one stock
 `@ably/ai-transport` smoke demo, at a local Sockudo server. Ably publishes two
-SDK lines: the `ably` package, which `@ably/ai-transport` still peers on, and
-the 3.x `@ably/pubsub-device` and `@ably/pubsub-server` packages. Both are
-covered.
+SDK lines: the 2.x `ably` package and the 3.x `@ably/pubsub-device` and
+`@ably/pubsub-server` packages. Both are covered; `@ably/ai-transport` 0.11
+peers on the 3.x packages, so the AI Transport demo builds its clients with
+`createRealtimeClient` from `@ably/pubsub-server`.
 
 Required local service:
 
@@ -113,8 +114,9 @@ methods that the Ably AI Transport encoder calls: `appendMessage`,
 `updateMessage`, `deleteMessage`, `getMessage`, `getMessageVersions`, and
 `history`.
 
-The stock AI Transport chat demo uses `@ably/ai-transport@0.10.0` and the
-`@ably/ai-transport/vercel` codec against Sockudo. A client and an agent each
+The stock AI Transport chat demo uses `@ably/ai-transport@0.11.0` and the
+`@ably/ai-transport/vercel` codec against Sockudo, over Pub/Sub 3.x clients
+from `@ably/pubsub-server`. A client and an agent each
 create a transport on one channel. The client sends a Vercel-style user message,
 the agent receives it and pipes text chunks back, and the client asserts that it
 received the whole reply.

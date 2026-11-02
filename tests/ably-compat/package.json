@@ -17,7 +17,7 @@
     "demo:recovery-history": "node ait-recovery.mjs"
   },
   "dependencies": {
-    "@ably/ai-transport": "0.10.0",
+    "@ably/ai-transport": "0.11.0",
     "@ably/pubsub-device": "3.0.0",
     "@ably/pubsub-server": "3.0.0",
     "ably": "2.30.0",
