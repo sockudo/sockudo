@@ -7,7 +7,7 @@ use sockudo_core::{
     app::AppPolicy, options::MemoryCacheOptions, versioned_messages::MessageAction,
 };
 use sockudo_protocol::messages::AiHeaderLimits;
-use sockudo_protocol::messages::{AiCodec, AiExtras, MessageExtras};
+use sockudo_protocol::messages::{AiCodec, AiExtras, ExtrasValue, MessageExtras};
 use sockudo_protocol::versioned_messages::apply_runtime_metadata;
 use sockudo_ws::{
     Config as WsConfig, Http1, Stream as WsStream, WebSocketStream, axum_integration::WebSocket,
@@ -225,6 +225,31 @@ fn publish_rejects_ai_codec_that_is_neither_id_nor_headers() {
         ..AblyMessage::default()
     };
     assert!(validate_ably_publish_message(&oversized, false, AiHeaderLimits::default()).is_err());
+}
+
+#[test]
+fn publish_preserves_null_header_values() {
+    // Ably admits string, number, boolean and null under extras.headers, and
+    // Ably AI Transport forwards a caller's null header unchanged.
+    let extras = json!({
+        "headers": { "trace": null, "tenant": "acme", "retry": false }
+    });
+    let message = AblyMessage {
+        extras: Some(extras.clone()),
+        ..AblyMessage::default()
+    };
+    validate_ably_publish_message(&message, false, AiHeaderLimits::default()).unwrap();
+    let decoded = ably_extras_to_message_extras(message.extras)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        decoded
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("trace")),
+        Some(&ExtrasValue::Null)
+    );
+    assert_eq!(ably_extras_from_message_extras(&decoded), Some(extras));
 }
 
 #[test]

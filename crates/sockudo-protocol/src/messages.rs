@@ -159,12 +159,14 @@ pub fn is_ai_agent_publish_event(event: &str) -> bool {
 
 /// Allowed value types for extras.headers.
 /// Flat only — no Object or Array variant so nesting is structurally impossible.
+/// `Null` matches Ably, which admits string, number, boolean and null headers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ExtrasValue {
     String(String),
     Number(f64),
     Bool(bool),
+    Null,
 }
 
 /// Structured metadata envelope for V2-specific message features.

@@ -475,7 +475,7 @@ AIT-S17 [EXISTS-VERIFY] `message_*_own` requires matching verified actor/origina
 AIT-S18 [EXISTS-VERIFY] `message_*_any` permits authorized any-actor mutation.
 AIT-S19 [EXISTS-VERIFY] V1 deliveries strip extras, tags, serial, stream_id, and message_id.
 AIT-S20 [EXISTS-VERIFY] V2 deliveries clear top-level `idempotency_key`.
-AIT-S21 [EXISTS-VERIFY] `extras.headers` rejects nested objects and arrays.
+AIT-S21 [EXISTS-VERIFY] `extras.headers` rejects nested objects and arrays; values are string, number, boolean, or `null` (JSON and MessagePack relay `null`, Protobuf omits the key).
 AIT-S22 [EXISTS-VERIFY] HTTP publish body `idempotency_key` wins over header key.
 AIT-S23 [EXISTS-VERIFY] Single publish idempotency caches the final response.
 AIT-S24 [EXISTS-VERIFY] Batch per-event idempotency skips duplicate event keys.

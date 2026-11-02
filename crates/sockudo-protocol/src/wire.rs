@@ -291,7 +291,9 @@ struct ProtoAiExtras {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MsgpackMessageExtras {
-    headers: Option<HashMap<String, MsgpackExtrasValue>>,
+    /// A null header is a native msgpack nil, which every SDK decoder already
+    /// reads as a null or absent value.
+    headers: Option<HashMap<String, Option<MsgpackExtrasValue>>>,
     ephemeral: Option<bool>,
     idempotency_key: Option<String>,
     echo: Option<bool>,
@@ -645,11 +647,13 @@ impl From<MsgpackMessageData> for MessageData {
 impl From<MessageExtras> for ProtoMessageExtras {
     fn from(value: MessageExtras) -> Self {
         Self {
+            // Protobuf has no null header value and the SDK protobuf decoders
+            // read an unknown value as an empty string, so null headers are omitted.
             headers: value
                 .headers
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(k, v)| (k, v.into()))
+                .filter_map(|(k, v)| ProtoExtrasValue::from_extras(v).map(|v| (k, v)))
                 .collect(),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
@@ -662,9 +666,12 @@ impl From<MessageExtras> for ProtoMessageExtras {
 impl From<MessageExtras> for MsgpackMessageExtras {
     fn from(value: MessageExtras) -> Self {
         Self {
-            headers: value
-                .headers
-                .map(|headers| headers.into_iter().map(|(k, v)| (k, v.into())).collect()),
+            headers: value.headers.map(|headers| {
+                headers
+                    .into_iter()
+                    .map(|(k, v)| (k, MsgpackExtrasValue::from_extras(v)))
+                    .collect()
+            }),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             echo: value.echo,
@@ -728,9 +735,12 @@ impl TryFrom<ProtoMessageExtras> for MessageExtras {
 impl From<MsgpackMessageExtras> for MessageExtras {
     fn from(value: MsgpackMessageExtras) -> Self {
         Self {
-            headers: value
-                .headers
-                .map(|headers| headers.into_iter().map(|(k, v)| (k, v.into())).collect()),
+            headers: value.headers.map(|headers| {
+                headers
+                    .into_iter()
+                    .map(|(k, v)| (k, v.map_or(ExtrasValue::Null, Into::into)))
+                    .collect()
+            }),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             push: None,
@@ -782,23 +792,25 @@ impl From<MsgpackAiExtras> for AiExtras {
     }
 }
 
-impl From<ExtrasValue> for ProtoExtrasValue {
-    fn from(value: ExtrasValue) -> Self {
+impl ProtoExtrasValue {
+    fn from_extras(value: ExtrasValue) -> Option<Self> {
         let kind = match value {
-            ExtrasValue::String(s) => Some(proto_extras_value::Kind::String(s)),
-            ExtrasValue::Number(n) => Some(proto_extras_value::Kind::Number(n)),
-            ExtrasValue::Bool(b) => Some(proto_extras_value::Kind::Bool(b)),
+            ExtrasValue::String(s) => proto_extras_value::Kind::String(s),
+            ExtrasValue::Number(n) => proto_extras_value::Kind::Number(n),
+            ExtrasValue::Bool(b) => proto_extras_value::Kind::Bool(b),
+            ExtrasValue::Null => return None,
         };
-        Self { kind }
+        Some(Self { kind: Some(kind) })
     }
 }
 
-impl From<ExtrasValue> for MsgpackExtrasValue {
-    fn from(value: ExtrasValue) -> Self {
+impl MsgpackExtrasValue {
+    fn from_extras(value: ExtrasValue) -> Option<Self> {
         match value {
-            ExtrasValue::String(s) => Self::String(s),
-            ExtrasValue::Number(n) => Self::Number(n),
-            ExtrasValue::Bool(b) => Self::Bool(b),
+            ExtrasValue::String(s) => Some(Self::String(s)),
+            ExtrasValue::Number(n) => Some(Self::Number(n)),
+            ExtrasValue::Bool(b) => Some(Self::Bool(b)),
+            ExtrasValue::Null => None,
         }
     }
 }
@@ -927,6 +939,7 @@ mod tests {
                         ExtrasValue::String("high".to_string()),
                     ),
                     ("ttl".to_string(), ExtrasValue::Number(5.0)),
+                    ("urgent".to_string(), ExtrasValue::Bool(true)),
                 ])),
                 ephemeral: Some(true),
                 idempotency_key: Some("extra-idem".to_string()),
@@ -1085,6 +1098,46 @@ mod tests {
         let bytes = serialize_message(&msg, WireFormat::Protobuf).unwrap();
         let decoded = deserialize_message(&bytes, WireFormat::Protobuf).unwrap();
         assert_eq!(decoded.data, msg.data);
+    }
+
+    fn message_with_null_header() -> PusherMessage {
+        let mut msg = sample_message();
+        let headers = msg.extras.as_mut().unwrap().headers.as_mut().unwrap();
+        headers.insert("trace".to_string(), ExtrasValue::Null);
+        msg
+    }
+
+    #[test]
+    fn null_header_round_trips_in_json_and_messagepack() {
+        let msg = message_with_null_header();
+        for format in [WireFormat::Json, WireFormat::MessagePack] {
+            let bytes = serialize_message(&msg, format).unwrap();
+            let decoded = deserialize_message(&bytes, format).unwrap();
+            assert_eq!(decoded.extras, msg.extras, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn null_header_is_native_messagepack_nil() {
+        // SDK msgpack decoders read nil as null; a new `kind` tag would reach
+        // them as an opaque array instead.
+        let bytes =
+            serialize_message(&message_with_null_header(), WireFormat::MessagePack).unwrap();
+        let wire: MsgpackPusherMessage = deserialize_msgpack_exact(&bytes).unwrap();
+        let headers = wire.extras.unwrap().headers.unwrap();
+        assert_eq!(headers.get("trace"), Some(&None));
+        assert!(headers.get("urgent").unwrap().is_some());
+    }
+
+    #[test]
+    fn protobuf_omits_null_header_and_keeps_the_rest() {
+        let msg = message_with_null_header();
+        let bytes = serialize_message(&msg, WireFormat::Protobuf).unwrap();
+        let decoded = deserialize_message(&bytes, WireFormat::Protobuf).unwrap();
+        let headers = decoded.extras.unwrap().headers.unwrap();
+        assert!(!headers.contains_key("trace"));
+        assert_eq!(headers.get("urgent"), Some(&ExtrasValue::Bool(true)));
+        assert_eq!(headers.len(), 3);
     }
 
     #[test]

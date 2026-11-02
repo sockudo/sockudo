@@ -109,12 +109,17 @@ client ID, originating connection ID, and server publish timestamp. Live
 delivery, durable history, rewind, recovery, message reads, and mutation
 projections all read those same commit-time facts.
 
-The facade also preserves AI Transport 0.9 codec metadata under `extras.ai`,
+The facade also preserves AI Transport codec metadata under `extras.ai`,
 including `type`, nested `fields`, `stream`, and `ends`. These values are opaque
 to Sockudo; native `transport` and `codec` headers retain their existing
-validation. `extras.ephemeral` accepts a boolean and is returned on live
-deliveries. With ephemeral handling enabled, ephemeral messages bypass durable
-history, replay storage, and webhooks through the native publish pipeline.
+validation. `extras.ai.codec` may also be the string codec id that AI Transport
+1.0 stamps on every message; it is relayed verbatim so Ably decoders can match
+it. `extras.headers` accepts string, number, boolean, and `null` values, as Ably
+does; `null` is returned as `null` on JSON and MessagePack deliveries and is
+omitted from Protobuf deliveries, which have no null header value.
+`extras.ephemeral` accepts a boolean and is returned on live deliveries. With
+ephemeral handling enabled, ephemeral messages bypass durable history, replay
+storage, and webhooks through the native publish pipeline.
 
 Live append delivery selects one projection per attachment: subscribers with a
 known message base receive the append fragment; new subscribers receive a full
