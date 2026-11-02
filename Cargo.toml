@@ -117,7 +117,7 @@ lapin = { version = "4.3.0", default-features = false, features = ["rustls", "to
 omq-tokio = "0.31.0"
 num_cpus = "1.17.0"
 oxidelta = "0.1.4"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 papaya = "0.2.4"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
