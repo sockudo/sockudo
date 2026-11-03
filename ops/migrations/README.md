@@ -6,19 +6,19 @@ backends used by Sockudo.
 How to use it:
 
 - Fresh MySQL/MariaDB database: use
-  [mysql/001_fresh_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/001_fresh_schema.sql)
+  [mysql/001_fresh_schema.sql](mysql/001_fresh_schema.sql)
 - Fresh PostgreSQL database: use
-  [postgresql/001_fresh_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgresql/001_fresh_schema.sql)
+  [postgresql/001_fresh_schema.sql](postgresql/001_fresh_schema.sql)
 - Push PostgreSQL schema: use
-  [postgres/001_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgres/001_push_schema.sql)
+  [postgres/001_push_schema.sql](postgres/001_push_schema.sql)
 - Push MySQL schema: use
-  [mysql/003_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/003_push_schema.sql)
+  [mysql/003_push_schema.sql](mysql/003_push_schema.sql)
 - Existing push PostgreSQL schema version 1: apply
-  [postgres/002_push_status_revision.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgres/002_push_status_revision.sql)
+  [postgres/002_push_status_revision.sql](postgres/002_push_status_revision.sql)
 - Existing push MySQL/MariaDB schema version 1: apply
-  [mysql/004_push_status_revision.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/004_push_status_revision.sql)
+  [mysql/004_push_status_revision.sql](mysql/004_push_status_revision.sql)
 - Test-only MySQL grants/user setup: use
-  [mysql/002_test_access.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/002_test_access.sql)
+  [mysql/002_test_access.sql](mysql/002_test_access.sql)
 
 Backend notes:
 
