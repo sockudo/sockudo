@@ -40,7 +40,7 @@ host = "0.0.0.0"
 debug = false
 
 [app_manager]
-driver = "postgres"
+driver = "pgsql"
 
 [adapter]
 driver = "redis"
@@ -70,8 +70,7 @@ The app manager stores app credentials and app-level policy. Memory is useful fo
 | Driver | Use when |
 | --- | --- |
 | `memory` | Credentials are static and local to one process. |
-| `postgres` or `mysql` | You need relational app records and standard operational tooling. |
-| `redis` | You need lightweight shared app state. |
+| `pgsql` or `mysql` | You need relational app records and standard operational tooling. |
 | `dynamodb` | You run on AWS and want managed key-value storage. |
 | `scylladb` | You need wide-column scale. |
 | `surrealdb` | You use SurrealDB 3 for app metadata. |
@@ -149,15 +148,15 @@ ADAPTER_FAST_PRESENCE_TRANSITIONS=true
 ## Recovery and history
 
 ```toml
-[recovery]
+[connection_recovery]
 enabled = true
-buffer_size = 1000
-ttl_seconds = 120
+buffer_ttl_seconds = 120
+max_buffer_size = 1000
 
 [history]
 enabled = true
-retention_seconds = 86400
-max_items_per_channel = 10000
+retention_window_seconds = 86400
+max_messages_per_channel = 10000
 ```
 
 Recovery buffers are for reconnect continuity. Durable history is for API reads, rewind, versioned messages, and operational inspection. Keep those concerns separate.
