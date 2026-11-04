@@ -534,3 +534,159 @@ async fn test_dead_nodes_expire_locally_when_node_dead_publish_hangs() {
         "node_count must converge to 1 (ourselves) with no reachable peers"
     );
 }
+
+/// A follower must still clean up a dead node when the leader elected for it dies before
+/// broadcasting NodeDead.
+///
+/// REGRESSION. Followers expire dead nodes from heartbeat tracking up front and then wait for the
+/// leader's broadcast. When that leader was itself already dead (killed but not yet timed out),
+/// no broadcast came, and once the leader timed out the next round only covered the leader: the
+/// first dead node was gone from tracking, so its presence members stayed in the registry for
+/// good. Seen in the distributed-correctness chaos run as `presence_ghosts_after_cleanup` after a
+/// rolling SIGKILL of one node followed by a partition and SIGKILL of its replacement.
+#[tokio::test]
+async fn test_follower_takes_over_cleanup_when_elected_leader_dies() {
+    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(MockConfig::default())
+        .await
+        .unwrap();
+    let event_receiver = adapter
+        .configure_dead_node_events()
+        .expect("dead node events");
+
+    // See test_dead_nodes_expire_locally_when_node_dead_publish_hangs for why these values.
+    let cluster_config = ClusterHealthConfig {
+        enabled: true,
+        heartbeat_interval_ms: 100,
+        node_timeout_ms: 300,
+        cleanup_interval_ms: 100,
+    };
+    adapter.set_cluster_health(&cluster_config).await.unwrap();
+
+    let dead_node = "zzz-dead-node".to_string();
+    // '-' sorts before every hex digit, so this wins the election against our UUID node id.
+    let dying_leader = "0-dying-leader".to_string();
+    assert!(dying_leader < adapter.node_id);
+    {
+        let horizontal = adapter.horizontal.clone();
+        horizontal
+            .add_presence_entry(
+                &dead_node,
+                "presence-room",
+                "socket-ghost",
+                "ghost-user",
+                "test-app",
+                None,
+            )
+            .await;
+        let now = std::time::Instant::now();
+        let mut heartbeats = horizontal.node_heartbeats.write().await;
+        // Already timed out: expired in the first round, while the dying leader still looks
+        // alive and wins the election.
+        heartbeats.insert(dead_node.clone(), now - Duration::from_secs(1));
+        // Times out a few rounds later without ever broadcasting NodeDead.
+        heartbeats.insert(dying_leader.clone(), now);
+    }
+
+    adapter.start_listeners().await.unwrap();
+
+    let mut cleaned = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while !cleaned.contains(&dead_node) {
+        let Ok(Ok(event)) = tokio::time::timeout_at(deadline, event_receiver.recv()).await else {
+            break;
+        };
+        let event: DeadNodeEvent = event;
+        if event.dead_node_id == dead_node {
+            assert_eq!(event.orphaned_members.len(), 1);
+            assert_eq!(event.orphaned_members[0].user_id, "ghost-user");
+        }
+        cleaned.push(event.dead_node_id);
+    }
+    assert!(
+        cleaned.contains(&dead_node),
+        "presence of a dead node whose elected leader died must still be cleaned up; \
+         cleanup events seen for: {cleaned:?}"
+    );
+
+    let horizontal = adapter.horizontal.clone();
+    assert!(
+        !horizontal
+            .cluster_presence_registry
+            .read()
+            .await
+            .contains_key(&dead_node),
+        "dead node presence must be removed from the registry"
+    );
+    assert!(
+        horizontal
+            .dead_nodes_awaiting_cleanup
+            .read()
+            .await
+            .is_empty(),
+        "nothing should be left awaiting cleanup once this node led the round"
+    );
+}
+
+/// A follower stops waiting on a dead node once the leader's NodeDead broadcast arrives, or once
+/// the node is heard from again.
+#[tokio::test]
+async fn test_dead_nodes_awaiting_cleanup_cleared_by_node_dead_and_heartbeat() {
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(MockConfig::default())
+        .await
+        .unwrap();
+    let horizontal = adapter.horizontal.clone();
+
+    let request = |request_type: RequestType, node_id: &str, dead_node_id: Option<&str>| {
+        sockudo_adapter::horizontal_adapter::RequestBody {
+            request_id: format!("req-{node_id}"),
+            node_id: node_id.to_string(),
+            app_id: "cluster".to_string(),
+            request_type,
+            channel: None,
+            socket_id: None,
+            user_id: None,
+            user_info: None,
+            timestamp: Some(1234567890),
+            dead_node_id: dead_node_id.map(str::to_string),
+            target_node_id: None,
+            reply_to: None,
+            trace_context: Default::default(),
+            channels: None,
+        }
+    };
+
+    horizontal
+        .record_dead_node_round(
+            &["cleaned-by-leader".to_string(), "came-back".to_string()],
+            false,
+        )
+        .await;
+    assert_eq!(
+        horizontal
+            .with_dead_nodes_awaiting_cleanup(vec!["fresh".to_string()])
+            .await
+            .len(),
+        3
+    );
+
+    horizontal
+        .process_request(request(
+            RequestType::NodeDead,
+            "leader-node",
+            Some("cleaned-by-leader"),
+        ))
+        .await
+        .unwrap();
+    horizontal
+        .process_request(request(RequestType::Heartbeat, "came-back", None))
+        .await
+        .unwrap();
+
+    assert!(
+        horizontal
+            .dead_nodes_awaiting_cleanup
+            .read()
+            .await
+            .is_empty()
+    );
+}
