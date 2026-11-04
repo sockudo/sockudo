@@ -40,7 +40,7 @@ host = "0.0.0.0"
 debug = false
 
 [app_manager]
-driver = "postgres"
+driver = "pgsql"
 
 [adapter]
 driver = "redis"
@@ -70,8 +70,7 @@ The app manager stores app credentials and app-level policy. Memory is useful fo
 | Driver | Use when |
 | --- | --- |
 | `memory` | Credentials are static and local to one process. |
-| `postgres` or `mysql` | You need relational app records and standard operational tooling. |
-| `redis` | You need lightweight shared app state. |
+| `pgsql` or `mysql` | You need relational app records and standard operational tooling. |
 | `dynamodb` | You run on AWS and want managed key-value storage. |
 | `scylladb` | You need wide-column scale. |
 | `surrealdb` | You use SurrealDB 4 for app metadata. |

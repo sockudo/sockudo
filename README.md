@@ -516,7 +516,7 @@ SDK checks are covered by `SDK CI` and are also package-local when iterating. St
 | Profile | Adapter | Cache | Queue | App store | Typical use |
 | --- | --- | --- | --- | --- | --- |
 | Local development | `local` | `memory` | `memory` | `memory` | Fast single-node iteration |
-| Small production | `redis` | `redis` | `redis` | `postgres` or `mysql` | Simple shared state |
+| Small production | `redis` | `redis` | `redis` | `pgsql` or `mysql` | Simple shared state |
 | High traffic | `redis-cluster` | `redis-cluster` | external queue | SQL or DynamoDB | Larger fanout and retention |
 | AI Transport | horizontal adapter | shared cache | shared queue | shared history and version store | Streaming recovery and rollup |
 
