@@ -144,6 +144,22 @@ a dependency/readiness check and does not fail because of memory pressure. Use
 `sockudo_memory_pressure_shedding` and `sockudo_memory_pressure_rejections_total` to alert on the
 current state and rejected connection count.
 
+## WebSocket receive buffer
+
+Each WebSocket connection allocates a receive buffer when it opens and keeps it while idle:
+
+```toml
+[websocket]
+read_buffer_size = 2048 # bytes, minimum 1024
+```
+
+Client frames are small (pings, subscribes, resumes), so the 2 KiB default fits nearly all of them.
+A larger frame grows the buffer for that frame, and the buffer shrinks back once the connection is
+quiet again. With 2,000 idle Protocol V2 connections, the previous fixed 64 KiB buffer used about
+70 KiB more RSS per connection than the 2 KiB default. Raise it (for example to `16384` or `65536`)
+when clients regularly send large frames, such as large client events. `WEBSOCKET_READ_BUFFER_SIZE`
+overrides it.
+
 ## App manager
 
 The app manager stores app credentials, limits, and policy. The default `memory` driver reads
