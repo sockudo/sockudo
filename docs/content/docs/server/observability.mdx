@@ -81,7 +81,7 @@ The TCP exporter has bounded buffering by default. When buffers fill, event samp
 | `sockudo_connection_errors_total` | counter | `error_type` | Failed connections, for example `origin_not_allowed`. |
 | `sockudo_memory_pressure_rejections_total` | counter | `port` only | New sockets refused by memory-pressure admission. |
 | `sockudo_memory_pressure_shedding` | gauge | none | `1` while the node is shedding new connections. |
-| `sockudo_ws_messages_received_total`, `sockudo_ws_messages_sent_total` | counter | | WebSocket frames in and out. |
+| `sockudo_ws_messages_received_total`, `sockudo_ws_messages_sent_total` | counter | `app_id`, `port` | Messages received from connections, and application messages addressed to connections. Outbound control frames are counted separately in `sockudo_ws_control_frames_total`; see [WebSocket delivery metrics](#websocket-delivery-metrics). |
 | `sockudo_socket_received_bytes`, `sockudo_socket_transmitted_bytes` | counter | | WebSocket bandwidth. |
 | `sockudo_http_calls_received_total` | counter | | REST API calls, including publishes. |
 | `sockudo_http_received_bytes`, `sockudo_http_transmitted_bytes` | counter | | REST API bandwidth. |
