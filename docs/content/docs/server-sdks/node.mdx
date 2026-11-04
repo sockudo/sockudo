@@ -1,140 +1,367 @@
 ---
 title: Node.js
-description: Publish events, sign auth responses, validate webhooks, read state, and manage push with the Node.js server SDK.
+description: Publish events, sign channel and user auth, validate webhooks, read history, mutate versioned messages, and manage push from Node.js with the sockudo package.
 icon: FileCode
 ---
 
+`sockudo` is the trusted backend library for calling the Sockudo HTTP API from Node.js 16+. It runs
+inside your API servers, workers, and serverless functions, signs every request with your app
+secret, and ships TypeScript declarations. It does not hold a WebSocket subscription; use
+[`@sockudo/client`](/docs/clients/javascript) to receive events.
+
+- Signed HTTP publishing to one channel, up to 100 channels, or a batch of events
+- Automatic and explicit idempotency keys, with built-in retries for 5xx and network failures
+- Private, presence, encrypted-channel, and user (signin) authentication signing
+- Webhook signature validation, including key rotation
+- Channel state through signed `get` requests, durable history, and presence history
+- Versioned messages (get, versions, update, delete, append) and annotations (publish, list, delete)
+- Push device registration, channel subscriptions, publish, scheduling, publish status, and Apple
+  Live Activities
+- Terminate or force-reconnect every connection of a user
+
 ## Install
 
-Install the published package from npm:
-
-```bash
+```bash title="Terminal"
 npm install sockudo
-# or: bun add sockudo
 # or: pnpm add sockudo
 # or: yarn add sockudo
+# or: bun add sockudo
 ```
 
-## Configure
+The package supports Node.js 16 and newer and bundles its type definitions; no separate `@types`
+package is needed. Version 2.2.0 is the current release.
 
-```ts
-import { Sockudo } from "sockudo";
+Contributors working inside the Sockudo monorepo can build the SDK from its package directory:
 
-const sockudo = new Sockudo({
-  appId: "app-id",
-  key: "app-key",
-  secret: "app-secret",
-  host: "127.0.0.1",
-  port: 6001,
-  useTLS: false,
+```bash title="Terminal"
+cd server-sdks/sockudo-http-node
+npm install
+npm run build
+```
+
+The module exports the `Sockudo` class itself (`module.exports = Sockudo`), not a named export:
+
+```ts title="import.ts"
+// ESM, or TypeScript with esModuleInterop
+import Sockudo from "sockudo";
+
+// CommonJS
+// const Sockudo = require("sockudo");
+```
+
+## Configure the client
+
+```ts title="src/sockudo.ts"
+import Sockudo from "sockudo";
+import { Agent } from "node:https";
+
+export const sockudo = new Sockudo({
+  appId: process.env.SOCKUDO_APP_ID!,
+  key: process.env.SOCKUDO_KEY!,
+  secret: process.env.SOCKUDO_SECRET!,
+  host: process.env.SOCKUDO_HOST ?? "127.0.0.1",
+  port: process.env.SOCKUDO_PORT ?? "6001",
+  useTLS: process.env.SOCKUDO_USE_TLS === "true",
+  timeout: 5_000,
+  agent: new Agent({ keepAlive: true }),
+  // Required only for private-encrypted-* channels.
+  encryptionMasterKeyBase64: process.env.SOCKUDO_ENCRYPTION_MASTER_KEY,
 });
 ```
 
-The package supports Node.js 16+ and ships TypeScript declarations. Create one
-instance at application startup and reuse it so HTTP connections can be pooled.
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `appId` | `string` | required | Sockudo app ID; used in every `/apps/{appId}/...` path. |
+| `key` | `string` | required | App key, sent as `auth_key` and used as the prefix of auth signatures. |
+| `secret` | `string` | required | App secret used for HMAC-SHA256 signing. Never send it to a client. |
+| `host` | `string` | `"localhost"` | HTTP API host without a scheme. |
+| `port` | `string` | scheme default | HTTP API port. When omitted, the URL has no port, so `80` or `443` applies. |
+| `useTLS` | `boolean` | `false` | Use `https`. Enable it whenever traffic leaves a trusted network. |
+| `timeout` | `number` | none | Per-request timeout in milliseconds. Without it, requests wait for the socket. |
+| `agent` | `http.Agent` | Node default | Custom agent for keep-alive pools, proxies, or TLS settings. |
+| `encryptionMasterKeyBase64` | `string` | none | Base64 key that must decode to exactly 32 bytes; validated in the constructor. |
+| `autoIdempotencyKey` | `boolean` | `true` | Attach a generated key to every `trigger` and batch item that has none. |
+| `maxRetries` | `number` | `3` | Total attempts for `trigger` and `triggerBatch`, including the first. |
 
-| Option | Meaning | Typical production value |
-| --- | --- | --- |
-| `host` | HTTP API host without a scheme | Internal service DNS or API hostname |
-| `port` | HTTP API port | Service port or `443` |
-| `useTLS` | Use HTTPS | `true` outside a trusted local network |
-| `timeout` | Request timeout in milliseconds | Lower than the route or job deadline |
-| `agent` | Custom Node HTTP(S) agent | Keep-alive, proxy, and pool settings |
+`encrypted` is a deprecated alias for `useTLS`; setting both throws. `encryptionMasterKey` (a raw
+32-character string) is deprecated in favour of `encryptionMasterKeyBase64`.
 
-You can also parse a connection URL:
+<Callout type="note" title="Type declarations lag the runtime">
+`maxRetries` is read by the runtime but is missing from the bundled `index.d.ts`, as is
+`channelPresenceSnapshot`. In TypeScript, set `maxRetries` on an options object typed loosely, or
+assign `sockudo.maxRetries` after construction.
+</Callout>
 
-```ts
-const sockudo = Sockudo.forURL(
-  "https://app-key:app-secret@realtime-api.example.com/apps/app-id",
+Build a client from a single connection URL kept in your secret manager:
+
+```ts title="src/sockudo.ts"
+// SOCKUDO_URL=https://app-key:app-secret@realtime-api.example.com/apps/12345
+export const sockudo = Sockudo.forURL(process.env.SOCKUDO_URL!, {
+  timeout: 5_000,
+});
+```
+
+`forURL` takes the scheme, host, port, key, and secret from the URL and parses the last path segment
+as an integer app ID, so use it only with numeric app IDs. Never write the URL to logs; it contains
+the secret.
+
+### Why the secret stays on the server
+
+The app secret signs every HTTP API call and every channel and user authorization. Anyone holding it
+can publish to any channel, read history, register push devices, and impersonate any user on a
+presence channel. Load it from a secret manager or environment variable at startup and keep it out of
+browser bundles, mobile apps, and logs.
+
+<Callout type="tip" title="Create one client per process">
+Construct the client once at startup and import it wherever you need it. Reuse keeps the HTTP
+agent's keep-alive pool warm and keeps the auto-idempotency serial unique within the process.
+</Callout>
+
+## Publish an event
+
+```ts title="src/orders.ts"
+import { sockudo } from "./sockudo";
+
+const response = await sockudo.trigger(
+  "orders",
+  "order.created",
+  { id: "ord_123", total: 4200 },
+  { idempotency_key: "order.created:tenant-42:ord_123:v1" },
 );
+
+console.log(response.status, response.idempotencyKey);
 ```
 
-Keep that URL in a secret manager and never write it to logs.
+`trigger(channels, event, data, params?)` resolves to the `node-fetch` `Response` from the server,
+with an `idempotencyKey` property set to the key that was sent. Non-string `data` is serialized with
+`JSON.stringify`; strings are sent as is. Event names longer than 200 characters and invalid channel
+names throw before any request is made.
 
-## Publish
+`params` accepts:
 
-```ts
-await sockudo.trigger("orders", "order.created", { id: "ord_123" }, {
-  idempotency_key: "order-created-ord_123",
-});
+| Param | Description |
+| --- | --- |
+| `socket_id` | Exclude this connection from delivery. Must look like `123.456`. |
+| `info` | Comma-separated attributes to return, such as `subscription_count` or `user_count`. |
+| `idempotency_key` | Stable key for this logical publish, or `true` for a random UUID. |
 
-await sockudo.triggerBatch([
-  { channel: "orders", name: "order.created", data: { id: "ord_124" } },
-  { channel: "orders", name: "order.paid", data: { id: "ord_124" } },
-]);
-```
+Pass `socket_id` when the sender has already applied the change optimistically. The server delivers
+to every subscriber except that connection, so the originating client does not process its own
+update twice.
 
-Publish the same event to several channels with an array, and exclude an
-originating socket when the sender already updated optimistically:
+## Publish to many channels or in a batch
 
-```ts
+Pass an array to send the same event to several channels in one request:
+
+```ts title="src/orders.ts"
 await sockudo.trigger(
-  ["tenant-42:orders", "user-7:orders"],
+  ["tenant-42-orders", "user-7-orders"],
   "order.updated",
   { id: "ord_124", status: "paid" },
   {
-    socket_id: "123.456",
-    idempotency_key: "order-paid:ord_124:v3",
+    socket_id: req.body.socket_id,
+    idempotency_key: "order.paid:tenant-42:ord_124:v3",
   },
 );
 ```
 
-A multi-channel publish supports up to 100 channels; a batch supports up to 10
-events. Use a stable idempotency key for every publish that a queue worker or
-HTTP handler may retry. Passing `idempotency_key: true` asks the SDK to generate
-a UUID, but a business-derived key is better when separate attempts may run in
-different processes.
+Use `triggerBatch` when several independent events can share one HTTP request:
 
-## Auth
-
-```ts
-app.post("/sockudo/auth", express.urlencoded({ extended: false }), (req, res) => {
-  const { socket_id, channel_name } = req.body;
-  const user = requireUser(req);
-
-  if (channel_name.startsWith("presence-")) {
-    return res.json(sockudo.authorizeChannel(socket_id, channel_name, {
-      user_id: user.id,
-      user_info: { name: user.name },
-    }));
-  }
-
-  res.json(sockudo.authorizeChannel(socket_id, channel_name));
-});
+```ts title="src/orders.ts"
+await sockudo.triggerBatch([
+  {
+    channel: "orders",
+    name: "order.created",
+    data: { id: "ord_125" },
+    idempotency_key: "order.created:tenant-42:ord_125:v1",
+  },
+  {
+    channel: "private-user-7",
+    name: "order.receipt",
+    data: { id: "ord_125" },
+    idempotency_key: "order.receipt:tenant-42:ord_125:v1",
+  },
+]);
 ```
 
-Call application authorization before `authorizeChannel`; signing alone grants
-access. For user-targeted events, expose a separate authenticated endpoint:
+Limits:
 
-```ts
-app.post("/sockudo/user-auth", express.urlencoded({ extended: false }), (req, res) => {
-  const user = requireUser(req);
-  res.json(sockudo.authenticateUser(req.body.socket_id, {
-    id: user.id,
-    user_info: { name: user.name },
-  }));
-});
+- The SDK rejects more than 100 channels per `trigger` before sending.
+- The server's defaults are `[event_limits] max_channels_at_once = 100`, `max_batch_size = 10`,
+  `max_payload_in_kb = 100`, and `max_name_length = 200`. The SDK does not check batch size or
+  payload size, so oversized requests fail with a `4xx` from the server.
+- `private-encrypted-*` channels can only be published one channel per `trigger` call; mixing an
+  encrypted channel into a multi-channel publish throws. Batch items are encrypted individually.
+
+<Callout type="warn" title="Batch items are modified in place">
+`triggerBatch` serializes or encrypts each item's `data` on the objects you pass. Build a fresh array
+for every call instead of reusing event objects across batches.
+</Callout>
+
+## Idempotency and retries
+
+A timeout does not tell you whether Sockudo published the event. The request may have failed before
+it arrived, or the server may have published and the response was lost. Retrying without a key can
+deliver the event twice; an idempotency key lets the server recognise the retry.
+
+Server semantics:
+
+- The key can be sent as the body field `idempotency_key` or the `X-Idempotency-Key` header; the
+  body field wins when both are present. `trigger` sends the key in both.
+- `[idempotency]` defaults: `enabled = true`, `ttl_seconds = 120`, `max_key_length = 128`. Empty
+  keys are rejected.
+- A duplicate inside the TTL returns the original cached `200` response without publishing again.
+- In a batch, `X-Idempotency-Key` identifies the whole batch and each item's `idempotency_key`
+  identifies only that event; the two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
+
+A key names a logical operation, such as `order.created:tenant-42:ord_123:v1`, not an HTTP attempt.
+Never reuse a key for a different payload.
+
+How this SDK sets keys:
+
+| Mechanism | Scope | Survives an application-level retry? |
+| --- | --- | --- |
+| `idempotency_key: "..."` on `trigger` or a batch item | One publish or batch item | Yes, when derived from business data |
+| `autoIdempotencyKey` (default `true`) | `{processId}:{serial}` per `trigger`; `{processId}:{serial}:{index}` per batch item | No, it covers only the SDK's own retries |
+| `idempotency_key: true` | A new UUID for every request attempt | No, and not across the SDK's own retries either |
+
+`triggerBatch` sends keys per item only; it does not send a batch-level `X-Idempotency-Key`. The
+response exposes the keys it sent as `response.idempotencyKeys`.
+
+`trigger` and `triggerBatch` retry automatically, immediately and without backoff, up to
+`maxRetries` total attempts, when the request fails with a network error or a `5xx` status. They do
+not retry `4xx` responses (including `429`) or requests aborted by `timeout`. Every attempt reuses
+the same idempotency key, except when you pass `idempotency_key: true`. Other methods, such as
+`get`, `post`, history, and push calls, do not retry.
+
+<Callout type="warn" title="Prefer a business-derived key">
+The automatic key is unique per call, so a queue worker that calls `trigger` again after a crash or
+timeout sends a new key and can publish twice. Derive the key from the operation (tenant, entity,
+version) whenever a job or HTTP handler may run more than once.
+</Callout>
+
+## Authorize private and presence channels
+
+When a client subscribes to a `private-` or `presence-` channel, it asks your backend for a
+signature. `authorizeChannel` only produces that signature; it does not decide whether the user may
+join. Your route must check the session, decide whether this user may access this exact channel, and
+take presence identity from your own user record, never from the request body.
+
+```ts title="src/server.ts"
+import express from "express";
+import { sockudo } from "./sockudo";
+import { requireUser, canAccessChannel } from "./auth";
+
+const app = express();
+
+app.post(
+  "/sockudo/auth",
+  express.urlencoded({ extended: false }),
+  async (req, res) => {
+    const user = await requireUser(req); // your session check
+    if (!user) return res.status(401).end();
+
+    const { socket_id, channel_name } = req.body;
+    if (typeof socket_id !== "string" || typeof channel_name !== "string") {
+      return res.status(400).end();
+    }
+    if (!(await canAccessChannel(user, channel_name))) {
+      return res.status(403).end();
+    }
+
+    try {
+      if (channel_name.startsWith("presence-")) {
+        return res.json(
+          sockudo.authorizeChannel(socket_id, channel_name, {
+            user_id: user.id,
+            user_info: { name: user.displayName },
+          }),
+        );
+      }
+      return res.json(sockudo.authorizeChannel(socket_id, channel_name));
+    } catch {
+      // Malformed socket_id or channel name.
+      return res.status(400).end();
+    }
+  },
+);
 ```
 
-Disconnect or force reconnect all sockets for a compromised or changed user:
+`authorizeChannel(socketId, channel, presenceData?)` validates the socket ID and channel name (it
+throws on invalid input) and returns `{ auth, channel_data?, shared_secret? }`. `channel_data` is
+present when you pass presence data; `shared_secret` is present for `private-encrypted-*` channels.
+`authenticate` is a deprecated alias.
 
-```ts
+<Callout type="warn" title="Signing is not authorization">
+Never deploy an endpoint that signs whatever channel the client names. Every signature grants
+access, so the access check must run first, and presence `user_id` and `user_info` must come from
+your session, not from the request.
+</Callout>
+
+### User authentication
+
+Clients sign in to receive user-targeted events and to be identifiable for
+`terminateUserConnections`. Expose a separate authenticated endpoint:
+
+```ts title="src/server.ts"
+app.post(
+  "/sockudo/user-auth",
+  express.urlencoded({ extended: false }),
+  async (req, res) => {
+    const user = await requireUser(req);
+    if (!user) return res.status(401).end();
+
+    res.json(
+      sockudo.authenticateUser(req.body.socket_id, {
+        id: user.id,
+        user_info: { name: user.displayName },
+      }),
+    );
+  },
+);
+```
+
+`authenticateUser(socketId, userData)` requires a non-empty `userData.id` and returns
+`{ auth, user_data }`. Send an event to every connection signed in as that user with
+`sockudo.sendToUser(userId, event, data)`.
+
+### Encrypted channels
+
+For `private-encrypted-*` channels, configure `encryptionMasterKeyBase64`. The SDK then encrypts
+published data with a per-channel key derived from the master key and returns that key as
+`shared_secret` in the auth response, so Sockudo only ever sees ciphertext. Generate a key with
+`openssl rand -base64 32` and store and rotate it like the app secret.
+
+Authorize and publish to a given encrypted channel with the same SDK; each SDK derives the channel
+key from the master key in its own way.
+
+### Terminate user connections
+
+Disconnect every socket for a compromised or changed user, or ask them to reconnect and
+re-authenticate:
+
+```ts title="src/admin.ts"
 await sockudo.terminateUserConnections("user-42");
 await sockudo.forceReconnectUser("user-42");
 ```
 
-## Webhooks
+## Validate webhooks
 
-Signature verification requires the exact raw body. In Express, install a raw
-parser on the webhook route before a global JSON parser consumes it:
+Sockudo signs each webhook with HMAC-SHA256 over the exact request body bytes and sends the key and
+signature in `X-Pusher-Key` and `X-Pusher-Signature`. Parsing the body to JSON and serializing it
+again changes whitespace and key order, so the signature no longer matches. Capture the raw body on
+the webhook route before any global JSON parser consumes it.
 
-```ts
+```ts title="src/server.ts"
 app.post(
   "/sockudo/webhook",
-  express.raw({ type: "application/json" }),
+  express.raw({ type: "application/json", limit: "1mb" }),
   (req, res) => {
     const webhook = sockudo.webhook({
-      rawBody: req.body.toString(),
+      rawBody: req.body.toString("utf8"),
       headers: req.headers,
     });
 
@@ -142,66 +369,191 @@ app.post(
       return res.status(401).send("invalid signature");
     }
 
-    enqueueWebhookEvents(webhook.getEvents());
-    return res.sendStatus(202);
+    // Acknowledge fast; process asynchronously and idempotently.
+    enqueueWebhookEvents(webhook.getTime(), webhook.getEvents());
+    return res.sendStatus(200);
   },
 );
 ```
 
-During credential rotation, `isValid()` can accept additional old key/secret
-pairs for a bounded overlap window. Do not log the raw webhook or signature.
+`webhook({ rawBody, headers })` expects lowercase header names, as Express provides them.
+`isValid()` returns `false` unless the `content-type` is `application/json`, the body parses as
+JSON, the key matches, and the signature verifies with a constant-time comparison. `getEvents()` and
+`getTime()` throw `Sockudo.WebHookError` for an invalid body.
 
-## State and history
+During key rotation, pass the previous credentials so both are accepted for a bounded overlap
+window:
 
-```ts
-const channels = await (await sockudo.get({ path: "/channels" })).json();
-const users = await (await sockudo.get({ path: "/channels/presence-lobby/users" })).json();
-const history = await sockudo.channelHistory("orders", {
+```ts title="src/server.ts"
+webhook.isValid([{ key: process.env.OLD_SOCKUDO_KEY!, secret: process.env.OLD_SOCKUDO_SECRET! }]);
+```
+
+Sockudo may retry delivery, so acknowledge quickly and make processing idempotent. Do not log the raw
+body or the signature.
+
+## Channel state and history
+
+Channel state has no typed helpers; use the signed `get` helper, which resolves to a `Response`:
+
+```ts title="src/state.ts"
+const channels = await (
+  await sockudo.get({ path: "/channels", params: { filter_by_prefix: "presence-" } })
+).json();
+
+const info = await (
+  await sockudo.get({ path: "/channels/orders", params: { info: "subscription_count" } })
+).json();
+
+const members = await (await sockudo.get({ path: "/channels/presence-lobby/users" })).json();
+```
+
+State endpoints describe current occupancy. Use them for diagnostics and dashboards, not as an
+authorization database.
+
+### History
+
+```ts title="src/history.ts"
+let page = await sockudo.channelHistory("orders", {
   limit: 50,
   direction: "newest_first",
 });
+
+while (page.has_more && page.next_cursor) {
+  page = await sockudo.channelHistory("orders", { cursor: page.next_cursor });
+}
 ```
 
-State queries describe current occupancy and should not be used as an
-authorization database. History cursors are opaque: pass `next_cursor` back to
-the next call unchanged and bound each page.
+`channelHistory` resolves to a typed `HistoryPage` with `items`, `has_more`, `next_cursor`,
+`bounds`, and `continuity`. It also accepts `start_serial`, `end_serial`, `start_time_ms`, and
+`end_time_ms`. Cursors are opaque: pass `next_cursor` back unchanged and never build one yourself.
+
+### Presence history
+
+```ts title="src/history.ts"
+const transitions = await sockudo.channelPresenceHistory("presence-lobby", {
+  limit: 100,
+  direction: "oldest_first",
+});
+
+const snapshot = await sockudo.channelPresenceSnapshot("presence-lobby", {
+  at_time_ms: Date.now() - 60_000,
+});
+```
+
+Presence history returns `member_added` and `member_removed` transitions with their cause; the
+snapshot replays them to reconstruct membership at a time or serial. Both require a `presence-`
+channel and throw otherwise. See [History and recovery](/docs/server/history-recovery).
+
+## Versioned messages and annotations
+
+When versioned messages are enabled for a channel, publishes receive a `message_serial`, and you can
+read and mutate the message by that serial:
+
+```ts title="src/messages.ts"
+const { item } = await sockudo.getMessage("chat-room-1", messageSerial);
+
+const versions = await sockudo.getMessageVersions("chat-room-1", messageSerial, { limit: 20 });
+
+await sockudo.updateMessage("chat-room-1", messageSerial, {
+  data: JSON.stringify({ text: "Edited text" }),
+});
+
+await sockudo.appendMessage("chat-room-1", messageSerial, { data: " more text" });
+
+await sockudo.deleteMessage("chat-room-1", messageSerial);
+```
+
+Mutations resolve to a `MutationResponse` with `message_serial`, `action`, `accepted`,
+`version_serial`, `history_serial`, `delivery_serial`, and `status`. `appendMessage` requires a
+string `data` fragment. Field semantics, `op_id` replay, and authorization rules are described in
+[Mutable messages](/docs/server/mutable-messages).
+
+Annotations attach reactions and other typed metadata to a message:
+
+```ts title="src/messages.ts"
+const { annotationSerial } = await sockudo.publishAnnotation("chat-room-1", messageSerial, {
+  type: "reactions:distinct.v1",
+  name: "thumbs-up",
+  clientId: "user-42",
+});
+
+const annotations = await sockudo.listAnnotations("chat-room-1", messageSerial, { limit: 50 });
+
+await sockudo.deleteAnnotation("chat-room-1", messageSerial, annotationSerial);
+```
 
 ## Push notifications
 
-```ts
-await sockudo.activateDevice({
-  deviceId: "ios-device-1",
+Register devices and publish notifications from the backend so app secrets and provider credentials
+never reach a browser or mobile app. Push helpers send the `push-admin` capability header.
+
+```ts title="src/push.ts"
+import Sockudo from "sockudo";
+import { sockudo } from "./sockudo";
+
+const registration = await sockudo.activateDevice({
+  appId: process.env.SOCKUDO_APP_ID!, // replaced by the app in the URL
+  id: "device-123",
   clientId: "user-42",
-  platform: "apns",
-  providerToken: "provider-token",
+  formFactor: "phone",
+  platform: "android",
+  deviceSecret: "issued-by-server", // replaced on push-admin registration
+  timezone: "Europe/Bucharest",
+  locale: "en-US",
+  push: {
+    recipient: { transportType: "gcm", registrationToken: fcmToken },
+    state: "ACTIVE",
+  },
 });
+
+// Returned on first registration (or rotation); hand it to the device.
+const deviceIdentityToken = registration.deviceIdentityToken;
 
 await sockudo.upsertChannelPushSubscription({
-  deviceId: "ios-device-1",
-  clientId: "user-42",
+  appId: process.env.SOCKUDO_APP_ID!,
   channel: "orders",
-});
+  deviceId: "device-123",
+  clientId: "user-42",
+  provider: "fcm",
+  tokenHash: registration.tokenHash,
+  // The bundled type marks credentialVersion as required; the server treats it as optional.
+} as Sockudo.PushChannelSubscription);
 
 const accepted = await sockudo.publishPush({
+  publishId: "order-ord_123-packed",
   recipients: [{ type: "channel", channel: "orders" }],
   payload: {
     title: "Order updated",
     body: "Order ord_123 is packed",
-    data: { order_id: "ord_123" },
   },
-  idempotency_key: "push-order-ord_123-packed",
 });
 
-const status = await sockudo.getPublishStatus(accepted.publish_id);
+const status = await sockudo.getPublishStatus(accepted.publishId!);
 ```
 
-Push helpers force async delivery with `sync: false` for production-safe fanout.
+`publishPush` always sends `sync: false`, so the server admits the request and fans out
+asynchronously. The `202` response is an admission record (`publishId`, `status`,
+`expectedRecipients`, `fanoutRegime`), not a delivery receipt; poll `getPublishStatus` or consume
+delivery callbacks for outcomes. A stable `publishId` makes a retried publish return the original
+admission instead of sending twice.
+
+| Area | Methods |
+| --- | --- |
+| Devices | `activateDevice`, `updateDeviceRegistration`, `getDeviceRegistration`, `listDeviceRegistrations`, `deleteDeviceRegistration`, `removeDeviceRegistrationsByClient` |
+| Channel subscriptions | `upsertChannelPushSubscription`, `listChannelPushSubscriptions`, `listChannelPushSubscriptionChannels`, `deleteChannelPushSubscriptions` |
+| Credentials | `putPushCredential`, `listPushCredentials` |
+| Publish | `publishPush`, `publishPushBatch`, `schedulePush` (requires `notBeforeMs`), `getPublishStatus`, `cancelScheduledPush`, `postPushDeliveryStatus` |
+| Live Activities | `createApnsLiveActivityChannel`, `getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, `deleteApnsLiveActivityChannel` |
+
+See [Push notifications](/docs/server/push-notifications) for provider setup and recipient types.
+
+### Apple Live Activities
 
 For iOS 16.1+ direct Live Activities, use an `apnsLiveActivity` recipient and the typed
-`liveActivity` payload. For iOS 18 shared-content audiences, create one APNs channel and publish
-one O(1) broadcast request:
+`liveActivity` payload. For iOS 18 shared-content audiences, create one APNs channel and publish one
+O(1) broadcast request:
 
-```ts
+```ts title="src/live-activity.ts"
 const channel = await sockudo.createApnsLiveActivityChannel("mostRecent");
 
 await sockudo.publishPush({
@@ -224,31 +576,58 @@ await sockudo.publishPush({
 });
 ```
 
-See [Apple Live Activities](/docs/server/apple-live-activities) for start/end fields, storage
+See [Apple Live Activities](/docs/server/apple-live-activities) for start and end fields, storage
 policy, token rotation, sandbox endpoints, and operating limits.
 
-## Errors, retries, and shutdown
+## Errors and timeouts
 
-HTTP failures reject with `RequestError`, which exposes a status code for
-classification. Retry transient network errors, `429`, and suitable `5xx`
-responses with bounded backoff; do not retry `401`, `403`, or invalid payloads
-unchanged.
+Two kinds of failure reach your code:
 
-```ts
+- **HTTP and network failures reject with `Sockudo.RequestError`.** `status` holds the HTTP status
+  for responses `>= 400` and is `undefined` for network errors and timeouts, where `error` holds the
+  underlying cause. `body` holds the response text.
+- **Invalid input throws synchronously** with a plain `Error`: a malformed `socket_id` or channel
+  name, an event name over 200 characters, more than 100 channels, a multi-channel encrypted publish,
+  or a missing encryption master key.
+
+```ts title="src/orders.ts"
+import Sockudo from "sockudo";
+import { sockudo } from "./sockudo";
+
+const key = `order.created:${tenantId}:${orderId}:v1`;
+
 try {
-  await sockudo.trigger("orders", "order.created", payload, {
-    idempotency_key: operationId,
-  });
+  await sockudo.trigger("orders", "order.created", payload, { idempotency_key: key });
 } catch (error) {
-  if (error instanceof Sockudo.RequestError && error.statusCode === 429) {
-    await retryLater(operationId);
-  } else {
-    throw error;
+  if (error instanceof Sockudo.RequestError) {
+    const status = error.status;
+    if (status === undefined || status === 429 || status >= 500) {
+      // Built-in retries are exhausted or skipped: retry later with the SAME key.
+      await retryLater(key);
+      return;
+    }
+    // 400, 401, 403, 413: retrying unchanged will not help.
   }
+  throw error;
 }
 ```
 
-Reuse the client instead of constructing it per request, set a timeout below
-the caller's deadline, and drain application jobs during graceful shutdown.
-Never log `error.url` or `error.body` without redaction because they can contain
-signed parameters or application data.
+Without `timeout`, a request can hang until the socket gives up; set it below the route or job
+deadline, keeping in mind that `trigger` can make up to `maxRetries` attempts. Retry network errors,
+`429`, and `5xx` with bounded, jittered backoff and the same idempotency key. Do not retry `400`,
+`401`, `403`, or `413` unchanged.
+
+<Callout type="warn" title="RequestError carries the signed URL">
+`error.url` contains `auth_key` and `auth_signature`, and `error.body` can contain application data.
+Log the status code, operation, latency, and retry count instead, and never log the app secret,
+encryption master key, raw webhook bodies, or push provider tokens.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card title="Server SDKs" href="/docs/server-sdks" description="Compare capabilities across every server SDK." />
+  <Card title="JavaScript client" href="/docs/clients/javascript" description="Subscribe, call your auth endpoint, and receive events in the browser." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Webhook events, delivery, and retry behaviour." />
+  <Card title="HTTP API" href="/docs/server/http-api" description="The signed endpoints this SDK wraps." />
+</Cards>

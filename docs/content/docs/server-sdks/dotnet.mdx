@@ -1,211 +1,700 @@
 ---
 title: .NET
-description: Use the .NET HTTP server SDK for publishing, auth, state queries, encrypted channels, and signed push requests.
+description: Publish events, sign channel and user auth, validate webhooks, query history, mutate versioned messages, and manage push from .NET with the SockudoServer package.
 icon: FileCode
 ---
 
+`SockudoServer` is the official .NET server SDK for Sockudo. It is a trusted backend library: it
+holds your app secret, signs every HTTP API request, and produces the signatures your realtime
+clients need to join private, presence, and encrypted channels. Every network call is `async` and
+returns `Task<IGetResult<T>>` or `Task<ITriggerResult>`, so it fits naturally into ASP.NET Core,
+worker services, and background jobs.
+
+What it does in .NET:
+
+- Publish events to one channel, many channels, or a batch, with automatic idempotency keys and
+  built-in retries for transient failures
+- Sign private, presence, and `private-encrypted-*` channel subscriptions, and user sign-in
+- Validate webhook signatures and expose typed and raw webhook events
+- Query channel state, presence members, durable history, presence history, and presence snapshots
+- Read, update, delete, and append to versioned messages, and publish, list, and delete annotations
+- Register devices, manage channel push subscriptions, publish push, read publish status, and manage
+  Apple Live Activity broadcast channels
+- Terminate or force-reconnect every connection for a user
+
 ## Install
 
-Install the published NuGet package:
-
-```bash
+```bash title="Terminal"
 dotnet add package SockudoServer --version 2.2.0
 ```
 
-Or add it directly to your project file:
+Or reference it from your project file:
 
-```xml
+```xml title="MyApp.csproj"
 <PackageReference Include="SockudoServer" Version="2.2.0" />
 ```
 
-## Configure
+The 2.2.0 package targets `net10.0`, so your application needs the .NET 10 SDK and runtime. It
+depends on `Newtonsoft.Json` and `NaCl.Net` (used for end-to-end encrypted channels).
 
-```csharp
-using Sockudo;
+For local development inside the Sockudo monorepo, reference the project directly instead:
+`server-sdks/sockudo-http-dotnet/SockudoServer/SockudoServer.csproj`.
 
-var options = new SockudoOptions
-{
-    Host = "127.0.0.1",
-    Port = 6001,
-    Encrypted = false,
-};
+All public types live in the `SockudoServer` namespace (exceptions in `SockudoServer.Exceptions`).
+The client class itself is named `Sockudo`.
 
-var sockudo = new Sockudo(APP_ID, APP_KEY, APP_SECRET, options);
-```
+## Configure the client
 
-Register one `Sockudo` instance as a singleton and reuse it. `Host` overrides
-`Cluster`; `Encrypted` selects HTTPS; `RestClientTimeout` bounds requests; and
-`BatchEventDataSizeLimit` can reject oversized event data before sending it.
-Use HTTPS when the API crosses an untrusted network.
+Create one client per app and register it as a singleton. The example reads credentials from
+configuration, which in ASP.NET Core includes environment variables:
 
-## Publish
+```csharp title="Program.cs"
+using SockudoServer;
 
-```csharp
-ITriggerResult result = await sockudo.TriggerAsync(
-    "orders",
-    "order.created",
-    new { id = "ord_123" },
-    new TriggerOptions
+var builder = WebApplication.CreateBuilder(args);
+var config = builder.Configuration;
+
+builder.Services.AddSingleton(_ => new Sockudo(
+    config["SOCKUDO_APP_ID"]!,
+    config["SOCKUDO_APP_KEY"]!,
+    config["SOCKUDO_APP_SECRET"]!,
+    new SockudoOptions
     {
-        IdempotencyKey = "order-created-ord_123",
-    }
-).ConfigureAwait(false);
+        HostName = config["SOCKUDO_HOST"] ?? "127.0.0.1",
+        Port = int.Parse(config["SOCKUDO_PORT"] ?? "6001"),
+        Encrypted = bool.Parse(config["SOCKUDO_USE_TLS"] ?? "false"),
+        RestClientTimeout = TimeSpan.FromSeconds(10),
+        EncryptionMasterKey = config["SOCKUDO_ENCRYPTION_MASTER_KEY"] is { } key
+            ? Convert.FromBase64String(key)
+            : null,
+    }));
+
+var app = builder.Build();
 ```
 
-Publish to several channels or send a batch:
+The constructor is `new Sockudo(appId, appKey, appSecret, options)`. It throws `ArgumentException`
+if any of the three credentials is null or empty. `options` is optional.
 
-```csharp
+`SockudoOptions` properties:
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `HostName` | `string` | `"api.sockudo.io"` | API host without a scheme. Setting a value that contains `://` throws `FormatException`. Setting `HostName` overrides `Cluster`. |
+| `Port` | `int` | `80`, or `443` when `Encrypted = true` and no port was set | HTTP API port. Use `6001` for a default local Sockudo server. |
+| `Encrypted` | `bool` | `false` | Use HTTPS for API calls. |
+| `Cluster` | `string` | — | Sets the host to `api-<cluster>.sockudo.io` unless `HostName` is set. Self-hosted deployments normally use `HostName`. |
+| `RestClientTimeout` | `TimeSpan` | 30 seconds | Timeout applied to the internal `HttpClient`. |
+| `BatchEventDataSizeLimit` | `int?` | `null` (no client-side check) | When set, event data longer than this many characters (after JSON serialization and encryption) throws `EventDataSizeExceededException` before the request is sent. `SockudoOptions.DEFAULT_BATCH_EVENT_DATA_SIZE_LIMIT` is `10 * 1024`. |
+| `EncryptionMasterKey` | `byte[]` | `null` | 32-byte master key for `private-encrypted-*` channels. |
+| `TraceLogger` | `ITraceLogger` | `null` | Receives trace messages for publish requests and responses, including request bodies. Keep it off in production. |
+| `JsonSerializer` / `JsonDeserializer` | `ISerializeObjectsToJson` / `IDeserializeJsonStrings` | Newtonsoft.Json-based defaults | Replace event data serialization. |
+| `RestClient` | `ISockudoRestClient` | Created lazily from the options above | Override the HTTP transport, for example a `SockudoRestClient` built from your own `HttpClient`. A client you supply keeps its own base address and timeout; `RestClientTimeout` is applied only to the default client. |
+
+The `Sockudo` instance also exposes `AutoIdempotencyKey` (`bool`, default `true`), described in
+[Idempotency and retries](#idempotency-and-retries).
+
+<Callout type="tip" title="Create once, reuse everywhere">
+The client owns its `HttpClient`. Register it as a singleton and inject it. Creating a client per
+request wastes sockets and resets the idempotency serial used for automatic keys.
+</Callout>
+
+Keep the app secret on the server. It signs every API call and every channel and user
+authorization. Anyone holding it can publish to any channel, read your app's state, and impersonate
+any user by minting their own presence or sign-in signatures. Never ship it in a desktop, mobile,
+Blazor WebAssembly, or browser build.
+
+## Publish an event
+
+```csharp title="OrdersEndpoints.cs"
+app.MapPost("/orders/{id}/paid", async (string id, Sockudo sockudo) =>
+{
+    ITriggerResult result = await sockudo.TriggerAsync(
+        "orders",
+        "order.paid",
+        new { id, status = "paid" },
+        new TriggerOptions
+        {
+            IdempotencyKey = $"order.paid:{id}:v1",
+        }).ConfigureAwait(false);
+
+    return (int)result.StatusCode is >= 200 and < 300
+        ? Results.Accepted()
+        : Results.StatusCode(502);
+});
+```
+
+`TriggerAsync` returns an `ITriggerResult` with `StatusCode`, the raw response `Body`, `EventIds`
+(channel name to event ID), and `ChannelAttributes`. A non-2xx response is returned, not thrown;
+check `StatusCode` before treating the publish as accepted.
+
+To get per-channel counts in the response, set `TriggerOptions.Info`, for example
+`Info = new List<string> { "subscription_count" }`. `TriggerOptions.Extras` takes a `MessageExtras`
+(`Headers`, `Ephemeral`, `IdempotencyKey`, `Echo`) for Protocol V2 extras.
+
+When a user action both changes your database and is published back to the same user, pass that
+user's socket ID so the originating connection does not receive its own echo:
+
+```csharp title="OrdersEndpoints.cs"
+await sockudo.TriggerAsync("orders", "order.updated", order, new TriggerOptions
+{
+    SocketId = socketIdFromRequest, // "1234.5678"
+}).ConfigureAwait(false);
+```
+
+The client already applied the change locally; excluding its socket prevents a duplicate render.
+The SDK validates the format (`digits.digits`) and throws `SocketIdFormatException` otherwise.
+
+## Publish to many channels or in a batch
+
+Pass a channel array to send the same event to several channels in one request:
+
+```csharp title="Fanout.cs"
 await sockudo.TriggerAsync(
-    new[] { "tenant-42:orders", "user-7:orders" },
+    new[] { "tenant-42-orders", "user-7-orders" },
     "order.updated",
-    new { id = "ord_123", status = "paid" }
-).ConfigureAwait(false);
+    new { id = "ord_123", status = "paid" }).ConfigureAwait(false);
+```
 
-await sockudo.TriggerAsync(new[]
+Pass an `Event[]` to send different events in one request:
+
+```csharp title="Batch.cs"
+ITriggerResult result = await sockudo.TriggerAsync(new[]
 {
     new Event
     {
         Channel = "orders",
         EventName = "order.created",
         Data = new { id = "ord_124" },
+        IdempotencyKey = "order.created:ord_124:v1",
     },
     new Event
     {
-        Channel = "orders",
-        EventName = "order.paid",
+        Channel = "private-user-7",
+        EventName = "order.receipt",
         Data = new { id = "ord_124" },
+        SocketId = "1234.5678",
     },
 }).ConfigureAwait(false);
 ```
 
-Set `TriggerOptions.SocketId` to exclude a sender that already applied the
-change. Use a stable `IdempotencyKey` for every publish that may be retried.
-Set `BatchEventDataSizeLimit` to the server's event-size limit to fail early.
+Server defaults from `[event_limits]`: `max_channels_at_once = 100`, `max_batch_size = 10`,
+`max_payload_in_kb = 100`, and `max_name_length = 200` for event and channel names.
 
-## Auth
+The SDK also validates before sending:
 
-```csharp
-var privateAuth = sockudo.Authenticate("private-orders", socketId).ToJson();
+- Channel names must match `\A[a-zA-Z0-9_=@,.;\-]+\z` and be at most 164 characters
+  (`ChannelNameFormatException`, `ChannelNameLengthExceededException`). The server also accepts `:`
+  (its namespace separator) and `#`, but this SDK rejects them, so publish from .NET only to channels
+  that use `-`, `_`, or `.` as separators.
+- A batch larger than 10 events throws `EventBatchSizeExceededException`.
+- A multi-channel publish cannot include a `private-encrypted-*` channel (`InvalidOperationException`).
+- Data size is checked only when `BatchEventDataSizeLimit` is set. To mirror the server default, set
+  it to `100 * 1024`.
 
-var channelData = new PresenceChannelData
+The SDK does not cap the number of channels in one publish; the server rejects more than
+`max_channels_at_once`.
+
+## Idempotency and retries
+
+A timeout does not tell you whether the server published the event. If you retry without a key,
+subscribers may receive it twice. With an idempotency key, Sockudo remembers the first result and
+returns it for duplicates instead of publishing again.
+
+Server semantics:
+
+- The key can be sent as the body field `idempotency_key` or the `X-Idempotency-Key` header. When
+  both are present, the body field wins.
+- `[idempotency]` defaults: `enabled = true`, `ttl_seconds = 120`, `max_key_length = 128`. Empty
+  keys are rejected.
+- A duplicate within the TTL returns the original cached `200` response without publishing again.
+- In a batch, `X-Idempotency-Key` identifies the whole batch and each item's `idempotency_key`
+  identifies only that event. The two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
+
+How the .NET SDK applies keys:
+
+- `TriggerOptions.IdempotencyKey` is sent both as the body field and as the `X-Idempotency-Key`
+  header for single and multi-channel publishes.
+- `Event.IdempotencyKey` sets the per-item key in a batch. The SDK does not send a batch-level
+  `X-Idempotency-Key` header.
+- With `AutoIdempotencyKey = true` (the default), a publish without a key gets
+  `<random-instance-id>:<serial>`, and each batch item without a key gets
+  `<random-instance-id>:<serial>:<index>`. Set `sockudo.AutoIdempotencyKey = false` to disable this.
+- `Sockudo.GenerateIdempotencyKey()` returns a new UUID string if you need a random key.
+
+Built-in retries: both `TriggerAsync` overloads make up to 3 attempts. They retry when the response
+status is 500 or higher (waiting 100 ms, then 200 ms) and when the HTTP call throws, for example on
+a connection failure or timeout. Every attempt reuses the same request and therefore the same key.
+After the last attempt, a 5xx result is returned and an exception is rethrown. `429` and other 4xx
+responses are returned immediately. Other methods (state, history, push, versioned messages) do not
+retry.
+
+Automatic keys protect the SDK's own retries only. When your code retries a publish later, for
+example from a job queue, derive the key from the business operation so the retry sends the same
+key:
+
+```csharp title="OrderPublisher.cs"
+var options = new TriggerOptions
 {
-    user_id = "user-42",
-    user_info = new { name = "Ada" },
+    // A logical operation, not an HTTP attempt.
+    IdempotencyKey = $"order.created:tenant-42:{order.Id}:v1",
 };
 
-var presenceAuth = sockudo.Authenticate("presence-lobby", socketId, channelData).ToJson();
+await sockudo.TriggerAsync("orders", "order.created", order, options).ConfigureAwait(false);
 ```
 
-Authentication methods sign a response; your endpoint must first authenticate
-the application session, authorize the exact channel, and derive presence
-identity from trusted state.
+<Callout type="warn" title="Use a fresh TriggerOptions per publish">
+When `AutoIdempotencyKey` generates a key, the SDK writes it back into the `TriggerOptions` (or
+`Event`) instance you passed. If you reuse that instance for a different event, the second publish
+carries the first key and the server returns the cached response instead of publishing. Never reuse
+a key, or an options object, for a different payload.
+</Callout>
 
-For `private-encrypted-*`, set a 32-byte `EncryptionMasterKey` in
-`SockudoOptions`. The SDK encrypts published payloads and derives the channel
-shared secret used during auth. Keep the master key in a secret manager and
-continue to use TLS.
+## Authorize private and presence channels
 
-## State
+When a client subscribes to `private-*`, `presence-*`, or `private-encrypted-*`, it asks your
+backend for a signature. Your endpoint decides whether this user may join this channel. For presence
+channels, derive `user_id` and `user_info` from the authenticated session, never from the request,
+or any user can impersonate any other member.
 
-```csharp
-var channel = await sockudo.FetchStateForChannelAsync<object>("orders")
-    .ConfigureAwait(false);
+The client posts `socket_id` and `channel_name` as form fields. This ASP.NET Core minimal API
+endpoint uses the signed-in user's claims:
 
-var users = await sockudo.FetchUsersFromPresenceChannelAsync<object>("presence-lobby")
-    .ConfigureAwait(false);
-```
+```csharp title="Program.cs"
+using System.Security.Claims;
+using SockudoServer;
+using SockudoServer.Exceptions;
 
-Read bounded history and forward opaque cursors unchanged:
-
-```csharp
-var page = await sockudo.FetchHistoryForChannelAsync<object>(
-    "orders",
-    new { limit = 50, direction = "newest_first" }
-).ConfigureAwait(false);
-
-var presencePage = await sockudo.FetchPresenceHistoryForChannelAsync<object>(
-    "presence-lobby",
-    new { limit = 50, direction = "newest_first" }
-).ConfigureAwait(false);
-
-var snapshot = await sockudo.FetchPresenceSnapshotForChannelAsync<object>(
-    "presence-lobby",
-    new { at_serial = 4 }
-).ConfigureAwait(false);
-```
-
-Application state is an operational snapshot and should not be used as an
-authorization database.
-
-## Webhooks
-
-Preserve the original body and validate before deserializing business data:
-
-```csharp
-var webhook = sockudo.ProcessWebHook(receivedSignature, rawBody);
-if (!webhook.IsValid)
+app.MapPost("/sockudo/auth", async (HttpRequest request, ClaimsPrincipal user, Sockudo sockudo) =>
 {
-    return Results.Unauthorized();
-}
+    var userId = user.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (userId is null)
+    {
+        return Results.Unauthorized();
+    }
 
-await queue.EnqueueAsync(webhook.Events, cancellationToken);
-return Results.Accepted();
+    var form = await request.ReadFormAsync();
+    var socketId = form["socket_id"].ToString();
+    var channelName = form["channel_name"].ToString();
+
+    if (!CanSubscribe(userId, channelName))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    try
+    {
+        IChannelAuthorizationResponse auth = channelName.StartsWith("presence-", StringComparison.Ordinal)
+            ? sockudo.AuthorizeChannel(channelName, socketId, new PresenceChannelData
+            {
+                user_id = userId,
+                user_info = new { name = user.FindFirstValue(ClaimTypes.Name) },
+            })
+            : sockudo.AuthorizeChannel(channelName, socketId);
+
+        return Results.Content(auth.ToJson(), "application/json");
+    }
+    catch (Exception ex) when (ex is SocketIdFormatException
+                                  or ChannelNameFormatException
+                                  or ChannelNameLengthExceededException)
+    {
+        return Results.BadRequest();
+    }
+}).RequireAuthorization();
+
+// Replace with your own rules: tenant membership, room ACLs, ownership checks.
+static bool CanSubscribe(string userId, string channelName) =>
+    channelName == $"private-user-{userId}"
+    || channelName == "presence-lobby";
 ```
 
-Do not normalize or log the raw body or signature. Make downstream processing
-idempotent.
+`AuthorizeChannel` returns an `IChannelAuthorizationResponse` whose `ToJson()` is the exact body the
+client expects (`auth`, plus `channel_data` for presence and `shared_secret` for encrypted
+channels). `Authenticate` still exists but is deprecated; use `AuthorizeChannel` in new code.
 
-## User connection management
+<Callout type="warn" title="Signing is not authorization">
+`AuthorizeChannel` signs whatever channel and socket you pass. It does not check that the user is
+allowed in. The `CanSubscribe` check, and deriving presence identity from the session, are what keep
+one tenant out of another's channels.
+</Callout>
 
-```csharp
-await sockudo.TerminateUserConnectionsAsync("user-42")
-    .ConfigureAwait(false);
+### User authentication
 
-await sockudo.ForceReconnectUserAsync("user-42")
-    .ConfigureAwait(false);
-```
+Clients that call `signin()` request a user-authentication signature from your backend. Sign the
+user's identity with `AuthenticateUser`:
 
-Terminate for immediate revocation; force reconnect when clients should obtain
-new auth or routing state.
-
-## Push and Live Activities
-
-Current SDKs expose `PublishPushAsync<T>` and first-class
-`Create/Get/List/DeleteApnsLiveActivityChannelAsync<T>` helpers. The example below publishes a
-typed server request while the SDK handles request signing:
-
-```csharp
-var result = await sockudo.PublishPushAsync<object>(new
+```csharp title="Program.cs"
+app.MapPost("/sockudo/user-auth", async (HttpRequest request, ClaimsPrincipal user, Sockudo sockudo) =>
 {
-    recipients = new[]
+    var userId = user.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (userId is null)
     {
-        new { type = "channel", channel = "orders" },
-    },
-    payload = new
+        return Results.Unauthorized();
+    }
+
+    var form = await request.ReadFormAsync();
+    IUserAuthenticationResponse auth = sockudo.AuthenticateUser(
+        form["socket_id"].ToString(),
+        new UserData
+        {
+            id = userId,
+            user_info = new { name = user.FindFirstValue(ClaimTypes.Name) },
+        });
+
+    return Results.Content(auth.ToJson(), "application/json");
+}).RequireAuthorization();
+```
+
+`UserData` has `id`, `user_info`, and `watchlist` (an array of user IDs). The response JSON contains
+`auth` and `user_data`.
+
+### Encrypted channels
+
+For `private-encrypted-*` channels the SDK encrypts event data before it leaves your server, and
+Sockudo only relays ciphertext. Generate a 32-byte key once, store it in a secret manager, and pass
+the bytes as `EncryptionMasterKey`:
+
+```bash title="Terminal"
+openssl rand -base64 32
+```
+
+```csharp title="Program.cs"
+EncryptionMasterKey = Convert.FromBase64String(config["SOCKUDO_ENCRYPTION_MASTER_KEY"]!),
+```
+
+With the key set, `TriggerAsync` encrypts data for `private-encrypted-*` channels (XSalsa20-Poly1305
+via NaCl.Net), and `AuthorizeChannel` adds the per-channel `shared_secret` that the client uses to
+decrypt. A key that is missing or not exactly 32 bytes throws `EncryptionMasterKeyException`.
+Encrypted channels must be published one channel per call. Keep using TLS: encryption hides payloads,
+not channel names or event names.
+
+The .NET SDK derives each channel's secret as an HMAC-SHA256 of the channel name keyed with the
+master key. Other Sockudo server SDKs derive it differently, so publish to and authorize a given
+encrypted channel from the same SDK; otherwise clients cannot decrypt.
+
+### Terminate user connections
+
+Disconnect every connection for a user, for example after a ban or password change, or ask clients
+to reconnect so they fetch fresh auth:
+
+```csharp title="AccountService.cs"
+IGetResult<object> terminated = await sockudo.TerminateUserConnectionsAsync("user-42")
+    .ConfigureAwait(false);
+
+IGetResult<object> reconnecting = await sockudo.ForceReconnectUserAsync("user-42")
+    .ConfigureAwait(false);
+```
+
+`ForceReconnectUserAsync` closes connections with code `4200`, which clients treat as a reconnect
+signal. Revoke the user's session first, or your auth endpoint will simply sign them back in.
+
+## Validate webhooks
+
+Sockudo signs each webhook with an HMAC-SHA256 of the exact request bytes, using your app secret,
+and sends it in the `X-Pusher-Signature` header (with your app key in `X-Pusher-Key`). Any JSON
+parsing and re-serialization changes those bytes, so read the raw body as a string before any model
+binding:
+
+```csharp title="Program.cs"
+using System.Text;
+using SockudoServer;
+
+app.MapPost("/webhooks/sockudo", async (HttpRequest request, Sockudo sockudo, IWebhookQueue queue) =>
+{
+    using var reader = new StreamReader(request.Body, Encoding.UTF8);
+    var body = await reader.ReadToEndAsync();
+    var signature = request.Headers["X-Pusher-Signature"].ToString();
+
+    IWebHook webhook = sockudo.ProcessWebHook(signature, body);
+    if (!webhook.IsValid)
     {
-        title = "Order updated",
-        body = "Order ord_123 is packed",
-    },
-    publishId = "push-order-ord_123-packed",
-    sync = false,
+        return Results.Unauthorized();
+    }
+
+    // Hand off and acknowledge quickly; process in the background.
+    await queue.EnqueueAsync(webhook.GetRawEvents(), request.HttpContext.RequestAborted);
+    return Results.Ok();
 });
 ```
 
-Use anonymous objects or your own records for the camel-case ActivityKit fields. See
-[Apple Live Activities](/docs/server/apple-live-activities) for direct and broadcast examples.
+`IWebhookQueue` stands for your own durable queue or background channel. The handler binds no body
+parameter, so ASP.NET Core leaves the stream untouched.
 
-## Errors, retries, and application lifetime
+`ProcessWebHook(signature, body)` returns an `IWebHook` with:
 
-Inspect `ITriggerResult` and `IGetResult<T>` before using response data.
-Validation failures such as `EventDataSizeExceededException` should not be
-retried unchanged. Retry only transient HTTP failures, `429`, and suitable
-server errors with bounded backoff and the original idempotency key.
+- `IsValid` and `ValidationErrors`
+- `Time` (the webhook timestamp)
+- `Events`, a `Dictionary<string, string>[]` projection where nested values are stringified
+- `GetRawEvents()` (extension method), which keeps nested payloads as
+  `IReadOnlyDictionary<string, object>`
 
-- Register the SDK client as a singleton and reuse its HTTP resources.
-- Set `RestClientTimeout` below the ASP.NET request or worker deadline.
-- Pass cancellation through surrounding application operations where the SDK
-  overload supports it.
-- Keep credentials, event bodies, signed requests, webhooks, and provider
-  tokens out of logs.
-- Test payload limits, duplicate attempts, webhook retries, credential
-  rotation, and graceful host shutdown.
+The SDK checks the signature only; it does not compare `X-Pusher-Key`. It also has no built-in
+support for validating against more than one secret during key rotation.
+
+Acknowledge fast and make processing idempotent. Sockudo may retry delivery, so the same event can
+arrive more than once.
+
+<Callout type="warn" title="Keep validation errors private">
+A failed signature check adds a `ValidationErrors` entry that contains the signature computed for
+that body. Never return `ValidationErrors` to the caller, and do not log raw webhook bodies or
+signatures.
+</Callout>
+
+## Channel state and history
+
+Responses are deserialized with Newtonsoft.Json into the `T` you choose, so `object`, `JObject`, or
+your own classes all work. `Data` is populated only for successful responses.
+
+```csharp title="ChannelState.cs"
+using Newtonsoft.Json.Linq;
+
+// All occupied presence channels with user counts
+IGetResult<ChannelsList> channels = await sockudo.FetchStateForChannelsAsync<ChannelsList>(new
+{
+    filter_by_prefix = "presence-",
+    info = "user_count",
+}).ConfigureAwait(false);
+
+// One channel
+IGetResult<JObject> channel = await sockudo.FetchStateForChannelAsync<JObject>(
+    "presence-lobby",
+    new { info = "user_count,subscription_count" }).ConfigureAwait(false);
+
+// Members of a presence channel
+IGetResult<JObject> users = await sockudo.FetchUsersFromPresenceChannelAsync<JObject>("presence-lobby")
+    .ConfigureAwait(false);
+```
+
+For any other signed `GET` against the app's HTTP API, use `GetAsync<T>(resource, parameters)`, for
+example `sockudo.GetAsync<ChannelsList>("/channels")`. It is the only generic request helper; there
+is no generic signed `POST` or `DELETE`.
+
+Channel state is an operational snapshot. Do not use it as an authorization database.
+
+### History
+
+`FetchHistoryForChannelAsync` reads durable history. Parameters include `limit`, `direction`,
+`cursor`, `start_serial`, `end_serial`, `start_time_ms`, and `end_time_ms`. Cursors are opaque: pass
+`next_cursor` back unchanged and do not parse or construct them.
+
+```csharp title="HistoryExport.cs"
+string? cursor = null;
+do
+{
+    object query = cursor is null
+        ? new { limit = 100, direction = "newest_first" }
+        : new { cursor };
+
+    IGetResult<JObject> page = await sockudo.FetchHistoryForChannelAsync<JObject>("orders", query)
+        .ConfigureAwait(false);
+    if (page.Data is null)
+    {
+        throw new InvalidOperationException($"History request failed: {(int)page.StatusCode}");
+    }
+
+    foreach (var item in page.Data["items"]!)
+    {
+        // item["serial"], item["event_name"], item["message"], ...
+    }
+
+    cursor = page.Data.Value<string>("next_cursor");
+} while (cursor is not null);
+```
+
+### Presence history
+
+```csharp title="PresenceAudit.cs"
+IGetResult<JObject> transitions = await sockudo.FetchPresenceHistoryForChannelAsync<JObject>(
+    "presence-lobby",
+    new { limit = 50, direction = "newest_first" }).ConfigureAwait(false);
+
+IGetResult<JObject> snapshot = await sockudo.FetchPresenceSnapshotForChannelAsync<JObject>(
+    "presence-lobby",
+    new { at_serial = 4 }).ConfigureAwait(false);
+```
+
+Presence history uses the same pagination parameters and opaque cursors as channel history. A
+snapshot accepts `at_time_ms` or `at_serial` and reconstructs membership at that point. See
+[History and recovery](/docs/server/history-recovery).
+
+## Versioned messages and annotations
+
+Protocol V2 messages carry a `message_serial`. Use it to read, edit, delete, or append to a message
+and to manage annotations on it. Each call returns `IGetResult<T>`.
+
+```csharp title="MessageEditing.cs"
+const string channel = "chat-room-1";
+
+IGetResult<JObject> latest = await sockudo.GetMessageAsync<JObject>(channel, messageSerial);
+
+IGetResult<JObject> versions = await sockudo.GetMessageVersionsAsync<JObject>(
+    channel, messageSerial, new { limit = 10, direction = "oldest_first" });
+
+await sockudo.UpdateMessageAsync<JObject>(channel, messageSerial, new
+{
+    data = "Edited text",
+    description = "typo fix",
+});
+
+await sockudo.AppendMessageAsync<JObject>(channel, messageSerial, new { data = " more tokens" });
+
+await sockudo.DeleteMessageAsync<JObject>(channel, messageSerial, new
+{
+    clear_fields = new[] { "data", "extras" },
+});
+```
+
+Annotations:
+
+```csharp title="Reactions.cs"
+IGetResult<JObject> published = await sockudo.PublishAnnotationAsync<JObject>(
+    channel, messageSerial, new { type = "reactions:distinct.v1", name = "like" });
+
+IGetResult<JObject> list = await sockudo.ListAnnotationsAsync<JObject>(
+    channel, messageSerial, new { type = "reactions:distinct.v1", limit = 50 });
+
+await sockudo.DeleteAnnotationAsync<JObject>(channel, messageSerial, annotationSerial);
+```
+
+The SDK inserts channel names and serials into the request path as given. See
+[Mutable messages](/docs/server/mutable-messages) for request fields, authorization, and delivery
+semantics.
+
+## Push notifications
+
+Push helpers send the `X-Sockudo-Push-Capability` header for you (`push-admin`, or `push-subscribe`
+when you pass a `deviceIdentityToken`). Request bodies are plain objects serialized as given, so use
+the camel-case field names from the [push notifications guide](/docs/server/push-notifications).
+
+```csharp title="PushService.cs"
+// Register a device after verifying the user owns it.
+await sockudo.ActivateDeviceAsync<JObject>(deviceRegistration);
+
+// Subscribe a device to channel push.
+await sockudo.UpsertChannelPushSubscriptionAsync<JObject>(subscription);
+
+// Publish
+IGetResult<JObject> accepted = await sockudo.PublishPushAsync<JObject>(new
+{
+    publishId = "push-order-ord_123-packed",
+    recipients = new[] { new { type = "channel", channel = "orders" } },
+    payload = new { title = "Order updated", body = "Order ord_123 is packed" },
+});
+
+// Inspect delivery later
+IGetResult<JObject> status = await sockudo.GetPublishStatusAsync<JObject>("push-order-ord_123-packed");
+```
+
+`PublishPushAsync` always sends `sync = false`, so the response is an admission record (the
+`publishId`, status, expected recipients, and rendered payloads), not a delivery result. Read
+`GetPublishStatusAsync` afterwards. A stable `publishId` lets you retry a publish safely.
+
+Other helpers:
+
+| Area | Methods |
+| --- | --- |
+| Devices | `ActivateDeviceAsync`, `CreateDeviceActivationAsync`, `UpdateDeviceRegistrationAsync`, `GetDeviceRegistrationAsync`, `ListDeviceRegistrationsAsync`, `DeleteDeviceRegistrationAsync`, `RemoveDeviceRegistrationsByClientAsync` |
+| Channel subscriptions | `UpsertChannelPushSubscriptionAsync`, `ListChannelPushSubscriptionsAsync`, `DeleteChannelPushSubscriptionsAsync`, `ListChannelPushSubscriptionChannelsAsync` |
+| Publishing | `PublishPushAsync`, `PublishPushDirectAsync`, `PublishPushBatchAsync`, `SchedulePushAsync` (requires `notBeforeMs`), `CancelScheduledPushAsync`, `GetPublishStatusAsync` |
+| Credentials and feedback | `ListPushCredentialsAsync`, `PutPushCredentialAsync`, `PostPushDeliveryStatusAsync` |
+
+### Apple Live Activities
+
+Send ActivityKit payloads through `PublishPushAsync` with a `liveActivity` object, and manage iOS 18
+broadcast channels with `CreateApnsLiveActivityChannelAsync` (`"noStorage"` or `"mostRecent"`),
+`GetApnsLiveActivityChannelAsync`, `ListApnsLiveActivityChannelsAsync`, and
+`DeleteApnsLiveActivityChannelAsync`. Channel IDs are URL-escaped for you.
+
+```csharp title="LiveScores.cs"
+await sockudo.PublishPushAsync<JObject>(new
+{
+    publishId = "match-90-score-3-1",
+    recipients = new[]
+    {
+        new
+        {
+            type = "recipient",
+            recipient = new
+            {
+                transportType = "apnsLiveActivityBroadcast",
+                channelId = broadcastChannelId,
+                storagePolicy = "mostRecent",
+            },
+        },
+    },
+    payload = new { },
+    liveActivity = new
+    {
+        @event = "update",
+        timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        contentState = new { home = 3, away = 1 },
+        priority = "conservePower",
+    },
+});
+```
+
+See [Apple Live Activities](/docs/server/apple-live-activities) for direct-token start, update, and
+end flows.
+
+## Errors and timeouts
+
+How failures surface:
+
+- **HTTP errors are returned, not thrown.** Every result has `StatusCode` and `Body`. For
+  `IGetResult<T>`, `Data` is set only on a 2xx response.
+- **Validation throws before sending:** `ArgumentException` (empty arguments),
+  `ChannelNameFormatException`, `ChannelNameLengthExceededException`, `SocketIdFormatException`,
+  `EventBatchSizeExceededException`, `EventDataSizeExceededException`, and
+  `EncryptionMasterKeyException`, all in `SockudoServer.Exceptions` except `ArgumentException`.
+- **Unparseable publish responses** throw `TriggerResponseException`, for example when a proxy
+  returns an HTML error page.
+- **Transport failures** surface from `HttpClient`: `HttpRequestException`, or
+  `TaskCanceledException` when `RestClientTimeout` elapses.
+
+Retry network errors, timeouts, `429`, and 5xx responses with backoff, and reuse the original
+idempotency key or `publishId`. Do not retry `400`, `401`, `403`, or `413` unchanged; fix the
+request, credentials, or payload. Remember that `TriggerAsync` can take up to three times
+`RestClientTimeout` because of its built-in retries, so keep that total below your request or job
+deadline.
+
+```csharp title="SafePublish.cs"
+using System.Net;
+using SockudoServer.Exceptions;
+
+try
+{
+    ITriggerResult result = await sockudo.TriggerAsync("orders", "order.created", order,
+        new TriggerOptions { IdempotencyKey = $"order.created:{order.Id}:v1" });
+
+    if (result.StatusCode == HttpStatusCode.TooManyRequests || (int)result.StatusCode >= 500)
+    {
+        // Transient: schedule a retry with the same key.
+    }
+    else if ((int)result.StatusCode >= 400)
+    {
+        // Permanent: log the status code, not the body, and fix the request.
+    }
+}
+catch (EventDataSizeExceededException)
+{
+    // Payload too large: do not retry unchanged.
+}
+catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or TriggerResponseException)
+{
+    // Transient: schedule a retry with the same key.
+}
+```
+
+Never log the app secret, the encryption master key, signed request URLs (their query string carries
+`auth_signature`), raw webhook bodies, or push provider tokens.
+
+## Next steps
+
+<Cards>
+  <Card title="Server SDKs overview" href="/docs/server-sdks" description="Compare capabilities across every official server SDK." />
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="End-to-end flow for private, presence, and user authentication." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Event types, delivery, retries, and signature details." />
+  <Card title="HTTP API" href="/docs/server/http-api" description="The endpoints this SDK signs and calls." />
+</Cards>

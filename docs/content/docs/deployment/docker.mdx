@@ -4,44 +4,105 @@ description: Run Sockudo in containers with mounted configuration, correct limit
 icon: Container
 ---
 
-The published Sockudo image runs as a non-root user and starts the binary with
-`--config /app/config/config.json`. The bundled file is a development example so a bare
-`docker run` can start safely with node-local drivers. For production, pin a release tag, mount or
-generate the exact configuration, inject secrets separately, and set limits on the container
-itself.
+This guide runs the published Sockudo image with `docker run` or Docker Compose, with production
+limits, read-only configuration, and separate secrets. Choose it for a single container host, for
+staging environments, or as the building block before moving to
+[Kubernetes](/docs/deployment/kubernetes).
+
+## What the image does by default
+
+The published image is built from the repository `Dockerfile`:
+
+- it runs as a non-root `sockudo` user with `/app` as the working directory
+- its default command is `sockudo --config /app/config/config.json`
+- it exposes `6001` (WebSocket and HTTP API) and `9601` (Prometheus metrics)
+- it sets `HOST=0.0.0.0`, `PORT=6001`, and `METRICS_PORT=9601`
+- it includes `curl` and a `HEALTHCHECK` that calls `http://localhost:${PORT}/${HEALTHCHECK_PATH}`
+  every 30 seconds, with `HEALTHCHECK_PATH=up`
+
+The bundled `config.json` is a development example: `mode` is `development`, the adapter is
+`local`, and `shutdown_grace_period` is `2` seconds. It lets a bare `docker run` start safely with
+node-local drivers. For production, pin a release tag, mount or generate the exact configuration,
+inject secrets separately, and set limits on the container itself.
+
+The image is published to both `ghcr.io/sockudo/sockudo` and Docker Hub as `sockudo/sockudo`, with
+the same version tags.
 
 ## Production-like docker run
 
-```bash
-docker run -d \
-  --name sockudo \
-  --restart unless-stopped \
-  --init \
-  --stop-timeout 45 \
-  --ulimit nofile=262144:262144 \
-  --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-  --mount type=bind,src="$PWD/config.toml",dst=/app/config/production.toml,readonly \
-  --env-file "$PWD/sockudo.env" \
-  -p 6001:6001 \
-  -p 127.0.0.1:9601:9601 \
-  ghcr.io/sockudo/sockudo:5.2.0 \
-  sockudo --config /app/config/production.toml
-```
+<Steps>
 
-The arguments after the image replace its default command, so include both `sockudo` and
-`--config`. Mount metrics only on a private or loopback interface unless the network policy already
-restricts it.
+1. Put the non-secret configuration in `config.toml` (see
+   [Static configuration](/docs/deployment/static-configuration)) and the secrets in
+   `sockudo.env`. Make the config readable by the container user and keep the env file private:
+
+   ```bash
+   chmod 0644 config.toml
+   chmod 0600 sockudo.env
+   ```
+
+2. Start the container:
+
+   ```bash
+   docker run -d \
+     --name sockudo \
+     --restart unless-stopped \
+     --init \
+     --stop-timeout 120 \
+     --ulimit nofile=262144:262144 \
+     --read-only \
+     --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+     --mount type=bind,src="$PWD/config.toml",dst=/app/config/production.toml,readonly \
+     --env-file "$PWD/sockudo.env" \
+     -e HEALTHCHECK_PATH=up/production \
+     -p 6001:6001 \
+     -p 127.0.0.1:9601:9601 \
+     ghcr.io/sockudo/sockudo:5.2.0 \
+     sockudo --config /app/config/production.toml
+   ```
+
+3. Confirm the configuration source and health:
+
+   ```bash
+   docker logs sockudo 2>&1 | grep 'explicit configuration applied'
+   curl -fsS http://127.0.0.1:6001/up/production
+   docker inspect sockudo --format '{{.State.Health.Status}}'
+   ```
+
+   The log line names `/app/config/production.toml`, `curl` prints `OK`, and the health status
+   becomes `healthy` after the first check.
+
+</Steps>
+
+Why each flag is there:
+
+| Flag | Purpose |
+| --- | --- |
+| `sockudo --config ...` after the image | Arguments after the image replace its default command, so include both `sockudo` and `--config`. |
+| `--init` | Runs a minimal init as PID 1 that forwards signals and reaps child processes. |
+| `--stop-timeout 120` | Time between `SIGTERM` and `SIGKILL`; it must cover Sockudo's drain (see below). |
+| `--ulimit nofile=...` | Raises the open-file limit; every WebSocket is a file descriptor. |
+| `--read-only` and `--tmpfs /tmp` | Makes the image filesystem immutable while leaving a small scratch area. Sockudo logs to stdout. |
+| `-e HEALTHCHECK_PATH=up/production` | Points the image's built-in health check at your app. |
+| `-p 127.0.0.1:9601:9601` | Publishes metrics only on loopback. |
 
 The `CONFIG_FILE` environment value embedded in the image is descriptive; the server selects a
 non-default file through `--config`.
+
+<Callout type="warn" title="Size the stop timeout from the drain budget">
+Docker's default stop timeout is 10 seconds. After `SIGTERM`, Sockudo keeps its listener open for
+`shutdown_grace_period`, then drains webhooks and queue work, each phase bounded by
+`queue.reliability.shutdown_timeout_ms` (30 seconds by default). With
+`shutdown_grace_period = 30` that is up to `30 + 2 × 30 = 90` seconds before teardown, so the
+examples use 120 seconds. A `SIGKILL` during the drain can lose buffered lifecycle events.
+</Callout>
 
 ## Compose profile
 
 This example keeps the Sockudo process immutable and connects it to an external or separately
 managed Redis:
 
-```yaml
+```yaml title="compose.yaml"
 name: sockudo
 
 services:
@@ -50,7 +111,7 @@ services:
     command: ["sockudo", "--config", "/app/config/production.toml"]
     restart: unless-stopped
     init: true
-    stop_grace_period: 45s
+    stop_grace_period: 120s
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -84,6 +145,18 @@ services:
         max-file: "5"
 ```
 
+Start it and check the result:
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+The `sockudo` service shows `running (healthy)` once `/up/production` returns `OK`.
+
+`METRICS_HOST` is `0.0.0.0` inside the container so the published port can reach the metrics
+listener; the `127.0.0.1:9601` host binding is what keeps it private.
+
 For local development, adding Redis to the same Compose project is convenient. In production, a
 single-host Redis container has the same host failure domain as Sockudo. Use a managed or
 independently operated Redis topology when the shared adapter, cache, queue, or rate limiter must
@@ -95,6 +168,8 @@ Prefer this separation:
 
 - mount the complete non-secret TOML or JSON read-only
 - supply secret-backed environment variables through the orchestrator
+- reference those variables from the config with `${VAR}` placeholders when a nested value, such as
+  an inline app secret, has no dedicated environment variable
 - mount TLS keys, provider credentials, and service-account JSON as read-only secret files
 - reference secret file paths from Sockudo configuration or environment
 
@@ -102,8 +177,10 @@ An `env_file` is still a plaintext secret file on the Docker host. Limit its own
 out of image build context and source control, and rotate it through the host's secret-management
 workflow.
 
-Do not use Docker build arguments for credentials. Build arguments and layers can remain visible in
-image metadata or caches.
+<Callout type="warn" title="Never pass credentials as build arguments">
+Docker build arguments and layers can remain visible in image metadata or caches. Inject
+credentials at runtime only.
+</Callout>
 
 ## Limits: host versus container
 
@@ -115,17 +192,19 @@ Three different layers can cap a container:
 | Process `nofile` | `docker exec sockudo sh -c 'ulimit -n'` | `--ulimit` or Compose `ulimits` |
 | Host kernel and service manager | `sysctl`, Docker daemon unit limits | Host image, sysctl, and daemon configuration |
 
-Changing `/etc/security/limits.d` inside the image does not raise the running container's file
-limit. Set it through the runtime and verify from inside the container.
+The lowest of the three wins. Changing `/etc/security/limits.d` inside the image does not raise the
+running container's file limit. Set it through the runtime and verify from inside the container.
 
 Host-level connection queues and NIC settings remain host concerns. Namespaced sysctls may be set
 per container, but only after confirming the runtime supports them and the value is safe for other
-workloads.
+workloads. For a dedicated container host, apply the measured host guidance from
+[Linux VM and bare metal](/docs/deployment/linux).
 
 ## CPU and memory
 
 Start with a memory limit that leaves room for peak sockets, payload buffers, adapter queues, and
-allocator fragmentation. An out-of-memory kill disconnects every client on that container at once.
+allocator fragmentation. An out-of-memory kill disconnects every client on that container at once,
+and they all reconnect at the same moment.
 
 CPU quotas can create latency cliffs during reconnect or fanout bursts. Set CPU reservations, watch
 throttling metrics, and add a hard CPU limit only when multi-tenant isolation requires one and the
@@ -137,20 +216,27 @@ Measure:
 docker stats sockudo
 docker inspect sockudo --format '{{json .HostConfig.Ulimits}}'
 docker exec sockudo sh -c 'ulimit -n; cat /proc/1/limits'
-docker exec sockudo sh -c 'curl -fsS http://127.0.0.1:6001/live'
+docker exec sockudo sh -c 'curl -fsS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:6001/live'
 ```
+
+`ulimit -n` must print `262144`, and the `/live` check prints `200`.
 
 ## Health and startup ordering
 
 Use `/live` when the runtime needs to decide whether the process is alive. Use `/up` or
-`/up/<app-id>` when the load balancer needs dependency-aware readiness.
+`/up/<app-id>` when the load balancer needs dependency-aware readiness. `/up/<app-id>` prints `OK`
+with status `200` when healthy and returns `503` when a dependency check fails.
 
 Compose `depends_on` can order startup, but it does not make a dependency permanently available.
 Sockudo must still expose failed readiness and operators must alert on adapter, cache, queue, and
 app-manager failures.
 
-Do not restart a healthy process merely because Redis or a database is briefly slow. Repeated
-container restarts amplify reconnect load.
+<Callout type="note" title="Unhealthy does not mean restart">
+Plain Docker and Compose report a failing health check as `unhealthy` but do not restart the
+container because of it. That is the right behavior for a dependency-aware check: restarting a
+healthy process because Redis is briefly slow does not repair Redis and amplifies reconnect load.
+If you add an auto-restart tool, point it at `/live`, not `/up`.
+</Callout>
 
 ## Multi-host containers
 
@@ -159,7 +245,7 @@ Sockudo replica must have:
 
 - the same app identity and policy, or access to one shared app manager
 - a unique `INSTANCE_PROCESS_ID`
-- a shared horizontal adapter
+- a shared horizontal adapter with `fallback_to_local = false`
 - a shared cache for cross-node coordination and distributed limits
 - durable queue and state backends where the enabled features require them
 - a WebSocket-aware load balancer with readiness and connection drain
@@ -167,6 +253,21 @@ Sockudo replica must have:
 Do not place a local memory adapter behind a multi-host load balancer. Clients connected to
 different hosts would occupy isolated realtime islands.
 
-For larger container deployments, use the [Kubernetes and Helm](/docs/deployment/kubernetes)
-guide. For one dedicated container host, also apply the measured host guidance from
-[Linux VM and bare metal](/docs/deployment/linux).
+## Production checklist
+
+- the image tag is a pinned release, never `latest`
+- logs show `explicit configuration applied` with your mounted path
+- `ulimit -n` inside the container matches the intended `nofile`
+- the stop timeout exceeds `shutdown_grace_period` plus twice the queue shutdown timeout
+- the metrics port is bound to loopback or a private network
+- secrets live only in the env file or mounted secret files, never in the image or command line
+- multi-host deployments use a shared adapter, cache, and queue
+
+## Next steps
+
+<Cards>
+  <Card title="Kubernetes and Helm" href="/docs/deployment/kubernetes" description="Move from one container host to orchestrated replicas." />
+  <Card title="Linux VM and bare metal" href="/docs/deployment/linux" description="Tune the container host's kernel and network path." />
+  <Card title="Static configuration" href="/docs/deployment/static-configuration" description="Write the config file you mount into the container." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Choose a shared adapter before adding a second host." />
+</Cards>

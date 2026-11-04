@@ -1,0 +1,512 @@
+---
+import { ArrowRight, Check, Copy, Sparkles, Star } from '@lucide/astro';
+import GithubIcon from '../GithubIcon.astro';
+import { getStars, repoUrl } from '@/lib/github';
+
+const stars = await getStars();
+const installs = [
+  { id: 'curl', label: 'Linux binary', cmd: "curl --proto '=https' --tlsv1.2 -sSfL https://sockudo.io/install.sh | sh" },
+  { id: 'docker', label: 'Docker', cmd: 'docker run -p 6001:6001 ghcr.io/sockudo/sockudo:latest' },
+  { id: 'cargo', label: 'Cargo', cmd: 'cargo install sockudo --locked' },
+];
+---
+
+<section class="hero island" aria-labelledby="hero-title">
+  <canvas class="hero-canvas" data-hero-canvas aria-hidden="true"></canvas>
+  <div class="hero-vignette" aria-hidden="true"></div>
+
+  <div class="hero-inner">
+    <div class="hero-copy">
+      <a class="announce" href="/docs/server/ai-transport-overview" data-hero-in>
+        <span class="announce-tag"><Sparkles size={12} /> New in 5.2</span>
+        <span>AI Transport — durable token streaming</span>
+        <ArrowRight size={14} />
+      </a>
+
+      <h1 id="hero-title" class="hero-title">
+        <span class="line" data-hero-line><span>Realtime</span></span>
+        <span class="line" data-hero-line><span>infrastructure</span></span>
+        <span class="line" data-hero-line><span>you <em class="grad">own.</em></span></span>
+      </h1>
+
+      <p class="hero-lede" data-hero-in>
+        A high-performance, self-hosted WebSocket server written in <strong>Rust</strong>. Keep the Pusher clients you already ship — then
+        unlock recovery, history, mutable messages, push and AI streaming the moment you need them.
+      </p>
+
+      <div class="hero-ctas" data-hero-in>
+        <a class="btn btn-primary" href="/docs/getting-started/installation">Start building <ArrowRight class="arrow" /></a>
+        <a class="btn btn-glass gh-cta" href={repoUrl} target="_blank" rel="noreferrer">
+          <GithubIcon size={17} /> Star on GitHub
+          <span class="gh-count"><Star size={13} /><span data-stars data-raw={stars}>{stars}</span></span>
+        </a>
+      </div>
+
+      <div class="install glass" data-hero-in data-install>
+        <div class="install-tabs" role="tablist" aria-label="Install method">
+          {
+            installs.map((i, n) => (
+              <button type="button" role="tab" aria-selected={n === 0 ? 'true' : 'false'} data-install-tab={i.id}>
+                {i.label}
+              </button>
+            ))
+          }
+        </div>
+        <div class="install-row">
+          <span class="prompt" aria-hidden="true">$</span>
+          {
+            installs.map((i, n) => (
+              <code data-install-cmd={i.id} hidden={n !== 0}>
+                {i.cmd}
+              </code>
+            ))
+          }
+          <button class="copy" type="button" aria-label="Copy install command" data-install-copy>
+            <Copy class="c1" size={15} /><Check class="c2" size={15} />
+          </button>
+        </div>
+      </div>
+
+      <ul class="proof" data-hero-in>
+        <li><Check size={14} /> Pusher Protocol V1 compatible</li>
+        <li><Check size={14} /> MIT licensed</li>
+        <li><Check size={14} /> 8 horizontal fanout backends</li>
+        <li><Check size={14} /> 16 official SDKs</li>
+      </ul>
+    </div>
+
+    <div class="float-cards" aria-hidden="true">
+      <div class="fcard glass fc1" data-float>
+        <div class="fc-head"><span class="dot live"></span> sockudo:message <span class="muted">orders</span></div>
+        <pre><span class="k">"serial"</span>: <span class="n" data-ticker="1042">1042</span>,
+<span class="k">"event"</span>: <span class="s">"order.created"</span>,
+<span class="k">"data"</span>: {"{"} <span class="k">"id"</span>: <span class="s">"ord_123"</span> {"}"}</pre>
+      </div>
+      <div class="fcard glass fc2" data-float>
+        <div class="fc-head"><span class="dot fuchsia"></span> recovered <span class="muted">until_attach</span></div>
+        <div class="bars"><i></i><i></i><i></i><i></i><i class="gap"></i><i class="gap"></i><i></i><i></i></div>
+        <small>2 missed messages replayed from history</small>
+      </div>
+      <div class="fcard glass fc3" data-float>
+        <div class="fc-head"><span class="dot cyan"></span> presence <span class="muted">room-42</span></div>
+        <div class="avatars"><b>RD</b><b>AK</b><b>MJ</b><b>+9</b></div>
+      </div>
+    </div>
+  </div>
+
+  <a class="scroll-hint" href="#migrate" aria-label="Scroll to content"><span></span></a>
+</section>
+
+<style>
+  .hero {
+    position: relative;
+    min-height: 100svh;
+    margin-top: calc(var(--header-h) * -1);
+    padding: calc(var(--header-h) + 6vh) 20px 80px;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    color: var(--fg);
+    background:
+      radial-gradient(1200px 700px at 72% 45%, rgb(124 58 237 / 0.22), transparent 60%),
+      radial-gradient(900px 600px at 10% 100%, rgb(192 38 211 / 0.12), transparent 60%),
+      #07050c;
+    isolation: isolate;
+  }
+  .hero-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+  }
+  .hero-vignette {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg, rgb(7 5 12 / 0.85) 0%, rgb(7 5 12 / 0.35) 45%, transparent 70%),
+      linear-gradient(0deg, #07050c 0%, transparent 22%);
+  }
+  .hero-inner {
+    width: 100%;
+    max-width: 1320px;
+    margin: 0 auto;
+    position: relative;
+  }
+  .hero-copy {
+    max-width: 680px;
+  }
+  .announce {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 12px 5px 5px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    color: var(--fg-muted);
+    background: rgb(255 255 255 / 0.04);
+    border: 1px solid var(--glass-border);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    transition:
+      border-color 0.2s,
+      color 0.2s;
+  }
+  .announce:hover {
+    color: var(--fg);
+    border-color: rgb(196 165 255 / 0.4);
+  }
+  .announce-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 0.74rem;
+    color: #fff;
+    background: linear-gradient(135deg, #8b4dff, #c026d3);
+  }
+  .hero-title {
+    margin: 26px 0 22px;
+    font-size: clamp(3rem, 8.2vw, 6.6rem);
+    line-height: 0.94;
+    letter-spacing: -0.055em;
+    font-weight: 720;
+  }
+  .hero-title .line {
+    display: block;
+    overflow: hidden;
+    padding-bottom: 0.06em;
+  }
+  .hero-title .line > span {
+    display: inline-block;
+  }
+  .hero-title em {
+    font-style: normal;
+  }
+  .hero-lede {
+    font-size: clamp(1.05rem, 1.5vw, 1.22rem);
+    line-height: 1.6;
+    color: var(--fg-muted);
+    max-width: 560px;
+    margin: 0 0 32px;
+  }
+  .hero-lede strong {
+    color: var(--fg);
+  }
+  .hero-ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .gh-cta .gh-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 4px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    background: rgb(255 255 255 / 0.08);
+    font-variant-numeric: tabular-nums;
+  }
+  .gh-cta .gh-count svg {
+    width: 13px;
+    height: 13px;
+    color: #fbbf24;
+    fill: #fbbf24;
+  }
+
+  .install {
+    max-width: 600px;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .install-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 6px 6px 0;
+  }
+  .install-tabs button {
+    border: 0;
+    background: transparent;
+    padding: 6px 12px;
+    border-radius: 9px 9px 0 0;
+    font-size: 0.78rem;
+    font-weight: 550;
+    color: var(--fg-subtle);
+    transition:
+      color 0.2s,
+      background 0.2s;
+  }
+  .install-tabs button[aria-selected='true'] {
+    color: var(--fg);
+    background: rgb(255 255 255 / 0.05);
+  }
+  .install-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 10px 12px 16px;
+    background: rgb(255 255 255 / 0.05);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .install-row .prompt {
+    color: var(--accent);
+  }
+  .install-row code {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    color: #e9e1fb;
+  }
+  .install-row .copy {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg-muted);
+  }
+  .install-row .copy:hover {
+    color: var(--fg);
+    border-color: var(--glass-border);
+  }
+  .install-row .copy .c2,
+  .install-row .copy[data-copied] .c1 {
+    display: none;
+  }
+  .install-row .copy[data-copied] .c2 {
+    display: block;
+    color: #4ade80;
+  }
+
+  .proof {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    list-style: none;
+    padding: 0;
+    margin: 26px 0 0;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+  }
+  .proof li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .proof svg {
+    color: var(--accent);
+  }
+
+  .float-cards {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .fcard {
+    position: absolute;
+    padding: 12px 14px;
+    border-radius: 14px;
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+    background: rgb(20 13 34 / 0.45);
+    box-shadow: 0 20px 50px -20px rgb(0 0 0 / 0.8);
+    will-change: transform;
+  }
+  .fc1 {
+    right: 2%;
+    top: 4%;
+    width: 250px;
+  }
+  .fc2 {
+    right: 30%;
+    bottom: 2%;
+    width: 230px;
+  }
+  .fc3 {
+    right: -1%;
+    bottom: 18%;
+  }
+  .fc-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--fg);
+    margin-bottom: 8px;
+  }
+  .fc-head .muted {
+    margin-left: auto;
+    color: var(--fg-subtle);
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #a978ff;
+    box-shadow: 0 0 10px currentColor;
+  }
+  .dot.live {
+    background: #4ade80;
+    color: #4ade80;
+    animation: blink 1.6s ease-in-out infinite;
+  }
+  .dot.fuchsia {
+    background: #e879f9;
+    color: #e879f9;
+  }
+  .dot.cyan {
+    background: #67e8f9;
+    color: #67e8f9;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .fcard pre {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.6;
+    color: #d9d0ec;
+  }
+  .fcard .k {
+    color: #c4a5ff;
+  }
+  .fcard .s {
+    color: #86efac;
+  }
+  .fcard .n {
+    color: #fbbf24;
+  }
+  .bars {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .bars i {
+    flex: 1;
+    height: 22px;
+    border-radius: 4px;
+    background: linear-gradient(#a978ff, #6425d0);
+  }
+  .bars i.gap {
+    background: linear-gradient(#f0abfc, #c026d3);
+    animation: refill 3s ease-in-out infinite;
+  }
+  @keyframes refill {
+    0%,
+    30% {
+      opacity: 0.15;
+      transform: scaleY(0.3);
+    }
+    60%,
+    100% {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .avatars {
+    display: flex;
+  }
+  .avatars b {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    margin-left: -8px;
+    border-radius: 50%;
+    font-size: 0.65rem;
+    color: #fff;
+    border: 2px solid #120c1c;
+    background: linear-gradient(135deg, #8b4dff, #c026d3);
+    animation: bob 3s ease-in-out infinite;
+  }
+  .avatars b:first-child {
+    margin-left: 0;
+  }
+  .avatars b:nth-child(2) {
+    background: linear-gradient(135deg, #0ea5e9, #8b4dff);
+    animation-delay: 0.2s;
+  }
+  .avatars b:nth-child(3) {
+    background: linear-gradient(135deg, #f472b6, #a855f7);
+    animation-delay: 0.4s;
+  }
+  .avatars b:nth-child(4) {
+    background: rgb(255 255 255 / 0.1);
+    animation-delay: 0.6s;
+  }
+  @keyframes bob {
+    50% {
+      transform: translateY(-3px);
+    }
+  }
+
+  .scroll-hint {
+    position: absolute;
+    left: 50%;
+    bottom: 24px;
+    width: 24px;
+    height: 38px;
+    margin-left: -12px;
+    border-radius: 14px;
+    border: 1.5px solid rgb(255 255 255 / 0.25);
+  }
+  .scroll-hint span {
+    position: absolute;
+    left: 50%;
+    top: 7px;
+    width: 3px;
+    height: 8px;
+    margin-left: -1.5px;
+    border-radius: 2px;
+    background: #c4a5ff;
+    animation: wheel 1.8s ease-in-out infinite;
+  }
+  @keyframes wheel {
+    0% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    30% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+  }
+
+  @media (max-width: 1100px) {
+    .float-cards {
+      display: none;
+    }
+  }
+  @media (max-width: 760px) {
+    .hero {
+      padding-top: calc(var(--header-h) + 32px);
+      align-items: flex-start;
+    }
+    .hero-vignette {
+      background: linear-gradient(0deg, #07050c 5%, rgb(7 5 12 / 0.55) 60%, rgb(7 5 12 / 0.3));
+    }
+    .scroll-hint {
+      display: none;
+    }
+  }
+</style>

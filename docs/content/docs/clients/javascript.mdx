@@ -4,11 +4,30 @@ description: Use @sockudo/client in browsers, Node.js, workers, React, Vue, Reac
 icon: Braces
 ---
 
-`@sockudo/client` is the official JavaScript and TypeScript realtime SDK. It preserves the Pusher subscribe/bind model and adds runtime-specific entrypoints.
+`@sockudo/client` is the official JavaScript and TypeScript realtime SDK. It keeps the Pusher
+`subscribe` / `bind` programming model, so existing `pusher-js` code ports with few changes, and
+adds Sockudo-native features on top: connection recovery, rewind, server-side filters, delta
+compression, binary wire formats, and versioned messages.
 
-The default is Protocol V1 compatibility. Set `protocolVersion: 2` for
-Sockudo-native recovery, rewind, filters, deltas, binary wire formats, and
-versioned-message metadata.
+One package covers every JavaScript runtime. Runtime-specific entrypoints keep bundlers from
+pulling in transports the target cannot use:
+
+| Runtime | Entrypoint |
+| --- | --- |
+| Browser and bundlers (default) | `@sockudo/client` |
+| Node.js 22+ | `@sockudo/client` (resolved through the `node` export condition) |
+| Web Worker | `@sockudo/client/worker` |
+| React hooks | `@sockudo/client/react` |
+| Vue composables | `@sockudo/client/vue` |
+| React Native | `@sockudo/client/react-native` |
+| NativeScript | `@sockudo/client/nativescript` |
+| End-to-end encrypted channels | `@sockudo/client/with-encryption`, `@sockudo/client/worker/with-encryption` |
+| Filter builder | `@sockudo/client/filter` |
+
+The client speaks Protocol V1 (Pusher-compatible, `protocol=7`) by default. Set
+`protocolVersion: 2` to opt into Sockudo-native recovery, rewind, filters, deltas, binary wire
+formats, and versioned-message metadata. See [Protocol V2](/docs/clients/protocol-v2) for what
+changes on the wire.
 
 ## Install
 
@@ -21,22 +40,44 @@ npm install @sockudo/client
 # or: yarn add @sockudo/client
 ```
 
-## Runtime imports
+Framework integrations use peer dependencies that your application already has:
 
-```ts
+```bash
+npm install @sockudo/client react react-dom   # React hooks
+npm install @sockudo/client vue               # Vue composables
+npm install @sockudo/client @valor/nativescript-websockets   # NativeScript
+```
+
+`@react-native-community/netinfo` is an optional peer dependency for React Native network
+reachability.
+
+### Runtime imports
+
+```ts title="imports.ts"
 import Sockudo from "@sockudo/client";
 import { Filter } from "@sockudo/client/filter";
 import SockudoEncrypted from "@sockudo/client/with-encryption";
 import WorkerSockudo from "@sockudo/client/worker";
+import WorkerEncrypted from "@sockudo/client/worker/with-encryption";
 import { SockudoProvider, useChannel } from "@sockudo/client/react";
 import { createSockudoPlugin, useChannel as useSockudoChannel } from "@sockudo/client/vue";
 import ReactNativeSockudo from "@sockudo/client/react-native";
 import NativeScriptSockudo from "@sockudo/client/nativescript";
 ```
 
+The package also sets the `main`, `browser`, `react-native`, and `nativescript` fields in
+`package.json`, so most bundlers resolve the right build from the root import alone.
+
 ## Connect
 
-```ts
+A **client** (`new Sockudo(...)`) owns one WebSocket connection to Sockudo, including its
+heartbeats and reconnect policy. A **channel** is a named stream of events multiplexed over that
+connection. You subscribe to the channels you care about and bind handlers to event names.
+
+The client needs only your **public app key** and the address of your Sockudo server. The app
+secret never ships to a browser or device.
+
+```ts title="realtime.ts"
 import Sockudo from "@sockudo/client";
 
 const client = new Sockudo("app-key", {
@@ -48,25 +89,245 @@ const client = new Sockudo("app-key", {
   connectionRecovery: true,
 });
 
+client.connection.bind("state_change", ({ previous, current }) => {
+  console.log(`connection: ${previous} -> ${current}`);
+});
+
 const channel = client.subscribe("public-updates");
 channel.bind("price-updated", (payload) => {
-  console.log(payload);
+  console.log("price-updated", payload);
 });
 ```
 
-For self-hosted production, `wsHost` should be the public ingress or load
-balancer name, `wssPort` is normally `443`, and `forceTLS` should be `true`.
-Specify `enabledTransports: ["ws"]` only when debugging a direct local
-connection; allowing both secure and fallback transports is safer across
+Publish a `price-updated` event to `public-updates` from your backend (see the
+[Node.js server SDK](/docs/server-sdks/node)) and the console shows:
+
+```text
+connection: connecting -> connected
+price-updated { symbol: 'BTC', price: 67210 }
+```
+
+The client connects automatically once the runtime is ready. Calling `client.connect()` yourself
+is safe: it does nothing while a connection is already open or being established.
+
+<Callout type="warn" title="cluster is a hosted-domain shortcut">
+Passing only `cluster: "eu"` resolves the host to `ws-eu.sockudo.io`. For a self-hosted server,
+always set `wsHost` to your own ingress. The constructor throws if neither `cluster` nor `wsHost`
+is provided.
+</Callout>
+
+For self-hosted production, `wsHost` should be the public ingress or load balancer name, `wssPort`
+is normally `443`, and `forceTLS` should be `true`. Specify `enabledTransports: ["ws"]` only when
+debugging a direct local connection; allowing both secure and fallback transports is safer across
 browser and mobile runtimes.
 
-## Capability-token authentication
+### Common options
 
-Protocol V2 can authorize the WebSocket with a scoped capability token:
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `wsHost` | `string` | `ws-<cluster>.sockudo.io` when `cluster` is set | WebSocket host. Set this for any self-hosted server. |
+| `cluster` | `string` | none | Hosted cluster name. Required when `wsHost` is not set. |
+| `wsPort` | `number` | `80` | Port used for unencrypted `ws://` connections. |
+| `wssPort` | `number` | `443` | Port used for `wss://` connections. |
+| `wsPath` | `string` | `""` | Path prefix in front of `/app/<key>`, for servers mounted behind a path. |
+| `forceTLS` | `boolean` | TLS on | TLS is used unless this is `false`. Pages served over `https:` always use TLS. |
+| `enabledTransports` | `Transport[]` | all supported | Restrict transports, for example `["ws", "wss"]`. |
+| `protocolVersion` | `number` | `7` (Protocol V1) | Set to `2` for Protocol V2. |
+| `connectionRecovery` | `boolean` | `false` | V2: track per-channel positions and resume after reconnect. |
+| `wireFormat` | `"json"`, `"messagepack"`, `"protobuf"` | `"json"` | V2 wire encoding. `"msgpack"` and `"proto"` are accepted aliases. |
+| `messageDeduplication` | `boolean` | `true` | Drop repeated deliveries with the same `message_id`. |
+| `messageDeduplicationCapacity` | `number` | `1000` | How many recent `message_id` values to remember. |
+| `echoMessages` | `boolean` | server default | V2: set `false` to stop receiving your own publishes. |
+| `appendMode` | `"delta"` or `"full"` | server default (`delta`) | V2: how mutable-message appends are delivered. |
+| `deltaCompression` | `DeltaOptions` | not set | Enables client-side delta reconstruction. See [Delta compression](#delta-compression). |
+| `channelAuthorization` | `object` | endpoint `/sockudo/auth`, transport `fetch` | Private and presence channel auth. |
+| `userAuthentication` | `object` | endpoint `/sockudo/user-auth`, transport `fetch` | User sign-in auth. |
+| `token`, `authUrl`, `authCallback` | see below | none | V2 capability-token authentication. |
+| `presenceHistory` | `{ endpoint, headers?, headersProvider? }` | not set | Backend proxy for presence history helpers. |
+| `versionedMessages` | `{ endpoint, headers?, headersProvider? }` | not set | Backend proxy for history, versions, and annotations. |
+| `activityTimeout` | `number` (ms) | `120000` | Idle time before the client sends a ping. |
+| `pongTimeout` | `number` (ms) | `30000` | Time to wait for a pong before reconnecting. |
+| `unavailableTimeout` | `number` (ms) | `10000` | Time in `connecting` before the state becomes `unavailable`. |
+| `maxReconnectAttempts` | `number` or `null` | `6` | Retry limit; `null` retries forever. |
+| `maxReconnectGapInSeconds` | `number` | `120` | Cap on the quadratic backoff delay. |
+| `reconnectJitter` | `number` (0 to 1) | `0` | Fraction of each backoff delay to randomize. |
+| `retryJitterMs` | `number` (ms) | `0` | Random delay before immediate protocol retries such as close code `4200`. |
 
-```ts
+## Subscribe and bind events
+
+`subscribe()` returns the channel immediately, even before the server confirms it. Bind handlers
+right away; they start firing once the subscription succeeds.
+
+```ts title="orders.ts"
+const channel = client.subscribe("orders");
+
+const onOrder = (order: unknown) => console.log("order.created", order);
+channel.bind("order.created", onOrder);
+
+// Observe every event on the channel, including system events.
+channel.bind_global((eventName, data) => console.log(eventName, data));
+```
+
+### Subscription state
+
+A connected socket can still have a pending or unauthorized channel. Gate channel-dependent UI on
+the channel's own success event, not only the global `connected` state.
+
+```ts title="subscription-state.ts"
+channel.bind("sockudo:subscription_succeeded", () => {
+  console.log("orders is live");
+});
+channel.bind("sockudo:subscription_error", (error) => {
+  // { type: "AuthError", error: "...", status: 403 }
+  console.error("orders subscription failed", error);
+});
+```
+
+<Callout type="note" title="System event prefixes follow the protocol">
+Under Protocol V2, system events use the `sockudo:` prefix (`sockudo:subscription_succeeded`,
+`sockudo:member_added`). Under the default Protocol V1 they keep the Pusher names
+(`pusher:subscription_succeeded`, `pusher:member_added`). Bind the names that match the
+`protocolVersion` you configured.
+</Callout>
+
+### Unbind and unsubscribe
+
+Keep a reference to the handler when you need to remove exactly one binding. Remove the whole
+subscription when its owning component or job ends:
+
+```ts title="cleanup.ts"
+channel.unbind("order.created", onOrder);
+client.unsubscribe("orders");
+client.disconnect();
+```
+
+`unsubscribe()` also discards the channel's recovery position and delta state, so a later
+`subscribe()` starts fresh. Framework hooks clean up their own bindings when components unmount;
+when using the core client directly, lifecycle cleanup is your responsibility.
+
+### Client events
+
+Private and presence channels can carry peer-to-peer client events. Their names must start with
+`client-`; any other name throws `BadEventName`.
+
+```ts title="typing.ts"
+const room = client.subscribe("private-room-42");
+room.bind("sockudo:subscription_succeeded", () => {
+  room.trigger("client-typing", { userId: "u_123" });
+});
+```
+
+## Private and presence channels
+
+Anyone with your public app key can open a connection, so Sockudo cannot decide on its own who may
+read a protected channel. Channels prefixed `private-`, `presence-`, or `private-encrypted-`
+therefore require a signature from **your backend**, which knows who the user is. The SDK asks
+your auth endpoint for that signature during every subscribe.
+
+<Steps>
+
+1. The client connects and receives a `socket_id`.
+2. On `subscribe("private-orders")`, the SDK sends a form-encoded `POST` with `socket_id` and
+   `channel_name` to `channelAuthorization.endpoint`.
+3. Your backend authenticates the session, checks that this user may access that exact channel,
+   and returns a signed JSON response (`auth`, plus `channel_data` for presence).
+4. The SDK forwards the signature to Sockudo, which verifies it with the app secret and confirms
+   the subscription.
+
+</Steps>
+
+```ts title="realtime.ts"
 const client = new Sockudo("app-key", {
-  cluster: "local",
+  wsHost: "realtime.example.com",
+  forceTLS: true,
+  channelAuthorization: {
+    endpoint: "/sockudo/auth",
+    headersProvider: () => ({ Authorization: `Bearer ${getSessionToken()}` }),
+  },
+  userAuthentication: {
+    endpoint: "/sockudo/user-auth",
+  },
+});
+```
+
+Both auth option objects accept `endpoint`, `transport` (`"fetch"` or `"ajax"`), static `params`
+and `headers`, the dynamic `paramsProvider` and `headersProvider`, and a `customHandler` that
+replaces the HTTP request entirely. Any non-`200` response surfaces as a
+`subscription_error` with the HTTP `status`.
+
+A minimal backend endpoint with the [Node.js server SDK](/docs/server-sdks/node):
+
+```ts title="server/auth.ts"
+import express from "express";
+import Sockudo from "sockudo";
+
+const sockudo = new Sockudo({
+  appId: process.env.SOCKUDO_APP_ID!,
+  key: process.env.SOCKUDO_KEY!,
+  secret: process.env.SOCKUDO_SECRET!,
+  host: "realtime.example.com",
+  useTLS: true,
+});
+
+const app = express();
+app.use(express.urlencoded({ extended: false }));
+
+app.post("/sockudo/auth", (req, res) => {
+  const user = requireSessionUser(req); // your session lookup
+  const { socket_id, channel_name } = req.body;
+
+  if (!canAccessChannel(user, channel_name)) {
+    return res.status(403).end();
+  }
+
+  const presence = channel_name.startsWith("presence-")
+    ? { user_id: user.id, user_info: { name: user.name } }
+    : undefined;
+
+  res.json(sockudo.authorizeChannel(socket_id, channel_name, presence));
+});
+```
+
+<Callout type="warn" title="Authorize the exact channel">
+Never sign every channel name the client asks for. Validate the current session and the exact
+`channel_name` before signing. For presence channels, derive `user_id` on the server; do not trust
+an identity supplied by the client.
+</Callout>
+
+### Presence
+
+Presence channels add a live member list. `subscription_succeeded` delivers the members collection
+and member events deliver single members:
+
+```ts title="lobby.ts"
+const presence = client.subscribe("presence-lobby");
+
+presence.bind("sockudo:subscription_succeeded", (members) => {
+  console.log("online:", members.count);
+});
+presence.bind("sockudo:member_added", (member) => {
+  console.log("joined", member.id, member.info);
+});
+presence.bind("sockudo:member_removed", (member) => {
+  console.log("left", member.id);
+});
+```
+
+### User sign-in
+
+Configure `userAuthentication.endpoint` and call `client.signin()` when using user-targeted events
+or watchlists. The backend signs the current `socket_id` and the authenticated user data (for
+example with `sockudo.authenticateUser(socketId, { id: user.id })`). A presence auth response
+without `channel_data` falls back to the signed-in user's `id`.
+
+### Capability-token authentication
+
+Protocol V2 can authorize the whole WebSocket with a scoped capability token instead of signing
+each channel:
+
+```ts title="token-auth.ts"
+const client = new Sockudo("app-key", {
+  wsHost: "realtime.example.com",
   protocolVersion: 2,
   token: initialToken,
   authCallback: async ({ socketId, reason }) =>
@@ -74,242 +335,21 @@ const client = new Sockudo("app-key", {
 });
 ```
 
-The optional static token is used on the first connection. The callback is
-called before reconnects and at 80% of a JWT's lifetime, then the client sends
-`sockudo:auth` without dropping the socket. `authUrl` is also supported for a
-JSON POST token endpoint. Expiry code `40142` refreshes only through a
-provider; revocation code `40160` surfaces `TokenRevokedError` without an
-in-place retry. Token auth configured outside Protocol V2 is rejected.
+The optional static `token` is used on the first connection. The callback receives a `reason` of
+`initial`, `reconnect`, `refresh`, or `expired`. It is called before reconnects and at 80% of a
+JWT's lifetime, then the client sends `sockudo:auth` without dropping the socket. `authUrl` is
+also supported for a token endpoint: it receives a JSON `POST` with `socket_id` and `reason`, and
+returns either a token string or an object with `token` and optional expiry fields.
 
-## Connection lifecycle
+Expiry code `40142` refreshes only through a provider; a static token is never resent in a loop.
+Revocation code `40160` surfaces `TokenRevokedError` without an in-place retry. Token auth
+configured outside Protocol V2 is rejected when the client is constructed.
 
-Observe the connection separately from channel subscription state:
-
-```ts
-client.connection.bind("state_change", ({ previous, current }) => {
-  console.log(`connection: ${previous} -> ${current}`);
-});
-client.connection.bind("error", (error) => {
-  console.error("Sockudo connection error", error);
-});
-
-const channel = client.subscribe("orders");
-channel.bind("sockudo:subscription_succeeded", () => {
-  console.log("orders is live");
-});
-channel.bind("sockudo:subscription_error", (error) => {
-  console.error("orders subscription failed", error);
-});
-```
-
-A connected socket can still have an unauthorized or pending channel. Gate
-channel-dependent UI on `subscription_succeeded`, not only the global
-`connected` event.
-
-Keep the binding callback when you need to remove one handler, or remove the
-whole subscription when its owning component or job ends:
-
-```ts
-const onOrder = (order: unknown) => console.log(order);
-channel.bind("order.created", onOrder);
-
-channel.unbind("order.created", onOrder);
-client.unsubscribe("orders");
-client.disconnect();
-```
-
-Framework hooks clean up their own bindings when components unmount. When using
-the core client directly, lifecycle cleanup is your responsibility.
-
-Unexpected disconnects emit `reconnecting` and use quadratic backoff (0s, 1s,
-4s, 9s) capped at 120 seconds. Configure `maxReconnectAttempts` (default `6`,
-`null` for unlimited) and `maxReconnectGapInSeconds`. `reconnectJitter`
-(0 to 1) randomizes that fraction of each backoff delay. Protocol retry close
-codes, such as `4200` during a server shutdown, reconnect immediately unless
-`retryJitterMs` is set, in which case each client waits a random 0 to
-`retryJitterMs` milliseconds first. TLS-upgrade retries remain immediate.
-
-```ts
-const client = new Sockudo("app-key", {
-  cluster: "local",
-  maxReconnectAttempts: 10,
-  maxReconnectGapInSeconds: 60,
-  reconnectJitter: 0.5,
-  retryJitterMs: 2000,
-});
-
-client.connection.bind("reconnecting", () => console.log("reconnecting"));
-```
-
-## Binary wire formats
-
-Protocol V2 can negotiate JSON, MessagePack, or Protobuf with `wireFormat`.
-MessagePack and Protobuf preserve `Uint8Array` message data as native binary
-values without a JSON or base64 intermediate.
-
-```ts
-const client = new Sockudo("app-key", {
-  wsHost: "127.0.0.1",
-  wsPort: 6001,
-  forceTLS: false,
-  protocolVersion: 2,
-  wireFormat: "messagepack",
-});
-
-const channel = client.subscribe("private-binary");
-channel.trigger("client-binary", new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
-```
-
-Native MessagePack uses the additive tagged data variant
-`["binary", <bin>]`. Existing string, structured, and JSON variants retain
-their previous representation.
-
-## Private and presence auth
-
-```ts
-const client = new Sockudo("app-key", {
-  wsHost: "realtime.example.com",
-  forceTLS: true,
-  channelAuthorization: {
-    endpoint: "/sockudo/auth",
-  },
-  userAuthentication: {
-    endpoint: "/sockudo/user-auth",
-  },
-});
-
-const presence = client.subscribe("presence-lobby");
-presence.bind("pusher:member_added", console.log);
-```
-
-The auth endpoint must validate the current application session and authorize
-the exact `channel_name` sent by the SDK before signing. For presence channels,
-derive `user_id` on the server; do not trust a client-supplied identity. The
-client bundle contains only the public app key.
-
-```ts
-presence.bind("pusher:subscription_succeeded", (members) => {
-  console.log("initial members", members);
-});
-presence.bind("pusher:member_removed", (member) => {
-  console.log("left", member);
-});
-```
-
-Configure `userAuthentication.endpoint` and call `client.signin()` when using
-user-targeted events or watchlists. The backend signs the current `socket_id`
-and authenticated user data.
-
-## React
-
-```tsx
-import Sockudo from "@sockudo/client";
-import { SockudoProvider, useChannel } from "@sockudo/client/react";
-
-const client = new Sockudo("app-key", {
-  wsHost: "127.0.0.1",
-  wsPort: 6001,
-  forceTLS: false,
-});
-
-client.connect();
-
-function Orders() {
-  const { subscribed, events } = useChannel("orders", ["order.created"]);
-  return <pre>{JSON.stringify({ subscribed, events }, null, 2)}</pre>;
-}
-
-export function App() {
-  return (
-    <SockudoProvider client={client}>
-      <Orders />
-    </SockudoProvider>
-  );
-}
-```
-
-## Vue
-
-```ts
-import Sockudo from "@sockudo/client";
-import { createSockudoPlugin, useChannel } from "@sockudo/client/vue";
-
-const client = new Sockudo("app-key", {
-  wsHost: "127.0.0.1",
-  wsPort: 6001,
-  forceTLS: false,
-});
-
-app.use(createSockudoPlugin(client));
-
-const { subscribed, bind } = useChannel("orders");
-bind("order.created", (payload) => console.log(payload));
-```
-
-## Filters and deltas
-
-```ts
-const channel = client.subscribe("market:btc", {
-  filter: Filter.and(
-    Filter.eq("market", "spot"),
-    Filter.gte("price", "100"),
-  ),
-  delta: {
-    enabled: true,
-    algorithm: "xdelta3",
-  },
-});
-```
-
-## Recovery and rewind
-
-```ts
-const channel = client.subscribe("market:BTC", {
-  rewind: { seconds: 30 },
-});
-
-channel.bind("message", () => {
-  console.log(client.getRecoveryPosition("market:BTC"));
-});
-
-client.bind("sockudo:resume_success", (payload) => {
-  console.log(payload.recovered, payload.failed);
-});
-```
-
-## Versioned messages
-
-Configure a backend proxy for REST reads:
-
-```ts
-const client = new Sockudo("app-key", {
-  wsHost: "127.0.0.1",
-  wsPort: 6001,
-  forceTLS: false,
-  versionedMessages: {
-    endpoint: "/sockudo/versioned",
-  },
-});
-
-const channel = client.subscribe("chat:room-1");
-const latest = await channel.getMessage("42");
-const versions = await channel.getMessageVersions("42", {
-  limit: 20,
-  direction: "oldest_first",
-});
-```
-
-The proxy endpoint must authenticate the caller, authorize access to the
-channel, and sign the upstream HTTP request with the app secret. Use
-`until_attach` channel history for a gap-free late join: first attach, then load
-history ending at the server-provided attach serial, then apply buffered live
-events.
-
-## Encrypted channels
+### Encrypted channels
 
 Use the encryption entrypoint for `private-encrypted-*` channels:
 
-```ts
+```ts title="encrypted.ts"
 import SockudoEncrypted from "@sockudo/client/with-encryption";
 
 const encryptedClient = new SockudoEncrypted("app-key", {
@@ -323,15 +363,444 @@ encryptedClient
   .bind("doc.updated", (payload) => console.log(payload));
 ```
 
-Your auth response supplies the derived channel `shared_secret`. Keep the
-encryption master key on the trusted backend. End-to-end encryption complements
-TLS and authorization; it does not replace either.
+Your auth response supplies the derived channel `shared_secret`. Keep the encryption master key on
+the trusted backend. End-to-end encryption complements TLS and authorization; it does not replace
+either.
 
-## Push proxy helpers
+## Protocol V2 features
 
-Browser push registration should flow through your backend. Keep app secrets and provider credentials server-side.
+Everything in this section requires `protocolVersion: 2` on the client and the matching feature
+enabled on the server. V1 clients connected to the same server keep receiving plain
+Pusher-compatible frames.
 
-```ts
+### Recovery and rewind
+
+With `connectionRecovery: true`, the client records the `stream_id` and `serial` of the last
+message on each channel. After an unexpected reconnect it sends those positions in a
+`sockudo:resume` frame, and Sockudo replays what the client missed if it can prove continuity.
+
+```ts title="recovery.ts"
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  protocolVersion: 2,
+  connectionRecovery: true,
+});
+
+const channel = client.subscribe("market:BTC", {
+  rewind: { seconds: 30 }, // or { count: 50 }, or a bare number of messages
+});
+
+channel.bind("sockudo:rewind_complete", (payload) => {
+  console.log(payload.historical_count, payload.complete);
+});
+
+client.bind("sockudo:resume_success", (payload) => {
+  // payload.recovered: [{ channel, source, replayed, position }]
+  console.log(payload.recovered, payload.failed);
+});
+
+client.bind("sockudo:resume_failed", (payload) => {
+  // payload.code is for example "position_expired" or "continuity_unverifiable"
+  console.warn("rebuild", payload.channel, payload.code);
+});
+```
+
+On `resume_failed` the SDK drops that channel's position and resubscribes it automatically. Your
+application must discard derived state for the channel and reload an authoritative snapshot.
+
+Read or restore positions with `getRecoveryPosition(channel)`, `getRecoveryPositions()`,
+`setRecoveryPosition(channel, position)`, and `setRecoveryPositions(positions)`, for example to
+carry positions across a page reload.
+
+### Channel history and late joins
+
+The `versionedMessages` proxy exposes paged channel history through
+`channel.channelHistory({ limit, direction, cursor, start_serial, end_serial, start_time_ms, end_time_ms })`.
+Each page has `hasNext()` and `next()`.
+
+For a gap-free late join, use history bounded at the subscription's attach point: first attach,
+then load history ending at the server-provided `attach_serial`, then apply buffered live events.
+The SDK does not wrap the WebSocket `channel_history` request; send it directly and bind the
+response on the channel:
+
+```ts title="late-join.ts"
+const chat = client.subscribe("chat:room-1");
+
+chat.bind("sockudo:channel_history", (page) => {
+  // page.items, page.has_more, page.next_cursor, page.bounds.attach_serial
+  renderBackfill(page.items);
+});
+
+chat.bind("sockudo:subscription_succeeded", () => {
+  client.send_event("sockudo:channel_history", {
+    channel: "chat:room-1",
+    limit: 100,
+    direction: "newest_first",
+    until_attach: true,
+  });
+});
+```
+
+The request and response shapes are documented in [Protocol V2](/docs/clients/protocol-v2#client-history).
+
+### Filters
+
+Server-side filters stop irrelevant messages before they reach the client. A subscription can
+combine event names, a tag filter, and a bounded JMESPath expression; every supplied component must
+match:
+
+```ts title="filters.ts"
+import { Filter } from "@sockudo/client/filter";
+
+client.subscribe("orders.*", {
+  events: ["order.updated"],
+  filter: Filter.and(Filter.eq("region", "eu"), Filter.gte("total", "100")),
+  expression: 'data.total >= `100` && headers.priority == `"high"`',
+});
+```
+
+The full operator list is in [Filters and delta compression](/docs/clients/filters-delta).
+
+### Delta compression
+
+Delta compression sends only the difference between consecutive similar messages. Enable
+reconstruction on the client with `deltaCompression`, then optionally choose an algorithm or opt
+out per subscription:
+
+```ts title="deltas.ts"
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  protocolVersion: 2,
+  deltaCompression: { enabled: true, algorithms: ["fossil", "xdelta3"] },
+});
+
+client.subscribe("market:btc", {
+  delta: { enabled: true, algorithm: "xdelta3" },
+});
+
+client.subscribe("audit-log", { delta: { enabled: false } });
+
+console.log(client.getDeltaStats()?.bandwidthSavedPercent);
+```
+
+<Callout type="warn" title="Per-subscription delta settings need deltaCompression">
+A subscription `delta` setting asks the server to send deltas, but only a client constructed with
+`deltaCompression` can decode them. Without it, delta frames reach the channel as raw
+`sockudo:delta` events and your normal handlers do not fire.
+</Callout>
+
+`DeltaOptions` also accepts `debug`, `onStats`, and `onError`. `resetDeltaStats()` clears the
+counters.
+
+### Binary wire formats
+
+Protocol V2 can negotiate JSON, MessagePack, or Protobuf with `wireFormat`. MessagePack and
+Protobuf preserve `Uint8Array` message data as native binary values without a JSON or base64
+intermediate.
+
+```ts title="binary.ts"
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  protocolVersion: 2,
+  wireFormat: "messagepack",
+});
+
+const channel = client.subscribe("private-binary");
+channel.trigger("client-binary", new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+```
+
+Native MessagePack uses the additive tagged data variant `["binary", <bin>]`. Existing string,
+structured, and JSON variants retain their previous representation.
+
+### Versioned messages
+
+Mutable messages arrive as explicit action events: `sockudo:message.update`,
+`sockudo:message.delete`, and `sockudo:message.append`.
+
+- `message.update`: replace local state with the full payload in the event.
+- `message.delete`: treat the event as the latest visible version; the payload may be `null`.
+- `message.append`: concatenate the incoming string fragment onto your current string state. If
+  you do not have a string base yet, fetch the latest visible message first.
+
+The `isMutableMessageEvent` and `reduceMutableMessageEvent` helpers read the action and serials
+from the frame's `extras.headers`. Channel handlers receive only `data`, so feed the helpers full
+frames from the connection-level `message` stream:
+
+```ts title="mutable.ts"
+import {
+  getMutableMessageInfo,
+  isMutableMessageEvent,
+  reduceMutableMessageEvent,
+  type MutableMessageState,
+} from "@sockudo/client";
+
+const messages = new Map<string, MutableMessageState>();
+
+client.connection.bind("message", (event) => {
+  if (event.channel !== "chat:room-1" || !isMutableMessageEvent(event)) return;
+  const info = getMutableMessageInfo(event)!;
+  const current = messages.get(info.messageSerial) ?? null;
+  if (current?.versionSerial && current.versionSerial === info.versionSerial) return;
+
+  const next = reduceMutableMessageEvent(current, event);
+  messages.set(info.messageSerial, next);
+  console.log(next.messageSerial, next.action, next.data);
+});
+```
+
+The reducer tracks one logical message and throws if it receives a different `messageSerial`, so
+keep one state per serial as shown.
+
+<Callout type="note" title="The connection stream is pre-deduplication">
+`client.connection` emits every decoded frame before `message_id` deduplication runs. Compare
+`versionSerial` before applying a frame, as above, so that a repeated append is not applied twice.
+</Callout>
+
+Configure a backend proxy for REST reads. The endpoint receives a JSON `POST` of the form
+`{ channel, messageSerial?, params?, action }` and must sign the upstream Sockudo HTTP request with
+the app secret:
+
+```ts title="versions.ts"
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  protocolVersion: 2,
+  versionedMessages: {
+    endpoint: "/sockudo/versioned",
+  },
+});
+
+const channel = client.subscribe("chat:room-1");
+const latest = await channel.getMessage("42");
+const versions = await channel.getMessageVersions("42", {
+  limit: 20,
+  direction: "oldest_first",
+});
+```
+
+The proxy must authenticate the caller and authorize access to the channel. A helper called
+without `versionedMessages.endpoint` throws.
+
+### Annotations
+
+Annotations attach reactions, labels, or counters to a message serial. The same proxy powers
+`channel.publishAnnotation(messageSerial, { type, name, data, ... })`,
+`channel.deleteAnnotation(messageSerial, annotationSerial)`, and
+`channel.listAnnotations(messageSerial, { type, limit })`.
+
+By default a subscriber receives only `message.summary` projections. Subscribe with
+`annotationSubscribe: true` to also receive raw `annotation.create` and `annotation.delete`
+events:
+
+```ts title="annotations.ts"
+const chat = client.subscribe("chat:room-1", { annotationSubscribe: true });
+chat.bind("annotation.create", (annotation) => console.log(annotation.type, annotation.name));
+chat.bind("message.summary", (summary) => console.log(summary));
+```
+
+## Framework integrations
+
+### React
+
+Create the client once, outside render functions, and provide it to the tree. `useChannel`
+subscribes on mount, unsubscribes on unmount, and returns a state snapshot (`subscribed`,
+`subscriptionPending`, `members`, `lastEventName`, `lastEventData`, and more).
+
+```tsx title="App.tsx"
+import Sockudo from "@sockudo/client";
+import { SockudoProvider, useChannel } from "@sockudo/client/react";
+
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+});
+
+function Orders() {
+  const { subscribed, lastEventName, lastEventData } = useChannel("orders", {
+    onEvent: (eventName, data) => console.log(eventName, data),
+  });
+  return <pre>{JSON.stringify({ subscribed, lastEventName, lastEventData }, null, 2)}</pre>;
+}
+
+export function App() {
+  return (
+    <SockudoProvider client={client}>
+      <Orders />
+    </SockudoProvider>
+  );
+}
+```
+
+React exports: `SockudoProvider`, `useSockudo`, `useSockudoEvent`, `useChannel`, and
+`usePresenceChannel`. Hook options include `enabled`, `filter`, `delta`, `events`, `onEvent`,
+`onSubscriptionSucceeded`, `onSubscriptionError`, `onMemberAdded`, and `onMemberRemoved`.
+
+### Vue
+
+The Vue composables return the same state as refs, plus a `stop()` function:
+
+```ts title="main.ts"
+import { createApp, defineComponent, h } from "vue";
+import Sockudo from "@sockudo/client";
+import { createSockudoPlugin, useChannel } from "@sockudo/client/vue";
+
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+});
+
+const Orders = defineComponent({
+  setup() {
+    const { subscribed, lastEventData } = useChannel("orders", {
+      onEvent: (eventName, data) => console.log(eventName, data),
+    });
+    return () => h("pre", JSON.stringify({ subscribed: subscribed.value, last: lastEventData.value }));
+  },
+});
+
+createApp(Orders).use(createSockudoPlugin(client)).mount("#app");
+```
+
+Vue exports: `createSockudoPlugin`, `provideSockudo`, `useSockudo`, `useSockudoEvent`,
+`useChannel`, and `usePresenceChannel`.
+
+## Connection lifecycle and reconnection
+
+`client.connection` reports one of these states:
+
+| State | Meaning |
+| --- | --- |
+| `initialized` | The client was created and has not started connecting. |
+| `connecting` | The first connection attempt is in progress. |
+| `reconnecting` | A retry after an unexpected disconnect is in progress. |
+| `connected` | The socket is open; `client.connection.socket_id` is set. |
+| `unavailable` | No connection within `unavailableTimeout`, or the network is down. Retries continue. |
+| `disconnected` | Closed by `disconnect()`, by a refusing close code, or after `maxReconnectAttempts`. |
+| `failed` | The runtime cannot open any supported transport, or a token provider failed before connecting. |
+
+Each state is emitted as its own event and as `state_change` with `{ previous, current }`. Before a
+delayed retry the manager also emits `connecting_in` with the delay in seconds.
+
+```ts title="lifecycle.ts"
+client.connection.bind("state_change", ({ previous, current }) => {
+  console.log(`connection: ${previous} -> ${current}`);
+});
+client.connection.bind("connecting_in", (seconds) => {
+  console.log(`retrying in ${seconds}s`);
+});
+```
+
+Unexpected disconnects emit `reconnecting` and use quadratic backoff (0s, 1s, 4s, 9s) capped at
+120 seconds. Configure `maxReconnectAttempts` (default `6`, `null` for unlimited) and
+`maxReconnectGapInSeconds`. `reconnectJitter` (0 to 1) randomizes that fraction of each backoff
+delay. Protocol retry close codes, such as `4200` during a server shutdown, reconnect immediately
+unless `retryJitterMs` is set, in which case each client waits a random 0 to `retryJitterMs`
+milliseconds first. TLS-upgrade retries remain immediate.
+
+```ts title="reconnect.ts"
+const client = new Sockudo("app-key", {
+  wsHost: "realtime.example.com",
+  maxReconnectAttempts: 10,
+  maxReconnectGapInSeconds: 60,
+  reconnectJitter: 0.5,
+  retryJitterMs: 2000,
+});
+
+client.connection.bind("reconnecting", () => console.log("reconnecting"));
+```
+
+The attempt counter resets after a successful connection and on explicit `connect()` or
+`disconnect()` calls. Close codes map to these actions:
+
+| Close code | Action |
+| --- | --- |
+| `4000` | Reconnect immediately over TLS. |
+| `4001` to `4099` | Refused: the client disconnects and does not retry. |
+| `4100` to `4199` | Reconnect with backoff. |
+| `4200` to `4299` | Reconnect immediately (subject to `retryJitterMs`). |
+| `4300` and above | Refused: the client disconnects and does not retry. |
+
+<Callout type="tip" title="Spread reconnect storms">
+Without jitter, every client dropped by the same event retries on the same schedule. In large
+deployments set `reconnectJitter` (for example `0.5`) and `retryJitterMs` (for example `2000`) so
+a rolling restart does not land all clients on the remaining nodes at once.
+</Callout>
+
+Heartbeats are automatic. Protocol V2 prefers native WebSocket ping/pong frames; browser-like
+runtimes that cannot send native pings may use lightweight `sockudo:ping` / `sockudo:pong`
+fallback messages, which carry no `message_id`, `serial`, or `stream_id`.
+
+## Error handling
+
+Errors surface on three channels. Bind all of them in production:
+
+```ts title="errors.ts"
+import { TokenRevokedError } from "@sockudo/client";
+
+// Transport and server errors: { type: "SockudoError" | "WebSocketError" | ..., data | error }
+client.connection.bind("error", (error) => {
+  console.error("Sockudo connection error", error);
+});
+
+// Capability-token failures (TokenAuthError, TokenExpiredError, TokenRevokedError)
+client.bind("error", (error) => {
+  if (error instanceof TokenRevokedError) signOut();
+});
+
+// Per-channel auth failures: { type: "AuthError", error, status }
+channel.bind("sockudo:subscription_error", (error) => {
+  if (error.status === 401 || error.status === 403) showAccessDenied();
+});
+```
+
+| Error | Where | Typical cause |
+| --- | --- | --- |
+| `SockudoError` | `client.connection` `error` | Server `sockudo:error` frame or a close code; `data.code` carries the code. |
+| `WebSocketError` | `client.connection` `error` | Transport failure while connecting. |
+| `MessageParseError` | `client.connection` `error` | A frame could not be decoded. |
+| `AuthError` | channel `subscription_error` | The auth endpoint returned non-`200` or invalid JSON. |
+| `TokenExpiredError`, `TokenRevokedError` | `client` `error` | Capability token expired without a provider (`40142`) or revoked (`40160`). |
+| `BadEventName` | thrown by `trigger()` | Client event name does not start with `client-`. |
+
+- Treat auth `401` and `403` as an application-permission problem, not a reconnect loop.
+- On `sockudo:resume_failed`, clear derived state and fetch an authoritative snapshot before
+  applying new events.
+- Make handlers idempotent and validate unknown payloads at the application boundary.
+
+## Platform notes
+
+### Browser and Node.js
+
+- Reuse one client per browser tab, worker, or Node process.
+- Create the client outside React render functions and Vue component setup.
+- Use the runtime-specific entrypoint so bundlers do not pull in incompatible browser or Node
+  transports. The Node build requires Node.js 22 or newer.
+- Unbind handlers, unsubscribe unused channels, and disconnect during application shutdown.
+- Never expose the app secret, push credentials, or encryption master key in a browser or mobile
+  bundle.
+
+### React Native and NativeScript
+
+- React Native resolves through the root `react-native` field or the explicit
+  `@sockudo/client/react-native` subpath.
+- Import `@sockudo/client/nativescript` to load the `@valor/nativescript-websockets` polyfill
+  before the SDK.
+
+### Push proxy helpers
+
+Browser push registration should flow through your backend. Keep app secrets and provider
+credentials server-side.
+
+```ts title="push-device.ts"
 await fetch("/sockudo/push/devices", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -343,10 +812,11 @@ await fetch("/sockudo/push/devices", {
 });
 ```
 
-`SockudoPushRegistration` is available from the root package for authenticated application proxies.
-It includes typed direct and broadcast Apple Live Activity recipients and payloads:
+`SockudoPushRegistration` is available from the root package for authenticated application
+proxies. It covers device registration, channel push subscriptions, publish, scheduling, and
+status, and includes typed direct and broadcast Apple Live Activity recipients and payloads:
 
-```ts
+```ts title="live-activity.ts"
 import { SockudoPushRegistration } from "@sockudo/client";
 
 const push = new SockudoPushRegistration({
@@ -377,23 +847,19 @@ native iOS bridge because the attributes type belongs to the app's Widget Extens
 rotation immediately. Use `apnsLiveActivityBroadcast` only with a server-created channel and its
 immutable storage policy. See [Apple Live Activities](/docs/server/apple-live-activities).
 
-The proxy must authenticate the caller and authorize the exact activity or channel. Use a server SDK
-for unrestricted administrative publishing; never expose the app secret, APNs provider key, or a
-blanket `push-admin` capability to client code.
+<Callout type="warn" title="Keep administrative push on the server">
+The proxy must authenticate the caller and authorize the exact activity or channel. Use a server
+SDK for unrestricted administrative publishing; never expose the app secret, APNs provider key, or
+a blanket `push-admin` capability to client code.
+</Callout>
 
-## Error handling and production guidance
+## Next steps
 
-- Reuse one client per browser tab, worker, or native application runtime.
-- Create the client outside React render functions and Vue component setup.
-- Use the runtime-specific entrypoint so bundlers do not pull in incompatible
-  browser or Node transports.
-- Treat auth `401`/`403` as an application-permission problem, not a reconnect
-  loop.
-- On `sockudo:resume_failed`, clear derived state and fetch an authoritative
-  snapshot before applying new events.
-- Make handlers idempotent and validate unknown payloads at the application
-  boundary.
-- Unbind handlers, unsubscribe unused channels, and disconnect during
-  application shutdown.
-- Never expose the app secret, push credentials, or encryption master key in a
-  browser or mobile bundle.
+<Cards>
+  <Card title="Protocol V2" href="/docs/clients/protocol-v2" description="Wire metadata, recovery contract, and client history." />
+  <Card title="Filters and delta compression" href="/docs/clients/filters-delta" description="Tag filters, compound predicates, and delta tuning." />
+  <Card title="Presence history" href="/docs/clients/presence-history" description="Current members, transition history, and snapshots." />
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="Channel auth, user auth, and capability tokens end to end." />
+  <Card title="Node.js server SDK" href="/docs/server-sdks/node" description="Publish events and sign auth responses from your backend." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Server-side recovery tiers, rewind, and durable history." />
+</Cards>

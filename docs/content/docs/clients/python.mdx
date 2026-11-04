@@ -4,13 +4,24 @@ description: Use the async sockudo-python realtime client with Protocol V2, prot
 icon: FileCode
 ---
 
-`sockudo-python` is the official asynchronous realtime client for Python. It is
-intended for long-running services, agents, workers, CLIs, and other
-`asyncio` applications that need a WebSocket connection to Sockudo. It is
-different from [`sockudo-http-python`](/docs/server-sdks/python), which is the
-trusted server-side HTTP SDK used to publish and sign authorization responses.
+`sockudo-python` is the official asynchronous realtime client for Python. It
+holds a WebSocket connection to Sockudo, subscribes to channels, and delivers
+events to your handlers. Use it in long-running services, AI agents, workers,
+CLIs, and any other `asyncio` application that needs to receive (or send
+client) events in real time.
 
-The client requires Python 3.10 or newer and uses Protocol V2 by default.
+It is a different package from [`sockudo-http-python`](/docs/server-sdks/python),
+the trusted server-side HTTP SDK that publishes events, signs authorization
+responses, and validates webhooks. The realtime client only ever holds the
+public app key; the HTTP SDK holds the app secret.
+
+| | |
+| --- | --- |
+| Package | `sockudo-python` (import name `sockudo_python`) |
+| Python | 3.10 or newer, `asyncio` |
+| Default protocol | Protocol V2 (set `protocol_version=1` for Pusher compatibility) |
+| Wire formats | JSON, MessagePack, Protobuf |
+| Runtime dependencies | `websockets`, `httpx`, `msgpack`, `PyNaCl`, `vcdiff-decoder` |
 
 ## Install
 
@@ -18,18 +29,20 @@ The client requires Python 3.10 or newer and uses Protocol V2 by default.
 python -m pip install sockudo-python
 ```
 
-For development from this monorepo:
+For development from this monorepo, install the package in editable mode:
 
 ```bash
 python -m pip install -e client-sdks/sockudo-python
 ```
 
-## Connect and subscribe
+## Connect
 
-Create one client per application process, bind handlers before connecting, and
-close it during application shutdown:
+A **client** (`SockudoClient`) owns one WebSocket connection and its reconnect
+policy. A **channel** is a named stream of events on that connection; you
+subscribe to channels and bind handlers to event names. Create one client per
+application process, bind handlers, connect, and disconnect during shutdown.
 
-```python
+```python title="realtime.py"
 import asyncio
 
 from sockudo_python import SockudoClient, SockudoOptions
@@ -48,8 +61,17 @@ async def main() -> None:
         ),
     )
 
+    client.bind(
+        "state_change",
+        lambda change, _: print(f"connection: {change['previous']} -> {change['current']}"),
+    )
+
     channel = client.subscribe("public-updates")
-    channel.bind("price-updated", lambda payload, meta: print(payload))
+    channel.bind(
+        "sockudo:subscription_succeeded",
+        lambda *_: print("subscribed to public-updates"),
+    )
+    channel.bind("price-updated", lambda payload, meta: print("price:", payload))
 
     try:
         await client.connect()
@@ -61,67 +83,166 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`connect()` returns after starting the connection; event callbacks run on the
-same asyncio event loop. Do not perform blocking file, database, or network work
-inside a callback. Schedule or await that work in an async task instead.
+Run it against a local server and publish a `price-updated` event to
+`public-updates` with any server SDK:
 
-### Self-hosted connection options
+```text
+connection: initialized -> connecting
+connection: connecting -> connected
+subscribed to public-updates
+price: {'price': 67210}
+```
 
-| Option | Purpose | Production guidance |
+`connect()` returns once the WebSocket is open; the `connected` state follows
+when Sockudo sends the connection handshake. Channels subscribed before that
+point are sent to the server automatically as soon as the connection is
+established, so you can call `subscribe()` before or after `connect()`.
+
+<Callout type="warn" title="Callbacks run on the event loop">
+Handlers are plain synchronous callables invoked on the same asyncio event loop
+as the receive loop. Do not perform blocking file, database, or network work
+inside a callback, and note that an `async def` handler is not awaited. Schedule
+async work with `asyncio.create_task(...)` from a synchronous handler instead.
+</Callout>
+
+### Connection options
+
+The values below are the `SockudoOptions` defaults in the SDK source.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `cluster` | `str` | required | Must be non-empty. Used to derive the host only when `ws_host` is not set. |
+| `ws_host` | `str` or `None` | `None` | WebSocket host without a scheme. Set it to your public ingress or load-balancer hostname when self-hosting. |
+| `ws_port` | `int` | `80` | Port for `ws://` connections. |
+| `wss_port` | `int` | `443` | Port for `wss://` connections. |
+| `ws_path` | `str` | `""` | Path prefix placed before `/app/<key>`. |
+| `force_tls` | `bool` or `None` | `None` | TLS is used unless this is explicitly `False`. Set `False` only for local plaintext development. |
+| `enabled_transports` / `disabled_transports` | list of `SockudoTransport` or `None` | `None` | Restrict the `ws` / `wss` transports the client may use. |
+| `protocol_version` | `int` | `2` | `2` for Sockudo-native features; `1` for Pusher compatibility. |
+| `connection_recovery` | `bool` | `False` | Track `stream_id` and `serial` per channel and resume after reconnects. |
+| `message_deduplication` | `bool` | `True` | Drop repeated messages by `message_id`. |
+| `message_deduplication_capacity` | `int` | `1000` | Number of recent `message_id` values remembered. |
+| `echo_messages` | `bool` | `True` | Protocol V2: whether this connection receives its own published messages. |
+| `wire_format` | `SockudoWireFormat` | `SockudoWireFormat.JSON` | `JSON`, `MESSAGEPACK`, or `PROTOBUF` (Protocol V2). |
+| `activity_timeout` | `float` | `120.0` | Seconds of inactivity before the client sends a ping. |
+| `unavailable_timeout` | `float` | `10.0` | Seconds a connection attempt may take before the state becomes `unavailable`. |
+| `max_reconnect_attempts` | `int` or `None` | `6` | Retry limit for unexpected disconnects; `None` means unlimited. |
+| `max_reconnect_gap_in_seconds` | `float` | `120.0` | Upper bound on the quadratic backoff delay. |
+| `reconnect_jitter` | `float` | `0.0` | Fraction (0 to 1) of each backoff delay to randomize. |
+| `channel_authorization` | `ChannelAuthorizationOptions` | endpoint `/sockudo/auth` | Private, presence, and encrypted channel auth. |
+| `user_authentication` | `UserAuthenticationOptions` | endpoint `/sockudo/user-auth` | User sign-in auth. |
+| `token` / `auth_callback` | `str` / callable | `None` | Protocol V2 capability-token authentication. |
+| `auth_refresh_leeway_seconds` | `float` | `30.0` | Refresh leeway for capability tokens. |
+| `delta_compression` | `DeltaOptions` or `None` | `None` | Enables delta negotiation and payload reconstruction. |
+| `channel_history` / `presence_history` / `versioned_messages` | proxy options or `None` | `None` | Backend proxy endpoints for history and mutable messages. |
+| `append_mode` | `AppendMode` | `AppendMode.DELTA` | Protocol V2 append delivery mode: `DELTA` or `FULL`. |
+| `append_rollup_window` | `int` or `None` | `None` | Protocol V2 append rollup window; must be one of `0`, `20`, `40`, `100`, `500`. |
+
+<Callout type="tip" title="Self-hosted routing">
+`cluster` is still required by the options type, but `ws_host` is the setting
+that routes a self-hosted client. In production, point `ws_host` at your public
+hostname, leave `force_tls` unset (or `True`), and use `wss_port=443` behind a
+TLS-terminating proxy.
+</Callout>
+
+## Subscribe and bind events
+
+`client.subscribe(name, options=None)` returns a channel object; the channel
+type is chosen from the name prefix:
+
+| Name prefix | Channel | Needs auth endpoint |
 | --- | --- | --- |
-| `ws_host` | WebSocket host without a scheme | Use the public load balancer or ingress hostname |
-| `ws_port` / `wss_port` | Plaintext and TLS WebSocket ports | Usually `80` and `443` behind a proxy |
-| `force_tls` | Select `wss://` when true | Enable outside local development |
-| `protocol_version` | `2` for Sockudo-native features; `1` for Pusher compatibility | Prefer `2` for new applications |
-| `connection_recovery` | Resume from the last `stream_id` and `serial` | Enable when missed events matter |
-| `max_reconnect_attempts` | Retry limit; `None` means unlimited | Defaults to `6` |
-| `max_reconnect_gap_in_seconds` | Maximum quadratic backoff delay | Defaults to `120.0` seconds |
-| `wire_format` | JSON, MessagePack, or Protobuf | Use a binary format only when every endpoint supports it |
+| none (for example `orders`) | public | no |
+| `private-` | private | yes |
+| `presence-` | presence (member list) | yes, plus a user identity |
+| `private-encrypted-` | end-to-end encrypted | yes, plus a `shared_secret` |
 
-`cluster` remains required by the options type, but a custom `ws_host` is the
-important routing setting for self-hosted deployments.
+Every handler receives `(data, metadata)`. `metadata` is an `EventMetadata`
+whose `user_id` is set when the server attaches one (for example, client events
+on presence channels).
 
-## Lifecycle and cleanup
+```python title="handlers.py"
+def on_order(data, meta) -> None:
+    print("order:", data, "from user:", meta.user_id if meta else None)
 
-Bind connection events to make health and reconnect behavior visible:
+
+orders = client.subscribe("orders")
+token = orders.bind("order.created", on_order)
+
+# Every event on the channel, including sockudo: system events.
+orders.bind_global(lambda event_name, data: print(event_name, data))
+
+# Remove one handler with its token, or every handler for an event.
+orders.unbind("order.created", token)
+orders.unbind("order.created")
+
+# Leave the channel entirely.
+await client.unsubscribe("orders")
+```
+
+`client.bind(...)` receives connection events and every non-internal channel
+event, and `client.channel(name)` returns an existing subscription.
+
+### Subscription state
+
+A connected socket does not mean every channel is subscribed. Wait for the
+channel's subscription result before treating it as live. With Protocol V2 the
+events use the `sockudo:` prefix; with `protocol_version=1` they use `pusher:`.
 
 ```python
-def on_state_change(change, _) -> None:
-    print(f"connection: {change['previous']} -> {change['current']}")
-
-
-client.bind("state_change", on_state_change)
-client.bind(
-    "connected",
-    lambda data, _: print("socket id:", data.get("socket_id")),
+orders.bind("sockudo:subscription_succeeded", lambda data, _: print("live"))
+orders.bind(
+    "sockudo:subscription_error",
+    lambda error, _: print("subscription failed:", error),
 )
-client.bind("connecting", lambda *_: print("connecting"))
-client.bind("reconnecting", lambda *_: print("reconnecting"))
-client.bind("error", lambda error, _: print("error:", error))
 ```
 
-Remove a subscription when its consumer goes away. This also clears the
-channel's recovery and delta state:
+When the auth request fails, the SDK emits `sockudo:subscription_error` with
+`{"type": "AuthError", "error": "<message>"}` on that channel.
+
+### Client events
+
+Private and presence channels can relay `client-` events directly between
+subscribers when client events are enabled for the app:
 
 ```python
-await client.unsubscribe("public-updates")
+private_room = client.subscribe("private-room-1")
+await private_room.trigger("client-typing", {"user": "ada"})
 ```
 
-`await client.close()` is an alias for `disconnect()`. A manual disconnect
-stops reconnect timers; an unexpected transport failure uses the client's
-reconnect policy. Retries emit `reconnecting` and use quadratic backoff (0s,
-1s, 4s, 9s) capped by `max_reconnect_gap_in_seconds`; protocol retry and
-TLS-upgrade close codes remain immediate.
+`trigger()` raises `BadEventName` when the name does not start with `client-`,
+and returns `False` if there is no open socket. Encrypted channels do not
+support client events.
 
-## Private and presence authorization
+## Private and presence channels
 
-The client sends its `socket_id` and channel name to your backend. Your backend
-must authenticate the user, enforce access to the requested channel, and use a
-[server SDK](/docs/server-sdks) to sign the response. Never put the app secret
-in Python client code.
+Public channels are open to anyone with the app key. Private, presence, and
+encrypted channels are protected: before subscribing, the client asks **your
+backend** to approve that exact channel for this connection. Your backend
+checks the user's session, decides whether they may access the channel, and
+signs a response with the app secret using a [server SDK](/docs/server-sdks).
+Because only the backend has the secret, a client cannot forge access to a
+channel it was not granted.
 
-```python
-from sockudo_python import ChannelAuthorizationOptions
+<Steps>
+
+1. The client connects and receives its `socket_id`.
+2. On `subscribe("private-orders")`, the SDK sends an HTTP `POST` to
+   `channel_authorization.endpoint` with a form-encoded body containing
+   `socket_id`, `channel_name`, and any configured `params`.
+3. Your backend authenticates the caller, authorizes that `channel_name`, and
+   returns JSON with `auth` (plus `channel_data` for presence and
+   `shared_secret` for encrypted channels).
+4. The SDK sends the subscribe request to Sockudo with the signed `auth`.
+
+</Steps>
+
+```python title="private_channel.py"
+from sockudo_python import (
+    ChannelAuthorizationOptions,
+    SockudoClient,
+    SockudoOptions,
+)
 
 client = SockudoClient(
     "app-key",
@@ -140,32 +261,54 @@ private_orders = client.subscribe("private-orders")
 private_orders.bind("order-placed", lambda data, _: print(data))
 ```
 
-Presence subscriptions receive the initial member set and subsequent joins and
-leaves:
+`ChannelAuthorizationOptions` also accepts `params`, `headers_provider` and
+`params_provider` callables (evaluated per request, useful for short-lived
+session tokens), and `custom_handler`, an async function that receives a
+`ChannelAuthorizationRequest` (`socket_id`, `channel_name`) and returns
+`ChannelAuthorizationData` without the built-in HTTP call.
 
-```python
+<Callout type="warn" title="Never sign every channel">
+The auth endpoint must authorize the exact `channel_name` it receives. Never put
+the app secret in Python client code, and derive presence `user_id` from the
+server-side session rather than from a value the client sends.
+</Callout>
+
+### Presence channels
+
+Presence channels add a member list. On Protocol V2, subscription success
+delivers the member set, and later joins, leaves, and data updates arrive as
+separate events:
+
+```python title="presence.py"
 presence = client.subscribe("presence-lobby")
+
 presence.bind(
     "sockudo:subscription_succeeded",
-    lambda members, _: print("members:", members),
+    lambda members, _: print("members:", members.count, "me:", members.me),
 )
-presence.bind("sockudo:member_added", lambda member, _: print("joined:", member))
-presence.bind("sockudo:member_removed", lambda member, _: print("left:", member))
+presence.bind("sockudo:member_added", lambda member, _: print("joined:", member.id, member.info))
+presence.bind("sockudo:member_removed", lambda member, _: print("left:", member.id))
+presence.bind("sockudo:presence_update", lambda member, _: print("updated:", member.id, member.info))
 
 await client.connect()
 await presence.update({"status": "editing"})
 ```
 
-The `update()` call is a Protocol V2 presence update. It changes member data
+The subscription-succeeded payload is the channel's member collection (with
+`count`, `me`, and `member(id)`); member events deliver a `PresenceMember` with
+`id` and `info`. The same collection is available as `presence.members`.
+
+`update()` is a Protocol V2 presence update. It changes the member's data
 without a leave and rejoin cycle.
 
-## Capability-token authentication
+### Capability-token authentication
 
-Protocol V2 can authorize the WebSocket itself with a scoped capability token.
-Use an async callback so the client can obtain fresh credentials:
+Protocol V2 can also authorize the WebSocket connection itself with a scoped
+capability token, issued by your backend. Pass a static `token`, or an
+`auth_callback` (sync or async) so the client can obtain fresh credentials:
 
-```python
-from sockudo_python import TokenAuthData
+```python title="token_auth.py"
+from sockudo_python import SockudoClient, SockudoOptions, TokenAuthData
 
 
 async def fetch_token() -> TokenAuthData:
@@ -187,74 +330,101 @@ client = SockudoClient(
 )
 ```
 
-Expiry metadata lets the SDK schedule a refresh before expiration. Opaque
-callback tokens without expiry metadata are refreshed after code `40142` and
-before reconnects. Static and revoked tokens are never resent. Token auth is
-rejected outside Protocol V2.
+- The callback may return a plain token string or `TokenAuthData`. Expiry
+  metadata (`expires_in`, `expires_at`, `expires_at_ms`, `exp`) lets the SDK
+  schedule a refresh at 80% of the token lifetime, or
+  `auth_refresh_leeway_seconds` before expiry if that is earlier, and send it
+  over the open socket with `sockudo:auth`.
+- Opaque callback tokens without expiry metadata are refreshed after code
+  `40142` and before reconnects.
+- Static tokens are never resent, and revocation code `40160` is not retried
+  in place.
 
-## Filters, event selection, and delta compression
+<Callout type="note" title="V2 only">
+Configuring `token` or `auth_callback` with `protocol_version=1` raises
+`InvalidOptions` when the client is constructed.
+</Callout>
 
-Protocol V2 subscriptions can combine event names, tag filters, and a bounded
-expression. All supplied conditions must match:
+### User sign-in
 
-```python
-from sockudo_python import (
-    ChannelDeltaSettings,
-    DeltaAlgorithm,
-    Filter,
-    SubscriptionOptions,
-)
+Configure a user-auth endpoint when using user-targeted events or watchlists:
 
-market = client.subscribe(
-    "price:btc",
-    options=SubscriptionOptions(
-        events=["price.updated"],
-        filter=Filter.and_(
-            Filter.eq("market", "spot"),
-            Filter.gt("spread", "0"),
-        ),
-        expression="data.price >= `100`",
-        delta=ChannelDeltaSettings(
-            enabled=True,
-            algorithm=DeltaAlgorithm.XDELTA3,
+```python title="signin.py"
+from sockudo_python import UserAuthenticationOptions
+
+client = SockudoClient(
+    "app-key",
+    SockudoOptions(
+        cluster="local",
+        user_authentication=UserAuthenticationOptions(
+            endpoint="https://api.example.com/sockudo/user-auth",
         ),
     ),
 )
+
+# Events sent to this user (server-to-user channel).
+client.user.bind("account-updated", lambda data, _: print(data))
+
+await client.connect()
+await client.user.sign_in()  # or: await client.signin()
 ```
 
-Use delta compression for frequently changing, structurally similar payloads
-such as order books. The SDK reconstructs full payloads before invoking your
-handler. Monitor `client.get_delta_stats()` and fall back to full events if
-base continuity is lost. See [Filters and delta compression](/docs/clients/filters-delta).
+The SDK posts `socket_id` to the endpoint and expects `auth` and `user_data`
+in the JSON response. The backend must bind the authenticated application user
+to the current `socket_id`; never accept a user ID supplied by the client
+without checking the session.
 
-## Recovery, rewind, and late joins
+## Protocol V2 features
 
-Recovery resumes a previously attached channel after a connection interruption.
+Protocol V2 is the default for this SDK. It adds continuity metadata
+(`message_id`, `stream_id`, `serial`) and Sockudo-native features on top of the
+familiar channel model. See [Protocol V2](/docs/clients/protocol-v2) for the
+wire-level contract.
+
+### Recovery
+
+With `connection_recovery=True`, the client records the last `serial`,
+`stream_id`, and `message_id` per channel. After a reconnect it sends those
+positions with `sockudo:resume`, and Sockudo replays what the channel missed if
+continuity can be proven.
+
+```python title="recovery.py"
+client.bind("sockudo:resume_success", lambda data, _: print("recovered:", data))
+client.bind("sockudo:resume_failed", lambda data, _: print("rebuild:", data))
+```
+
+On `sockudo:resume_failed`, the SDK clears the stored position and delta state
+for that channel and resubscribes it automatically.
+
+<Callout type="warn" title="Treat resume_failed as a continuity break">
+Missed events were not replayed. Clear derived local state and fetch an
+authoritative snapshot (or use channel history with `until_attach`) before
+applying new events.
+</Callout>
+
+### Rewind
+
 Rewind asks the server for a bounded amount of earlier history at subscription
-time:
+time, either by count or by age:
 
-```python
+```python title="rewind.py"
 from sockudo_python import SubscriptionOptions, SubscriptionRewind
 
 market = client.subscribe(
     "market:btc",
     options=SubscriptionOptions(
-        rewind=SubscriptionRewind.seconds_back(30),
+        rewind=SubscriptionRewind.seconds_back(30),  # or SubscriptionRewind.count_messages(50)
     ),
 )
-
-client.bind("sockudo:resume_success", lambda data, _: print(data))
-client.bind("sockudo:resume_failed", lambda data, _: print(data))
 market.bind("sockudo:rewind_complete", lambda data, _: print(data))
 ```
 
-Treat `resume_failed` as a continuity break: clear derived local state and fetch
-an authoritative snapshot before applying new events.
+### Channel history and late joins
 
 For gap-free late joins, proxy channel history through your backend and request
 history only up to the subscription's attach point:
 
-```python
+```python title="history.py"
 from sockudo_python import ChannelHistoryOptions, ChannelHistoryParams
 
 client = SockudoClient(
@@ -271,17 +441,24 @@ channel = client.subscribe("orders")
 page = await channel.history(
     ChannelHistoryParams(limit=50, until_attach=True),
 )
+for item in page.items:
+    print(item)
+if page.has_next():
+    older = await page.next()
 ```
 
-The proxy owns Sockudo credentials and validates which channels the requesting
-user may read.
+`until_attach=True` uses the `attach_serial` received with
+`subscription_succeeded` when available, so history and live events join
+without a gap or duplicate. The proxy receives a JSON `POST` of
+`{channel, params, action}`, owns Sockudo credentials, and validates which
+channels the requesting user may read.
 
-## Presence history and snapshots
+### Presence history and snapshots
 
 Presence history is also proxy-backed. The endpoint receives a channel, action,
 and parameters, then calls the signed server REST API:
 
-```python
+```python title="presence_history.py"
 from sockudo_python.client import (
     PresenceHistoryOptions,
     PresenceHistoryParams,
@@ -312,12 +489,102 @@ Use current membership for live UI, history for audit or timelines, and a
 snapshot to reconstruct membership at a specific serial. See
 [Presence history](/docs/clients/presence-history).
 
-## Versioned messages
+<Callout type="note" title="Import path">
+The presence-history types are not re-exported from the package root; import
+them from `sockudo_python.client` as shown.
+</Callout>
+
+### Filters and event selection
+
+Protocol V2 subscriptions can combine event names, tag filters, and a bounded
+expression. The server evaluates them and delivers only messages where every
+supplied condition matches:
+
+```python title="filters.py"
+from sockudo_python import Filter, SubscriptionOptions
+
+market = client.subscribe(
+    "price:btc",
+    options=SubscriptionOptions(
+        events=["price.updated"],
+        filter=Filter.and_(
+            Filter.eq("market", "spot"),
+            Filter.gt("spread", "0"),
+        ),
+        expression="data.price >= `100`",
+    ),
+)
+```
+
+`Filter` provides `eq`, `neq`, `inside`, `not_in`, `exists`, `not_exists`,
+`starts_with`, `ends_with`, `contains`, `gt`, `gte`, `lt`, `lte`, and the
+combinators `and_`, `or_`, and `not_`. Tag values are strings.
+`validate_filter(node)` returns an error message, or `None` if the filter is
+valid.
+
+### Delta compression
+
+Delta compression sends only the difference from a previous message on the
+same channel. The SDK reconstructs the full payload before invoking your
+handler, using Fossil or Xdelta3/VCDIFF.
+
+```python title="deltas.py"
+from sockudo_python import (
+    ChannelDeltaSettings,
+    DeltaAlgorithm,
+    DeltaOptions,
+    SockudoClient,
+    SockudoOptions,
+    SubscriptionOptions,
+)
+
+client = SockudoClient(
+    "app-key",
+    SockudoOptions(
+        cluster="local",
+        ws_host="127.0.0.1",
+        ws_port=6001,
+        force_tls=False,
+        delta_compression=DeltaOptions(enabled=True),
+    ),
+)
+
+book = client.subscribe(
+    "orderbook:btc-usd",
+    options=SubscriptionOptions(
+        delta=ChannelDeltaSettings(
+            enabled=True,
+            algorithm=DeltaAlgorithm.XDELTA3,
+        ),
+    ),
+)
+book.bind("snapshot", lambda data, _: print(data))
+
+stats = client.get_delta_stats()
+if stats:
+    print(stats.bandwidth_saved_percent, stats.errors)
+```
+
+<Callout type="warn" title="Enable reconstruction on the client">
+Set `delta_compression=DeltaOptions(enabled=True)` on `SockudoOptions`. It
+negotiates delta compression on connect and creates the reconstruction state
+that `get_delta_stats()` reports; without it `get_delta_stats()` returns
+`None` and the SDK cannot rebuild delta frames into full payloads.
+</Callout>
+
+`DeltaOptions` also accepts `algorithms` (default Fossil and Xdelta3), `debug`,
+and `on_stats` / `on_error` callbacks. Use deltas for frequently changing,
+structurally similar payloads such as order books; monitor `get_delta_stats()`
+and reload full state if base continuity is lost. Delta settings are ignored
+for encrypted channels. See [Filters and delta compression](/docs/clients/filters-delta).
+
+### Versioned messages
 
 Create and mutate versioned messages through a trusted proxy. These helpers do
-not expose app credentials or send mutation frames over the WebSocket:
+not expose app credentials or send mutation frames over the WebSocket; the
+proxy performs the signed HTTP request and returns the server acknowledgement.
 
-```python
+```python title="versioned.py"
 from sockudo_python import VersionedMessageOptions
 
 client = SockudoClient(
@@ -348,60 +615,157 @@ await client.versioned_messages.update(
     ack.message_id,
     {"text": "hello world"},
 )
+await client.versioned_messages.delete("chat:room-1", ack.message_id)
 ```
 
-Apply mutations in serial order. If an append arrives before its base, fetch
-the latest visible message from the proxy before applying later appends.
+The same operations exist on a channel as `create_versioned_message`,
+`append_versioned_message`, `update_versioned_message`, and
+`delete_versioned_message`. Each accepts optional `extras` (a `MessageExtras`
+or dict) and a per-call `timeout`; `VersionedMessageOptions.timeout` defaults
+to `10.0` seconds.
 
-## Encrypted channels
+Apply mutations in serial order. If an append arrives before its base, fetch
+the latest visible message from the proxy before applying later appends. See
+[Mutable messages](/docs/server/mutable-messages).
+
+### Binary wire formats
+
+Protocol V2 can negotiate MessagePack or Protobuf with
+`wire_format=SockudoWireFormat.MESSAGEPACK` or `SockudoWireFormat.PROTOBUF`.
+Both preserve `bytes` message data as native binary. MessagePack uses the
+additive `["binary", <bin>]` tagged value; existing string and JSON variants
+are unchanged. Use a binary format only when every endpoint that touches the
+stream supports it.
+
+### Encrypted channels
 
 `private-encrypted-*` subscriptions are decrypted automatically. The
-authorization response must include a `shared_secret` derived by your trusted
-backend:
+authorization response must include a base64 `shared_secret` derived by your
+trusted backend; the SDK fails the subscription if it is missing.
 
-```python
+```python title="encrypted.py"
 encrypted = client.subscribe("private-encrypted-documents")
-encrypted.bind("doc-updated", lambda data, _: print(data))
+encrypted.bind("doc-updated", lambda data, _: print(data))  # already decrypted
 ```
 
 Encryption protects event content end to end. It does not replace TLS,
 authorization, channel naming policy, or secret rotation.
 
-## User sign-in
+## Connection lifecycle and reconnection
 
-Configure a user-auth endpoint when using user-targeted events or watchlists:
+The client moves through the `ConnectionState` values `initialized`,
+`connecting`, `connected`, `reconnecting`, `unavailable`, `disconnected`, and
+`failed`. Each change emits `state_change` with `previous` and `current`, plus
+an event named after the new state.
 
-```python
-from sockudo_python import UserAuthenticationOptions
+```python title="lifecycle.py"
+def on_state_change(change, _) -> None:
+    print(f"connection: {change['previous']} -> {change['current']}")
 
-client = SockudoClient(
-    "app-key",
-    SockudoOptions(
-        cluster="local",
-        user_authentication=UserAuthenticationOptions(
-            endpoint="https://api.example.com/sockudo/user-auth",
-        ),
-    ),
+
+client.bind("state_change", on_state_change)
+client.bind(
+    "connected",
+    lambda data, _: print("socket id:", data.get("socket_id")),
 )
-
-await client.connect()
-await client.user.sign_in()
+client.bind("connecting", lambda *_: print("connecting"))
+client.bind("reconnecting", lambda *_: print("reconnecting"))
+client.bind("unavailable", lambda *_: print("unavailable"))
+client.bind("disconnected", lambda *_: print("disconnected"))
+client.bind("error", lambda error, _: print("error:", error))
 ```
 
-The backend must bind the authenticated application user to the current
-`socket_id`; never accept a user ID supplied by the client without checking the
-session.
+The current state is also available as `client.connection_state`, and the
+socket ID as `client.socket_id`.
 
-## Error handling and production checklist
+| Situation | Behavior |
+| --- | --- |
+| Unexpected transport failure | Retries with quadratic backoff (0s, 1s, 4s, 9s, ...) capped by `max_reconnect_gap_in_seconds`, emitting `reconnecting`. |
+| Protocol retry close codes (`4200`-`4299`) | Reconnect immediately. |
+| TLS-upgrade close code (`4000`) | Switches to TLS and reconnects immediately. |
+| Backoff close codes (`4100`-`4199`) | Reconnect with backoff. |
+| Refused close codes (`4001`-`4099`, `4300`+) | No reconnect; state becomes `disconnected`. |
+| Retry limit reached | State becomes `disconnected`. |
+| No handshake within `unavailable_timeout` | State becomes `unavailable`. |
+| `await client.disconnect()` | Stops reconnect and refresh timers and closes the socket. |
 
-- Catch `SockudoException` around explicit connect, auth, proxy, and mutation
-  operations; connection errors are also emitted through the connection.
-- Put timeouts and authentication on every proxy endpoint.
-- Use TLS and a public load-balancer hostname outside local development.
-- Keep callbacks fast and move blocking work off the asyncio event loop.
-- Make handlers idempotent because reconnect and application retries can repeat
-  work even when transport deduplication is enabled.
-- On a failed resume or unrecoverable delta, reload authoritative state.
-- Unsubscribe unused channels and disconnect cleanly during process shutdown.
-- Use the HTTP [Python server SDK](/docs/server-sdks/python) for publishing,
-  signing auth, webhooks, history administration, and push.
+The attempt counter resets after a successful connection and on explicit
+`connect()` or `disconnect()` calls. `reconnect_jitter` randomizes each delay
+by that fraction so clients dropped by one event do not return in lockstep:
+`0.5` picks uniformly from 50-100% of the delay, `1.0` from 0-100%. The default
+`0.0` keeps delays exact.
+
+Remove a subscription when its consumer goes away. This also clears the
+channel's recovery and delta state:
+
+```python
+await client.unsubscribe("public-updates")
+```
+
+`await client.close()` is an alias for `disconnect()`, which also closes the
+SDK's HTTP client used for auth and proxy calls.
+
+## Error handling
+
+Errors surface in two ways: exceptions from awaited calls, and `error` events
+for problems that happen inside the receive loop.
+
+| Exception | Raised when |
+| --- | --- |
+| `SockudoException` | Base class for every SDK error; also raised for failed or invalid proxy (history, presence history, versioned message) responses. |
+| `InvalidAppKey` | The app key passed to `SockudoClient` is empty. |
+| `InvalidOptions` | `cluster` is empty, token auth is configured with Protocol V1, or `append_rollup_window` is not an allowed value. |
+| `AuthFailure` | An auth endpoint returns a status of 400 or above or invalid JSON; carries `status_code`. |
+| `BadEventName` | `trigger()` is called with a name that does not start with `client-`. |
+| `UnsupportedFeature` | `trigger()` is called on an encrypted channel. |
+
+Only `SockudoException` is exported from the package root; import the
+subclasses from `sockudo_python.client`.
+
+```python title="errors.py"
+from sockudo_python import SockudoException
+from sockudo_python.client import AuthFailure
+
+client.bind("error", lambda error, _: print("connection or server error:", error))
+
+try:
+    page = await channel.history()
+except SockudoException as exc:
+    print("history unavailable:", exc)
+```
+
+- Auth failures during subscribe do not raise; they emit
+  `sockudo:subscription_error` on the channel. Treat `401`/`403` as an
+  application-permission problem, not a reason to retry in a loop.
+- Server `sockudo:error` frames are emitted to `client.bind("error", ...)`
+  with the error payload.
+- Exceptions raised inside message handlers are caught by the receive loop and
+  emitted as `error` events with the exception object, so a faulty handler
+  does not kill the connection.
+- Close reasons sent by the server are emitted as `error` events.
+
+## Platform notes
+
+- **One client per process.** Share a single `SockudoClient` across tasks; it
+  multiplexes all channels over one socket.
+- **Event loop.** Create, connect, and disconnect the client on the same
+  running event loop. Keep callbacks fast and move blocking work off the loop.
+- **Shutdown.** Always `await client.disconnect()` (for example in a `finally`
+  block or your framework's shutdown hook) so timers, the socket, and the HTTP
+  client are released.
+- **Idempotent handlers.** Reconnects and application retries can repeat work
+  even with `message_id` deduplication enabled.
+- **Proxy endpoints.** Put timeouts and authentication on every auth and proxy
+  endpoint, and use TLS with a public load-balancer hostname outside local
+  development.
+- **Publishing.** Use the HTTP [Python server SDK](/docs/server-sdks/python)
+  for publishing, signing auth, webhooks, history administration, and push.
+
+## Next steps
+
+<Cards>
+  <Card title="Python server SDK" href="/docs/server-sdks/python" description="Publish events, sign channel auth, and validate webhooks with sockudo-http-python." />
+  <Card title="Protocol V2" href="/docs/clients/protocol-v2" description="Continuity metadata, native events, recovery, and history semantics." />
+  <Card title="Filters and delta compression" href="/docs/clients/filters-delta" description="Cut delivered traffic with tag filters and delta reconstruction." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Configure durable history, rewind, and resume on the server." />
+</Cards>

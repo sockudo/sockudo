@@ -4,6 +4,11 @@ description: Run Sockudo under systemd with correct file limits, measured kernel
 icon: Server
 ---
 
+This guide runs Sockudo as a systemd service on a Linux VM or physical host, then tunes file limits,
+the kernel, and the reverse proxy for long-lived WebSocket connections. Choose this path when you
+want direct control over the process and host, or when connection density matters more than
+orchestration features.
+
 A Linux VM is often the simplest production deployment for a known, stable workload. It gives you
 direct control over file limits, kernel settings, CPU scheduling, network queues, and the process
 lifecycle. Start with one host only if a host restart is an acceptable outage; use at least two
@@ -20,23 +25,73 @@ Use separate paths for the binary, configuration, secrets, and service account:
 /etc/systemd/system/sockudo.service
 ```
 
-The service account needs read access to its configuration and secret-backed files. Sockudo does
-not need root privileges when it binds to ports `6001` and `9601`.
+Root owns the binary and configuration so a compromised Sockudo process cannot rewrite them. The
+`sockudo` group can read the configuration and secrets. Sockudo does not need root privileges when
+it binds to ports `6001` and `9601`, because both are above 1024.
 
-```bash
-sudo useradd --system --home /var/lib/sockudo --create-home --shell /usr/sbin/nologin sockudo
-sudo install -o root -g root -m 0755 target/release/sockudo /usr/local/bin/sockudo
-sudo install -d -o root -g sockudo -m 0750 /etc/sockudo
-sudo install -o root -g sockudo -m 0640 config/production.toml /etc/sockudo/config.toml
-```
+## Install the service
 
-Keep `/etc/sockudo/sockudo.env` at mode `0640` or stricter. Do not put secrets directly in the
-systemd unit because unit contents are commonly collected in diagnostics and configuration
-management.
+<Steps>
+
+1. Create the service account and configuration directory:
+
+   ```bash
+   sudo useradd --system --home /var/lib/sockudo --create-home --shell /usr/sbin/nologin sockudo
+   sudo install -d -o root -g sockudo -m 0750 /etc/sockudo
+   ```
+
+   Verify with `id sockudo`, which prints the new user and group.
+
+2. Install a pinned binary. With the release installer, download into a staging directory and then
+   install it system-wide:
+
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSfL https://sockudo.io/install.sh \
+     | sh -s -- --version 5.2.0 --bin-dir "$HOME/sockudo-5.2.0"
+   sudo install -o root -g root -m 0755 "$HOME/sockudo-5.2.0/sockudo" /usr/local/bin/sockudo
+   ```
+
+   From a source build, install `target/release/sockudo` the same way. Verify with
+   `/usr/local/bin/sockudo --version`, which prints `sockudo 5.2.0`.
+
+3. Install the configuration and the secret environment file:
+
+   ```bash
+   sudo install -o root -g sockudo -m 0640 config/production.toml /etc/sockudo/config.toml
+   sudo install -o root -g sockudo -m 0640 /dev/null /etc/sockudo/sockudo.env
+   sudoedit /etc/sockudo/sockudo.env
+   ```
+
+   Keep `sockudo.env` at mode `0640` or stricter. Verify with `ls -l /etc/sockudo`: both files
+   show `-rw-r-----` and group `sockudo`.
+
+4. Write the systemd unit from the next section to `/etc/systemd/system/sockudo.service`.
+
+5. Start the service and enable it at boot:
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now sockudo
+   sudo systemctl status sockudo
+   ```
+
+   `status` must show `active (running)`. Confirm the configuration source and health:
+
+   ```bash
+   journalctl -u sockudo -b | grep -E 'explicit configuration applied|applied environment variable overrides'
+   curl -fsS http://127.0.0.1:6001/up/<app-id>
+   ```
+
+   The `curl` command prints `OK`.
+
+</Steps>
+
+Do not put secrets directly in the systemd unit. Unit contents are commonly collected in
+diagnostics and configuration management, and `systemctl show` exposes them to local users.
 
 ## systemd unit
 
-```ini
+```ini title="/etc/systemd/system/sockudo.service"
 [Unit]
 Description=Sockudo realtime server
 Wants=network-online.target
@@ -52,7 +107,7 @@ ExecStart=/usr/local/bin/sockudo --config /etc/sockudo/config.toml
 Restart=on-failure
 RestartSec=2s
 LimitNOFILE=1048576
-TimeoutStopSec=90s
+TimeoutStopSec=120s
 KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
@@ -69,33 +124,52 @@ LockPersonality=true
 WantedBy=multi-user.target
 ```
 
+Why the key directives matter:
+
+- `--config` is explicit, so the result does not depend on `WorkingDirectory`. A file that fails to
+  load stops startup, and `Restart=on-failure` retries it every two seconds; check
+  `journalctl -u sockudo` when the unit flaps.
+- `LimitNOFILE` is the only reliable way to raise the open-file limit for a systemd service. Every
+  socket is a file descriptor.
+- `TimeoutStopSec` is how long systemd waits after `SIGTERM` before it sends `SIGKILL`. A kill
+  during drain can lose buffered webhook and lifecycle events.
+- The `Protect*`, `Private*`, and `Restrict*` directives remove filesystem and kernel access that
+  Sockudo does not need.
+
 Set `TimeoutStopSec` above `shutdown_grace_period` plus twice
 `queue.reliability.shutdown_timeout_ms / 1000`, with additional time for connection and backend
 teardown. The two budgets cover [webhook draining](/docs/server/webhooks#shutdown-delivery) and
-queue worker shutdown. Add `ReadWritePaths=` only when a selected
-feature writes to local disk. A stricter security directive may need adjustment for a
-provider SDK or a TLS key path; keep any exception narrow.
+queue worker shutdown.
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now sockudo
-sudo systemctl status sockudo
-```
+For example (illustrative): with `shutdown_grace_period = 30` and the default
+`shutdown_timeout_ms = 30000`, the drain can take `30 + 2 × 30 = 90` seconds. Adding 30 seconds for
+teardown gives the `TimeoutStopSec=120s` shown above. Recalculate when you change either value.
+
+Add `ReadWritePaths=` only when a selected feature writes to local disk. A stricter security
+directive may need adjustment for a provider SDK or a TLS key path; keep any exception narrow.
 
 ## File descriptor limits
 
 Every accepted socket consumes a file descriptor, as do logs, shared-backend connections, metrics,
-and internal listeners. Budget:
+and internal listeners. When the process reaches its limit, new connections fail at `accept` even
+though CPU and memory look healthy. Budget:
 
 ```text
 required nofile >= planned sockets + backend connections + listeners + operational reserve
 ```
 
+For example (illustrative): 100,000 planned sockets, 200 backend connections, and 10 listeners
+with a 20% reserve need `(100,000 + 200 + 10) × 1.2 ≈ 120,252` descriptors. The unit's
+`LimitNOFILE=1048576` covers that comfortably.
+
 Use at least 10–20% reserve and never set `SOCKUDO_MAX_CONNECTIONS` equal to the hard `nofile`
 limit.
 
+<Callout type="warn" title="limits.conf does not apply to systemd services">
 `/etc/security/limits.d/*.conf` applies to PAM login sessions. It does not reliably change a
-systemd service. `LimitNOFILE=` in the unit is the relevant setting.
+systemd service, so a shell showing a high `ulimit -n` proves nothing about Sockudo.
+`LimitNOFILE=` in the unit is the relevant setting, and it cannot exceed the kernel's `fs.nr_open`.
+</Callout>
 
 Verify the running process rather than the shell:
 
@@ -105,6 +179,9 @@ cat /proc/"$(pidof sockudo)"/limits | grep -i 'open files'
 ls /proc/"$(pidof sockudo)"/fd | wc -l
 ```
 
+The first two commands should both report `1048576`; the third shows how many descriptors the
+process holds right now.
+
 Also check system-wide pressure:
 
 ```bash
@@ -112,13 +189,14 @@ sysctl fs.file-max fs.nr_open
 cat /proc/sys/fs/file-nr
 ```
 
+The first field of `file-nr` is the number of allocated file handles; it should stay well below
+`fs.file-max`.
+
 ## Baseline kernel profile
 
 Treat this as a starting profile for a dedicated Sockudo node, not a universal requirement:
 
-```ini
-# /etc/sysctl.d/99-sockudo.conf
-
+```ini title="/etc/sysctl.d/99-sockudo.conf"
 # Listen and SYN queues for connection bursts.
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
@@ -145,13 +223,18 @@ sysctl net.core.netdev_max_backlog
 sysctl net.ipv4.tcp_keepalive_time net.ipv4.tcp_keepalive_intvl net.ipv4.tcp_keepalive_probes
 ```
 
+Each `sysctl` line must print the value from the file, for example `net.core.somaxconn = 65535`.
+
 Why these are not all “set once and forget” values:
 
 - a larger `somaxconn` helps only if the application's listen backlog and accept loop can use it
-- a larger SYN queue helps connection bursts, not steady-state message fanout
+- a larger SYN queue helps connection bursts, such as every client reconnecting after a node
+  restart, not steady-state message fanout
 - a larger `netdev_max_backlog` can trade drops for latency and memory when CPU is already saturated
 - TCP keepalive does not replace Sockudo's protocol ping/pong and should not fire more aggressively
   than necessary
+- `tcp_slow_start_after_idle = 0` matters for realtime traffic because quiet sockets are idle most
+  of the time; without it, the first burst after a pause starts from a small congestion window
 - modern Linux already autotunes TCP buffers; raising `rmem_max` and `wmem_max` without high
   bandwidth-delay-product evidence can increase per-socket memory risk
 
@@ -159,9 +242,11 @@ Optional settings such as `tcp_fin_timeout`, socket buffer ceilings, IRQ affinit
 busy polling, and NIC ring sizes should follow a measured bottleneck. Record the before/after
 kernel counters and repeat the same workload.
 
+<Callout type="note" title="ip_local_port_range does not limit inbound sockets">
 Do not widen `ip_local_port_range` to increase inbound WebSocket capacity. Inbound sockets use the
 server's listening port. The ephemeral range matters for high-volume outbound connections from
 Sockudo, a NAT gateway, or the load generator.
+</Callout>
 
 ## Inspect the network path
 
@@ -184,10 +269,12 @@ Interpret them together:
 
 ## Reverse proxy example
 
-Terminate TLS at a load balancer or a carefully configured reverse proxy. NGINX needs HTTP/1.1
-upgrade forwarding and long enough timeouts:
+Terminate TLS at a load balancer or a carefully configured reverse proxy. A WebSocket starts as an
+HTTP/1.1 request with `Upgrade: websocket`; a proxy that does not forward those headers turns every
+connection attempt into a plain HTTP request. NGINX needs HTTP/1.1 upgrade forwarding and long
+enough timeouts:
 
-```nginx
+```nginx title="/etc/nginx/conf.d/sockudo.conf"
 map $http_upgrade $connection_upgrade {
     default upgrade;
     ''      close;
@@ -218,10 +305,22 @@ server {
 }
 ```
 
+`least_conn` sends each new connection to the backend with the fewest active connections, which
+suits long-lived sockets better than round robin. `proxy_buffering off` stops NGINX from holding
+realtime frames in a buffer.
+
 The default Sockudo `activity_timeout` is 120 seconds. Set every proxy or load-balancer idle timeout
 above the longest expected interval between application or heartbeat traffic, with margin. A
 180-second starting value works with the default, but validate it with the actual client SDKs and
 network path.
+
+<Callout type="warn" title="An idle timeout below the heartbeat interval disconnects quiet clients">
+If the proxy closes a connection that has been quiet for less time than the client heartbeat
+interval, idle clients disconnect and reconnect on a fixed cycle. The symptom is a steady sawtooth
+in connection count with no errors on the Sockudo side.
+</Callout>
+
+### Client IP behind the proxy
 
 If the proxy adds entries to `X-Forwarded-For`, configure `RATE_LIMITER_API_TRUST_HOPS` and
 `RATE_LIMITER_WS_TRUST_HOPS` to the client's one-based position from the right of that header.
@@ -247,20 +346,53 @@ back to the socket peer, with a once-only warning containing no header values. S
 | History and mutations | Memory can be acceptable for tests | Use a supported durable backend |
 | Load balancer | Optional reverse proxy | Required, with health checks and drain |
 
-For multiple nodes, set `fallback_to_local = false`. A production cluster should fail readiness or
-startup when its horizontal adapter is unavailable instead of silently splitting into isolated
-local islands.
+For multiple nodes, set `fallback_to_local = false`. The default is `true`, which lets a node that
+cannot reach its horizontal adapter at startup run alone. A production cluster should fail startup
+when its horizontal adapter is unavailable instead of silently splitting into isolated local
+islands.
 
 ## Drain and upgrade
 
-1. Remove the host from load-balancer readiness.
+On `SIGTERM`, Sockudo marks itself as draining (`/up` and `/ready` return `503 DRAINING`), rejects
+new WebSocket upgrades, closes existing connections with code 4200 so clients reconnect elsewhere,
+and keeps the listener open for `shutdown_grace_period` seconds. See
+[rolling deploys](/docs/server/scaling#rolling-deploys) for the full sequence and the
+`shutdown_close_delay_ms` and `shutdown_close_spread_ms` pacing options.
+
+<Steps>
+
+1. Remove the host from load-balancer rotation. If you skip this, the balancer's health check
+   still sees `503 DRAINING` once Sockudo stops, but only after its probe interval.
 2. Wait for the balancer's deregistration delay or connection drain policy.
-3. Stop Sockudo with `systemctl stop sockudo`.
-4. Allow `TimeoutStopSec` to cover Sockudo's listener grace, webhook drain, queue worker shutdown,
-   and teardown.
-5. Replace the binary and configuration atomically.
-6. Start the service, wait for `/up/<app-id>`, then restore load-balancer membership.
+3. Stop Sockudo with `sudo systemctl stop sockudo`. `TimeoutStopSec` must cover Sockudo's listener
+   grace, webhook drain, queue worker shutdown, and teardown.
+4. Replace the binary and configuration atomically, for example with `install` to a new path
+   followed by `mv`.
+5. Start the service with `sudo systemctl start sockudo`.
+6. Wait until `curl -fsS http://127.0.0.1:6001/up/<app-id>` prints `OK`, then restore
+   load-balancer membership.
+
+</Steps>
 
 Watch reconnect attempts, recovery success, adapter errors, and connection distribution throughout
-the rollout. Continue with [Capacity planning](/docs/deployment/capacity-planning) before setting a
-production connection limit.
+the rollout.
+
+## Production checklist
+
+- `/usr/local/bin/sockudo --version` reports the intended release on every host
+- `/proc/<pid>/limits` shows the intended `Max open files`
+- `SOCKUDO_MAX_CONNECTIONS` (or `max_connections`) is set below the measured safe ceiling
+- `TimeoutStopSec` exceeds the drain budget calculated above
+- the sysctl profile is applied after reboot (`sysctl --system` reads `/etc/sysctl.d`)
+- proxy idle timeouts exceed the heartbeat interval, verified with a quiet client
+- the metrics port `9601` is reachable only from your monitoring network
+- `fallback_to_local = false` on every node of a multi-host deployment
+
+## Next steps
+
+<Cards>
+  <Card title="Capacity planning" href="/docs/deployment/capacity-planning" description="Measure the safe connection ceiling before setting a production limit." />
+  <Card title="Observability" href="/docs/server/observability" description="Scrape metrics, ship logs, and set alerts." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Add a second host with a shared adapter and plan rolling deploys." />
+  <Card title="Security" href="/docs/server/security" description="Harden secrets, origins, and network exposure." />
+</Cards>

@@ -4,13 +4,25 @@ description: Design multi-node Sockudo deployments with shared adapters, cache, 
 icon: Network
 ---
 
+This page explains how Sockudo runs as a cluster: how a publish on one node reaches sockets on
+another, which dependencies every node must share, and how to deploy, drain, and load-test without
+dropping messages. You need it as soon as you run more than one Sockudo process, including two
+replicas behind a load balancer for availability.
+
 Sockudo scales horizontally when every node shares the dependencies that carry cross-node state: adapter, cache, queue, app manager, and optional history store.
 
-AI Transport has a stricter horizontal matrix because streaming recovery depends on durable history, versioned-message state, and shared orphan ownership. For horizontal adapters (`redis`, `redis-cluster`, `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, or `iggy`), configure shared non-memory history and version-store backends plus Redis or Redis Cluster cache. Startup rejects AI Transport with process-local memory history, version stores, or cache on horizontal adapters.
+AI Transport has a stricter horizontal matrix because streaming recovery depends on durable history, versioned-message state, and shared orphan ownership. For horizontal adapters (`redis`, `redis-cluster`, `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy`, or `omq`), configure shared non-memory history and version-store backends plus Redis or Redis Cluster cache. Startup rejects AI Transport with process-local memory history, version stores, or cache on horizontal adapters.
 
 ## Architecture
 
-![Horizontal scaling diagram](/diagrams/horizontal-scaling.svg)
+<FanoutDiagram start={1} caption="Horizontal scaling in 3D: a publish on any node crosses the adapter bus so every node delivers to its own sockets." />
+
+Each WebSocket lives on exactly one node, but a publish can arrive at any node: over HTTP through the
+load balancer, or as a client event from a socket on another node. The adapter closes that gap. The
+receiving node delivers to its own subscribers and publishes the message to the adapter bus; every
+other node receives it and delivers to its own subscribers. Cluster-wide questions, such as channel
+occupancy or presence membership, are answered by asking peers over the same bus or from gossiped
+counts.
 
 At minimum, a production cluster has:
 
@@ -22,18 +34,33 @@ At minimum, a production cluster has:
 - shared app manager for dynamic app credentials
 - metrics and logs from every node
 
+### What breaks if a dependency is node-local
+
+| Dependency | If left on `memory` or `local` in a cluster |
+| --- | --- |
+| Adapter | Subscribers on other nodes never receive the publish. |
+| Cache | Idempotent retries that land on another node publish twice; token revocations do not propagate. |
+| Rate limiter | Each node enforces its own bucket, so the effective limit grows with node count. |
+| Queue | Webhook and push jobs are lost when the node that holds them exits. |
+| History and version store | Recovery and history reads on another node cannot prove continuity and fail closed. |
+| App manager | App changes must be redeployed to every node. |
+
 ## Adapter choices
 
-| Adapter | Strength |
-| --- | --- |
-| Redis | Simple, common, low-latency local and regional deployments. |
-| Redis Cluster | Higher Redis scale and shard-aware deployments. |
-| NATS | Lightweight pub/sub with strong operational ergonomics. |
-| Kafka | Durable stream backbone and high-volume integration pipelines. |
-| RabbitMQ | Enterprise messaging and routing patterns. |
-| Pulsar | Multi-tenant stream workloads. |
-| Google Pub/Sub | Managed GCP fanout. |
-| Apache Iggy | High-throughput persistent log workloads, with replicated VSR clusters. |
+| Adapter | Driver | Strength |
+| --- | --- | --- |
+| Redis | `redis` | Simple, common, low-latency local and regional deployments. |
+| Redis Cluster | `redis-cluster` | Higher Redis scale and shard-aware deployments. |
+| NATS | `nats` | Lightweight pub/sub with strong operational ergonomics. |
+| Kafka | `kafka` | Durable stream backbone and high-volume integration pipelines. |
+| RabbitMQ | `rabbitmq` | Enterprise messaging and routing patterns. |
+| Pulsar | `pulsar` | Multi-tenant stream workloads. |
+| Google Pub/Sub | `google-pubsub` | Managed GCP fanout. |
+| Apache Iggy | `iggy` | High-throughput persistent log workloads, with replicated VSR clusters. |
+| OMQ | `omq` | Brokerless PUB/SUB between nodes; messages in flight are not retained. |
+
+If you have no strong preference, start with Redis: it is also the natural choice for the shared
+cache, queue, and rate limiter, so one dependency covers four roles.
 
 ### NATS notes
 
@@ -148,6 +175,11 @@ readinessProbe:
     port: http
 ```
 
+<Callout type="warn" title="Never point liveness at /up">
+If a shared dependency such as Redis slows down, every pod fails `/up` at once. As a liveness probe
+that restarts the whole fleet together; as a readiness probe it only stops routing new traffic.
+</Callout>
+
 ## Duplicate delivery
 
 Distributed realtime systems must tolerate retries and duplicate delivery. Sockudo features that help:
@@ -164,6 +196,11 @@ Consumers should treat application event IDs as stable and idempotent.
 
 V2 recovery uses stream continuity. A reconnect to a different node can recover only if the required replay state is available through the configured shared backend or still present in a valid buffer.
 
+The hot replay buffer lives in each node's memory and holds messages published through that node,
+so a reconnect to a different node usually cannot prove continuity from it. Recovery then falls
+through to durable history: with a shared history backend the gap is replayed; with `memory` history
+it cannot be proven and the resume fails.
+
 Fail closed if continuity cannot be proven. Do not display a recovered state unless the server returns a successful resume.
 
 ## Push fanout at scale
@@ -173,7 +210,7 @@ Push notification fanout is queue-oriented. A realtime publish and a push publis
 Operational recommendations:
 
 - keep push `sync` false in production
-- use idempotency keys for publish retries
+- use a stable `publishId` for publish retries
 - partition high-volume channel pushes by tenant or campaign
 - set publish status retention high enough for support workflows
 - alert on provider error rates and queue backlog
@@ -183,6 +220,8 @@ Operational recommendations:
 ## Rolling deploys
 
 On SIGTERM or SIGINT, Sockudo:
+
+<Steps>
 
 1. Reports not ready: `/up` and `/ready` return 503 `DRAINING` and new WebSocket upgrades are
    rejected with 503. The listener stays open and HTTP API requests are still served, except
@@ -205,6 +244,8 @@ On SIGTERM or SIGINT, Sockudo:
 5. Drains local memory-queue work before disconnecting the queue and other backends. Broker
    queues retain their enqueued jobs and apply their normal worker shutdown budget.
 
+</Steps>
+
 Allow the process supervisor enough time for the listener grace, lifecycle drain, queue worker
 shutdown, and connection/backend teardown. The two drain phases can each use
 `queue.reliability.shutdown_timeout_ms`. An exhausted lifecycle budget logs a warning that
@@ -219,13 +260,18 @@ idle WebSocket connections before Sockudo finishes deregistering.
 For large nodes, spread the reconnect load. For example, with a load balancer that marks a node
 down after about two seconds:
 
-```toml
+```toml title="config.toml"
 shutdown_grace_period = 20
 shutdown_close_delay_ms = 3000
 shutdown_close_spread_ms = 15000
 ```
 
 Clients can add their own spread too. For example, `@sockudo/client` has `retryJitterMs`.
+
+<Callout type="note" title="Kubernetes termination budget">
+Set `terminationGracePeriodSeconds` above `shutdown_grace_period` plus the lifecycle and queue drain
+budgets, or the kubelet kills the process before in-memory webhook events are flushed.
+</Callout>
 
 Then:
 
@@ -235,16 +281,22 @@ Then:
 
 ## Metrics to watch
 
-- active connections by node
-- subscription count by channel class
-- publish accepted and failed counters
-- fanout latency and adapter errors
-- recovery success and failure counters
-- replay buffer pressure
-- AI stream orphan cancellations and `ai_stream_orphaned` webhook delivery
-- webhook queue depth and failure count
-- push publish accepted, dispatched, failed, and scheduled counters
-- push provider latency and error labels
+Metric names below assume the default `sockudo_` prefix. Full tables and alert suggestions are in
+[Observability](/docs/server/observability).
+
+| Signal | Metrics |
+| --- | --- |
+| Active connections by node | `sockudo_connected`, by `instance` |
+| Connection churn | `sockudo_new_connections_total`, `sockudo_new_disconnections_total` |
+| Subscriptions by channel class | `sockudo_channel_subscriptions_total`, `sockudo_active_channels` (label `channel_type`) |
+| Publish volume | `sockudo_http_calls_received_total`, `sockudo_ws_messages_sent_total` |
+| Fanout latency | `sockudo_broadcast_latency_ms` |
+| Cross-node requests and adapter health | `sockudo_horizontal_adapter_resolve_time`, `sockudo_horizontal_adapter_uncomplete_promises`, `sockudo_horizontal_transport_reconnections_total`, `sockudo_horizontal_transport_messages_dropped_total` |
+| Recovery | `sockudo_history_recovery_success_total{source}`, `sockudo_history_recovery_failures_total{code}` |
+| Durable state | `sockudo_history_degraded_channels`, `sockudo_history_reset_required_channels`, `sockudo_history_queue_depth` |
+| AI stream orphans | `sockudo_ai_active_streams`, plus `ai_stream_orphaned` webhook delivery |
+| Webhook and job queues | `sockudo_queue_depth`, `sockudo_queue_settled_total{outcome}` |
+| Push | `sockudo_push_publish_accepted_total`, `sockudo_push_dispatched_total`, `sockudo_push_provider_failures_total`, `sockudo_push_dispatch_duration_seconds` |
 
 ## Capacity checklist
 
@@ -274,3 +326,12 @@ k6 run \
   -e DURATION=10m \
   benches/subscription-churn.js
 ```
+
+## Next steps
+
+<Cards>
+  <Card title="Kubernetes" href="/docs/deployment/kubernetes" description="Probes, disruption budgets, and Helm values for a cluster." />
+  <Card title="Capacity planning" href="/docs/deployment/capacity-planning" description="Benchmarks and sizing before a traffic increase." />
+  <Card title="Observability" href="/docs/server/observability" description="Metric tables and alerts for every subsystem." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Why cross-node recovery needs a shared history backend." />
+</Cards>

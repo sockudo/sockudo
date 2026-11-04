@@ -1,0 +1,293 @@
+---
+import { Code } from 'astro-expressive-code/components';
+import { ArrowRight } from '@lucide/astro';
+
+const clients = [
+  {
+    id: 'js',
+    label: 'JavaScript',
+    lang: 'ts',
+    href: '/docs/clients/javascript',
+    code: `import Sockudo from "@sockudo/client";
+
+const client = new Sockudo("app-key", {
+  wsHost: "realtime.example.com",
+  protocolVersion: 2,
+});
+
+client
+  .subscribe("orders")
+  .bind("order.created", (order) => render(order));`,
+  },
+  {
+    id: 'swift',
+    label: 'Swift',
+    lang: 'swift',
+    href: '/docs/clients/swift',
+    code: `import SockudoSwift
+
+let channel = client.subscribe("public-updates")
+channel.bind("price-updated") { data, _ in
+    Task { @MainActor in
+        viewModel.latestPrice = String(describing: data)
+    }
+}
+
+client.connect()`,
+  },
+  {
+    id: 'pusher',
+    label: 'pusher-js (V1)',
+    lang: 'ts',
+    href: '/docs/getting-started/first-connection',
+    code: `import Pusher from "pusher-js";
+
+const pusher = new Pusher("app-key", {
+  wsHost: "realtime.example.com",
+  cluster: "local",
+  forceTLS: true,
+});
+
+pusher.subscribe("orders").bind("order.created", console.log);`,
+  },
+];
+
+const servers = [
+  {
+    id: 'node',
+    label: 'Node',
+    lang: 'ts',
+    href: '/docs/server-sdks/node',
+    code: `import Sockudo from "sockudo";
+
+const sockudo = new Sockudo({ appId, key, secret, host: "realtime.example.com" });
+
+await sockudo.trigger("orders", "order.created", { id: "ord_123" }, {
+  idempotency_key: "order-created-ord_123",
+});`,
+  },
+  {
+    id: 'python',
+    label: 'Python',
+    lang: 'python',
+    href: '/docs/server-sdks/python',
+    code: `from sockudo_http_python import TriggerOptions
+
+sockudo.trigger(
+    "orders",
+    "order.created",
+    {"id": "ord_123"},
+    TriggerOptions(idempotency_key="order-created-ord_123"),
+)`,
+  },
+  {
+    id: 'php',
+    label: 'PHP',
+    lang: 'php',
+    href: '/docs/server-sdks/php',
+    code: `<?php
+$sockudo->trigger('orders', 'order.created', ['id' => 'ord_123'], [
+    'idempotency_key' => 'order-created-ord_123',
+]);`,
+  },
+  {
+    id: 'rust',
+    label: 'Rust',
+    lang: 'rust',
+    href: '/docs/server-sdks/rust',
+    code: `let channels = vec![Channel::from_string("orders")?];
+let params = TriggerParams::builder()
+    .idempotency_key("order-created-ord_123")
+    .build();
+
+sockudo
+    .trigger(&channels, "order.created", json!({ "id": "ord_123" }), Some(params))
+    .await?;`,
+  },
+];
+---
+
+<section class="sec sdks" aria-labelledby="sdks-title">
+  <div class="sec-inner">
+    <div class="sec-head" data-reveal>
+      <span class="eyebrow">Official SDKs</span>
+      <h2 id="sdks-title" class="sec-title">Subscribe anywhere.<br /><span class="grad">Publish from anything.</span></h2>
+      <p class="sec-lede">Six realtime clients and ten server SDKs, all living in one monorepo and tested against the same server.</p>
+    </div>
+
+    <div class="sdk-grid">
+      {
+        [
+          { title: 'Realtime clients', sub: 'Browser, mobile, desktop', items: clients, key: 'c' },
+          { title: 'Server SDKs', sub: 'Signed HTTP publishing', items: servers, key: 's' },
+        ].map((group, gi) => (
+          <div class="sdk-panel glass" data-tabs data-reveal style={`--d:${gi * 120}ms`}>
+            <div class="sdk-top">
+              <div>
+                <strong>{group.title}</strong>
+                <small>{group.sub}</small>
+              </div>
+              <div class="tabs" role="tablist" aria-label={group.title}>
+                {group.items.map((it, i) => (
+                  <button type="button" role="tab" aria-selected={i === 0 ? 'true' : 'false'} data-tab={`${group.key}-${it.id}`}>
+                    {it.label}
+                  </button>
+                ))}
+                <span class="tab-ink" aria-hidden="true" />
+              </div>
+            </div>
+            {group.items.map((it, i) => (
+              <div class="sdk-code" role="tabpanel" data-panel={`${group.key}-${it.id}`} hidden={i !== 0}>
+                <Code code={it.code} lang={it.lang} />
+                <a class="link-arrow small" href={it.href}>
+                  {it.label} guide <ArrowRight size={14} />
+                </a>
+              </div>
+            ))}
+          </div>
+        ))
+      }
+    </div>
+
+    <div class="sdk-langs" data-reveal>
+      {
+        [
+          ['JavaScript', '/docs/clients/javascript'],
+          ['Swift', '/docs/clients/swift'],
+          ['Kotlin', '/docs/clients/kotlin'],
+          ['Flutter', '/docs/clients/flutter'],
+          ['.NET', '/docs/clients/dotnet'],
+          ['Python', '/docs/clients/python'],
+          ['Node', '/docs/server-sdks/node'],
+          ['PHP', '/docs/server-sdks/php'],
+          ['Laravel', '/docs/server-sdks/laravel'],
+          ['Ruby', '/docs/server-sdks/ruby'],
+          ['Go', '/docs/server-sdks/go'],
+          ['Rust', '/docs/server-sdks/rust'],
+          ['Java', '/docs/server-sdks/java'],
+        ].map(([n, h]) => <a href={h}>{n}</a>)
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .sdk-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+  }
+  .sdk-panel {
+    display: flex;
+    flex-direction: column;
+    border-radius: 24px;
+    padding: 20px;
+    min-width: 0;
+  }
+  .sdk-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .sdk-top strong {
+    display: block;
+    font-size: 1.05rem;
+  }
+  .sdk-top small {
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+  }
+  .tabs {
+    position: relative;
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 12px;
+    background: var(--accent-soft);
+    border: 1px solid var(--glass-border);
+  }
+  .tabs button {
+    position: relative;
+    z-index: 1;
+    border: 0;
+    background: none;
+    padding: 6px 12px;
+    border-radius: 9px;
+    font-size: 0.8rem;
+    font-weight: 560;
+    color: var(--fg-muted);
+    transition: color 0.2s;
+  }
+  .tabs button[aria-selected='true'] {
+    color: #fff;
+  }
+  .tab-ink {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 0;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #8b4dff, #a21caf);
+    box-shadow: 0 6px 18px -6px rgb(139 77 255 / 0.8);
+    transition:
+      transform 0.45s var(--ease-out),
+      width 0.45s var(--ease-out);
+  }
+  .sdk-code {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    animation: fade-up 0.45s var(--ease-out);
+  }
+  .sdk-code :global(.expressive-code) {
+    flex: 1;
+  }
+  .sdk-code :global(.expressive-code .frame) {
+    height: 100%;
+  }
+  .sdk-code[hidden] {
+    display: none;
+  }
+  .link-arrow.small {
+    margin-top: 14px;
+    font-size: 0.85rem;
+  }
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+  .sdk-langs {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 32px;
+  }
+  .sdk-langs a {
+    padding: 7px 14px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    background: var(--glass);
+    transition:
+      color 0.2s,
+      border-color 0.2s,
+      transform 0.25s var(--ease-spring);
+  }
+  .sdk-langs a:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+  @media (max-width: 960px) {
+    .sdk-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

@@ -1,17 +1,35 @@
 ---
 title: Troubleshooting
-description: Diagnose connection, authentication, publish, cluster, history, recovery, and push notification issues.
+description: Diagnose connection, authentication, publish, cluster fanout, recovery, push notification, and webhook problems one boundary at a time.
 icon: Wrench
 ---
 
-Start with the path that failed: connection, subscription, publish, fanout, history, or push. Sockudo is easier to debug when each boundary is checked separately.
+Start with the path that failed: connection, subscription, publish, fanout, history, or push. Sockudo is easier to debug when each boundary is checked separately, because each one fails in its own recognizable way. Use the table below to jump to the right section, then work through its checks in order.
+
+## Find your symptom
+
+| Symptom | Likely boundary | Section |
+| --- | --- | --- |
+| The client never reaches `connected` | Network, TLS, proxy, or app key | [Connection fails](#connection-fails) |
+| `private-` or `presence-` subscriptions are rejected | Your auth endpoint or signature | [Private or presence subscription fails](#private-or-presence-subscription-fails) |
+| Backend publishes return `400` or `401` | HTTP API request signing | [HTTP API requests are rejected](#http-api-requests-are-rejected) |
+| Publishes succeed but clients see nothing | Channel, protocol, or cluster fanout | [Events publish but clients do not receive them](#events-publish-but-clients-do-not-receive-them) |
+| Reconnecting clients miss messages | Recovery configuration | [Recovery or rewind is incomplete](#recovery-or-rewind-is-incomplete) |
+| Push is accepted but never arrives | Push providers and device state | [Push notification publish is accepted but nothing arrives](#push-notification-publish-is-accepted-but-nothing-arrives) |
+| Webhook signatures fail | Raw request body handling | [Webhooks are rejected](#webhooks-are-rejected) |
 
 ## Connection fails
 
-Verify the server is reachable:
+Verify the server is reachable and healthy. A healthy server prints `OK`:
 
 ```bash
 curl -f http://127.0.0.1:6001/up
+```
+
+Then confirm the app your client uses exists. An unknown app ID returns `404`:
+
+```bash
+curl -s http://127.0.0.1:6001/up/app-id
 ```
 
 Check the client host options:
@@ -25,12 +43,26 @@ new Sockudo("app-key", {
 });
 ```
 
+To take the client SDK out of the picture, open a raw WebSocket with Node.js 22 or later. A working server answers with `connection_established` right away:
+
+```bash
+node -e 'const ws = new WebSocket("ws://127.0.0.1:6001/app/app-key?protocol=7"); ws.onmessage = (m) => { console.log(m.data); ws.close(); };'
+```
+
+```json
+{"event":"pusher:connection_established","data":"{\"socket_id\":\"9501381246.8633737996\",\"activity_timeout\":120}"}
+```
+
 Common causes:
 
 - using `forceTLS: true` against an HTTP-only local server
 - forgetting `enabledTransports: ["ws"]` in local browser tests
 - proxying WebSockets without `Upgrade` and `Connection` headers
 - sending clients to one host while HTTP publish uses another app environment
+- using `app-key` against Docker Compose, whose app key is `demo-key`
+- an app with `enabled = false`, which rejects new connections
+
+When the server closes the socket, the close code tells you why. `4001` means the app does not exist, `4004` means the app is over its connection quota, and `4009` means the connection was unauthorized. The full list is in [Errors](/docs/reference/errors).
 
 ## Private or presence subscription fails
 
@@ -51,19 +83,52 @@ If signatures fail, verify:
 - presence `channel_data` is serialized before signing
 - framework body parsers are not dropping form fields
 
+<Callout type="tip" title="Check the request your endpoint receives">
+`@sockudo/client` posts `socket_id` and `channel_name` as a URL-encoded form to `/sockudo/auth` by default. If your framework only parses JSON bodies, both fields arrive empty and every signature is wrong.
+</Callout>
+
+If connections close with `4009` about an hour after connecting, the app has user authentication enabled and the client never called `client.signin()`. See [User authentication](/docs/getting-started/authentication#user-authentication).
+
+## HTTP API requests are rejected
+
+Every HTTP API call must be signed with the app secret. Server SDKs do this for you, so these errors usually come from custom clients or misconfigured SDKs:
+
+| Error | Cause | Fix |
+| --- | --- | --- |
+| `400` with `Missing authentication query parameters` or `Invalid authentication query parameters` | The query string is missing or lacks `auth_key`, `auth_timestamp`, or `auth_signature`. | Sign the request, or use a server SDK. |
+| `401` with a timestamp error | `auth_timestamp` is more than 600 seconds from the server clock. | Generate the timestamp per request and sync clocks with NTP. |
+| `401` with `body_md5 mismatch` | The body was changed after hashing, or re-serialized by a middleware. | Hash and send the exact same bytes. |
+| `401` with any other message | Wrong key or secret, or a signature over a different method, path, or query. | Check the credentials and compare the signed string with the request. |
+
+[First connection](/docs/getting-started/first-connection#publish-over-raw-http) has a working signed `curl` example to compare against.
+
 ## Events publish but clients do not receive them
 
 Check the channel name and protocol mode first. Protocol V1 clients receive Pusher-shaped event prefixes. Protocol V2 clients receive Sockudo-native prefixes and V2 metadata.
 
+Watch the counters while you publish a fresh event:
+
 ```bash
-curl -s http://127.0.0.1:9601/metrics | rg "publish|connection|subscription"
+curl -s http://127.0.0.1:9601/metrics \
+  | grep -E '^sockudo_(connected|http_calls_received_total|ws_messages_sent_total)'
 ```
+
+`sockudo_http_calls_received_total` should rise with each publish, and `sockudo_ws_messages_sent_total` should rise as Sockudo delivers to subscribers. If the first moves and the second does not, no connection on that node is subscribed to the channel.
+
+Also check:
+
+- The publish and the subscription use the same app, channel, and event name, including case.
+- The publish does not include the subscriber's own `socket_id`; Sockudo excludes that connection from delivery.
 
 In a cluster, verify all nodes share the same adapter and cache configuration. Local memory adapters do not fan out between nodes.
 
+<Callout type="warn" title="Works locally, fails behind a load balancer">
+If delivery works with one node and becomes intermittent with two, the nodes are almost certainly running the default `local` adapter. Each publish then reaches only the clients connected to the node that handled it. Configure a shared adapter such as Redis on every node.
+</Callout>
+
 ## Recovery or rewind is incomplete
 
-Recovery depends on continuity. Sockudo should fail closed when the stream cannot be proven.
+Recovery depends on continuity. Sockudo should fail closed when the stream cannot be proven: if the replay buffer expired or the stream was reset, the client receives a resume failure and must rebuild its state instead of silently missing messages.
 
 Check:
 
@@ -73,23 +138,42 @@ Check:
 - channel-specific rewind limits
 - adapter delivery latency and duplicate suppression metrics
 
+The replay buffer is configured on the server:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `[connection_recovery] enabled` | `false` | Keeps the replay buffer that resume depends on. The sample `config/config.toml` sets it to `true`. |
+| `[connection_recovery] buffer_ttl_seconds` | `120` | How long a disconnected client can be away and still resume. |
+| `[connection_recovery] max_buffer_size` | `100` | Messages kept per channel for replay. |
+
+The matching environment variables are `CONNECTION_RECOVERY_ENABLED`, `CONNECTION_RECOVERY_BUFFER_TTL`, and `CONNECTION_RECOVERY_MAX_BUFFER_SIZE`. For gaps longer than the buffer, use durable history; see [History and recovery](/docs/server/history-recovery).
+
 ## Push notification publish is accepted but nothing arrives
 
 Push is asynchronous by design. A successful admission response means Sockudo accepted the publish, not that every provider delivered it.
 
 Check in order:
 
+<Steps>
+
 1. The device registration exists and is active.
 2. The device has a provider token for the target platform.
 3. The channel push subscription exists when targeting a channel.
 4. Provider credentials are configured for the platform.
-5. The publish returned a `publish_id`.
-6. The publish status endpoint shows accepted, dispatched, failed, or scheduled.
+5. The publish returned a publish ID.
+6. The publish status shows how far the publish progressed.
 7. Provider delivery callbacks are reaching Sockudo when configured.
 
-```bash
-curl -s "http://127.0.0.1:6001/apps/app-id/push/publish/pub_123/status"
+</Steps>
+
+Read the status with the server SDK, which signs the request for you:
+
+```ts
+const status = await sockudo.getPublishStatus("pub_123");
+console.log(status);
 ```
+
+The underlying endpoint is `GET /apps/{appId}/push/publish/{publishId}/status`. Its lifecycle state shows whether the publish is still queued, planning, or dispatching, or has finished as succeeded, partially succeeded, failed, expired, cancelled, or dead-lettered.
 
 Common push causes:
 
@@ -98,33 +182,45 @@ Common push causes:
 - FCM project credentials for the wrong app
 - expired device provider token
 - client registration stored under a different `client_id`
-- publish targeting `sync: true` under production fanout pressure
+- a server built without the `push` feature or the provider's feature, such as `push-apns`
 
 ## Webhooks are rejected
 
-Webhook validation uses the raw body, not a parsed JSON object.
+Webhook validation uses the raw body, not a parsed JSON object. Sockudo signs the exact bytes it sends and puts the signature in the `X-Pusher-Signature` header.
 
 ```ts
-const webhook = sockudo.webhook({
-  rawBody,
-  headers: req.headers,
-});
+app.post("/sockudo/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  const webhook = sockudo.webhook({
+    rawBody: req.body.toString(),
+    headers: req.headers,
+  });
 
-if (!webhook.isValid()) {
-  return res.status(401).send("invalid signature");
-}
+  if (!webhook.isValid()) {
+    return res.status(401).send("invalid signature");
+  }
+
+  res.sendStatus(200);
+});
 ```
 
-Keep the raw request bytes from your framework before JSON parsing mutates whitespace or key order.
+Keep the raw request bytes from your framework before JSON parsing mutates whitespace or key order. The SDK also checks that `Content-Type` is `application/json`, so a proxy that rewrites that header makes every webhook invalid.
 
 ## Escalation bundle
 
 When reporting an issue, include:
 
-- Sockudo version and feature flags
+- Sockudo version (`sockudo --version`) and feature flags
 - protocol version used by affected clients
 - app manager, adapter, cache, and queue drivers
 - relevant configuration with secrets redacted
 - server logs around the failure
 - metrics for connection, publish, fanout, history, and push
 - a minimal client and server SDK reproduction
+
+## Next steps
+
+<Cards>
+  <Card title="Errors" href="/docs/reference/errors" description="HTTP error codes, WebSocket close codes, and capability-token errors." />
+  <Card title="Observability" href="/docs/server/observability" description="Metrics, logs, and alerts for every subsystem." />
+  <Card title="Logging" href="/docs/reference/logging" description="Log levels, formats, and what each subsystem reports." />
+</Cards>

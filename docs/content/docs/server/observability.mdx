@@ -4,6 +4,11 @@ description: Monitor Sockudo connections, subscriptions, publishes, fanout, hist
 icon: Activity
 ---
 
+This page lists the metrics Sockudo exports, what each one tells you, and which conditions are worth
+paging on. Set it up before production traffic: realtime failures are often silent (a node that stops
+hearing its peers, a history store that degrades, a webhook queue that backs up) and only metrics
+make them visible.
+
 Observability is part of the runtime contract. A realtime system should tell operators when it is connected, degraded, delayed, retrying, or dropping work.
 
 ## Metrics endpoint
@@ -12,13 +17,38 @@ Observability is part of the runtime contract. A realtime system should tell ope
 curl http://127.0.0.1:9601/metrics
 ```
 
+Prometheus metrics are served on the dedicated `[metrics]` listener (`9601` by default), not on the
+WebSocket and HTTP API port, so you can keep them on a private network.
+
+```toml title="config.toml"
+[metrics]
+enabled = true
+driver = "prometheus"
+host = "0.0.0.0"
+port = 9601
+
+[metrics.prometheus]
+prefix = "sockudo_"
+```
+
 Scrape the endpoint with Prometheus and label metrics by environment, region, node, adapter, and app where possible. Sockudo emits metrics through the `metrics-rs` recorder and exposes them through the Prometheus exporter by default.
+
+How to read the tables below:
+
+- Names assume the default `sockudo_` prefix. `process_*` metrics are never prefixed.
+- Most Sockudo metrics carry `app_id` and `port` labels; extra labels are listed per metric.
+- A counter only goes up: graph it with `rate()` or `increase()`. A gauge is a current value. A
+  histogram exposes `_bucket`, `_sum`, and `_count` series: use `histogram_quantile()` for latency.
+- Prometheus adds `instance` and `job` at scrape time; use `instance` to compare nodes.
+
+For OTLP export of the same metrics plus traces and logs, see
+[Observability configuration](/docs/reference/configuration#observability).
 
 ## TCP metrics exporter
 
 For live debugging or sidecar consumers, Sockudo can also fan out metric events over TCP using `metrics-exporter-tcp`. This exporter streams protobuf-encoded metric events to connected clients; it is useful for local inspection and custom collectors, but Prometheus scraping should remain the primary production monitoring path.
 
-```toml
+```toml title="config.toml"
 [metrics.tcp_exporter]
 enabled = true
 host = "127.0.0.1"
@@ -32,14 +62,107 @@ The TCP exporter has bounded buffering by default. When buffers fill, event samp
 
 | Area | Watch |
 | --- | --- |
-| Connections | active sockets, connection attempts, disconnect reasons, heartbeat failures |
-| Subscriptions | subscribe successes, auth failures, presence joins and leaves |
-| Publish | accepted, rejected, idempotency hits, payload-too-large failures |
-| Fanout | adapter publish latency, adapter receive latency, duplicate suppression |
-| Recovery | resume successes, resume failures, replay counts, buffer misses |
-| History | writes, reads, retention purges, cursor errors |
-| Webhooks | queued, delivered, failed |
-| Push | accepted, scheduled, dispatched, provider errors, publish status outcomes |
+| Connections | active sockets, connection attempts, disconnects, connection errors by type |
+| Subscriptions | subscribe and unsubscribe rates, active channels by type |
+| Publish | HTTP calls, idempotency hits, rate-limit rejections |
+| Fanout | broadcast latency, cross-node request latency, transport reconnects and drops |
+| Recovery | resume successes by source, resume failures by code |
+| History | writes, write failures, queue depth, degraded and reset-required channels |
+| Webhooks | queue depth and settled outcomes for the `webhooks` queue |
+| Push | accepted, dispatched, provider failures, queue age |
+
+### Connections and traffic
+
+| Metric | Type | Labels | What it tells you |
+| --- | --- | --- | --- |
+| `sockudo_connected` | gauge | | Sockets currently connected to this node. Compare across `instance` to spot imbalance. |
+| `sockudo_new_connections_total` | counter | | Connection attempts. A spike after a deploy is normal reconnect churn. |
+| `sockudo_new_disconnections_total` | counter | | Disconnects. Rising faster than connections means clients are leaving. |
+| `sockudo_connection_errors_total` | counter | `error_type` | Failed connections, for example `origin_not_allowed`. |
+| `sockudo_memory_pressure_rejections_total` | counter | `port` only | New sockets refused by memory-pressure admission. |
+| `sockudo_memory_pressure_shedding` | gauge | none | `1` while the node is shedding new connections. |
+| `sockudo_ws_messages_received_total`, `sockudo_ws_messages_sent_total` | counter | | WebSocket frames in and out. |
+| `sockudo_socket_received_bytes`, `sockudo_socket_transmitted_bytes` | counter | | WebSocket bandwidth. |
+| `sockudo_http_calls_received_total` | counter | | REST API calls, including publishes. |
+| `sockudo_http_received_bytes`, `sockudo_http_transmitted_bytes` | counter | | REST API bandwidth. |
+
+### Channels and fanout
+
+| Metric | Type | Labels | What it tells you |
+| --- | --- | --- | --- |
+| `sockudo_channel_subscriptions_total`, `sockudo_channel_unsubscriptions_total` | counter | `channel_type` | Subscription churn by channel type. |
+| `sockudo_active_channels` | gauge | `channel_type` | Channels with at least one local subscriber. |
+| `sockudo_broadcast_latency_ms` | histogram | `channel_type`, `recipient_count_bucket` | End-to-end broadcast latency. Your main fanout SLI. |
+| `sockudo_horizontal_adapter_resolve_time` | histogram | | Time for peers to answer cross-node requests such as counts and presence. |
+| `sockudo_horizontal_adapter_sent_requests`, `_received_requests`, `_received_responses`, `_resolved_promises` | counter | | Cross-node request volume. |
+| `sockudo_horizontal_adapter_uncomplete_promises` | counter | `request_type` | Cross-node requests not answered by every node. Counts may be partial. |
+| `sockudo_horizontal_transport_reconnections_total` | counter | `driver` only | Adapter transport reconnects, including failed Redis subscriber PINGs. |
+| `sockudo_horizontal_transport_messages_dropped_total` | counter | `driver` only | Cross-node messages dropped by the transport. Any increase is lost fanout. |
+| `sockudo_horizontal_transport_queue_depth` | gauge | `driver` only | Transport backlog. |
+| `sockudo_nats_events_total` | counter | `event` only | NATS client events such as `disconnected` and `slow_consumer`. |
+
+### Publish controls
+
+| Metric | Type | Labels | What it tells you |
+| --- | --- | --- | --- |
+| `sockudo_rate_limit_checks_total` | counter | `limiter_type`, `request_context` | Rate-limit decisions made. |
+| `sockudo_rate_limit_triggered_total` | counter | `limiter_type`, `request_context` | Requests rejected by a rate limit. |
+| `sockudo_idempotency_publish_total` | counter | | Publishes that carried an idempotency key. |
+| `sockudo_idempotency_duplicates_total` | counter | | Retries answered from the idempotency cache. A high ratio points at aggressive client retries. |
+| `sockudo_ephemeral_messages_total` | counter | | V2 ephemeral messages delivered. |
+| `sockudo_event_filter_suppressed_total`, `sockudo_echo_suppressed_total` | counter | | V2 deliveries skipped by event filters or echo control. |
+
+### History, recovery, and versioned messages
+
+| Metric | Type | Labels | What it tells you |
+| --- | --- | --- | --- |
+| `sockudo_history_writes_total`, `sockudo_history_write_failures_total` | counter | | Durable history appends and failures. Failures put channels at risk of degrading. |
+| `sockudo_history_write_latency_ms` | histogram | | Durable write latency. |
+| `sockudo_history_queue_depth` | gauge | | History writer backlog. Growth means the backend is slower than publish rate. |
+| `sockudo_history_retained_messages`, `sockudo_history_retained_bytes` | gauge | | Retained history volume. |
+| `sockudo_history_evictions_total`, `sockudo_history_evicted_bytes_total` | counter | | Rows removed by retention. |
+| `sockudo_history_degraded_channels` | gauge | | Channels whose durable stream cannot currently prove continuity. |
+| `sockudo_history_reset_required_channels` | gauge | | Channels that need an operator reset before history and recovery resume. |
+| `sockudo_history_recovery_success_total` | counter | `source` (`hot`, `cold`) | Successful resumes, from the hot buffer or durable history. |
+| `sockudo_history_recovery_failures_total` | counter | `code` | Failed resumes: `position_expired`, `continuity_unverifiable`, `stream_reset`, `persistence_unavailable`. |
+| `sockudo_versioned_message_mutations_total` | counter | `action`, `result` | Update, delete, and append attempts and outcomes. |
+| `sockudo_versioned_message_retrieval_total` | counter | `surface`, `result` | Latest-version and version-list reads. |
+| `sockudo_versioned_history_substitution_total` | counter | `result` | History rows replaced by their latest version. |
+| `sockudo_presence_history_*` | mixed | | The same write, retention, queue, degraded, and reset-required signals for presence history. |
+
+### Annotations and delta compression
+
+| Metric | Type | Labels | What it tells you |
+| --- | --- | --- | --- |
+| `sockudo_annotations_published_total`, `sockudo_annotations_deleted_total` | counter | `channel`, `type` | Annotation create and delete volume. |
+| `sockudo_annotation_summary_deliveries_total` | counter | `channel` | Summary messages delivered. |
+| `sockudo_annotation_summary_clipped_total` | counter | `channel`, `type` | Summaries clipped by size limits. |
+| `sockudo_annotation_projection_rebuild_total`, `_duration_seconds` | counter, histogram | `channel` | Full projection rebuilds and their cost. |
+| `sockudo_delta_compression_bandwidth_saved_bytes`, `_original_bytes` | counter | `channel_name` | Bandwidth saved by delta compression. |
+| `sockudo_delta_compression_full_messages_total`, `_delta_messages_total` | counter | `channel_name` | Full versus delta frames sent. |
+| `sockudo_delta_cluster_coordination_backend_up` | gauge | `backend` only | Health of the delta coordination backend. |
+
+<Callout type="warn" title="Watch per-channel label cardinality">
+Annotation and delta compression metrics are labeled by channel. With many short-lived channels they
+create many series; drop or aggregate those labels in your scrape config if Prometheus memory grows.
+</Callout>
+
+### Queues, push, and runtime
+
+| Metric | Type | Labels | What it tells you |
+| --- | --- | --- | --- |
+| `sockudo_queue_depth` | gauge | `backend`, `queue`, `state` | Jobs by state (`ready`, `active`, `delayed`, `dead-letter`, `completed`). Redis-family queue backends. |
+| `sockudo_queue_settled_total` | counter | `backend`, `queue`, `outcome` | Job outcomes: `completed`, `retry`, `dead-letter`, `panic-or-lease-lost`. |
+| `sockudo_queue_enqueue_total`, `sockudo_queue_claimed_total` | counter | `backend`, `queue` | Jobs added and picked up. |
+| `sockudo_queue_processing_duration_seconds` | histogram | `backend`, `queue` | Job processing time. |
+| `sockudo_push_publish_accepted_total` | counter | see push docs | Push publishes admitted. |
+| `sockudo_push_dispatched_total`, `sockudo_push_provider_failures_total` | counter | see push docs | Provider sends and failures by provider and failure class. |
+| `sockudo_push_queue_oldest_age_seconds` | gauge | see push docs | Age of the oldest push work item; the best push backlog signal. |
+| `sockudo_tokio_active_tasks`, `sockudo_tokio_worker_busy_ratio` | gauge | `worker` on busy ratio | Runtime saturation. Busy ratio near 1.0 on every worker means the node is CPU bound. |
+| `process_resident_memory_bytes`, `process_open_fds` | gauge | none | Memory and file descriptors. Each socket uses a descriptor; compare with `process_max_fds`. |
+
+The full push metric catalog, with labels and push-specific alerts, is in
+[Push operations](/docs/server/push-operations).
 
 ### WebSocket delivery metrics
 
@@ -104,6 +227,10 @@ Metrics exposed at `/metrics` include:
 
 The four production signals are run outcomes, stream rate, rejects by code, and rollup efficiency. Use `docs/public/grafana/ai-transport-observability.json` as the starting Grafana dashboard.
 
+`sockudo_rollup_ratio` is the number of input appends folded into one delivered frame, so higher
+means rollup is saving more fanout. `sockudo_flush_latency` is in milliseconds and should stay near
+the configured rollup window.
+
 Active-stream gauges use exact atomic insertion/removal deltas. Tracker entries that never receive
 a terminal event expire at the configured AI orphan TTL and decrement the same gauge exactly.
 AI lifecycle webhooks are awaited into the configured bounded webhook queue, which supplies
@@ -129,12 +256,16 @@ For support escalation, capture the channel, wall-clock time window, verified `c
 
 For Ably-style production persistence, persist completed runs from your backend instead of making Sockudo a domain store:
 
+<Steps>
+
 1. Enable the `ai_run_ended` webhook for the app.
 2. On `reason: "complete"`, query the history endpoint for the channel around the webhook time.
 3. Select messages with the same `extras.ai.transport.run-id`.
 4. Store the reduced transcript in your application database.
 
-```ts
+</Steps>
+
+```ts {13-15}
 app.post("/sockudo/webhooks", async (req, res) => {
   for (const event of req.body.events) {
     if (event.name !== "ai_run_ended" || event.reason !== "complete") continue;
@@ -148,13 +279,18 @@ app.post("/sockudo/webhooks", async (req, res) => {
       runId: event.run_id,
       channel: event.channel,
       items: history.items.filter((item) => {
-        return item.extras?.ai?.transport?.["run-id"] === event.run_id;
+        return item.message?.extras?.ai?.transport?.["run-id"] === event.run_id;
       }),
     });
   }
   res.sendStatus(200);
 });
 ```
+
+Each history item wraps the delivered message in its `message` field, so AI Transport headers are at
+`item.message.extras.ai.transport`. The page `limit` is capped by the channel's history
+`max_page_size`; follow `next_cursor` for long runs. Verify the webhook signature before trusting the
+event, as described in [Webhooks](/docs/server/webhooks#verify-signatures).
 
 ## Logs
 
@@ -171,7 +307,8 @@ Use structured logs for events that operators need to investigate:
 }
 ```
 
-Avoid logging secrets, raw auth signatures, provider tokens, or encrypted payloads.
+Avoid logging secrets, raw auth signatures, provider tokens, or encrypted payloads. Log filters,
+JSON output, and the data-safety policy are in the [logging reference](/docs/reference/logging).
 
 ## Grafana dashboards
 
@@ -207,24 +344,56 @@ Alert on symptoms operators can act on:
 - push provider credential failures
 - push delivery status callback failures
 
+Starting rules, to tune against your own baseline:
+
+| Alert | Expression | Why it matters |
+| --- | --- | --- |
+| Cross-node fanout loss | `increase(sockudo_horizontal_transport_messages_dropped_total[5m]) > 0` | Subscribers on some nodes missed messages. |
+| Adapter flapping | `increase(sockudo_horizontal_transport_reconnections_total[10m]) > 3` | The adapter link is unstable; expect gaps until it settles. |
+| Durable history degraded | `max(sockudo_history_degraded_channels) > 0` for 5m | Recovery and history reads on those channels fail closed. |
+| Reset required | `max(sockudo_history_reset_required_channels) > 0` | An operator must reset the stream; it will not heal on its own. |
+| History write failures | `increase(sockudo_history_write_failures_total[5m]) > 0` | The history backend is rejecting writes. |
+| Recovery failure ratio | `sum(rate(sockudo_history_recovery_failures_total[10m])) / (sum(rate(sockudo_history_recovery_success_total[10m])) + sum(rate(sockudo_history_recovery_failures_total[10m]))) > 0.05` | Reconnecting clients are falling back to full backfill. Break down by `code`. |
+| Fanout latency | `histogram_quantile(0.99, sum by (le) (rate(sockudo_broadcast_latency_ms_bucket[5m]))) > 250` | p99 delivery is slower than your SLO. |
+| Memory shedding | `max(sockudo_memory_pressure_shedding) == 1` for 2m | The node is refusing new connections. |
+| Webhook backlog | `sockudo_queue_depth{queue="webhooks",state="ready"}` above baseline for 10m | Webhook consumers are falling behind or failing. |
+| Webhook dead letters | `increase(sockudo_queue_settled_total{queue="webhooks",outcome="dead-letter"}[15m]) > 0` | Events were given up on after all retries. |
+| Rate limiting | `sum(rate(sockudo_rate_limit_triggered_total[5m])) by (app_id)` well above baseline | A client or tenant is being throttled. |
+
+<Callout type="tip" title="Alert on ratios, not raw counts">
+Raw counters scale with traffic. Ratios such as recovery failures over attempts stay meaningful as
+your user base grows and do not page you on a busy day.
+</Callout>
+
 ## Push status workflow
 
-Push publishes are asynchronous. Store the `publish_id` returned by the API when a business workflow needs support visibility.
+Push publishes are asynchronous. Store the `publishId` returned by the API when a business workflow needs support visibility.
 
 ```ts
 const response = await sockudo.publishPush({
   recipients: [{ type: "channel", channel: "orders" }],
   payload: { title: "Order updated", body: "Packed" },
-  sync: false,
 });
 
-console.log(response.publish_id);
+console.log(response.publishId);
 ```
 
-Then inspect status:
+Then inspect status with a signed request, for example through the server SDK:
 
-```bash
-curl "https://realtime.example.com/apps/app-id/push/publish/pub_123/status"
+```ts
+const status = await sockudo.getPublishStatus(response.publishId);
 ```
 
-Status records should be retained long enough for customer support and incident review.
+This calls `GET /apps/{app_id}/push/publish/{publish_id}/status`, which requires push admin.
+
+Status records should be retained long enough for customer support and incident review. Retention is
+`push.publish_status_ttl_days` (default `30`).
+
+## Next steps
+
+<Cards>
+  <Card title="Push operations" href="/docs/server/push-operations" description="Push metric catalog, alerts, and provider runbooks." />
+  <Card title="Logging reference" href="/docs/reference/logging" description="Filters, JSON output, and what is never logged." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Which signals to watch during rolling deploys." />
+  <Card title="AI Transport production ops" href="/docs/server/ai-transport-production-ops" description="Runbooks for AI streams, rollup, and orphans." />
+</Cards>

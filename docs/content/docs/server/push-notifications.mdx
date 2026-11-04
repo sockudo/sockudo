@@ -4,52 +4,666 @@ description: Configure and operate Sockudo's core push notification platform for
 icon: BellRing
 ---
 
-Push notifications are a core part of Sockudo. WebSockets deliver realtime messages to connected clients; push notifications reach devices that are offline, backgrounded, rate-limited by the OS, or outside the active channel session.
+Sockudo ships a durable push notification pipeline next to its realtime server. WebSockets reach
+clients that are connected right now; push notifications reach devices that are offline,
+backgrounded, suspended by the OS, or outside the active channel session. Use this page when you
+need to register devices, target them by channel, user, or device, and deliver through FCM, APNs,
+Web Push, HMS, or WNS with idempotency, retries, and observable status.
 
 For ActivityKit start, update, end, push-token rotation, and iOS 18 broadcast channels, see
-[Apple Live Activities](/docs/server/apple-live-activities).
+[Apple Live Activities](/docs/server/apple-live-activities). For metrics, alerts, and outage
+runbooks, see [Push operations](/docs/server/push-operations).
 
 ```mermaid
-flowchart LR
-  D[Mobile/browser device] -->|provider token| B[Your backend]
-  B -->|device registration| S[Sockudo push API]
-  B -->|channel subscription| S
-  A[Application event] -->|push publish or push rule| S
+flowchart TB
+  D[Device or browser] -->|provider token| B[Your backend]
+  B -->|register device| S[Sockudo push API]
+  B -->|subscribe to channel| S
+  A[Application event] -->|publish or rule| S
   S --> Q[(Push queue)]
-  Q --> F[FCM]
-  Q --> AP[APNs]
-  Q --> W[Web Push]
-  Q --> H[HMS]
-  Q --> N[WNS]
-  F --> D
-  AP --> D
-  W --> D
-  H --> D
-  N --> D
+  Q --> F[FCM] & AP[APNs] & W[Web Push] & H[HMS] & N[WNS]
+  F & AP & W & H & N --> R[Device receives push]
 ```
 
-## Concepts
+## How push works
+
+Every notification moves through the same five stages. Each stage has its own API surface and its
+own failure modes, so it helps to keep them separate in your head.
+
+| Stage | What happens | Where it lives |
+| --- | --- | --- |
+| 1. Registration | Your backend stores a **device**: a stable `id`, an optional `clientId`, and the provider **recipient** (FCM registration token, APNs device token, Web Push subscription, HMS token, or WNS channel URI). | `POST /apps/{appId}/push/deviceRegistrations` |
+| 2. Subscription | A device is mapped to a realtime **channel** so channel-targeted publishes can find it. | `POST /apps/{appId}/push/channelSubscriptions` |
+| 3. Publish | You submit a **publish**: one or more targets plus a payload. Sockudo validates, renders provider payloads, persists the work durably, and returns `202` with a `publishId`. | `POST /apps/{appId}/push/publish` |
+| 4. Provider delivery | Planner, shard, and provider workers resolve targets to devices and send to FCM, APNs, Web Push, HMS, or WNS. | Push queue stages (`push.publish.v1`, `push.shards.v1`, `push.delivery.<provider>.v1`) |
+| 5. Status and feedback | Feedback workers record each provider outcome, schedule retries, dead-letter exhausted work, and invalidate dead tokens. | `GET /apps/{appId}/push/publish/{publishId}/status` |
+
+The key mental model: **a `202` means "durably accepted", not "delivered"**. Delivery is
+asynchronous, and the publish status record is the source of truth for what happened next.
+
+### Concepts
 
 | Concept | Meaning |
 | --- | --- |
-| Device registration | A device record tied to a provider token and optional `client_id`. |
-| Activation | A safe workflow for clients to register or update devices through your backend. |
+| Device registration | A device record tied to one provider recipient and an optional `clientId`. Responses expose only a `tokenHash`, never the raw token. |
+| Device identity token | A per-device secret issued on admin registration. It lets a device-scoped caller update its own registration and subscriptions. |
 | Channel subscription | A mapping between a device and a realtime channel for push targeting. |
 | Credential | Provider configuration for FCM, APNs, Web Push, HMS, or WNS. |
 | Publish | A push request accepted by Sockudo and fanned out asynchronously. |
 | Publish status | The operational record for accepted, scheduled, dispatched, failed, or cancelled push work. |
+| Template | A stored, localized notification body that a publish references by `templateId`. |
 
 ## Provider support
 
-| Provider | Platforms | Credentials | Notes |
-| --- | --- | --- | --- |
-| FCM | Android, web, cross-platform app backends | Service account JSON and optional project ID | Best default for Android and Firebase-backed apps. |
-| APNs | iOS, iPadOS, macOS, watchOS, tvOS, visionOS | Team ID, key ID, bundle ID, `.p8` private key, environment | Use sandbox for development tokens and production for App Store/TestFlight tokens. |
-| Web Push | Browsers and installed PWAs | VAPID subject, public key, private key | Payload size and browser support vary; store endpoint metadata with the device. |
-| HMS | Huawei devices | App credentials | Use when shipping to Huawei Mobile Services environments. |
-| WNS | Windows apps | WNS credentials | Use for Microsoft Store/Windows notification channels. |
+| Provider | Platforms | Cargo feature | Recipient (`transportType`) | Notes |
+| --- | --- | --- | --- | --- |
+| FCM | Android, web, cross-platform app backends | `push-fcm` | `gcm` with `registrationToken` | Best default for Android and Firebase-backed apps. |
+| APNs | iOS, iPadOS, macOS, watchOS, tvOS, visionOS | `push-apns` | `apns` with `deviceToken` | Use sandbox for development tokens and production for App Store/TestFlight tokens. |
+| Web Push | Browsers and installed PWAs | `push-webpush` | `web` with `endpoint`, `p256dh`, `auth` | Endpoints must be public HTTPS URLs; payload size and browser support vary. |
+| HMS | Huawei devices | `push-hms` | `hms` with `registrationToken` | Use when shipping to Huawei Mobile Services environments. |
+| WNS | Windows apps | `push-wns` | `wns` with `channelUri` | Use for Windows notification channels. |
 
-Sockudo normalizes admission, idempotency, queueing, retries, status retention, and feedback. Provider-specific limits still apply after the request leaves Sockudo.
+Sockudo normalizes admission, idempotency, queueing, retries, status retention, and feedback.
+Provider-specific limits still apply after the request leaves Sockudo.
+
+## Set up the server
+
+<Steps>
+
+1. Build Sockudo with the push features you need. `monolith` runs the planner, dispatcher,
+   provider, feedback, retry, repair, and cleanup workers inside the server process. The `full`
+   feature set includes every push provider.
+
+   ```bash
+   cargo build -p sockudo --release --features "push-fcm,push-apns,push-webpush,monolith"
+   ```
+
+2. Choose durable storage and a durable queue. `storage_driver` accepts `memory`, `postgres`,
+   `mysql`, `dynamodb`, `surrealdb`, or `scylladb`. `queue_driver` is `memory` or a broker
+   driver. A broker `queue_driver` runs on the shared `[queue]` backend and must match
+   `queue.driver`. Push needs per-message delays, so it starts only on `redis`, `redis-cluster`,
+   standard `sqs` and `pulsar`; see [push queue backends](/docs/reference/configuration#push).
+
+3. Enable each provider and configure its credentials (see
+   [Provider credentials](#provider-credentials)).
+
+   ```toml title="config.toml"
+   [push]
+   storage_driver = "postgres"
+   queue_driver = "redis"
+   allow_memory_drivers = false
+   fcm_enabled = true
+   apns_enabled = true
+   webpush_enabled = true
+   publish_status_ttl_days = 30
+   analytics_retention_days = 30
+   scheduler_interval_secs = 5
+   cleanup_interval_secs = 300
+   cleanup_batch_size = 1000
+   cleanup_max_deleted_per_tick = 100000
+
+   [push.apns]
+   # Required whenever apns_enabled = true.
+   topic = "com.example.app"
+   ```
+
+4. Start the server and confirm each provider worker reports ready in the logs. A provider whose
+   credentials are missing logs a warning and does not start its dispatch worker.
+
+</Steps>
+
+<Callout type="warn" title="Memory drivers are rejected in production">
+In `mode = "production"`, `storage_driver = "memory"` and `queue_driver = "memory"` are rejected
+unless `allow_memory_drivers = true` or `PUSH_ALLOW_MEMORY_DRIVERS=true` is set explicitly. Memory
+drivers are node-local and lose state on restart or dead-node loss.
+</Callout>
+
+APNs connection pooling, Live Activity topics, broadcast and channel-management endpoints, and
+timeouts are configured under `[push.apns]`. Retry policy lives under `[push.retry]`, the provider
+circuit breaker under `[push.circuit_breaker]`, per-app defaults under `[push.default_quotas]`, and
+log redaction under `[push.payload_redaction]`. See the
+[configuration reference](/docs/reference/configuration) for every key.
+
+## Provider credentials
+
+Provider workers in a monolith process load credentials at boot, from environment variables or
+from a credential stored through the push API. Most provider credential variables also accept an
+unprefixed alias, for example `FCM_PROJECT_ID`, `APNS_TEAM_ID`, or `VAPID_PRIVATE_KEY`.
+
+| Provider | Environment credentials | Stored credential |
+| --- | --- | --- |
+| FCM | `PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH` or `PUSH_FCM_SERVICE_ACCOUNT_JSON`. `PUSH_FCM_PROJECT_ID` is optional when the service account JSON contains `project_id`. `PUSH_FCM_PROVIDER_TOKEN` (with `PUSH_FCM_PROJECT_ID`) remains only for short-lived legacy static-token dispatch. | Upload to `push/credentials/fcm` and set `PUSH_FCM_APP_ID` (and optionally `PUSH_FCM_CREDENTIAL_ID`, default `fcm`). |
+| APNs | `PUSH_APNS_TEAM_ID`, `PUSH_APNS_KEY_ID`, and `PUSH_APNS_PRIVATE_KEY_PATH` or `PUSH_APNS_PRIVATE_KEY` for token auth; or `PUSH_APNS_PROVIDER_TOKEN`. Topic from `[push.apns].topic` or `PUSH_APNS_TOPIC`. | Upload to `push/credentials/apns` and set `PUSH_APNS_APP_ID` (and optionally `PUSH_APNS_CREDENTIAL_ID`, default `apns`). Stored material can be `p12`, `pem`, or `teamId` + `keyId` + `privateKey`. |
+| Web Push | `PUSH_WEBPUSH_VAPID_PRIVATE_KEY` (required) and `PUSH_WEBPUSH_VAPID_CONTACT` (defaults to `mailto:sockudo-webpush@example.com`). | Accepted by `push/credentials/webpush`; the dispatch worker reads the VAPID key from the environment. |
+| HMS | `PUSH_HMS_APP_ID` and a pre-generated `PUSH_HMS_PROVIDER_TOKEN`. Optional `PUSH_HMS_ENDPOINT`. | Accepted by `push/credentials/hms`; the dispatch worker reads the environment. |
+| WNS | A pre-generated `PUSH_WNS_PROVIDER_TOKEN`. | Accepted by `push/credentials/wns`; the dispatch worker reads the environment. |
+
+Point APNs workers at the sandbox with `PUSH_APNS_ENDPOINT=https://api.sandbox.push.apple.com` (or
+`[push.apns].endpoint`) when you test development-build tokens.
+
+```bash title=".env"
+PUSH_FCM_ENABLED=true
+PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH=/run/secrets/fcm-service-account.json
+
+PUSH_APNS_ENABLED=true
+PUSH_APNS_TOPIC=com.example.app
+PUSH_APNS_TEAM_ID=TEAMID1234
+PUSH_APNS_KEY_ID=KEYID12345
+PUSH_APNS_PRIVATE_KEY_PATH=/run/secrets/AuthKey_KEYID12345.p8
+
+PUSH_WEBPUSH_ENABLED=true
+PUSH_WEBPUSH_VAPID_PRIVATE_KEY=...
+PUSH_WEBPUSH_VAPID_CONTACT=mailto:ops@example.com
+```
+
+### Store a credential through the API
+
+Credential endpoints require the `push-admin` capability. Secret fields are encrypted before they
+are stored and are never returned.
+
+```http
+POST /apps/{appId}/push/credentials/apns
+Content-Type: application/json
+
+{
+  "credentialId": "apns",
+  "version": 2,
+  "teamId": "TEAMID1234",
+  "keyId": "KEYID12345",
+  "privateKey": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+}
+```
+
+```json title="201 Created"
+{
+  "app_id": "my-app",
+  "credential_id": "apns",
+  "provider": "apns",
+  "version": 2
+}
+```
+
+| Endpoint | Body fields |
+| --- | --- |
+| `POST /apps/{appId}/push/credentials/fcm` | `serviceAccountJson` (object) |
+| `POST /apps/{appId}/push/credentials/apns` | `p12` + `p12Password`, or `pem`, or `teamId` + `keyId` + `privateKey` |
+| `POST /apps/{appId}/push/credentials/webpush` | `publicKey`, `privateKey` |
+| `POST /apps/{appId}/push/credentials/hms` | `hmsAppId`, `clientSecret` |
+| `POST /apps/{appId}/push/credentials/wns` | `packageSid`, `clientSecret` |
+| `GET /apps/{appId}/push/credentials` | Lists stored credentials (metadata only), paged with `limit` and `cursor`. |
+
+Every credential body also accepts optional `credentialId` (defaults to the provider name) and
+`version` (defaults to `1`).
+
+<Callout type="warn" title="Set an encryption key before uploading">
+Set `PUSH_CREDENTIAL_ENCRYPTION_KEY` before uploading credentials so Sockudo stores decryptable
+AES-GCM envelopes that workers can load later. Changing provider capability or credentials
+requires a provider worker restart; stored credentials are reloaded when a supervised provider
+worker restarts.
+</Callout>
+
+## Authorization model
+
+Every push endpoint is a signed app API request, authenticated with the app key and secret exactly
+like the rest of the [HTTP API](/docs/server/http-api). On top of that, the
+`x-sockudo-push-capability` header selects one of two capabilities:
+
+| Capability | When to use | What it may do |
+| --- | --- | --- |
+| `push-admin` (default when the header is absent) | Your trusted backend. | Everything: credentials, templates, publishes, status, dead letters, any device or subscription. |
+| `push-subscribe` | Device-scoped calls that act on one existing device. | Update an existing device registration, and read, add, or remove that device's channel subscriptions. Requires `x-sockudo-device-identity-token` (or an `Authorization` bearer token) matching the device. |
+
+An admin registration of a new device returns a one-time `deviceIdentityToken`. Send
+`x-sockudo-rotate-device-identity-token: true` with an admin registration to issue a new one.
+
+<Callout type="warn" title="Keep app secrets on the server">
+Mobile and browser clients should call your backend, never Sockudo's push API directly with app
+credentials. Your backend authenticates the user, validates device ownership, and forwards to
+Sockudo.
+</Callout>
+
+## Register devices
+
+Device IDs should be stable per installation. Provider tokens rotate; register again with the same
+`id` whenever the platform SDK gives you a new token. The response tells you whether anything
+changed.
+
+```http
+POST /apps/{appId}/push/deviceRegistrations
+Content-Type: application/json
+x-sockudo-push-capability: push-admin
+
+{
+  "appId": "my-app",
+  "id": "ios-7f3c2a",
+  "clientId": "user-42",
+  "formFactor": "phone",
+  "platform": "ios",
+  "timezone": "Europe/Berlin",
+  "locale": "de-DE",
+  "deviceSecret": "server-assigned",
+  "push": {
+    "state": "ACTIVE",
+    "recipient": { "transportType": "apns", "deviceToken": "APNS_DEVICE_TOKEN" }
+  }
+}
+```
+
+```json title="201 Created"
+{
+  "change": "inserted",
+  "tokenHash": "9c1e...",
+  "device": {
+    "appId": "my-app",
+    "id": "ios-7f3c2a",
+    "clientId": "user-42",
+    "formFactor": "phone",
+    "platform": "ios",
+    "timezone": "Europe/Berlin",
+    "locale": "de-DE",
+    "lastActiveAtMs": 0,
+    "pushState": "ACTIVE",
+    "pushFailureCount": 0,
+    "recipient": { "transportType": "apns", "provider": "apns", "tokenHash": "9c1e..." }
+  },
+  "deviceIdentityToken": "DEVICE_IDENTITY_TOKEN"
+}
+```
+
+- `formFactor`: `phone`, `tablet`, `desktop`, `tv`, `car`, `watch`, `embedded`, or `other`.
+- `platform`: `android`, `ios`, `browser`, `windows`, `macos`, `watchos`, `tvos`, or `other`.
+- `push.state`: `ACTIVE`, `FAILING`, or `FAILED`. Register new devices as `ACTIVE`.
+- `deviceSecret` is part of the device schema, but the server always replaces it with the hash of
+  the issued device identity token; send any placeholder.
+- `change` is `inserted`, `updated`, or `unchanged`.
+
+With the Node server SDK, the same call from your backend looks like this:
+
+```ts title="routes/push.ts"
+app.post("/api/push/devices", async (req, res) => {
+  const user = requireUser(req);
+
+  const result = await sockudo.activateDevice({
+    appId: process.env.SOCKUDO_APP_ID!,
+    id: req.body.deviceId,
+    clientId: user.id,
+    formFactor: "phone",
+    platform: req.body.platform,
+    timezone: req.body.timezone,
+    locale: req.body.locale,
+    deviceSecret: "server-assigned",
+    push: {
+      state: "ACTIVE",
+      recipient: { transportType: "gcm", registrationToken: req.body.fcmToken },
+    },
+  });
+
+  res.json({ tokenHash: result.tokenHash });
+});
+```
+
+Other device operations:
+
+| Request | Capability | Result |
+| --- | --- | --- |
+| `GET /apps/{appId}/push/deviceRegistrations/{id}` | admin, or subscribe with the device's identity token | The device (without raw tokens). |
+| `GET /apps/{appId}/push/deviceRegistrations?limit=&cursor=` | admin | `{ "items": [...], "next_cursor": ..., "has_more": ... }` |
+| `DELETE /apps/{appId}/push/deviceRegistrations/{id}` | admin, or subscribe with the device's identity token | `204 No Content` |
+| `DELETE /apps/{appId}/push/deviceRegistrations?clientId=user-42` | admin | `{ "deleted": n, "consistency": "eventual" }` |
+
+List endpoints accept `limit` between 1 and 1000 and return an opaque `next_cursor`.
+
+<Callout type="note" title="Web Push endpoint safety">
+Web Push `endpoint` values must be `https` URLs with a host and no user info. Localhost, `.local`,
+and private or local IP ranges are rejected unless `PUSH_ALLOW_LOCAL_WEB_PUSH_ENDPOINTS=true` is set
+for local tests. `PUSH_WEBPUSH_DENIED_HOSTS` and `PUSH_WEBPUSH_ALLOWED_HOSTS` further restrict
+accepted hosts.
+</Callout>
+
+## Subscribe devices to channels
+
+A channel subscription lets a publish that targets `{ "type": "channel" }` reach every device
+subscribed to that channel. Pass the `tokenHash` returned by registration.
+
+```http
+POST /apps/{appId}/push/channelSubscriptions
+Content-Type: application/json
+x-sockudo-push-capability: push-admin
+
+{
+  "appId": "my-app",
+  "channel": "orders",
+  "deviceId": "ios-7f3c2a",
+  "clientId": "user-42",
+  "provider": "apns",
+  "tokenHash": "9c1e..."
+}
+```
+
+The response is `201 Created` with the stored subscription. With the Node SDK:
+
+```ts
+await sockudo.upsertChannelPushSubscription({
+  appId: process.env.SOCKUDO_APP_ID!,
+  channel: "orders",
+  deviceId: "ios-7f3c2a",
+  clientId: "user-42",
+  provider: "apns",
+  tokenHash: registration.tokenHash,
+  credentialVersion: 1,
+});
+```
+
+| Request | Result |
+| --- | --- |
+| `GET /apps/{appId}/push/channelSubscriptions?channel=orders` | Devices subscribed to a channel. |
+| `GET /apps/{appId}/push/channelSubscriptions?deviceId=ios-7f3c2a` | Channels a device is subscribed to. `push-subscribe` callers must pass their own `deviceId`. |
+| `GET /apps/{appId}/push/channelSubscriptions/channels` | Every channel with at least one push subscription (admin only). |
+| `DELETE /apps/{appId}/push/channelSubscriptions?channel=orders` or `?deviceId=...` | `{ "deleted": n }`. One of `channel` or `deviceId` is required. |
+
+<Callout type="warn" title="Mirror your realtime authorization">
+Use the same authorization model as realtime channel subscription. If the user cannot subscribe to
+`private-orders` over WebSocket, do not subscribe their device to `private-orders` for push.
+</Callout>
+
+```mermaid
+sequenceDiagram
+  participant App as Client app
+  participant API as Your backend
+  participant S as Sockudo
+  participant P as Push provider
+
+  App->>API: current provider token
+  API->>API: verify user and device
+  API->>S: register device
+  API->>S: subscribe device to channel
+  API->>S: publish push
+  S-->>API: 202 publishId
+  S->>P: provider request
+  P-->>S: accepted or failed
+  API->>S: get publish status
+  S-->>API: state and counters
+```
+
+## Publish
+
+A publish combines **targets** (`recipients`) with a **payload**. Publish requires `push-admin`.
+
+```http
+POST /apps/{appId}/push/publish
+Content-Type: application/json
+x-sockudo-push-capability: push-admin
+
+{
+  "publishId": "order-ord_123-packed",
+  "recipients": [
+    { "type": "channel", "channel": "orders" },
+    { "type": "client", "client_id": "user-42" }
+  ],
+  "payload": {
+    "title": "Order updated",
+    "body": "Order ord_123 is packed",
+    "collapseKey": "order-ord_123",
+    "templateData": { "order_id": "ord_123" }
+  }
+}
+```
+
+```json title="202 Accepted"
+{
+  "publishId": "order-ord_123-packed",
+  "status": "accepted",
+  "expectedRecipients": 2,
+  "fanoutRegime": "fastPath",
+  "renderedPayloads": [
+    {
+      "provider": "apns",
+      "payload": {
+        "headers": { "apns-push-type": "alert", "apns-priority": "10", "apns-collapse-id": "order-ord_123" },
+        "aps": { "alert": { "title": "Order updated", "body": "Order ord_123 is packed" }, "sound": null },
+        "data": { "order_id": "ord_123" }
+      },
+      "usedOverride": false
+    }
+  ]
+}
+```
+
+`renderedPayloads` contains one preview per provider (FCM, APNs, Web Push, HMS, WNS, and the
+realtime transport); the example above shows only APNs. `fanoutRegime` is `fastPath` below
+`push.fanout_fast_threshold` expected recipients and `shardPath` above it.
+
+With the Node SDK:
+
+```ts
+const response = await sockudo.publishPush({
+  publishId: "order-ord_123-packed",
+  recipients: [
+    { type: "channel", channel: "orders" },
+    { type: "client", client_id: "user-42" },
+  ],
+  payload: {
+    title: "Order updated",
+    body: "Order ord_123 is packed",
+    templateData: { order_id: "ord_123" },
+  },
+});
+
+console.log(response.publishId);
+```
+
+### Targets
+
+| `type` | Fields | Resolves to |
+| --- | --- | --- |
+| `device` | `device_id` | One registered device. |
+| `client` | `client_id` | Every device registered with that `clientId`. |
+| `channel` | `channel` | Every device subscribed to that channel. |
+| `recipient` | `recipient` (a raw provider recipient, for example `{ "transportType": "gcm", "registrationToken": "..." }`) | One provider token, without a stored device. Requires `push-admin`. |
+| `registeredTopic`, `userTopic` | `topic` | Topic-scoped targets. |
+| `providerTopic` | `provider`, `topic` | A provider-native topic. |
+| `providerCondition` | `provider`, `condition` | A provider-native condition expression. |
+| `indexedFilter` | `filter` | An indexed device filter. |
+
+### Payload fields
+
+| Field | Meaning |
+| --- | --- |
+| `title`, `body` | Notification text. |
+| `icon` | An `https` image URL. |
+| `sound` | Platform sound name. |
+| `collapseKey` | Collapses superseded notifications (APNs `apns-collapse-id`, Web Push `topic`, FCM/HMS `collapse_key`). |
+| `templateData` | Arbitrary JSON delivered as the provider `data` object, and the source for template placeholders. |
+| `templateId` | References a stored template. |
+
+### Idempotency
+
+Publishing is idempotent in two ways. Reusing a `publishId` returns the original publish instead of
+creating new work. Sending an identical request body (same targets, payload, overrides, and timing)
+also resolves to the original publish. Idempotency records last until `expiresAtMs`, or 24 hours
+when no expiry is set.
+
+<Callout type="tip" title="Derive publishId from your domain event">
+Use a deterministic `publishId` such as `order-ord_123-packed`. Your own retries, queue
+redeliveries, and double-clicks then collapse into one notification instead of several.
+</Callout>
+
+<Callout type="note" title="The publish API is always asynchronous">
+`sync: true` or `?mode=sync` does not block on delivery. The request is still admitted
+asynchronously and the response carries `X-Sockudo-Forced-Async: publish-api-is-async`. Use
+`POST /apps/{appId}/push/batch/publish` with a JSON array of publish requests to admit several at
+once; it returns `{ "items": [...] }` with one accepted response per request.
+</Callout>
+
+## Track publish status
+
+```http
+GET /apps/{appId}/push/publish/order-ord_123-packed/status
+x-sockudo-push-capability: push-admin
+```
+
+```json title="200 OK"
+{
+  "appId": "my-app",
+  "publishId": "order-ord_123-packed",
+  "state": "succeeded",
+  "counters": {
+    "planned": 2,
+    "dispatched": 2,
+    "succeeded": 2,
+    "failed": 0,
+    "expired": 0,
+    "retryScheduled": 0,
+    "retryAttempted": 0,
+    "deadLettered": 0
+  },
+  "fanoutRegime": "fastPath"
+}
+```
+
+| `state` | Meaning |
+| --- | --- |
+| `queued` | Durably accepted; waiting for the planner. The publish response reports this as `accepted`. |
+| `planning` | Targets are being resolved to devices. |
+| `throttled` | Delivery is paused by rate or quota limits. |
+| `dispatching` | Provider requests are in flight or scheduled for retry. |
+| `succeeded` | Every planned delivery succeeded. |
+| `partiallySucceeded` | Some deliveries succeeded and some failed, expired, or dead-lettered. The publish response label is `partially_succeeded`. |
+| `failed` | Every delivery failed terminally. |
+| `expired` | `expiresAtMs` passed before delivery. |
+| `dead_lettered` | Retries were exhausted with no successes. |
+| `quota_exceeded` | Rejected at admission by a fanout or delivery quota. |
+| `cancelled` | Cancelled before dispatch. |
+
+`planned` is the acceptance-time audience estimate. Terminal states are absorbing: once a publish
+is `succeeded`, `failed`, `expired`, `dead_lettered`, `partiallySucceeded`, `quota_exceeded`, or
+`cancelled`, it never moves again.
+
+## Payload fidelity, templates, and overrides
+
+Publish responses include `renderedPayloads`, one provider-specific preview per provider. The same
+renderer is used by admission and dispatch. Provider workers send the previewed provider payload,
+except for runtime-only fields such as provider tokens, APNs device tokens, generated authorization
+headers, and provider request IDs.
+
+`providerOverrides` are provider-specific complete payloads. When an override exists for a
+provider, it replaces the generic payload mapping for that provider. APNs override headers become
+APNs request headers, Web Push `headers.ttl`, `headers.urgency`, and `headers.topic` become Web
+Push request headers, and FCM/HMS/WNS overrides are sent as the provider body with runtime recipient
+tokens added by the worker. Overrides are validated and size-checked before dispatch.
+
+```json
+{
+  "recipients": [{ "type": "client", "client_id": "user-42" }],
+  "payload": { "title": "Order updated", "body": "Order ord_123 is packed" },
+  "providerOverrides": [
+    {
+      "provider": "fcm",
+      "payload": {
+        "message": {
+          "notification": { "title": "Order updated", "body": "Packed and ready" },
+          "android": { "priority": "high" }
+        }
+      }
+    }
+  ]
+}
+```
+
+### Templates
+
+Store localized content once and reference it by `templateId`:
+
+```http
+POST /apps/{appId}/push/templates
+Content-Type: application/json
+
+{
+  "appId": "my-app",
+  "templateId": "order-packed",
+  "defaultLocale": "en",
+  "locales": {
+    "en": { "title": "Order packed", "body": "Order {{ data.order_id }} is packed" },
+    "de": { "title": "Bestellung verpackt", "body": "Bestellung {{ data.order_id }} ist verpackt" }
+  }
+}
+```
+
+The response is `201 Created` with the stored template. `defaultLocale` must exist in `locales`.
+`GET /apps/{appId}/push/templates`, `GET /apps/{appId}/push/templates/{id}`, and
+`DELETE /apps/{appId}/push/templates/{id}` list, read, and remove templates.
+
+Templates are resolved during publish admission. A `payload.templateId` must reference an existing
+template; missing templates fail the publish request before work is accepted. Sockudo selects the
+template locale from `payload.templateData.locale`, falling back from exact locale to language and
+then the template's `defaultLocale`. Template fields fill missing payload fields, while explicit
+payload fields win. Template provider overrides are applied first and request `providerOverrides`
+win when both define the same provider. The resolved payload is stored in the accepted publish work,
+so later template edits do not change queued delivery or retry attempts.
+
+Template placeholders use bounded `{{ data.path }}` substitutions against `payload.templateData`.
+Missing placeholders fail admission with a precise invalid-template error; objects and arrays are
+not coerced into strings.
+
+## Delayed delivery and cancellation
+
+```ts
+const delayed = await sockudo.publishPush({
+  notBeforeMs: Date.parse("2026-05-19T18:00:00Z"),
+  expiresAtMs: Date.parse("2026-05-19T18:10:00Z"),
+  recipients: [{ type: "client", client_id: "user-42" }],
+  payload: { title: "Reminder", body: "Your room starts soon" },
+});
+```
+
+`notBeforeMs` delays provider dispatch; `expiresAtMs` prevents late sends. Both are enforced at
+delivery time, including on retries.
+
+The public HTTP API does not expose a separate schedule-create endpoint. Use
+`POST /apps/{appId}/push/publish` with `notBeforeMs` for delayed delivery. Persisted scheduled jobs
+created by internal scheduler/store integrations can be cancelled before emission with
+`DELETE /apps/{appId}/push/scheduled/{jobId}`, which returns `204 No Content`.
+
+## Channel-triggered push rule
+
+Push rules convert normal channel events into push work, with no extra API call from your backend.
+This is useful for product events and AI agent completion notifications.
+
+```toml title="config.toml"
+[[push_rules]]
+enabled = true
+channel_pattern = "notifications:*"
+event_filter = ["agent-complete", "order-ready"]
+rate_limit_per_second = 100
+
+[push_rules.payload_mapping]
+title_field = "title"
+body_field = "body"
+template_data_field = "data"
+include_remaining_fields = true
+```
+
+A realtime publish such as this one now also produces a channel-targeted push to every device
+subscribed to `notifications:user-42`:
+
+```json
+{
+  "name": "agent-complete",
+  "channel": "notifications:user-42",
+  "data": {
+    "title": "Agent finished",
+    "body": "Your answer is ready",
+    "data": {
+      "session_id": "sess_01J"
+    }
+  }
+}
+```
+
+- `channel_pattern` supports an exact name, `*`, or a trailing wildcard such as `notifications:*`.
+- `event_filter` must list 1 to 32 event names.
+- The event `data` must be a JSON object with string `title` and `body` fields (or the fields named
+  by `payload_mapping`). Events that do not match produce no push.
 
 ## Admission readiness
 
@@ -61,17 +675,15 @@ provider worker without scanning large channel subscription sets during admissio
 publishes also require a local shard worker. The planner still resolves exact devices
 asynchronously.
 
-In `mode = "production"`, `storage_driver = "memory"` and `queue_driver = "memory"` are rejected
-unless `allow_memory_drivers = true` or `PUSH_ALLOW_MEMORY_DRIVERS=true` is set explicitly. Memory
-drivers are node-local and lose state on restart or dead-node loss.
+| Response | Cause |
+| --- | --- |
+| `202` with `status: "quota_exceeded"` | Quota rejection. Sockudo persists a terminal `quota_exceeded` publish status and idempotency record without appending publish log work or enqueueing the pipeline. |
+| `429` with `Retry-After` | Queue pressure (a critical stage crossed its lag or oldest-age threshold), or the per-app acceptance rate (`[push.default_quotas].acceptance_rps`, overridable with `PUSH_ACCEPTANCE_RATE_LIMIT`) was exceeded. |
+| `503` | Readiness failure: queue unhealthy, memory drivers in production, missing provider feature or credentials, or no capable worker. |
+| `400` | Invalid targets, payload, template, override, or Live Activity fields. |
+| `403` | Missing `push-admin` capability. |
 
-A broker `queue_driver` runs on the shared `[queue]` backend and must match `queue.driver`. Push
-needs per-message delays, so it starts only on `redis`, `redis-cluster`, standard `sqs` and
-`pulsar`; see [push queue backends](/docs/reference/configuration#push) for details.
-
-Readiness failures return `503`. Queue pressure returns `429` with `Retry-After`. Quota rejection
-persists a terminal `quota_exceeded` publish status and idempotency record without appending publish
-log work or enqueueing the pipeline.
+Errors use the standard body `{ "error": "...", "code": "...", "status": 503 }`.
 
 ## Cluster queue delivery guarantees
 
@@ -81,6 +693,11 @@ duplicated if a worker crashes after the provider accepts the request but before
 is produced or before the original delivery batch is acknowledged. Sockudo keeps the duplicate
 window bounded with stable delivery idempotency keys, deterministic retry context, and duplicate
 feedback suppression, but it does not claim exactly-once provider delivery.
+
+<Callout type="tip" title="Design for rare duplicates">
+Set `collapseKey` on notifications that represent state ("order is packed") so a rare duplicate
+replaces the previous notification on the device instead of stacking.
+</Callout>
 
 In monolith deployments, each node consumes only stages it can process. Planner, shard, feedback,
 retry, and dead-letter stages are consumed only by nodes with the matching local worker enabled.
@@ -107,10 +724,21 @@ first-attempt timestamp, retry deadline, and the provider error class. Retry sch
 consume only due entries, respect provider `Retry-After` deadlines when configured, and otherwise
 use bounded exponential backoff with deterministic jitter.
 
+```toml title="config.toml (defaults)"
+[push.retry]
+max_attempts = 5
+initial_backoff_ms = 1000
+max_backoff_ms = 60000
+max_elapsed_secs = 86400
+jitter = true
+jitter_ratio_percent = 20
+respect_retry_after = true
+```
+
 Retries stop at the earliest of `max_attempts`, `max_elapsed_secs`, or the publish/job
 `expires_at_ms`. Exhausted retry work is emitted to `push.deadletters.v1` and the publish status
 moves to `dead_lettered` unless some deliveries already succeeded, in which case it becomes
-`partially_succeeded`. If the publish expiry passes before a retry can run, the publish moves to
+partially succeeded. If the publish expiry passes before a retry can run, the publish moves to
 `expired`. Pending retry work increments `retryScheduled`; retry dispatch increments
 `retryAttempted`; `dispatched` counts terminal provider outcomes so retry attempts do not inflate
 completion accounting.
@@ -125,7 +753,10 @@ and dead-letter queue lag through the health/backpressure surfaces, and metrics 
 `sockudo_push_queue_oldest_age_seconds{stage=...,state=...}`,
 `sockudo_push_retry_scheduled_total`, `sockudo_push_retry_attempted_total`,
 `sockudo_push_retry_dead_lettered_total`, `sockudo_push_retry_malformed_total`, and
-`sockudo_push_provider_failures_total{failure_class=...}`.
+`sockudo_push_provider_failures_total{failure_class=...}`. Inspect and replay dead letters with
+`GET /apps/{appId}/push/deadLetters` and
+`POST /apps/{appId}/push/deadLetters/{deadLetterId}/replay`; see
+[Push operations](/docs/server/push-operations).
 
 Lifecycle safety checks expose `sockudo_push_invariant_violations_total{invariant=...}`. The bounded
 `status_transition` label means a stale, non-monotonic status write was ignored. The metric does
@@ -138,30 +769,35 @@ exhausted; the worker returns a structured error instead of silently accepting a
 Component labels come from a fixed internal set and neither metric includes payloads, tokens,
 credentials, app IDs, or publish IDs.
 
+<Callout type="warn" title="Upgrade with a drain-and-replace boundary">
 All installations must stop old push admission and worker processes before starting
 revision-aware workers; do not run old blind status writers alongside them. PostgreSQL and MySQL
 must apply the push schema-version-2 migration while workers are stopped. DynamoDB, SurrealDB, and
 ScyllaDB store the revision in the status document envelope and need no table migration, but still
 require the same drain-and-replace deployment boundary.
+</Callout>
 
 Upgrade note: provider workers now enqueue internal `deliveryFeedback` payloads on
 `push.results.v1` so feedback workers can schedule retries with replayable job context. Older
 `deliveryResult` payloads are still accepted, but retryable legacy results without job context are
 dead-lettered instead of being retried blindly.
 
-## Retention and cleanup
+## Provider outcomes and device invalidation
 
-The cleanup worker runs in monolith deployments when `push.cleanup_interval_secs > 0`. It removes
-terminal publish statuses older than `push.publish_status_ttl_days`, delivery events and operator
-invalidation events older than `push.analytics_retention_days`, expired idempotency records, and
-expired scheduler locks. It does not delete active scheduled jobs, active retry work, credentials,
-templates, or active device registrations.
+Every provider response becomes a delivery outcome (`accepted`, `rejected`, `retryable`,
+`expired`, or `cancelled`) plus a failure class. The outcome decides whether the delivery is retried;
+the class decides what happens to the device and how the failure is counted.
 
-Cleanup is incremental: each tick is bounded by `push.cleanup_batch_size` per category and
-`push.cleanup_max_deleted_per_tick` overall. See [Push operations](/docs/server/push-operations)
-for metrics, alerts, and outage runbooks.
-
-## Device invalidation safety
+| `failure_class` | Typical cause | Device effect |
+| --- | --- | --- |
+| `device_terminal` | The token is permanently invalid (see below). | Device registration is deleted. |
+| `device_transient` | A device-specific, possibly temporary failure. | Failure count increments; the device moves from `ACTIVE` to `FAILING`, then `FAILED`. |
+| `provider_transient` | Provider `5xx`. | None. |
+| `provider_quota` | Provider `429` or quota response. | None. |
+| `credential_auth` | Bad key, project, topic, environment, or VAPID configuration. | None. |
+| `caller_payload` | The provider rejected the payload. | None. |
+| `network_transport` | DNS, TLS, or connection failure. | None. |
+| `unknown` | Unclassified response. | None. |
 
 Sockudo deletes or terminally invalidates a device only for device-specific terminal failures:
 
@@ -176,197 +812,30 @@ Push VAPID/auth failures, provider `429` quota responses, provider `5xx` respons
 transport failures, and caller payload errors. These outcomes still update publish status, schedule
 retry or dead-letter work according to the retry policy, and emit classified metrics.
 
+<Callout type="warn" title="Never purge devices for credential failures">
 Operators should treat `credential_auth` and project/topic mismatch failures as credential or
 configuration incidents: rotate or fix the provider credential, project id, APNs topic/environment,
 or VAPID configuration, then inspect `GET /apps/{appId}/push/deadLetters` and replay entries marked
 `replayable` or republish from the original source as appropriate. Do not purge device registries
-for these classes. The `sockudo_push_provider_failures_total{failure_class=...}` metric separates
-`device_terminal`, `provider_transient`, `provider_quota`, `credential_auth`, `caller_payload`,
-`network_transport`, and `unknown` failures. The `sockudo_push_token_invalidation_guard_total`
-metric and `token-invalidation-guard` meta event fire when a publish crosses the built-in
-invalidation spike threshold.
+for these classes.
+</Callout>
 
-## Configure providers
+The `sockudo_push_provider_failures_total{failure_class=...}` metric separates these classes. The
+`sockudo_push_token_invalidation_guard_total` metric and `token-invalidation-guard` meta event fire
+when a publish crosses the built-in invalidation spike threshold: at least 10 failed deliveries and
+at least 20% of the planned recipients.
 
-```toml
-[push]
-storage_driver = "postgres"
-queue_driver = "redis"
-allow_memory_drivers = false
-fcm_enabled = true
-apns_enabled = true
-publish_status_ttl_days = 30
-analytics_retention_days = 30
-scheduler_interval_secs = 5
-cleanup_interval_secs = 300
-cleanup_batch_size = 1000
-cleanup_max_deleted_per_tick = 100000
+## Retention and cleanup
 
-# Runtime env for FCM monolith workers:
-# PUSH_FCM_ENABLED=true
-# PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH=/run/secrets/fcm-service-account.json
-# PUSH_FCM_PROJECT_ID is optional when the service account JSON has project_id.
+The cleanup worker runs in monolith deployments when `push.cleanup_interval_secs > 0`. It removes
+terminal publish statuses older than `push.publish_status_ttl_days`, delivery events and operator
+invalidation events older than `push.analytics_retention_days`, expired idempotency records, and
+expired scheduler locks. It does not delete active scheduled jobs, active retry work, credentials,
+templates, or active device registrations.
 
-# Runtime env for APNs monolith workers:
-# PUSH_APNS_ENABLED=true
-# PUSH_APNS_TOPIC=com.example.app
-# PUSH_APNS_PRIVATE_KEY_PATH=/run/secrets/AuthKey_KEYID12345.p8
-```
-
-APNs connection pooling, Live Activity topics, broadcast and channel-management endpoints, and
-timeouts are configured under `[push.apns]`. Broadcast delivery uses one APNs request per channel,
-instead of expanding the audience into device-token jobs.
-
-## Register devices
-
-Clients should call your backend. Your backend authenticates the user, validates ownership, and forwards to Sockudo with server credentials.
-
-```ts
-app.post("/api/push/devices", async (req, res) => {
-  const user = requireUser(req);
-
-  const result = await sockudo.activateDevice({
-    device_id: req.body.device_id,
-    client_id: user.id,
-    platform: req.body.platform,
-    provider_token: req.body.provider_token,
-  });
-
-  res.json(result);
-});
-```
-
-Device IDs should be stable per installation. Provider tokens can rotate; update the registration
-when the platform SDK gives you a new token.
-
-## Subscribe devices to channels
-
-```ts
-await sockudo.upsertChannelPushSubscription({
-  device_id: "ios-device-1",
-  client_id: "user-42",
-  channel: "orders",
-});
-```
-
-Use the same authorization model as realtime channel subscription. If the user cannot subscribe to `private-orders` over WebSocket, they should not subscribe a device to `private-orders` for push.
-
-```mermaid
-sequenceDiagram
-  participant App as Client app
-  participant API as Your backend
-  participant S as Sockudo
-  participant P as Push provider
-
-  App->>API: current provider token
-  API->>API: verify user and device
-  API->>S: register device
-  API->>S: subscribe device to channel
-  API->>S: publish push
-  S->>P: provider request
-  P-->>S: accepted or failed
-  S-->>API: publish status
-```
-
-## Publish
-
-```ts
-const response = await sockudo.publishPush({
-  recipients: [
-    { type: "channel", channel: "orders" },
-    { type: "client", client_id: "user-42" },
-  ],
-  payload: {
-    title: "Order updated",
-    body: "Order ord_123 is packed",
-    data: {
-      order_id: "ord_123",
-      channel: "orders",
-    },
-  },
-  idempotency_key: "push-order-ord_123-packed",
-  sync: false,
-});
-
-console.log(response.publish_id);
-```
-
-Use `sync: false` for most production traffic. Async admission returns quickly, then workers fan out
-to providers and update publish status records.
-
-### Payload fidelity, templates, and overrides
-
-Publish responses include `renderedPayloads`, one provider-specific preview for FCM, APNs, Web
-Push, HMS, and WNS. The same renderer is used by admission and dispatch. Provider workers send the
-previewed provider payload, except for runtime-only fields such as provider tokens, APNs device
-tokens, generated authorization headers, and provider request IDs.
-
-`providerOverrides` are provider-specific complete payloads. When an override exists for a
-provider, it replaces the generic payload mapping for that provider. APNs override headers become
-APNs request headers, Web Push `headers.ttl`, `headers.urgency`, and `headers.topic` become Web
-Push request headers, and FCM/HMS/WNS overrides are sent as the provider body with runtime recipient
-tokens added by the worker. Overrides are validated and size-checked before dispatch.
-
-Templates are resolved during publish admission. A `payload.templateId` must reference an existing
-template; missing templates fail the publish request before work is accepted. Sockudo selects the
-template locale from `payload.templateData.locale`, falling back from exact locale to language and
-then the template's `defaultLocale`. Template fields fill missing payload fields, while explicit
-payload fields win. Template provider overrides are applied first and request `providerOverrides`
-win when both define the same provider. The resolved payload is stored in the accepted publish work,
-so later template edits do not change queued delivery or retry attempts.
-
-Template placeholders use bounded `{{ data.path }}` substitutions against `payload.templateData`.
-Missing placeholders fail admission with a precise invalid-template error; objects and arrays are
-not coerced into strings.
-
-## Delayed delivery and cancellation
-
-```ts
-const delayed = await sockudo.publishPush({
-  notBeforeMs: Date.parse("2026-05-19T18:00:00Z"),
-  expiresAtMs: Date.parse("2026-05-19T18:10:00Z"),
-  recipients: [{ type: "client", client_id: "user-42" }],
-  payload: { title: "Reminder", body: "Your room starts soon" },
-});
-```
-
-The public HTTP API does not expose a separate schedule-create endpoint. Use
-`POST /apps/{appId}/push/publish` with `notBeforeMs` for delayed delivery. Persisted scheduled jobs
-created by internal scheduler/store integrations can be cancelled before emission with
-`DELETE /apps/{appId}/push/scheduled/{jobId}`.
-
-## Channel-triggered push rule
-
-Push rules convert normal channel events into push work. This is useful for product events and AI
-agent completion notifications.
-
-```toml
-[[push_rules]]
-enabled = true
-channel_pattern = "notifications:*"
-event_filter = ["agent-complete", "order-ready"]
-rate_limit_per_second = 100
-
-[push_rules.payload_mapping]
-title_field = "title"
-body_field = "body"
-template_data_field = "data"
-include_remaining_fields = true
-```
-
-```json
-{
-  "name": "agent-complete",
-  "channel": "notifications:user-42",
-  "data": {
-    "title": "Agent finished",
-    "body": "Your answer is ready",
-    "data": {
-      "session_id": "sess_01J"
-    }
-  }
-}
-```
+Cleanup is incremental: each tick is bounded by `push.cleanup_batch_size` per category and
+`push.cleanup_max_deleted_per_tick` overall. See [Push operations](/docs/server/push-operations)
+for metrics, alerts, and outage runbooks.
 
 ## Capacity planning
 
@@ -374,30 +843,36 @@ Push fanout has a different bottleneck profile than WebSocket fanout:
 
 - provider rate limits
 - token invalidation churn
-- per-platform payload size limits
-- queue depth and worker concurrency
+- per-platform payload size limits (4096 bytes for FCM, APNs device, Web Push, and HMS payloads)
+- queue depth and worker concurrency (`dispatch_worker_count`, `dispatch_max_outbound_requests`)
 - status retention writes
 - scheduled publish scans
 - provider callback volume
 
-Before a campaign, test admission and provider dispatch separately. A healthy API admission rate does not prove provider delivery capacity.
+Before a campaign, test admission and provider dispatch separately. A healthy API admission rate
+does not prove provider delivery capacity.
 
 ## Benchmarking
 
-Use the repository push scripts for repeatable scenarios:
+Use the repository push benchmark for repeatable scenarios. `--mode` is `seed` (register devices
+and subscriptions), `admission` (publish load), `e2e`, or `all`.
 
 ```bash
 node scripts/push-benchmark.mjs \
-  --host http://127.0.0.1:6001 \
+  --url http://127.0.0.1:6001 \
   --app-id app-id \
   --key app-key \
   --secret app-secret \
+  --mode all \
+  --provider fcm \
   --devices 10000 \
-  --channels orders \
-  --publish-rate 100
+  --channels 100 \
+  --concurrency 50 \
+  --duration 60
 ```
 
-Track accepted publishes, queue depth, provider dispatch latency, provider error classes, and status write latency.
+Track accepted publishes, queue depth, provider dispatch latency, provider error classes, and status
+write latency.
 
 The Criterion benchmark `push_retry_scheduler/memory_drain_100k_due_retry_entries_budget_lt_5s`
 seeds and drains 100k due retry entries through the memory queue/store path as a regression guard
@@ -408,8 +883,11 @@ for retry scheduling overhead.
 | Symptom | Check |
 | --- | --- |
 | `202` returned but no notification | Inspect publish status and provider errors. |
+| `400 invalid JSON body` on registration | Include `appId`, `deviceSecret`, `push.state`, `timezone`, and `locale`; check field casing. |
+| `403 push-admin capability is required` | The request sent `x-sockudo-push-capability: push-subscribe` to an admin-only endpoint. |
+| `401 invalid deviceIdentityToken` | The device-scoped call used a missing or rotated identity token. |
 | APNs rejects token | Verify bundle ID, environment, topic, and token freshness. |
-| Web Push rejected | Verify VAPID subject and key pair. |
+| Web Push rejected | Verify VAPID key and contact, and that the endpoint host is public HTTPS. |
 | FCM unauthorized | Verify service account and project. |
 | Channel push misses users | Verify channel push subscriptions and `client_id` mapping. |
 | Large push is rejected | Check platform payload limits and remove nonessential data. |
@@ -419,4 +897,14 @@ for retry scheduling overhead.
 | Publish becomes `dead_lettered` | Inspect `GET /apps/{appId}/push/deadLetters`, retry metrics, provider outage history, and `max_attempts`/`max_elapsed_secs`; replay only entries marked `replayable`. |
 | Cleanup failures increase | Check `sockudo_push_cleanup_errors_total`, store connectivity, and batch limits. |
 
-Push payloads should wake the app and include stable IDs. Fetch authoritative application state after the user opens the notification.
+Push payloads should wake the app and include stable IDs. Fetch authoritative application state
+after the user opens the notification.
+
+## Next steps
+
+<Cards>
+  <Card title="Apple Live Activities" href="/docs/server/apple-live-activities" description="Start, update, and end ActivityKit activities, and broadcast to iOS 18 channels." />
+  <Card title="Push operations" href="/docs/server/push-operations" description="Metrics, alerts, dead-letter replay, and provider outage runbooks." />
+  <Card title="AI Transport push" href="/docs/server/ai-transport-push-notifications" description="Notify users when an AI agent finishes while they are away." />
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Every push, retry, quota, and APNs configuration key." />
+</Cards>

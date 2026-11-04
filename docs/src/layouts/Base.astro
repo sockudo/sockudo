@@ -1,0 +1,92 @@
+---
+import { ClientRouter } from 'astro:transitions';
+import '@/styles/global.css';
+import Header from '@/components/Header.astro';
+import Footer from '@/components/Footer.astro';
+import SearchDialog from '@/components/SearchDialog.astro';
+import Consent from '@/components/Consent.astro';
+import typeUISnippet from '@/scripts/typeui-insights.js?raw';
+
+interface Props {
+  title?: string;
+  description?: string;
+  solidHeader?: boolean;
+  showMenu?: boolean;
+  footer?: boolean;
+  bodyClass?: string;
+}
+
+const {
+  title,
+  description = 'Documentation for Sockudo, the self-hosted Rust realtime server with Pusher compatibility, opt-in Ably REST and WebSocket compatibility excluding Live Objects, Protocol V2, recovery, push, AI Transport, and official SDKs.',
+  solidHeader = false,
+  showMenu = false,
+  footer = true,
+  bodyClass,
+} = Astro.props;
+const fullTitle = title ? `${title} | Sockudo Docs` : 'Sockudo — Realtime infrastructure you own';
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const ogImage = new URL('/sockudo-logo/sockudo-logo-color.png', Astro.site);
+---
+
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <meta name="theme-color" content="#07050c" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Sockudo Docs" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={ogImage} />
+    <script is:inline>
+      (() => {
+        let t;
+        try {
+          t = localStorage.getItem('sockudo-theme');
+        } catch {}
+        if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.dataset.theme = t;
+        document.documentElement.classList.add('js');
+      })();
+    </script>
+    <script is:inline data-typeui-site-verification="tui_verify_YQzmN7rICAlhxMTswui_-BKCggnpYdX-" set:html={typeUISnippet} />
+    <script
+      is:inline
+      async
+      crossorigin="anonymous"
+      src="https://cdn.databuddy.cc/databuddy.js"
+      data-databuddy-injected="true"
+      data-client-id="5aFTKbNqr8XkSznh3u3F3"
+      data-track-hash-changes="true"
+      data-track-attributes="true"
+      data-track-outgoing-links="true"
+      data-track-interactions="true"
+      data-track-web-vitals="true"
+      data-track-errors="true"></script>
+    <ClientRouter />
+    <slot name="head" />
+  </head>
+  <body class={bodyClass}>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <div class="backdrop" aria-hidden="true"><div class="aurora a1"></div><div class="aurora a2"></div></div>
+    <Header solid={solidHeader} showMenu={showMenu} />
+    <slot />
+    {footer && <Footer />}
+    <SearchDialog />
+    <Consent />
+    <script>
+      import '@/scripts/site';
+    </script>
+  </body>
+</html>

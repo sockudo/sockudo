@@ -4,29 +4,71 @@ description: Reference major Sockudo configuration sections and the deployment d
 icon: Settings2
 ---
 
-Sockudo's TOML configuration is organized by runtime responsibility.
+Sockudo's TOML configuration is organized by runtime responsibility: one table per subsystem, plus
+a handful of top-level keys for the listener and process. This page describes each section, what
+it controls, and when you would change it.
 
-For configuration loading order, JSON equivalence, and guidance on what belongs in files,
-environment overrides, or secret stores, see [Static configuration](/docs/deployment/static-configuration).
-The complete [environment variable reference](/docs/reference/environment-variables) lists every
-runtime variable parsed by the server and push subsystem.
+Configuration resolves in layers, and each later layer wins:
+
+1. compiled defaults, which apply to every key you omit
+2. the configuration file (`config/config.toml`, `config/config.json`, or the path given with
+   `--config`), with `${VAR}` and `${VAR:-default}` references expanded from the environment
+3. supported environment-variable overrides
+4. validation, which rejects inconsistent settings at startup
+
+Only explicitly mapped settings have an environment variable; nested policy such as app
+definitions and channel namespaces lives in the file or the app manager. For loading details, JSON
+equivalence, and guidance on what belongs in files, environment overrides, or secret stores, see
+[Static configuration](/docs/deployment/static-configuration). The complete
+[environment variable reference](/docs/reference/environment-variables) lists every runtime
+variable parsed by the server and push subsystem.
+
+<Callout type="note" title="Compiled defaults versus the shipped file">
+Defaults on this page are the compiled defaults used when a key is omitted. The repository's
+`config/config.toml` is a development profile that overrides several of them, for example
+`mode = "development"`, `shutdown_grace_period = 2`, and `connection_recovery.enabled = true`.
+Start production files from the defaults you need, not from the development profile.
+</Callout>
 
 ## Top-level
 
-| Key | Purpose |
-| --- | --- |
-| `host` | Bind host for WebSocket and HTTP API. |
-| `port` | Bind port for WebSocket and HTTP API. |
-| `max_connections` | Per-node WebSocket connection limit. When exceeded the server returns close code 4100 so clients reconnect with backoff. `0` disables the limit. |
-| `debug` | Enables verbose diagnostics for local development. |
-| `shutdown_grace_period` | Seconds the listener stays open after SIGTERM/SIGINT while `/ready` reports 503. Default `10`. |
-| `shutdown_close_delay_ms` | Milliseconds to wait after the shutdown signal before closing existing WebSockets with 4200, so load balancers see the node draining first. Default `0`. |
-| `shutdown_close_spread_ms` | Milliseconds over which existing WebSockets are closed with 4200, evenly in small batches, so clients do not all reconnect at once. Default `0` (all at once). Delay plus spread must not exceed `shutdown_grace_period`. |
-| `server_role` | Deployment topology role. `"default"` runs the full server. `"api"` runs HTTP publish, history, mutable messages, and push — without WebSocket listeners, cluster heartbeats, or presence sync. Default: `"default"`. |
+Process-wide keys that sit outside any table. Change these to set the bind address, connection
+limits, timeouts, and graceful-shutdown behavior.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string | `"0.0.0.0"` | Bind host for WebSocket and HTTP API. Use a specific interface to avoid listening on every network. |
+| `port` | integer | `6001` | Bind port for WebSocket and HTTP API. |
+| `mode` | string | `"production"` | Runtime mode. `"production"` rejects node-local memory push drivers unless explicitly allowed and warns about risky paths such as a Unix socket under `/tmp`. Set `"development"` for local work. |
+| `debug` | boolean | `false` | Enables verbose diagnostics for local development, including source locations in logs. |
+| `max_connections` | integer | `0` | Per-node WebSocket connection limit. When exceeded the server returns close code 4100 so clients reconnect with backoff. `0` disables the limit. Set it to protect each node's memory and to drive `/ready` capacity gating. |
+| `activity_timeout` | integer (seconds) | `120` | Pusher protocol activity timeout announced to clients in `connection_established`. |
+| `user_authentication_timeout` | integer (seconds) | `3600` | How long a connection may stay open without completing user authentication when the app requires it. |
+| `websocket_max_payload_kb` | integer (KiB) | `64` | Legacy maximum inbound WebSocket payload size. |
+| `health_check_timeout_ms` | integer (ms) | `2000` | Timeout for each subsystem check in `/up` (adapter, cache, queue, app manager). |
+| `shutdown_grace_period` | integer (seconds) | `10` | Seconds the listener stays open after SIGTERM/SIGINT while `/ready` reports 503. Raise it when load balancers need longer to drain a node. |
+| `shutdown_close_delay_ms` | integer (ms) | `0` | Milliseconds to wait after the shutdown signal before closing existing WebSockets with 4200, so load balancers see the node draining first. |
+| `shutdown_close_spread_ms` | integer (ms) | `0` | Milliseconds over which existing WebSockets are closed with 4200, evenly in small batches, so clients do not all reconnect at once. `0` closes all at once. Delay plus spread must not exceed `shutdown_grace_period`. |
+| `server_role` | string | `"default"` | Deployment topology role. `"default"` runs the full server. `"api"` runs HTTP publish, history, mutable messages, and push — without WebSocket listeners, cluster heartbeats, or presence sync. |
+| `path_prefix` | string | `"/"` | Parsed for compatibility but not currently applied to any route. Leave it at `"/"` and put a reverse proxy in front for path rewriting. |
+
+## Section index
+
+Every other setting lives in a table. Use this index to find the section that owns a behavior.
+
+| Group | Sections | Controls |
+| --- | --- | --- |
+| Listener and transport | `[ssl]`, `[unix_socket]`, `[cors]`, `[http_api]`, `[http_api.readiness]`, `[http_api.accept_traffic]`, `[websocket]`, `[instance]` | TLS, Unix socket listener, browser CORS, HTTP body limit and operator endpoints, probes and admission, per-connection buffers and heartbeats, and node identity. |
+| Apps and limits | `[app_manager]`, `[channel_limits]`, `[event_limits]`, `[presence]` | Where apps are stored, plus global channel, event, and presence limits that apps inherit. |
+| Runtime backends | `[adapter]`, `[cache]`, `[queue]`, `[rate_limiter]`, `[database]`, `[database_pooling]`, `[cleanup]` | Cross-node fanout, shared cache, background work, rate limits, database connections, and disconnect cleanup. |
+| Protocol features | `[connection_recovery]`, `[history]`, `[presence_history]`, `[versioned_messages]`, `[annotations]`, `[delta_compression]`, `[tag_filtering]`, `[idempotency]`, `[ephemeral]`, `[echo_control]`, `[event_name_filtering]` | Protocol V2 continuity, durable state, and delivery controls. |
+| Integrations | `[webhooks]`, `[push]`, `[[push_rules]]`, `[ai_transport]`, `[mcp]`, `[ably_compat]` | Outbound webhooks, push notifications, AI Transport, the MCP server, and the Ably facade. |
+| Observability | `[metrics]`, `[opentelemetry]`, `[logging]` | Prometheus, OTLP export, and log formatting. |
 
 ## Server role
 
-`server_role` controls which subsystems the process starts.
+`server_role` controls which subsystems the process starts. Use `"api"` to scale HTTP publishing
+and history independently of WebSocket capacity.
 
 ```toml
 server_role = "api"
@@ -51,6 +93,7 @@ For capacity and operational metrics see
 
 ## Capacity readiness
 
+Configure this when a load balancer should stop sending new connections to a full node.
 `GET /ready` runs the same dependency checks as `/up` and also reports `503 CAPACITY`
 when live native WebSocket connections reach the high watermark of `max_connections`.
 It stays unavailable until occupancy reaches the low watermark, avoiding repeated
@@ -77,7 +120,9 @@ on every probe. There is no adapter connection-pool size to tune.
 
 ## Memory-pressure connection admission
 
-Memory-pressure admission control is opt-in under `[http_api.accept_traffic]`:
+Memory-pressure admission control is opt-in under `[http_api.accept_traffic]`. Enable it when
+nodes run under a container memory limit and you would rather refuse new connections than be
+OOM-killed:
 
 ```toml
 [http_api.accept_traffic]
@@ -101,6 +146,10 @@ current state and rejected connection count.
 
 ## App manager
 
+The app manager stores app credentials, limits, and policy. The default `memory` driver reads
+apps from `[[app_manager.array.apps]]`; switch to a database driver when apps are created at
+runtime or shared by several nodes.
+
 | Section | Purpose |
 | --- | --- |
 | `[app_manager]` | Select app storage driver: `memory`, `mysql`, `pgsql` (aliases `postgres`, `postgresql`), `dynamodb`, `surrealdb` (alias `surreal`), or `scylladb` (alias `scylla`). `availability_check_interval_seconds` (default `15`, `0` disables) sets how often each node closes live connections of apps that were disabled (close code 4003) or deleted (4001). The `[app_manager.cache]` TTL adds to that delay. |
@@ -109,7 +158,8 @@ current state and rejected connection count.
 
 ## Channel namespaces
 
-Configure namespace rules per app under `policy.channels.channel_namespaces`
+Namespaces apply per-prefix channel rules within an app: naming patterns, client permissions,
+annotations, and history overrides. Configure namespace rules per app under `policy.channels.channel_namespaces`
 (`[[app_manager.array.apps.policy.channels.channel_namespaces]]` in TOML).
 For example, `private-chat:room-1` selects the namespace named `chat`: Sockudo
 strips the channel type prefix and uses the text before the first `:`. The first
@@ -165,7 +215,7 @@ namespace editor.
 
 ## Ably compatibility keys
 
-`App.key` and `App.secret` are always the implicit primary credential. When the
+Only relevant for binaries built with the `ably-compat` Cargo feature. `App.key` and `App.secret` are always the implicit primary credential. When the
 server is built with `ably-compat`, `[ably_compat]` can opt an app into additional
 Ably key names without creating sibling apps:
 
@@ -257,16 +307,26 @@ the same durable push store used by native push APIs.
 
 ## Runtime backends
 
-| Section | Purpose |
-| --- | --- |
-| `[adapter]` | Cross-node fanout. |
-| `[cache]` | Shared cache and coordination. |
-| `[queue]` | Webhook and push background work. |
-| `[rate_limiter]` | Request, connection, event, and push limits. |
+These sections choose the infrastructure Sockudo coordinates through. A single node works with the
+defaults; any multi-node deployment needs a shared adapter and cache.
+
+| Section | Default driver | Purpose |
+| --- | --- | --- |
+| `[adapter]` | `local` | Cross-node fanout. Use `redis`, `redis-cluster`, `nats`, or another broker for more than one node. |
+| `[cache]` | `memory` | Shared cache and coordination. Use `redis` or `redis-cluster` with any non-local adapter. |
+| `[queue]` | `redis` | Webhook and push background work. The compiled default expects Redis; set `memory` explicitly for a single development node. |
+| `[rate_limiter]` | `memory` | Request, connection, event, and push limits. Enabled by default; use a shared driver so limits apply across nodes. |
+
+<Callout type="warn" title="Single-node defaults">
+`adapter.driver = "local"` and `cache.driver = "memory"` keep all state inside one process. Running
+several nodes with these defaults silently splits channels and presence between nodes. Choose a
+shared adapter and cache before scaling out.
+</Callout>
 
 ## Rate limiter client IP
 
-`rate_limiter.api_rate_limit.trust_hops` and
+Set this when Sockudo runs behind a proxy or load balancer, otherwise every client shares the
+proxy's rate-limit bucket. `rate_limiter.api_rate_limit.trust_hops` and
 `rate_limiter.websocket_rate_limit.trust_hops` select the client's **one-based position from the
 right** of `X-Forwarded-For`, not a number of proxy machines. The Helm equivalents are
 `config.rateLimiter.apiTrustHops` and `wsTrustHops`.
@@ -297,7 +357,7 @@ proxied clients share the socket peer's bucket.
 
 ## OMQ adapter
 
-`adapter.driver = "omq"` enables brokerless horizontal fanout over OMQ PUB/SUB.
+Choose OMQ when you want horizontal fanout without operating a broker. `adapter.driver = "omq"` enables brokerless horizontal fanout over OMQ PUB/SUB.
 Each node binds one subscriber endpoint and connects its publisher to every
 other node's subscriber endpoint.
 
@@ -425,7 +485,8 @@ Sockudo nodes for local failover testing.
 
 ## Redis connections, Sentinel, and TLS
 
-`[database.redis]` configures the Redis connection used by the Redis adapter, cache, queue, rate limiter, and delta coordinator. Without Sentinel, `[database.redis.master_tls]` secures the direct Redis data connection for every consumer. When `sentinels` is non-empty, Sockudo connects through Redis Sentinel using a native Sentinel client (rather than a direct URL) and can secure both connection hops independently. Redis Cluster also reuses `master_tls` certificate material; the legacy `cluster.use_tls` switch continues to enable TLS with the default root store.
+Shared by every Redis-backed component. Change it to point at your Redis deployment, enable TLS,
+or use Sentinel for automatic failover. `[database.redis]` configures the Redis connection used by the Redis adapter, cache, queue, rate limiter, and delta coordinator. Without Sentinel, `[database.redis.master_tls]` secures the direct Redis data connection for every consumer. When `sentinels` is non-empty, Sockudo connects through Redis Sentinel using a native Sentinel client (rather than a direct URL) and can secure both connection hops independently. Redis Cluster also reuses `master_tls` certificate material; the legacy `cluster.use_tls` switch continues to enable TLS with the default root store.
 
 `[database.redis.cluster]` is the canonical Redis Cluster topology for every cluster component — adapter, cache, rate limiter, delta coordinator, and queue. When `queue.driver = "redis-cluster"` and `queue.redis_cluster.nodes` is not explicitly set, the queue inherits the `database.redis.cluster` seeds (normalized with the shared cluster username/password and TLS settings). Set `queue.redis_cluster.nodes` only to override the queue's seeds independently of the rest of the deployment.
 
@@ -438,7 +499,7 @@ Sockudo nodes for local failover testing.
 | `[database.redis.sentinel_tls]` | TLS for the client→Sentinel control connection. |
 | `[database.redis.master_tls]` | TLS for direct Redis, Redis Cluster, or the Sentinel-resolved master/replica data connection. |
 
-Each TLS block accepts `enabled`, `accept_invalid_certs` (skips verification; dangerous), `ca_path` (PEM CA for private CAs), and `client_cert_path` + `client_key_path` (PEM pair for mutual TLS / client-certificate auth).
+Each TLS block accepts `enabled`, `accept_invalid_certs` (skips verification; never enable it in production), `ca_path` (PEM CA for private CAs), and `client_cert_path` + `client_key_path` (PEM pair for mutual TLS / client-certificate auth).
 
 For a direct Redis deployment signed by a private CA, no Sentinel configuration is required:
 
@@ -482,21 +543,31 @@ client_cert_path = "/etc/sockudo/tls/client.pem"
 client_key_path = "/etc/sockudo/tls/client.key"
 ```
 
-> **Note:** All Redis consumers inherit the native Sentinel topology when they do not define a URL override. An adapter, cache, queue, or rate-limiter URL override selects its standalone path; `master_tls` still applies to that direct data connection.
+<Callout type="note" title="URL overrides bypass Sentinel">
+All Redis consumers inherit the native Sentinel topology when they do not define a URL override. An adapter, cache, queue, or rate-limiter URL override selects its standalone path; `master_tls` still applies to that direct data connection.
+</Callout>
 
 Each Sentinel-backed consumer polls Sentinel once per second with `SENTINEL GET-MASTER-ADDR-BY-NAME` and follows a failover without a restart: when Sentinel promotes a new primary, cached connections are dropped and rebuilt against it, and the adapter's Pub/Sub listener resubscribes. Recovery normally completes about a second after the promotion, so health probes such as `/up` recover on their own. If you restrict the Sentinel user with ACLs, allow that command alongside the ones used for primary resolution (`SENTINEL MASTERS` and `ROLE`). Primary changes are logged at `info` as `redis sentinel primary changed, reconnecting`.
 
 ## Protocol features
 
+These sections enable and bound the Protocol V2 feature set. Most are off by default or bounded
+conservatively; enable a feature here, then opt apps or channel namespaces into it through policy
+where required. Protocol V1 delivery is unaffected by every section in this table.
+
 | Section | Purpose |
 | --- | --- |
-| `[recovery]` | V2 replay buffers and resume behavior. |
+| `[connection_recovery]` | V2 replay buffers and resume behavior: `enabled` (default `false`), `buffer_ttl_seconds` (default `120`), and `max_buffer_size` (default `100`), which bounds both the per-channel hot buffer and one durable fallback replay. |
 | `[history]` | Durable channel history. |
 | `[versioned_messages]` | V2 mutable-message storage, version paging, and retention. Requires the `versioned-messages` Cargo feature (also enabled by `ai-transport`); without it the server logs a warning and disables this section. |
 | `[presence_history]` | Historical presence transitions and snapshots. |
 | `[annotations]` | V2 annotation publish/delete/summary surfaces. Requires the `versioned-messages` Cargo feature (also enabled by `ai-transport`); without it the server logs a warning and disables this section. |
-| `[delta]` | Delta algorithms, cache size, and conflation behavior. |
+| `[delta_compression]` | Delta algorithms, per-socket state limits, full-message interval, and conflation behavior. Enabled by default with the `fossil` algorithm. |
 | `[tag_filtering]` | V2 event/tag/JMESPath subscription predicates and tag projection controls. Predicate source, AST, tree, and projected-message memory are hard-bounded. |
+| `[idempotency]` | HTTP publish deduplication: `enabled` (default `true`), `ttl_seconds` (default `120`), `max_key_length` (default `128`). |
+| `[ephemeral]` | Allows `extras.ephemeral` messages that skip the recovery buffer and webhooks. Enabled by default. |
+| `[echo_control]` | Lets V2 connections opt out of receiving their own publishes: `enabled` and `default_echo_messages` (both default `true`). |
+| `[event_name_filtering]` | V2 subscription event-name filters: `enabled` (default `true`), `max_events_per_filter` (default `50`), `max_event_name_length` (default `200`). |
 | `[webhooks]` | Webhook delivery, batching, and retry. |
 | `[ai_transport]` | AI Transport validation and session-channel matching. |
 | `[ai_transport.rollup]` | Append rollup egress coalescing and orphan tracking. |
@@ -525,14 +596,21 @@ authority is unavailable; it does not fall back to a private per-process cache.
 
 ## Push
 
+Push requires the `push` Cargo feature plus a provider feature for each platform (`push-fcm`,
+`push-apns`, `push-webpush`, `push-hms`, `push-wns`). Configure storage, queue, workers, and
+per-provider switches in `[push]`. Provider credentials are stored through the
+[push credential API](/docs/reference/http-endpoints#credentials-and-templates) or supplied to
+workers through [provider environment variables](/docs/reference/environment-variables#push-providers);
+there is no `[push.providers.*]` table.
+
 | Section | Purpose |
 | --- | --- |
-| `[push]` | Enables push, async behavior, limits, status retention. |
-| `[push.providers.fcm]` | Firebase Cloud Messaging credentials. |
-| `[push.providers.apns]` | Apple Push Notification service credentials. |
-| `[push.providers.webpush]` | Web Push VAPID configuration. |
-| `[push.providers.hms]` | Huawei Mobile Services credentials. |
-| `[push.providers.wns]` | Windows Notification Service credentials. |
+| `[push]` | Storage and queue drivers, `fcm_enabled`, `apns_enabled`, `webpush_enabled`, `hms_enabled`, `wns_enabled`, optional `*_credential_ref` values, worker counts, fanout thresholds, backpressure, status retention, scheduler, repair, and cleanup. |
+| `[push.apns]` | APNs topic, endpoint, Live Activities, broadcast channels, connection pooling, and extra CA roots. |
+| `[push.retry]` | Provider delivery retry attempts, backoff, jitter, and `Retry-After` handling. |
+| `[push.circuit_breaker]` | Provider circuit-breaker failure threshold, cooldown, and half-open concurrency. |
+| `[push.default_quotas]` | Default per-app acceptance rate, daily delivery quota, fanout, and in-flight limits. |
+| `[push.payload_redaction]` | Redaction of payloads, template data, and provider overrides in logs. |
 | `[[push_rules]]` | Optional channel-publish to push-notification rules. |
 
 ## Capability tokens
@@ -746,9 +824,12 @@ metadata is inspected through `/apps/{appId}/push/deadLetters`. Cleanup is bound
 
 ## Observability
 
+Metrics are on by default; tracing export is opt-in. Change these sections to rename metrics, move
+the scrape listener, or ship telemetry to an OpenTelemetry collector.
+
 | Section | Purpose |
 | --- | --- |
-| `[metrics]` | Enables metrics and configures the Prometheus scrape endpoint. |
+| `[metrics]` | Enables metrics and configures the Prometheus scrape endpoint. Defaults: `enabled = true`, `host = "0.0.0.0"`, `port = 9601`. |
 | `[metrics.prometheus]` | Prometheus metric naming options. |
 | `[metrics.tcp_exporter]` | Optional metrics-rs TCP event exporter for live clients and sidecars. |
 | `[opentelemetry]` | Optional OTLP traces, metrics, logs, resource identity, batching, and propagation. |
@@ -809,6 +890,11 @@ Collector failures are fail-open: export uses bounded queues and does not change
 `/live`, or `/up`. Invalid static settings are still rejected during startup. Stable traces,
 metrics, and logs are supported; OpenTelemetry profiles are not.
 
+<Callout type="warn" title="The metrics listener is unauthenticated">
+With the defaults, `/metrics` is served on every interface at port `9601` without authentication.
+Bind `[metrics].host` to an internal interface or restrict the port with network policy.
+</Callout>
+
 ## Memory cache expiration
 
 The `memory` cache driver honors the TTL supplied by each write. `cache.memory.ttl`
@@ -826,7 +912,10 @@ entries with their remaining TTL, rounded up to whole seconds for Redis.
 
 ## Example production skeleton
 
-```toml
+A minimal multi-node starting point: shared Redis for fanout, cache, and queue, with metrics on
+the default port and durable push storage.
+
+```toml title="config.toml"
 host = "0.0.0.0"
 port = 6001
 debug = false
@@ -860,7 +949,7 @@ cleanup_interval_secs = 300
 
 ## Queue v2 reliability
 
-Queue v2 provides at-least-once delivery. Successful processors acknowledge a
+Tune `[queue.reliability]` to trade redelivery window against throughput. Queue v2 provides at-least-once delivery. Successful processors acknowledge a
 job; errors retry with bounded exponential backoff and jitter; exhausted jobs
 move to a dead-letter queue. Exactly-once execution is not promised, so handlers
 must remain idempotent. Redis, Redis Sentinel, and Redis Cluster additionally
@@ -1000,3 +1089,12 @@ duplicate callbacks must be minimized.
 SNS is producer-only. Configuring a consumer on SNS now fails instead of
 reporting a successful no-op. A requested backend that was not compiled into the
 binary also fails startup instead of silently falling back to memory.
+
+## Next steps
+
+<Cards>
+  <Card title="Environment variables" href="/docs/reference/environment-variables" description="Override these settings per environment and inject secrets." />
+  <Card title="Static configuration" href="/docs/deployment/static-configuration" description="Loading order, TOML versus JSON, and secret handling." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Choose adapters, caches, and queues for horizontal fanout." />
+  <Card title="Security" href="/docs/server/security" description="Harden auth, origins, rate limits, and operator endpoints." />
+</Cards>

@@ -4,19 +4,65 @@ description: Deploy Sockudo with production Helm values, safe probes, disruption
 icon: Boxes
 ---
 
+This guide deploys Sockudo to Kubernetes with the official Helm chart, then covers the settings
+that matter for long-lived connections: probes, drain timing, autoscaling, ingress, and node
+tuning. It is for platform teams running several replicas who want repeatable rollouts and
+failure-domain placement.
+
 Kubernetes is a good Sockudo platform when you need repeatable rollouts, failure-domain placement,
 secret injection, metrics discovery, and several replicas. It does not remove the state model:
 pods still need shared adapters and stores, and scale-down still disconnects their clients.
 
 ## Install the chart
 
-```bash
-helm upgrade --install sockudo oci://ghcr.io/sockudo/charts/sockudo \
-  --version 4.7.0 \
-  --namespace sockudo \
-  --create-namespace \
-  --values values-production.yaml
-```
+The chart is published as an OCI artifact at `oci://ghcr.io/sockudo/charts/sockudo`. The release
+pipeline packages it with the same version as the Sockudo release, so chart `5.2.0` deploys image
+`5.2.0` by default.
+
+<Steps>
+
+1. Create the namespace and the Secrets that the [production values](#production-values-example)
+   reference. Write each value to a file first so it never appears in shell history or a manifest:
+
+   ```bash
+   kubectl create namespace sockudo
+   kubectl create secret generic sockudo-app -n sockudo \
+     --from-file=default-app-id=./secrets/app-id \
+     --from-file=default-app-key=./secrets/app-key \
+     --from-file=default-app-secret=./secrets/app-secret
+   kubectl create secret generic sockudo-redis -n sockudo \
+     --from-file=redis-password=./secrets/redis-password
+   ```
+
+   `--from-file` stores the exact bytes, including a trailing newline. Create the files without
+   one, for example `openssl rand -hex 32 | tr -d '\n' > secrets/app-secret`.
+
+   Verify with `kubectl get secret sockudo-app -n sockudo -o jsonpath='{.data}' | jq 'keys'`, which
+   lists `default-app-id`, `default-app-key`, and `default-app-secret`.
+
+2. Save the [production values](#production-values-example) as `values-production.yaml` and adapt
+   hosts, Redis address, and limits.
+
+3. Install or upgrade the release:
+
+   ```bash
+   helm upgrade --install sockudo oci://ghcr.io/sockudo/charts/sockudo \
+     --version 5.2.0 \
+     --namespace sockudo \
+     --create-namespace \
+     --values values-production.yaml
+   ```
+
+4. Wait for the rollout:
+
+   ```bash
+   kubectl rollout status deploy/sockudo -n sockudo
+   ```
+
+   Expect `deployment "sockudo" successfully rolled out`. Then run the checks in
+   [Verify the deployed state](#verify-the-deployed-state).
+
+</Steps>
 
 Pin the chart and image version in GitOps or release automation. Do not deploy `latest`.
 
@@ -28,7 +74,7 @@ To work on the chart itself, install from a checkout instead: `helm upgrade --in
 The chart is published as an OCI artifact, so ArgoCD consumes it directly without cloning this
 repository:
 
-```yaml
+```yaml title="sockudo-application.yaml"
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -39,7 +85,7 @@ spec:
   source:
     repoURL: ghcr.io/sockudo/charts
     chart: sockudo
-    targetRevision: 4.7.0
+    targetRevision: 5.2.0
     helm:
       valuesObject:
         replicaCount: 3
@@ -75,7 +121,8 @@ config:
 
 The ConfigMap is then not rendered, and the `config` volume is backed by the Secret. Combining
 `config.existingSecret` with `configJson` fails the render rather than silently ignoring one of
-them.
+them. The `config.*` keys that the chart also emits as environment variables, such as the driver
+selections and `shutdownGracePeriod`, still apply and override the file.
 
 The content must be JSON: it is mounted as `config.json` and Sockudo selects its parser from the
 file extension, even though the annotated reference configuration is TOML.
@@ -88,7 +135,7 @@ This is the shape that pairs with a secret operator. With External Secrets Opera
 `ExternalSecret` pulls the config file out of the backing store and the chart mounts the Secret it
 produces:
 
-```yaml
+```yaml title="sockudo-config-externalsecret.yaml"
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -112,12 +159,20 @@ spec:
         key: SOCKUDO_CONFIG_FILE
 ```
 
+<Callout type="tip" title="Alternative: keep the file in Git with placeholders">
+Sockudo replaces `${VAR}` placeholders in the config file with environment values before parsing.
+A `configJson` that contains `"secret": "${WEBHOOK_APP_SECRET}"` stays safe to commit, and an
+`extraEnvFrom` Secret reference supplies the value. An unset variable without a `${VAR:-default}`
+fallback stops startup with an error that names it. See
+[environment placeholders](/docs/deployment/static-configuration#environment-placeholders-in-config-files).
+</Callout>
+
 ## Production values example
 
 The following is a regional three-pod baseline with one immutable app sourced from a Kubernetes
 Secret and Redis used for fanout, cache, queue, and rate limits:
 
-```yaml
+```yaml title="values-production.yaml"
 replicaCount: 3
 
 image:
@@ -125,12 +180,18 @@ image:
   tag: "5.2.0"
   pullPolicy: IfNotPresent
 
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 25%
+
 config:
   mode: production
   debug: false
   logOutputFormat: json
   rustLog: "info,sockudo=info"
-  shutdownGracePeriod: 30
+  shutdownGracePeriod: 40
   adapterDriver: redis
   appManagerDriver: memory
   cacheDriver: redis
@@ -160,12 +221,19 @@ redis:
   existingSecret: sockudo-redis
 
 extraEnv:
+  # Chart default allocator tuning; keep it, because setting extraEnv replaces the list.
+  - name: _RJEM_MALLOC_CONF
+    value: "background_thread:true,dirty_decay_ms:2000,muzzy_decay_ms:0,tcache_max:4096,abort_conf:true"
   - name: SOCKUDO_MAX_CONNECTIONS
     value: "50000"
   - name: ADAPTER_FALLBACK_TO_LOCAL
     value: "false"
   - name: SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS
     value: "https://app.example.com"
+  - name: INSTANCE_PROCESS_ID
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
 
 resources:
   requests:
@@ -235,21 +303,32 @@ ingress:
         - ws.example.com
 ```
 
+What the less obvious values do:
+
+- `defaultApp.existingSecret` reads the keys `default-app-id`, `default-app-key`, and
+  `default-app-secret`. If the ID or key is missing, the app is not registered.
+- `redis.existingSecret` must contain `redis-password`; `redis-username` is optional.
+- `defaultApp.maxConnections` becomes `SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS`, the per-app quota.
+  `SOCKUDO_MAX_CONNECTIONS` is the separate per-pod cap across all apps.
+- `ADAPTER_FALLBACK_TO_LOCAL=false` makes a pod that cannot reach Redis at startup fail instead of
+  running as an isolated node. The default is `true`.
+- `INSTANCE_PROCESS_ID` from the pod name gives each pod a unique, readable identity. The chart sets
+  the same variable itself when `cluster.enabled` is true; do not define it twice in that case.
+- `strategy` surges new pods before removing old ones; see [Rollouts and disruptions](#rollouts-and-disruptions).
+
+<Callout type="warn" title="extraEnv replaces the chart default list">
+Helm replaces lists instead of merging them. The chart's default `extraEnv` sets
+`_RJEM_MALLOC_CONF` to tune the jemalloc allocator; any `extraEnv` you provide drops it unless you
+copy it in, as the example does.
+</Callout>
+
 Adapt the topology label selector when the release name or chart labels differ. If application
 records must change dynamically, select a durable app manager instead of `memory` and configure its
 database credentials from a Secret.
 
-Create the one-app Secret without placing values in the shell history or a checked-in manifest.
-The required keys are:
-
-```text
-default-app-id
-default-app-key
-default-app-secret
-```
-
 For advanced nested configuration, use the chart's `configJson` value or mount your own static
-file. Keep secret values out of `configJson`; combine it with `extraEnvFrom` or file-backed Secrets.
+file. Keep secret values out of `configJson`; combine it with `extraEnvFrom`, `${VAR}`
+placeholders, or file-backed Secrets.
 
 ## Probes
 
@@ -260,13 +339,24 @@ Use different endpoints for different decisions:
 | Startup | `/live` | The process has started. |
 | Liveness | `/live` | The process runtime is alive. |
 | Readiness | `/up` or `/up/<app-id>` | Required apps and shared dependencies are available. |
+| Capacity-aware readiness | `/ready` | Same dependency checks as `/up`, plus `503 CAPACITY` when the pod nears `SOCKUDO_MAX_CONNECTIONS`. |
 | New-connection admission | `/accept-traffic` | The pod is not draining or shedding new connections under memory pressure. |
 
+<Callout type="warn" title="Do not use /up for liveness">
 Do not use dependency-aware `/up` as liveness. Restarting every pod because Redis is slow creates a
 reconnect storm and does not repair Redis.
+</Callout>
+
+`/ready` goes unavailable at the high watermark (default 95% of `SOCKUDO_MAX_CONNECTIONS`) and
+recovers at the low watermark (default 85%), so a full pod stops receiving new clients without
+flapping. Tune it with `config.httpApi.readiness.highWatermark` and `lowWatermark`, which the chart
+writes to its generated ConfigMap; with `configJson` or `config.existingSecret`, set
+`http_api.readiness` in your file instead. With a zero
+connection limit the capacity gate is disabled. Use `/ready` for readiness when you want full pods
+taken out of rotation; keep `/up` when rollout health must succeed even on a full pod.
 
 Set probe timeout below its period and above normal dependency-check latency. Sockudo's
-`health_check_timeout_ms` bounds each dependency check separately.
+`health_check_timeout_ms` (default `2000`) bounds each dependency check separately.
 
 ## Resources and connection admission
 
@@ -296,6 +386,10 @@ When process RSS reaches the configured fraction, the pod rejects only new nativ
 WebSocket connections with `503`/retry guidance while established sessions continue. It resumes
 admission after a later sample falls below the threshold. The sampler is independent of metrics
 scrapes and fails open if Linux RSS or cgroup data is unavailable.
+
+For example (illustrative): with `limits.memory: 2Gi` and `memoryThreshold: 0.9`, new connections
+are refused once RSS reaches about 1.8 GiB, leaving roughly 200 MiB for established sessions to
+absorb a fanout burst before the OOM killer would disconnect all of them.
 
 Keep `/up` as Kubernetes readiness so dependency failures remain visible. If the ingress or external
 load balancer supports a separate backend-admission or network-watcher probe, point that probe at
@@ -327,6 +421,9 @@ autoscaling:
           periodSeconds: 120
 ```
 
+When `autoscaling.enabled` is true, the chart omits `replicas` from the Deployment and the HPA owns
+the replica count.
+
 CPU and memory are fallback signals, not a complete realtime scaling policy. A stronger setup also
 uses active connections per pod, connection admission rejections, event-loop or fanout latency,
 adapter backlog, and reconnect rate through an external/custom metrics adapter.
@@ -349,6 +446,13 @@ autoscaling:
           averageValue: "40000"
 ```
 
+An `External` metric requires a metrics adapter, such as Prometheus Adapter or KEDA, that exposes
+`sockudo_connected` to the Kubernetes external metrics API.
+
+For example (illustrative): with `SOCKUDO_MAX_CONNECTIONS=50000`, a target of `40000` adds pods at
+80% connection utilization, before `/ready` reports `CAPACITY` at 47,500 and well before admission
+rejects at 50,000.
+
 Setting it **replaces** the CPU and memory metrics generated from
 `targetCPUUtilizationPercentage` and `targetMemoryUtilizationPercentage` rather than adding to
 them. That is deliberate: an HPA acts on the highest recommendation from any metric, so leaving
@@ -369,15 +473,51 @@ Set:
 - a rollout `maxUnavailable` compatible with the PDB and remaining socket capacity
 - load-balancer deregistration or endpoint propagation time inside the drain budget
 
-On SIGTERM, Sockudo rejects new WebSocket upgrades, closes existing connections immediately
-with code 4200 so clients reconnect right away, and keeps the listener open for
-`SHUTDOWN_GRACE_PERIOD` seconds while `/ready` returns 503 `DRAINING`. Set
-`SHUTDOWN_GRACE_PERIOD` above the readiness probe's
+On SIGTERM, Sockudo rejects new WebSocket upgrades, closes existing connections with code 4200 so
+clients reconnect right away, and keeps the listener open for `SHUTDOWN_GRACE_PERIOD` seconds
+while `/up` and `/ready` return 503 `DRAINING`:
+
+```mermaid
+sequenceDiagram
+  participant K as Kubelet
+  participant P as Old pod
+  participant L as Load balancer
+  participant C as Clients
+  participant N as Other pods
+  K->>P: SIGTERM
+  P-->>L: /ready returns 503 DRAINING
+  Note over P,L: wait shutdown_close_delay_ms
+  P->>C: Close frame 4200
+  C->>L: Reconnect
+  L->>N: Route to ready pods
+  Note over K,P: listener open until grace ends, then webhook and queue drain
+```
+
+By default the close happens immediately and to every connection at once.
+`SHUTDOWN_CLOSE_DELAY_MS` waits first, so the load balancer can observe the 503 before anyone
+reconnects, and `SHUTDOWN_CLOSE_SPREAD_MS` spreads the closes over a window so the remaining pods
+are not hit by one simultaneous reconnect wave. Delay plus spread must fit inside
+`SHUTDOWN_GRACE_PERIOD`; set them through `extraEnv`. See
+[rolling deploys](/docs/server/scaling#rolling-deploys) for the full sequence.
+
+Set `SHUTDOWN_GRACE_PERIOD` (chart value `config.shutdownGracePeriod`) above the readiness probe's
 `periodSeconds × failureThreshold` plus endpoint propagation time, and keep
 `terminationGracePeriodSeconds` above `SHUTDOWN_GRACE_PERIOD` plus twice
 `QUEUE_SHUTDOWN_TIMEOUT_MS / 1000`, with additional time for connection and backend teardown.
 The two budgets cover [webhook draining](/docs/server/webhooks#shutdown-delivery) and queue worker
 shutdown. An early SIGKILL can lose buffered lifecycle events.
+
+For example (illustrative), with the production values above:
+
+```text
+readiness detection   = periodSeconds 10 × failureThreshold 3        = 30 s
+SHUTDOWN_GRACE_PERIOD > 30 s + ~10 s endpoint propagation           → 40 s
+drain budget          = 40 s + 2 × (QUEUE_SHUTDOWN_TIMEOUT_MS 30000 / 1000) = 100 s
+terminationGracePeriodSeconds = 100 s + 20 s teardown margin        → 120 s
+```
+
+The chart defaults (`shutdownGracePeriod: 10`, `terminationGracePeriodSeconds: 30`) are sized for
+development; raise both for production.
 
 `strategy` is passed through to the Deployment. Left unset, Kubernetes applies its default of
 `maxUnavailable: 25%` / `maxSurge: 25%`, which takes a quarter of the connection capacity offline
@@ -392,8 +532,10 @@ strategy:
     maxSurge: 25%
 ```
 
-Note that a PodDisruptionBudget does not cover this. A PDB governs the eviction API - node drains
-and upgrades - not Deployment rollouts.
+<Callout type="note" title="A PDB does not protect rollouts">
+A PodDisruptionBudget governs the eviction API - node drains and upgrades - not Deployment
+rollouts. Rollout safety comes from `strategy`.
+</Callout>
 
 During a rollout, watch connection count by pod. Kubernetes considers replica count, not how many
 sockets each replica owns. One terminating pod may hold a disproportionate share after a long
@@ -423,7 +565,8 @@ Confirm all layers:
 
 The ingress annotation example above is specific to ingress-nginx. Use the equivalent settings for
 AWS Load Balancer Controller, Google Cloud Load Balancing, Azure Application Gateway, Traefik,
-Envoy, HAProxy, or a service mesh.
+Envoy, HAProxy, or a service mesh. The chart also has a separate `wsIngress` block for controllers
+that need different annotations for WebSocket traffic.
 
 Sticky sessions are not required for basic pub/sub with a shared adapter. They can reduce
 reconnect-to-new-node churn, but must not substitute for shared state.
@@ -461,7 +604,7 @@ podSecurityContext:
 
 See Kubernetes' [sysctl documentation](https://kubernetes.io/docs/tasks/administer-cluster/sysctl-cluster/)
 and the provider-specific node-pool guide before enabling it. Do not grant a privileged container
-or broad `net.*` permission just to set one value.
+or broad `net.*` permission to set one value.
 
 Node-level sysctl configuration and pod network namespaces are distinct. Verify the effective value
 inside the scheduled pod:
@@ -492,15 +635,56 @@ Inbound WebSockets do not consume a Sockudo pod's local ephemeral port range. Av
 
 ## Verify the deployed state
 
-```bash
-helm get values sockudo -n sockudo
-kubectl get pods -n sockudo -o wide
-kubectl get pdb -n sockudo
-kubectl exec -n sockudo deploy/sockudo -- sh -c 'ulimit -n'
-kubectl port-forward -n sockudo svc/sockudo 6001:6001
-curl -fsS http://127.0.0.1:6001/live
-curl -fsS http://127.0.0.1:6001/up/production
-```
+<Steps>
 
-Then run a node drain and a rolling restart under load. A manifest that renders successfully is not
-yet a tested realtime deployment.
+1. Confirm the values Helm applied and where the pods landed:
+
+   ```bash
+   helm get values sockudo -n sockudo
+   kubectl get pods -n sockudo -o wide
+   kubectl get pdb -n sockudo
+   ```
+
+   Every pod is `Running` and `READY 1/1`, spread across zones, and the PDB shows
+   `MIN AVAILABLE 2`.
+
+2. Check the file limit inside a pod:
+
+   ```bash
+   kubectl exec -n sockudo deploy/sockudo -- sh -c 'ulimit -n'
+   ```
+
+   The value must exceed `SOCKUDO_MAX_CONNECTIONS` plus reserve.
+
+3. Check health through the Service:
+
+   ```bash
+   kubectl port-forward -n sockudo svc/sockudo 6001:6001
+   curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:6001/live
+   curl -fsS http://127.0.0.1:6001/up/production
+   ```
+
+   `/live` prints `200` and `/up/production` prints `OK`.
+
+4. Check metrics through the metrics Service:
+
+   ```bash
+   kubectl port-forward -n sockudo svc/sockudo-metrics 9601:9601
+   curl -fsS http://127.0.0.1:9601/metrics | grep '^sockudo_connected'
+   ```
+
+   The output contains `sockudo_connected` samples.
+
+5. Run a node drain and a rolling restart under load, and watch reconnects and recovery. A manifest
+   that renders successfully is not yet a tested realtime deployment.
+
+</Steps>
+
+## Next steps
+
+<Cards>
+  <Card title="Cloud platforms" href="/docs/deployment/cloud-platforms" description="Node-pool tuning on EKS, GKE, and AKS, and managed container limits." />
+  <Card title="Capacity planning" href="/docs/deployment/capacity-planning" description="Measure per-pod limits before setting SOCKUDO_MAX_CONNECTIONS and HPA targets." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Rolling deploy sequence, duplicate delivery, and recovery across nodes." />
+  <Card title="Observability" href="/docs/server/observability" description="Metrics, dashboards, and alerts for the deployed cluster." />
+</Cards>

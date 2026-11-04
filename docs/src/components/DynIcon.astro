@@ -1,0 +1,13 @@
+---
+import * as Icons from '@lucide/astro';
+
+interface Props {
+  name?: string;
+  class?: string;
+  size?: number;
+}
+const { name, class: className, size = 16 } = Astro.props;
+const Icon = name ? ((Icons as Record<string, any>)[name] ?? Icons.Circle) : Icons.Circle;
+---
+
+<Icon class={className} size={size} />

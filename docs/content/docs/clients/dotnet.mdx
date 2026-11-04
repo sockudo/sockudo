@@ -4,11 +4,15 @@ description: Use Sockudo.Client for .NET realtime applications with Protocol V2,
 icon: MonitorSmartphone
 ---
 
-`Sockudo.Client` is the official .NET realtime SDK. It defaults to Protocol V2 and supports V1 compatibility, public, private, presence, encrypted channels, recovery, filters, MessagePack, Protobuf, and delta reconstruction.
+`Sockudo.Client` is the official .NET realtime SDK for Sockudo. It keeps the Pusher
+subscribe/bind model, defaults to Protocol V2, and still supports Protocol V1 compatibility. It
+covers public, private, presence, and encrypted channels, capability tokens, connection recovery,
+tag filters, JSON/MessagePack/Protobuf wire formats, Fossil and Xdelta3/VCDIFF delta
+reconstruction, mutable messages, and push proxy helpers.
 
-The current monorepo package targets .NET 10. Choose
-[`SockudoServer`](/docs/server-sdks/dotnet) instead when the process needs app
-credentials to publish or authorize clients over HTTP.
+The current package (`2.2.0`) targets .NET 10 (`net10.0`). It is the realtime client: it holds only
+the public app key. Choose [`SockudoServer`](/docs/server-sdks/dotnet) instead when the process
+needs app credentials to publish or authorize clients over HTTP.
 
 ## Install
 
@@ -20,100 +24,243 @@ dotnet add package Sockudo.Client --version 2.2.0
 
 Or add it directly to your project file:
 
-```xml
+```xml title="MyApp.csproj"
 <PackageReference Include="Sockudo.Client" Version="2.2.0" />
 ```
 
+For local monorepo development, reference
+`client-sdks/sockudo-dotnet/src/Sockudo.Client/Sockudo.Client.csproj` directly.
+
 ## Connect
 
-```csharp
+A `SockudoClient` owns one WebSocket connection to Sockudo. Channels are named streams multiplexed
+over that connection: you subscribe to a channel, then bind callbacks to the event names published
+on it. `SockudoOptions` is a record whose only required argument is `Cluster`; pass everything else
+as named arguments.
+
+```csharp title="Program.cs"
 using Sockudo.Client;
 
-var client = new SockudoClient(
+await using var client = new SockudoClient(
     "app-key",
-    new SockudoOptions
-    {
-        Cluster = "local",
-        ForceTls = false,
-        WsHost = "127.0.0.1",
-        WsPort = 6001,
-        ProtocolVersion = 2,
-        ConnectionRecovery = true,
-    }
+    new SockudoOptions(
+        Cluster: "local",
+        ForceTls: false,
+        WsHost: "127.0.0.1",
+        WsPort: 6001,
+        ConnectionRecovery: true
+    )
 );
+
+client.Bind("state_change", (value, _) =>
+{
+    var change = (StateChange)value!;
+    Console.WriteLine($"connection: {change.Previous} -> {change.Current}");
+});
 
 var channel = client.Subscribe("public-updates");
 channel.Bind("price-updated", (data, meta) => Console.WriteLine(data));
 
 await client.ConnectAsync();
+await Task.Delay(TimeSpan.FromSeconds(30));
+await client.DisconnectAsync();
 ```
 
-For production, use the public ingress or load-balancer hostname with
-`ForceTls = true`. Reuse one client for the application lifetime rather than
-opening a WebSocket per operation.
+When the server accepts the connection, the output starts with:
 
-## Connection lifecycle
+```text
+connection: initialized -> connecting
+connection: connecting -> connected
+```
+
+<Callout type="warn" title="TLS is on unless you turn it off">
+`ForceTls` defaults to `null`, which the client treats as TLS. A plain `ws://` local server needs
+`ForceTls: false`. `WsHost` defaults to `ws-<cluster>.sockudo.io`, so self-hosted deployments must
+set `WsHost` to their own ingress.
+</Callout>
+
+For production, use the public ingress or load-balancer hostname with `ForceTls: true`. Reuse one
+client for the application lifetime rather than opening a WebSocket per operation.
+`SockudoClient` implements `IAsyncDisposable`; disposing it disconnects and releases its
+`HttpClient`.
+
+### Common options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `Cluster` | `string` | required | Cluster name. Must be non-empty; also used to derive default hosts. |
+| `ProtocolVersion` | `int` | `2` | `2` is Protocol V2. Any value below `2` uses Protocol V1 (`pusher:` prefixes). |
+| `ForceTls` | `bool?` | `null` | Anything other than `false` connects over `wss`. |
+| `WsHost` | `string?` | `null` | WebSocket host. Falls back to `ws-<cluster>.sockudo.io`. |
+| `WsPort` / `WssPort` | `int` | `80` / `443` | Ports for `ws` and `wss`. |
+| `EnabledTransports` | `IReadOnlyList<SockudoTransport>?` | `null` | Restrict to `SockudoTransport.Ws` and/or `SockudoTransport.Wss`. |
+| `ConnectionRecovery` | `bool` | `false` | Track stream positions and send a V2 resume after reconnect. |
+| `WireFormat` | `SockudoWireFormat` | `Json` | V2 wire format: `Json`, `MessagePack`, or `Protobuf`. |
+| `EchoMessages` | `bool` | `true` | V2: whether the server echoes this connection's own publishes back to it. |
+| `MessageDeduplication` | `bool` | `true` | Drop repeated `message_id` values. |
+| `MessageDeduplicationCapacity` | `int` | `1000` | Size of the deduplication window. |
+| `ActivityTimeout` | `TimeSpan?` | 120 s | V1 idle time before the client sends a ping. |
+| `UnavailableTimeout` | `TimeSpan?` | 10 s | Time without a connection before the state becomes `unavailable`. |
+| `MaxReconnectAttempts` | `int?` | `6` | Reconnect attempts before giving up. `null` is unlimited. |
+| `MaxReconnectGapInSeconds` | `double` | `120.0` | Upper bound on the backoff delay. |
+| `ReconnectJitter` | `double` | `0.0` | Fraction of each backoff delay to randomize, clamped to 0–1. |
+| `AppendRollupWindow` | `int?` | `null` | V2 AI append rollup window: `0`, `20`, `40`, `100`, or `500`. |
+
+## Subscribe and bind events
+
+`Subscribe` returns the channel immediately and sends the subscription once the socket is
+connected. `Bind` returns a string token you can pass to `Unbind` to remove exactly that handler.
+
+```csharp title="Orders.cs"
+var orders = client.Subscribe("orders");
+
+orders.Bind("sockudo:subscription_succeeded", (_, _) =>
+    Console.WriteLine("orders is live"));
+orders.Bind("sockudo:subscription_error", (error, _) =>
+    Console.Error.WriteLine($"orders subscription failed: {error}"));
+
+var orderToken = orders.Bind("order.created", (data, meta) =>
+    Console.WriteLine($"order: {data} from user {meta?.UserId}"));
+
+// Receive every event on the channel, for logging or reducers.
+orders.BindGlobal((eventName, data) => Console.WriteLine($"{eventName} {data}"));
+```
+
+A connected socket can still have a pending or rejected channel. Wait for the subscription-success
+event before treating channel data as live. Clean up bindings and subscriptions with `Unbind`,
+`UnsubscribeAsync`, and `DisconnectAsync`:
 
 ```csharp
-var stateToken = client.Bind("state_change", (value, _) =>
-{
-    var change = (StateChange)value!;
-    Console.WriteLine($"connection: {change.Previous} -> {change.Current}");
-});
-client.Bind("connected", (_, _) =>
-    Console.WriteLine($"socket id: {client.SocketId}"));
-client.Bind("connecting", (_, _) =>
-    Console.WriteLine("connecting"));
-client.Bind("reconnecting", (_, _) =>
-    Console.WriteLine("reconnecting"));
-client.Bind("error", (error, _) =>
-    Console.Error.WriteLine(error));
+orders.Unbind("order.created", orderToken);
+await client.UnsubscribeAsync("orders");
+```
+
+<Callout type="note" title="Event prefixes follow the protocol">
+System events use the `sockudo:` prefix on Protocol V2 (the default) and `pusher:` on Protocol V1.
+With `ProtocolVersion: 1`, bind `pusher:subscription_succeeded`, `pusher:member_added`, and so on.
+</Callout>
+
+Client events (`client-*`) can be sent with `channel.TriggerAsync("client-typing", data)` on
+authorized channels.
+
+## Private and presence channels
+
+Anyone with your public app key can open a socket, so Sockudo will not let a client join a
+`private-*`, `presence-*`, or `private-encrypted-*` channel on its own say-so. Instead, the SDK asks
+your backend to sign the subscription. Your backend checks the caller's session, decides whether
+that user may join that exact channel, and returns a signature made with the app secret. Sockudo
+verifies the signature before admitting the socket.
+
+The default authorizer sends a form-encoded `POST` with `socket_id` and `channel_name` to
+`ChannelAuthorization.Endpoint` (default `/sockudo/auth`) and expects JSON with `auth`, plus
+`channel_data` for presence and `shared_secret` for encrypted channels. Use an absolute URL unless
+you supply an `HttpClient` with a `BaseAddress`.
+
+```csharp title="Program.cs"
+var client = new SockudoClient(
+    "app-key",
+    new SockudoOptions(
+        Cluster: "local",
+        WsHost: "127.0.0.1",
+        WsPort: 6001,
+        ForceTls: false,
+        ChannelAuthorization: new ChannelAuthorizationOptions(
+            Endpoint: "https://api.example.com/sockudo/auth",
+            HeadersProvider: () => new Dictionary<string, string>
+            {
+                ["Authorization"] = $"Bearer {session.AccessToken}",
+            }
+        )
+    )
+);
+
+var channel = client.Subscribe("private-orders");
+channel.Bind("order-placed", (data, meta) => Console.WriteLine(data));
 
 await client.ConnectAsync();
 ```
 
-A connected socket can still have a pending or rejected channel. Wait for the
-subscription-success event before treating channel data as live. Clean up
-bindings and subscriptions with `Unbind`, `UnsubscribeAsync`, and
-`DisconnectAsync`:
+To produce the signature yourself, supply `CustomHandler`, which receives a
+`ChannelAuthorizationRequest` and returns `ChannelAuthorizationData`:
 
 ```csharp
-channel.Unbind("price-updated");
-client.Unbind("state_change", stateToken);
-await client.UnsubscribeAsync("public-updates");
-await client.DisconnectAsync();
+ChannelAuthorization: new ChannelAuthorizationOptions(
+    CustomHandler: async request =>
+    {
+        var signed = await backend.SignChannelAsync(request.SocketId, request.ChannelName);
+        return new ChannelAuthorizationData(
+            Auth: signed.Auth,
+            ChannelData: signed.ChannelData
+        );
+    }
+)
 ```
 
-Unexpected disconnects use quadratic backoff (0s, 1s, 4s, 9s) capped at 120
-seconds and emit `ConnectionState.Reconnecting`. Set `MaxReconnectAttempts`
-(default `6`, `null` for unlimited) and `MaxReconnectGapInSeconds` in
-`SockudoOptions`. Protocol retry and TLS-upgrade close codes reconnect
-immediately.
+<Callout type="warn" title="Authorize the exact channel">
+The endpoint authenticates the caller, authorizes the exact requested channel, and signs with the
+app secret. Derive presence identity from the backend session; never trust a user ID supplied by
+the client.
+</Callout>
 
-## Auth
+### Presence
+
+Subscribing to a `presence-*` name returns a `PresenceChannel`. Its `Members` collection
+(`Count`, `MyId`, `Me`, `Member(id)`) is filled from the subscription-success payload and kept
+current as members join, leave, or update.
+
+```csharp title="Lobby.cs"
+var presence = (PresenceChannel)client.Subscribe("presence-lobby");
+
+presence.Bind("sockudo:subscription_succeeded", (_, _) =>
+    Console.WriteLine($"members: {presence.Members.Count}"));
+presence.Bind("sockudo:member_added", (member, _) =>
+    Console.WriteLine($"joined: {member}"));
+presence.Bind("sockudo:member_removed", (member, _) =>
+    Console.WriteLine($"left: {member}"));
+presence.Bind("sockudo:presence_update", (member, _) =>
+    Console.WriteLine($"updated: {member}"));
+
+await presence.UpdateAsync(new Dictionary<string, object?>
+{
+    ["status"] = "editing",
+});
+```
+
+Protocol V2 presence data can change without a leave/rejoin cycle. `UpdateAsync` throws on
+Protocol V1.
+
+### User sign-in
+
+Configure `UserAuthenticationOptions` (default endpoint `/sockudo/user-auth`, expecting `auth` and
+`user_data`) and sign in after connecting when the application uses user-targeted events or
+watchlists:
 
 ```csharp
 var client = new SockudoClient(
     "app-key",
-    new SockudoOptions
-    {
-        Cluster = "local",
-        WsHost = "127.0.0.1",
-        WsPort = 6001,
-        ChannelAuthorization = new ChannelAuthorizationOptions(
-            Endpoint: "https://api.example.com/sockudo/auth"
-        ),
-    }
+    new SockudoOptions(
+        Cluster: "local",
+        WsHost: "127.0.0.1",
+        WsPort: 6001,
+        ForceTls: false,
+        UserAuthentication: new UserAuthenticationOptions(
+            Endpoint: "https://api.example.com/sockudo/user-auth"
+        )
+    )
 );
+
+await client.ConnectAsync();
+await client.User.SignInAsync();
 ```
 
-The endpoint authenticates the caller, authorizes the exact requested channel,
-and signs with the app secret. Derive presence identity from the backend
-session; never trust a user ID supplied by the client.
+Bind user events with `client.User.Bind(...)` and watchlist events with `client.Watchlist.Bind(...)`.
 
-Protocol V2 can use scoped capability tokens with refresh:
+### Capability tokens
 
-```csharp
+Protocol V2 connections can carry a scoped capability token in the initial WebSocket URL. Supply a
+static `Token`, an async `TokenProvider`, or both:
+
+```csharp title="Program.cs"
 var client = new SockudoClient(
     "app-key",
     new SockudoOptions(
@@ -126,43 +273,84 @@ var client = new SockudoClient(
         )
     )
 );
-```
 
-JWT expiry metadata enables proactive refresh. Token expiration and revocation
-are also exposed as typed errors.
-Capability-token options require Protocol V2; V1 configuration fails during
-client construction rather than opening an unauthenticated socket.
-
-## Presence
-
-```csharp
-var channel = client.Subscribe("presence-lobby");
-
-channel.Bind("sockudo:subscription_succeeded", (data, meta) =>
-    Console.WriteLine($"members: {data}"));
-channel.Bind("sockudo:member_added", (data, meta) =>
-    Console.WriteLine($"joined: {data}"));
-channel.Bind("sockudo:member_removed", (data, meta) =>
-    Console.WriteLine($"left: {data}"));
-```
-
-Protocol V2 presence data can change without a leave/rejoin:
-
-```csharp
-var presence = (PresenceChannel)channel;
-presence.Bind("sockudo:presence_update", (member, _) =>
-    Console.WriteLine(member));
-
-await presence.UpdateAsync(new Dictionary<string, object?>
+client.Bind("sockudo:auth_success", (data, _) => Console.WriteLine(data));
+client.Bind("error", (error, _) =>
 {
-    ["status"] = "editing",
+    if (error is TokenExpiredException or TokenRevokedException)
+    {
+        Console.WriteLine(error);
+    }
 });
+
+await client.ConnectAsync();
 ```
 
-## Filters
+- When `TokenProvider` returns a JWT with `exp`, the SDK parses `iat`/`exp` without validating the
+  signature and schedules a `sockudo:auth` refresh at 80% of the token lifetime. If `iat` is
+  missing, the schedule is based on the current time and `exp`.
+- Opaque tokens, unparsable tokens, and static `Token` values without a provider are
+  reactive/manual only. Call `client.RefreshAuthAsync()` to push a fresh token yourself.
+- On `sockudo:token_expired` with code `40142`, the SDK calls `TokenProvider` and sends a refresh
+  frame. Without a provider it raises `TokenExpiredException` on `error`.
+- Code `40160` is surfaced as `TokenRevokedException` with no in-place retry.
+
+<Callout type="warn" title="Tokens require Protocol V2">
+Configuring `TokenAuthentication` with a protocol version below `2` throws `UnsupportedFeature`
+during client construction rather than opening an unauthenticated socket.
+</Callout>
+
+## Protocol V2 features
+
+Protocol V2 is the default in this SDK. It keeps the same channel model but attaches continuity
+metadata (`message_id`, `serial`, `stream_id`) to broadcasts and unlocks server-side filtering,
+deltas, rewind, and mutable messages. See [Protocol V2](/docs/clients/protocol-v2) for the
+wire-level contract.
+
+### Recovery and rewind
+
+With `ConnectionRecovery: true`, the client records the latest position for each channel and
+sends `sockudo:resume` after reconnecting. Rewind asks the server to replay recent history at
+subscribe time, by count (`new SubscriptionRewind.Count(n)`) or by age
+(`new SubscriptionRewind.Seconds(n)`).
+
+```csharp title="Market.cs"
+var market = client.Subscribe(
+    "market:btc",
+    new SubscriptionOptions(Rewind: new SubscriptionRewind.Seconds(30))
+);
+
+market.Bind("sockudo:rewind_complete", (data, _) => Console.WriteLine(data));
+client.Bind("sockudo:resume_success", (data, _) => Console.WriteLine(data));
+client.Bind("sockudo:resume_failed", (data, _) =>
+    Console.WriteLine($"reload authoritative state: {data}"));
+```
+
+On `sockudo:resume_failed`, the SDK drops the stored position and delta state for that channel and
+resubscribes it, but your derived state may have a gap. Discard it and load a fresh snapshot.
+
+For gap-free late-join backfills, successful subscriptions expose `channel.AttachSerial` when the
+server includes `attach_serial`, and channel history accepts `UntilAttach`:
 
 ```csharp
-var channel = client.Subscribe(
+var history = await market.ChannelHistoryAsync(
+    new ChannelHistoryParams(Limit: 100, UntilAttach: true)
+);
+```
+
+`ChannelHistoryAsync`, `GetMessageAsync`, and `GetMessageVersionsAsync` call your
+`VersionedMessages.Endpoint` proxy.
+
+### Filters
+
+Tag filters run on the server, so non-matching messages never reach the client. Build them with
+`Filter` (`Eq`, `Neq`, `Inside`, `NotIn`, `Exists`, `NotExists`, `StartsWith`, `EndsWith`,
+`Contains`, `Gt`, `Gte`, `Lt`, `Lte`, `And`, `Or`, `Not`). Event-name lists and a bounded JMESPath
+`Expression` can be combined with tags; every supplied component must match. A plain string
+converts to a `SubscriptionExpression`.
+
+```csharp title="Prices.cs"
+var prices = client.Subscribe(
     "price:btc",
     new SubscriptionOptions(
         Filter: Filter.And(
@@ -175,8 +363,10 @@ var channel = client.Subscribe(
 );
 ```
 
-Combine filters with delta compression and bounded rewind for high-volume
-state feeds:
+### Delta compression
+
+Deltas shrink large, repetitive payloads by sending only the change against the previous message.
+Combine them with filters and bounded rewind for high-volume state feeds:
 
 ```csharp
 var orderBook = client.Subscribe(
@@ -189,17 +379,71 @@ var orderBook = client.Subscribe(
         Rewind: new SubscriptionRewind.Seconds(30)
     )
 );
-
-client.Bind("sockudo:resume_failed", (data, _) =>
-    Console.WriteLine($"reload authoritative state: {data}"));
+orderBook.Bind("snapshot", (data, meta) => Console.WriteLine(data));
 ```
 
-On a failed resume or missing delta base, discard derived state and load a
-fresh snapshot.
+Set `DeltaCompression: new DeltaOptions(...)` on `SockudoOptions` for `OnStats` and `OnError`
+callbacks, and read totals with `client.GetDeltaStats()`. On a missing delta base, discard derived
+state and load a fresh snapshot. See [Filters and delta compression](/docs/clients/filters-delta).
 
-## Presence history proxy
+### Mutable messages
+
+Protocol V2 mutable messages arrive as `sockudo:message.update`, `sockudo:message.delete`, and
+`sockudo:message.append`. An update replaces local content with the full payload, a delete is the
+latest visible version and may carry `null` data, and an append concatenates onto the current
+string. Apply them in serial order:
+
+```csharp title="Chat.cs"
+MutableMessageState? state = null;
+
+var chat = client.Subscribe("chat:room-1");
+chat.BindGlobal((eventName, data) =>
+{
+    if (data is not SockudoEvent ev || !MutableMessageReducer.IsMutableMessageEvent(ev))
+        return;
+    try
+    {
+        state = MutableMessageReducer.ReduceMutableMessageEvent(state, ev);
+        Console.WriteLine($"{state.MessageSerial} {state.Action} {state.Data}");
+    }
+    catch (InvalidOperationException ex)
+    {
+        Console.Error.WriteLine($"mutable message reduction failed: {ex.Message}");
+    }
+});
+```
+
+If an append arrives without a known base, fetch the latest visible version first with
+`GetMessageAsync`.
+
+Configure `VersionedMessages: new VersionedMessagesOptions(Endpoint: ...)` to create and mutate
+messages through a trusted backend. The client posts actions such as `publish_create`,
+`message_append`, `message_update`, and `message_delete`; the backend signs and forwards them to
+the Sockudo HTTP API.
 
 ```csharp
+var created = await chat.CreateVersionedMessageAsync(
+    "chat.message",
+    "Hello",
+    new VersionedMessageCreateOptions(MessageId: "message-1")
+);
+await chat.AppendVersionedMessageAsync(created.MessageSerial, " world");
+await chat.UpdateVersionedMessageAsync(
+    created.MessageSerial,
+    new VersionedMessageMutationOptions(Data: "Hello world!")
+);
+await chat.DeleteVersionedMessageAsync(created.MessageSerial);
+```
+
+Each call resolves to a `VersionedMessageAck`. See [Mutable messages](/docs/server/mutable-messages).
+
+### Presence history
+
+Presence history is proxy-backed. `Sockudo.Client` does not sign the server REST API directly;
+configure `PresenceHistory.Endpoint` to call your own backend proxy, which signs and forwards the
+request to Sockudo.
+
+```csharp title="LobbyHistory.cs"
 var client = new SockudoClient(
     "app-key",
     new SockudoOptions(
@@ -212,55 +456,150 @@ var client = new SockudoClient(
     )
 );
 
-var channel = (PresenceChannel)client.Subscribe("presence-lobby");
-var page = await channel.HistoryAsync(
+var lobby = (PresenceChannel)client.Subscribe("presence-lobby");
+var page = await lobby.HistoryAsync(
     new PresenceHistoryParams(Limit: 50, Direction: "newest_first")
 );
+if (page.HasNext())
+{
+    var nextPage = await page.NextAsync();
+}
+
+var snapshot = await lobby.SnapshotAsync(new PresenceSnapshotParams(AtSerial: 4));
 ```
 
-Proxy endpoints keep the app secret server-side. They must authenticate the
-caller, check channel access, bound page sizes, and forward opaque cursors.
-Channel history with `UntilAttach: true` provides a gap-free late join.
+Proxy endpoints keep the app secret server-side. They must authenticate the caller, check channel
+access, bound page sizes, and forward opaque cursors. See
+[Presence history](/docs/clients/presence-history).
 
-## Versioned and encrypted messages
+### Binary wire formats
 
-Configure `VersionedMessages.Endpoint` to create and mutate messages through a
-trusted backend:
+Set `WireFormat: SockudoWireFormat.MessagePack` or `SockudoWireFormat.Protobuf` to negotiate a
+binary encoding. Both preserve `byte[]` message data as native binary. MessagePack uses the
+additive `["binary", <bin>]` tagged value; existing string and JSON variants are unchanged.
+
+### Encrypted channels
+
+`private-encrypted-*` channels decrypt payloads automatically using the `SharedSecret` returned by
+your auth endpoint or custom handler. Handlers receive already-decrypted data.
 
 ```csharp
-var chat = client.Subscribe("chat:room-1");
-var created = await chat.CreateVersionedMessageAsync(
-    "chat.message",
-    "Hello",
-    new VersionedMessageCreateOptions(MessageId: "message-1")
-);
-await chat.AppendVersionedMessageAsync(created.MessageSerial, " world");
-await chat.UpdateVersionedMessageAsync(
-    created.MessageSerial,
-    new VersionedMessageMutationOptions(Data: "Hello world!")
-);
+var docs = client.Subscribe("private-encrypted-documents");
+docs.Bind("doc-updated", (data, meta) => Console.WriteLine(data));
 ```
 
-Apply V2 update, delete, and append actions in serial order. If an append
-arrives without a known base, fetch the latest visible version first.
+A custom handler must populate `SharedSecret` (a base64-encoded 32-byte secret); without it the
+subscription fails with `AuthFailure`. Client events are not supported on encrypted channels. Keep
+the encryption master key on the backend and continue to use TLS.
 
-`private-encrypted-*` payloads decrypt automatically when channel auth returns
-the derived `SharedSecret`. Keep the encryption master key on the backend and
-continue to use TLS.
+## Connection lifecycle and reconnection
 
-## User sign-in
-
-Configure `UserAuthenticationOptions` and sign in after connecting when the
-application uses user-targeted events or watchlists:
+The connection moves through `ConnectionState` values: `Initialized`, `Connecting`, `Connected`,
+`Reconnecting`, `Unavailable`, `Disconnected`, and `Failed`. Each change emits `state_change` with
+a `StateChange(Previous, Current)` of lowercase names, followed by an event named after the new
+state (`"connected"`, `"reconnecting"`, …). Read the current value from `client.ConnectionState`
+and the socket ID from `client.SocketId`.
 
 ```csharp
+var stateToken = client.Bind("state_change", (value, _) =>
+{
+    var change = (StateChange)value!;
+    Console.WriteLine($"connection: {change.Previous} -> {change.Current}");
+});
+client.Bind("connected", (_, _) =>
+    Console.WriteLine($"socket id: {client.SocketId}"));
+client.Bind("reconnecting", (_, _) =>
+    Console.WriteLine("reconnecting"));
+
 await client.ConnectAsync();
-await client.User.SignInAsync();
+
+// Later, during shutdown:
+client.Unbind("state_change", stateToken);
+await client.DisconnectAsync();
 ```
 
-## Push proxy helper
+Unexpected disconnects use quadratic backoff (0s, 1s, 4s, 9s) capped at `MaxReconnectGapInSeconds`
+(120 seconds by default) and emit `ConnectionState.Reconnecting`. Protocol retry and TLS-upgrade
+close codes reconnect immediately. The default limit is six attempts; set `MaxReconnectAttempts` to
+`null` for unlimited retries. The counter resets after a successful connection and on explicit
+connect or disconnect calls. When attempts run out, the state becomes `Disconnected`.
 
 ```csharp
+var options = new SockudoOptions(
+    Cluster: "local",
+    MaxReconnectAttempts: 10,
+    MaxReconnectGapInSeconds: 60,
+    ReconnectJitter: 0.5
+);
+```
+
+<Callout type="tip" title="Spread reconnect storms">
+Every client computes the same backoff, so clients dropped by one event retry in lockstep. Set
+`ReconnectJitter` to randomize each delay by that fraction: `0.5` picks uniformly from 50–100% of
+the delay, `1.0` from 0–100%. The default `0.0` keeps delays exact.
+</Callout>
+
+On Protocol V2, Sockudo uses native WebSocket ping/pong frames for heartbeats. .NET runtimes may
+still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages; those are excluded from
+recovery metadata such as `message_id`, `serial`, and `stream_id`.
+
+## Error handling
+
+All SDK exceptions derive from `SockudoException`.
+
+| Exception or event | Raised when | What to do |
+| --- | --- | --- |
+| `SockudoException` | Empty key or cluster at construction, invalid handshake | Fix configuration. |
+| `UnsupportedFeature` | Token auth or presence updates on Protocol V1, client events on encrypted channels, history or mutation helpers without a configured proxy endpoint | Switch to Protocol V2, configure the endpoint, or change the call. |
+| `BadEventName` | `TriggerAsync` with a name that does not start with `client-` | Prefix client events with `client-`. |
+| `AuthFailure` (`StatusCode`) | Auth endpoint returns `4xx`/`5xx` or omits `shared_secret` for an encrypted channel | Surfaces as channel `subscription_error` with `type = "AuthError"`. Treat `401`/`403` as a permission problem, not a reconnect loop. |
+| `TokenExpiredException` (`Code` `40142`) | Token expired and no provider can refresh it | Supply a `TokenProvider` or reconnect with a fresh token. |
+| `TokenRevokedException` (`Code` `40160`) | Server revoked the capability token | Sign the user out or obtain new credentials. |
+| `DeltaFailure` and other decode errors | A delta could not be reconstructed | Not thrown to callers: the message is dropped, the error goes to `DeltaOptions.OnError`, and delta stats count it. Reload derived state if failures persist. |
+| `ArgumentOutOfRangeException` | `AppendRollupWindow` is not an allowed value | Use `0`, `20`, `40`, `100`, or `500`. |
+
+Connection-level failures, server error frames, and token errors are delivered to the client
+`error` event:
+
+```csharp
+client.Bind("error", (error, _) =>
+{
+    switch (error)
+    {
+        case TokenRevokedException revoked:
+            Console.Error.WriteLine($"token revoked: {revoked.Reason}");
+            break;
+        case SockudoException sockudo:
+            Console.Error.WriteLine($"sockudo error: {sockudo.Message}");
+            break;
+        default:
+            Console.Error.WriteLine($"server error: {error}");
+            break;
+    }
+});
+```
+
+Make event processing idempotent and reload state after failed recovery. Handle auth failure,
+token expiry, rate limiting, and transport failure as different cases.
+
+## Platform notes
+
+### Hosting and lifetime
+
+- Register the client as a singleton or hosted-service dependency and dispose it during shutdown.
+- Pass cancellation tokens through long-running application operations; `ConnectAsync`,
+  `DisconnectAsync`, and the proxy helpers accept them.
+- Keep callbacks short and move blocking work away from the receive path.
+- Protect history, mutation, and push proxy endpoints with the application's normal authorization.
+- Test reconnects, service restarts, token rotation, and graceful host shutdown.
+
+### Push proxy helper
+
+`SockudoPushRegistration` points at your backend proxy, never at Sockudo directly. Keep Sockudo app
+secrets on the backend. `PublishAsync` and `PublishBatchAsync` always send `sync = false` and should
+expect `202 Accepted` with a `publish_id`; list helpers use `limit` and `cursor`.
+
+```csharp title="Push.cs"
 var push = new SockudoPushRegistration(
     new PushRegistrationOptions(
         Endpoint: "https://api.example.com/sockudo/push",
@@ -285,18 +624,22 @@ var publish = await push.PublishAsync(
         },
     }
 );
-```
+Console.WriteLine(publish["publish_id"]);
 
-The helper points at your backend proxy. Keep Sockudo app secrets on the backend.
+var page = await push.ListChannelSubscriptionsAsync(
+    new PushSubscriptionParams(DeviceId: "device-1", Limit: 20)
+);
+Console.WriteLine(page["next_cursor"]);
+```
 
 ### Apple Live Activities
 
 ActivityKit runs in the iOS host and Widget Extension because its APIs use the application's custom
-`ActivityAttributes`; from .NET you reach it through a Swift binding. `Sockudo.Client` ships the
-typed pieces around it: `ApnsLiveActivityTokenUpdate` for uploading push-to-start and activity token
-rotations to your backend, and `ApnsLiveActivityPublishRequest` with
-`SockudoPushRegistration.PublishLiveActivityAsync` for proxies that let a user publish to their own
-activities.
+`ActivityAttributes`; from .NET (for example a .NET for iOS or MAUI app) you reach it through a
+small Swift binding. `Sockudo.Client` ships the typed pieces around it:
+`ApnsLiveActivityTokenUpdate` for uploading push-to-start and activity token rotations to your
+backend, and `ApnsLiveActivityPublishRequest` with `SockudoPushRegistration.PublishLiveActivityAsync`
+for proxies that let a user publish to their own activities.
 
 ```csharp
 var update = ApnsLiveActivityTokenUpdate.Activity(activityId, ApnsLiveActivityTokenUpdate.EncodeHex(tokenBytes));
@@ -312,20 +655,24 @@ await push.PublishLiveActivityAsync(
             ContentState: new Dictionary<string, object?> { ["status"] = "arriving", ["etaMinutes"] = 1 })));
 ```
 
-The builders validate the same rules the server enforces and throw `ArgumentException` before any
-request is sent. Do not ship Sockudo app secrets, APNs provider keys, or unrestricted push-admin
-capabilities in the app. See [Apple Live Activities](/docs/server/apple-live-activities) for channel
-setup, broadcast delivery, and the complete payload contract.
+The builders validate the same rules the server enforces (`lowPower` is broadcast-only, `start`
+requires `attributesType`, `attributes`, and `alert`, input push token and channel are mutually
+exclusive) and throw `ArgumentException` before any request is sent. Broadcast requests use
+`ApnsLiveActivityBroadcastRecipient(channelId, ApnsChannelStoragePolicy.MostRecent)`.
 
-## Production checklist
+<Callout type="warn" title="Keep credentials off the device">
+Do not ship Sockudo app secrets, APNs provider keys, or unrestricted push-admin capabilities in the
+app. See [Apple Live Activities](/docs/server/apple-live-activities) for channel setup, broadcast
+delivery, and the complete payload contract.
+</Callout>
 
-- Register the client as a singleton or hosted-service dependency and dispose
-  it during shutdown.
-- Pass cancellation tokens through long-running application operations.
-- Keep callbacks short and move blocking work away from the receive path.
-- Handle auth failure, token expiry, rate limiting, and transport failure as
-  different cases.
-- Make event processing idempotent and reload state after failed recovery.
-- Protect history, mutation, and push proxy endpoints with the application's
-  normal authorization.
-- Test reconnects, service restarts, token rotation, and graceful host shutdown.
+## Next steps
+
+<Cards>
+  <Card title="Protocol V2" href="/docs/clients/protocol-v2" description="Continuity metadata, native events, recovery contract, and client history." />
+  <Card title="Filters and delta compression" href="/docs/clients/filters-delta" description="Cut delivered traffic with server-side tag filters and deltas." />
+  <Card title="Presence history" href="/docs/clients/presence-history" description="Read membership transitions and snapshots through a trusted proxy." />
+  <Card title=".NET server SDK" href="/docs/server-sdks/dotnet" description="Publish events, sign auth responses, and validate webhooks with SockudoServer." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Configure durable history, retention, and recovery on the server." />
+  <Card title="Push notifications" href="/docs/server/push-notifications" description="Register devices and publish notifications from your backend." />
+</Cards>

@@ -4,11 +4,13 @@ description: Runbooks, capacity formulas, alerts, chaos playbooks, and troublesh
 icon: ServerCog
 ---
 
-This runbook covers the S14 scale, soak, and chaos validation path for AI Transport deployments.
-Use it with the profiles in `test/load/profiles`, the runner in `test/load/ai-scale-runner.mjs`,
-and the chaos harness in `tools/chaos`.
+This runbook is for the people who operate AI Transport: how to size a fleet, which load and chaos
+runs prove it works, which signals to alert on, and what to do when they fire. It covers the S14
+scale, soak, and chaos validation path for AI Transport deployments. Use it with the profiles in
+`tests/load/profiles`, the runner in `tests/load/ai-scale-runner.mjs`, and the chaos harness in
+`tools/chaos`.
 
-## Capacity Model
+## Capacity model
 
 Start with these formulas, then replace the inputs with measured numbers from your hardware:
 
@@ -22,40 +24,70 @@ Start with these formulas, then replace the inputs with measured numbers from yo
 | History bytes per response | `mean_response_tokens * mean_token_bytes * retention_multiplier` |
 | History store write rate | `append_ingress_rate + create/update/delete/summary_rate` |
 
+Two consequences of the design shape these numbers:
+
+- **Ingress is never reduced by rollup.** Every append is persisted, so the history store write rate
+  scales with tokens per second, not with deliveries.
+- **Egress is.** Rollup caps a steady stream near 25 deliveries per second at the default 40 ms
+  window, so fanout egress grows with subscribers, not with model speed.
+
+For example, 10,000 active streams at 100 tokens per second is 1,000,000 appends per second of
+ingress, and the history store must absorb at least that write rate.
+
 The headline target is 1M concurrent connections, 50k active streams, 100 tok/s, and one to five
 subscriber devices per session for a 30-minute run. The 24-hour soak target is 20 percent of that
 load.
 
-## Required Runs
+## Required runs
 
-Run the five-node local smoke first:
+<Steps>
 
-```bash
-make ai-scale-smoke
-```
+1. Start the five-node local stack:
 
-Generate a production fleet plan:
+   ```bash
+   docker compose -f docker-compose.ai-transport.yml -f tests/load/docker-compose.ai-transport-scale.yml up -d --build
+   ```
 
-```bash
-node test/load/ai-scale-runner.mjs --profile test/load/profiles/headline-1m.json --plan
-```
+2. Run the smoke profile against it:
 
-Execute only on prepared hardware:
+   ```bash
+   node tests/load/ai-scale-runner.mjs --profile tests/load/profiles/smoke.json
+   ```
 
-```bash
-node test/load/ai-scale-runner.mjs \
-  --profile test/load/profiles/headline-1m.json \
-  --execute \
-  --urls "$SOCKUDO_NODE_URLS" \
-  --metricsUrls "$SOCKUDO_METRICS_URLS" \
-  --output docs/specs/ai-transport-results/headline-1m.json
-```
+3. Generate a production fleet plan:
+
+   ```bash
+   node tests/load/ai-scale-runner.mjs --profile tests/load/profiles/headline-1m.json --plan
+   ```
+
+4. Execute only on prepared hardware:
+
+   ```bash
+   node tests/load/ai-scale-runner.mjs \
+     --profile tests/load/profiles/headline-1m.json \
+     --execute \
+     --urls "$SOCKUDO_NODE_URLS" \
+     --metricsUrls "$SOCKUDO_METRICS_URLS" \
+     --output docs/specs/ai-transport-results/headline-1m.json
+   ```
+
+</Steps>
+
+Profiles with `planOnly: true` are protected from accidental laptop execution; passing `--execute`
+is the explicit operator action that starts the workload. The other committed profiles are
+`reconnect-storm.json`, `cancel-storm.json`, and `soak-20pct.json`.
 
 The required pass criteria are zero sampled transcript mismatches, clean serial monotonicity,
 p99 append-to-delivery under 25 ms intra-region, flat memory after warm-up, and no file descriptor
 or Tokio task leaks.
 
-## Chaos Playbooks
+<Callout type="warn" title="Results must be real">
+Store raw result JSON under `docs/specs/ai-transport-results` only when it comes from the runner,
+with hardware notes, Prometheus snapshots, transcript and serial audit summaries, and leak evidence.
+Never replace the committed `*.not-run.json` placeholders with synthetic numbers.
+</Callout>
+
+## Chaos playbooks
 
 Run all local chaos scenarios:
 
@@ -63,30 +95,38 @@ Run all local chaos scenarios:
 tools/chaos/ai-chaos-runner.sh all
 ```
 
-Node kill mid-stream:
-confirm post-heal transcript audits pass, `sockudo_ai_active_streams` returns to the expected
+The harness writes JSON artifacts to `target/ai-chaos` by default; set `RESULT_DIR` to keep them
+elsewhere.
+
+### Node kill mid-stream
+
+Confirm post-heal transcript audits pass, `sockudo_ai_active_streams` returns to the expected
 level, and janitor cleanup leaves no unbounded active rollup stream growth.
 
-Redis restart or failover:
-expect a bounded stall, no versioned-message corruption, and no durable history reset-required
+### Redis restart or failover
+
+Expect a bounded stall, no versioned-message corruption, and no durable history reset-required
 channels. Watch `sockudo_horizontal_transport_reconnections_total`,
 `sockudo_horizontal_transport_messages_dropped_total`, `sockudo_history_degraded_channels`, and
 `sockudo_history_reset_required_channels`.
 
-Inter-node partition:
-verify S8 duplicate/delay semantics, then confirm healed nodes converge through sampled latest
+### Inter-node partition
+
+Verify S8 duplicate/delay semantics, then confirm healed nodes converge through sampled latest
 reads and transcript audits.
 
-Slow subscribers:
-validate that the existing slow-consumer policy protects hot channels and that
+### Slow subscribers
+
+Validate that the existing slow-consumer policy protects hot channels and that
 `sockudo_broadcast_latency_ms` recovers after the pressure phase.
 
-Clock skew:
-the local script verifies signed client timestamp skew does not affect serial monotonicity. True
+### Clock skew
+
+The local script verifies signed client timestamp skew does not affect serial monotonicity. True
 node clock mutation must run on privileged production-like infrastructure; serial reservation is
 u64 store-backed and must not depend on wall-clock ordering.
 
-## Alert Thresholds
+## Alert thresholds
 
 Use these as starting alerts and tune with measured baselines:
 
@@ -105,6 +145,12 @@ Use these as starting alerts and tune with measured baselines:
 | `sockudo_horizontal_transport_queue_depth` | sustained growth across three scrape intervals |
 | `sockudo_tokio_active_tasks` | positive slope after warm-up in soak |
 
+<Callout type="tip" title="Page on reset-required, ticket on degraded">
+A reset-required channel means Sockudo can no longer prove history continuity and will fail
+recovery closed. That is user-visible and warrants a page. A briefly degraded channel usually
+recovers on its own and is a ticket unless it persists.
+</Callout>
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Operator action |
@@ -112,6 +158,18 @@ Use these as starting alerts and tune with measured baselines:
 | Mutations rejected as not permitted | App/channel capability lacks the create/update/delete/append action | Inspect token capability and server app policy; client-supplied identity is not authoritative |
 | History retention too short | Rewind or recovery request points before retained durable history | Increase retention count/time or reduce expected rewind window; watch retained message/byte gauges |
 | Run never ends | Missing terminal append/update/summary or rollup orphan TTL too long | Check `sockudo_ai_active_streams`, terminal event rates, and client run lifecycle |
-| Suspended-state publishes | Producer continued after suspend/continuation boundary | Reject or route through the continuation flow; audit op_id/message_id idempotency |
+| Suspended-state publishes | Producer continued after suspend/continuation boundary | Reject or route through the continuation flow; audit `op_id`/`message_id` idempotency |
 | Reconnect loop on bad tokens | Clients retrying auth failures without refreshing credentials | Rate-limit, inspect auth error codes, and fix token refresh logic |
-| Rollup mis-tuning | Window too high for latency budget or too low for fanout reduction | Compare `sockudo_flush_latency` and `sockudo_rollup_ratio`; tune the window per channel class |
+| Rollup mis-tuning | Window too high for latency budget or too low for fanout reduction | Compare `sockudo_flush_latency` and `sockudo_rollup_ratio`; tune `[ai_transport.rollup].default_window_ms` |
+
+The full symptom, cause, and fix list is in
+[AI Transport troubleshooting](/docs/server/ai-transport-troubleshooting).
+
+## Next steps
+
+<Cards>
+  <Card title="Production checklist" href="/docs/server/ai-transport-production-checklist" description="Preflight sign-off grouped by area." />
+  <Card title="Observability" href="/docs/server/observability" description="Every AI Transport metric and the starter Grafana dashboard." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Adapters, load balancing, and rolling deploys." />
+  <Card title="Capacity planning" href="/docs/deployment/capacity-planning" description="Size nodes, file descriptors, and memory." />
+</Cards>

@@ -4,48 +4,90 @@ description: Run Sockudo's deterministic disaster simulator for durable realtime
 icon: ShieldCheck
 ---
 
-The Sockudo simulator is a seed-replayable disaster lab for durable Protocol V2 state. It runs
-inside one process, drives real `sockudo-core` memory stores, calls the real `sockudo-push` memory
-store and accept pipeline for durable push boundaries, injects node, network, IO, queue, and
-fake-provider faults, and checks a shadow model
-continuously.
+The Sockudo simulator (`sockudo-sim`) is a seed-replayable disaster lab for durable Protocol V2
+state: history, versioned messages, presence history, recovery, and push. Run it when you change
+any of those subsystems, when you want a fast deterministic reproduction of a durability bug, or as
+a pull-request and nightly gate. Every run is a pure function of its seed and flags, so any failure
+can be replayed exactly.
 
-Use it to prove that Sockudo-side durability contracts survive dropped live fanout, duplicated
+## Mental model
+
+The simulator runs inside one process. It drives real `sockudo-core` memory stores, calls the real
+`sockudo-push` memory store and accept pipeline for durable push boundaries, injects node, network,
+IO, queue, and fake-provider faults, and checks a shadow model continuously.
+
+```mermaid
+flowchart TB
+    S[Seed and flags] --> W[Workload generator]
+    W --> F[Fault scheduler]
+    F --> R[Real memory stores]
+    R -->|accepted| M[Shadow model]
+    R --> O[Oracles]
+    M --> O
+    O -->|violation| C[Replay command]
+```
+
+Each tick picks one weighted action, routes it through seeded faults, and applies it to the real
+store first. The shadow model advances only when the real store accepts the operation. Oracles then
+compare what the stores return against the shadow; any disagreement stops the run with the seed,
+tick, and a replay command.
+
+It proves that Sockudo-side durability contracts survive dropped live fanout, duplicated
 delivery, node crashes, pauses, partitions, stream resets, retention purges, reconnect recovery,
 storage-level dropped writes, torn multi-record writes, stale or corrupted reads, delayed commit
 visibility, push queue loss, lost write responses, retryable provider failures, invalid tokens, and
 repair.
 
+<Callout type="note" title="What indestructible means here">
 The simulator deliberately does **not** claim that APNs, FCM, WebPush, HMS, WNS, browsers, mobile
 OSes, radios, or devices will deliver every notification. External providers are modeled as
 fallible systems. "Indestructible" means Sockudo does not lose, corrupt, double-apply logically, or
 make unrecoverable an accepted Sockudo-side operation.
+</Callout>
 
-```bash
-cargo run -p sockudo-simulator --bin sockudo-sim -- --seed 42 --ticks 10000
-```
+## Run it
 
-or through the Makefile wrapper:
+<Steps>
 
-```bash
-make simulator SIM_SEED=42 SIM_TICKS=10000
-```
+1. Run one fixed profile. `--seed` makes the run replayable; without it a random seed is printed at
+   startup. `--ticks` defaults to `5000`.
 
-For a disaster-heavy JSON profile:
+   ```bash
+   cargo run -p sockudo-simulator --bin sockudo-sim -- --seed 42 --ticks 10000
+   ```
 
-```bash
-make simulator-disaster SIM_SEED=12648430 SIM_TICKS=50000
-```
+   or through the Makefile wrapper (defaults `SIM_SEED=12648430`, `SIM_TICKS=5000`; extra flags go
+   in `SIM_ARGS`):
 
-For VOPR-style randomized distributions and liveness checks:
+   ```bash
+   make simulator SIM_SEED=42 SIM_TICKS=10000
+   ```
 
-```bash
-make simulator-swarm SIM_SEED=3735928559 SIM_TICKS=50000
-make simulator-liveness SIM_SEED=3735928559 SIM_TICKS=50000
-```
+2. Turn up the pressure with the disaster-heavy JSON profile, which raises node, queue, storage,
+   and provider fault rates across 9 nodes:
 
+   ```bash
+   make simulator-disaster SIM_SEED=12648430 SIM_TICKS=50000
+   ```
+
+3. Hunt for new combinations with VOPR-style randomized distributions and liveness checks:
+
+   ```bash
+   make simulator-swarm SIM_SEED=3735928559 SIM_TICKS=50000
+   make simulator-liveness SIM_SEED=3735928559 SIM_TICKS=50000
+   ```
+
+4. On failure, copy the printed replay command and follow [Reading failures](#reading-failures).
+
+</Steps>
+
+A passing run prints a one-line summary starting with `sockudo-sim: OK seed=...` with operation,
+oracle, commit, recovery, fault, and upgrade counters. Add `--json` for the full report.
+
+<Callout type="warn" title="Do not change the inputs while reducing a failure">
 Every failure prints a replay command with the seed. Keep the seed, tick count, and fault arguments
-unchanged when reducing a failure.
+unchanged when reducing a failure, or use the [shrinker](#vopr-style-maturity) to reduce it safely.
+</Callout>
 
 ## What It Exercises
 
@@ -62,8 +104,10 @@ The simulator covers these high-value durability surfaces:
 | Crash/restart recovery | Restarted nodes immediately re-read durable history, versions, presence history, and push status/log/idempotency state through the same safety oracles. |
 | Rolling upgrades | Opt-in upgrade runs restart nodes one by one with mixed legacy/target feature gates, schema activation, V1/V2 wire checks, before/during/after durable data counters, and push status oracles. |
 
+<Callout type="note" title="Inner loop, not the whole test plan">
 It does not replace live multi-node integration or Jepsen-style external testing. It is the fast,
 deterministic inner loop for the durable primitives those tests rely on.
+</Callout>
 
 ## Outside-In Binary Chaos Harness
 
@@ -98,7 +142,8 @@ containing:
 | `sockudo.log` | Captured server stdout/stderr. |
 | `push-provider.log` | Captured mock provider stdout/stderr when enabled. |
 
-Push-provider exercise is opt-in because it requires a compatible feature build:
+Push-provider exercise is opt-in because it requires a compatible feature build. The wrapper
+builds with `v2,monolith,push-fcm` and enables the flaky mock provider profile:
 
 ```bash
 make binary-chaos-push CHAOS_SEED=42 CHAOS_DURATION_MS=12000
@@ -115,7 +160,9 @@ prevents the server process from calling the local mock provider, the artifact r
 dispatch attempt and the harness performs a direct mock-provider probe so the fake provider outcome
 is still captured with the same seed.
 
+<Callout type="warn" title="Local and manual only">
 Keep this harness local/manual only. Do not add CI, scheduled jobs, or GitHub Actions for it.
+</Callout>
 
 ## Real-Code Boundary
 
@@ -466,9 +513,11 @@ Failure artifacts written with `--failure-artifact` include the full config and 
 directly with `--corpus-file`. Shrunk artifacts add a `shrink` block with the original and reduced
 tick, operation, and fault counts plus each accepted simplification step.
 
+<Callout type="warn" title="Failures are product bugs by default">
 Treat these as product bugs unless the invariant is deliberately stronger than the subsystem's
 documented contract. If the contract changes, update the simulator shadow and this page in the same
 change.
+</Callout>
 
 ## JSON Shape
 
@@ -486,8 +535,27 @@ example generated with `--seed 12648430 --ticks 16 --json` lives at
 
 Add new workloads by following the existing pattern:
 
+<Steps>
+
 1. Generate the operation through the deterministic scheduler or workload generator.
 2. Apply it to the real Sockudo store or subsystem first.
 3. Advance the shadow only after the real operation succeeds.
 4. Add a cheap per-run oracle and a quiesce oracle.
 5. Add or pin a seed that fails before the fix and passes after it.
+
+</Steps>
+
+<Callout type="tip" title="Never let the shadow lead">
+Advancing the shadow before the real store accepts an operation hides exactly the bugs the
+simulator exists to find: a dropped or rejected write would look like a store bug instead of a
+legitimate rejection.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="The durable history and recovery contracts the oracles enforce." />
+  <Card title="Mutable messages" href="/docs/server/mutable-messages" description="Serial continuity and version chains checked by the versioned-message oracles." />
+  <Card title="Push operations" href="/docs/server/push-operations" description="Status, retries, dead letters, and repair in production." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Live multi-node behavior the simulator models but does not replace." />
+</Cards>

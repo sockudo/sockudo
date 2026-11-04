@@ -1,232 +1,612 @@
 ---
 title: Ruby
-description: Use the Ruby server SDK for Rails and Rack apps, including push notification workflows.
+description: Publish events, sign channel and user auth, validate webhooks, read history, manage versioned messages, and run push workflows from Rails or any Rack app with the sockudo gem.
 icon: FileCode
 ---
 
+The `sockudo` gem is the official Ruby server SDK for Sockudo. It is a trusted backend library:
+it holds your app secret, signs every HTTP API request, and produces the signatures your realtime
+clients need to join private and presence channels. Use it from Rails, Sinatra, or any Rack app,
+and from background jobs.
+
+What it does in Ruby:
+
+- Signed HTTP publishing to one channel, many channels, or a batch, with idempotency keys and a
+  built-in retry for network failures.
+- Private, presence, and encrypted channel authorization, user authentication, and user
+  connection termination.
+- Webhook signature validation from a `Rack::Request`, including validation against extra key pairs
+  during rotation.
+- Channel state, durable history, presence history, and presence snapshots.
+- Versioned message reads and mutations (get, versions, update, delete, append) and annotations.
+- Push notifications: device registrations, channel push subscriptions, publish, schedule, status,
+  provider credentials, and Apple Live Activity broadcast channels.
+- Optional non-blocking requests through EventMachine or `httpclient` threads.
+
 ## Install
 
-```ruby
-gem "sockudo", "~> 2.0"
+Add the gem to your `Gemfile` and install it:
+
+```ruby title="Gemfile"
+gem "sockudo", "~> 2.2"
 ```
 
-```bash
+```bash title="Terminal"
 bundle install
 ```
 
-For one-off scripts, install the gem directly:
+The current gem version is `2.2.0`. The gemspec declares `required_ruby_version >= 2.6`; the SDK
+README lists Ruby 3.0 or later as the supported baseline, so target a maintained Ruby 3.x. Runtime
+dependencies are `httpclient`, `multi_json`, `logger`, and `pusher-signature`.
 
-```bash
-gem install sockudo -v "~> 2.0"
+To work against the SDK source in a checkout of the Sockudo monorepo, point Bundler at the package
+path instead:
+
+```ruby title="Gemfile"
+gem "sockudo", path: "../sockudo/server-sdks/sockudo-http-ruby"
 ```
 
-## Configure
+Two optional gems unlock extra features. Add `rbnacl` (which needs `libsodium`) for end-to-end
+encrypted channels, and `em-http-request` for EventMachine-based async requests.
 
-```ruby
+## Configure the client
+
+Create one client in an initializer and reuse it everywhere:
+
+```ruby title="config/initializers/sockudo.rb"
 require "sockudo"
 
-sockudo = Sockudo::Client.new(
-  app_id: "app-id",
-  key: "app-key",
-  secret: "app-secret",
-  host: "127.0.0.1",
-  port: 6001,
-  use_tls: false
+SOCKUDO = Sockudo::Client.new(
+  app_id: ENV.fetch("SOCKUDO_APP_ID"),
+  key: ENV.fetch("SOCKUDO_APP_KEY"),
+  secret: ENV.fetch("SOCKUDO_APP_SECRET"),
+  host: ENV.fetch("SOCKUDO_HOST", "127.0.0.1"),
+  port: Integer(ENV.fetch("SOCKUDO_PORT", "6001")),
+  use_tls: ENV.fetch("SOCKUDO_USE_TLS", "true") == "true"
+).tap do |client|
+  # Set timeouts before the first request: the HTTP client is built once and memoized.
+  client.timeout = 5
+end
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `app_id` | String | — | Sockudo app ID. Required for every API call. |
+| `key` | String | — | App key. Sent with every signed request and embedded in auth signatures. |
+| `secret` | String | — | App secret. Signs API requests, channel auth, and user auth. |
+| `host` | String | `api-mt1.sockudo.com` | HTTP API host without a scheme. The default is a legacy hosted value; always set it for a self-hosted server. |
+| `port` | Integer | `443`, or `80` when `use_tls: false` | HTTP API port. An explicit port always wins over the `use_tls` default. |
+| `use_tls` | Boolean | `true` | Use HTTPS. Set `false` only on a trusted local network. |
+| `cluster` | String | — | Builds `api-CLUSTER.sockudo.com` when `host` is not set. Not needed for self-hosted servers. |
+| `encryption_master_key_base64` | String | — | Base64 of a 32-byte key for `private-encrypted-*` channels. |
+| `http_proxy` | String | — | Outbound proxy URL, for example `http://user:pass@proxy:8080`. |
+| `auto_idempotency_key` | Boolean | `true` | Generate an idempotency key for `trigger` and `trigger_batch` calls that do not pass one. |
+| `encrypted` | Boolean | — | Deprecated alias for `use_tls`; prints a deprecation warning. |
+
+Timeouts are set with writers after construction, in seconds:
+
+| Writer | Default | Description |
+| --- | --- | --- |
+| `timeout=` | — | Sets connect, send, and receive timeouts to the same value. |
+| `connect_timeout=` | `5` | TCP and TLS connect timeout. |
+| `send_timeout=` | `5` | Request write timeout. |
+| `receive_timeout=` | `5` | Response read timeout. |
+| `keep_alive_timeout=` | `30` | Idle keep-alive connection lifetime. |
+
+You can also build a client from a connection URL:
+
+```ruby title="config/initializers/sockudo.rb"
+# SOCKUDO_URL=https://APP_KEY:APP_SECRET@realtime.example.com:443/apps/APP_ID
+SOCKUDO = Sockudo::Client.from_env # reads SOCKUDO_URL; raises Sockudo::ConfigurationError if unset
+
+# Or parse any variable or string you choose:
+# SOCKUDO = Sockudo::Client.from_url(ENV.fetch("REALTIME_URL"))
+```
+
+Module-level calls such as `Sockudo.trigger` use a default client that is built from `SOCKUDO_URL`
+when it is set. An explicit client is easier to reason about and to test.
+
+<Callout type="warn" title="The secret never leaves your backend">
+The app secret signs every API call and every channel and user auth response. Anyone holding it
+can publish to any channel, read history, and impersonate any user. Load it from a secret manager
+or environment, never ship it to browsers or mobile apps, and never log it or a connection URL
+that contains it.
+</Callout>
+
+## Publish an event
+
+```ruby title="app/controllers/orders_controller.rb"
+response = SOCKUDO.trigger(
+  "private-orders-42",
+  "order.created",
+  { id: "ord_123", total_cents: 4200 },
+  { socket_id: params[:socket_id] }
 )
 ```
 
-Create one client in an initializer and reuse it. `use_tls` defaults to `true`;
-a custom `port` takes precedence. You can also load
-`SOCKUDO_URL=http://KEY:SECRET@HOST:PORT/apps/APP_ID` with
-`Sockudo::Client.from_env`, but treat the full URL as a secret and never log it.
+`trigger` sends `POST /apps/APP_ID/events` and returns the parsed JSON response as a Hash with
+symbol keys. The response is `{}` unless you request channel attributes with `info:` (for example
+`info: "user_count"` on presence channels), in which case it contains `:channels`. Non-String data
+is JSON-encoded with `MultiJson`; Strings are sent unchanged.
 
-For applications behind an outbound proxy, configure `Sockudo.http_proxy`.
-Keep the SDK request timeout below the Rails request or job deadline.
+Pass `socket_id` when the publish comes from a user action that already updated the originating
+browser tab. The server skips that one connection, so the user does not receive an echo of their
+own change; every other subscriber still gets the event.
 
-## Publish
+### Asynchronous publishing
 
-```ruby
-sockudo.trigger(
-  "orders",
-  "order.created",
-  { id: "ord_123" },
-  { idempotency_key: "order-created-ord_123" }
+`trigger_async`, `trigger_batch_async`, `get_async`, and `post_async` avoid blocking the calling
+thread. When an EventMachine reactor is running (and `em-http-request` is installed), they return
+an `EM::DefaultDeferrable`; otherwise they return an `HTTPClient::Connection` immediately and run
+the request on an `httpclient` thread.
+
+```ruby title="worker.rb"
+EM.run do
+  SOCKUDO.trigger_async("orders", "order.created", { id: "ord_123" })
+    .callback { |response| EM.stop }
+    .errback { |error| warn("publish failed: #{error.class}"); EM.stop }
+end
+```
+
+The async variants do not use the built-in retry. An async call is not a durable queue: use a job
+for work that must survive a process restart.
+
+## Publish to many channels or in a batch
+
+Pass an array of channel names to publish the same event to several channels in one request:
+
+```ruby title="app/services/order_notifier.rb"
+SOCKUDO.trigger(
+  ["tenant-42-orders", "user-7-orders"],
+  "order.updated",
+  { id: "ord_123", status: "paid" },
+  { idempotency_key: "order.updated:tenant-42:ord_123:v3" }
 )
+```
 
-sockudo.trigger_batch([
-  { channel: "orders", name: "order.created", data: { id: "ord_124" } },
-  { channel: "orders", name: "order.paid", data: { id: "ord_124" } },
+Use `trigger_batch` to send different events in one request. Each event is a Hash with
+`:channel`, `:name`, `:data`, and optional `:socket_id`, `:info`, and `:idempotency_key`:
+
+```ruby title="app/services/order_notifier.rb"
+SOCKUDO.trigger_batch([
+  { channel: "orders", name: "order.created", data: { id: "ord_124" },
+    idempotency_key: "order.created:ord_124" },
+  { channel: "private-user-7", name: "order.receipt", data: { id: "ord_124" },
+    idempotency_key: "order.receipt:ord_124" }
 ])
 ```
 
-Publish the same event to several channels with an array and exclude an
-originating connection when it already applied the update:
+The SDK raises `Sockudo::Error` before sending when a single `trigger` names more than 100
+channels, or when a multi-channel publish includes a `private-encrypted-*` channel. It does not
+cap batch size or payload size locally. The server enforces its `[event_limits]` defaults:
 
-```ruby
-sockudo.trigger(
-  ["tenant-42:orders", "user-7:orders"],
-  "order.updated",
-  { id: "ord_123", status: "paid" },
-  {
-    socket_id: "123.456",
-    idempotency_key: "order-paid:ord_123:v3"
-  }
-)
-```
+| Limit | Default |
+| --- | --- |
+| `max_channels_at_once` | `100` channels per publish |
+| `max_batch_size` | `10` events per batch |
+| `max_payload_in_kb` | `100` KB per event payload |
+| `max_name_length` | `200` characters per event or channel name |
 
-Multi-channel and batch calls accept up to 10 entries. Use a stable
-idempotency key for every publish that Active Job or another worker may retry.
+## Idempotency and retries
 
-## Auth
+A timeout does not tell you whether the server published the event. If you retry without a key,
+subscribers can receive the event twice. An idempotency key makes the retry safe: within the TTL,
+the server returns the original cached response (`200`) instead of publishing again.
 
-```ruby
-private_auth = sockudo.authenticate("private-orders", params[:socket_id])
+Server semantics:
 
-presence_auth = sockudo.authenticate(
-  "presence-lobby",
-  params[:socket_id],
-  user_id: "user-42",
-  user_info: { name: "Ada" }
-)
-```
+- The key can be sent as the body field `idempotency_key` or the `X-Idempotency-Key` header. The
+  body field takes precedence.
+- `[idempotency]` defaults are `enabled = true`, `ttl_seconds = 120`, and `max_key_length = 128`.
+  Empty keys are rejected.
+- In a batch, `X-Idempotency-Key` identifies the whole batch and each event's `idempotency_key`
+  identifies only that event. The two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
 
-Signing is the last step of authorization. Authenticate the application
-session, validate the exact requested channel, and derive `user_id` from
-trusted server-side state before calling `authenticate`.
+How the Ruby SDK applies keys:
 
-Use `authenticate_user` for user-targeted events. When access changes,
-`terminate_user_connections` disconnects a user immediately and
-`force_reconnect_user` closes sockets with a reconnect instruction.
+- Pass `idempotency_key:` in the options Hash of `trigger`. The SDK sends it as both the body field
+  and the `X-Idempotency-Key` header.
+- In `trigger_batch`, set `:idempotency_key` on each event. The SDK does not send a batch-level
+  header.
+- With `auto_idempotency_key: true` (the default), calls without a key get a generated one in the
+  form `BASE:COUNTER` (and `BASE:COUNTER:INDEX` for batch events), where `BASE` is random per client
+  instance. That key protects only the SDK's own retry of the same call; a new call, process, or
+  job attempt gets a new key.
+- `trigger` and `trigger_batch` retry `Sockudo::HTTPError` (connection refused, timeouts, socket
+  errors, malformed responses) up to 3 attempts in total, immediately and with the same body and
+  key. HTTP error responses, including `429` and `5xx`, are raised without a retry.
 
-## Webhooks
+For retries you control, such as Active Job retries, derive the key from the logical operation and
+pass it explicitly so every attempt shares it:
 
-```ruby
-webhook = sockudo.webhook(request)
+```ruby title="app/jobs/publish_order_paid_job.rb"
+class PublishOrderPaidJob < ApplicationJob
+  retry_on Sockudo::HTTPError, wait: 5.seconds, attempts: 5
 
-if webhook.valid?
-  webhook.events.each { |event| handle_event(event) }
-  head :ok
-else
-  head :unauthorized
+  def perform(order_id, version)
+    SOCKUDO.trigger(
+      "private-orders-#{order_id}",
+      "order.paid",
+      { id: order_id, version: version },
+      { idempotency_key: "order.paid:#{order_id}:v#{version}" }
+    )
+  end
 end
 ```
 
-Build the webhook from the original `Rack::Request` so validation sees the raw
-body and headers. Validate before processing, enqueue the events, and return
-quickly. Do not log the request body or signature.
+`Sockudo.generate_idempotency_key` returns a random UUID. If you use it, generate it once when you
+enqueue the work and pass it to every attempt.
 
-## State and history
+<Callout type="warn" title="A key names an operation, not an attempt">
+Use keys like `order.created:tenant-42:order-123:v1`. Never generate a fresh key per retry, and
+never reuse a key for a different payload: the server would return the first result and drop the
+new event.
+</Callout>
 
-```ruby
-channels = sockudo.channels(filter_by_prefix: "presence-")
-info = sockudo.channel_info("presence-lobby", info: "user_count")
-users = sockudo.channel_users("presence-lobby")
+## Authorize private and presence channels
 
-page = sockudo.channel_history(
-  "orders",
-  limit: 50,
-  direction: "newest_first"
-)
-next_page = sockudo.channel_history("orders", cursor: page[:next_cursor])
+When a client subscribes to a `private-*` or `presence-*` channel, it asks your backend for a
+signature. Your endpoint decides whether the current user may join; the SDK only signs the answer.
+For presence channels, take `user_id` and `user_info` from your own session, never from request
+parameters, or any user could claim to be anyone.
 
-presence_page = sockudo.channel_presence_history(
-  "presence-lobby",
-  limit: 50
-)
-snapshot = sockudo.channel_presence_snapshot(
-  "presence-lobby",
-  at_serial: 4
-)
+```ruby title="config/routes.rb"
+post "/sockudo/auth", to: "sockudo_auth#create"
+post "/sockudo/user-auth", to: "sockudo_auth#user"
 ```
 
-State is an operational snapshot. Keep history pages bounded and pass opaque
-cursors back unchanged.
+```ruby title="app/controllers/sockudo_auth_controller.rb"
+class SockudoAuthController < ApplicationController
+  # Keep CSRF protection on: the client should send the CSRF token with its auth request.
+  before_action :require_login
 
-## Async requests
+  def create
+    channel_name = params.require(:channel_name)
+    socket_id = params.require(:socket_id)
 
-`trigger_async` and `get_async` use EventMachine when its reactor is active and
-otherwise return a threaded `HTTPClient::Connection` immediately:
+    return head :forbidden unless can_subscribe?(current_user, channel_name)
 
-```ruby
-sockudo.trigger_async(
-  "orders",
-  "order.created",
-  { id: "ord_123" },
-  { idempotency_key: "order-created:ord_123" }
-).callback do
-  Rails.logger.info("sockudo publish accepted")
-end.errback do |error|
-  retry_publish_later(error)
+    auth =
+      if channel_name.start_with?("presence-")
+        SOCKUDO.authenticate(
+          channel_name,
+          socket_id,
+          user_id: current_user.id.to_s,
+          user_info: { name: current_user.display_name }
+        )
+      else
+        SOCKUDO.authenticate(channel_name, socket_id)
+      end
+
+    render json: auth
+  rescue Sockudo::Error
+    # Invalid socket_id or channel name.
+    head :bad_request
+  end
+
+  private
+
+  def can_subscribe?(user, channel_name)
+    # Replace with your own rules, for example tenant or ownership checks.
+    channel_name.end_with?("-user-#{user.id}") || user.member_of_channel?(channel_name)
+  end
 end
 ```
 
-Use background jobs for work that must outlive a web request; an async method
-alone is not a durable queue.
+The client sends `socket_id` and `channel_name` form-encoded. `authenticate` validates the socket ID
+format (`123.456`) and the channel name (letters, digits, and `_-=@,.;:`, at most 200 characters),
+then returns a Hash: `{ auth: "KEY:SIGNATURE" }` for private channels, plus `channel_data` for
+presence channels and `shared_secret` for encrypted channels.
+
+<Callout type="warn" title="Signing is not authorization">
+`authenticate` signs whatever you pass it. Authenticate the session, check the exact channel name
+against your own rules, and only then sign. A missing check here lets any logged-in user read any
+private channel.
+</Callout>
+
+### User authentication
+
+User authentication (sign-in) binds a connection to a user ID so the server can target that user
+and terminate their connections:
+
+```ruby title="app/controllers/sockudo_auth_controller.rb"
+def user
+  render json: SOCKUDO.authenticate_user(
+    params.require(:socket_id),
+    { id: current_user.id.to_s, name: current_user.display_name }
+  )
+end
+```
+
+`user_data` must be a Hash with a non-empty String under the symbol key `:id`; otherwise
+`authenticate_user` raises `Sockudo::Error`. It returns `{ auth: ..., user_data: ... }`.
+
+### Encrypted channels
+
+`private-encrypted-*` channels are end-to-end encrypted: the server relays ciphertext it cannot
+read. Configure a 32-byte master key, encoded as base64, and add `rbnacl` to your Gemfile:
+
+```bash title="Terminal"
+openssl rand -base64 32
+```
+
+```ruby title="config/initializers/sockudo.rb"
+SOCKUDO = Sockudo::Client.new(
+  app_id: ENV.fetch("SOCKUDO_APP_ID"),
+  key: ENV.fetch("SOCKUDO_APP_KEY"),
+  secret: ENV.fetch("SOCKUDO_APP_SECRET"),
+  host: ENV.fetch("SOCKUDO_HOST"),
+  encryption_master_key_base64: ENV.fetch("SOCKUDO_ENCRYPTION_MASTER_KEY")
+)
+```
+
+The SDK encrypts event data with a per-channel key derived from the master key and adds that
+channel's `shared_secret` to the auth response. Publish to one encrypted channel per call:
+multi-channel publishes that include an encrypted channel raise `Sockudo::Error`. Batches may
+contain encrypted events.
+
+### Terminate user connections
+
+When access changes, disconnect a user's sockets immediately:
+
+```ruby title="app/services/access_revocation.rb"
+SOCKUDO.terminate_user_connections(user.id.to_s)
+
+# Or close every socket with code 4200 so clients reconnect and re-authenticate:
+SOCKUDO.force_reconnect_user(user.id.to_s)
+```
+
+## Validate webhooks
+
+Sockudo signs each webhook with HMAC-SHA256 over the exact request body bytes and sends the result
+in `X-Pusher-Signature`, with the app key in `X-Pusher-Key`. Validation must see the raw body:
+parsing and re-serializing the JSON changes the bytes and breaks the signature. Pass the original
+`Rack::Request` or `ActionDispatch::Request`; the SDK reads and rewinds the raw body itself.
+
+```ruby title="app/controllers/sockudo_webhooks_controller.rb"
+class SockudoWebhooksController < ActionController::Base
+  skip_forgery_protection
+
+  def create
+    webhook = SOCKUDO.webhook(request)
+    return head :unauthorized unless webhook.valid?
+
+    # Acknowledge fast; do the work in a job.
+    SockudoWebhookJob.perform_later(webhook.events)
+    head :ok
+  end
+end
+```
+
+`webhook.events` is an Array of Hashes with String keys (`"name"`, `"channel"`, `"event"`,
+`"data"`, `"socket_id"`, `"user_id"`, and future fields), and `webhook.time` is the event time.
+Always call `valid?` first: `events` does not check the signature. The body is parsed only when its
+`Content-Type` is `application/json`, which is what Sockudo sends.
+
+Sockudo may deliver the same webhook more than once, so make the job idempotent, for example by
+recording processed event identities. During key rotation, pass the other key pairs to `valid?`:
+
+```ruby title="app/controllers/sockudo_webhooks_controller.rb"
+previous = { key: ENV["SOCKUDO_PREVIOUS_KEY"], secret: ENV["SOCKUDO_PREVIOUS_SECRET"] }
+webhook.valid?([previous])
+```
+
+The extra pairs are tried only when the `X-Pusher-Key` header does not match the client's key.
+
+## Channel state and history
+
+```ruby title="app/services/realtime_state.rb"
+channels = SOCKUDO.channels(filter_by_prefix: "presence-", info: "user_count")
+info = SOCKUDO.channel_info("presence-lobby", info: "user_count,subscription_count")
+users = SOCKUDO.channel_users("presence-lobby")[:users] # [{ id: "user-42" }, ...]
+```
+
+State is an operational snapshot at the moment of the request; never use it as an authorization
+source.
+
+Durable history returns pages of stored messages. Supported parameters are `:limit`,
+`:direction` (`"newest_first"` or `"oldest_first"`), `:cursor`, `:start_serial`, `:end_serial`,
+`:start_time_ms`, and `:end_time_ms`:
+
+```ruby title="app/services/history_export.rb"
+cursor = nil
+loop do
+  page = SOCKUDO.channel_history(
+    "orders",
+    { limit: 100, direction: "oldest_first", cursor: cursor }.compact
+  )
+  page[:items].each { |item| export(item) }
+  break unless page[:has_more]
+
+  cursor = page[:next_cursor]
+end
+```
+
+Cursors are opaque: pass `next_cursor` back unchanged and do not parse or construct them. The
+server caps page sizes, so keep `limit` bounded.
+
+Presence history records join and leave transitions on presence channels, and a snapshot rebuilds
+membership at a serial or timestamp:
+
+```ruby title="app/services/presence_audit.rb"
+transitions = SOCKUDO.channel_presence_history("presence-lobby", limit: 50, direction: "newest_first")
+members = SOCKUDO.channel_presence_snapshot("presence-lobby", at_serial: 4) # or at_time_ms:
+```
+
+The same calls are available on a channel object, for example
+`SOCKUDO["orders"].history(limit: 50)` and `SOCKUDO["presence-lobby"].presence_history`.
+
+For endpoints without a dedicated method, the signed request helpers `get`, `post`, and `delete`
+take a path relative to `/apps/APP_ID` and handle signing:
+
+```ruby title="app/services/realtime_state.rb"
+SOCKUDO.get("/channels", filter_by_prefix: "private-")
+```
+
+## Versioned messages and annotations
+
+Protocol V2 messages can be read and mutated after publish. The SDK wraps the HTTP surface
+described in [Mutable messages](/docs/server/mutable-messages); request bodies are passed through
+as Hashes:
+
+```ruby title="app/services/message_editor.rb"
+latest = SOCKUDO.get_message("chat-room-1", message_serial)
+versions = SOCKUDO.get_message_versions("chat-room-1", message_serial, limit: 20)
+
+SOCKUDO.update_message("chat-room-1", message_serial, {
+  data: "hello, edited",
+  description: "fix typo",
+  op_id: "edit:#{message_serial}:2"
+})
+SOCKUDO.append_message("chat-room-1", message_serial, { data: " more text" })
+SOCKUDO.delete_message("chat-room-1", message_serial, { description: "removed by moderator" })
+```
+
+Mutation responses include `:message_serial`, `:action`, `:accepted`, `:status`, and the new
+`:version_serial`. `op_id` makes a mutation idempotent: replaying the same ID with the same
+operation returns the original acknowledgement. Without `socket_id`, a signed app-key request is a
+privileged server operation.
+
+Annotations attach typed reactions or flags to a message:
+
+```ruby title="app/services/reactions.rb"
+created = SOCKUDO.publish_annotation("chat-room-1", message_serial, {
+  type: "reactions:distinct.v1",
+  name: "thumbs_up",
+  clientId: "user-42"
+})
+events = SOCKUDO.list_annotations("chat-room-1", message_serial, type: "reactions:distinct.v1")
+SOCKUDO.delete_annotation("chat-room-1", message_serial, created[:annotationSerial])
+```
 
 ## Push notifications
 
-```ruby
-sockudo.activate_device(
-  deviceId: "ios-device-1",
-  clientId: "user-42",
-  platform: "apns",
-  providerToken: "provider-token"
-)
+The push helpers sign `/apps/APP_ID/push/*` requests and send the push capability header for you
+(`push-admin` by default, `push-subscribe` when you pass a device identity token). Request bodies
+are passed through as Hashes in the server's camelCase shape. See
+[Push notifications](/docs/server/push-notifications) for the full model.
 
-sockudo.upsert_channel_push_subscription(
-  deviceId: "ios-device-1",
-  clientId: "user-42",
-  channel: "orders"
-)
+Register a device from your backend after you verify the user:
 
-accepted = sockudo.publish_push(
-  recipients: [{ type: "channel", channel: "orders" }],
-  payload: {
-    title: "Order updated",
-    body: "Order ord_123 is packed"
-  },
-  publishId: "push-order-ord_123-packed"
-)
+```ruby title="app/controllers/push_devices_controller.rb"
+device_id = params.require(:installation_id)
 
-status = sockudo.get_publish_status(accepted[:publish_id])
+registration = SOCKUDO.activate_device({
+  appId: ENV.fetch("SOCKUDO_APP_ID"),
+  id: device_id,
+  clientId: current_user.id.to_s,
+  formFactor: "phone",
+  platform: "ios",
+  deviceSecret: "admin-registration-placeholder",
+  timezone: "Europe/Bucharest",
+  locale: "en",
+  push: {
+    recipient: { transportType: "apns", deviceToken: params.require(:apns_token) },
+    state: "ACTIVE"
+  }
+})
+
+device_identity_token = registration[:deviceIdentityToken]
 ```
 
-Use Rails jobs for push fanout workflows that also touch your product database.
+With admin capability the server ignores the `deviceSecret` value and issues a device identity
+token on first registration; pass `rotate_device_identity_token: true` as the second argument to
+issue a new one. Store the token for device-scoped calls such as `update_device_registration`.
 
-The SDK exposes `create_apns_live_activity_channel`, `get_apns_live_activity_channel`,
-`list_apns_live_activity_channels`, and `delete_apns_live_activity_channel`. Publish direct or
-broadcast ActivityKit payloads with `publish_push`; see
-[Apple Live Activities](/docs/server/apple-live-activities) for the wire-safe request shapes.
+Subscribe the device to a channel, publish, and check status:
 
-## Errors, logging, and retries
+```ruby title="app/services/order_push.rb"
+SOCKUDO.upsert_channel_push_subscription({
+  appId: ENV.fetch("SOCKUDO_APP_ID"),
+  channel: "private-orders-42",
+  deviceId: device_id,
+  clientId: current_user.id.to_s,
+  provider: "apns",
+  tokenHash: registration[:tokenHash]
+})
 
-All errors inherit from `Sockudo::Error`:
+accepted = SOCKUDO.publish_push({
+  publishId: "push:order-ord_123:packed",
+  recipients: [{ type: "channel", channel: "private-orders-42" }],
+  payload: { title: "Order updated", body: "Order ord_123 is packed" }
+})
 
-```ruby
+status = SOCKUDO.get_publish_status(accepted[:publishId])
+```
+
+`publish_push` always sends `sync: false`. The `202` response is an admission record
+(`publishId`, `status`, `expectedRecipients`), not proof of delivery; inspect delivery
+asynchronously with `get_publish_status`. Reuse the same `publishId` when you retry a publish.
+
+Other push methods:
+
+| Area | Methods |
+| --- | --- |
+| Devices | `activate_device` (alias `create_device_activation`), `update_device_registration`, `get_device_registration`, `list_device_registrations`, `delete_device_registration`, `remove_device_registrations_by_client` |
+| Subscriptions | `upsert_channel_push_subscription`, `list_channel_push_subscriptions`, `delete_channel_push_subscriptions`, `list_channel_push_subscription_channels` |
+| Publishing | `publish_push` (alias `publish_push_direct`), `publish_push_batch`, `schedule_push` (requires `notBeforeMs`), `cancel_scheduled_push`, `get_publish_status`, `post_push_delivery_status` |
+| Credentials | `put_push_credential`, `list_push_credentials` |
+
+For Apple Live Activities, manage iOS 18 broadcast channels with
+`create_apns_live_activity_channel` (storage policy `"noStorage"` or `"mostRecent"`),
+`get_apns_live_activity_channel`, `list_apns_live_activity_channels`, and
+`delete_apns_live_activity_channel`, and publish direct or broadcast ActivityKit payloads with
+`publish_push`. See [Apple Live Activities](/docs/server/apple-live-activities) for the wire-safe
+request shapes.
+
+## Errors and timeouts
+
+Every SDK error descends from `Sockudo::Error`:
+
+| Error | Raised when |
+| --- | --- |
+| `Sockudo::AuthenticationError` | The server returns `401`. Fix credentials or clock skew; do not retry unchanged. |
+| `Sockudo::ConfigurationError` | `app_id`, `key`, `secret`, or a required URL variable is missing. |
+| `Sockudo::HTTPError` | The HTTP client failed: connection refused, timeout, socket error, or malformed response. `original_error` holds the underlying exception. Other low-level exceptions, such as TLS errors, are not wrapped. |
+| `Sockudo::Error` | Any other non-success status, plus local validation failures. |
+
+The SDK does not expose a status attribute; non-success statuses other than `401` are reported in
+the message, for example `Bad request: ...` for `400` or `Unknown error (status code 503): ...` for
+unmapped codes. A `413` is reported as `Payload Too Large > 10KB`, but the limit that applies is
+the server's `max_payload_in_kb` (100 KB by default).
+
+Retry network errors, `429`, and `5xx` with bounded backoff and the original idempotency key. Do
+not retry `400`, `401`, `403`, or `413`: the same request fails the same way.
+
+```ruby title="app/services/order_notifier.rb"
+RETRYABLE_STATUS = /status code (429|5\d\d)/
+
 begin
-  sockudo.trigger(
-    "orders",
-    "order.created",
-    payload,
-    idempotency_key: operation_id
-  )
+  SOCKUDO.trigger("orders", "order.created", payload, { idempotency_key: operation_id })
 rescue Sockudo::AuthenticationError
-  # Fix credentials; do not retry unchanged.
-rescue Sockudo::HTTPError => error
-  retry_publish_later(error)
+  raise # Fix credentials or clock skew; retrying will not help.
+rescue Sockudo::HTTPError
+  PublishRetryJob.set(wait: 5.seconds).perform_later(operation_id)
 rescue Sockudo::Error => error
-  report_sdk_error(error)
+  raise unless error.message.match?(RETRYABLE_STATUS)
+
+  PublishRetryJob.set(wait: 5.seconds).perform_later(operation_id)
 end
 ```
 
-Set `Sockudo.logger = Rails.logger` to use the application logger, but redact
-credentials, signed URLs, provider tokens, and event content. Retry only
-transient network failures, `429`, and suitable `5xx` responses with bounded
-backoff and the original idempotency key.
+Keep the SDK timeout shorter than the web request or job deadline that wraps it; the defaults are
+5 seconds each for connect, send, and receive.
 
-- Reuse the client from a Rails initializer.
-- Keep request deadlines shorter than the web or job timeout.
-- Authorize and rate-limit auth/history endpoints.
-- Use jobs for fanout and push workflows.
-- Test duplicate delivery, credential rotation, webhook retries, and worker
-  shutdown.
+<Callout type="note" title="Keep logs clean">
+Set `Sockudo.logger = Rails.logger` to route SDK logs through your app. Never log the secret,
+signed request URLs, raw webhook bodies, device or provider tokens, or event content. On a failed
+webhook check the SDK logs a warning that includes the received and expected signatures, so keep
+that log stream access-controlled.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="How private, presence, and user auth flow between client, backend, and server." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Event types, delivery, retries, and signature rules." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Durable history, cursors, and connection recovery semantics." />
+  <Card title="HTTP API" href="/docs/server/http-api" description="Every endpoint the SDK signs, with request and response shapes." />
+</Cards>

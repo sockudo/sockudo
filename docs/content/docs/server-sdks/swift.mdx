@@ -1,245 +1,746 @@
 ---
 title: Swift
-description: Use the Swift HTTP server SDK to publish events, authenticate channels, validate state, and manage push.
+description: Publish events, sign channel auth, verify webhooks, read history, mutate versioned messages, and manage push from Swift with the Sockudo package.
 icon: FileCode
 ---
 
+The `Sockudo` Swift package is the official Swift server SDK for Sockudo, distributed through Swift
+Package Manager. It is a trusted backend library: it holds your app secret, signs every HTTP API
+request, and produces the signatures realtime clients need to join private, presence, and encrypted
+channels. Every operation completes through a callback that receives a `Result<T, SockudoError>`;
+the examples below bridge those callbacks to `async`/`await`.
+
+What it does in Swift:
+
+- Publish events to one channel, many channels, or a batch, with automatic idempotency keys and
+  built-in retries for transient failures
+- Sign private, presence, and `private-encrypted-*` channel subscriptions
+- Verify webhook signatures and decode typed webhook events, decrypting encrypted-channel events
+- Query occupied channels, channel info, presence members, durable history, presence history, and
+  presence snapshots
+- Read, update, delete, and append to versioned messages, and publish, list, and delete annotations
+- Register devices, manage channel push subscriptions, publish push, read publish status, and build
+  Apple Live Activity requests
+- Terminate or force-reconnect every connection for a user
+
 ## Install
 
-Install through Swift Package Manager from the Sockudo HTTP Swift mirror. SwiftPM resolves this from
-the `v2.2.0` Git tag and the mirror repository's root `Package.swift` manifest:
+Add the package from the `sockudo/sockudo-http-swift` mirror repository. SwiftPM resolves releases
+from its Git tags (`v2.2.0`) and its root `Package.swift`:
 
-```swift
-.package(url: "https://github.com/sockudo/sockudo-http-swift", from: "2.2.0")
+```swift title="Package.swift"
+// swift-tools-version:5.9
+import PackageDescription
+
+let package = Package(
+    name: "OrdersService",
+    platforms: [.macOS(.v12)],
+    dependencies: [
+        .package(url: "https://github.com/sockudo/sockudo-http-swift", from: "2.2.0"),
+    ],
+    targets: [
+        .executableTarget(
+            name: "OrdersService",
+            dependencies: [
+                .product(name: "Sockudo", package: "sockudo-http-swift"),
+            ]),
+    ]
+)
 ```
 
-```swift
-.product(name: "Sockudo", package: "sockudo-http-swift")
-```
+Then `import Sockudo`. The package exports two products: `Sockudo`, the native module for new code,
+and `Pusher`, a compatibility module for existing Pusher-shaped integrations.
 
-The package manifest supports Swift 5.3+, iOS 13+, macOS 10.15+, tvOS 13+, and watchOS
-6+. It also exports a `Pusher` compatibility product for existing integrations;
-new code should use `Sockudo`.
+The package supports macOS 10.15+, iOS 13+, tvOS 13+, and watchOS 6+, and its README lists a
+Swift 5.9 or later toolchain. Your own target needs macOS 10.15+ for `async`/`await`; the manifest
+above uses macOS 12 as a typical server baseline.
 
-## Configure
+<Callout type="warn" title="Apple platforms only in 2.2.0">
+The `Sockudo` module imports Apple's `Security` framework, which is not available on Linux. In
+2.2.0 the package builds for Apple platforms only, so it cannot be used in a Linux-hosted Vapor or
+Hummingbird deployment. The source lives in this monorepo at `server-sdks/sockudo-http-swift`.
+</Callout>
 
-```swift
+## Configure the client
+
+Create one client per app and keep it for the life of the process:
+
+```swift title="Sources/OrdersService/SockudoClient.swift"
+import Foundation
 import Sockudo
 
-let sockudo = Sockudo(options: try SockudoClientOptions(
-    appId: 123456,
-    key: "app-key",
-    secret: "app-secret",
-    host: "127.0.0.1",
-    port: 6001,
-    useTLS: false
-))
+func makeSockudo() throws -> Sockudo {
+    let env = ProcessInfo.processInfo.environment
+    guard
+        let appId = env["SOCKUDO_APP_ID"].flatMap(Int.init),
+        let key = env["SOCKUDO_APP_KEY"],
+        let secret = env["SOCKUDO_APP_SECRET"]
+    else {
+        throw ConfigurationError.missingSockudoCredentials
+    }
+
+    let options = try SockudoClientOptions(
+        appId: appId,
+        key: key,
+        secret: secret,
+        encryptionMasterKey: env["SOCKUDO_ENCRYPTION_MASTER_KEY"] ?? "",
+        host: env["SOCKUDO_HOST"] ?? "127.0.0.1",
+        port: Int(env["SOCKUDO_PORT"] ?? "6001"),
+        useTLS: env["SOCKUDO_USE_TLS"] == "true"
+    )
+    return Sockudo(options: options)
+}
+
+enum ConfigurationError: Error {
+    case missingSockudoCredentials
+}
+
+/// Bridges the SDK's callback API to async/await.
+func awaitSockudo<T>(
+    _ start: (@escaping (Result<T, SockudoError>) -> Void) -> Void
+) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        start { continuation.resume(with: $0) }
+    }
+}
 ```
 
-`useTLS` defaults to `true`. Keep it enabled in production and use an HTTPS API
-hostname. Construct the client once in service/application state and reuse it.
-Initializers validate options and throw; propagate or handle those errors
+`SockudoClientOptions` initializer parameters:
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `appId` | `Int` | required | Numeric app ID. |
+| `key` | `String` | required | App key. |
+| `secret` | `String` | required | App secret. Signs every request and authorization. |
+| `encryptionMasterKey` | `String` | required | Base64 master key for `private-encrypted-*` channels. The initializer throws if it is not valid Base64. If you do not use encrypted channels, pass an empty string. |
+| `cluster` | `String?` | `nil` | Sets the host to `api-<cluster>.sockudo.io` when no `host` is given. |
+| `host` | `String?` | `nil` | API host. Must not start with `http://` or `https://` or end with `/`. |
+| `port` | `Int?` | `nil` | Used only when `useTLS` is `false`; defaults to `80`. |
+| `scheme` | `String?` | `nil` | Used only when `useTLS` is `false`; defaults to `"http"`. |
+| `useTLS` | `Bool` | `true` | When `true`, the client always uses `https` on port `443` and ignores `port` and `scheme`. |
+| `httpProxy` | `String?` | `nil` | Stored on the options; the 2.2.0 HTTP client does not route through it. |
+
+If neither `host` nor `cluster` is given, you must pass both `port` and `scheme`. Invalid options
+throw from the initializer, and `Event` initializers throw for invalid events; handle those errors
 instead of using `try!`.
 
-## Publish
+<Callout type="warn" title="useTLS overrides your port">
+With the default `useTLS: true`, a `port: 6001` argument is ignored and requests go to port 443.
+For a plain-HTTP local server, pass `useTLS: false` with the port. To reach HTTPS on a non-standard
+port, pass `useTLS: false, scheme: "https", port: 8443`.
+</Callout>
 
-```swift
-let event = try Event(
-    name: "order.created",
-    data: ["id": "ord_123"],
-    channel: Channel(name: "orders", type: .public),
-    idempotencyKey: "order-created-ord_123"
-)
+The `Sockudo` instance also exposes `autoIdempotencyKey` (`Bool`, default `true`), described in
+[Idempotency and retries](#idempotency-and-retries). All requests share `URLSession.shared`, so
+creating one client and reusing it costs nothing extra per call.
 
-sockudo.trigger(event: event) { result in
-    switch result {
-    case .success(let summaries):
-        print(summaries)
-    case .failure(let error):
-        print(error)
+Keep the app secret on the server. It signs every API call and every channel authorization. Anyone
+holding it can publish to any channel, read your app's state, and impersonate any user by minting
+their own presence signatures. Never embed it in an iOS, macOS, tvOS, or watchOS app that ships to
+users.
+
+## Publish an event
+
+Build an `Event` with a `Channel` and any `Encodable` payload, then call `trigger(event:)`:
+
+```swift title="Sources/OrdersService/Publishing.swift"
+import Sockudo
+
+struct OrderPaid: Encodable {
+    let id: String
+    let status: String
+}
+
+func publishOrderPaid(_ sockudo: Sockudo, orderId: String) async throws {
+    let event = try Event(
+        name: "order.paid",
+        data: OrderPaid(id: orderId, status: "paid"),
+        channel: Channel(name: "orders", type: .public),
+        idempotencyKey: "order.paid:\(orderId):v1"
+    )
+
+    let summaries: [ChannelSummary] = try await awaitSockudo {
+        sockudo.trigger(event: event, callback: $0)
     }
+    _ = summaries
 }
 ```
 
-Publish to multiple channels or batch independent events:
+On success the result is an array of `ChannelSummary` values (`channel`, `attributes`). It is empty
+unless you ask for attributes with `attributeOptions: .subscriptionCount`, `.userCount`, or `.all`
+when creating the event. Any non-2xx response is delivered as a `.failure`.
 
-```swift
-let multi = try Event(
+`Channel(name:type:)` adds the prefix for you: `Channel(name: "lobby", type: .presence)` is
+`presence-lobby`. Use `Channel(fullName:)` when you already have the full name. `Event` also accepts
+`extras: MessageExtras(headers:ephemeral:idempotencyKey:echo:)` for Protocol V2 extras.
+
+When a user action both changes your data and is published back to the same user, pass that user's
+socket ID so the originating connection does not receive its own echo:
+
+```swift title="Sources/OrdersService/Publishing.swift"
+let event = try Event(
     name: "order.updated",
-    data: ["id": "ord_123", "status": "paid"],
+    data: OrderPaid(id: orderId, status: "paid"),
+    channel: Channel(name: "orders", type: .public),
+    socketId: socketIdFromRequest // "1234.5678"
+)
+```
+
+The client already applied the change locally; excluding its socket prevents a duplicate render.
+
+## Publish to many channels or in a batch
+
+Use `Event(name:data:channels:)` to publish the same event to several channels in one request:
+
+```swift title="Sources/OrdersService/Fanout.swift"
+let fanout = try Event(
+    name: "order.updated",
+    data: OrderPaid(id: "ord_123", status: "paid"),
     channels: [
-        Channel(name: "tenant-42:orders", type: .public),
-        Channel(name: "user-7:orders", type: .public),
+        Channel(name: "tenant-42-orders", type: .public),
+        Channel(name: "user-7-orders", type: .public),
     ],
-    idempotencyKey: "order-paid:ord_123:v3"
+    idempotencyKey: "order.updated:ord_123:v3"
 )
 
+let _: [ChannelSummary] = try await awaitSockudo { sockudo.trigger(event: fanout, callback: $0) }
+```
+
+Use `trigger(events:idempotencyKey:)` to send different single-channel events in one request:
+
+```swift title="Sources/OrdersService/Batch.swift"
 let created = try Event(
     name: "order.created",
-    data: ["id": "ord_124"],
-    channel: Channel(name: "orders", type: .public)
+    data: OrderPaid(id: "ord_124", status: "created"),
+    channel: Channel(name: "orders", type: .public),
+    idempotencyKey: "order.created:ord_124:v1"
 )
-let paid = try Event(
-    name: "order.paid",
-    data: ["id": "ord_124"],
-    channel: Channel(name: "orders", type: .public)
+let receipt = try Event(
+    name: "order.receipt",
+    data: OrderPaid(id: "ord_124", status: "created"),
+    channel: Channel(name: "user-7", type: .private)
 )
 
-sockudo.trigger(event: multi) { result in
-    handlePublishResult(result)
-}
-sockudo.trigger(events: [created, paid]) { result in
-    handlePublishResult(result)
+let infos: [ChannelInfo] = try await awaitSockudo {
+    sockudo.trigger(events: [created, receipt], idempotencyKey: "checkout:ord_124:v1", callback: $0)
 }
 ```
 
-Use an event's `socketId` to exclude the originating connection. Batches accept
-up to 10 events. Any publish that may be retried needs a stable
-business-derived idempotency key.
+The batch result is an array of `ChannelInfo` values in event order. A multi-channel `Event` cannot
+include an encrypted channel (the initializer throws), and each event in a batch must target a single
+channel.
 
-## Auth
+Server defaults from `[event_limits]`: `max_channels_at_once = 100`, `max_batch_size = 10`,
+`max_payload_in_kb = 100`, and `max_name_length = 200` for event and channel names. The Swift SDK
+does not check these limits client-side; the server rejects requests that exceed them, and the
+failure arrives as `SockudoError.failedResponse`.
 
-```swift
-let privateChannel = Channel(name: "orders", type: .private)
+## Idempotency and retries
 
-sockudo.authenticate(channel: privateChannel, socketId: "123.456") { result in
-    print(result)
-}
+A timeout does not tell you whether the server published the event. If you retry without a key,
+subscribers may receive it twice. With an idempotency key, Sockudo remembers the first result and
+returns it for duplicates instead of publishing again.
 
-let userData = PresenceUserAuthData(userId: "user-42", userInfo: ["name": "Ada"])
-let presenceChannel = Channel(name: "lobby", type: .presence)
+Server semantics:
 
-sockudo.authenticate(channel: presenceChannel, socketId: "123.456", userData: userData) { result in
-    print(result)
-}
-```
+- The key can be sent as the body field `idempotency_key` or the `X-Idempotency-Key` header. When
+  both are present, the body field wins.
+- `[idempotency]` defaults: `enabled = true`, `ttl_seconds = 120`, `max_key_length = 128`. Empty
+  keys are rejected.
+- A duplicate within the TTL returns the original cached `200` response without publishing again.
+- In a batch, `X-Idempotency-Key` identifies the whole batch and each item's `idempotency_key`
+  identifies only that event. The two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
 
-The SDK signs after your handler authenticates the session and authorizes the
-exact channel. Derive presence identity from trusted application state. Use
-`authenticateUser` for user-targeted events.
+How the Swift SDK applies keys:
 
-## Webhooks
+- `Event(..., idempotencyKey:)` on a single or multi-channel publish is sent as both the body field
+  and the `X-Idempotency-Key` header. In a batch it is the per-item key.
+- The `idempotencyKey:` argument of `trigger(events:idempotencyKey:)` is sent as the batch-level
+  `X-Idempotency-Key` header.
+- With `autoIdempotencyKey = true` (the default), an event without a key gets
+  `<random-instance-id>:<serial>`, and each batch item without a key gets
+  `<random-instance-id>:<serial>:<index>`. The batch-level header is never generated automatically.
+  Set `sockudo.autoIdempotencyKey = false` to disable this.
+- `Sockudo.generateIdempotencyKey()` returns a new UUID string if you need a random key.
 
-Pass the original request to `verifyWebhook` before processing its body:
+Built-in retries: both `trigger` methods make up to 3 attempts when the request fails at the
+transport level or the server returns a 5xx status, waiting 100 ms and then 200 ms. Every attempt
+resends the same body, so the same keys. `429` and other 4xx responses are not retried. No other
+method retries.
 
-```swift
-sockudo.verifyWebhook(request: receivedRequest) { result in
-    switch result {
-    case .success(let webhook):
-        enqueue(events: webhook.events)
-    case .failure:
-        rejectWebhook()
+Automatic keys only cover those internal retries, because every new `trigger` call takes a new
+serial. When your code retries a publish later, for example from a job queue, derive the key from
+the business operation, such as `order.created:tenant-42:order-123:v1`. A key identifies a logical
+operation, not an HTTP attempt; never reuse one for a different payload.
+
+## Authorize private and presence channels
+
+When a client subscribes to `private-*`, `presence-*`, or `private-encrypted-*`, it asks your
+backend for a signature. Your endpoint decides whether this user may join this channel. For presence
+channels, derive the user ID and user info from the authenticated session, never from the request,
+or any user can impersonate any other member.
+
+The example uses Vapor 4 on macOS. Vapor re-exports SwiftNIO, whose `Channel` type clashes with the
+SDK's `Channel`, so keep SDK calls in a file that imports only `Sockudo` and expose plain functions
+to your routes:
+
+```swift title="Sources/App/SockudoGateway.swift"
+import Foundation
+import Sockudo
+
+final class SockudoGateway {
+    let client: Sockudo
+
+    init(client: Sockudo) {
+        self.client = client
+    }
+
+    /// Returns the JSON body the realtime client expects from the auth endpoint.
+    func authorize(
+        channelName: String,
+        socketId: String,
+        userId: String,
+        displayName: String
+    ) async throws -> Data {
+        let channel = Channel(fullName: channelName)
+        let presence = channel.type == .presence
+            ? PresenceUserData(userId: userId, userInfo: ["name": AnyEncodable(displayName)])
+            : nil
+
+        let token: AuthenticationToken = try await awaitSockudo {
+            client.authenticate(channel: channel, socketId: socketId, userData: presence, callback: $0)
+        }
+        return try JSONEncoder().encode(token)
     }
 }
 ```
 
-Do not deserialize, normalize, or log the raw body before signature
-verification. Make downstream processing idempotent.
+```swift title="Sources/App/routes.swift"
+import Vapor
 
-## State and history
-
-```swift
-sockudo.channels(
-    withFilter: .presence,
-    attributeOptions: .userCount
-) { result in
-    handleChannels(result)
+struct ChannelAuthForm: Content {
+    let socket_id: String
+    let channel_name: String
 }
 
+func routes(_ app: Application, sockudo: SockudoGateway) throws {
+    app.post("sockudo", "auth") { req async throws -> Response in
+        // AppUser is your Authenticatable model, populated by your session middleware.
+        let user = try req.auth.require(AppUser.self)
+        let form = try req.content.decode(ChannelAuthForm.self)
+
+        guard canSubscribe(userId: user.id, channelName: form.channel_name) else {
+            throw Abort(.forbidden)
+        }
+
+        let body = try await sockudo.authorize(
+            channelName: form.channel_name,
+            socketId: form.socket_id,
+            userId: user.id,
+            displayName: user.name
+        )
+        return Response(
+            status: .ok,
+            headers: ["Content-Type": "application/json"],
+            body: .init(data: body)
+        )
+    }
+}
+
+// Replace with your own rules: tenant membership, room ACLs, ownership checks.
+func canSubscribe(userId: String, channelName: String) -> Bool {
+    channelName == "private-user-\(userId)" || channelName == "presence-lobby"
+}
+```
+
+`authenticate(channel:socketId:userData:)` produces an `AuthenticationToken` that encodes to the
+exact JSON the client expects: `auth`, plus `channel_data` for presence channels and `shared_secret`
+for encrypted channels. It fails for public channels, and for presence channels without `userData`.
+Presence `userInfo` is a `[String: AnyEncodable]` dictionary; wrap each value with `AnyEncodable`.
+
+<Callout type="warn" title="Signing is not authorization">
+`authenticate` signs whatever channel and socket you pass. It does not check that the user is allowed
+in. The `canSubscribe` check, and deriving presence identity from the session, are what keep one
+tenant out of another's channels.
+</Callout>
+
+### User authentication
+
+Not available in 2.2.0. The `Sockudo` module has no user sign-in helper, and there is no generic
+signed request helper to fall back on. If your clients call `signin()`, serve that endpoint from
+another Sockudo server SDK. See [Authentication](/docs/getting-started/authentication).
+
+### Encrypted channels
+
+For `private-encrypted-*` channels the SDK encrypts event data before it leaves your server, and
+Sockudo only relays ciphertext. Generate a key once and store it in a secret manager:
+
+```bash title="Terminal"
+openssl rand -base64 32
+```
+
+Pass the Base64 string as `encryptionMasterKey`, then publish with `Channel(name: "orders", type: .encrypted)`
+(full name `private-encrypted-orders`). `trigger` encrypts the data with NaCl secretbox, and
+`authenticate` returns the channel's `shared_secret`. Incoming webhook events on encrypted channels
+are decrypted for you.
+
+Points to know:
+
+- The initializer only checks that the key is valid Base64. Use 32 random bytes as shown.
+- A multi-channel event cannot include an encrypted channel.
+- In 2.2.0, encrypting an event rebuilds it without its `socketId`, so publishes to encrypted
+  channels are not excluded from the originating connection.
+- The Swift SDK derives each channel's secret from the channel name and the Base64 key string. Other
+  Sockudo server SDKs derive it differently, so publish to and authorize a given encrypted channel
+  from the same SDK.
+
+Keep using TLS: encryption hides payloads, not channel names or event names.
+
+### Terminate user connections
+
+Disconnect every connection for a user, for example after a ban, or ask clients to reconnect so they
+fetch fresh auth:
+
+```swift title="Sources/App/AccountActions.swift"
+let _: UserConnectionResponse = try await awaitSockudo {
+    sockudo.terminateUserConnections(userId: "user-42", callback: $0)
+}
+
+let _: UserConnectionResponse = try await awaitSockudo {
+    sockudo.forceReconnectUser(userId: "user-42", callback: $0)
+}
+```
+
+`forceReconnectUser` closes connections with code `4200`, which clients treat as a reconnect signal.
+Revoke the user's session first, or your auth endpoint will simply sign them back in.
+
+## Validate webhooks
+
+Sockudo signs each webhook with an HMAC-SHA256 of the exact request bytes, using your app secret, and
+sends it in `X-Pusher-Signature` with your app key in `X-Pusher-Key`. Re-encoding JSON changes the
+bytes, so pass the raw body through untouched. `verifyWebhook(request:)` takes a `URLRequest`, checks
+that `X-Pusher-Key` matches your key, verifies the signature over `httpBody`, and decodes the events:
+
+```swift title="Sources/App/SockudoGateway.swift"
+extension SockudoGateway {
+    func verifyWebhook(body: Data, key: String?, signature: String?) async throws -> Webhook {
+        // Only the headers and body are read; the URL is a placeholder.
+        var request = URLRequest(url: URL(string: "https://localhost/webhooks/sockudo")!)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue(key, forHTTPHeaderField: "X-Pusher-Key")
+        request.setValue(signature, forHTTPHeaderField: "X-Pusher-Signature")
+        let signed = request
+
+        return try await awaitSockudo { client.verifyWebhook(request: signed, callback: $0) }
+    }
+}
+```
+
+```swift title="Sources/App/routes.swift"
+app.on(.POST, "webhooks", "sockudo", body: .collect(maxSize: "1mb")) { req async throws -> HTTPStatus in
+    guard let buffer = req.body.data else {
+        throw Abort(.badRequest)
+    }
+
+    guard let webhook = try? await sockudo.verifyWebhook(
+        body: Data(buffer.readableBytesView),
+        key: req.headers.first(name: "X-Pusher-Key"),
+        signature: req.headers.first(name: "X-Pusher-Signature")
+    ) else {
+        throw Abort(.unauthorized)
+    }
+
+    // Hand webhook.events to your queue and acknowledge quickly.
+    _ = webhook.events
+    return .ok
+}
+```
+
+A verified `Webhook` has `createdAt` and `events`. Each `WebhookEvent` exposes `eventType`
+(`channelOccupied`, `channelVacated`, `memberAdded`, `memberRemoved`, `clientEvent`, or
+`unknown(String)` for newer event names), `channel`, `event`, `socketId`, `userId`, and
+`rawPayload` with every original field.
+
+Acknowledge fast and make processing idempotent. Sockudo may retry delivery, so the same event can
+arrive more than once. The SDK verifies against a single secret; it has no built-in support for
+accepting two secrets during key rotation.
+
+## Channel state and history
+
+```swift title="Sources/App/ChannelState.swift"
+// Occupied presence channels, with user counts
+let presenceChannels: [ChannelSummary] = try await awaitSockudo {
+    sockudo.channels(withFilter: .presence, attributeOptions: .userCount, callback: $0)
+}
+
+// One channel
+let lobby = Channel(name: "lobby", type: .presence)
+let info: ChannelInfo = try await awaitSockudo {
+    sockudo.channelInfo(for: lobby, attributeOptions: .all, callback: $0)
+}
+
+// Members of a presence channel
+let members: [User] = try await awaitSockudo {
+    sockudo.users(for: lobby, callback: $0)
+}
+```
+
+`ChannelFilter` is `.any`, `.private`, `.presence`, `.encrypted`, or `.custom(prefix:)`.
+`ChannelInfo.isOccupied` is `false` for an unoccupied channel, and its attributes are then empty.
+`users(for:)` only works for presence channels. Channel state is an operational snapshot; do not use
+it as an authorization database.
+
+### History
+
+`history(for:options:)` reads durable history. `ChannelHistoryFetchOptions` takes `limit`,
+`direction`, `cursor`, `startSerial`, `endSerial`, `startTimeMS`, and `endTimeMS`. Cursors are
+opaque: pass `nextCursor` back unchanged and do not parse or construct them.
+
+```swift title="Sources/App/HistoryExport.swift"
 let orders = Channel(name: "orders", type: .public)
-sockudo.history(
-    for: orders,
-    options: .init(limit: 50, direction: "newest_first")
-) { result in
-    handleHistory(result)
+var cursor: String? = nil
+
+repeat {
+    let options = cursor.map { ChannelHistoryFetchOptions(cursor: $0) }
+        ?? ChannelHistoryFetchOptions(limit: 100, direction: "newest_first")
+
+    let page: ChannelHistoryPage = try await awaitSockudo {
+        sockudo.history(for: orders, options: options, callback: $0)
+    }
+
+    for item in page.items {
+        print(item.serial, item.eventName ?? "", item.operationKind)
+    }
+    cursor = page.nextCursor
+} while cursor != nil
+```
+
+A `ChannelHistoryPage` also carries `hasMore`, `bounds`, and `continuity` (retained range, and
+whether retention truncated the stream).
+
+### Presence history
+
+```swift title="Sources/App/PresenceAudit.swift"
+let transitions: PresenceHistoryPage = try await awaitSockudo {
+    sockudo.presenceHistory(
+        for: lobby,
+        options: .init(limit: 50, direction: "newest_first"),
+        callback: $0)
 }
 
-let presence = Channel(name: "lobby", type: .presence)
-sockudo.presenceSnapshot(
-    for: presence,
-    options: .init(atSerial: 4)
-) { result in
-    handleSnapshot(result)
+let snapshot: PresenceSnapshot = try await awaitSockudo {
+    sockudo.presenceSnapshot(for: lobby, options: .init(atSerial: 4), callback: $0)
 }
 ```
 
-Current state is an operational snapshot. Bound history pages and pass opaque
-cursors back unchanged.
+Presence history uses the same pagination fields and opaque cursors as channel history. A snapshot
+accepts `atTimeMS` or `atSerial` and reconstructs membership at that point. See
+[History and recovery](/docs/server/history-recovery).
 
-## End-to-end encrypted channels
+## Versioned messages and annotations
 
-Pass a base64-encoded 32-byte `encryptionMasterKey` in
-`SockudoClientOptions`, then use a channel with type `.encrypted`. The SDK
-encrypts payloads and derives the auth shared secret. A single event cannot mix
-encrypted and unencrypted channels. Keep the master key in a secret manager
-and continue to use TLS.
+Protocol V2 messages carry a `messageSerial`. Use it to read, edit, delete, or append to a message
+and to manage annotations on it. Mutation bodies are `[String: Any]` dictionaries using the HTTP
+API's field names.
 
-## User connection management
+```swift title="Sources/App/MessageEditing.swift"
+let room = Channel(name: "chat-room-1", type: .public)
 
-```swift
-sockudo.terminateUserConnections(userId: "user-42") { result in
-    handleUserControl(result)
+let latest: GetMessageResponse = try await awaitSockudo {
+    sockudo.getMessage(for: room, messageSerial: messageSerial, callback: $0)
 }
 
-sockudo.forceReconnectUser(userId: "user-42") { result in
-    handleUserControl(result)
+let versions: MessageVersionsPage = try await awaitSockudo {
+    sockudo.getMessageVersions(
+        for: room, messageSerial: messageSerial,
+        options: .init(limit: 10, direction: "oldest_first"), callback: $0)
+}
+
+let updated: MutationResponse = try await awaitSockudo {
+    sockudo.updateMessage(
+        for: room, messageSerial: messageSerial,
+        body: ["data": "Edited text", "description": "typo fix"], callback: $0)
+}
+
+let _: MutationResponse = try await awaitSockudo {
+    sockudo.appendMessage(
+        for: room, messageSerial: messageSerial, body: ["data": " more tokens"], callback: $0)
+}
+
+let _: MutationResponse = try await awaitSockudo {
+    sockudo.deleteMessage(
+        for: room, messageSerial: messageSerial,
+        body: ["clear_fields": ["data", "extras"]], callback: $0)
 }
 ```
 
-Terminate for immediate revocation; force reconnect when the user should
-obtain refreshed auth or routing state.
+Annotations:
+
+```swift title="Sources/App/Reactions.swift"
+let reaction: PublishAnnotationResponse = try await awaitSockudo {
+    sockudo.publishAnnotation(
+        for: room, messageSerial: messageSerial,
+        body: ["type": "reactions:distinct.v1", "name": "like"], callback: $0)
+}
+
+let reactions: AnnotationEventsPage = try await awaitSockudo {
+    sockudo.listAnnotations(
+        for: room, messageSerial: messageSerial,
+        options: .init(type: "reactions:distinct.v1", limit: 50), callback: $0)
+}
+
+let _: DeleteAnnotationResponse = try await awaitSockudo {
+    sockudo.deleteAnnotation(
+        for: room, messageSerial: messageSerial,
+        annotationSerial: reaction.annotationSerial, callback: $0)
+}
+```
+
+`MutationResponse` reports `accepted`, `status`, and `versionSerial`. See
+[Mutable messages](/docs/server/mutable-messages) for request fields, authorization, and delivery
+semantics.
 
 ## Push notifications
 
-```swift
-sockudo.activateDevice(body: [
-    "deviceId": "ios-device-1",
-    "clientId": "user-42",
-    "platform": "apns",
-    "providerToken": "provider-token",
-]) { result in
-    print(result)
+Push helpers add the `X-Sockudo-Push-Capability` header for you (`push-admin`, or `push-subscribe`
+when you pass a `deviceIdentityToken`). Request bodies are `[String: Any]` dictionaries sent as
+given, so use the camel-case field names from the
+[push notifications guide](/docs/server/push-notifications).
+
+```swift title="Sources/App/PushService.swift"
+// Register a device after verifying the user owns it.
+let _: PushObjectResponse = try await awaitSockudo {
+    sockudo.activateDevice(body: deviceRegistration, callback: $0)
 }
 
-sockudo.upsertChannelPushSubscription(body: [
-    "deviceId": "ios-device-1",
-    "clientId": "user-42",
-    "channel": "orders",
-]) { result in
-    print(result)
+// Subscribe a device to channel push.
+let _: PushObjectResponse = try await awaitSockudo {
+    sockudo.upsertChannelPushSubscription(body: subscription, callback: $0)
 }
 
-sockudo.publishPush(request: [
-    "recipients": [["type": "channel", "channel": "orders"]],
-    "payload": [
-        "title": "Order updated",
-        "body": "Order ord_123 is packed",
-    ],
-    "publishId": "push-order-ord_123-packed",
-]) { result in
-    print(result)
+// Publish with your own stable publishId.
+let publishId = "push-order-ord_123-packed"
+let accepted: PushPublishAcceptedResponse = try await awaitSockudo {
+    sockudo.publishPush(request: [
+        "publishId": publishId,
+        "recipients": [["type": "channel", "channel": "orders"]],
+        "payload": ["title": "Order updated", "body": "Order ord_123 is packed"],
+    ], callback: $0)
+}
+
+// Inspect delivery later.
+let status: PushObjectResponse = try await awaitSockudo {
+    sockudo.getPublishStatus(publishID: publishId, callback: $0)
 }
 ```
 
-Use Swift server SDKs in trusted services, not inside untrusted client apps with app secrets.
+`publishPush` always sends `sync: false`, so the response is an admission record, not a delivery
+result; read `getPublishStatus(publishID:)` afterwards. Set and keep your own `publishId`: it makes
+retries safe, and in 2.2.0 the `publishID` property of `PushPublishAcceptedResponse` can be `nil`
+because the model expects snake-case keys while the server responds in camel case.
 
-`ApnsLiveActivity` builds direct recipients, broadcast recipients, and typed event/priority
-payload dictionaries. The SDK also exposes `create/get/list/deleteApnsLiveActivityChannel`; opaque
-channel IDs are safely path-encoded. See
-[Apple Live Activities](/docs/server/apple-live-activities) for the full lifecycle.
+Other helpers:
 
-## Errors, concurrency, and production guidance
+| Area | Methods |
+| --- | --- |
+| Devices | `activateDevice`, `createDeviceActivation`, `updateDeviceRegistration`, `getDeviceRegistration`, `listDeviceRegistrations`, `deleteDeviceRegistration`, `removeDeviceRegistrationsByClient` |
+| Channel subscriptions | `upsertChannelPushSubscription`, `listChannelPushSubscriptions`, `deleteChannelPushSubscriptions`, `listChannelPushSubscriptionChannels` |
+| Publishing | `publishPush`, `publishPushDirect`, `publishPushBatch`, `schedulePush` (requires `notBeforeMs`), `cancelScheduledPush`, `getPublishStatus` |
+| Credentials and feedback | `listPushCredentials`, `putPushCredential`, `postPushDeliveryStatus` |
 
-Every asynchronous operation completes with `Result`. Handle both cases and
-avoid force-unwrapping or `try!` in production. Retry only transient transport
-errors, `429`, and suitable server responses with bounded backoff. Retried
-publishes must retain their original idempotency key.
+List helpers take `PushCursorFetchOptions(limit:cursor:)` or
+`PushSubscriptionFetchOptions(limit:cursor:channel:deviceID:)` and return a `PushListResponse` with
+`items`, `nextCursor`, and `hasMore`.
 
-- Reuse the configured client and its URL session.
-- Keep the SDK operation deadline below the enclosing request or job deadline.
-- Dispatch completion work to the appropriate actor or queue for your
-  application.
-- Keep credentials, signed URLs, raw webhooks, event data, and provider tokens
-  out of logs.
-- Test duplicate attempts, key rotation, webhook retries, and graceful service
-  shutdown.
+### Apple Live Activities
+
+`ApnsLiveActivity` builds the recipient and payload dictionaries:
+`directRecipient(activityToken:)`, `broadcastRecipient(channelID:storagePolicy:)`, and
+`payload(event:timestamp:contentState:priority:)` with `ApnsLiveActivityEvent` (`.start`, `.update`,
+`.end`) and `ApnsLiveActivityPriority` (`.lowPower`, `.conservePower`, `.immediate`). Manage iOS 18
+broadcast channels with `createApnsLiveActivityChannel(storagePolicy:)`,
+`getApnsLiveActivityChannel(channelID:)`, `listApnsLiveActivityChannels`, and
+`deleteApnsLiveActivityChannel(channelID:)`; channel IDs are path-encoded for you.
+
+```swift title="Sources/App/LiveScores.swift"
+let channel: ApnsBroadcastChannel = try await awaitSockudo {
+    sockudo.createApnsLiveActivityChannel(storagePolicy: .mostRecent, callback: $0)
+}
+
+let _: PushPublishAcceptedResponse = try await awaitSockudo {
+    sockudo.publishPush(request: [
+        "publishId": "match-90-score-3-1",
+        "recipients": [[
+            "type": "recipient",
+            "recipient": ApnsLiveActivity.broadcastRecipient(
+                channelID: channel.channelID, storagePolicy: .mostRecent),
+        ]],
+        "payload": [String: Any](),
+        "liveActivity": ApnsLiveActivity.payload(
+            event: .update,
+            timestamp: UInt64(Date().timeIntervalSince1970),
+            contentState: ["home": 3, "away": 1]),
+    ], callback: $0)
+}
+```
+
+See [Apple Live Activities](/docs/server/apple-live-activities) for direct-token start, update, and
+end flows.
+
+## Errors and timeouts
+
+Every operation reports failures as a `SockudoError`:
+
+| Case | Meaning |
+| --- | --- |
+| `failedResponse(statusCode:errorResponse:)` | The server answered with a non-2xx status. `errorResponse` is the response body. |
+| `internalError(_:)` | Transport failure (connection, DNS, TLS, timeout), or another error raised while preparing the request, such as a failed encryption. |
+| `decodingError(_:)` / `encodingError(_:)` | A response or request body could not be decoded or encoded. |
+| `clientSide` | The request URL could not be built. |
+| `unexpectedResponse` | The response was not an HTTP response of the expected shape. |
+
+There is no timeout option in 2.2.0. Requests use `URLSession.shared` with its default
+configuration, so enforce your own deadline around the call. Cancelling the awaiting task does not
+cancel the underlying request when you use the bridge shown above, and a publish that timed out on
+your side may still have been applied, so retry it with the same key.
+
+Retry transport errors, `429`, and 5xx responses with backoff, and reuse the original idempotency key
+or `publishId`. Do not retry `400`, `401`, `403`, or `413` unchanged; fix the request, credentials,
+or payload.
+
+```swift title="Sources/App/SafePublish.swift"
+do {
+    let _: [ChannelSummary] = try await awaitSockudo { sockudo.trigger(event: event, callback: $0) }
+} catch let error as SockudoError {
+    switch error {
+    case .failedResponse(let statusCode, _) where statusCode == 429 || statusCode >= 500:
+        // Transient: schedule a retry with the same idempotency key.
+        break
+    case .failedResponse(let statusCode, _):
+        // Permanent: log the status code and fix the request.
+        print("Sockudo rejected publish with status \(statusCode)")
+    case .internalError:
+        // Transport failure: retry with the same idempotency key.
+        break
+    default:
+        // Encoding, decoding, or configuration problem: do not retry unchanged.
+        throw error
+    }
+}
+```
+
+Never log the app secret, the encryption master key, signed request URLs (their query string carries
+`auth_signature`), raw webhook bodies, or push provider tokens.
+
+## Next steps
+
+<Cards>
+  <Card title="Server SDKs overview" href="/docs/server-sdks" description="Compare capabilities across every official server SDK." />
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="End-to-end flow for private, presence, and user authentication." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Event types, delivery, retries, and signature details." />
+  <Card title="Push notifications" href="/docs/server/push-notifications" description="Device registration, channel push, publish status, and providers." />
+</Cards>

@@ -4,9 +4,35 @@ description: Deploy Sockudo on AWS, Google Cloud, and Azure with managed backend
 icon: Globe
 ---
 
+This guide maps the Sockudo deployment model onto AWS, Google Cloud, and Azure: which compute
+shape to pick, how to configure the provider's load balancer for WebSockets, and how to tune
+managed Kubernetes nodes. Read [Kubernetes and Helm](/docs/deployment/kubernetes) or
+[Linux VM and bare metal](/docs/deployment/linux) first; this page adds the provider-specific
+parts.
+
 Sockudo uses the same runtime model on every cloud: long-lived client connections at the edge,
 shared fanout and coordination between instances, and optional durable stores. Provider services
 change the failure modes and tuning controls, not those requirements.
+
+```mermaid
+flowchart TB
+  C[Clients] --> LB[Regional load balancer]
+  LB --> ZA[Sockudo zone A]
+  LB --> ZB[Sockudo zone B]
+  ZA <--> R[Managed Redis]
+  ZB <--> R
+  ZA --> DB[Managed database]
+  ZB --> DB
+```
+
+Whatever the provider, the same three questions decide the shape:
+
+1. **How long can a connection stay open?** Managed container platforms often cap request
+   duration, which forces periodic reconnects.
+2. **Do you control the node?** Kernel sysctls and process file limits are only tunable on VMs and
+   self-configured Kubernetes node pools.
+3. **Where does shared state live?** Managed Redis and databases should sit in the same region as
+   Sockudo, on a private network.
 
 ## Platform map
 
@@ -43,11 +69,30 @@ Application Load Balancers support WebSockets natively. Their idle timeout defau
 which is too close to many heartbeat configurations. Set it deliberately and test through every
 proxy layer:
 
-```bash
-aws elbv2 modify-load-balancer-attributes \
-  --load-balancer-arn "$SOCKUDO_ALB_ARN" \
-  --attributes Key=idle_timeout.timeout_seconds,Value=180
-```
+<Steps>
+
+1. Raise the idle timeout above Sockudo's 120-second default `activity_timeout`, with margin:
+
+   ```bash
+   aws elbv2 modify-load-balancer-attributes \
+     --load-balancer-arn "$SOCKUDO_ALB_ARN" \
+     --attributes Key=idle_timeout.timeout_seconds,Value=180
+   ```
+
+2. Confirm the attribute:
+
+   ```bash
+   aws elbv2 describe-load-balancer-attributes \
+     --load-balancer-arn "$SOCKUDO_ALB_ARN" \
+     --query "Attributes[?Key=='idle_timeout.timeout_seconds'].Value"
+   ```
+
+   The output is `["180"]`.
+
+3. Hold a quiet WebSocket open through the public endpoint for longer than 60 seconds and confirm it
+   is not closed by the load balancer.
+
+</Steps>
 
 AWS documents the default, valid range, and keepalive interaction in
 [Application Load Balancer attributes](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.html).
@@ -56,7 +101,7 @@ from client-side failures.
 
 Configure:
 
-- target health on `/up/<app-id>` and process monitoring on `/live`
+- target health on `/up/<app-id>` (or the capacity-aware `/ready`) and process monitoring on `/live`
 - deregistration delay and service termination grace as one drain budget
 - security groups that expose the Sockudo port only to the load balancer
 - metrics on target connection errors, rejected connections, and 5xx responses
@@ -125,8 +170,10 @@ Do not add `/etc/security/limits.d` to EKS user data expecting it to raise a con
 PAM limits do not control the existing container process. Check `/proc/1/limits` inside the pod and
 customize the node runtime only if the effective value is too low.
 
+<Callout type="warn" title="Node configuration changes replace nodes">
 Apply this profile to a dedicated, canary node group first. A launch-template or node configuration
-change replaces nodes and causes pod movement.
+change replaces nodes and causes pod movement, and every moved pod disconnects its clients.
+</Callout>
 
 ### AWS service choices
 
@@ -182,12 +229,27 @@ GKE accepts only its documented sysctl set and ranges. Check the current provide
 adding a value. Use an exact unsafe allowlist rather than `net.*`, then set the matching pod sysctl
 only when the node baseline is insufficient.
 
+After pods are scheduled on the new pool, verify the effective value inside a pod:
+
+```bash
+kubectl exec -n sockudo deploy/sockudo -- cat /proc/sys/net/core/somaxconn
+```
+
+Pin Sockudo to the pool with a `nodeSelector` such as `cloud.google.com/gke-nodepool: sockudo` in
+the chart values.
+
 ### Cloud Run
 
 Cloud Run supports WebSockets, but treats them as long-running HTTP requests. Google currently
 documents a request timeout of up to 60 minutes, best-effort session affinity, and up to 1000
 concurrent connections per container. See
 [Using WebSockets on Cloud Run](https://cloud.google.com/run/docs/triggering/websockets).
+
+<Callout type="warn" title="Every Cloud Run socket is closed at the request timeout">
+A WebSocket on Cloud Run ends when its request timeout expires, however healthy it is. With a
+60-minute timeout, every client reconnects at least once an hour. Design for it: shared state across
+instances and, where continuity matters, Protocol V2 recovery.
+</Callout>
 
 For Sockudo that means:
 
@@ -270,6 +332,17 @@ AKS uses camelCase names in the JSON API even though the documentation tables sh
 Provider defaults can already be high; for example, system-wide file handle ceilings on current
 AKS Linux images may not be the limiting `nofile`. Always inspect the process limit inside the pod.
 
+Verify the node pool and the effective values once pods are scheduled on it:
+
+```bash
+az aks nodepool show \
+  --resource-group "$AKS_RESOURCE_GROUP" \
+  --cluster-name "$AKS_CLUSTER" \
+  --name sockudo \
+  --query "linuxOsConfig.sysctls"
+kubectl exec -n sockudo deploy/sockudo -- cat /proc/sys/net/core/somaxconn
+```
+
 ### Azure Container Apps
 
 Azure Container Apps ingress supports WebSockets. Environment ingress settings can include an idle
@@ -300,6 +373,8 @@ Use AKS or Virtual Machine Scale Sets when connection density requires host cont
 The same decision tree works on DigitalOcean, Hetzner, Oracle Cloud, Fly.io, Render, Railway, or an
 on-premises Kubernetes platform:
 
+<Steps>
+
 1. Confirm native WebSocket support and the maximum idle or request duration.
 2. Confirm per-instance concurrent connection, file descriptor, bandwidth, and packet limits.
 3. Confirm whether you control node sysctls and process `rlimit`.
@@ -308,5 +383,33 @@ on-premises Kubernetes platform:
 6. Keep stateful dependencies close enough for the measured latency budget.
 7. Run a quiet-socket soak and reconnect storm, not only a short message-throughput test.
 
+</Steps>
+
+<Callout type="tip" title="Unpublished limits are unknowns, not infinities">
 If the provider does not publish a socket or timeout limit, treat it as an unknown to test and
 monitor, not as unlimited.
+</Callout>
+
+## Production checklist
+
+On any provider, confirm before taking traffic:
+
+- Sockudo runs in at least two zones behind one regional load balancer
+- the load balancer idle timeout exceeds the client heartbeat interval, verified with a quiet socket
+- target health uses `/up/<app-id>` or `/ready`; process restarts use `/live`
+- the Sockudo port accepts traffic only from the load balancer; metrics only from monitoring
+- Redis and databases are private, in the same region, and reached through workload identity or
+  secrets, not long-lived keys in images
+- `ADAPTER_FALLBACK_TO_LOCAL=false` on every replica
+- node sysctls and the process `nofile` limit are verified inside a running instance or pod
+- deregistration delay plus Sockudo's shutdown grace and drain budgets fit inside the platform's
+  termination window
+
+## Next steps
+
+<Cards>
+  <Card title="Kubernetes and Helm" href="/docs/deployment/kubernetes" description="Chart values, probes, and drain timing for EKS, GKE, and AKS." />
+  <Card title="Capacity planning" href="/docs/deployment/capacity-planning" description="Size instances and run benchmarks from realistic client regions." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Choose between Redis, NATS, Google Pub/Sub, and other adapters." />
+  <Card title="Security" href="/docs/server/security" description="Network boundaries, secrets, and origin policy." />
+</Cards>

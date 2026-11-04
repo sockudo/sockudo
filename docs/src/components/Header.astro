@@ -1,0 +1,50 @@
+---
+import { Menu, Moon, Search, Sun } from '@lucide/astro';
+import Stars from './Stars.astro';
+
+interface Props {
+  solid?: boolean;
+  showMenu?: boolean;
+}
+const { solid = false, showMenu = false } = Astro.props;
+const path = Astro.url.pathname;
+const links = [
+  { href: '/docs', label: 'Docs', match: (p: string) => p.startsWith('/docs') && !p.startsWith('/docs/server-sdks') && !p.startsWith('/docs/clients') },
+  { href: '/docs/clients', label: 'Clients', match: (p: string) => p.startsWith('/docs/clients') },
+  { href: '/docs/server-sdks', label: 'Server SDKs', match: (p: string) => p.startsWith('/docs/server-sdks') },
+  { href: '/docs/server/ai-transport-overview', label: 'AI Transport', match: () => false },
+  { href: '/blog', label: 'Blog', match: (p: string) => p.startsWith('/blog') },
+];
+---
+
+<header class="site-header" data-solid={solid ? '' : undefined}>
+  <div class="inner">
+    {
+      showMenu && (
+        <button class="icon-btn menu-btn" type="button" aria-label="Toggle navigation" data-nav-toggle>
+          <Menu />
+        </button>
+      )
+    }
+    <a class="brand" href="/" aria-label="Sockudo home">
+      <img src="/sockudo-logo/sockudo-icon-color.svg" alt="" width="28" height="28" />
+      <span>Sockudo</span>
+      <span class="tag">v5.2</span>
+    </a>
+    <nav class="main-nav" aria-label="Primary">
+      {links.map((l) => <a href={l.href} aria-current={l.match(path) ? 'page' : undefined}>{l.label}</a>)}
+    </nav>
+    <div class="header-actions">
+      <button class="search-trigger" type="button" data-search-open aria-label="Search documentation">
+        <Search size={16} />
+        <span class="label">Search docs…</span>
+        <kbd data-mod-key>Ctrl K</kbd>
+      </button>
+      <Stars />
+      <button class="icon-btn theme-toggle" type="button" aria-label="Toggle color theme" data-theme-toggle>
+        <Sun class="sun" />
+        <Moon class="moon" />
+      </button>
+    </div>
+  </div>
+</header>
