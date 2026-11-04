@@ -4,6 +4,19 @@
 
 ### Added
 
+- App secrets at rest (#527): with `SOCKUDO_APP_SECRET_ENCRYPTION_KEY` or
+  `SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE` set, the MySQL and PostgreSQL app
+  managers store secrets AES-256-GCM encrypted in a new `secret_enc` column,
+  bound to the app id. Plaintext rows keep working. `sockudo
+  --encrypt-app-secret <APP_ID>` prints the column value for a secret on stdin.
+- Disabled or deleted apps (#526): each node closes the live connections of
+  apps that are now disabled (`4003`) or deleted (`4001`) every
+  `app_manager.availability_check_interval_seconds` (default `15`, `0` off).
+- Paced shutdown (#528): `shutdown_close_delay_ms` and
+  `shutdown_close_spread_ms` (default `0`) delay and spread the `4200` closes
+  across the grace period. `@sockudo/client` adds `retryJitterMs`.
+- `SECURITY.md` with private vulnerability reporting instructions (#529).
+
 - Redis Cluster adapter: broadcast bucketing spreads broadcast fan-out across
   shards. `adapter.cluster.broadcast_buckets` (1–64, default `3`, set to the
   shard count) publishes each broadcast to one hash-tagged channel per bucket,
@@ -20,6 +33,17 @@
   per message on the origin node.
 
 ### Changed
+
+- An explicit `--config` file that fails to load now exits with status 1, and
+  an existing auto-discovered `config/config.toml`/`config.json` that fails to
+  parse is fatal too, instead of silently falling back (#520).
+- `[app_manager] driver` accepts `postgres`/`postgresql` (and `surreal`,
+  `scylla`) in config files (#521).
+- `[database.postgres]` defaults to port `5432` and user `postgres` (#524).
+- The fresh SQL schemas no longer insert the demo app with public credentials;
+  it moved to dev/test-only `900_dev_seed_app.sql` (#522).
+- SurrealDB client upgraded to 4.0. It requires a SurrealDB 4.x server; a 4.0
+  server converts a 3.x datastore one-way on first start, so back it up first.
 
 - `sockudo_ws_messages_sent_total` now counts application deliveries on every
   node. Before, only the node that received the publish counted, and only its

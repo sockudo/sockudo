@@ -44,8 +44,7 @@ func main() {
         AppID:  "your-app-id",
         Key:    "your-app-key",
         Secret: "your-app-secret",
-        Host:   "127.0.0.1",
-        Port:   "6001",
+        Host:   "127.0.0.1:6001", // host or host:port
     }
 
     data := map[string]string{"message": "hello world"}
@@ -66,8 +65,7 @@ client := sockudo.Client{
     AppID:  "your-app-id",
     Key:    "your-app-key",
     Secret: "your-app-secret",
-    Host:   "127.0.0.1",
-    Port:   "6001",
+    Host:   "127.0.0.1:6001", // host or host:port
     Secure: false,
 }
 ```
@@ -75,14 +73,20 @@ client := sockudo.Client{
 ### From URL
 
 ```go
-client := sockudo.ClientFromURL("http://key:secret@127.0.0.1:6001/apps/app-id")
+client, err := sockudo.ClientFromURL("http://key:secret@127.0.0.1:6001/apps/app-id")
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### From Environment Variable
 
 ```go
 // Reads SOCKUDO_URL, expected format: http://key:secret@host:port/apps/app_id
-client := sockudo.ClientFromEnv("SOCKUDO_URL")
+client, err := sockudo.ClientFromEnv("SOCKUDO_URL")
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### HTTPS
@@ -153,7 +157,7 @@ Pass an `IdempotencyKey` in `TriggerParams` to safely retry publishes without ca
 ```go
 key := "order-shipped-order-789"
 params := sockudo.TriggerParams{IdempotencyKey: &key}
-err := client.TriggerWithParams("my-channel", "my-event", data, params)
+_, err := client.TriggerWithParams("my-channel", "my-event", data, params)
 ```
 
 The server deduplicates publishes with the same key within the configured window.
@@ -318,8 +322,7 @@ Sockudo supports end-to-end encryption for `private-encrypted-` prefixed channel
        AppID:                    "your-app-id",
        Key:                      "your-app-key",
        Secret:                   "your-app-secret",
-       Host:                     "127.0.0.1",
-       Port:                     "6001",
+       Host:                     "127.0.0.1:6001", // host or host:port
        EncryptionMasterKeyBase64: "<output from command above>",
    }
    ```
@@ -328,21 +331,25 @@ Sockudo supports end-to-end encryption for `private-encrypted-` prefixed channel
 
 ## Google App Engine
 
-This library is compatible with Google App Engine's `urlfetch` library. Pass the `urlfetch.Client` as the HTTP client:
+On current App Engine runtimes the default `net/http` client works, so no extra setup is needed.
+If your app uses the legacy bundled services through `google.golang.org/appengine/v2`, pass a
+`urlfetch.Client` as the HTTP client:
 
 ```go
 package main
 
 import (
-    "appengine"
-    "appengine/urlfetch"
     "fmt"
     "net/http"
+
     sockudo "github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2"
+    "google.golang.org/appengine/v2"
+    "google.golang.org/appengine/v2/urlfetch"
 )
 
-func init() {
+func main() {
     http.HandleFunc("/", handler)
+    appengine.Main()
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -352,8 +359,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
         AppID:      "your-app-id",
         Key:        "your-app-key",
         Secret:     "your-app-secret",
-        Host:       "127.0.0.1",
-        Port:       "6001",
+        Host:       "127.0.0.1:6001", // host or host:port
         HTTPClient: urlfetch.Client(c),
     }
 
@@ -428,8 +434,7 @@ client := pusher.Client{
     AppID:  "your-app-id",
     Key:    "your-app-key",
     Secret: "your-app-secret",
-    Host:   "127.0.0.1",
-    Port:   "6001",
+    Host:   "127.0.0.1:6001", // host or host:port
 }
 ```
 

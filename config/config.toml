@@ -4,6 +4,10 @@ port = 6001
 mode = "development"
 path_prefix = "/"
 shutdown_grace_period = 2
+# Wait before closing existing connections with 4200, then spread the closes.
+# Delay + spread must fit inside shutdown_grace_period.
+shutdown_close_delay_ms = 0
+shutdown_close_spread_ms = 0
 websocket_max_payload_kb = 64
 max_connections = 0 # 0 = disabled (no per-pod limit)
 user_authentication_timeout = 3600
@@ -246,6 +250,8 @@ table_name = "applications"
 
 [app_manager]
 driver = "memory"
+# Close live connections of disabled/deleted apps (seconds, 0 = off).
+availability_check_interval_seconds = 15
 
 [app_manager.array]
 [[app_manager.array.apps]]

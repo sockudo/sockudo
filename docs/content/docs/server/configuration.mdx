@@ -74,7 +74,7 @@ The app manager stores app credentials and app-level policy. Memory is useful fo
 | `redis` | You need lightweight shared app state. |
 | `dynamodb` | You run on AWS and want managed key-value storage. |
 | `scylladb` | You need wide-column scale. |
-| `surrealdb` | You use SurrealDB 3 for app metadata. |
+| `surrealdb` | You use SurrealDB 4 for app metadata. |
 
 ## Adapter
 
@@ -149,15 +149,16 @@ ADAPTER_FAST_PRESENCE_TRANSITIONS=true
 ## Recovery and history
 
 ```toml
-[recovery]
+[connection_recovery]
 enabled = true
-buffer_size = 1000
-ttl_seconds = 120
+buffer_ttl_seconds = 120
+max_buffer_size = 100
 
 [history]
 enabled = true
-retention_seconds = 86400
-max_items_per_channel = 10000
+backend = "postgres"
+retention_window_seconds = 86400
+max_messages_per_channel = 10000
 ```
 
 Recovery buffers are for reconnect continuity. Durable history is for API reads, rewind, versioned messages, and operational inspection. Keep those concerns separate.

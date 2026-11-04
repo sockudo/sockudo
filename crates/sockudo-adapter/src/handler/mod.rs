@@ -5,6 +5,7 @@ pub mod ai_orphans;
 #[cfg(feature = "ai-transport")]
 mod ai_rollup;
 pub mod annotations;
+pub mod app_availability;
 pub mod auth_tokens;
 pub mod authentication;
 pub mod connection_management;

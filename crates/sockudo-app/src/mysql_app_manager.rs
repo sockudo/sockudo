@@ -1,3 +1,4 @@
+use crate::secret_cipher::{AppSecretCipher, resolve_row_secret, seal_row_secret};
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use moka::future::Cache;
@@ -10,7 +11,6 @@ use sockudo_core::token::{Token, secure_compare};
 use sockudo_core::webhook_types::Webhook;
 use sockudo_core::websocket::SocketId;
 use sqlx::{MySqlPool, mysql::MySqlPoolOptions};
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
@@ -19,6 +19,7 @@ pub struct MySQLAppManager {
     config: DatabaseConnection,
     pool: MySqlPool,
     app_cache: Cache<String, App>,
+    secret_cipher: Option<AppSecretCipher>,
 }
 
 impl MySQLAppManager {
@@ -56,11 +57,19 @@ impl MySQLAppManager {
             config,
             pool,
             app_cache,
+            secret_cipher: None,
         };
 
         manager.ensure_table_exists().await?;
 
         Ok(manager)
+    }
+
+    /// Encrypt app secrets at rest in the `secret_enc` column with `cipher`.
+    /// Rows that still only have a plaintext `secret` keep working.
+    pub fn with_secret_cipher(mut self, cipher: Option<AppSecretCipher>) -> Self {
+        self.secret_cipher = cipher;
+        self
     }
 
     /// Helper function to add a column if it doesn't exist
@@ -128,6 +137,7 @@ impl MySQLAppManager {
                 id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci PRIMARY KEY,
                 `key` VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci UNIQUE NOT NULL,
                 secret VARCHAR(255) NOT NULL,
+                secret_enc TEXT NULL,
                 max_connections INT UNSIGNED NOT NULL,
                 enable_client_messages BOOLEAN NOT NULL DEFAULT FALSE,
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -170,6 +180,7 @@ impl MySQLAppManager {
             ("idempotency", "JSON NULL"),
             ("connection_recovery", "JSON NULL"),
             ("policy", "JSON NULL"),
+            ("secret_enc", "TEXT NULL"),
         ];
 
         for (column_name, column_type) in columns_to_add {
@@ -191,7 +202,7 @@ impl MySQLAppManager {
 
         let query = format!(
             r#"SELECT
-                id, `key`, secret, max_connections,
+                id, `key`, secret, secret_enc, max_connections,
                 enable_client_messages, enabled,
                 max_backend_events_per_second,
                 max_client_events_per_second,
@@ -225,7 +236,7 @@ impl MySQLAppManager {
             })?;
 
         if let Some(app_row) = app_result {
-            let app = app_row.into_app();
+            let app = app_row.into_app(self.secret_cipher.as_ref())?;
             self.app_cache.insert(app_id.to_string(), app.clone()).await;
             Ok(Some(app))
         } else {
@@ -243,7 +254,7 @@ impl MySQLAppManager {
 
         let query = format!(
             r#"SELECT
-                id, `key`, secret, max_connections,
+                id, `key`, secret, secret_enc, max_connections,
                 enable_client_messages, enabled,
                 max_backend_events_per_second,
                 max_client_events_per_second,
@@ -277,7 +288,7 @@ impl MySQLAppManager {
             })?;
 
         if let Some(app_row) = app_result {
-            let app = app_row.into_app();
+            let app = app_row.into_app(self.secret_cipher.as_ref())?;
             let app_id = app.id.clone();
             self.app_cache.insert(app_id, app.clone()).await;
             Ok(Some(app.clone()))
@@ -290,6 +301,8 @@ impl MySQLAppManager {
     pub async fn create_app(&self, app: App) -> Result<()> {
         info!(app_id = %app.id, "app registering");
         let policy = app.policy();
+        let (secret_column, secret_enc) =
+            seal_row_secret(self.secret_cipher.as_ref(), &app.id, &app.secret)?;
 
         let query = format!(
             r#"INSERT INTO `{}` (
@@ -300,15 +313,15 @@ impl MySQLAppManager {
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size, enable_user_authentication,
                 enable_watchlist_events, policy, webhooks, allowed_origins, channel_delta_compression,
-                idempotency, connection_recovery
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                idempotency, connection_recovery, secret_enc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             self.config.table_name
         );
 
         sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .bind(&app.id)
             .bind(&app.key)
-            .bind(&app.secret)
+            .bind(&secret_column)
             .bind(policy.limits.max_connections)
             .bind(policy.features.enable_client_messages)
             .bind(app.enabled)
@@ -332,6 +345,7 @@ impl MySQLAppManager {
             ))
             .bind(sqlx::types::Json(&policy.idempotency))
             .bind(sqlx::types::Json(&policy.connection_recovery))
+            .bind(&secret_enc)
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -348,6 +362,8 @@ impl MySQLAppManager {
     pub async fn update_app(&self, app: App) -> Result<()> {
         info!(app_id = %app.id, "app updating");
         let policy = app.policy();
+        let (secret_column, secret_enc) =
+            seal_row_secret(self.secret_cipher.as_ref(), &app.id, &app.secret)?;
 
         let query = format!(
             r#"UPDATE `{}` SET
@@ -360,14 +376,15 @@ impl MySQLAppManager {
                 enable_watchlist_events = ?, policy = ?, webhooks = ?, allowed_origins = ?,
                 channel_delta_compression = ?,
                 idempotency = ?,
-                connection_recovery = ?
+                connection_recovery = ?,
+                secret_enc = ?
                 WHERE id = ?"#,
             self.config.table_name
         );
 
         let result = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .bind(&app.key)
-            .bind(&app.secret)
+            .bind(&secret_column)
             .bind(policy.limits.max_connections)
             .bind(policy.features.enable_client_messages)
             .bind(app.enabled)
@@ -391,6 +408,7 @@ impl MySQLAppManager {
             ))
             .bind(sqlx::types::Json(&policy.idempotency))
             .bind(sqlx::types::Json(&policy.connection_recovery))
+            .bind(&secret_enc)
             .bind(&app.id)
             .execute(&self.pool)
             .await
@@ -438,7 +456,7 @@ impl MySQLAppManager {
 
         let query = format!(
             r#"SELECT
-            id, `key`, secret, max_connections,
+            id, `key`, secret, secret_enc, max_connections,
             enable_client_messages, enabled,
             max_backend_events_per_second,
             max_client_events_per_second,
@@ -472,11 +490,22 @@ impl MySQLAppManager {
 
         warn!(apps_count = app_rows.len(), "app rows fetched");
 
-        let apps = stream::iter(app_rows)
-            .map(|row| async {
-                let app = row.into_app();
-                let app_arc = Arc::new(app.clone());
-                self.app_cache.insert(app_arc.id.clone(), app.clone()).await;
+        let apps: Vec<App> = app_rows
+            .into_iter()
+            .filter_map(|row| {
+                let app_id = row.id.clone();
+                match row.into_app(self.secret_cipher.as_ref()) {
+                    Ok(app) => Some(app),
+                    Err(e) => {
+                        error!(app_id = %app_id, error = %e, "skipping app with unreadable secret");
+                        None
+                    }
+                }
+            })
+            .collect();
+        let apps = stream::iter(apps)
+            .map(|app| async {
+                self.app_cache.insert(app.id.clone(), app.clone()).await;
                 app
             })
             .buffer_unordered(self.config.connection_pool_size as usize)
@@ -567,6 +596,7 @@ struct AppRow {
     id: String,
     key: String,
     secret: String,
+    secret_enc: Option<String>,
     max_connections: u32,
     enable_client_messages: bool,
     enabled: bool,
@@ -598,15 +628,22 @@ struct AppRow {
 }
 
 impl AppRow {
-    fn into_app(self) -> App {
+    fn into_app(self, cipher: Option<&AppSecretCipher>) -> Result<App> {
+        let secret = resolve_row_secret(cipher, &self.id, self.secret, self.secret_enc.as_deref())?;
         if let Some(policy) = self.policy {
-            return App::from_policy(self.id, self.key, self.secret, self.enabled, policy);
+            return Ok(App::from_policy(
+                self.id,
+                self.key,
+                secret,
+                self.enabled,
+                policy,
+            ));
         }
 
-        App::from_policy(
+        Ok(App::from_policy(
             self.id,
             self.key,
-            self.secret,
+            secret,
             self.enabled,
             sockudo_core::app::AppPolicy {
                 limits: sockudo_core::app::AppLimitsPolicy {
@@ -642,7 +679,7 @@ impl AppRow {
                 history: None,
                 presence_history: None,
             },
-        )
+        ))
     }
 }
 
@@ -692,6 +729,7 @@ impl Clone for MySQLAppManager {
             config: self.config.clone(),
             pool: self.pool.clone(),
             app_cache: self.app_cache.clone(),
+            secret_cipher: self.secret_cipher.clone(),
         }
     }
 }
@@ -754,6 +792,73 @@ mod tests {
         MySQLAppManager::new(config, DatabasePooling::default())
             .await
             .is_ok()
+    }
+
+    #[tokio::test]
+    async fn test_secret_encryption_at_rest() {
+        if !is_mysql_available().await {
+            eprintln!("Skipping test: MySQL not available");
+            return;
+        }
+        let config = DatabaseConnection {
+            username: "sockudo".to_string(),
+            password: "sockudo123".to_string(),
+            database: "sockudo".to_string(),
+            table_name: "apps_secret_enc_test".to_string(),
+            cache_ttl: 5,
+            port: 13306,
+            ..Default::default()
+        };
+        let cipher =
+            AppSecretCipher::from_encoded_key("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+                .unwrap();
+        let manager = MySQLAppManager::new(config.clone(), DatabasePooling::default())
+            .await
+            .unwrap()
+            .with_secret_cipher(Some(cipher.clone()));
+        for id in ["enc_a", "enc_b"] {
+            let _ = manager.delete_app(id).await;
+        }
+        manager.create_app(create_test_app("enc_a")).await.unwrap();
+        manager.create_app(create_test_app("enc_b")).await.unwrap();
+
+        let (secret, secret_enc): (String, Option<String>) = sqlx::query_as(
+            "SELECT secret, secret_enc FROM `apps_secret_enc_test` WHERE id = 'enc_a'",
+        )
+        .fetch_one(&manager.pool)
+        .await
+        .unwrap();
+        assert_eq!(secret, "");
+        let secret_enc = secret_enc.unwrap();
+        assert!(secret_enc.starts_with("v1:"));
+
+        let reader = MySQLAppManager::new(config.clone(), DatabasePooling::default())
+            .await
+            .unwrap()
+            .with_secret_cipher(Some(cipher.clone()));
+        assert_eq!(
+            reader.find_by_id("enc_a").await.unwrap().unwrap().secret,
+            "enc_a_secret"
+        );
+        let keyless = MySQLAppManager::new(config.clone(), DatabasePooling::default())
+            .await
+            .unwrap();
+        assert!(keyless.find_by_id("enc_a").await.is_err());
+
+        sqlx::query("UPDATE `apps_secret_enc_test` SET secret_enc = ? WHERE id = 'enc_b'")
+            .bind(&secret_enc)
+            .execute(&manager.pool)
+            .await
+            .unwrap();
+        let reader = MySQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap()
+            .with_secret_cipher(Some(cipher));
+        assert!(reader.find_by_id("enc_b").await.is_err());
+
+        for id in ["enc_a", "enc_b"] {
+            manager.delete_app(id).await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -832,6 +937,7 @@ mod tests {
             id: "app".to_string(),
             key: "key".to_string(),
             secret: "secret".to_string(),
+            secret_enc: None,
             max_connections: 1,
             enable_client_messages: false,
             enabled: true,
@@ -868,7 +974,7 @@ mod tests {
             connection_recovery: None,
         };
 
-        let app = row.into_app();
+        let app = row.into_app(None).unwrap();
         let history = app.policy.history.unwrap();
         assert_eq!(history.enabled, Some(true));
         assert_eq!(history.rewind_enabled, Some(false));

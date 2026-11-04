@@ -1088,6 +1088,30 @@ impl SockudoServer {
             );
         }
 
+        // Close live connections of apps that were disabled or removed; the app
+        // manager alone only rejects new connections.
+        if !config.server_role.is_api()
+            && config.app_manager.availability_check_interval_seconds > 0
+        {
+            let handler_clone = handler.clone();
+            let interval = std::time::Duration::from_secs(
+                config.app_manager.availability_check_interval_seconds,
+            );
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    handler_clone.close_connections_of_unavailable_apps().await;
+                }
+            });
+            info!(
+                interval_seconds = interval.as_secs(),
+                "app availability check task started"
+            );
+        }
+
         // Set metrics for adapters using TypedAdapter (lock-free configuration)
         if let Some(metrics_instance_arc) = &metrics {
             if let Err(e) = typed_adapter

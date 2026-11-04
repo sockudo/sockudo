@@ -19,6 +19,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     options.port = parse_env::<u16>("PORT", options.port);
     options.shutdown_grace_period =
         parse_env::<u64>("SHUTDOWN_GRACE_PERIOD", options.shutdown_grace_period);
+    options.shutdown_close_delay_ms =
+        parse_env::<u64>("SHUTDOWN_CLOSE_DELAY_MS", options.shutdown_close_delay_ms);
+    options.shutdown_close_spread_ms =
+        parse_env::<u64>("SHUTDOWN_CLOSE_SPREAD_MS", options.shutdown_close_spread_ms);
     options.user_authentication_timeout = parse_env::<u64>(
         "USER_AUTHENTICATION_TIMEOUT",
         options.user_authentication_timeout,
