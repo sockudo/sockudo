@@ -1,14 +1,32 @@
 ---
 title: Java
-description: Use the Java server SDK for synchronous or asynchronous publishing, auth, state queries, and push.
+description: Publish events, sign channel auth, validate webhooks, read history, mutate versioned messages, and manage push from Java and Spring Boot backends, with synchronous and CompletableFuture clients.
 icon: FileCode
 ---
 
+`sockudo-http-java` is the official Java client for the Sockudo HTTP API. It ships a synchronous
+client (`io.sockudo.rest.Sockudo`, built on Apache HttpClient 4.5) and an asynchronous client
+(`io.sockudo.rest.SockudoAsync`, built on AsyncHttpClient 3) with the same methods, and is meant to
+run only on trusted backends that hold your app secret.
+
+What it does in Java:
+
+- Signed HTTP publishing to one channel, up to 100 channels, or a batch of events.
+- Automatic idempotency keys plus built-in retries for network errors and `5xx` responses.
+- Private, presence, and encrypted channel authorization.
+- Webhook signature validation and tolerant webhook parsing.
+- Durable history, presence history, and presence snapshots.
+- Versioned message reads and mutations (get, versions, update, delete, append) and annotations.
+- Push device registrations, channel subscriptions, publish, scheduling, publish status, and Apple
+  Live Activity broadcast channels.
+- Generic signed `get`, `post`, and `delete` helpers, plus `signedUri` for your own HTTP client.
+
 ## Install
 
-Install the published package from Maven Central:
+The library targets **Java 11** bytecode and is tested on Java 11, 17, and 21. Install it from
+Maven Central:
 
-```xml
+```xml title="pom.xml"
 <dependency>
   <groupId>io.sockudo</groupId>
   <artifactId>sockudo-http-java</artifactId>
@@ -16,233 +34,609 @@ Install the published package from Maven Central:
 </dependency>
 ```
 
-```kotlin
+```kotlin title="build.gradle.kts"
 implementation("io.sockudo:sockudo-http-java:2.2.0")
 ```
 
-## Configure
+Apache HttpClient, AsyncHttpClient, and Gson are exposed as `api` dependencies because they appear
+in public method signatures. For local development against this monorepo, publish the package to
+your local Maven repository from `server-sdks/sockudo-http-java`:
 
-```java
-Sockudo sockudo = new Sockudo("app-id", "app-key", "app-secret");
-sockudo.setHost("127.0.0.1");
-sockudo.setPort(6001);
-sockudo.setEncrypted(false);
+```bash title="Terminal"
+./gradlew publishToMavenLocal
 ```
 
-Create one instance and reuse it; the client is thread-safe and keeps a pooled
-HTTP connection manager. You can also configure it from
-`http://key:secret@host:port/apps/app-id`, but that URL contains credentials
-and must not be logged.
+## Configure the client
 
-Use `setEncrypted(true)` for HTTPS in production. Configure the synchronous or
-asynchronous HTTP client when you need an outbound proxy, connection pool
-limits, or request timeouts.
+Create one client and expose it as a Spring bean. Spring resolves `${SOCKUDO_APP_SECRET}` and the
+other placeholders from environment variables, so credentials stay out of source control:
 
-## Publish
+```java title="SockudoConfig.java"
+import io.sockudo.rest.Sockudo;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
-```java
-Map<String, Object> data = new HashMap<>();
-data.put("id", "ord_123");
+@Configuration
+public class SockudoConfig {
+
+    @Bean
+    public Sockudo sockudo(
+            @Value("${SOCKUDO_APP_ID}") String appId,
+            @Value("${SOCKUDO_APP_KEY}") String key,
+            @Value("${SOCKUDO_APP_SECRET}") String secret,
+            @Value("${SOCKUDO_HOST:127.0.0.1:6001}") String host,
+            @Value("${SOCKUDO_TLS:false}") boolean tls) {
+        Sockudo sockudo = new Sockudo(appId, key, secret);
+        sockudo.setHost(host);          // "host" or "host:port"
+        sockudo.setEncrypted(tls);      // true -> https
+        sockudo.setRequestTimeout(5000);
+        return sockudo;
+    }
+}
+```
+
+`Sockudo` and `SockudoAsync` implement `AutoCloseable`, so Spring calls `close()` on the bean at
+shutdown and releases the connection pool.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `appId`, `key`, `secret` (constructor) | `String` | required | App credentials. Empty values throw `IllegalArgumentException`. |
+| `encryptionMasterKeyBase64` (4th constructor argument) | `String` | none | Base64 of a 32-byte key for `private-encrypted-*` channels. |
+| `setHost` | `String` | `"api.sockudo.io"` | API host. There is no separate port setter; append the port, for example `"127.0.0.1:6001"`. |
+| `setCluster` | `String` | — | Sets the host to `api-{cluster}.sockudo.io`. For self-hosted Sockudo use `setHost`. |
+| `setEncrypted` | `boolean` | `false` (`http`) | `true` switches to `https`. Enable it for every non-local deployment. |
+| `setRequestTimeout` | `int` (ms) | `4000` | Synchronous client only. Applied as connect, socket, and pool-checkout timeout. |
+| `configureHttpClient` | `HttpClientBuilder` / `DefaultAsyncHttpClientConfig.Builder` | `defaultHttpClientBuilder()` / `Dsl.config()` | Replace the underlying HTTP client: proxy, pool size, TLS, async timeouts. |
+| `setAutoIdempotencyKey` | `boolean` | `true` | Attach a generated idempotency key to every publish that has none. |
+| `setDataMarshaller` / `setGsonSerialiser` | `DataMarshaller` / `Gson` | Gson | Controls how event payload objects are serialized. |
+
+You can also construct a client from a URL in the form
+`<scheme>://<key>:<secret>@<host>[:<port>]/apps/<appId>`, which sets the scheme, credentials, host,
+and port at once. The URL contains the secret, so load it from a secret store and never log it:
+
+```java title="SockudoConfig.java"
+Sockudo sockudo = new Sockudo(System.getenv("SOCKUDO_URL"));
+// SOCKUDO_URL = "http://APP_KEY:APP_SECRET@127.0.0.1:6001/apps/APP_ID"
+```
+
+<Callout type="tip" title="Create once, reuse, and size the pool">
+The client is thread-safe and keeps persistent pooled connections. The default Apache pool allows
+only 2 concurrent connections per route; for busy services, raise it once at startup instead of
+creating more clients:
+
+```java title="SockudoConfig.java"
+PoolingHttpClientConnectionManager pool = new PoolingHttpClientConnectionManager();
+pool.setDefaultMaxPerRoute(50);
+pool.setMaxTotal(50);
+sockudo.configureHttpClient(Sockudo.defaultHttpClientBuilder().setConnectionManager(pool));
+```
+</Callout>
+
+The app secret never leaves your backend. It signs every HTTP API call and every channel auth
+response, so anyone holding it can publish to any channel, read history, and impersonate any user
+in presence channels. Keep it in your secret manager or environment, never in client-side code.
+
+### Asynchronous client
+
+`SockudoAsync` has the same constructors and methods, but every HTTP call returns
+`CompletableFuture<Result>` instead of `Result`:
+
+```java title="OrderEvents.java"
+import io.sockudo.rest.SockudoAsync;
+import io.sockudo.rest.data.Result;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+
+SockudoAsync async = new SockudoAsync(appId, key, secret);
+async.setHost("127.0.0.1:6001");
+
+CompletableFuture<Result> future = async.trigger(
+    "orders", "order.created", Map.of("id", "ord_123"), null, "order.created:tenant-42:ord_123:v1");
+
+future.thenAccept(result -> {
+    if (result.getStatus() != Result.Status.SUCCESS) {
+        scheduleRetry(result);
+    }
+});
+```
+
+The future completes normally with a `Result` even when the request fails; transport failures
+surface as `UNKNOWN_ERROR` with a `null` HTTP status rather than as an exceptional completion.
+Configure timeouts, proxies, and pool limits through
+`async.configureHttpClient(Dsl.config()...)`. `setRequestTimeout` has no effect on the async client.
+Async execution is not a durable queue; persist work separately when it must survive a restart.
+
+## Publish an event
+
+`trigger` serializes the payload (a `Map` or POJO) to JSON with Gson and returns a `Result`:
+
+```java title="OrderEvents.java"
+import io.sockudo.rest.Sockudo;
+import io.sockudo.rest.data.Result;
+import java.util.Map;
 
 Result result = sockudo.trigger(
     "orders",
     "order.created",
-    data,
+    Map.of("id", "ord_123"),
+    null,                                   // socketId to exclude, or null
+    "order.created:tenant-42:ord_123:v1"    // idempotency key, or null
+);
+
+if (result.getStatus() != Result.Status.SUCCESS) {
+    throw new IllegalStateException(
+        "Sockudo publish failed: " + result.getStatus() + " (HTTP " + result.getHttpStatus() + ")");
+}
+```
+
+HTTP failures do not throw. Check `getStatus()`; `getHttpStatus()` holds the status code and
+`getMessage()` the response body on success or an error description on failure.
+
+To keep the user who caused an event from receiving their own echo, pass the originating
+connection's socket ID. The server delivers the event to everyone except that connection, which
+avoids applying an optimistic UI update twice:
+
+```java title="OrderEvents.java"
+sockudo.trigger("orders", "order.updated", data, socketIdFromRequest); // e.g. "1302.1081607"
+```
+
+## Publish to many channels or in a batch
+
+Pass a list of channels to send the same event to all of them in one request:
+
+```java title="OrderEvents.java"
+sockudo.trigger(
+    List.of("tenant-42-orders", "user-7-orders"),
+    "order.updated",
+    Map.of("id", "ord_123", "status", "paid"),
     null,
-    "order-created-ord_123"
+    "order.updated:tenant-42:ord_123:v2"
 );
 ```
 
-The SDK also supports multi-channel and batch publishing:
+Pass a `List<Event>` to send different events in one request. Each `Event` can carry its own socket
+ID and idempotency key (`new Event(channel, eventName, data, socketId, idempotencyKey)`), and a sixth
+`MessageExtras` argument for Protocol V2 extras:
 
-```java
-sockudo.trigger(
-    List.of("tenant-42:orders", "user-7:orders"),
-    "order.updated",
-    Map.of("id", "ord_123", "status", "paid")
-);
+```java title="OrderEvents.java"
+import io.sockudo.rest.data.Event;
 
 List<Event> batch = List.of(
-    new Event("orders", "order.created", Map.of("id", "ord_124")),
-    new Event("orders", "order.paid", Map.of("id", "ord_124"))
+    new Event("orders", "order.created", Map.of("id", "ord_124"), null, "order.created:tenant-42:ord_124:v1"),
+    new Event("orders", "order.paid", Map.of("id", "ord_124"), null, "order.paid:tenant-42:ord_124:v1")
 );
-sockudo.trigger(batch);
+Result result = sockudo.trigger(batch);
 ```
 
-Use the overload accepting a socket ID to exclude the originating connection.
-The five-argument overload accepts both `socketId` and `idempotencyKey`; each
-batch `Event` can also carry those values. Attach a stable key to any request
-that a job or HTTP handler may retry.
+Client-side checks throw `IllegalArgumentException` before any request is sent: more than 100
+channels in one `trigger`, a channel name that does not match `[-a-zA-Z0-9_=@,.;]+`, or a socket ID
+that is not `digits.digits`. The SDK does not check batch size or name lengths, so the server
+enforces its `[event_limits]` defaults: `max_channels_at_once = 100`, `max_batch_size = 10`,
+`max_payload_in_kb = 100`, and `max_name_length = 200`. Exceeding them returns a `Result` with
+`CLIENT_ERROR` or another non-success status.
 
-All requests return `Result`. Inspect `getStatus()` and `getMessage()` rather
-than assuming a completed call succeeded:
+## Idempotency and retries
 
-```java
-Result result = sockudo.trigger(
-    "orders",
-    "order.created",
-    data,
-    null,
-    "order-created-ord_123"
-);
-if (result.getStatus() != Status.SUCCESS) {
-    throw new IllegalStateException("Sockudo publish failed: " + result.getStatus());
+A timeout does not tell you whether Sockudo published the event. The request may have been processed
+and the response lost. Retrying without an idempotency key can deliver the event twice; retrying
+with the same key lets the server recognize the duplicate.
+
+How the server treats keys:
+
+- A key can be sent as the `idempotency_key` body field or the `X-Idempotency-Key` header. When both
+  are present the body field wins. The Java SDK sends the same key in both places for `trigger`.
+- `[idempotency]` defaults are `enabled = true`, `ttl_seconds = 120`, and `max_key_length = 128`.
+  Empty keys are rejected.
+- A duplicate within the TTL returns the original cached `200` response without publishing again.
+- For batches, an `X-Idempotency-Key` header identifies the whole batch and each item's
+  `idempotency_key` identifies only that event. The two key spaces do not collide.
+- If the coordination backend is unavailable the server returns `503 service_unavailable`. A
+  concurrent retry while the first request is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
+
+How this SDK sets keys:
+
+- `trigger(channel or channels, event, data, socketId, idempotencyKey)` sends your key.
+- Batch events carry per-event keys through the `Event` constructor. The SDK has no option for a
+  batch-level `X-Idempotency-Key` header; if you need one, send the request yourself with
+  `post("/batch_events", body, headers)`.
+- With `setAutoIdempotencyKey(true)` (the default), a publish without a key gets
+  `{baseId}:{serial}` (`{baseId}:{serial}:{index}` for batch events). `baseId` is random per client
+  instance and `serial` increments per call, so these keys deduplicate only the SDK's own retries of
+  that one call. They do **not** protect retries driven by your job queue or a restarted process.
+- `Sockudo.generateIdempotencyKey()` returns a random 16-character key if you want one to store with
+  a job.
+
+<Callout type="warn" title="Use business keys for application-level retries">
+A key identifies a logical operation, not an HTTP attempt. Derive it from your domain, for example
+`order.created:tenant-42:ord_123:v1`, store it with the job, and send the same key on every attempt.
+Never reuse a key for a different payload.
+</Callout>
+
+Built-in retries apply to every request and are not configurable: up to 3 attempts in total with
+100 ms and 200 ms backoff, resending the identical signed request.
+
+| Client | Retried | Not retried |
+| --- | --- | --- |
+| `Sockudo` | `SERVER_ERROR` (`5xx`, including `503 backpressure`), `NETWORK_ERROR` (`IOException`) | Every other status, including `429` |
+| `SockudoAsync` | `SERVER_ERROR` (`5xx`) | Transport failures (`UNKNOWN_ERROR`), `429`, all `4xx` |
+
+The backoff does not read `Retry-After`. Handle what remains after the built-in attempts in your own
+retry policy with the same key.
+
+## Authorize private and presence channels
+
+When a client subscribes to a `private-` or `presence-` channel, it asks your backend for a signed
+auth response. Your endpoint decides whether the signed-in user may join that channel, then asks the
+SDK to sign. The client sends `socket_id` and `channel_name` form-encoded.
+
+```java title="SockudoAuthController.java"
+import io.sockudo.rest.Sockudo;
+import io.sockudo.rest.data.PresenceUser;
+import java.security.Principal;
+import java.util.Map;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class SockudoAuthController {
+
+    private final Sockudo sockudo;
+    private final UserDirectory users; // your own service
+
+    public SockudoAuthController(Sockudo sockudo, UserDirectory users) {
+        this.sockudo = sockudo;
+        this.users = users;
+    }
+
+    @PostMapping(
+        path = "/sockudo/auth",
+        consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE,
+        produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<String> auth(
+            @RequestParam("socket_id") String socketId,
+            @RequestParam("channel_name") String channelName,
+            Principal principal) {
+        // 1. Authenticate with your own session layer (Spring Security here).
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        AppUser user = users.findByUsername(principal.getName());
+
+        // 2. Authorize this user for this exact channel.
+        if (!users.canAccess(user, channelName)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        try {
+            // 3. Presence identity comes from the session, never from the request.
+            String body = channelName.startsWith("presence-")
+                ? sockudo.authenticate(socketId, channelName,
+                      new PresenceUser(user.id(), Map.of("name", user.displayName())))
+                : sockudo.authenticate(socketId, channelName);
+            return ResponseEntity.ok(body);
+        } catch (IllegalArgumentException invalidRequest) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
 }
 ```
 
-## Auth
+`authenticate` returns the complete JSON body the client expects: `auth`, plus `channel_data` for
+presence channels and `shared_secret` for encrypted channels. The two-argument form accepts only
+`private-*` channels and the three-argument form only `presence-*` channels; anything else, or an
+invalid socket ID or channel name, throws `IllegalArgumentException`. `PresenceUser` takes a `String`
+or `Number` user ID and any object for `user_info`.
 
-```java
-String privateAuth = sockudo.authenticate(socketId, "private-orders");
+<Callout type="warn" title="Signing is not authorization">
+The SDK signs whatever you pass it. Check the session and the channel name before calling
+`authenticate`, and build `PresenceUser` from your server-side user record. If a client could choose
+its own presence identity, it could impersonate any user in the member list.
+</Callout>
 
-Map<String, String> userInfo = new HashMap<>();
-userInfo.put("name", "Ada");
+### User authentication
 
-String presenceAuth = sockudo.authenticate(
-    socketId,
-    "presence-lobby",
-    new PresenceUser("user-42", userInfo)
-);
+The Java SDK does not wrap user authentication (signin). If you need it, sign the user object with
+the public `SignatureUtil.sign` helper, which computes the same HMAC-SHA256 used by the rest of the
+SDK:
+
+```java title="SockudoAuthController.java"
+import com.google.gson.Gson;
+import io.sockudo.rest.SignatureUtil;
+
+String userData = new Gson().toJson(Map.of("id", user.id(), "user_info", Map.of("name", user.displayName())));
+String signature = SignatureUtil.sign(socketId + "::user::" + userData, appSecret);
+String body = new Gson().toJson(Map.of("auth", appKey + ":" + signature, "user_data", userData));
 ```
 
-Authenticate the application session and authorize the exact channel before
-signing. Build `PresenceUser` from trusted server-side identity. Use
-`authenticateUser` for user-targeted events, then
-`terminateUserConnections` or `forceReconnectUser` when permissions change.
+### Encrypted channels
 
-## Async
+End-to-end encrypted channels use the `private-encrypted-` prefix. Pass a base64-encoded 32-byte
+master key (for example from `openssl rand -base64 32`) as the fourth constructor argument:
 
-```java
-SockudoAsync async = new SockudoAsync("app-id", "app-key", "app-secret");
-async.setHost("127.0.0.1");
-async.setPort(6001);
-
-CompletableFuture<Result> result =
-    async.trigger("orders", "order.created", Collections.singletonMap("id", "ord_123"));
+```java title="SockudoConfig.java"
+Sockudo sockudo = new Sockudo(appId, key, secret, System.getenv("SOCKUDO_ENCRYPTION_MASTER_KEY"));
 ```
 
-Compose the returned future and handle errors explicitly:
+A key that does not decode to 32 bytes throws `IllegalArgumentException`. With a key configured,
+`authenticate(socketId, "private-encrypted-...")` adds a per-channel `shared_secret`, and `trigger`
+encrypts payloads before sending. A single `trigger` call cannot mix an encrypted channel with other
+channels, and using encrypted channels without a master key throws `SockudoException`. Keep the key
+in a secret manager and still use TLS.
 
-```java
-async.trigger(
-        "orders",
-        "order.created",
-        data,
-        null,
-        "order-created-ord_123"
-    )
-    .thenAccept(response -> recordStatus(response.getStatus()))
-    .exceptionally(error -> {
-        scheduleRetry(operationId, error);
-        return null;
-    });
+### Terminate user connections
+
+When a user's access changes (logout everywhere, ban, role change), close their sockets:
+
+```java title="AdminService.java"
+sockudo.terminateUserConnections("user-42");
+
+// Or close with code 4200 so clients reconnect and re-authenticate:
+sockudo.forceReconnectUser("user-42");
 ```
 
-Tune the async client rather than blocking on every future. Async execution is
-not a durable queue; persist work separately when it must survive process
-failure.
+## Validate webhooks
 
-## State and history
+Sockudo signs each webhook body with HMAC-SHA256 using your app secret and sends the result in
+`X-Pusher-Signature`, with the app key in `X-Pusher-Key`. The signature covers the exact bytes, so
+validate the raw body before parsing it. Binding the body to a POJO and re-serializing it changes
+whitespace and key order and breaks the signature.
 
-```java
+```java title="SockudoWebhookController.java"
+import io.sockudo.rest.Sockudo;
+import io.sockudo.rest.data.Validity;
+import io.sockudo.rest.data.Webhook;
+import io.sockudo.rest.data.WebhookEvent;
+import java.nio.charset.StandardCharsets;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class SockudoWebhookController {
+
+    private final Sockudo sockudo;
+    private final WebhookQueue queue; // your own service
+
+    public SockudoWebhookController(Sockudo sockudo, WebhookQueue queue) {
+        this.sockudo = sockudo;
+        this.queue = queue;
+    }
+
+    @PostMapping("/sockudo/webhooks")
+    public ResponseEntity<Void> receive(
+            @RequestHeader(value = "X-Pusher-Key", required = false) String key,
+            @RequestHeader(value = "X-Pusher-Signature", required = false) String signature,
+            @RequestBody byte[] rawBody) {
+        if (key == null || signature == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        String body = new String(rawBody, StandardCharsets.UTF_8);
+        if (sockudo.validateWebhookSignature(key, signature, body) != Validity.VALID) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        Webhook webhook = sockudo.parseWebhook(body);
+        for (WebhookEvent event : webhook.getEvents()) {
+            queue.enqueue(event.getName(), event.getChannel(), event.getRawEvent());
+        }
+        return ResponseEntity.ok().build();
+    }
+}
+```
+
+`validateWebhookSignature` returns `VALID`, `INVALID`, or `SIGNED_WITH_WRONG_KEY` (the key header
+does not match this client's key). Check for missing headers first: passing `null` throws. The
+parser keeps unknown event names and fields: `WebhookEvent` exposes `getName`, `getChannel`,
+`getUserId`, `getSocketId`, `getData`, `getRawEvent`, `get(field)`, and serial getters such as
+`getMessageSerial` and `getVersionSerial`; `Webhook.getTimeMs()` returns the delivery timestamp.
+
+There is no built-in key rotation. During a credential rotation, keep a second client built with
+the previous key and secret and accept the webhook if either client returns `VALID`.
+
+<Callout type="note" title="Acknowledge fast, process idempotently">
+Return `200` as soon as the signature checks out and hand events to a queue. Sockudo may retry a
+delivery, so make processing idempotent. Do not log the raw body or signature.
+</Callout>
+
+## Channel state and history
+
+Query channel state with the generic signed `get`. Paths are relative to `/apps/{appId}`, and the
+response JSON is in `getMessage()`:
+
+```java title="ChannelState.java"
 Result channels = sockudo.get(
     "/channels",
-    Map.of("filter_by_prefix", "presence-", "info", "user_count")
-);
-Result users = sockudo.get("/channels/presence-lobby/users");
+    Map.of("filter_by_prefix", "presence-", "info", "user_count"));
+Result channel = sockudo.get("/channels/presence-lobby", Map.of("info", "user_count"));
+Result members = sockudo.get("/channels/presence-lobby/users");
 
+if (members.getStatus() == Result.Status.SUCCESS) {
+    String json = members.getMessage();
+}
+```
+
+Durable history uses `getChannelHistory`. Query parameters are strings: `limit`, `direction`,
+`cursor`, `start_serial`, `end_serial`, `start_time_ms`, and `end_time_ms`.
+
+```java title="ChannelState.java"
 Result page = sockudo.getChannelHistory(
     "orders",
-    Map.of("limit", "50", "direction", "newest_first")
-);
-Result next = sockudo.getChannelHistory(
-    "orders",
-    Map.of("cursor", opaqueCursor)
-);
+    Map.of("limit", "50", "direction", "newest_first"));
+
+// Read next_cursor from page.getMessage(), then pass it back unchanged:
+Result next = sockudo.getChannelHistory("orders", Map.of("cursor", nextCursor));
 ```
 
-Presence history and snapshots have corresponding helpers. State is an
-operational snapshot; keep pages bounded and forward cursors unchanged.
+Cursors are opaque: forward `next_cursor` exactly as returned and never build or edit one. Check the
+response `continuity` block before assuming you have every message.
 
-## Webhooks
+Presence history and snapshots work the same way for presence channels:
 
-Validate the signature against the exact raw body before parsing:
+```java title="ChannelState.java"
+Result transitions = sockudo.getChannelPresenceHistory(
+    "presence-lobby",
+    Map.of("limit", "100", "direction", "newest_first"));
 
-```java
-Validity validity = sockudo.validateWebhookSignature(
-    xPusherKey,
-    xPusherSignature,
-    rawBody
-);
-if (validity != Validity.VALID) {
-    throw new SecurityException("invalid Sockudo webhook");
-}
-
-Webhook webhook = sockudo.parseWebhook(rawBody);
-enqueueWebhookEvents(webhook.getEvents());
+Result snapshot = sockudo.getChannelPresenceSnapshot(
+    "presence-lobby",
+    Map.of("at_serial", "4")); // or "at_time_ms"
 ```
 
-The parser preserves unknown event names and fields for forward compatibility.
-Do not log the raw body or signature.
+## Versioned messages and annotations
 
-## End-to-end encrypted channels
+These Protocol V2 helpers read and mutate messages by their `message_serial`. Mutation and
+annotation bodies are JSON strings that follow the server request shape: update accepts fields such
+as `name`, `data`, `extras`, `description`, `metadata`, `op_id`, `client_id`, and `socket_id`; append
+requires a string `data`. See [Mutable messages](/docs/server/mutable-messages) for semantics and
+authorization.
 
-Pass a base64-encoded 32-byte encryption master key to the SDK constructor and
-publish only to `private-encrypted-*` names. The SDK encrypts the payload and
-derives the shared secret returned during auth. Do not mix encrypted and
-unencrypted channels in one publish, and keep the master key in a secret
-manager.
+```java title="MessageService.java"
+import com.google.gson.Gson;
+
+Gson gson = new Gson();
+String channel = "private-chat-room-1";
+
+Result latest = sockudo.getMessage(channel, messageSerial);
+Result versions = sockudo.getMessageVersions(channel, messageSerial, Map.of("limit", "20"));
+
+sockudo.updateMessage(channel, messageSerial,
+    gson.toJson(Map.of("data", "edited text", "description", "typo fix")));
+sockudo.appendMessage(channel, messageSerial,
+    gson.toJson(Map.of("data", " more tokens")));
+sockudo.deleteMessage(channel, messageSerial,
+    gson.toJson(Map.of("description", "removed by moderator")));
+```
+
+Annotations attach typed reactions or metadata to a message:
+
+```java title="MessageService.java"
+Result published = sockudo.publishAnnotation(channel, messageSerial,
+    gson.toJson(Map.of("type", "reactions:distinct.v1", "name", "thumbsup", "clientId", "user-42")));
+
+Result annotations = sockudo.listAnnotations(channel, messageSerial, Map.of("limit", "50"));
+
+sockudo.deleteAnnotation(channel, messageSerial, annotationSerial);
+```
+
+`listAnnotations` accepts `type`, `from_serial`, `limit`, and `socket_id`; `deleteAnnotation` has an
+overload that takes query parameters such as `socket_id`.
 
 ## Push notifications
 
-```java
-Map<String, Object> device = new HashMap<>();
-device.put("deviceId", "android-device-1");
-device.put("clientId", "user-42");
-device.put("platform", "fcm");
-device.put("providerToken", "provider-token");
-sockudo.activateDevice(device);
+Push helpers take `Map` bodies, add the `X-Sockudo-Push-Capability` header (`push-admin`, or
+`push-subscribe` when you pass a device identity token), and return a `Result`.
 
-Map<String, Object> subscription = new HashMap<>();
-subscription.put("deviceId", "android-device-1");
-subscription.put("clientId", "user-42");
-subscription.put("channel", "orders");
-sockudo.upsertChannelPushSubscription(subscription);
+```java title="PushService.java"
+sockudo.activateDevice(Map.of(
+    "deviceId", "android-device-1",
+    "clientId", "user-42",
+    "platform", "fcm",
+    "providerToken", "provider-token"));
 
-Map<String, Object> payload = new HashMap<>();
-payload.put("title", "Order updated");
-payload.put("body", "Order ord_123 is packed");
+sockudo.upsertChannelPushSubscription(Map.of(
+    "deviceId", "android-device-1",
+    "clientId", "user-42",
+    "channel", "orders"));
 
-Map<String, Object> request = new HashMap<>();
-request.put("recipients", List.of(Map.of("type", "channel", "channel", "orders")));
-request.put("payload", payload);
-request.put("publishId", "push-order-ord_123-packed");
+Result admission = sockudo.publishPush(Map.of(
+    "recipients", List.of(Map.of("type", "channel", "channel", "orders")),
+    "payload", Map.of("title", "Order updated", "body", "Order ord_123 is packed"),
+    "publishId", "push-order-ord_123-packed"));
 
-sockudo.publishPush(request);
+Result status = sockudo.getPublishStatus("push-order-ord_123-packed");
 ```
 
-Push helpers set `sync` to `false` and include the required Sockudo push capability header.
+`publishPush` always sets `sync` to `false`. The response is an admission record, not a delivery
+receipt; poll `getPublishStatus` or consume delivery feedback to learn the provider outcome. Reuse
+the same `publishId` when you retry a publish.
 
-Manage iOS 18 APNs broadcast channels with `createApnsLiveActivityChannel`,
-`getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, and
-`deleteApnsLiveActivityChannel`. Pass the typed ActivityKit fields as nested maps to
-`publishPush`; see [Apple Live Activities](/docs/server/apple-live-activities).
+| Area | Methods |
+| --- | --- |
+| Devices | `activateDevice` (optional `rotateDeviceIdentityToken` flag), `updateDeviceRegistration`, `listDeviceRegistrations`, `getDeviceRegistration`, `deleteDeviceRegistration`, `removeDeviceRegistrationsByClient` |
+| Channel subscriptions | `upsertChannelPushSubscription`, `listChannelPushSubscriptions`, `deleteChannelPushSubscriptions`, `listChannelPushSubscriptionChannels` |
+| Publishing | `publishPush`, `publishPushBatch`, `schedulePush` (requires `notBeforeMs`), `cancelScheduledPush`, `getPublishStatus` |
+| Provider setup | `listPushCredentials`, `putPushCredential`, `postPushDeliveryStatus` |
 
-## Concurrency, errors, and production guidance
+See [Push notifications](/docs/server/push-notifications) for payload fields and
+[Push operations](/docs/server/push-operations) for credentials and feedback.
 
-The synchronous client is thread-safe. Its default connection pool is small;
-increase `PoolingHttpClientConnectionManager.setDefaultMaxPerRoute` for
-high-concurrency services and set explicit timeouts.
+For Apple Live Activities, pass the ActivityKit fields as nested maps to `publishPush`, and manage
+iOS 18 APNs broadcast channels with `createApnsLiveActivityChannel` (storage policy `"noStorage"`,
+the default, or `"mostRecent"`), `getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, and
+`deleteApnsLiveActivityChannel`. See [Apple Live Activities](/docs/server/apple-live-activities) for
+direct and broadcast payloads and retry semantics.
 
-Retry only transient network errors, `429`, and suitable server failures with
-bounded exponential backoff. A retried publish must retain its original
-idempotency key. Authentication and validation errors require a request or
-configuration change.
+## Errors and timeouts
 
-- Reuse the sync or async client.
-- Keep the SDK deadline shorter than the caller's deadline.
-- Validate and rate-limit auth/history endpoints.
-- Keep credentials, signed URIs, raw webhooks, payloads, and provider tokens
-  out of logs.
-- Test connection-pool saturation, duplicate attempts, credential rotation,
-  and graceful application shutdown.
+HTTP and network failures come back as a `Result`, not as exceptions. `Result.Status` classifies
+them, and `shouldRetry()` reports whether the same request may succeed unchanged:
+
+| Status | Cause | `shouldRetry()` |
+| --- | --- | --- |
+| `SUCCESS` | `200`, `201`, `202`, `204` | — |
+| `CLIENT_ERROR` | `400` | false |
+| `AUTHENTICATION_ERROR` | `401` | false |
+| `MESSAGE_QUOTA_EXCEEDED` | `403` | false |
+| `NOT_FOUND` | `404` | false |
+| `SERVER_ERROR` | `5xx` | true |
+| `NETWORK_ERROR` | `IOException` in the sync client, including timeouts | true |
+| `UNKNOWN_ERROR` | Any other status such as `413` or `429`, or an async transport failure | false |
+
+Exceptions are reserved for programming and configuration errors: `IllegalArgumentException` for
+invalid channels, socket IDs, credentials, or keys; `SockudoException` for encrypted-channel misuse;
+and Gson's `JsonParseException` from `parseWebhook` for a body that is not a JSON object.
+
+```java title="OrderEvents.java"
+Result result = sockudo.trigger("orders", "order.created", data, null, idempotencyKey);
+
+switch (result.getStatus()) {
+    case SUCCESS:
+        break;
+    case SERVER_ERROR:
+    case NETWORK_ERROR:
+        retryQueue.schedule(orderId, idempotencyKey); // same key on every attempt
+        break;
+    default:
+        Integer http = result.getHttpStatus();
+        if (http != null && http == 429) {
+            retryQueue.scheduleWithBackoff(orderId, idempotencyKey);
+        } else {
+            throw new IllegalStateException("Sockudo rejected publish: HTTP " + http);
+        }
+}
+```
+
+Retry network errors, `429`, and `5xx` with bounded backoff and the original idempotency key. Do
+not retry `400`, `401`, `403`, or `413`; they need a request or configuration change. Keep
+`setRequestTimeout` (sync) or the async client's timeouts shorter than the caller's deadline.
+
+<Callout type="warn" title="Keep secrets out of logs">
+Never log the app secret, the encryption master key, the client URL, URIs from `signedUri`, event
+payloads, raw webhook bodies, or provider tokens. Log the status, `getHttpStatus()`, and your own
+operation ID instead of the full `getMessage()` text.
+</Callout>
+
+For endpoints without a dedicated helper, `get`, `post(path, body[, headers])`, and
+`delete(path, params[, headers])` sign requests for paths relative to `/apps/{appId}`.
+`signedUri(method, path, body[, params])` returns a signed `java.net.URI` for your own HTTP client;
+its `path` is the full path, such as `/apps/APP_ID/channels`, and the keys `auth_key`,
+`auth_timestamp`, `auth_version`, `auth_signature`, and `body_md5` are reserved.
+
+## Next steps
+
+<Cards>
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="How clients request channel and user auth from your backend." />
+  <Card title="HTTP API" href="/docs/server/http-api" description="Every endpoint the SDK signs, with request and response shapes." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Webhook events, delivery, and retry behavior." />
+  <Card title="Error reference" href="/docs/reference/errors" description="Server error codes and what to do about each one." />
+</Cards>

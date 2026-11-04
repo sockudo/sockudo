@@ -4,36 +4,103 @@ description: Canonical AI Transport, mutable-message, history, presence-history,
 icon: SlidersHorizontal
 ---
 
-This is the canonical server-side limit table for AI Transport-adjacent features.
+This is the canonical server-side limit table for AI Transport and the features it builds on. Every
+row lists the config key (or a fixed constant), the default, and what a client sees when it hits
+the limit. Use it when you size a deployment, pick retention windows, or decode a rejection.
 
-| Area | Key or constant | Default | Notes |
+Limits fall into three groups:
+
+- **Hard rejections** stop a publish, mutation, or connection with an error code. The client must
+  change what it sends.
+- **Clamps** silently reduce a request, such as a page size, to the allowed maximum.
+- **Retention windows** decide how far back history, versions, and recovery can reach. Exceeding
+  them shows up later as a recovery or history gap, not as an immediate error.
+
+## AI Transport
+
+| Limit | Key or constant | Default | When exceeded |
 | --- | --- | --- | --- |
-| HTTP API | `http_api.request_limit_in_mb` | `100` | Whole request cap. |
-| Event payload | `event_limits.max_payload_in_kb` | `100` | App policy can lower effective limit. |
-| Event batch | `event_limits.max_batch_size` | `10` | Applies to batch publish. |
-| Version history page | `versioned_messages.max_page_size` | `100` | Server caps version pages. |
-| Version retention | `versioned_messages.retention_window_seconds` | `0` | `0` means no expiry. |
+| Accumulated content per output message | `ai_transport.max_accumulated_message_bytes` | `1048576` (1 MiB) | Append rejected with `40009` `payload_too_large`. Start a new message. |
+| Appends per message | `ai_transport.max_appends_per_message` | `4096` | Append rejected with `40009`. |
+| Open streaming messages per channel | `ai_transport.max_open_streaming_messages_per_channel` | `1024` | New streaming create rejected with `40009`. |
+| Keys per `transport` or `codec` tier | constant | `32` | Publish rejected with `104001` `ai_header_too_large`. |
+| Header key length | constant | `64` bytes | Publish rejected with `104001`. |
+| Transport value length | `ai_transport.max_transport_value_bytes` | `256` bytes | Publish rejected with `104001`. Can only be raised. |
+| `steer-codec-message-ids` value length | `ai_transport.max_steer_codec_message_ids_bytes` | `2048` bytes | Publish rejected with `104001`. Can only be raised. |
+| Ordinary codec value length | constant | `256` bytes | Publish rejected with `104001`. |
+| `extras.ai.codec.providerMetadata` length | constant | `8` KiB | Publish rejected with `104001`. |
+| `message_id` on AI channels | constant | `64` bytes | HTTP publish rejected with `104001`; an empty value is rejected with `104000`. |
+| Rollup windows | `append_rollup_window` | `0`, `20`, `40`, `100`, `500` | Any other value fails the V2 WebSocket upgrade with HTTP `400`. |
+| Rollup default | `ai_transport.rollup.default_window_ms` | `40` | Node-local egress coalescing window. |
+| Rollup orphan TTL | `ai_transport.rollup.orphan_ttl_ms` | `60000` | Stale stream claim/cancel threshold. The stream is closed with `status=cancelled` and `error-code=orphan_timeout`. |
+
+The three stream caps are checked inside the same version-store transaction as the mutation, so
+they hold across nodes and cannot be bypassed by racing appends.
+
+## Events, history, and versions
+
+| Limit | Key | Default | When exceeded |
+| --- | --- | --- | --- |
+| HTTP request body | `http_api.request_limit_in_mb` | `10` | Whole request cap; the request is rejected. |
+| Event payload | `event_limits.max_payload_in_kb` | `100` | Publish rejected. App policy can lower the effective limit. |
+| Event batch | `event_limits.max_batch_size` | `10` | Batch publish rejected. |
+| Version history page | `versioned_messages.max_page_size` | `100` | Clamped; the server caps version pages. |
+| Version retention | `versioned_messages.retention_window_seconds` | `0` | `0` means no expiry. Purged chains fall back to the raw history payload. |
 | Version purge batch | `versioned_messages.purge_batch_size` | `1000` | SQL/memory purge worker bound. |
-| History page | `history.max_page_size` | `100` | Client history may be further capped at `1000`. |
-| History retention | `history.retention_window_seconds` | `86400` | Per-app/namespace policy can override. |
+| History page | `history.max_page_size` | `100` | Clamped. Client history over the WebSocket is additionally capped at `1000`. |
+| History retention | `history.retention_window_seconds` | `86400` | Older positions fail recovery with `position_expired`. Per-app/namespace policy can override. |
 | History writer queue | `history.writer_queue_capacity` | `4096` | Bounded writer queue. |
 | Presence history page | `presence_history.max_page_size` | `100` | Presence transition history, not current members. |
 | Presence history retention | `presence_history.retention_window_seconds` | `86400` | Durable or memory retention. |
-| AI accumulated content | `ai_transport.max_accumulated_message_bytes` | `1048576` | Latest aggregated mutable message content cap. |
-| AI appends per message | `ai_transport.max_appends_per_message` | `4096` | Per logical stream. |
-| AI open streams/channel | `ai_transport.max_open_streaming_messages_per_channel` | `1024` | Active streaming messages on one channel. |
-| Rollup windows | `append_rollup_window` | `0`, `20`, `40`, `100`, `500` | V2 query values accepted by validation. |
-| Rollup default | `ai_transport.rollup.default_window_ms` | `40` | Node-local egress coalescing window. |
-| Rollup orphan TTL | `ai_transport.rollup.orphan_ttl_ms` | `60000` | Stale stream claim/cancel threshold. |
-| Capability token size | constant | `8192` bytes | HS256 JWT only. |
-| Capability token lifetime | constant | `24h` | `iat` to `exp`. |
-| Capability `client_id` | constant | `128` bytes | Required. |
-| Capability `jti` | constant | `128` bytes | Required. |
+
+## Presence
+
+| Limit | Key or constant | Default | When exceeded |
+| --- | --- | --- | --- |
+| `sockudo:presence_update` member data | constant | `1024` bytes | Update rejected with `40009`. |
+| Presence updates per member | `presence.update_rate_limit_per_member_per_second` | `10` | Update rejected by the client-event rate limiter. |
+| V2 disconnect grace | `presence.v2_ungraceful_timeout_seconds` | `15` | After the grace window, the member is removed. |
+| V1 disconnect grace | `presence.ungraceful_timeout_seconds` | `0` | Legacy immediate removal. |
+
+## Capability tokens
+
+| Limit | Key or constant | Default | When exceeded |
+| --- | --- | --- | --- |
+| Capability token size | constant | `8192` bytes | Authentication fails. HS256 JWT only. |
+| Capability patterns per token | constant | `100` | Authentication fails. |
+| Capability token lifetime | constant | `24h` | `iat` to `exp`; longer tokens fail authentication. |
+| Capability `client_id` | constant | `128` bytes | Required; authentication fails outside `1..=128`. |
+| Capability `jti` | constant | `128` bytes | Required; authentication fails outside `1..=128`. |
+| Clock skew | constant | `30` seconds | Tolerance applied to `exp`, `nbf`, and `iat`. |
+| Expiry grace | constant | `30` seconds | After `sockudo:token_expired`, the connection closes with `4009` unless refreshed. |
+| Revocation memory | `ttl_seconds` or `expires_at` on the request | `24h` | Revoked identities stay blocked for this long. |
+
+## Push
+
+| Limit | Key | Default | Notes |
+| --- | --- | --- | --- |
 | Push fanout fast path | `push.fanout_fast_threshold` | `10000` | Planning threshold. |
 | Push shard size | `push.fanout_shard_size` | `100000` | Channel fanout shard size. |
 | Push acceptance quota | `push.default_quotas.acceptance_rps` | `100` | Per-app default quota. |
 | Push inflight quota | `push.default_quotas.inflight_max` | `1000` | Per-app default. |
 | Push status retention | `push.publish_status_ttl_days` | `30` | Support/audit retention. |
-| Push rule event filter | `push_rules.event_filter` | max `32` names | Each event name at most 200 bytes. |
+| Push rule event filter | `push_rules.event_filter` | max `32` names | Each event name at most 200 bytes. Violations fail startup validation. |
+| Push rule rate | `push_rules.rate_limit_per_second` | `100` | Per rule. |
+
+<Callout type="tip" title="Size retention for your slowest reconnect">
+Recovery and rewind can only reach what history still retains. Set `history.retention_window_seconds`
+to cover your longest expected offline gap plus support investigations, and keep
+`versioned_messages.retention_window_seconds` at least as long so history can still materialize the
+latest aggregate of each output message.
+</Callout>
 
 The machine-checked default block is in [Configuration reference](/docs/reference/configuration).
+
+## Next steps
+
+<Cards>
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Every key with its machine-checked default." />
+  <Card title="Error reference" href="/docs/reference/errors" description="HTTP and WebSocket error codes in full." />
+  <Card title="Troubleshooting" href="/docs/server/ai-transport-troubleshooting" description="What to do when a limit rejects traffic." />
+  <Card title="Production operations" href="/docs/server/ai-transport-production-ops" description="Capacity formulas and alert thresholds." />
+</Cards>

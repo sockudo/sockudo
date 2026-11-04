@@ -4,8 +4,15 @@ description: Practical Sockudo patterns for public channels, private auth, prese
 icon: RadioTower
 ---
 
+This page collects the patterns most Sockudo applications are built from: public feeds, private and
+presence channels, recovery and rewind, mutable messages, annotations, and the shape of a scaled
+deployment. Use it as a blueprint when you design a new realtime feature, and as a checklist when
+you review one.
+
 Sockudo starts Pusher-compatible and becomes Sockudo-native when you opt into Protocol V2 features.
 The safest production pattern is to keep untrusted clients simple and put authority in your backend.
+
+## The trust model
 
 ```mermaid
 flowchart LR
@@ -17,6 +24,17 @@ flowchart LR
   S --> H[(History / version store)]
   S --> P[(Push queue)]
 ```
+
+Three actors, three roles:
+
+- **Clients** hold only the app key. They connect, subscribe, and render. They can be inspected and
+  modified by their users, so nothing they send is trusted on its own.
+- **Your backend** holds the app secret. It decides who may join which private or presence channel,
+  signs those decisions, and publishes business events over the signed HTTP API.
+- **Sockudo** verifies signatures, fans messages out, and keeps history, versions, and the push queue.
+
+Every pattern below follows from that split: authorization decisions are made in your backend, and
+Sockudo enforces the signed result.
 
 ## Public feed
 
@@ -46,11 +64,28 @@ await sockudo.trigger("market:btc", "price.updated", {
 });
 ```
 
+<Callout type="warn" title="The app key is public">
+Anyone can read the app key from your client bundle and subscribe to any public channel. If the data
+is per-user or per-tenant, use a private channel.
+</Callout>
+
 ## Private channel
 
-Private channels prove the user can subscribe before Sockudo admits the connection.
+Private channels prove the user may subscribe before Sockudo admits the subscription. Channels whose
+name starts with `private-` trigger the flow automatically.
 
-```ts
+<Steps>
+
+1. The client opens a WebSocket and receives a `socket_id`.
+2. On `subscribe("private-...")`, the client SDK posts `socket_id` and `channel_name` to your
+   `channelAuthorization.endpoint`.
+3. Your backend authenticates the user, checks the channel against its own policy, and signs the
+   pair with the app secret.
+4. The client sends the signature to Sockudo, which verifies it and completes the subscription.
+
+</Steps>
+
+```ts {4-7}
 const client = new Sockudo("app-key", {
   wsHost: "realtime.example.com",
   forceTLS: true,
@@ -67,7 +102,7 @@ account.bind("invoice.paid", updateInvoice);
 Backend auth should derive the channel from verified user state, not from a trusted-looking request
 body.
 
-```ts
+```ts {5-7}
 app.post("/api/sockudo/channel-auth", async (req, res) => {
   const user = requireUser(req);
   const { socket_id, channel_name } = req.body;
@@ -79,6 +114,11 @@ app.post("/api/sockudo/channel-auth", async (req, res) => {
   res.json(sockudo.authorizeChannel(socket_id, channel_name));
 });
 ```
+
+<Callout type="tip" title="Deny by default">
+Write the auth endpoint as an allowlist of channel shapes the user may join. Anything that does not
+match returns `403`, including channel names you have not invented yet.
+</Callout>
 
 ## Presence room
 
@@ -112,9 +152,18 @@ res.json(sockudo.authorizeChannel(socketId, channelName, {
 }));
 ```
 
+Members are keyed by `user_id`, so one user with several tabs appears once: `member_added` fires on
+the first connection and `member_removed` after the last one leaves. Keep `user_info` small; it is
+capped by `presence.max_member_size_in_kb` (default 2 KB) and sent to every member.
+
 ## Protocol V2 recovery and rewind
 
 Protocol V2 clients can recover missed messages and ask for recent history during subscribe.
+
+- **Recovery** fills the gap after a short disconnect, so a client that was already subscribed sees
+  every message exactly as if it had stayed connected.
+- **Rewind** gives a client that is joining now the last few messages, so a new chat window or
+  dashboard starts populated.
 
 ```ts
 const client = new Sockudo("app-key", {
@@ -158,10 +207,17 @@ sequenceDiagram
 Use `until_attach` for late joins: it prevents a history page from racing with live messages above
 the attach serial.
 
+<Callout type="warn" title="Handle resume_failed">
+When continuity cannot be proven, Sockudo reports `sockudo:resume_failed` instead of replaying a
+partial gap. Resubscribe and backfill from history; never mark the channel as recovered on your own.
+See [History and recovery](/docs/server/history-recovery).
+</Callout>
+
 ## Mutable messages
 
 Mutable messages let a logical message be updated, deleted, appended, and summarized while keeping a
-version history.
+version history. Every subscriber converges on the same latest version, and late joiners receive
+that version rather than the original create payload.
 
 ```ts
 const latest = await channel.getMessage("msg_01J");
@@ -206,6 +262,9 @@ Append is the right primitive for streams:
 }
 ```
 
+A stable `op_id` per operation makes retries safe: a repeated `op_id` returns `status: "duplicate"`
+instead of appending twice. See [Mutable messages](/docs/server/mutable-messages).
+
 ## Annotations
 
 Annotations attach secondary state to a message without rewriting the message itself. Use them for
@@ -220,10 +279,13 @@ Content-Type: application/json
 {
   "type": "reactions:distinct.v1",
   "name": "thumbs-up",
-  "client_id": "user-42",
+  "clientId": "user-42",
   "count": 1
 }
 ```
+
+Annotation permissions are separate from message mutation permissions, so a user can react to a
+message they are not allowed to edit.
 
 ## Backend publishing checklist
 
@@ -240,26 +302,20 @@ Content-Type: application/json
 
 ```mermaid
 flowchart TB
-  LB[Load balancer] --> N1[Sockudo node A]
-  LB --> N2[Sockudo node B]
-  LB --> N3[Sockudo node C]
-
-  N1 <-->|adapter fanout| Bus[(Redis / NATS / Kafka / RabbitMQ / Pulsar / Iggy)]
-  N2 <-->|adapter fanout| Bus
-  N3 <-->|adapter fanout| Bus
-
-  N1 --> Cache[(Shared cache)]
-  N2 --> Cache
-  N3 --> Cache
-
-  N1 --> Store[(History + version store)]
-  N2 --> Store
-  N3 --> Store
-
-  N1 --> Queue[(Webhook / push queue)]
-  N2 --> Queue
-  N3 --> Queue
+  LB[Load balancer] --> Cluster
+  subgraph Cluster [Sockudo cluster]
+    N1[Node A]
+    N2[Node B]
+    N3[Node C]
+  end
+  Cluster <-->|adapter fanout| Bus[(Adapter bus)]
+  Cluster --> Cache[(Shared cache)]
+  Cluster --> Store[(History + version store)]
+  Cluster --> Queue[(Webhook / push queue)]
 ```
+
+The adapter bus is any horizontal adapter: Redis, Redis Cluster, NATS, Kafka, RabbitMQ, Pulsar,
+Google Pub/Sub, Apache Iggy, or OMQ.
 
 For horizontal deployments, avoid memory-only cache, queue, history, and version stores. Memory is
 fine for local development and single-node demos; production clusters need shared stores for
@@ -279,3 +335,12 @@ idempotency, recovery, push dispatch, and durable history continuity.
 
 Start with normal Sockudo when you are building realtime product events. Add AI Transport when model
 runs need to outlive one HTTP request, one browser tab, or one device.
+
+## Next steps
+
+<Cards>
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="Private, presence, and user authentication end to end." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Hot replay, durable history, rewind, and failing closed." />
+  <Card title="Mutable messages" href="/docs/server/mutable-messages" description="Update, delete, and append with version history." />
+  <Card title="AI Transport" href="/docs/server/ai-transport-overview" description="Durable, resumable model runs on the same primitives." />
+</Cards>

@@ -1,0 +1,34 @@
+---
+import type { MarkdownHeading } from 'astro';
+import { AlignLeft, Sparkles } from '@lucide/astro';
+
+interface Props {
+  headings: MarkdownHeading[];
+}
+const items = Astro.props.headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+
+<aside class="toc" aria-label="On this page" data-lenis-prevent>
+  {
+    items.length > 0 && (
+      <>
+        <h2>
+          <AlignLeft /> On this page
+        </h2>
+        <ul>
+          <span class="marker" aria-hidden="true" />
+          {items.map((h) => (
+            <li class={`depth-${h.depth}`}>
+              <a href={`#${h.slug}`}>{h.text}</a>
+            </li>
+          ))}
+        </ul>
+      </>
+    )
+  }
+  <div class="toc-card glass">
+    <strong><Sparkles size={13} style="display:inline;vertical-align:-2px;color:var(--accent)" /> Building with AI?</strong>
+    Feed the whole docs to your agent with one URL.
+    <a href="/llms-full.txt">llms-full.txt →</a>
+  </div>
+</aside>

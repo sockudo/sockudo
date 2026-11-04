@@ -1,0 +1,44 @@
+---
+import { ChevronRight, ExternalLink } from '@lucide/astro';
+import { loadDocs } from '@/lib/docs';
+import DynIcon from './DynIcon.astro';
+
+interface Props {
+  current: string;
+}
+const { current } = Astro.props;
+const { groups } = await loadDocs();
+---
+
+<aside class="sidebar" aria-label="Documentation navigation" data-lenis-prevent>
+  {
+    groups.map((g) => (
+      <div class="group">
+        <div class="group-title">{g.title}</div>
+        {g.items.map((item) =>
+          item.type === 'link' ? (
+            <a class="nav-link" href={item.href} aria-current={item.slug === current ? 'page' : undefined}>
+              {item.title}
+              {item.external && <ExternalLink size={12} style="margin-left:auto;opacity:.5" />}
+            </a>
+          ) : (
+            <details open={item.items.some((l) => l.slug === current) || undefined}>
+              <summary>
+                <DynIcon name={item.icon} class="ico" />
+                {item.title}
+                <ChevronRight class="chev" />
+              </summary>
+              <div class="sub">
+                {item.items.map((l) => (
+                  <a class="nav-link" href={l.href} aria-current={l.slug === current ? 'page' : undefined}>
+                    {l.title}
+                  </a>
+                ))}
+              </div>
+            </details>
+          ),
+        )}
+      </div>
+    ))
+  }
+</aside>

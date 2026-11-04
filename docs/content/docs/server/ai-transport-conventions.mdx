@@ -3,9 +3,18 @@ title: AI Transport conventions
 description: Default-off AI Transport event and extras conventions for Protocol V2.
 ---
 
-AI Transport support is additive and default-off. Enable it with the `ai-transport` Cargo feature and runtime `[ai_transport]` config, then scope validation to channel prefixes:
+This page is the working reference for what an AI Transport message looks like on the wire: which
+event names exist, who may publish them, which `extras.ai` headers Sockudo validates, and how
+idempotent retries work. Read it when you write your own agent publisher, debug a rejected publish,
+or plan a production deployment. The SDK applies these conventions for you; you need the details
+when you step outside it.
 
-```toml
+## Enable and scope
+
+AI Transport support is additive and default-off. Enable it with the `ai-transport` Cargo feature
+and runtime `[ai_transport]` config, then scope validation to channel prefixes:
+
+```toml title="config.toml"
 [ai_transport]
 enabled = true
 
@@ -13,9 +22,36 @@ enabled = true
 prefix = "private-ai-"
 ```
 
-AI lifecycle events are plain channel events: `ai-input`, `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. Server-side validation applies only on enabled AI channels. WebSocket clients may publish `ai-input` and `ai-cancel` when their token allows `publish`; agent events require trusted server-side HTTP publish until an explicit agent token marker is specified.
+A channel is an AI channel when its name starts with one of the configured prefixes. Server-side
+validation applies only on enabled AI channels. Publishing an AI event name or `extras.ai` metadata
+to any other channel is rejected with `104003` `ai_event_not_permitted`.
 
-AI metadata is carried in the existing V2 `extras` envelope:
+## Events and who may publish them
+
+AI lifecycle events are plain channel events: `ai-input`, `ai-output`, `ai-run-start`,
+`ai-run-suspend`, `ai-run-resume`, `ai-run-end`, and `ai-cancel`. Agents additionally publish
+`ai-step-start` and `ai-step-end` around re-attemptable steps inside a run.
+
+| Event | WebSocket client | Trusted app-key HTTP |
+| --- | --- | --- |
+| `ai-input`, `ai-cancel` | Allowed with `publish` capability and a verified client identity | Allowed |
+| `ai-output`, `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, `ai-run-end` | Rejected with `104003` | Allowed |
+| `ai-step-start`, `ai-step-end` | Rejected with `104003` | Allowed |
+| `ai-turn-start`, `ai-turn-end` (legacy aliases) | Rejected with `104003` | Allowed |
+
+WebSocket clients may publish `ai-input` and `ai-cancel` when their token allows `publish`; agent
+events require trusted server-side HTTP publish until an explicit agent token marker is specified.
+WebSocket AI publishes also require Protocol V2 and an authenticated `client_id` (a capability
+token or a signed-in user); AI publishes from an anonymous connection are refused.
+
+## The extras envelope
+
+AI metadata is carried in the existing V2 `extras` envelope. It has two tiers:
+
+- **`transport`** holds the headers Sockudo understands and validates: run identity, status,
+  lineage, and identity claims.
+- **`codec`** holds SDK- or provider-specific fields. Sockudo bounds their size but never
+  interprets them.
 
 ```json
 {
@@ -34,15 +70,131 @@ AI metadata is carried in the existing V2 `extras` envelope:
 }
 ```
 
-Each `transport` and `codec` tier is limited to 32 string keys. Keys must be at most 64 bytes. Transport keys match `[a-z0-9-]+`; codec keys match `[A-Za-z0-9_-]+` for Ably/Vercel codec fields. Transport values and ordinary codec values must be at most 256 bytes; `extras.ai.codec.providerMetadata` may be up to 8 KiB because Vercel provider metadata is JSON-serialized there. Transport keys are validated against the wire protocol registry. Codec keys are opaque but still bounded. Ably-native regenerate publishes use `extras.ai.transport.msg-regenerate` as the codec-message-id of the assistant message being regenerated. Any `*-client-id` transport value on an untrusted WebSocket publish must match the verified signed-in client identity. Trusted app-key publishes may preserve empty `run-client-id` and `step-client-id` values as unknown-owner sentinels; derived identities treat those empty values as absent.
+Each `transport` and `codec` tier is limited to 32 string keys. Keys must be at most 64 bytes.
+Transport keys match `[a-z0-9-]+`; codec keys match `[A-Za-z0-9_-]+` for Ably/Vercel codec fields.
+Transport values and ordinary codec values must be at most 256 bytes;
+`extras.ai.codec.providerMetadata` may be up to 8 KiB because Vercel provider metadata is
+JSON-serialized there. Transport keys are validated against the wire protocol registry. Codec keys
+are opaque but still bounded.
+
+Other keys placed directly under `extras.ai` (for example Ably AI Transport 0.9's `type`, `fields`,
+`stream`, and `ends`) are preserved as opaque JSON, subject to the message size limit. They cannot
+be named `transport` or `codec`.
+
+<Callout type="note" title="Raising the transport value ceilings">
+`[ai_transport].max_transport_value_bytes` (default `256`) and
+`[ai_transport].max_steer_codec_message_ids_bytes` (default `2048`) can only be raised. Startup
+rejects a value below the protocol floor, because lowering either one would start rejecting traffic
+that previously passed validation.
+</Callout>
+
+### Transport header registry
+
+Unknown transport keys are rejected with `104000` `ai_invalid_transport_header`.
+
+| Key | Accepted values |
+| --- | --- |
+| `run-id` | Non-empty opaque string. |
+| `run-client-id` | Verified client identity, or the empty sentinel for an unknown owner (trusted publishes only). |
+| `run-reason` | `complete`, `cancelled`, `error`. |
+| `run-continue` | `true` or `false`; marks a client input as re-entering an existing run. |
+| `codec-message-id` | Non-empty opaque string; equals Sockudo `message_serial` for streamed mutable messages. |
+| `input-codec-message-id` | Non-empty opaque string. |
+| `parent` | Parent `codec-message-id`. |
+| `fork-of` | Fork source `codec-message-id`. |
+| `msg-regenerate` | Non-empty `codec-message-id` of the assistant message being regenerated. |
+| `supersedes` | Non-empty `run-id` of a suspended reply replaced by a client tool-result fork. |
+| `stream` | `true` or `false`. |
+| `stream-id` | Non-empty opaque string. |
+| `status` | `streaming`, `complete`, `cancelled`. |
+| `discrete` | `true` or `false`. |
+| `invocation-id` | Non-empty opaque string. |
+| `event-id` | Non-empty opaque string. |
+| `input-client-id` | Verified client identity. |
+| `step-id` | Non-empty opaque string; stable logical step identity across attempts. |
+| `step-start-serial` | Non-empty serial of the matching `ai-step-start` attempt. |
+| `step-reason` | `complete`, `failed`, `cancelled`. |
+| `step-client-id` | Verified client identity, or the empty sentinel for an unknown participant (trusted publishes only). |
+| `steer-codec-message-ids` | Non-empty JSON-stringified array of steer IDs; 2 KiB ceiling instead of 256 bytes. |
+| `role` | `user`, `assistant`, `system`, `tool`, `agent`. |
+| `error-code` | Non-empty opaque string. |
+| `error-message` | Human-readable string within the value limit. |
+| `model` | Non-empty opaque string; optional model identifier. |
+
+Legacy transport aliases `turn-id`, `turn-client-id`, `turn-reason`, and `turn-continue` are
+accepted for inbound and stored compatibility; `turn-reason` additionally accepts `suspended`.
+
+Ably-native regenerate publishes use `extras.ai.transport.msg-regenerate` as the codec-message-id
+of the assistant message being regenerated.
+
+### Identity headers cannot be spoofed
+
+Any `*-client-id` transport value on an untrusted WebSocket publish must match the verified
+signed-in client identity; a mismatch is rejected with `104002` `ai_client_id_spoof`. Trusted
+app-key publishes may preserve empty `run-client-id` and `step-client-id` values as unknown-owner
+sentinels; derived identities treat those empty values as absent. For an untrusted client, an empty
+value is still a spoof.
+
+## Canonical run sequences
+
+These are the event orders the SDKs produce and expect. Every streamed output is one mutable
+message, so "create", "append", and "update" below are `sockudo:message.*` operations on the same
+`message_serial`.
+
+| Scenario | Sequence |
+| --- | --- |
+| Normal streaming run | `ai-run-start` (with `run-id`, `invocation-id`, `run-client-id`); create `ai-output` with `stream=true`, `status=streaming`; zero or more appends with `status=streaming`; final append or update with `status=complete`; `ai-run-end` with `run-reason=complete`. |
+| Client cancellation | Client publishes `ai-cancel` with `run-id`; agent emits a final append or update with `status=cancelled`; `ai-run-end` with `run-reason=cancelled`. |
+| Error | Stream starts normally; agent emits an update with `status=complete`, `error-code`, and `error-message` (or no final content if no message was created); `ai-run-end` with `run-reason=error`. |
+| Suspend and resume | Agent emits `ai-run-suspend` with `run-id` and the current `invocation-id`; the continuation emits `ai-run-resume` with the same `run-id` and a new `invocation-id`. |
+| Regenerate | New output create carries `msg-regenerate=<old assistant codec-message-id>` and parents at the same input as the regenerated reply. |
+| Edit | Edited user input is a new `ai-input` or mutable update with `parent=<previous codec-message-id>`; downstream outputs fork from that parent. |
+
+<Callout type="tip" title="Always send a terminal status">
+A stream stays "active" until a final append or update carries `status=complete` or
+`status=cancelled`. If your agent crashes before that, the orphan janitor cancels it after
+`ai_transport.rollup.orphan_ttl_ms` (see below), but users wait the full TTL first.
+</Callout>
+
+## Idempotency and acknowledgements
 
 `extras.ai.codec` may instead be a single string: the codec id that Ably AI Transport stamps on every message (for example `"vercel-ai-sdk-ui-message"`, `"openai-responses"`, `"ag-ui-events"`). Ably decoders skip messages whose id does not match exactly, so Sockudo relays the string verbatim on live delivery and history. A codec id is limited to 256 bytes and is not otherwise validated.
 
-Existing `idempotency_key` behavior is unchanged. AI SDKs may additionally send `message_id` on HTTP publish for idempotent creates, and mutation requests may send `op_id` for no-op replay of append/update/delete operations. V2 publish and mutation acknowledgements expose `message_serial`, `history_serial`, `delivery_serial`, and `version_serial` when those serials are assigned.
+Existing `idempotency_key` behavior is unchanged. AI SDKs may additionally send `message_id` on
+HTTP publish for idempotent creates, and mutation requests may send `op_id` for no-op replay of
+append/update/delete operations. V2 publish and mutation acknowledgements expose `message_serial`,
+`history_serial`, `delivery_serial`, and `version_serial` when those serials are assigned.
+
+| Mechanism | Dedupe key | Retry behavior |
+| --- | --- | --- |
+| `message_id` on create | `(app_id, channel, message_id)` | Returns the original serials; no rebroadcast. At most 64 bytes on AI channels. |
+| `op_id` on append, update, delete | `(app_id, channel, message_serial, action, op_id)` | Same payload returns the original acknowledgement with `status: "duplicate"`; a different payload is a conflict. |
+| `X-Idempotency-Key` header or body `idempotency_key` | App and key | Returns the cached acknowledgement; the body value wins over the header. |
+
+When the event name is an AI event or `message_id` is present, `POST /apps/{appId}/events` responds
+with per-channel serials:
+
+```json
+{
+  "channels": {
+    "private-ai-user-42-sess-01J": {
+      "message_serial": "msg_...",
+      "history_serial": 123,
+      "delivery_serial": 456,
+      "version_serial": "ver_..."
+    }
+  }
+}
+```
+
+`GET /apps/{appId}/channels/{channelName}` adds an `ai` block with `active_streams`,
+`last_history_serial`, and `message_count` for channels that match an AI prefix.
 
 ## Deployment matrix
 
-AI Transport requires durable history and versioned messages. Startup rejects `ai_transport.enabled = true` unless both `[history].enabled` and `[versioned_messages].enabled` are true.
+AI Transport requires durable history and versioned messages. Startup rejects
+`ai_transport.enabled = true` unless both `[history].enabled` and `[versioned_messages].enabled` are
+true.
 
 | Adapter | Cache | History backend | Version store | Support |
 | --- | --- | --- | --- | --- |
@@ -53,20 +205,66 @@ AI Transport requires durable history and versioned messages. Startup rejects `a
 | any horizontal adapter | any | `memory` | any | Rejected at startup |
 | any horizontal adapter | any | any | `memory` | Rejected at startup |
 
-Under AI Transport, versioned-message delivery serials are leased in 128-position blocks per node and channel. The backing store still owns monotonic reservation authority; the lease cache reduces append-stream reservation contention without changing stored serials or recovery semantics.
+The horizontal rejections exist because every node must agree on the same history, the same version
+chains, and the same owner for an orphaned stream. A node-local store would split that authority.
 
-Append rollup is egress-only and defaults to a 40 ms window. Streaming messages are tracked in the shared cache while their `extras.ai.transport.status` is `streaming`. Any node can claim a stale stream after `ai_transport.rollup.orphan_ttl_ms`, which defaults to 60000 ms, then append a normal versioned `message.update` with `status=cancelled` and `error-code=orphan_timeout`. The claim key prevents duplicate cancellation across nodes, and the latest version is re-read before mutation so active streams that advanced meanwhile are refreshed instead of cancelled.
+Under AI Transport, versioned-message delivery serials are leased in 128-position blocks per node
+and channel. The backing store still owns monotonic reservation authority; the lease cache reduces
+append-stream reservation contention without changing stored serials or recovery semantics.
 
-Apps can subscribe to the webhook event type `ai_stream_orphaned` to observe synthetic orphan cancellation. The event payload includes `channel`, `message_serial`, and `reason`.
+## Rollup and orphaned streams
+
+Append rollup is egress-only and defaults to a 40 ms window; see
+[Token streaming and rollup](/docs/server/token-streaming-rollup). Streaming messages are tracked in
+the shared cache while their `extras.ai.transport.status` is `streaming`. Any node can claim a stale
+stream after `ai_transport.rollup.orphan_ttl_ms`, which defaults to 60000 ms, then append a normal
+versioned `message.update` with `status=cancelled`, `error-code=orphan_timeout`, and an
+`error-message` explaining the timeout. The claim key prevents duplicate cancellation across nodes,
+and the latest version is re-read before mutation so active streams that advanced meanwhile are
+refreshed instead of cancelled.
+
+Apps can subscribe to the webhook event type `ai_stream_orphaned` to observe synthetic orphan
+cancellation. The event payload includes `channel`, `message_serial`, and `reason`. The other AI
+webhook event types are `ai_run_started`, `ai_run_ended`, and `ai_cancel_requested`; see
+[Webhooks](/docs/server/webhooks).
 
 ## Scale-out verification
 
 The repository includes a three-node Redis/PostgreSQL AI Transport stack and verification scripts:
 
-```bash
-docker compose -f docker-compose.ai-transport.yml up --build -d
-node scripts/ai-transport-3node-bench.mjs
-scripts/ai-transport-jepsen-lite.sh
-```
+<Steps>
 
-`scripts/ai-transport-3node-bench.mjs` runs a same-stack baseline plus a cross-node workload, verifies every node reads the same final aggregate, and enforces the cross-node added append p99 budget. `scripts/ai-transport-jepsen-lite.sh` runs the same correctness check before, during, and after a docker `pause`/`unpause` partition of one node; steady state uses `MAX_APPEND_ADDED_P99_MS` and partition/heal phases use `PARTITION_MAX_APPEND_ADDED_P99_MS`.
+1. Start the stack:
+
+   ```bash
+   docker compose -f docker-compose.ai-transport.yml up --build -d
+   ```
+
+2. Run the cross-node benchmark:
+
+   ```bash
+   node scripts/ai-transport-3node-bench.mjs
+   ```
+
+3. Run the partition check:
+
+   ```bash
+   scripts/ai-transport-jepsen-lite.sh
+   ```
+
+</Steps>
+
+`scripts/ai-transport-3node-bench.mjs` runs a same-stack baseline plus a cross-node workload,
+verifies every node reads the same final aggregate, and enforces the cross-node added append p99
+budget. `scripts/ai-transport-jepsen-lite.sh` runs the same correctness check before, during, and
+after a docker `pause`/`unpause` partition of one node; steady state uses `MAX_APPEND_ADDED_P99_MS`
+and partition/heal phases use `PARTITION_MAX_APPEND_ADDED_P99_MS`.
+
+## Next steps
+
+<Cards>
+  <Card title="Authentication" href="/docs/server/ai-transport-authentication" description="Capability tokens, identity, and who may publish each event." />
+  <Card title="Limits and quotas" href="/docs/server/ai-transport-limits-quotas" description="Every cap that applies to AI traffic and what happens when you hit it." />
+  <Card title="Mutable messages" href="/docs/server/mutable-messages" description="The versioned-message model behind ai-output streams." />
+  <Card title="Troubleshooting" href="/docs/server/ai-transport-troubleshooting" description="Decode rejection codes and fix common integration mistakes." />
+</Cards>

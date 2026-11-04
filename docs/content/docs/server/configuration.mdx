@@ -4,13 +4,44 @@ description: Configure apps, adapters, cache, queues, rate limits, history, reco
 icon: SlidersHorizontal
 ---
 
-Sockudo configuration should describe the runtime shape explicitly: app storage, fanout adapter, cache, queue, protocol features, security controls, metrics, webhooks, and push notification providers.
+This page walks through the runtime shape of a Sockudo deployment: where app credentials live, how
+nodes fan out to each other, which shared stores carry state, and which protocol features are on.
+Read it before your first production deploy, or whenever you add a node, a backend, or a V2 feature.
 For TOML versus JSON, file discovery, `--config`, environment precedence, and secret placement, start
-with [Static configuration](/docs/deployment/static-configuration).
+with [Static configuration](/docs/deployment/static-configuration). Every key is listed in the
+[configuration reference](/docs/reference/configuration).
+
+## How the pieces fit
+
+Sockudo configuration should describe the runtime shape explicitly: app storage, fanout adapter,
+cache, queue, protocol features, security controls, metrics, webhooks, and push notification
+providers. Each top-level section owns one concern:
+
+| Section | Owns | Single node | Multi-node |
+| --- | --- | --- | --- |
+| `[app_manager]` | App credentials and per-app policy | `memory` is fine | A shared database driver |
+| `[adapter]` | Cross-node fanout and cluster-wide counts | `local` | A horizontal driver such as `redis` or `nats` |
+| `[cache]` | Idempotency claims, token revocations, coordination | `memory` | `redis` or `redis-cluster` |
+| `[queue]` | Webhook and background jobs | `memory` | A broker-backed driver |
+| `[rate_limiter]` | HTTP API and WebSocket connect limits | `memory` | `redis` |
+| `[connection_recovery]`, `[history]` | Reconnect replay and durable history | `memory` history backend | A shared history backend |
+| `[push]` | Push storage, queue, and workers | Memory drivers in dev only | Durable storage and queue |
+| `[database]` | Connection details the drivers above reuse | | |
+
+The rule of thumb: anything a second node must see (a claimed idempotency key, a revoked token, a
+replay position, a queued webhook) must live in a shared backend, not in process memory.
+
+<Callout type="note" title="Code defaults differ from the shipped config">
+Built-in defaults are conservative: `[connection_recovery]`, `[history]`, and `[versioned_messages]`
+are disabled, and `adapter.driver` is `local`. The shipped `config/config.toml` turns the V2
+features on for local development. Set every feature you rely on explicitly in production config.
+</Callout>
 
 ## Minimal local config
 
-```toml
+A single process with one static app. Good for development and tests.
+
+```toml title="config.toml"
 port = 6001
 host = "0.0.0.0"
 debug = true
@@ -34,7 +65,10 @@ enable_client_messages = false
 
 ## Production shape
 
-```toml
+Every node points at the same app database, adapter, cache, and queue. Metrics are served on a
+separate port so you can keep it off the public listener.
+
+```toml title="config.toml"
 port = 6001
 host = "0.0.0.0"
 debug = false
@@ -51,6 +85,10 @@ driver = "redis"
 [queue]
 driver = "redis"
 
+[database.redis]
+host = "redis"
+port = 6379
+
 [metrics]
 enabled = true
 host = "0.0.0.0"
@@ -63,23 +101,46 @@ port = 5000
 buffer_size = 1024
 ```
 
+`[database.redis]` is the Redis connection reused by the Redis adapter, cache, queue, and rate
+limiter. Sentinel, TLS, and Redis Cluster topology are covered in
+[Redis connections, Sentinel, and TLS](/docs/reference/configuration#redis-connections-sentinel-and-tls).
+
 ## App manager
 
-The app manager stores app credentials and app-level policy. Memory is useful for local development; persistent managers are preferred for production.
+The app manager stores app credentials and app-level policy (limits, features, allowed origins,
+channel namespaces, webhooks). Memory is useful for local development; persistent managers are
+preferred for production because they let you add, rotate, and disable apps without a restart.
 
 | Driver | Use when |
 | --- | --- |
 | `memory` | Credentials are static and local to one process. |
-| `pgsql` or `mysql` | You need relational app records and standard operational tooling. |
+| `pgsql` (aliases `postgres`, `postgresql`) or `mysql` | You need relational app records and standard operational tooling. |
 | `dynamodb` | You run on AWS and want managed key-value storage. |
 | `scylladb` | You need wide-column scale. |
 | `surrealdb` | You use SurrealDB 4 for app metadata. |
 
+```toml title="config.toml"
+[app_manager]
+driver = "postgres"
+# Close live connections of disabled/deleted apps (seconds, 0 = off).
+availability_check_interval_seconds = 15
+
+[app_manager.cache]
+enabled = true
+ttl = 300
+```
+
+The MySQL and PostgreSQL managers can encrypt app secrets at rest; see
+[App secrets at rest](/docs/server/security#app-secrets-at-rest-mysql-and-postgresql). How disabling
+an app reaches live connections is covered in [Disabling an app](/docs/server/security#disabling-an-app).
+
 ## Adapter
 
-The adapter controls cross-node fanout.
+The adapter controls cross-node fanout. When a publish lands on node A, the adapter carries it to
+every other node so each one can deliver to its own sockets. It also answers cluster-wide questions
+such as "how many sockets are subscribed to this channel".
 
-```toml
+```toml title="config.toml"
 [adapter]
 driver = "redis"
 enable_socket_counting = true
@@ -87,13 +148,15 @@ aggregate_counts = false
 fast_presence_transitions = false
 
 [adapter.redis]
-host = "redis"
-port = 6379
-prefix = "sockudo"
+prefix = "sockudo_adapter:"
+requests_timeout = 5000
 pubsub_ping_interval_ms = 10000
 ```
 
-Use a shared adapter for every multi-node deployment. Local memory adapters are intentionally process-local.
+Use a shared adapter for every multi-node deployment. The `local` adapter is intentionally
+process-local: a second node never sees the first node's publishes. Available drivers are `local`,
+`redis`, `redis-cluster`, `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy`, and `omq`;
+see [Scaling](/docs/server/scaling#adapter-choices) for how to choose.
 
 `pubsub_ping_interval_ms` (under `[adapter.redis]` and `[adapter.cluster]`, default `10000`) is how
 often each node PINGs its Redis subscriber connection. A subscriber connection only reads, so when
@@ -102,6 +165,12 @@ behind the same address) it would otherwise wait forever while publishing keeps 
 node silently stops receiving events from its peers. When a PING fails or gets no answer within one
 interval, the node logs a warning, increments `sockudo_horizontal_transport_reconnections_total`,
 and resubscribes. Set it to `0` to disable the probe.
+
+<Callout type="warn" title="Do not disable the subscriber probe on managed Redis">
+With `pubsub_ping_interval_ms = 0`, a silently dropped subscriber connection leaves the node
+publishing to peers but never hearing from them. Clients on that node see partial fanout with no
+error.
+</Callout>
 
 ### Redis Cluster broadcast bucketing
 
@@ -145,9 +214,39 @@ ADAPTER_AGGREGATE_COUNTS=true
 ADAPTER_FAST_PRESENCE_TRANSITIONS=true
 ```
 
+## Cache and queue
+
+The cache holds short-lived shared state such as idempotency claims and capability-token
+revocations. The queue carries background work such as webhook delivery.
+
+| Section | Drivers |
+| --- | --- |
+| `[cache]` | `memory`, `redis`, `redis-cluster`, `none` |
+| `[queue]` | `memory`, `redis`, `redis-cluster`, `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy`, `sqs`, `sns`, `none` |
+
+<Callout type="warn" title="Memory cache breaks idempotency across nodes">
+Idempotency keys are claimed in the cache. With `cache.driver = "memory"` on a multi-node cluster,
+a retry that lands on a different node is not recognized as a duplicate, and a token revoked on one
+node stays valid on the others.
+</Callout>
+
+Retry, lease, and dead-letter behavior for queue jobs lives under `[queue.reliability]`; see
+[Queue v2 reliability](/docs/reference/configuration#queue-v2-reliability).
+
 ## Recovery and history
 
-```toml
+Sockudo keeps two separate stores for past messages. They answer different questions, so size and
+back them separately.
+
+| | Hot replay buffer | Durable history |
+| --- | --- | --- |
+| Section | `[connection_recovery]` | `[history]` |
+| Purpose | Fill the gap after a short disconnect | API reads, rewind, cold recovery, versioned messages, inspection |
+| Lifetime | `buffer_ttl_seconds` (default 120) | `retention_window_seconds` (default 86400) |
+| Size bound | `max_buffer_size` messages per channel (default 100) | `max_messages_per_channel`, `max_bytes_per_channel` |
+| Storage | In process | `backend`: `postgres`, `mysql`, `dynamodb`, `surrealdb`, `scylladb`, or `memory` |
+
+```toml title="config.toml"
 [connection_recovery]
 enabled = true
 buffer_ttl_seconds = 120
@@ -162,11 +261,15 @@ max_messages_per_channel = 10000
 
 Recovery buffers are for reconnect continuity. Durable history is for API reads, rewind, versioned messages, and operational inspection. Keep those concerns separate.
 
+`max_buffer_size` bounds both the per-channel hot buffer and a single durable fallback replay, so a
+client that missed more than that many messages on one channel gets `position_expired` and must
+backfill from history. The full recovery model is in [History and recovery](/docs/server/history-recovery).
+
 ## Push notifications
 
 Push is a core Sockudo subsystem. Configure it with a queue, provider credentials, retention, admission limits, and metrics before sending production traffic.
 
-```toml
+```toml title="config.toml"
 [push]
 storage_driver = "postgres"
 queue_driver = "redis"
@@ -182,17 +285,27 @@ cleanup_max_deleted_per_tick = 100000
 # PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH=/var/run/secrets/fcm-service-account.json
 # PUSH_FCM_PROJECT_ID is optional when the service account JSON has project_id.
 
-# Runtime env for APNs monolith workers:
+# Runtime env for APNs monolith workers (token auth):
 # PUSH_APNS_ENABLED=true
 # PUSH_APNS_TOPIC=com.example.app
+# PUSH_APNS_TEAM_ID=ABCDE12345
+# PUSH_APNS_KEY_ID=KEY123ABCD
 # PUSH_APNS_PRIVATE_KEY_PATH=/var/run/secrets/apns-auth-key.p8
 ```
 
+Both `storage_driver` and `queue_driver` default to `memory`, which is node-local and loses push state
+on restart. Production mode rejects memory push storage and queues unless
+`allow_memory_drivers = true` is set explicitly.
+
 Use the queue backend for push fanout. Direct synchronous provider delivery is only suitable for tests and can hide production latency.
+
+APNs token auth needs a team ID, a key ID, and the private key (`PUSH_APNS_PRIVATE_KEY_PATH` or
+`PUSH_APNS_PRIVATE_KEY`). Prefer the FCM service account JSON over `PUSH_FCM_PROVIDER_TOKEN`: a
+static provider token cannot be refreshed and is only suitable for short-lived legacy dispatch.
 
 Channel push rules are top-level entries. They trigger the existing push pipeline after matching realtime publishes:
 
-```toml
+```toml title="config.toml"
 [[push_rules]]
 enabled = true
 channel_pattern = "notifications:*"
@@ -206,9 +319,13 @@ template_data_field = "data"
 include_remaining_fields = true
 ```
 
+`channel_pattern` accepts an exact name, `*`, or a single trailing wildcard such as
+`notifications:*`, up to 256 bytes. The payload mapping values shown are the defaults. See
+[Push notifications](/docs/server/push-notifications) for providers, templates, and status.
+
 ## Presence
 
-```toml
+```toml title="config.toml"
 [presence]
 max_members_per_channel = 100
 max_member_size_in_kb = 2
@@ -225,30 +342,65 @@ remove presence immediately for both protocol versions.
 
 ## Webhooks
 
-```toml
+Webhook endpoints are configured per app under `policy.webhooks`. The server-wide `[webhooks]`
+section controls timeouts, batching, and retries for every app:
+
+```toml title="config.toml"
 [webhooks]
+request_timeout_ms = 10000
+
+[webhooks.batching]
 enabled = true
-batching_enabled = true
-max_batch_size = 50
-flush_interval_ms = 500
-timeout_ms = 5000
+duration = 50
+size = 100
+
+[webhooks.retry]
+enabled = true
+max_attempts = 5
+max_elapsed_time_ms = 300000
+initial_backoff_ms = 1000
+max_backoff_ms = 60000
 ```
 
-Webhook consumers must validate signatures with the raw request body. Configure retry behavior and dead-letter visibility before relying on webhooks for workflows.
+`batching.enabled` defaults to `true` when omitted (the shipped `config/config.toml` sets it to
+`false`). `batching.duration` is the flush interval in milliseconds and `batching.size` the maximum
+events per request. Webhooks are delivered through `[queue]`; with `queue.driver = "none"` they are disabled.
+
+Webhook consumers must validate signatures with the raw request body. Configure retry behavior and dead-letter visibility before relying on webhooks for workflows. Endpoint setup and payloads are in [Webhooks](/docs/server/webhooks).
 
 ## Rate limits
 
-```toml
+The server-wide rate limiter has two buckets: signed HTTP API requests and new WebSocket connections.
+Each limit allows `max_requests` per `window_seconds` per client IP.
+
+```toml title="config.toml"
 [rate_limiter]
 enabled = true
 driver = "redis"
 
-[rate_limiter.limits]
-connection_per_ip = 50
-events_per_second = 100
+[rate_limiter.api_rate_limit]
+max_requests = 100
+window_seconds = 60
+trust_hops = 0
+
+[rate_limiter.websocket_rate_limit]
+max_requests = 20
+window_seconds = 60
+trust_hops = 0
 ```
 
+The values shown are the built-in defaults. `trust_hops = 0` ignores forwarding headers and keys
+limits on the socket peer; behind a trusted proxy, set it as described in
+[Rate limiter client IP](/docs/reference/configuration#rate-limiter-client-ip). Per-app ceilings
+such as `max_client_events_per_second` and `max_backend_events_per_second` live under
+`[app_manager.array.apps.policy.limits]`.
+
 Keep limits close to product intent. A collaboration app, trading dashboard, and push-heavy mobile app need different ceilings.
+
+<Callout type="tip" title="Use a shared driver across nodes">
+With `driver = "memory"`, each node counts independently, so the effective cluster limit is the
+per-node limit multiplied by the node count.
+</Callout>
 
 ## Environment variables
 
@@ -260,9 +412,18 @@ SOCKUDO_DEFAULT_APP_KEY=app-key
 SOCKUDO_DEFAULT_APP_SECRET=app-secret
 REDIS_URL=redis://redis:6379/0
 PUSH_FCM_PROJECT_ID=project-id
-PUSH_FCM_PROVIDER_TOKEN=oauth2-access-token
+PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH=/run/secrets/fcm-service-account.json
 ```
 
 Avoid putting app secrets, encryption master keys, webhook secrets, and push provider credentials in committed config files.
 
 Every runtime environment override is listed in the [environment variable reference](/docs/reference/environment-variables).
+
+## Next steps
+
+<Cards>
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Every section and key, with defaults." />
+  <Card title="Static configuration" href="/docs/deployment/static-configuration" description="File discovery, --config, and environment precedence." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Choose an adapter and plan a multi-node cluster." />
+  <Card title="Security" href="/docs/server/security" description="Protect secrets, origins, auth endpoints, and push credentials." />
+</Cards>

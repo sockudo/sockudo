@@ -1,0 +1,157 @@
+---
+import { ArrowRight } from '@lucide/astro';
+
+const adapters = [
+  { name: 'Redis', note: 'Pub/Sub' },
+  { name: 'Redis Cluster', note: 'Cluster mode' },
+  { name: 'NATS', note: 'Subjects' },
+  { name: 'Kafka', note: 'Topics' },
+  { name: 'RabbitMQ', note: 'AMQP' },
+  { name: 'Pulsar', note: 'Topics' },
+  { name: 'Google Pub/Sub', note: 'Managed' },
+  { name: 'Apache Iggy', note: 'Single or VSR cluster' },
+  { name: 'Memory', note: 'Single node' },
+];
+---
+
+<section class="sec adapters" aria-labelledby="adapters-title">
+  <div class="sec-inner split">
+    <div data-reveal>
+      <span class="eyebrow">Horizontal scaling</span>
+      <h2 id="adapters-title" class="sec-title">Scale on the bus <span class="grad">you already run.</span></h2>
+      <p class="sec-lede">
+        Add nodes behind any load balancer. Sockudo coordinates fanout, presence and continuity through a pluggable adapter — no sticky-session
+        gymnastics, no proprietary broker.
+      </p>
+      <ul class="ticks">
+        <li>Ready for Kubernetes with a Helm chart and readiness probes</li>
+        <li>Duplicate suppression and continuity checks across nodes</li>
+        <li>App managers on MySQL, PostgreSQL, DynamoDB, ScyllaDB or SurrealDB</li>
+      </ul>
+      <a class="link-arrow" href="/docs/server/scaling">Scaling guide <ArrowRight size={16} /></a>
+    </div>
+
+    <div class="ring-stage" data-reveal style="--d:120ms" aria-label="Supported adapters">
+      <div class="ring-core">
+        <img src="/sockudo-logo/sockudo-icon-color.svg" alt="" width="64" height="64" />
+      </div>
+      <div class="ring" style={`--n:${adapters.length}`}>
+        {
+          adapters.map((a, i) => (
+            <div class="face glass" style={`--i:${i}`}>
+              <strong>{a.name}</strong>
+              <small>{a.note}</small>
+            </div>
+          ))
+        }
+      </div>
+      <div class="ring-floor" aria-hidden="true"></div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .adapters {
+    overflow: hidden;
+  }
+  .ring-stage {
+    position: relative;
+    height: 460px;
+    perspective: 1100px;
+    perspective-origin: 50% 30%;
+    display: grid;
+    place-items: center;
+  }
+  .ring-core {
+    position: absolute;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgb(139 77 255 / 0.4), transparent 70%);
+    animation: corepulse 3s ease-in-out infinite;
+  }
+  .ring-core img {
+    filter: drop-shadow(0 0 24px rgb(169 120 255 / 0.9));
+  }
+  @keyframes corepulse {
+    50% {
+      transform: scale(1.08);
+    }
+  }
+  .ring {
+    position: relative;
+    width: 150px;
+    height: 78px;
+    transform-style: preserve-3d;
+    animation: ring-rot 32s linear infinite;
+  }
+  .ring-stage:hover .ring {
+    animation-play-state: paused;
+  }
+  .face {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 16px;
+    border-radius: 16px;
+    transform: rotateY(calc(var(--i) * 360deg / var(--n))) translateZ(300px);
+    backface-visibility: visible;
+    background: var(--glass);
+    box-shadow: 0 0 40px -10px rgb(139 77 255 / 0.5);
+    padding: 0 14px;
+  }
+  .face strong {
+    font-size: 0.98rem;
+    letter-spacing: -0.01em;
+  }
+  .face small {
+    font-size: 0.72rem;
+    color: var(--fg-subtle);
+  }
+  .ring-floor {
+    position: absolute;
+    bottom: 40px;
+    left: 50%;
+    width: 560px;
+    height: 560px;
+    margin-left: -280px;
+    border-radius: 50%;
+    transform: rotateX(78deg);
+    background:
+      radial-gradient(circle, transparent 46%, rgb(139 77 255 / 0.35) 47%, transparent 48%),
+      radial-gradient(circle, transparent 30%, rgb(232 121 249 / 0.18) 31%, transparent 32%),
+      radial-gradient(circle, rgb(139 77 255 / 0.18), transparent 60%);
+    pointer-events: none;
+  }
+  @keyframes ring-rot {
+    from {
+      transform: rotateX(-16deg) rotateY(0);
+    }
+    to {
+      transform: rotateX(-16deg) rotateY(-360deg);
+    }
+  }
+  @media (max-width: 620px) {
+    .ring-stage {
+      height: 380px;
+      perspective: 800px;
+    }
+    .face {
+      transform: rotateY(calc(var(--i) * 360deg / var(--n))) translateZ(190px);
+    }
+    .ring {
+      width: 140px;
+      height: 72px;
+    }
+    .ring-floor {
+      width: 400px;
+      height: 400px;
+      margin-left: -200px;
+    }
+  }
+</style>

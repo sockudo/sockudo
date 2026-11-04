@@ -4,9 +4,31 @@ description: Secure Sockudo credentials, auth endpoints, origin policy, encrypte
 icon: ShieldCheck
 ---
 
+This page maps each Sockudo security control to the attack it stops: leaked secrets, forged
+subscriptions, cross-site socket hijacking, spoofed webhooks, abusive clients, and push misuse. Read
+it before exposing a deployment to the internet, and revisit it whenever you add a channel type,
+enable client events, or turn on push.
+
 Sockudo security depends on clear trust boundaries. Client SDKs connect and subscribe; server SDKs hold secrets, sign auth responses, publish events, validate webhooks, and manage push.
 
+## Threat model
+
+| Threat | Control | Section |
+| --- | --- | --- |
+| An attacker obtains the app secret and publishes or signs subscriptions as your backend | Keep secrets server-side; encrypt them at rest | [Secrets](#secrets) |
+| A user subscribes to another user's private channel | Your auth endpoint signs only channels the user owns | [Auth endpoints](#auth-endpoints) |
+| A malicious web page opens a socket with your app key in a victim's browser | Origin allowlist | [Origin policy](#origin-policy) |
+| A subscribed client impersonates the server on a shared channel | Client events off by default, `client-` prefix only | [Client messages](#client-messages) |
+| A forged request hits your webhook endpoint | HMAC signature over the raw body | [Webhook validation](#webhook-validation) |
+| A client floods connections, API calls, or events | Rate limits and per-app limits | [Rate limiting](#rate-limiting) |
+| A stolen or stale client token keeps working | Short-lived capability tokens and revocation | [Three-layer auth model](#three-layer-auth-model) |
+| Transport or infrastructure operators read message payloads | End-to-end encrypted channels | [Encrypted channels](#encrypted-channels) |
+| Notifications sent to devices that did not opt in, or leaked provider keys | Push identity and credential controls | [Push security](#push-security) |
+
 ## Secrets
+
+Anyone holding an app secret can publish to every channel, sign any private or presence
+subscription, and read history for that app. Treat it like a database root password.
 
 Keep these server-side only:
 
@@ -21,6 +43,11 @@ Keep these server-side only:
 - Web Push VAPID private key
 
 Use secret managers or Kubernetes Secrets. Do not bake secrets into images or public environment bundles.
+
+<Callout type="warn" title="The app key is not a secret, the app secret is">
+The app key ships in every client bundle and only identifies the app. The app secret must never
+reach a browser, a mobile binary, or client-side logs. If it leaks, rotate it.
+</Callout>
 
 ### App secrets at rest (MySQL and PostgreSQL)
 
@@ -38,17 +65,30 @@ into the ciphertext, so a `secret_enc` value copied onto another app's row fails
 The column is added automatically on startup. Rows that only have a plaintext `secret` keep
 working, so you can migrate one app at a time:
 
-```bash
-openssl rand -base64 32 > /run/secrets/sockudo-app-secret-key
-export SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE=/run/secrets/sockudo-app-secret-key
+<Steps>
 
-# Prints the secret_enc value for app "my-app"; the secret is read from stdin.
-printf '%s' "$APP_SECRET" | sockudo --encrypt-app-secret my-app
-```
+1. Generate a key and point every node at it.
 
-```sql
-UPDATE applications SET secret_enc = 'v1:...', secret = '' WHERE id = 'my-app';
-```
+   ```bash
+   openssl rand -base64 32 > /run/secrets/sockudo-app-secret-key
+   export SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE=/run/secrets/sockudo-app-secret-key
+   ```
+
+2. Seal each app's secret. The secret is read from stdin, so it never appears in shell history or
+   the process list.
+
+   ```bash
+   # Prints the secret_enc value for app "my-app"; the secret is read from stdin.
+   printf '%s' "$APP_SECRET" | sockudo --encrypt-app-secret my-app
+   ```
+
+3. Store the sealed value and clear the plaintext column.
+
+   ```sql
+   UPDATE applications SET secret_enc = 'v1:...', secret = '' WHERE id = 'my-app';
+   ```
+
+</Steps>
 
 Sockudo fails closed. A row with `secret_enc` but no configured key, or a key that does not
 match, is rejected: lookups for that app return an error, and app listings skip it. An invalid
@@ -64,11 +104,18 @@ apps with code `4003` and sockets of deleted apps with `4001`. Clients do not re
 either code. The worst-case delay is the check interval plus `[app_manager.cache] ttl`. If an
 app lookup fails, for example during a database outage, the check keeps the connections open.
 
+This is your kill switch for a compromised or abusive tenant: disable the app in the app manager and
+its traffic stops within that window, without a restart.
+
 ## Origin policy
+
+**Protects against:** cross-site WebSocket hijacking. Browsers let any page open a WebSocket to any
+host, and the app key is public, so without an allowlist a malicious site can connect with your key
+from a visitor's browser.
 
 Configure allowed origins for browser clients. Do not use wildcard origins for authenticated apps.
 
-```toml
+```toml title="config.toml"
 [[app_manager.array.apps]]
 id = "app-id"
 key = "app-key"
@@ -81,27 +128,58 @@ allowed_origins = [
 ]
 ```
 
+When the list is non-empty, a connection whose `Origin` header is missing or not on the list is
+rejected with error code `4009` and counted in `sockudo_connection_errors_total` with
+`error_type="origin_not_allowed"`. Matching is case-insensitive, and `*.example.com` patterns match
+subdomains. An empty list, `*`, or `any` allows every origin.
+
+<Callout type="note" title="Origin is a browser control">
+Browsers set `Origin` and scripts cannot change it, but a non-browser client can send any value.
+The origin allowlist stops other websites from using your key; channel authorization is what stops
+an attacker with their own client.
+</Callout>
+
 ## Client messages
+
+**Protects against:** a subscribed client injecting events that other subscribers trust as if your
+server sent them.
 
 Client events allow subscribed clients to publish events to private or presence channels. Disable them unless the product explicitly needs peer-to-peer client events.
 
-```toml
+```toml title="config.toml"
 [app_manager.array.apps.policy.features]
 enable_client_messages = false
 ```
 
+When enabled, Sockudo accepts client events only on private and presence channels, only with a
+`client-` name prefix, and never with reserved `pusher:`, `pusher_internal:`, `sockudo:`, or
+`sockudo_internal:` prefixes. Rate limit them with `max_client_events_per_second` under
+`[app_manager.array.apps.policy.limits]`.
+
 When enabled, validate channel authorization carefully and use event names that are easy to audit.
+Receivers must treat client events as untrusted user input.
 
 ## Auth endpoints
 
+**Protects against:** horizontal privilege escalation, where a signed-in user subscribes to a channel
+that belongs to someone else. Sockudo only checks that the signature is valid; your endpoint decides
+whether the user should have it.
+
 Auth endpoints must:
 
-1. authenticate the current user
-2. validate `socket_id`
-3. validate `channel_name`
-4. enforce tenant and resource policy
-5. sign with the server SDK
-6. avoid logging full signatures or secrets
+<Steps>
+
+1. Authenticate the current user from your session or token, never from the request body.
+2. Validate `socket_id` so a signature cannot be replayed onto another connection.
+3. Validate `channel_name` against an allowlist of shapes the user may join.
+4. Enforce tenant and resource policy, for example that `private-account:42` belongs to user 42.
+5. Sign with the server SDK.
+6. Avoid logging full signatures or secrets.
+
+</Steps>
+
+Because the signature covers `socket_id` and `channel_name`, a signature captured from one session
+cannot be reused for another connection or another channel.
 
 ## Three-layer auth model
 
@@ -115,9 +193,20 @@ Sockudo separates client authority into three layers:
 
 Capability tokens are additive. They do not replace Pusher-compatible HMAC channel auth, signed app HTTP APIs, or per-app mutation policies. A token-authenticated mutation must have `publish` for the channel and must also satisfy the existing own/any mutable-message policy.
 
+Tokens are HS256-signed, at most 8 KiB, and live at most 24 hours, with 30 seconds of allowed clock
+skew. Issue them with short lifetimes so a leaked token expires quickly on its own.
+
 Revocation is stored through the configured Sockudo cache by `jti` or `client_id`. Use a shared cache such as Redis when multiple Sockudo nodes must observe revocations consistently. A node that receives `POST /apps/{appId}/revocations` closes matching local token-authenticated sockets immediately; other nodes reject the revoked token on the next validation or refresh once the cache entry is visible.
 
+<Callout type="warn" title="Memory cache makes revocation node-local">
+With `cache.driver = "memory"` on a cluster, a revoked token is rejected only on the node that
+received the revocation. Every other node keeps accepting it until it expires.
+</Callout>
+
 ## Encrypted channels
+
+**Protects against:** anyone between your backend and the subscriber reading payloads, including
+Sockudo operators, log pipelines, and history stores. Sockudo relays and stores only ciphertext.
 
 Encrypted channels protect payload contents from the transport. They do not replace channel authorization.
 
@@ -130,7 +219,11 @@ Rules:
 
 ## Webhook validation
 
-Validate webhooks with the raw body:
+**Protects against:** forged webhook requests. Your webhook URL is reachable from the internet, so an
+attacker can POST fake `member_added` or `ai_run_ended` events unless you verify the sender.
+
+Each delivery carries `X-Pusher-Key` and `X-Pusher-Signature`, a hex HMAC SHA-256 of the raw body
+keyed with the app secret. Validate webhooks with the raw body:
 
 ```ts
 const webhook = sockudo.webhook({ rawBody, headers });
@@ -139,7 +232,13 @@ if (!webhook.isValid()) {
 }
 ```
 
-Support key rotation by accepting old and new webhook tokens during the migration window.
+<Callout type="warn" title="Verify before parsing">
+Compute the signature over the exact bytes received. A framework that parses and re-serializes the
+JSON first changes the bytes and makes every signature check fail, which tempts teams to disable it.
+</Callout>
+
+Support key rotation by accepting old and new webhook tokens during the migration window. Delivery
+details are in [Webhooks](/docs/server/webhooks#verify-signatures).
 
 ## Push security
 
@@ -152,7 +251,16 @@ Push is a privileged subsystem. Treat it like an outbound messaging platform:
 - push publish APIs should be rate limited per tenant and workflow
 - scheduled push should have cancellation and audit trails
 
+Sockudo enforces part of this for you. A signed push request acts as `push-admin` by default.
+Sending `X-Sockudo-Push-Capability: push-subscribe` narrows it: the request can only act on an
+existing device and must present that device's `X-Sockudo-Device-Identity-Token`. The server stores
+only a hash of that token. Publishing push always requires `push-admin`, so a device-scoped flow
+cannot broadcast notifications.
+
 ## Rate limiting
+
+**Protects against:** connection floods, credential stuffing on auth endpoints, noisy tenants, and
+runaway clients exhausting shared capacity.
 
 Rate limit:
 
@@ -163,6 +271,35 @@ Rate limit:
 - push registration and publish by tenant
 - webhook retries
 
+Sockudo enforces the server-side pieces directly:
+
+```toml title="config.toml"
+[rate_limiter]
+enabled = true
+driver = "redis"
+
+[rate_limiter.api_rate_limit]
+max_requests = 100
+window_seconds = 60
+trust_hops = 0
+
+[rate_limiter.websocket_rate_limit]
+max_requests = 20
+window_seconds = 60
+trust_hops = 0
+```
+
+Rejected HTTP requests return `429` with `Retry-After` and `X-RateLimit-*` headers, and every
+decision is counted in `sockudo_rate_limit_checks_total` and `sockudo_rate_limit_triggered_total`.
+Auth endpoint limits live in your backend, because Sockudo never sees those requests.
+
+<Callout type="warn" title="Set trust_hops only behind a trusted proxy">
+With `trust_hops = 0` (the default) Sockudo keys limits on the socket peer and ignores
+`X-Forwarded-For`. A positive value reads the client IP from that header, which any client can set.
+Use it only when Sockudo is reachable exclusively through proxies that rewrite the header; see
+[Rate limiter client IP](/docs/reference/configuration#rate-limiter-client-ip).
+</Callout>
+
 Use shared Redis-backed limits in multi-node deployments.
 
 ## Operational hardening
@@ -172,3 +309,13 @@ Use shared Redis-backed limits in multi-node deployments.
 - use readiness checks during deploys
 - emit audit logs for denied auth and push admin operations
 - alert on authentication failures, signature failures, and provider credential errors
+- keep the metrics port (`9601` by default) off the public network
+
+## Next steps
+
+<Cards>
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="Build private, presence, and user auth endpoints." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Signature verification and idempotent handlers." />
+  <Card title="Push notifications" href="/docs/server/push-notifications" description="Device identity, credentials, and provider setup." />
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Rate limiter, capability token, and app policy keys." />
+</Cards>

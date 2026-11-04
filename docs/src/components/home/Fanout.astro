@@ -1,0 +1,251 @@
+---
+const steps = [
+  {
+    k: '01',
+    title: 'Publish once',
+    body: 'Your backend calls the signed HTTP API — or a server SDK — on any node. Idempotency keys make retries safe.',
+    tag: 'POST /apps/:id/events',
+  },
+  {
+    k: '02',
+    title: 'Fan out across the cluster',
+    body: 'The adapter bus broadcasts to every node: Redis, Redis Cluster, NATS, Kafka, RabbitMQ, Pulsar, Google Pub/Sub or Apache Iggy.',
+    tag: 'adapter.driver = "nats"',
+  },
+  {
+    k: '03',
+    title: 'Deliver to every socket',
+    body: 'Each node pushes to its local subscribers, applying tag filters and delta compression per connection before bytes hit the wire.',
+    tag: 'sockudo:message',
+  },
+  {
+    k: '04',
+    title: 'Recover what was missed',
+    body: 'A phone drops into a tunnel. On reconnect, Sockudo replays the gap from the hot buffer or durable history — or fails closed when continuity can’t be proven.',
+    tag: 'recover { serial: 1042 }',
+  },
+];
+---
+
+<section class="fanout island" aria-labelledby="fanout-title" data-fanout>
+  <div class="fanout-head" data-reveal>
+    <span class="eyebrow">How it works</span>
+    <h2 id="fanout-title" class="sec-title">One publish.<br /><span class="grad">Every socket, every node.</span></h2>
+  </div>
+
+  <div class="fanout-grid">
+    <div class="fanout-sticky">
+      <div class="stage glass">
+        <canvas data-fanout-canvas aria-hidden="true"></canvas>
+        <div class="labels" data-fanout-labels aria-hidden="true">
+          <span class="lbl s0" data-anchor="publisher">HTTP API</span>
+          <span class="lbl s0" data-anchor="node-a">Node A</span>
+          <span class="lbl s1" data-anchor="node-b">Node B</span>
+          <span class="lbl s1" data-anchor="node-c">Node C</span>
+          <span class="lbl s1 bus" data-anchor="adapter">Adapter bus</span>
+          <span class="lbl s2" data-anchor="clients">WebSocket clients</span>
+          <span class="lbl s3 hist" data-anchor="history">Durable history</span>
+        </div>
+        <div class="stage-hud">
+          <span class="dot-live"></span>
+          <span data-fanout-status>Live simulation</span>
+        </div>
+      </div>
+    </div>
+    <ol class="steps">
+      {
+        steps.map((s, i) => (
+          <li class="step" data-step={i}>
+            <span class="num">{s.k}</span>
+            <h3>{s.title}</h3>
+            <p>{s.body}</p>
+            <code>{s.tag}</code>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>
+
+<style>
+  .fanout {
+    position: relative;
+    padding: 120px 20px 60px;
+    color: var(--fg);
+    background:
+      radial-gradient(900px 500px at 30% 20%, rgb(124 58 237 / 0.16), transparent 60%),
+      radial-gradient(700px 500px at 90% 80%, rgb(192 38 211 / 0.1), transparent 60%),
+      #07050c;
+  }
+  .fanout-head {
+    max-width: 1240px;
+    margin: 0 auto 48px;
+  }
+  .fanout-grid {
+    max-width: 1240px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1.55fr 1fr;
+    gap: 56px;
+  }
+  .fanout-sticky {
+    position: relative;
+  }
+  .stage {
+    position: sticky;
+    top: calc(var(--header-h) + 24px);
+    height: min(640px, calc(100vh - var(--header-h) - 48px));
+    border-radius: 28px;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 40%, rgb(124 58 237 / 0.12), rgb(10 7 18 / 0.6));
+  }
+  .stage canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .labels {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .lbl {
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+    color: #ede5ff;
+    background: rgb(20 13 34 / 0.65);
+    border: 1px solid rgb(196 165 255 / 0.25);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    transition: opacity 0.5s var(--ease-out);
+    will-change: transform;
+  }
+  .lbl.bus {
+    border-color: rgb(232 121 249 / 0.4);
+  }
+  .lbl.hist {
+    border-color: rgb(232 121 249 / 0.6);
+    color: #fae8ff;
+  }
+  .labels[data-step='0'] .s0,
+  .labels[data-step='1'] :is(.s0, .s1),
+  .labels[data-step='2'] :is(.s0, .s1, .s2),
+  .labels[data-step='3'] .lbl {
+    opacity: 1;
+  }
+  .stage-hud {
+    position: absolute;
+    left: 18px;
+    bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--fg-muted);
+  }
+  .dot-live {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 10px #4ade80;
+    animation: blink2 1.4s ease-in-out infinite;
+  }
+  @keyframes blink2 {
+    50% {
+      opacity: 0.3;
+    }
+  }
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .step {
+    min-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    opacity: 0.28;
+    transform: translateX(12px);
+    transition:
+      opacity 0.6s var(--ease-out),
+      transform 0.6s var(--ease-out);
+  }
+  .step:first-child {
+    min-height: 50vh;
+    justify-content: flex-start;
+    padding-top: 12vh;
+  }
+  .step.active {
+    opacity: 1;
+    transform: none;
+  }
+  .step .num {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+  .step h3 {
+    font-size: clamp(1.6rem, 2.6vw, 2.2rem);
+    letter-spacing: -0.035em;
+    line-height: 1.1;
+    margin: 0 0 12px;
+  }
+  .step p {
+    color: var(--fg-muted);
+    font-size: 1.05rem;
+    margin: 0 0 16px;
+  }
+  .step code {
+    align-self: flex-start;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 5px 10px;
+    border-radius: 8px;
+    color: var(--accent-text);
+    background: var(--accent-soft);
+    border: 1px solid var(--glass-border);
+  }
+  @media (max-width: 960px) {
+    .fanout {
+      padding: 80px 16px 40px;
+    }
+    .fanout-grid {
+      grid-template-columns: 1fr;
+      gap: 0;
+    }
+    .fanout-sticky {
+      position: sticky;
+      top: var(--header-h);
+      z-index: 1;
+      height: 46vh;
+    }
+    .stage {
+      position: relative;
+      top: 0;
+      height: 100%;
+    }
+    .step {
+      min-height: 60vh;
+      padding: 24px 4px;
+    }
+    .step:first-child {
+      padding-top: 24px;
+    }
+    .step p,
+    .step h3 {
+      text-shadow: 0 2px 12px #07050c;
+    }
+  }
+</style>

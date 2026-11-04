@@ -4,53 +4,118 @@ description: Preflight checklist for AI Transport deployments.
 icon: ClipboardCheck
 ---
 
-Use this checklist before enabling AI Transport for production traffic.
+Use this checklist before enabling AI Transport for production traffic. It is grouped by area so
+each owner (platform, security, operations, client teams) can sign off their section. Every item
+links a requirement to something you can verify; if an item does not apply, write down why.
 
 ## Build and config
 
-- Build with `v2`, `ai-transport`, the selected shared adapter/cache/store features, and `push`
-  when push recipes are used.
-- Enable `[history]`, `[versioned_messages]`, and `[ai_transport]`.
-- Use shared history, version store, and cache for horizontal deployments.
-- Scope `[[ai_transport.channels]]` to narrow prefixes.
-- Set history and version retention to cover reconnect, rewind, and support windows.
+- [ ] Build with `v2`, `ai-transport`, the selected shared adapter/cache/store features, and `push`
+  when push recipes are used. For example:
+  `cargo build -p sockudo --features "v2,ai-transport,redis,postgres,push"`.
+- [ ] Build Docker images both with and without `ai-transport` enabled, and confirm the default
+  profile carries no AI Transport feature.
+- [ ] Enable `[history]`, `[versioned_messages]`, and `[ai_transport]`. Startup rejects AI Transport
+  without the first two.
+- [ ] Use shared history, version store, and cache for horizontal deployments. Startup rejects
+  memory history, a memory version store, or a `memory`/`none` cache with any adapter other than
+  `local`.
+- [ ] Scope `[[ai_transport.channels]]` to narrow prefixes, and confirm every session channel name
+  actually starts with one (prefix matching is literal).
+- [ ] Set history and version retention to cover reconnect, rewind, and support windows. Keep
+  version retention at least as long as history retention so history can materialize each output's
+  latest aggregate.
+- [ ] Review `[ai_transport]` stream caps (`max_accumulated_message_bytes`,
+  `max_appends_per_message`, `max_open_streaming_messages_per_channel`) against your longest
+  expected answer.
+- [ ] Choose `ai_transport.rollup.orphan_ttl_ms` longer than your longest legitimate pause inside a
+  stream. `config/ai-transport.example.toml` is the release config example.
 
 ## Auth
 
-- Issue short-lived V2 capability tokens from a backend only.
-- Keep capability patterns exact or tenant/user scoped.
-- Use app-key HTTP only from trusted server workers.
-- Revoke by `jti` or `client_id` for incident response.
-- Do not accept client-asserted identity fields.
+- [ ] Issue short-lived V2 capability tokens from a backend only.
+- [ ] Keep capability patterns exact or tenant/user scoped.
+- [ ] Use app-key HTTP only from trusted server workers. Agent events are accepted only there.
+- [ ] Revoke by `jti` or `client_id` for incident response, and know that a `client_id` revocation
+  also blocks new tokens until its TTL expires.
+- [ ] Do not accept client-asserted identity fields. Derive the user in your `/api/chat` route from
+  your own session, not from the `clientId` in the request body.
+- [ ] Grant `publish` on push notification channels only to server-side publishers.
 
 ## Operations
 
-- Scrape Prometheus metrics from every node.
-- Alert on history degraded/reset-required channels, recovery failures, rollup flush latency, active
-  stream leaks, horizontal transport drops, and push queue/provider failures.
-- Run the AIT-S conformance suite before release.
-- Run `scripts/ai-transport-bench-guard.sh` and review budgets.
-- Run `scripts/ai-transport-ga-gate.sh ci-evidence` on every release-candidate branch.
-- Run `scripts/ai-transport-ga-gate.sh release-evidence` before any GA tag; it fails until the
-  external S14 scale/chaos, rolling-upgrade, and full SDK compatibility manifests are committed.
-- Generate release evidence with `scripts/ai-transport-s14-release-evidence.sh`,
-  `scripts/ai-transport-rolling-upgrade-redis.mjs --execute`, and
-  `scripts/sdk-compat-full-matrix.mjs --execute`.
-- Execute `test/load` and `tools/chaos` profiles on production-like hardware before headline claims.
-- Build Docker images both with and without `ai-transport` enabled.
+- [ ] Scrape Prometheus metrics from every node.
+- [ ] Alert on history degraded/reset-required channels, recovery failures, rollup flush latency,
+  active stream leaks, horizontal transport drops, and push queue/provider failures. Starting
+  thresholds are in [production operations](/docs/server/ai-transport-production-ops).
+- [ ] Subscribe a webhook endpoint to `ai_run_ended` and `ai_stream_orphaned` if you persist
+  transcripts or monitor orphaned streams.
+- [ ] Execute `tests/load` and `tools/chaos` profiles on production-like hardware before headline
+  claims.
+- [ ] Keep `[ai_transport]` runtime-disabled during a mixed-version rolling upgrade on shared Redis.
+  Enable it only after every node runs the new release, then run an AI stream and recovery smoke
+  test.
+
+## Release evidence
+
+<Steps>
+
+1. Run the AIT-S conformance suite before release:
+
+   ```bash
+   AIT_CONFORMANCE_OFFLINE=1 scripts/ai-conformance-node.sh
+   ```
+
+2. Run the benchmark guard and review budgets:
+
+   ```bash
+   scripts/ai-transport-bench-guard.sh
+   ```
+
+3. Run the deterministic gate on every release-candidate branch:
+
+   ```bash
+   scripts/ai-transport-ga-gate.sh ci-evidence
+   ```
+
+4. Generate release evidence with `scripts/ai-transport-s14-release-evidence.sh`,
+   `scripts/ai-transport-rolling-upgrade-redis.mjs --execute`, and
+   `scripts/sdk-compat-full-matrix.mjs --execute`.
+
+5. Run `scripts/ai-transport-ga-gate.sh release-evidence` before any GA tag; it fails until the
+   external S14 scale/chaos, rolling-upgrade, and full SDK compatibility manifests are committed.
+
+</Steps>
+
+<Callout type="warn" title="No synthetic numbers">
+Capacity claims must come from the runner output with hardware notes, Prometheus snapshots,
+transcript audits, serial audits, and leak evidence. The committed `*.not-run.json` manifests under
+`docs/specs/ai-transport-results` are explicit placeholders, not results.
+</Callout>
 
 ## Client behavior
 
-- Treat Sockudo history as authoritative after reconnect or notification open.
-- Use `until_attach` for late-join history to avoid gaps.
-- Reduce mutable-message events by `message_serial` and `version.serial`.
-- Send terminal stream status for completed/cancelled/error runs.
-- Refresh tokens before expiry and back off on auth errors.
+- [ ] Treat Sockudo history as authoritative after reconnect or notification open.
+- [ ] Use `until_attach` for late-join history to avoid gaps.
+- [ ] Reduce mutable-message events by `message_serial` and `version.serial`.
+- [ ] Send terminal stream status for completed/cancelled/error runs, and call `run.end(...)` on
+  every code path, including errors.
+- [ ] Refresh tokens before expiry and back off on auth errors. Configure `authCallback` or
+  `authUrl` so refresh after `sockudo:token_expired` is automatic.
+- [ ] Handle `position_expired` and `stream_reset` by resubscribing and reloading history.
 
 ## GA readiness
 
 The canonical readiness record is
-[`docs/specs/ai-transport-ga-readiness.md`](/specs/ai-transport-ga-readiness). Server releases ship
-AI Transport defaults off before SDK releases that depend on the feature. Full product parity still
-depends on the SDK plans in `plans/ai-transport/02-sdk-prompts.md` and the E4/E5 enablement work in
-`plans/ai-transport/03-existing-sdks-prompts.md`.
+[`docs/specs/ai-transport-ga-readiness.md`](https://github.com/sockudo/sockudo/blob/master/docs/specs/ai-transport-ga-readiness.md).
+Server releases ship AI Transport defaults off before SDK releases that depend on the feature. Full
+product parity still depends on the SDK plans and enablement work listed in that record.
+
+## Next steps
+
+<Cards>
+  <Card title="Production operations" href="/docs/server/ai-transport-production-ops" description="Capacity model, required runs, and alert thresholds." />
+  <Card title="Limits and quotas" href="/docs/server/ai-transport-limits-quotas" description="Every limit and default in one table." />
+  <Card title="Authentication" href="/docs/server/ai-transport-authentication" description="Token issuance, refresh, and revocation." />
+  <Card title="Troubleshooting" href="/docs/server/ai-transport-troubleshooting" description="Symptom, cause, and fix for common failures." />
+</Cards>

@@ -1,0 +1,245 @@
+---
+import { ArrowRight, Bot, Radio, RotateCcw, Smartphone, Zap } from '@lucide/astro';
+
+const features = [
+  { icon: Zap, title: 'Token streaming with rollup', body: 'Agents append tokens to a mutable message; egress rollup coalesces bursts so sockets aren’t flooded.' },
+  { icon: RotateCcw, title: 'Resume mid-answer', body: 'Reload the tab or lose signal — the stream picks up from durable history, not from scratch.' },
+  { icon: Radio, title: 'Agent presence', body: 'Know when an agent is thinking, streaming or idle through V2 presence updates.' },
+  { icon: Smartphone, title: 'Push when they leave', body: 'Finished runs can notify devices through the existing push pipeline and push rules.' },
+];
+---
+
+<section class="sec ai island" aria-labelledby="ai-title">
+  <div class="ai-glow" aria-hidden="true"></div>
+  <div class="sec-inner split">
+    <div data-reveal>
+      <span class="eyebrow"><Bot size={14} /> AI Transport</span>
+      <h2 id="ai-title" class="sec-title">LLM streams that <span class="grad">survive reality.</span></h2>
+      <p class="sec-lede">
+        Built on the same durable primitives as everything else — versioned messages, history, recovery, presence and push — instead of a
+        fragile side-channel. Works with the Vercel AI SDK, OpenAI and Anthropic.
+      </p>
+      <div class="ai-feats">
+        {
+          features.map((f, i) => (
+            <div class="ai-feat" data-reveal style={`--d:${i * 90}ms`}>
+              <f.icon />
+              <div>
+                <strong>{f.title}</strong>
+                <span>{f.body}</span>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+      <a class="link-arrow" href="/docs/server/ai-transport-overview">Explore AI Transport <ArrowRight size={16} /></a>
+    </div>
+
+    <div class="chat glass" data-reveal style="--d:150ms" data-chat data-tilt>
+      <div class="chat-head">
+        <span class="agent"><Bot size={15} /></span>
+        <div>
+          <strong>support-agent</strong>
+          <small data-chat-state>streaming…</small>
+        </div>
+        <span class="chan">private-session-7f2</span>
+      </div>
+      <div class="chat-body">
+        <div class="bubble user">Why did my order sync fail last night?</div>
+        <div class="bubble bot"><span data-chat-text></span><span class="caret"></span></div>
+        <div class="drop" data-chat-drop>
+          <span class="x">●</span> connection lost · <b>resuming from serial 318</b>
+        </div>
+      </div>
+      <div class="chat-foot">
+        <span>ai-output · <b data-chat-version>v1</b></span>
+        <span>appends <b data-chat-appends>0</b></span>
+        <span class="ok">rollup ×<b data-chat-ratio>1.0</b></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .ai {
+    color: var(--fg);
+    background: #07050c;
+    overflow: hidden;
+  }
+  .ai-glow {
+    position: absolute;
+    right: -10%;
+    top: 10%;
+    width: 60vw;
+    height: 60vw;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, #7c3aed, #c026d3, #22d3ee, #7c3aed);
+    filter: blur(120px);
+    opacity: 0.18;
+    animation: spin 22s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .ai .sec-inner {
+    position: relative;
+  }
+  .ai .eyebrow svg {
+    display: inline;
+  }
+  .ai-feats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px 24px;
+    margin: 8px 0 32px;
+  }
+  .ai-feat {
+    display: flex;
+    gap: 12px;
+  }
+  .ai-feat > svg {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin-top: 2px;
+    color: var(--accent);
+  }
+  .ai-feat strong {
+    display: block;
+    font-size: 0.95rem;
+    margin-bottom: 2px;
+  }
+  .ai-feat span {
+    font-size: 0.86rem;
+    color: var(--fg-muted);
+    line-height: 1.5;
+  }
+
+  .chat {
+    border-radius: 24px;
+    overflow: hidden;
+    box-shadow: 0 40px 100px -40px rgb(124 58 237 / 0.6);
+    transition: transform 0.5s var(--ease-out);
+  }
+  .chat-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .agent {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 11px;
+    color: #fff;
+    background: linear-gradient(135deg, #8b4dff, #c026d3);
+  }
+  .chat-head strong {
+    display: block;
+    font-size: 0.9rem;
+  }
+  .chat-head small {
+    font-size: 0.75rem;
+    color: #4ade80;
+  }
+  .chan {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--fg-subtle);
+  }
+  .chat-body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 22px 18px;
+    min-height: 300px;
+  }
+  .bubble {
+    max-width: 88%;
+    padding: 12px 15px;
+    border-radius: 18px;
+    font-size: 0.92rem;
+    line-height: 1.55;
+  }
+  .bubble.user {
+    align-self: flex-end;
+    color: #fff;
+    background: linear-gradient(135deg, #7c3aed, #a21caf);
+    border-bottom-right-radius: 6px;
+  }
+  .bubble.bot {
+    align-self: flex-start;
+    background: rgb(255 255 255 / 0.05);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 6px;
+    min-height: 48px;
+  }
+  .caret {
+    display: inline-block;
+    width: 7px;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: -2px;
+    border-radius: 2px;
+    background: var(--accent);
+    animation: caret 0.9s steps(2) infinite;
+  }
+  @keyframes caret {
+    50% {
+      opacity: 0;
+    }
+  }
+  .drop {
+    align-self: center;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    color: #fecdd3;
+    background: rgb(244 63 94 / 0.14);
+    border: 1px solid rgb(244 63 94 / 0.3);
+    opacity: 0;
+    transform: translateY(6px);
+    transition:
+      opacity 0.3s,
+      transform 0.3s;
+  }
+  .drop[data-show] {
+    opacity: 1;
+    transform: none;
+  }
+  .drop .x {
+    color: #fb7185;
+  }
+  .chat-foot {
+    display: flex;
+    gap: 18px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--fg-subtle);
+  }
+  .chat-foot b {
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .chat-foot .ok {
+    margin-left: auto;
+    color: var(--accent-text);
+  }
+  @media (max-width: 620px) {
+    .ai-feats {
+      grid-template-columns: 1fr;
+    }
+    .chan {
+      display: none;
+    }
+  }
+</style>

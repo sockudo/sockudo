@@ -1,0 +1,107 @@
+---
+import { ArrowRight, Star } from '@lucide/astro';
+import GithubIcon from '../GithubIcon.astro';
+import { getStars, repoUrl } from '@/lib/github';
+
+const stars = await getStars();
+---
+
+<section class="cta island" aria-labelledby="cta-title">
+  <canvas class="cta-canvas" data-globe-canvas aria-hidden="true"></canvas>
+  <div class="cta-fade" aria-hidden="true"></div>
+  <div class="cta-inner" data-reveal>
+    <a class="star-big glass" href={repoUrl} target="_blank" rel="noreferrer">
+      <GithubIcon size={20} />
+      <span class="num" data-stars-full data-target={stars}>{stars.toLocaleString('en-US')}</span>
+      <span class="lbl"><Star size={14} /> developers starred Sockudo</span>
+    </a>
+    <h2 id="cta-title">Ship realtime <span class="grad">tonight.</span></h2>
+    <p>One binary. Your infrastructure. Your data. Start with Docker in under a minute.</p>
+    <div class="cta-btns">
+      <a class="btn btn-primary" href="/docs/getting-started/installation">Get started <ArrowRight class="arrow" /></a>
+      <a class="btn btn-glass" href="/docs">Browse the docs</a>
+    </div>
+  </div>
+</section>
+
+<style>
+  .cta {
+    position: relative;
+    min-height: 92vh;
+    display: grid;
+    place-items: center;
+    padding: 120px 20px;
+    overflow: hidden;
+    color: var(--fg);
+    background: #07050c;
+    isolation: isolate;
+  }
+  .cta-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+  }
+  .cta-fade {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(ellipse 50% 45% at 50% 50%, rgb(7 5 12 / 0.75), transparent 75%),
+      linear-gradient(#07050c, transparent 20%, transparent 80%, #07050c);
+  }
+  .cta-inner {
+    text-align: center;
+    max-width: 760px;
+  }
+  .star-big {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 18px;
+    border-radius: 999px;
+    margin-bottom: 28px;
+    transition:
+      transform 0.3s var(--ease-spring),
+      box-shadow 0.3s;
+  }
+  .star-big:hover {
+    transform: translateY(-2px) scale(1.02);
+    box-shadow: var(--shadow-glow);
+  }
+  .star-big .num {
+    font-size: 1.3rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .star-big .lbl {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.88rem;
+    color: var(--fg-muted);
+  }
+  .star-big .lbl svg {
+    color: #fbbf24;
+    fill: #fbbf24;
+  }
+  h2 {
+    font-size: clamp(3rem, 9vw, 7rem);
+    line-height: 0.95;
+    letter-spacing: -0.06em;
+    margin: 0 0 20px;
+  }
+  p {
+    font-size: 1.2rem;
+    color: var(--fg-muted);
+    margin: 0 0 36px;
+  }
+  .cta-btns {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+</style>

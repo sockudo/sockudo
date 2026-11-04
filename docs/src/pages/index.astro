@@ -1,0 +1,32 @@
+---
+import Base from '@/layouts/Base.astro';
+import Hero from '@/components/home/Hero.astro';
+import Marquee from '@/components/home/Marquee.astro';
+import Migrate from '@/components/home/Migrate.astro';
+import Fanout from '@/components/home/Fanout.astro';
+import Bento from '@/components/home/Bento.astro';
+import AiTransport from '@/components/home/AiTransport.astro';
+import Adapters from '@/components/home/Adapters.astro';
+import Sdks from '@/components/home/Sdks.astro';
+import Protocols from '@/components/home/Protocols.astro';
+import Cta from '@/components/home/Cta.astro';
+---
+
+<Base bodyClass="home-page" description="Sockudo is a self-hosted, high-performance realtime server written in Rust. Pusher-compatible today; recovery, history, mutable messages, push and AI Transport when you need them.">
+  <main id="main-content" class="home">
+    <Hero />
+    <Marquee />
+    <Migrate />
+    <Fanout />
+    <Bento />
+    <AiTransport />
+    <Adapters />
+    <Sdks />
+    <Protocols />
+    <Cta />
+  </main>
+  <script>
+    import { initHome } from '@/scripts/home';
+    document.addEventListener('astro:page-load', initHome);
+  </script>
+</Base>

@@ -1,0 +1,28 @@
+---
+interface Props {
+  caption?: string;
+  start?: number;
+}
+const { caption = 'Live 3D model: one HTTP publish fans out through the adapter bus to every node and socket; a dropped client recovers from durable history.', start = 0 } = Astro.props;
+const steps = ['Publish', 'Fan out', 'Deliver', 'Recover'];
+---
+
+<figure class="d3 not-prose island" data-diagram3d data-start={start}>
+  <div class="d3-stage">
+    <canvas aria-hidden="true"></canvas>
+    <div class="labels" data-fanout-labels aria-hidden="true">
+      <span class="lbl s0" data-anchor="publisher">HTTP API</span>
+      <span class="lbl s0" data-anchor="node-a">Node A</span>
+      <span class="lbl s1" data-anchor="node-b">Node B</span>
+      <span class="lbl s1" data-anchor="node-c">Node C</span>
+      <span class="lbl s1" data-anchor="adapter">Adapter bus</span>
+      <span class="lbl s2" data-anchor="clients">Clients</span>
+      <span class="lbl s3" data-anchor="history">Durable history</span>
+    </div>
+    <div class="d3-steps" role="tablist" aria-label="Diagram step">
+      {steps.map((s, i) => <button type="button" role="tab" data-d3-step={i}><b>{i + 1}</b>{s}</button>)}
+    </div>
+    <span class="d3-badge">interactive 3D</span>
+  </div>
+  <figcaption>{caption}</figcaption>
+</figure>

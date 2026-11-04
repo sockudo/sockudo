@@ -5,14 +5,19 @@ icon: BadgeCheck
 ---
 
 Sockudo's compatibility rule is simple: Protocol V1 preserves Pusher behavior; Protocol V2 adds
-Sockudo-native behavior.
+Sockudo-native behavior. Use this page to check whether a feature works with an existing Pusher
+client, what it requires otherwise, and how compatibility is guarded across releases.
 
-> Sockudo's third-party compatibility layers are community-built and
-> community-maintained. They are not products of Pusher or Ably, and those
-> companies do not provide support for Sockudo. Use Sockudo's project and
-> community support channels for help.
+<Callout type="note" title="Community compatibility layers">
+Sockudo's third-party compatibility layers are community-built and community-maintained. They are
+not products of Pusher or Ably, and those companies do not provide support for Sockudo. Use
+Sockudo's project and community support channels for help.
+</Callout>
 
 ## Pusher-compatible
+
+These features work with unmodified Pusher clients and server libraries over Protocol V1, and keep
+working when a client upgrades to Protocol V2.
 
 | Feature | Compatibility |
 | --- | --- |
@@ -29,6 +34,9 @@ Sockudo-native behavior.
 
 ## Sockudo-native
 
+These features have no Pusher equivalent. Each needs Protocol V2, a Sockudo SDK, or a Sockudo HTTP
+API, and some also need a Cargo feature or runtime switch.
+
 | Feature | Requirement |
 | --- | --- |
 | `message_id` | Protocol V2 |
@@ -44,6 +52,8 @@ Sockudo-native behavior.
 
 ## Migration strategy
 
+Move from Pusher in stages so each step is reversible:
+
 1. Run Pusher-compatible clients against Sockudo first.
 2. Verify public, private, presence, encrypted, webhook, and backend publish flows.
 3. Adopt Sockudo server SDKs where you need idempotency, history, annotations, or push.
@@ -57,7 +67,8 @@ managed by backend services and device registration flows.
 
 ## AI Transport compatibility
 
-AI Transport is additive and default-off. The server release order is:
+AI Transport is additive and default-off: it requires the `ai-transport` Cargo feature (also
+enabled by `ably-compat`) and runtime `[ai_transport].enabled`. The server release order is:
 
 1. Ship Sockudo with the `ai-transport` feature available but runtime-disabled by default.
 2. Release Sockudo client SDK support after server, SDK, and conformance evidence is green.
@@ -72,8 +83,13 @@ AI Transport is additive and default-off. The server release order is:
 | Existing client SDKs | Full product parity depends on Protocol V2 feature enablement in each SDK |
 | Server HTTP SDKs | Existing Pusher-compatible publish APIs continue to work; AI helpers are additive |
 
+<Callout type="warn" title="Scope of Ably compatibility">
 Sockudo does not claim full Ably platform compatibility. The evidence-backed wording is **Ably REST
-and WebSocket compatibility, excluding Live Objects**. The opt-in `ably-compat` surface is validated
+and WebSocket compatibility, excluding Live Objects**. Realtime is WebSocket-only; Ably fallback
+transports are not supported.
+</Callout>
+
+The opt-in `ably-compat` surface is validated
 in two layers. Pull requests fetch the current `main` heads of `ably-js`, `ably-go`, and
 `ably-ai-transport-js`, record their resolved commit IDs, and run the Node REST/WebSocket, official
 Go unit and JSON/MsgPack integration, and complete AI Transport suites against the pull request.
@@ -121,6 +137,8 @@ current/baseline runs with a one-sided statistical regression test.
 
 ## Release gates
 
+These gates keep existing clients working as the server and SDKs evolve.
+
 Protocol-visible server PRs must pass the Protocol Change checklist and relevant fixtures for the
 changed surface. When protocol-owned paths change, CI also requires the `sockudo-js` compatibility
 lane because that SDK is the reference client for cross-SDK compatibility.
@@ -134,3 +152,12 @@ independently because valid V1 and existing V2 traffic remain compatible.
 
 GA evidence is tracked in
 [`docs/specs/ai-transport-ga-readiness.md`](/specs/ai-transport-ga-readiness).
+
+## Next steps
+
+<Cards>
+  <Card title="Migration guide" href="/docs/getting-started/migration" description="Move an existing Pusher deployment to Sockudo step by step." />
+  <Card title="Protocol reference" href="/docs/reference/protocol" description="Frame-level differences between Protocol V1 and V2." />
+  <Card title="Ably compatibility" href="/docs/server/ably-ai-transport-compatibility" description="Ably REST, WebSocket, and AI Transport compatibility details." />
+  <Card title="Protocol V2 for clients" href="/docs/clients/protocol-v2" description="Enable the Sockudo-native features listed above." />
+</Cards>

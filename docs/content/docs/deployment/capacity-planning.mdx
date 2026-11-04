@@ -4,6 +4,10 @@ description: Size Sockudo from measured connection, fanout, memory, network, and
 icon: Gauge
 ---
 
+This page shows how to turn a workload description into a safe per-node connection limit, and how
+to benchmark Sockudo without measuring the load generator by accident. It is for anyone setting
+`SOCKUDO_MAX_CONNECTIONS`, choosing instance sizes, or publishing benchmark numbers.
+
 There is no single “connections per node” number. A quiet public-channel socket, a presence member,
 a filtered Protocol V2 subscriber, and a slow client receiving large payloads have different memory,
 CPU, and network costs. Capacity is the lowest limit across Sockudo, the process, the node, the load
@@ -48,13 +52,37 @@ safe connections = min(
 Use 20–30% headroom after a stable test, more when traffic is bursty or failure of one node must be
 absorbed by the others.
 
-For an `N`-node cluster that must survive one node loss:
+**Worked example (illustrative numbers).** Suppose measurements on one node give:
+
+| Budget | Measured limit |
+| --- | ---: |
+| Process file-descriptor budget | 222,000 |
+| Memory budget | 85,000 |
+| CPU/latency budget (p99 still within target) | 70,000 |
+| Node and vNIC limits | 150,000 |
+| Load-balancer target limit | 100,000 |
+| Shared-backend budget | 200,000 |
+
+The minimum is the CPU/latency budget, 70,000. With 25% headroom the safe value is
+`70,000 × 0.75 = 52,500`, so set `SOCKUDO_MAX_CONNECTIONS` to about 52,000. Raising the file limit
+would not change this node's capacity; more CPU or a cheaper workload would.
+
+For an `N`-node cluster that must survive one node loss, each node must be able to hold its share
+of the peak with one node missing:
 
 ```text
-normal per-node target <= cluster peak connections / (N - 1)
+per-node safe capacity >= cluster peak connections / (N - 1)
 ```
 
-That is an availability constraint, not just a scaling calculation. The remaining nodes also need
+Equivalently, under normal operation each node should carry no more than
+`(N - 1) / N` of its safe capacity.
+
+**Worked example (illustrative numbers).** A peak of 150,000 connections on 4 nodes is 37,500 per
+node in normal operation. After one node fails, the 3 survivors carry `150,000 / 3 = 50,000` each,
+so every node's safe capacity must be at least 50,000. With the 52,500 limit from the previous
+example, 4 nodes are enough; 3 nodes would need 75,000 each and are not.
+
+That is an availability constraint, not only a scaling calculation. The remaining nodes also need
 CPU, network, broker, and memory headroom for the reconnect burst.
 
 ## File descriptor budget
@@ -67,6 +95,13 @@ nofile soft limit
 - listener, metrics, logging, and runtime descriptors
 - 10–20% descriptor reserve
 = maximum socket descriptor budget
+```
+
+**Worked example (illustrative numbers).** With a soft limit of 262,144, 200 backend sockets, 100
+listener and runtime descriptors, and a 15% reserve (`262,144 × 0.15 ≈ 39,322`):
+
+```text
+262,144 - 200 - 100 - 39,322 = 222,522 socket descriptors
 ```
 
 Then set `SOCKUDO_MAX_CONNECTIONS` below that result. Verify the actual process:
@@ -82,15 +117,22 @@ container process limit.
 
 ## Measure memory per workload
 
-Do not borrow a per-socket number from another server or another Sockudo feature set.
+Do not borrow a per-socket number from another server or another Sockudo feature set. Memory per
+socket depends on subscriptions, presence membership, buffered writes, and which Protocol V2
+features are enabled.
+
+<Steps>
 
 1. Start the exact release build, allocator, config, and container limit.
-2. Hold the server idle and record steady resident memory.
+2. Hold the server idle and record steady resident memory, for example with
+   `ps -o rss= -p "$(pidof sockudo)"` (KiB) or the container's memory metric.
 3. Ramp to a known socket and subscription count.
 4. Wait for allocations, buffers, and metrics to settle.
 5. Exercise the intended message, presence, filter, delta, and recovery workload.
 6. Record both steady and peak resident memory.
 7. Repeat at several counts; do not extrapolate from 100 sockets to 100,000.
+
+</Steps>
 
 Approximate the marginal result:
 
@@ -98,6 +140,16 @@ Approximate the marginal result:
 marginal bytes per socket =
   (steady RSS at high count - baseline RSS) / active sockets
 ```
+
+**Worked example (illustrative numbers).** Baseline RSS is 80 MiB; at 50,000 active sockets steady
+RSS is 1,280 MiB:
+
+```text
+(1,280 MiB - 80 MiB) / 50,000 = 1,258,291,200 B / 50,000 ≈ 25,166 B ≈ 24.6 KiB per socket
+```
+
+If peak RSS under the fanout workload reaches 1,600 MiB, size the memory limit from 1,600 MiB plus
+margin, not from the steady figure.
 
 Use peak RSS, not only marginal steady memory, when setting a cgroup or pod memory limit. Include
 allocator fragmentation, slow-client buffers, adapter queues, recovery buffers, and rolling-deploy
@@ -130,6 +182,10 @@ Approximate client delivery rate:
 deliveries/s = publishes/s × average matching subscribers per publish
 ```
 
+**Worked example (illustrative numbers).** 1,000 publishes/s with an average of 100 matching
+subscribers is `1,000 × 100 = 100,000` client deliveries/s. The same 1,000 publishes/s with 10,000
+subscribers each is 10,000,000 deliveries/s, a completely different workload.
+
 Adapter and serialization cost may scale with publishes while egress and per-client write cost scale
 with deliveries.
 
@@ -141,6 +197,11 @@ Approximate payload egress before protocol, TLS, and TCP overhead:
 payload egress bytes/s =
   publishes/s × matching subscribers × average delivered payload bytes
 ```
+
+**Worked example (illustrative numbers).** 1,000 publishes/s × 100 subscribers × 1,024 bytes is
+102,400,000 bytes/s, about 97.7 MiB/s or 819 Mbit/s of payload alone, before envelope, TLS, and
+TCP overhead. On a VM with a 1 Gbit/s baseline that leaves little room, even though the CPU may be
+mostly idle.
 
 Also account for:
 
@@ -174,6 +235,11 @@ One source IP connecting to one target IP and port has a finite TCP 4-tuple spac
 less than a high-density Sockudo node can accept. To test beyond it, shard across generators, source
 IPs, or target addresses. Do not “solve” a generator's ephemeral ports by changing
 `ip_local_port_range` on the Sockudo server.
+
+**Worked example (illustrative numbers).** A common Linux default range of `32768 60999` gives
+28,232 ephemeral ports per source IP and destination. Holding 100,000 sockets to one target address
+and port therefore needs at least `100,000 / 28,232 ≈ 3.5`, so 4, source IPs, generators, or target
+addresses. Check the actual range with `sysctl net.ipv4.ip_local_port_range`.
 
 Inspect a Linux generator:
 
@@ -249,13 +315,16 @@ runs without cooldown are not independent.
 
 ### Subscription churn
 
-`benches/subscription-churn.js` models room switching. Churn rate is approximately:
+`benches/subscription-churn.js` is a k6 script that models room switching: each virtual user holds
+one socket and moves to another channel every `ROOM_SWITCH_INTERVAL_MS`. Churn rate is
+approximately:
 
 ```text
 cycles/s = VUS / (ROOM_SWITCH_INTERVAL_MS / 1000)
 ```
 
-For 10,000 sockets and about 500 unsubscribe/subscribe cycles per second:
+For 10,000 sockets switching every 20 seconds, that is `10,000 / 20 = 500` unsubscribe/subscribe
+cycles per second:
 
 ```bash
 k6 run \
@@ -273,7 +342,9 @@ Shard `WS_HOSTS` or run several generators when one process or source IP approac
 ### Horizontal adapter fanout
 
 `benches/adapter-horizontal.js` records successful publishes, client deliveries, delivery ratio,
-and latency:
+and latency. By default it targets three local nodes on ports 6001–6003; point it at your cluster
+with comma-separated `WS_URLS` and `HTTP_URLS` lists of equal length, and the matching `APP_ID`,
+`APP_KEY`, and `APP_SECRET`. `SUBSCRIBERS` must be divisible by `CHANNELS` times the node count.
 
 ```bash
 SUBSCRIBERS=900 \
@@ -286,8 +357,9 @@ RESULT_PATH=/tmp/sockudo-adapter.json \
 k6 run --quiet benches/adapter-horizontal.js
 ```
 
-Use the same image, nodes, subscriber distribution, payload, warmup, and generator placement when
-comparing adapters.
+Each publish reaches `SUBSCRIBERS / CHANNELS` subscribers, so this run offers
+`1,000 × (900 / 100) = 9,000` deliveries/s. Use the same image, nodes, subscriber distribution,
+payload, warmup, and generator placement when comparing adapters.
 
 ## Diagnose the first knee
 
@@ -338,14 +410,19 @@ Without that context, benchmark numbers are anecdotes.
 
 After the stable knee is known:
 
-1. choose a point below the first latency, error, or resource cliff
-2. subtract failure and rollout headroom
-3. set `SOCKUDO_MAX_CONNECTIONS` per node
-4. configure load-balancer and autoscaling thresholds to add capacity before admission rejects
-5. alert on connection utilization, rejection rate, memory, CPU throttling, network, adapter
-   latency, and recovery failures
-6. rerun after changing the binary, features, instance type, kernel, runtime, CNI, load balancer, or
-   shared backend
+<Steps>
+
+1. Choose a point below the first latency, error, or resource cliff.
+2. Subtract failure and rollout headroom.
+3. Set `SOCKUDO_MAX_CONNECTIONS` per node. Verify that connections beyond it are rejected and that
+   `/ready` returns `503 CAPACITY` at the high watermark (95% by default).
+4. Configure load-balancer and autoscaling thresholds to add capacity before admission rejects.
+5. Alert on connection utilization, rejection rate, memory, CPU throttling, network, adapter
+   latency, and recovery failures.
+6. Rerun after changing the binary, features, instance type, kernel, runtime, CNI, load balancer, or
+   shared backend.
+
+</Steps>
 
 Capacity belongs to the complete deployment, not the Sockudo process in isolation.
 
@@ -356,15 +433,27 @@ separate API pods (`server_role = "api"`) isolates publish latency and cuts memo
 on the API tier. See [server role configuration](/docs/reference/configuration#server-role)
 for setup and requirements.
 
+API pods require a horizontal adapter: every publish they accept is sent through the adapter so
+the WebSocket pods can deliver it. They do not accept WebSocket connections or answer cross-node
+request/reply queries.
+
 Expected operational behavior:
 
-| Metric | API pod | WS pod |
+| Signal | API pod | WS pod |
 | --- | --- | --- |
-| `sockudo_horizontal_broadcast_published_total` | > 0 | varies |
-| `sockudo_horizontal_broadcast_received_total` | 0 | > 0 |
-| `sockudo_horizontal_request_received_total` | 0 | > 0 |
+| `sockudo_connected` | 0 | > 0 |
+| `sockudo_horizontal_adapter_received_requests` | 0 | > 0 when peers query it |
 | WebSocket connections | 0 | > 0 |
-| Memory (100K+ connections) | ~50 MiB baseline | ~2–4 GiB |
+| Memory (illustrative, 100K+ connections in the cluster) | ~50 MiB baseline | ~2–4 GiB |
 
 API pods report `"server_role": "api"` in `/stats` so dashboards can distinguish
-them from WS pods reporting zero connections.
+them from WS pods reporting zero connections. The field is absent on default-role pods.
+
+## Next steps
+
+<Cards>
+  <Card title="Kubernetes and Helm" href="/docs/deployment/kubernetes" description="Apply the limit per pod and drive autoscaling from connection count." />
+  <Card title="Linux VM and bare metal" href="/docs/deployment/linux" description="Raise file limits and inspect kernel counters on the host." />
+  <Card title="Observability" href="/docs/server/observability" description="Metrics and alerts for connection utilization and fanout latency." />
+  <Card title="Scaling" href="/docs/server/scaling" description="Adapter choices and cross-node behavior that change capacity." />
+</Cards>

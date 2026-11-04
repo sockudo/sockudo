@@ -1,25 +1,48 @@
 ---
 title: Laravel
-description: Use Sockudo as a first-class Laravel broadcaster with Echo-compatible auth and access to native history, mutable-message, annotation, and push APIs.
+description: Use Sockudo as a native Laravel broadcasting driver with Echo-compatible channel auth, plus facade access to history, versioned messages, annotations, and push.
 icon: RadioTower
 ---
 
-The official Laravel integration registers a `sockudo` broadcasting connection
-backed by the PHP server SDK. Existing Laravel broadcast events keep their
-normal semantics, while trusted backend code can use Sockudo-native APIs from
-the service container or facade.
+`sockudo/laravel` is the official Laravel integration for Sockudo. It registers a `sockudo`
+broadcasting driver backed by the [PHP server SDK](/docs/server-sdks/php), binds that SDK in the
+service container, and exposes it through a facade. Existing Laravel broadcast events, channel
+authorization callbacks, and Laravel Echo keep working unchanged; trusted backend code can reach
+Sockudo-native APIs when it needs them.
+
+In Laravel, the package gives you:
+
+- A `sockudo` broadcasting connection for `ShouldBroadcast`, `ShouldBroadcastNow`, queued
+  broadcasts, and `toOthers()`.
+- Private, presence, and encrypted private channel authorization through Laravel's
+  `routes/channels.php`, plus user authentication.
+- The `Sockudo` facade and `Sockudo\SockudoInterface` binding, which proxy every PHP SDK method:
+  publishing with idempotency keys, batches, webhook validation, channel state, history, presence
+  history, versioned-message reads, annotations, and push.
+- Named connections for multiple Sockudo apps.
+- `sockudo:install` and `sockudo:check` Artisan commands.
 
 ## Install
 
-```bash
+```bash title="Terminal"
 composer require sockudo/laravel
 php artisan sockudo:install
 ```
 
-The service provider is auto-discovered. Configure credentials through your
-environment or secret manager:
+The package requires PHP 8.2 or newer and Laravel 12 or 13, and depends on
+`sockudo/sockudo-php-server` `^2.2`. The service provider is auto-discovered.
 
-```bash
+`sockudo:install` publishes `config/sockudo.php` (pass `--force` to overwrite an existing copy) and
+prints the environment variables to set. It warns when `routes/channels.php` is missing; private
+and presence channels need Laravel's broadcasting routes, so run `php artisan install:broadcasting`
+in that case. The package supplies the backend connection but never rewrites your route
+authorization.
+
+## Configure the client
+
+Set credentials in `.env` or your secret manager:
+
+```bash title=".env"
 BROADCAST_CONNECTION=sockudo
 
 SOCKUDO_APP_ID=app-id
@@ -30,61 +53,290 @@ SOCKUDO_PORT=6001
 SOCKUDO_SCHEME=http
 ```
 
-Use `https` when the signed HTTP API crosses an untrusted network. Confirm the
-configuration and API connectivity without exposing credentials:
+Use `SOCKUDO_SCHEME=https` whenever the signed HTTP API crosses an untrusted network. Then confirm
+the configuration and API connectivity without printing credentials:
 
-```bash
+```bash title="Terminal"
 php artisan sockudo:check
+php artisan sockudo:check --config-only   # validate config without contacting Sockudo
+php artisan sockudo:check --connection=sockudo-eu
 ```
 
-Use `php artisan sockudo:check --config-only` when Sockudo is intentionally
-unreachable during image builds.
+Use `--config-only` in image builds where Sockudo is intentionally unreachable.
 
-The install command warns when Laravel's `routes/channels.php` broadcasting
-scaffold is absent. Install Laravel broadcasting routes before using private or
-presence channels; the Sockudo package supplies the backend connection but
-does not silently rewrite application route authorization.
+The package adds a `sockudo` connection to `broadcasting.connections` at runtime unless your
+`config/broadcasting.php` already defines one with that name. The default connection comes from
+`config/sockudo.php`:
 
-## Broadcast events
+```php title="config/sockudo.php"
+$scheme = env('SOCKUDO_SCHEME', 'http');
 
-Laravel's existing event contracts work unchanged:
+return [
+    'default' => env('BROADCAST_CONNECTION', 'null'),
+    'connection' => env('SOCKUDO_CONNECTION', 'sockudo'),
 
-```php
+    'broadcasting' => [
+        'driver' => 'sockudo',
+        'key' => env('SOCKUDO_APP_KEY'),
+        'secret' => env('SOCKUDO_APP_SECRET'),
+        'app_id' => env('SOCKUDO_APP_ID'),
+        'options' => [
+            'host' => env('SOCKUDO_HOST', '127.0.0.1'),
+            'port' => (int) env('SOCKUDO_PORT', $scheme === 'https' ? 443 : 6001),
+            'scheme' => $scheme,
+            'useTLS' => $scheme === 'https',
+            'path' => env('SOCKUDO_PATH', ''),
+            'timeout' => (int) env('SOCKUDO_TIMEOUT', 30),
+            'encryption_master_key_base64' => env('SOCKUDO_ENCRYPTION_MASTER_KEY_BASE64', ''),
+        ],
+        'client_options' => [
+            'connect_timeout' => (float) env('SOCKUDO_CONNECT_TIMEOUT', 5),
+        ],
+    ],
+];
+```
+
+| Environment variable | Config key | Default | Description |
+| --- | --- | --- | --- |
+| `BROADCAST_CONNECTION` | `sockudo.default` | `null` | Set to `sockudo` to broadcast Laravel events through Sockudo. Used only when `broadcasting.default` is not already configured. |
+| `SOCKUDO_CONNECTION` | `sockudo.connection` | `sockudo` | Broadcasting connection used by the facade, `SockudoInterface`, and `sockudo:check`. |
+| `SOCKUDO_APP_ID` | `app_id` | — | Required. |
+| `SOCKUDO_APP_KEY` | `key` | — | Required. |
+| `SOCKUDO_APP_SECRET` | `secret` | — | Required. Server-side only. |
+| `SOCKUDO_HOST` | `options.host` | `127.0.0.1` | HTTP API host. |
+| `SOCKUDO_PORT` | `options.port` | `6001`, or `443` when the scheme is `https` | HTTP API port. |
+| `SOCKUDO_SCHEME` | `options.scheme`, `options.useTLS` | `http` | `https` also sets `useTLS`. |
+| `SOCKUDO_PATH` | `options.path` | `''` | Path prefix for a reverse proxy. |
+| `SOCKUDO_TIMEOUT` | `options.timeout` | `30` | Per-request timeout in seconds; also applied to the Guzzle client. |
+| `SOCKUDO_CONNECT_TIMEOUT` | `client_options.connect_timeout` | `5` | Guzzle connect timeout in seconds. |
+| `SOCKUDO_ENCRYPTION_MASTER_KEY_BASE64` | `options.encryption_master_key_base64` | `''` | Base64 of a 32-byte key for `private-encrypted-` channels. |
+| — | `jsonp` | `false` | Allow JSONP `callback` responses from the auth endpoints. |
+
+Config keys other than `sockudo.*` live under `broadcasting.connections.sockudo`. Everything under
+`options` is passed to the PHP SDK constructor, so SDK options such as `auto_idempotency_key` can be
+added there; see the [PHP option table](/docs/server-sdks/php#configure-the-client).
+`client_options` is passed to `new GuzzleHttp\Client(...)`.
+
+Resolving a connection that is missing `key`, `secret`, or `app_id` throws
+`InvalidArgumentException`. Restart long-lived queue workers after changing cached configuration.
+
+The app secret must stay on the server. It signs every HTTP API call and every channel and user
+auth response, so anyone holding it can publish to any channel and impersonate any user. Never
+expose `SOCKUDO_APP_SECRET` to Vite or JavaScript; only the key, host, port, and scheme belong in
+`VITE_` variables.
+
+### Multiple Sockudo apps
+
+Define additional `'driver' => 'sockudo'` entries in `config/broadcasting.php`, each with its own
+credentials, host, TLS options, and `client_options`, then select one explicitly:
+
+```php title="app/Services/EuOrders.php"
+use Sockudo\Laravel\Facades\Sockudo;
+
+$client = Sockudo::connection('sockudo-eu');
+$client->trigger('orders', 'order.updated', ['id' => 'ord-123']);
+```
+
+Clients are created once per connection name and reused. Inject `Sockudo\SockudoInterface` when
+constructor injection is preferable; it resolves the connection named by `SOCKUDO_CONNECTION`.
+
+## Publish an event
+
+Laravel's broadcast events work without Sockudo-specific interfaces:
+
+```php title="app/Events/OrderUpdated.php"
+<?php
+
+namespace App\Events;
+
+use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 
 final class OrderUpdated implements ShouldBroadcast
 {
-    public function __construct(public readonly string $orderId) {}
+    use InteractsWithSockets;
+
+    public function __construct(
+        public readonly string $orderId,
+        public readonly string $status,
+    ) {}
 
     public function broadcastOn(): PrivateChannel
     {
         return new PrivateChannel("orders.{$this->orderId}");
     }
+
+    public function broadcastAs(): string
+    {
+        return 'order.updated';
+    }
 }
 ```
 
-The driver supports queued broadcasting, `ShouldBroadcastNow`, `toOthers()`,
-public channels, private channels, presence channels, encrypted private
-channels, and user authentication. Define authorization callbacks in
-`routes/channels.php` as usual:
+```php title="app/Http/Controllers/OrderController.php"
+broadcast(new OrderUpdated($order->id, 'paid'))->toOthers();
+```
 
-```php
+`ShouldBroadcast` events are queued; `ShouldBroadcastNow` sends them during the request.
+`toOthers()` excludes the browser connection that made the request: Echo sends its socket ID in the
+`X-Socket-ID` header, and the driver forwards it as `socket_id` so that client does not receive an
+echo of a change it already applied.
+
+For direct control over the payload, response, or idempotency key, publish through the facade:
+
+```php title="app/Actions/PublishOrderPaid.php"
+use Sockudo\Laravel\Facades\Sockudo;
+
+$result = Sockudo::trigger('private-orders.' . $order->id, 'order.paid', [
+    'id' => $order->id,
+    'status' => 'paid',
+], [
+    'idempotency_key' => "order.paid:{$order->tenant_id}:{$order->id}:v{$order->version}",
+]);
+```
+
+The facade uses Sockudo channel names directly, so add the `private-` or `presence-` prefix that
+Laravel's channel classes add for you. `trigger` returns the decoded API response as an object. To
+exclude the originating connection, add `'socket_id' => $socketId` with the value Echo sent in the
+`X-Socket-ID` header.
+
+## Publish to many channels or in a batch
+
+Return several channels from `broadcastOn()` to publish one event to all of them. The driver
+publishes in chunks of 100 channels per API call, so larger lists become several requests.
+
+```php title="app/Events/OrderUpdated.php"
+public function broadcastOn(): array
+{
+    return [
+        new PrivateChannel("tenants.{$this->tenantId}.orders"),
+        new PrivateChannel("users.{$this->customerId}.orders"),
+    ];
+}
+```
+
+Through the facade, `trigger` accepts up to 100 channel names, and `triggerBatch` sends different
+events in one request:
+
+```php title="app/Actions/PublishOrderBatch.php"
+use Sockudo\Laravel\Facades\Sockudo;
+
+Sockudo::triggerBatch([
+    [
+        'channel' => 'private-orders.124',
+        'name' => 'order.created',
+        'data' => ['id' => 'ord_124'],
+        'idempotency_key' => 'order.created:tenant-42:ord_124:v1',
+    ],
+    [
+        'channel' => 'private-users.7',
+        'name' => 'order.receipt',
+        'data' => ['id' => 'ord_124'],
+    ],
+]);
+```
+
+Server defaults from `[event_limits]`:
+
+| Limit | Server default |
+| --- | --- |
+| Channels per event (`max_channels_at_once`) | `100` |
+| Events per batch (`max_batch_size`) | `10` |
+| Payload size (`max_payload_in_kb`) | `100` KB |
+| Event and channel name length (`max_name_length`) | `200` |
+
+## Idempotency and retries
+
+A timeout does not tell you whether the server published the event. Retrying without an
+idempotency key can deliver it twice; retrying with the same key lets the server recognise the
+duplicate.
+
+How the server handles keys:
+
+- The key can be sent as the `idempotency_key` body field or the `X-Idempotency-Key` header. When
+  both are present, the body field wins.
+- The `[idempotency]` defaults are `enabled = true`, `ttl_seconds = 120`, and
+  `max_key_length = 128`. Empty keys are rejected.
+- A duplicate within the TTL returns the original cached response with status `200` and does not
+  publish again.
+- For batches, `X-Idempotency-Key` identifies the whole batch and a per-item `idempotency_key`
+  identifies only that event. The two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
+
+How keys flow through Laravel:
+
+- Broadcast events cannot carry an idempotency key. The PHP SDK attaches an auto-generated key to
+  each API call and retries `5xx` responses with it, up to three attempts. When the broadcast job
+  itself is retried by the queue, the event is published again with a new key, so a job that timed
+  out after the server published can deliver twice.
+- For events that must not duplicate, publish from your own queued job with `Sockudo::trigger` and
+  an explicit `idempotency_key`, or per-item keys in `Sockudo::triggerBatch`. The same key on every
+  job attempt makes queue retries safe. `triggerBatch` does not send a batch-level header.
+
+```php title="app/Jobs/PublishOrderPaid.php"
+public function handle(): void
+{
+    Sockudo::trigger("private-orders.{$this->orderId}", 'order.paid', $this->payload, [
+        // Stable across every attempt of this job.
+        'idempotency_key' => "order.paid:{$this->tenantId}:{$this->orderId}:v{$this->version}",
+    ]);
+}
+```
+
+<Callout type="warn" title="One key, one logical operation">
+A key identifies a logical operation such as `order.created:tenant-42:order-123:v1`, not an HTTP
+attempt or a job attempt. Never reuse a key for a different payload: within the TTL the server
+returns the first response and silently drops the new event.
+</Callout>
+
+## Authorize private and presence channels
+
+When Echo subscribes to a private or presence channel, it asks Laravel's `/broadcasting/auth`
+route for a signed auth response. The driver signs the response only after your channel callback
+returns a truthy value; signing is not authorization. Your callback decides whether this user may
+join this exact channel, and for presence channels the identity comes from the authenticated user,
+never from the request.
+
+```php title="routes/channels.php"
+use App\Models\Order;
+use App\Models\Room;
+use App\Models\User;
 use Illuminate\Support\Facades\Broadcast;
 
-Broadcast::channel('orders.{order}', function ($user, $order) {
+Broadcast::channel('orders.{order}', function (User $user, Order $order) {
     return $user->can('view', $order);
+});
+
+Broadcast::channel('rooms.{room}', function (User $user, Room $room) {
+    if (!$user->can('join', $room)) {
+        return false;
+    }
+
+    // Presence: the array becomes user_info for other members.
+    return ['name' => $user->name];
 });
 ```
 
-Signing proves that Laravel approved a subscription; your channel callback is
-still responsible for tenant and resource authorization.
+The driver handles the request parsing and response for you: it reads the form-encoded
+`socket_id` and `channel_name`, rejects guarded channels for unauthenticated users with `403`, runs
+your callback, and returns JSON. For `presence-` channels it uses the user's
+`getAuthIdentifierForBroadcasting()` (or `getAuthIdentifier()`) as `user_id` and the array your
+callback returns as `user_info`.
 
-## Connect Laravel Echo
+<Callout type="warn" title="Signing is not authorization">
+Laravel only checks that a callback exists and returns a truthy value. A callback that returns
+`true` for every user lets every signed-in user join that channel. Check tenant and resource
+ownership in each callback.
+</Callout>
 
-Laravel Echo uses the Pusher connector for Sockudo Protocol V1:
+### Connect Laravel Echo
 
-```js
+Laravel Echo uses its Pusher connector for Sockudo's Protocol V1 connection:
+
+```js title="resources/js/echo.js"
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
@@ -101,66 +353,243 @@ window.Echo = new Echo({
 });
 ```
 
-Echo sends private and presence authorization requests to Laravel's standard
-`/broadcasting/auth` endpoint. Never expose `SOCKUDO_APP_SECRET` to JavaScript.
+Protocol V2 features such as recovery, rewind, tag filters, delta compression, and
+versioned-message projections need a Sockudo-native realtime client rather than Laravel Echo. See
+[Client SDKs](/docs/clients).
 
-Protocol V2 recovery, rewind, filters, deltas, and mutable-message projections
-require a Sockudo-native realtime client rather than Laravel Echo.
+### User authentication
 
-## Native APIs
+User authentication binds a connection to a user ID for user-targeted events and connection
+termination. Tell Laravel how to describe the signed-in user, and expose the
+`/broadcasting/user-auth` route with `Broadcast::userRoutes()` if your app does not already
+register it:
 
-The facade proxies calls to the configured PHP server SDK client:
+```php title="app/Providers/AppServiceProvider.php"
+use Illuminate\Support\Facades\Broadcast;
 
-```php
+public function boot(): void
+{
+    Broadcast::resolveAuthenticatedUserUsing(fn ($request) => $request->user() ? [
+        'id' => (string) $request->user()->id,
+        'name' => $request->user()->name,
+    ] : null);
+}
+```
+
+The driver passes the array to the SDK's `authenticateUser`, which requires a non-empty `id`.
+Returning an `Arrayable` also works. Send events to a signed-in user with
+`Sockudo::sendToUser($userId, $event, $data)`.
+
+### Encrypted channels
+
+Set `SOCKUDO_ENCRYPTION_MASTER_KEY_BASE64` to a base64-encoded 32-byte key (for example from
+`openssl rand -base64 32`). Laravel's `PrivateEncryptedChannel` maps to `private-encrypted-`
+channels; the driver signs them like other private channels and adds the per-channel shared
+secret, and the SDK encrypts event data before publishing. Subscribe with Echo's
+`encryptedPrivate()`. Broadcast each encrypted event to a single encrypted channel: the SDK rejects
+events that mix encrypted and unencrypted channels, and encrypts the payload with the first
+channel's key, so other encrypted channels in the same event could not decrypt it.
+
+### Terminate user connections
+
+```php title="app/Actions/RevokeUserAccess.php"
 use Sockudo\Laravel\Facades\Sockudo;
 
-$history = Sockudo::getChannelHistory('orders', ['limit' => 50]);
+Sockudo::terminateUserConnections((string) $user->id);   // disconnect
+Sockudo::forceReconnectUser((string) $user->id);         // close with 4200 so clients re-authorize
+```
 
-Sockudo::updateMessage('orders', $messageSerial, [
-    'data' => ['status' => 'paid'],
+## Validate webhooks
+
+The package does not register a webhook route. Validate deliveries with the SDK's `webhook` method
+through the facade. Sockudo signs the exact request body bytes with HMAC-SHA256, so pass
+`$request->getContent()`, never re-encoded JSON from `$request->all()`.
+
+```php title="routes/web.php"
+use App\Jobs\ProcessSockudoWebhookEvent;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use Sockudo\Laravel\Facades\Sockudo;
+use Sockudo\SockudoException;
+
+Route::post('/sockudo/webhooks', function (Request $request) {
+    try {
+        $webhook = Sockudo::webhook([
+            // The SDK looks up these exact header names.
+            'X-Pusher-Key' => (string) $request->header('X-Pusher-Key', ''),
+            'X-Pusher-Signature' => (string) $request->header('X-Pusher-Signature', ''),
+        ], $request->getContent());
+    } catch (SockudoException) {
+        abort(401);
+    }
+
+    foreach ($webhook->get_events() as $event) {
+        ProcessSockudoWebhookEvent::dispatch((array) $event, $webhook->get_time_ms());
+    }
+
+    return response()->noContent();
+});
+```
+
+Webhooks carry no CSRF token, so exclude the route in `bootstrap/app.php`:
+
+```php title="bootstrap/app.php"
+->withMiddleware(function (Middleware $middleware) {
+    $middleware->validateCsrfTokens(except: ['sockudo/webhooks']);
+})
+```
+
+`webhook` throws `SockudoException` when the key or signature does not match or the body is not
+valid JSON, and decrypts encrypted-channel events when the master key is configured. Respond
+quickly and process in a queued job: Sockudo retries failed deliveries, so make the handler
+idempotent.
+
+## Channel state and history
+
+```php title="app/Services/OrderPresence.php"
+use Sockudo\Laravel\Facades\Sockudo;
+
+$info = Sockudo::getChannelInfo('presence-rooms.7', ['info' => 'user_count']);
+$channels = Sockudo::getChannels(['filter_by_prefix' => 'presence-']);
+$members = Sockudo::getPresenceUsers('presence-rooms.7');
+
+$page = Sockudo::getChannelHistory('private-orders.123', [
+    'limit' => 50,
+    'direction' => 'newest_first',
 ]);
 
-Sockudo::publishAnnotation('orders', $messageSerial, [
+if ($page->has_more) {
+    $next = Sockudo::getChannelHistory('private-orders.123', ['cursor' => $page->next_cursor]);
+}
+
+$transitions = Sockudo::getPresenceHistory('presence-rooms.7', ['limit' => 100]);
+$snapshot = Sockudo::getPresenceSnapshot('presence-rooms.7', ['at_time_ms' => $timestampMs]);
+```
+
+Cursors are opaque; pass `next_cursor` back unchanged. Use Sockudo channel names, including the
+`private-` or `presence-` prefix. Rate-limit and authorize any application endpoint that exposes
+history to users. See [History and recovery](/docs/server/history-recovery).
+
+## Versioned messages and annotations
+
+The facade exposes the PHP SDK's Protocol V2 helpers for reading versioned messages and managing
+annotations:
+
+```php title="app/Services/OrderMessages.php"
+use Sockudo\Laravel\Facades\Sockudo;
+
+$message = Sockudo::getMessage('orders', $messageSerial);
+$versions = Sockudo::getMessageVersions('orders', $messageSerial, ['limit' => 20]);
+
+$annotation = Sockudo::publishAnnotation('orders', $messageSerial, [
     'type' => 'reaction',
     'name' => 'confirmed',
 ]);
+$annotations = Sockudo::listAnnotations('orders', $messageSerial);
+Sockudo::deleteAnnotation('orders', $messageSerial, $annotation->annotationSerial);
+```
 
-$publish = Sockudo::publishPush([
+<Callout type="warn" title="Mutations: use the signed post helper">
+In PHP SDK `2.2.0`, `updateMessage`, `deleteMessage`, and `appendMessage` do not JSON-encode their
+parameters and fail with a `TypeError`. Send mutations through the facade's generic `post` helper
+with a JSON-encoded body until the SDK is fixed.
+</Callout>
+
+```php title="app/Services/OrderMessages.php"
+Sockudo::post(
+    '/channels/orders/messages/' . rawurlencode($messageSerial) . '/update',
+    json_encode([
+        'data' => json_encode(['status' => 'paid']),
+        'op_id' => 'order.paid:ord-123:v4',
+    ], JSON_THROW_ON_ERROR),
+);
+```
+
+The same pattern works for `/append` and `/delete`. Paths exclude the `/apps/<app_id>` prefix, and
+`Sockudo::get` and `Sockudo::delete` cover other endpoints without a typed helper. See
+[Mutable messages](/docs/server/mutable-messages).
+
+## Push notifications
+
+Every PHP SDK push helper is available through the facade:
+
+```php title="app/Actions/NotifyOrderPacked.php"
+use Sockudo\Laravel\Facades\Sockudo;
+
+$accepted = Sockudo::publishPush([
     'recipients' => [['type' => 'channel', 'channel' => 'orders']],
-    'payload' => ['title' => 'Order updated'],
-    'publishId' => 'order-updated:ord-123:v4',
+    'payload' => ['title' => 'Order updated', 'body' => 'Order ord-123 is packed'],
+    'publishId' => 'order-packed:ord-123:v4',
 ]);
+
+$status = Sockudo::getPublishStatus($accepted->publishId);
 ```
 
-Inject `Sockudo\SockudoInterface` when constructor injection is preferable. The
-binding resolves the connection named by `SOCKUDO_CONNECTION`, which defaults
-to `sockudo`.
+`publishPush` returns an admission record (`publishId`, `status`, `expectedRecipients`), not a
+delivery result. Check `getPublishStatus` later, for example from a scheduled job, and reuse the
+same `publishId` on retries. Device registrations, channel subscriptions, credentials,
+`publishPushBatch`, `schedulePush`, and `cancelScheduledPush` are listed on the
+[PHP page](/docs/server-sdks/php#push-notifications).
 
-The facade also forwards `createApnsLiveActivityChannel`,
+For iOS 18 Live Activity broadcast channels, use `createApnsLiveActivityChannel`,
 `getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, and
-`deleteApnsLiveActivityChannel` for iOS 18 broadcast delivery. See
-[Apple Live Activities](/docs/server/apple-live-activities) for request shapes and operational
-guidance.
+`deleteApnsLiveActivityChannel`. See [Push notifications](/docs/server/push-notifications) and
+[Apple Live Activities](/docs/server/apple-live-activities).
 
-## Multiple Sockudo apps
+## Errors and timeouts
 
-Define additional `driver => sockudo` entries in
-`config/broadcasting.php`, then select one explicitly:
+Failures surface differently depending on the path:
 
-```php
-$client = Sockudo::connection('sockudo-eu');
-$client->trigger('orders', 'order.updated', ['id' => 'ord-123']);
+- Broadcast events: any publish failure becomes
+  `Illuminate\Broadcasting\BroadcastException` with the message `Sockudo publish failed.` The
+  original exception is deliberately not chained, because transport errors can contain signed URLs
+  or response bodies. Queued broadcasts follow your queue's retry settings; run
+  `php artisan sockudo:check` to diagnose connectivity or credentials.
+- Facade and `SockudoInterface` calls: the PHP SDK's exceptions propagate unchanged.
+  `Sockudo\ApiErrorException` carries the HTTP status in `getCode()` (`0` for connection failures
+  and timeouts); `Sockudo\SockudoException` signals invalid input caught before sending.
+- Missing connection or credentials: `InvalidArgumentException` when the connection is resolved.
+- Auth endpoints: `AccessDeniedHttpException` (`403`) when the user is not allowed on the channel.
+
+`SOCKUDO_TIMEOUT` (default 30 seconds) bounds each request and `SOCKUDO_CONNECT_TIMEOUT` (default 5
+seconds) bounds connection setup. Keep both below your queue job's timeout.
+
+```php title="app/Jobs/PublishOrderPaid.php"
+use Sockudo\ApiErrorException;
+use Sockudo\Laravel\Facades\Sockudo;
+
+public function handle(): void
+{
+    try {
+        Sockudo::trigger("private-orders.{$this->orderId}", 'order.paid', $this->payload, [
+            'idempotency_key' => $this->idempotencyKey,
+        ]);
+    } catch (ApiErrorException $error) {
+        $status = $error->getCode();
+        if ($status === 0 || $status === 429 || $status >= 500) {
+            $this->release(5); // retry later with the same key
+            return;
+        }
+        $this->fail($error);   // 400, 401, 403, 413: retrying will not help
+    }
+}
 ```
 
-Each connection has its own credentials, host, TLS options, and HTTP client
-settings. Keep all secrets out of committed configuration and logs.
+Retry network errors, timeouts, `429`, and `5xx` responses with backoff. Do not retry `400`,
+`401`, `403`, or `413`. Never log signed URLs, `SOCKUDO_APP_SECRET`, or raw request and response
+bodies.
 
-## Deployment notes
+<Callout type="tip" title="Before switching production traffic">
+Test public, private, presence, encrypted, `toOthers()`, and queued broadcast flows against a
+staging Sockudo server, and confirm that queue workers pick up configuration changes after a
+restart.
+</Callout>
 
-- Run broadcasts on Laravel queues when request latency should not depend on
-  the realtime API.
-- Keep the SDK timeout below the queue-job timeout.
-- Restart long-lived queue workers after changing cached configuration.
-- Use stable, business-derived idempotency keys for retryable native publishes.
-- Test public, private, presence, encrypted, `toOthers()`, and queued flows
-  before switching production traffic.
+## Next steps
+
+<Cards>
+  <Card title="PHP server SDK" href="/docs/server-sdks/php" description="Every method the facade proxies, with options and defaults." />
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="How clients request private, presence, and user auth from your backend." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Webhook events, delivery, retries, and configuration." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Durable history, cursors, and two-tier recovery." />
+</Cards>

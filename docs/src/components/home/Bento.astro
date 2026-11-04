@@ -1,0 +1,646 @@
+---
+import { ArrowUpRight, BellRing, Filter, GitBranch, History, Layers, PencilLine, SmilePlus, Users, Activity } from '@lucide/astro';
+---
+
+<section class="sec bento-sec" aria-labelledby="bento-title">
+  <div class="sec-inner">
+    <div class="sec-head" data-reveal>
+      <span class="eyebrow">Protocol V2</span>
+      <h2 id="bento-title" class="sec-title">Everything after <span class="grad">“connected”</span></h2>
+      <p class="sec-lede">
+        Pusher gets bytes to sockets. Sockudo’s native protocol adds the semantics product teams end up rebuilding by hand — gated, so V1
+        clients never see them.
+      </p>
+    </div>
+
+    <div class="bento">
+      <a class="tile glass t-recover" href="/docs/server/history-recovery" data-reveal data-glow data-tilt>
+        <div class="t-icon"><History /></div>
+        <h3>Recovery, rewind & durable history</h3>
+        <p>Two-tier recovery from a hot replay buffer and durable history, with opaque cursors and gapless <code>until_attach</code> reads.</p>
+        <div class="viz timeline" aria-hidden="true">
+          {Array.from({ length: 14 }, (_, i) => <i class:list={{ miss: i >= 6 && i <= 9 }} style={`--i:${i};height:${34 + ((i * 37) % 46)}px`} />)}
+          <span class="tl-label off">offline</span>
+          <span class="tl-label rep">replayed ✓</span>
+        </div>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-mutable" href="/docs/server/mutable-messages" data-reveal data-glow data-tilt style="--d:80ms">
+        <div class="t-icon"><PencilLine /></div>
+        <h3>Mutable messages</h3>
+        <p>Create, update, delete and append with full version history.</p>
+        <div class="viz versions" aria-hidden="true">
+          <div class="msg"><span class="v">v1</span><span class="tx a">Shipping Friday</span><span class="tx b">Shipping Thursday</span><span class="tx c">Shipped 🎉</span></div>
+          <div class="chain"><b>v1</b><b>v2</b><b>v3</b></div>
+        </div>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-presence" href="/docs/clients/presence-history" data-reveal data-glow data-tilt style="--d:160ms">
+        <div class="t-icon"><Users /></div>
+        <h3>Presence + history</h3>
+        <p>First-join / last-leave correct across nodes and multi-tab users.</p>
+        <div class="viz faces" aria-hidden="true"><b>A</b><b>K</b><b>M</b><b>J</b><b>S</b></div>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-delta" href="/docs/clients/filters-delta" data-reveal data-glow data-tilt>
+        <div class="t-icon"><Layers /></div>
+        <h3>Delta compression</h3>
+        <p>Send only what changed between consecutive messages.</p>
+        <div class="viz deltas" aria-hidden="true">
+          <div><span>full</span><i class="full"></i></div>
+          <div><span>delta</span><i class="small"></i></div>
+        </div>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-filter" href="/docs/clients/filters-delta" data-reveal data-glow data-tilt style="--d:80ms">
+        <div class="t-icon"><Filter /></div>
+        <h3>Tag filtering</h3>
+        <p>Subscribers declare filters; the server drops what they don’t need.</p>
+        <div class="viz stream" aria-hidden="true">
+          <span class="f">region=eu</span>
+          <div class="lane">
+            <i class="y">eu</i><i>us</i><i class="y">eu</i><i>ap</i><i class="y">eu</i><i>us</i>
+          </div>
+        </div>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-annot" href="/docs/clients/protocol-v2" data-reveal data-glow data-tilt style="--d:160ms">
+        <div class="t-icon"><SmilePlus /></div>
+        <h3>Annotations</h3>
+        <p>Reactions, receipts and moderation with summary projection.</p>
+        <div class="viz reacts" aria-hidden="true"><span>👍 <b data-count-loop="24">24</b></span><span>🔥 <b data-count-loop="9">9</b></span><span>✅ <b>read</b></span></div>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-push" href="/docs/server/push-notifications" data-reveal data-glow data-tilt>
+        <div class="t-icon"><BellRing /></div>
+        <h3>Push notifications</h3>
+        <p>FCM, APNs, Web Push, HMS and WNS — plus Apple Live Activities — from the same publish.</p>
+        <div class="viz phone" aria-hidden="true">
+          <div class="notif n1"><b>Orders</b> ord_123 was paid</div>
+          <div class="notif n2"><b>Agent</b> Your report is ready</div>
+        </div>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-obs" href="/docs/server/observability" data-reveal data-glow data-tilt style="--d:80ms">
+        <div class="t-icon"><Activity /></div>
+        <h3>Operable by default</h3>
+        <p>Prometheus metrics, webhooks, rate limits, quotas, readiness probes and a Grafana dashboard.</p>
+        <svg class="viz spark" viewBox="0 0 300 70" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="sg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#a978ff" stop-opacity=".45"></stop><stop offset="1" stop-color="#a978ff" stop-opacity="0"></stop></linearGradient>
+          </defs>
+          <path class="area" d="M0 50 L20 44 L40 48 L60 30 L80 36 L100 22 L120 30 L140 18 L160 26 L180 12 L200 22 L220 16 L240 28 L260 10 L280 18 L300 8 L300 70 L0 70Z" fill="url(#sg)"></path>
+          <path class="line" d="M0 50 L20 44 L40 48 L60 30 L80 36 L100 22 L120 30 L140 18 L160 26 L180 12 L200 22 L220 16 L240 28 L260 10 L280 18 L300 8" fill="none" stroke="#a978ff" stroke-width="2"></path>
+        </svg>
+        <ArrowUpRight class="go" />
+      </a>
+
+      <a class="tile glass t-proto" href="/docs/clients/protocol-v2" data-reveal data-glow data-tilt style="--d:160ms">
+        <div class="t-icon"><GitBranch /></div>
+        <h3>Two protocols, one server</h3>
+        <p>V1 stays byte-for-byte Pusher. V2 adds serials, message IDs and <code>sockudo:</code> events.</p>
+        <div class="viz forks" aria-hidden="true">
+          <span class="v1">pusher:</span><span class="v2">sockudo:</span>
+        </div>
+        <ArrowUpRight class="go" />
+      </a>
+    </div>
+  </div>
+</section>
+
+<style>
+  .bento {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    grid-auto-rows: minmax(230px, auto);
+    gap: 16px;
+  }
+  .tile {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 26px;
+    border-radius: 24px;
+    overflow: hidden;
+    grid-column: span 2;
+    transform-style: preserve-3d;
+    transition:
+      transform 0.5s var(--ease-out),
+      box-shadow 0.4s,
+      border-color 0.3s,
+      opacity 0.9s var(--ease-out);
+  }
+  .tile::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(520px circle at var(--mx, 50%) var(--my, 0%), rgb(139 77 255 / 0.18), transparent 45%);
+    opacity: 0;
+    transition: opacity 0.35s;
+    pointer-events: none;
+  }
+  .tile:hover {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    box-shadow: var(--shadow-glow);
+  }
+  .tile:hover::before {
+    opacity: 1;
+  }
+  .t-recover {
+    grid-column: span 4;
+  }
+  .t-push,
+  .t-obs {
+    grid-column: span 3;
+  }
+  .t-proto {
+    grid-column: span 6;
+  }
+  .t-icon {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    margin-bottom: 18px;
+    border-radius: 12px;
+    color: #fff;
+    background: linear-gradient(135deg, #8b4dff, #c026d3);
+    box-shadow: 0 8px 24px -8px rgb(139 77 255 / 0.8);
+  }
+  .t-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+  .tile h3 {
+    font-size: 1.2rem;
+    letter-spacing: -0.025em;
+    margin: 0 0 8px;
+  }
+  .tile p {
+    margin: 0;
+    font-size: 0.92rem;
+    color: var(--fg-muted);
+    max-width: 520px;
+  }
+  .tile code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--accent-text);
+  }
+  .go {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    width: 18px;
+    height: 18px;
+    color: var(--fg-subtle);
+    transition:
+      transform 0.35s var(--ease-spring),
+      color 0.2s;
+  }
+  .tile:hover .go {
+    color: var(--accent);
+    transform: translate(3px, -3px);
+  }
+  .viz {
+    margin-top: auto;
+    padding-top: 22px;
+  }
+
+  /* timeline */
+  .timeline {
+    position: relative;
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+    height: 92px;
+  }
+  .timeline i {
+    flex: 1;
+    border-radius: 6px;
+    background: linear-gradient(#a978ff, #5b21b6);
+    transform-origin: bottom;
+    animation: grow 0.8s calc(var(--i) * 60ms) var(--ease-out) both paused;
+  }
+  .timeline i.miss {
+    background: linear-gradient(#f0abfc, #a21caf);
+    animation:
+      grow 0.8s calc(var(--i) * 60ms) var(--ease-out) both paused,
+      replay 4s 1.2s ease-in-out infinite paused;
+  }
+  .tile.in .timeline i {
+    animation-play-state: running;
+  }
+  @keyframes grow {
+    from {
+      transform: scaleY(0);
+    }
+  }
+  @keyframes replay {
+    0%,
+    20% {
+      opacity: 0.12;
+    }
+    45%,
+    100% {
+      opacity: 1;
+    }
+  }
+  .tl-label {
+    position: absolute;
+    top: 0;
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .tl-label.off {
+    left: 43%;
+    color: #fda4af;
+    background: rgb(244 63 94 / 0.12);
+  }
+  .tl-label.rep {
+    right: 0;
+    color: #86efac;
+    background: rgb(34 197 94 / 0.12);
+  }
+
+  /* versions */
+  .versions .msg {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: var(--accent-soft);
+    border: 1px solid var(--glass-border);
+    height: 48px;
+    overflow: hidden;
+  }
+  .versions .v {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 6px;
+    color: #fff;
+    background: var(--violet-600);
+  }
+  .versions .tx {
+    position: absolute;
+    left: 56px;
+    font-size: 0.9rem;
+    font-weight: 550;
+    opacity: 0;
+    animation: cycle 9s infinite;
+  }
+  .versions .tx.b {
+    animation-delay: 3s;
+  }
+  .versions .tx.c {
+    animation-delay: 6s;
+  }
+  @keyframes cycle {
+    0% {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    5%,
+    30% {
+      opacity: 1;
+      transform: none;
+    }
+    36%,
+    100% {
+      opacity: 0;
+      transform: translateY(-12px);
+    }
+  }
+  .chain {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .chain b {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: var(--fg-muted);
+    border: 1px solid var(--border-strong);
+  }
+
+  /* faces */
+  .faces {
+    display: flex;
+  }
+  .faces b {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin-left: -10px;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 0.85rem;
+    border: 3px solid var(--bg-elev);
+    background: linear-gradient(135deg, #8b4dff, #c026d3);
+    animation: join 6s infinite;
+  }
+  .faces b:first-child {
+    margin-left: 0;
+  }
+  .faces b:nth-child(2) {
+    background: linear-gradient(135deg, #0ea5e9, #8b4dff);
+    animation-delay: 0.4s;
+  }
+  .faces b:nth-child(3) {
+    background: linear-gradient(135deg, #f472b6, #a855f7);
+    animation-delay: 0.8s;
+  }
+  .faces b:nth-child(4) {
+    background: linear-gradient(135deg, #22d3ee, #6366f1);
+    animation-delay: 1.2s;
+  }
+  .faces b:nth-child(5) {
+    background: linear-gradient(135deg, #a3e635, #8b5cf6);
+    animation-delay: 1.6s;
+  }
+  @keyframes join {
+    0% {
+      opacity: 0;
+      transform: scale(0.4) translateY(10px);
+    }
+    10%,
+    80% {
+      opacity: 1;
+      transform: none;
+    }
+    90%,
+    100% {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+  }
+
+  /* deltas */
+  .deltas div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--fg-subtle);
+  }
+  .deltas span {
+    width: 38px;
+  }
+  .deltas i {
+    height: 12px;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #8b4dff, #c026d3);
+  }
+  .deltas .full {
+    width: 100%;
+    opacity: 0.35;
+  }
+  .deltas .small {
+    width: 14%;
+    animation: squeeze 3.5s ease-in-out infinite;
+  }
+  @keyframes squeeze {
+    0% {
+      width: 100%;
+    }
+    40%,
+    100% {
+      width: 14%;
+    }
+  }
+
+  /* stream filter */
+  .stream {
+    position: relative;
+  }
+  .stream .f {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: 6px;
+    color: var(--accent-text);
+    background: var(--accent-soft);
+    margin-bottom: 10px;
+  }
+  .lane {
+    display: flex;
+    gap: 6px;
+    overflow: hidden;
+    mask-image: linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent);
+  }
+  .lane i {
+    flex: none;
+    font-style: normal;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    color: var(--fg-subtle);
+    opacity: 0.4;
+    animation: slide 5s linear infinite;
+  }
+  .lane i.y {
+    opacity: 1;
+    color: #fff;
+    border-color: transparent;
+    background: linear-gradient(135deg, #8b4dff, #c026d3);
+  }
+  @keyframes slide {
+    from {
+      transform: translateX(-60px);
+    }
+    to {
+      transform: translateX(60px);
+    }
+  }
+
+  /* reactions */
+  .reacts {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .reacts span {
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.9rem;
+    background: var(--accent-soft);
+    border: 1px solid var(--glass-border);
+    animation: pop 2.4s ease-in-out infinite;
+  }
+  .reacts span:nth-child(2) {
+    animation-delay: 0.8s;
+  }
+  .reacts span:nth-child(3) {
+    animation-delay: 1.6s;
+  }
+  .reacts b {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.82rem;
+  }
+  @keyframes pop {
+    0%,
+    80%,
+    100% {
+      transform: none;
+    }
+    90% {
+      transform: scale(1.12);
+    }
+  }
+
+  /* phone */
+  .phone {
+    position: relative;
+    height: 120px;
+  }
+  .notif {
+    position: absolute;
+    left: 0;
+    right: 0;
+    max-width: 360px;
+    padding: 12px 14px;
+    border-radius: 16px;
+    font-size: 0.84rem;
+    color: var(--fg-muted);
+    background: var(--glass-strong);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-lg);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    animation: notif 6s var(--ease-out) infinite;
+  }
+  .notif b {
+    display: block;
+    color: var(--fg);
+    font-size: 0.8rem;
+  }
+  .notif.n1 {
+    top: 0;
+  }
+  .notif.n2 {
+    top: 58px;
+    left: 24px;
+    animation-delay: 0.5s;
+  }
+  @keyframes notif {
+    0% {
+      opacity: 0;
+      transform: translateY(-16px) scale(0.96);
+    }
+    10%,
+    75% {
+      opacity: 1;
+      transform: none;
+    }
+    90%,
+    100% {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+  }
+
+  /* sparkline */
+  .spark {
+    width: 100%;
+    height: 80px;
+  }
+  .spark .line {
+    stroke-dasharray: 600;
+    stroke-dashoffset: 600;
+    filter: drop-shadow(0 0 6px #a978ff);
+  }
+  .tile.in .spark .line {
+    animation: draw 2.4s 0.3s var(--ease-out) forwards;
+  }
+  @keyframes draw {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* forks */
+  .forks {
+    display: flex;
+    gap: 12px;
+  }
+  .forks span {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    padding: 8px 16px;
+    border-radius: 12px;
+    border: 1px solid var(--border-strong);
+  }
+  .forks .v2 {
+    color: #fff;
+    border-color: transparent;
+    background: linear-gradient(135deg, #8b4dff, #c026d3);
+    box-shadow: 0 10px 30px -10px rgb(139 77 255 / 0.8);
+  }
+  .t-proto {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 32px;
+    min-height: 0;
+  }
+  .t-proto .t-icon {
+    margin-bottom: 0;
+  }
+  .t-proto .viz {
+    margin: 0 0 0 auto;
+    padding: 0 40px 0 0;
+  }
+
+  @media (max-width: 960px) {
+    .bento {
+      grid-template-columns: 1fr 1fr;
+    }
+    .tile,
+    .t-recover,
+    .t-push,
+    .t-obs,
+    .t-proto {
+      grid-column: span 2;
+    }
+    .t-mutable,
+    .t-presence,
+    .t-delta,
+    .t-filter {
+      grid-column: span 1;
+    }
+  }
+  @media (max-width: 620px) {
+    .tile,
+    .t-mutable,
+    .t-presence,
+    .t-delta,
+    .t-filter {
+      grid-column: span 2;
+    }
+    .t-proto .viz {
+      margin: 16px 0 0;
+      padding: 0;
+    }
+  }
+</style>

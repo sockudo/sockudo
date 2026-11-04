@@ -1,0 +1,195 @@
+---
+import { ArrowRight } from '@lucide/astro';
+---
+
+<section class="sec migrate" id="migrate" aria-labelledby="migrate-title">
+  <div class="sec-inner split">
+    <div class="copy" data-reveal>
+      <span class="eyebrow">Zero-rewrite migration</span>
+      <h2 id="migrate-title" class="sec-title">Change one hostname.<br /><span class="grad">Keep every client.</span></h2>
+      <p class="sec-lede">
+        Protocol V1 is a strict Pusher compatibility target: same channels, same auth signatures, same HTTP publish API. Point pusher-js or
+        Laravel Echo at Sockudo and ship. Adopt Protocol V2 later, one app at a time.
+      </p>
+      <ul class="ticks">
+        <li>Public, private, presence and encrypted channels</li>
+        <li>Pusher-signed HTTP API, batch triggers and webhooks</li>
+        <li>Opt-in Ably REST + WebSocket compatibility facade</li>
+      </ul>
+      <a class="link-arrow" href="/docs/getting-started/migration">Read the migration guide <ArrowRight size={16} /></a>
+    </div>
+
+    <div class="diff-card glass" data-reveal style="--d:120ms" data-tilt>
+      <div class="diff-head">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span class="file">realtime.ts</span>
+        <span class="badge">+2 −1</span>
+      </div>
+      <pre class="diff"><code><span class="row "><span class="ln">1</span><span class="tx"><span class="kw">import</span> Pusher <span class="kw">from</span> <span class="str">"pusher-js"</span>;</span></span><span class="row "><span class="ln">2</span><span class="tx"> </span></span><span class="row "><span class="ln">3</span><span class="tx"><span class="kw">const</span> pusher = <span class="kw">new</span> <span class="fn">Pusher</span>(<span class="str">"app-key"</span>, &#123;</span></span><span class="row del"><span class="ln">4</span><span class="tx">-   cluster: <span class="str">"mt1"</span>,</span></span><span class="row add"><span class="ln">4</span><span class="tx">+   cluster: <span class="str">"local"</span>,</span></span><span class="row add"><span class="ln">5</span><span class="tx">+   wsHost: <span class="str">"realtime.example.com"</span>,</span></span><span class="row "><span class="ln">6</span><span class="tx">    forceTLS: <span class="kw">true</span>,</span></span><span class="row "><span class="ln">7</span><span class="tx">  &#125;);</span></span><span class="row "><span class="ln">8</span><span class="tx"> </span></span><span class="row "><span class="ln">9</span><span class="tx">  pusher.<span class="fn">subscribe</span>(<span class="str">"orders"</span>)</span></span><span class="row "><span class="ln">10</span><span class="tx">    .<span class="fn">bind</span>(<span class="str">"order.created"</span>, render);</span></span></code></pre>
+      <div class="diff-foot">
+        <span class="pulse"></span> Connected to <b>Sockudo</b> · protocol <b>7</b> · <span class="mono">pusher:connection_established</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .diff-card {
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: var(--shadow-lg);
+    transform-style: preserve-3d;
+    transition: transform 0.5s var(--ease-out);
+  }
+  .diff-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.78rem;
+  }
+  .lights {
+    display: flex;
+    gap: 6px;
+  }
+  .lights i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ff5f57;
+  }
+  .lights i:nth-child(2) {
+    background: #febc2e;
+  }
+  .lights i:nth-child(3) {
+    background: #28c840;
+  }
+  .file {
+    font-family: var(--font-mono);
+    color: var(--fg-muted);
+  }
+  .badge {
+    margin-left: auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    background: var(--accent-soft);
+  }
+  .diff {
+    margin: 0;
+    padding: 18px 0;
+    font-family: var(--font-mono);
+    font-size: 0.84rem;
+    line-height: 1.85;
+    overflow-x: auto;
+  }
+  .diff code {
+    display: block;
+    min-width: max-content;
+  }
+  .row {
+    display: block;
+    padding-right: 20px;
+  }
+  .ln {
+    display: inline-block;
+    width: 44px;
+    padding-right: 14px;
+    text-align: right;
+    color: var(--fg-subtle);
+    user-select: none;
+  }
+  .kw {
+    color: #c084fc;
+  }
+  .str {
+    color: #34d399;
+  }
+  [data-theme='light'] .str {
+    color: #047857;
+  }
+  .fn {
+    color: #60a5fa;
+  }
+  [data-theme='light'] .fn {
+    color: #2563eb;
+  }
+  .row.del {
+    background: rgb(244 63 94 / 0.12);
+    color: #fb7185;
+  }
+  .row.del .tx {
+    text-decoration: line-through;
+    text-decoration-color: rgb(244 63 94 / 0.6);
+  }
+  .row.add {
+    background: rgb(34 197 94 / 0.12);
+    color: #4ade80;
+  }
+  [data-theme='light'] .row.add {
+    color: #15803d;
+  }
+  [data-theme='light'] .row.del {
+    color: #be123c;
+  }
+  .diff-card.in .row.add {
+    animation: line-in 1s var(--ease-out) both;
+    animation-delay: 0.7s;
+  }
+  .diff-card.in .row.add + .row.add {
+    animation-delay: 0.95s;
+  }
+  .diff-card.in .row.del {
+    animation: strike 0.8s 0.25s var(--ease-out) both;
+  }
+  @keyframes line-in {
+    from {
+      clip-path: inset(0 100% 0 0);
+    }
+    to {
+      clip-path: inset(0 0 0 0);
+    }
+  }
+  @keyframes strike {
+    from {
+      background: transparent;
+      color: inherit;
+    }
+  }
+  .diff-foot {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    font-size: 0.78rem;
+    color: var(--fg-muted);
+  }
+  .diff-foot b {
+    color: var(--fg);
+  }
+  .mono {
+    font-family: var(--font-mono);
+    color: var(--accent-text);
+  }
+  .pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 0 0 rgb(74 222 128 / 0.6);
+    animation: ping 2s infinite;
+  }
+  @keyframes ping {
+    70% {
+      box-shadow: 0 0 0 10px rgb(74 222 128 / 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgb(74 222 128 / 0);
+    }
+  }
+</style>

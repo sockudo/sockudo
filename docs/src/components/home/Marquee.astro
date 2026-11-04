@@ -1,0 +1,72 @@
+---
+const row1 = ['pusher-js', 'Laravel Echo', 'Ably SDKs', 'React', 'Vue', 'React Native', 'Next.js', 'Nuxt', 'Vercel AI SDK', 'NativeScript', 'Web Workers'];
+const row2 = ['Swift', 'Kotlin', 'Flutter', '.NET', 'Python', 'Node.js', 'PHP', 'Laravel', 'Ruby', 'Go', 'Rust', 'Java'];
+---
+
+<section class="marquee-sec" aria-label="Compatible clients and SDKs">
+  <p class="marquee-label" data-reveal>Plugs into the stack you already run</p>
+  <div class="marquee" aria-hidden="true">
+    <div class="track">{[...row1, ...row1].map((n) => <span class="chip">{n}</span>)}</div>
+  </div>
+  <div class="marquee reverse" aria-hidden="true">
+    <div class="track">{[...row2, ...row2].map((n) => <span class="chip">{n}</span>)}</div>
+  </div>
+</section>
+
+<style>
+  .marquee-sec {
+    padding: 64px 0 24px;
+    overflow: hidden;
+  }
+  .marquee-label {
+    text-align: center;
+    font-size: 0.8rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-subtle);
+    margin: 0 0 24px;
+  }
+  .marquee {
+    display: flex;
+    mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+    margin-bottom: 12px;
+  }
+  .track {
+    display: flex;
+    gap: 12px;
+    flex: none;
+    padding-right: 12px;
+    animation: marquee 45s linear infinite;
+  }
+  .reverse .track {
+    animation-direction: reverse;
+    animation-duration: 52s;
+  }
+  .marquee:hover .track {
+    animation-play-state: paused;
+  }
+  .chip {
+    flex: none;
+    padding: 10px 20px;
+    border-radius: 999px;
+    font-weight: 560;
+    font-size: 0.95rem;
+    color: var(--fg-muted);
+    background: var(--glass);
+    border: 1px solid var(--border);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    transition:
+      color 0.2s,
+      border-color 0.2s;
+  }
+  .chip:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+  @keyframes marquee {
+    to {
+      transform: translateX(-50%);
+    }
+  }
+</style>
