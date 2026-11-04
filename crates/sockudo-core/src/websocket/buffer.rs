@@ -348,8 +348,12 @@ pub(super) enum OutboundFrame {
     Broadcast(SizedMessage),
 }
 
-pub(super) type OutboundChannelFlavor = mpsc::Array<OutboundFrame>;
-type OutboundSenderHandle = crossfire::MAsyncTx<OutboundChannelFlavor>;
+// A bounded `Array` flavor allocates and initializes every slot up front: with the default
+// 1,000-message limit that is 2,000 slots, ~110 KiB resident per idle socket. The list flavor
+// allocates 31-slot blocks on demand and frees them as the writer drains them. The `pending`
+// counters below enforce the configured limits, so the channel itself needs no bound.
+pub(super) type OutboundChannelFlavor = mpsc::List<OutboundFrame>;
+type OutboundSenderHandle = crossfire::MTx<OutboundChannelFlavor>;
 
 #[derive(Debug, Clone)]
 pub(super) struct MessageSenderHandle {
