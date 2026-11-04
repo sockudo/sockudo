@@ -1,0 +1,52 @@
+# One Sockudo node limited to 0.25 CPU with Redis and Postgres history, for
+# tests/load/v2-capacity-probe.mjs. Builds this checkout for the host's
+# architecture (linux/arm64 on Apple Silicon), with the published image's
+# features unless SOCKUDO_FEATURES overrides them. Credentials are local-only.
+#
+#   docker compose -f tests/load/docker-compose.v2-capacity.yml up -d --build
+#   CONTAINER=v2-capacity-sockudo-1 node tests/load/v2-capacity-probe.mjs
+name: v2-capacity
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: probe
+      POSTGRES_PASSWORD: probe-local-only
+      POSTGRES_DB: sockudo
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U probe -d sockudo"]
+      interval: 2s
+      retries: 30
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  sockudo:
+    build:
+      context: ../..
+      args:
+        SOCKUDO_FEATURES: ${SOCKUDO_FEATURES:-full,monolith}
+    command: ["sockudo", "--config", "/etc/sockudo/config.toml"]
+    cpus: ${SOCKUDO_CPUS:-0.25}
+    mem_limit: 768m
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - ./v2-capacity-probe.toml:/etc/sockudo/config.toml:ro
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_POSTGRES_HOST: postgres
+      DATABASE_POSTGRES_PORT: "5432"
+      DATABASE_POSTGRES_USERNAME: probe
+      DATABASE_POSTGRES_PASSWORD: probe-local-only
+      DATABASE_POSTGRES_DATABASE: sockudo
+    ports: ["6001:6001", "127.0.0.1:9601:9601"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }

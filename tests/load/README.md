@@ -70,3 +70,26 @@ Results on one macOS node with the Redis adapter, 8,000 connections per round
 | `throttled-tab`, 24,000 pong timeouts | 13 connections and 13 presence channels leaked (5, 8, 13 after each round) | 0 | 0 |
 | `dead`, 8,000 pong timeouts | 0 | 0 | 0 |
 | `clean`, median time to count 8,000 disconnects | n/a | 260.5 ms | 259.0 ms |
+
+## V2 capacity probe
+
+`v2-capacity-probe.mjs` measures one node in the shape reported in
+sockudo/sockudo#533: Protocol V2 clients on private channels, durable Postgres
+history, connection recovery, the Redis adapter and rate limiter. It reports
+memory per idle connection at each connection step, then publishes one event
+per channel every `TICK_MS` and reports server CPU, publish latency by HTTP
+status (`0` is a client timeout, `503` is publish load shedding), and delivery
+latency with a count of every expected delivery.
+
+```bash
+docker compose -f tests/load/docker-compose.v2-capacity.yml up -d --build
+CONTAINER=v2-capacity-sockudo-1 STEPS=500,1000,2000 TICK_MS=500 \
+  node tests/load/v2-capacity-probe.mjs
+```
+
+The compose file limits Sockudo to `SOCKUDO_CPUS` (default `0.25`) and builds
+this checkout for the host architecture with `SOCKUDO_FEATURES` (default
+`full,monolith`, as in the published image). With 2,000 clients on 20 channels,
+`TICK_MS` of 2000, 500 and 250 offer 1,000, 4,000 and 8,000 deliveries per
+second. Against a local binary instead, run it with
+`tests/load/v2-capacity-probe.toml` and pass `PID` in place of `CONTAINER`.
