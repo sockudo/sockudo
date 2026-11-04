@@ -210,6 +210,14 @@ Opaque cursors make storage implementation details private. Store the cursor as 
 The HTTP endpoint, its query parameters, and the full response shape are documented in
 [HTTP API: History](/docs/server/http-api#history).
 
+`retention_window_seconds` is enforced on reads. Backends delete expired rows when the channel is
+written to and in the purge job (`purge_interval_seconds`), so expired rows can stay stored for up
+to the window plus the purge interval, but history reads, rewind, and durable recovery never
+return them. A page that skipped expired entries has `truncated_by_retention: true` and
+`complete: false`, and a resume that needs an expired entry fails with
+`code: "position_expired"`. The window resolves per channel: namespace, then app
+`policy.history`, then global `[history]`.
+
 Protocol V2 clients use WebSocket `channel_history` frames instead of direct HTTP history. Token-authenticated clients need the `history` capability for the requested channel. The existing app-key HTTP endpoint remains server-only; there is no client-token HTTP history surface in v1.
 
 ```json
