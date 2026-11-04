@@ -195,11 +195,10 @@ impl AppManagerFactory {
         };
 
         if config.cache.enabled {
-            Ok(Arc::new(CachedAppManager::new(
-                inner,
-                cache_manager,
-                config.cache.clone(),
-            )))
+            Ok(Arc::new(
+                CachedAppManager::new(inner, cache_manager, config.cache.clone())
+                    .with_secret_cipher(crate::secret_cipher::AppSecretCipher::from_env()?),
+            ))
         } else {
             Ok(inner)
         }
