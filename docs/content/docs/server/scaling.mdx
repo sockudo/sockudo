@@ -189,10 +189,15 @@ On SIGTERM or SIGINT, Sockudo:
    publishes (`/events`, `/batch_events`) on a node without a horizontal adapter: those return
    503 `draining` with `Retry-After`, because no subscriber can receive them there any more.
    Publishers can retry them against a healthy instance.
-2. Closes existing connections immediately with code 4200 so clients reconnect right away
-   instead of waiting for the grace period or a load-balancer cutoff.
-3. Keeps the listener open for `shutdown_grace_period` seconds so load balancers finish
-   deregistration without connection-refused errors.
+2. Closes existing connections with code 4200 so clients reconnect right away instead of
+   waiting for the grace period or a load-balancer cutoff. By default every connection closes
+   at once. `shutdown_close_delay_ms` waits that long first, so the load balancer can see
+   `/ready` return 503 before anyone reconnects. `shutdown_close_spread_ms` spreads the closes
+   evenly over that window, so a node's clients do not all reconnect onto the remaining nodes
+   in the same instant. A second signal closes any remaining connections at once.
+3. Keeps the listener open until `shutdown_grace_period` seconds after the signal so load
+   balancers finish deregistration without connection-refused errors. The close delay and
+   spread run inside this window; together they must not exceed it.
 4. Waits for connection cleanup, pending presence leases, and delayed lifecycle webhook
    producers, then flushes the remaining webhook batch. This phase has a separate budget of
    `queue.reliability.shutdown_timeout_ms` (30 seconds by default). Presence leases and
@@ -209,7 +214,20 @@ pending events may be lost; a forced process kill cannot flush in-memory events.
 Set `shutdown_grace_period` to cover your load balancer's deregistration time (for a
 readiness probe, roughly `periodSeconds × failureThreshold` plus endpoint propagation). Keep
 it well below the load balancer's connection-draining timeout, otherwise the balancer cuts
-idle WebSocket connections before Sockudo finishes deregistering. Then:
+idle WebSocket connections before Sockudo finishes deregistering.
+
+For large nodes, spread the reconnect load. For example, with a load balancer that marks a node
+down after about two seconds:
+
+```toml
+shutdown_grace_period = 20
+shutdown_close_delay_ms = 3000
+shutdown_close_spread_ms = 15000
+```
+
+Clients can add their own spread too. For example, `@sockudo/client` has `retryJitterMs`.
+
+Then:
 
 1. Keep adapter and cache dependencies available.
 2. Watch reconnect, resume, and missed-message metrics.

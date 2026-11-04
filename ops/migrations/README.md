@@ -6,19 +6,38 @@ backends used by Sockudo.
 How to use it:
 
 - Fresh MySQL/MariaDB database: use
-  [mysql/001_fresh_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/001_fresh_schema.sql)
+  [mysql/001_fresh_schema.sql](mysql/001_fresh_schema.sql)
 - Fresh PostgreSQL database: use
-  [postgresql/001_fresh_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgresql/001_fresh_schema.sql)
+  [postgresql/001_fresh_schema.sql](postgresql/001_fresh_schema.sql)
 - Push PostgreSQL schema: use
-  [postgres/001_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgres/001_push_schema.sql)
+  [postgres/001_push_schema.sql](postgres/001_push_schema.sql)
 - Push MySQL schema: use
-  [mysql/003_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/003_push_schema.sql)
+  [mysql/003_push_schema.sql](mysql/003_push_schema.sql)
 - Existing push PostgreSQL schema version 1: apply
-  [postgres/002_push_status_revision.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgres/002_push_status_revision.sql)
+  [postgres/002_push_status_revision.sql](postgres/002_push_status_revision.sql)
 - Existing push MySQL/MariaDB schema version 1: apply
-  [mysql/004_push_status_revision.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/004_push_status_revision.sql)
+  [mysql/004_push_status_revision.sql](mysql/004_push_status_revision.sql)
 - Test-only MySQL grants/user setup: use
-  [mysql/002_test_access.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/002_test_access.sql)
+  [mysql/002_test_access.sql](mysql/002_test_access.sql)
+- Development/test-only demo application (`app-id` / `app-key` /
+  `app-secret`): [mysql/900_dev_seed_app.sql](mysql/900_dev_seed_app.sql) and
+  [postgresql/900_dev_seed_app.sql](postgresql/900_dev_seed_app.sql)
+
+Applications:
+
+- The fresh schema files create an empty `applications` table. They do not
+  insert any application, so a production database starts with no credentials
+  anyone else knows.
+- Create each application yourself with a randomly generated key and secret,
+  for example `openssl rand -hex 16` for the key and `openssl rand -hex 32` for
+  the secret.
+- The `900_dev_seed_app.sql` files insert an enabled demo application with
+  publicly known credentials. Only the local docker-compose dev/test stacks
+  apply them. Never apply them to a database reachable from outside.
+- The `applications.secret_enc` column holds AES-256-GCM encrypted secrets when
+  `SOCKUDO_APP_SECRET_ENCRYPTION_KEY` (or `_FILE`) is set. Sockudo adds the
+  column on startup if it is missing. See the security docs for the migration
+  steps.
 
 Backend notes:
 

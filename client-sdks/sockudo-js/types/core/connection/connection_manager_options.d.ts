@@ -10,6 +10,7 @@ interface ConnectionManagerOptions {
     maxReconnectAttempts: number | null;
     maxReconnectGapInSeconds: number;
     reconnectJitter: number;
+    retryJitterMs?: number;
     beforeConnect?: (reason: 'initial' | 'reconnect') => void | Promise<void>;
 }
 export default ConnectionManagerOptions;

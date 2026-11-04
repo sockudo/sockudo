@@ -99,6 +99,8 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 | `PORT` | Main HTTP and WebSocket bind port. |
 | `ACTIVITY_TIMEOUT` | Pusher protocol activity timeout. |
 | `SHUTDOWN_GRACE_PERIOD` | Seconds to keep the listener open after SIGTERM/SIGINT. Existing WebSockets close promptly with 4200; during this window `/up`, `/ready`, and `/accept-traffic` return 503 `DRAINING` and new upgrades are rejected with 503. HTTP API requests are still served. A second signal ends the window early. The [webhook drain](/docs/server/webhooks#shutdown-delivery) follows this window. |
+| `SHUTDOWN_CLOSE_DELAY_MS` | Milliseconds to wait after the shutdown signal, while `/ready` already reports 503, before closing existing WebSockets with 4200. Default `0`. |
+| `SHUTDOWN_CLOSE_SPREAD_MS` | Milliseconds over which existing WebSockets are closed with 4200, evenly in small batches. Default `0` (all at once). Delay plus spread must not exceed `SHUTDOWN_GRACE_PERIOD`. |
 | `USER_AUTHENTICATION_TIMEOUT` | Timeout used by user authentication flows. |
 | `SOCKUDO_MAX_CONNECTIONS` | Per-node WebSocket connection limit. `0` disables. |
 | `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. |
@@ -203,13 +205,16 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `ADAPTER_DRIVER` | Horizontal fanout driver. |
 | `CACHE_DRIVER` | Cache driver. |
 | `QUEUE_DRIVER` | Queue driver. |
-| `APP_MANAGER_DRIVER` | App manager driver. |
+| `APP_MANAGER_DRIVER` | App manager driver: `memory`, `mysql`, `pgsql` (aliases `postgres`, `postgresql`), `dynamodb`, `surrealdb`, or `scylladb`. |
 | `RATE_LIMITER_DRIVER` | Rate limiter backend driver. |
 | `ADAPTER_BUFFER_MULTIPLIER_PER_CPU` | Adapter fanout buffer sizing multiplier. |
 | `ADAPTER_ENABLE_SOCKET_COUNTING` | Enables adapter socket counting. |
 | `ADAPTER_AGGREGATE_COUNTS` | Enables gossiped aggregate channel counts for local count reads. |
 | `ADAPTER_FAST_PRESENCE_TRANSITIONS` | Uses the replicated presence registry for first-join/last-leave checks; faster but eventually consistent. |
 | `ADAPTER_FALLBACK_TO_LOCAL` | Falls back to the local adapter when a configured adapter cannot start. |
+| `APP_MANAGER_AVAILABILITY_CHECK_INTERVAL_SECONDS` | How often each node re-checks the apps of its live connections and closes sockets of disabled (4003) or deleted (4001) apps. Default `15`; `0` disables the check. The app cache TTL adds to the delay. |
+| `SOCKUDO_APP_SECRET_ENCRYPTION_KEY` | 32-byte key (base64 or hex) that encrypts app secrets at rest in the MySQL/PostgreSQL `secret_enc` column. See [app secrets at rest](/docs/server/security#app-secrets-at-rest-mysql-and-postgresql). |
+| `SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE` | Path to a file that holds that key. Set only one of the two. |
 | `APP_MANAGER_REGISTER_INLINE_APPS` | Allows inline app definitions from config to be registered. |
 | `SOCKUDO_SKIP_INLINE_APPS` | Skips inline apps even if present in the config file. |
 
@@ -303,8 +308,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `DATABASE_MYSQL_POOL_MIN` | MySQL minimum pool size. |
 | `DATABASE_MYSQL_POOL_MAX` | MySQL maximum pool size. |
 | `DATABASE_POSTGRES_HOST` | PostgreSQL host. |
-| `DATABASE_POSTGRES_PORT` | PostgreSQL port. |
-| `DATABASE_POSTGRES_USERNAME` | PostgreSQL username used by the core config loader. |
+| `DATABASE_POSTGRES_PORT` | PostgreSQL port. Defaults to `5432`. |
+| `DATABASE_POSTGRES_USERNAME` | PostgreSQL username used by the core config loader. Defaults to `postgres`. |
 | `DATABASE_POSTGRES_USER` | PostgreSQL username fallback used by the PostgreSQL app manager. |
 | `DATABASE_POSTGRES_PASSWORD` | PostgreSQL password. |
 | `DATABASE_POSTGRES_DATABASE` | PostgreSQL database name. |

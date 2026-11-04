@@ -84,6 +84,7 @@ services:
     volumes:
       - mysql-test-data:/var/lib/mysql
       - ./ops/migrations/mysql/001_fresh_schema.sql:/docker-entrypoint-initdb.d/01-init-sql.sql:ro
+      - ./ops/migrations/mysql/900_dev_seed_app.sql:/docker-entrypoint-initdb.d/90-dev-seed-app.sql:ro
       - ./ops/migrations/mysql/002_test_access.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
     networks:
       - sockudo-network
@@ -131,6 +132,7 @@ services:
     volumes:
       - postgres-test-data:/var/lib/postgresql/data
       - ./ops/migrations/postgresql/001_fresh_schema.sql:/docker-entrypoint-initdb.d/01-init-postgres-test.sql:ro
+      - ./ops/migrations/postgresql/900_dev_seed_app.sql:/docker-entrypoint-initdb.d/90-dev-seed-app.sql:ro
     networks:
       - sockudo-network
     mem_limit: 256m
@@ -161,7 +163,8 @@ services:
 
   # SurrealDB for testing
   surrealdb-test:
-    image: surrealdb/surrealdb:latest
+    # Pinned to the major line the Rust client supports (surrealdb crate 4.x).
+    image: surrealdb/surrealdb:v4
     command:
       - start
       - --no-banner

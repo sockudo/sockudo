@@ -116,6 +116,7 @@ services:
     volumes:
       - mysql-dev-data:/var/lib/mysql
       - ./ops/migrations/mysql/001_fresh_schema.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./ops/migrations/mysql/900_dev_seed_app.sql:/docker-entrypoint-initdb.d/90-dev-seed-app.sql:ro
 
     deploy:
       resources:

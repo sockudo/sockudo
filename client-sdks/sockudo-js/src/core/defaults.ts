@@ -21,6 +21,7 @@ export interface DefaultConfig {
   maxReconnectAttempts: number;
   maxReconnectGapInSeconds: number;
   reconnectJitter: number;
+  retryJitterMs: number;
   userAuthentication: UserAuthenticationOptions;
   channelAuthorization: ChannelAuthorizationOptions;
 
@@ -53,6 +54,7 @@ const Defaults: DefaultConfig = {
   maxReconnectAttempts: 6,
   maxReconnectGapInSeconds: 120,
   reconnectJitter: 0,
+  retryJitterMs: 0,
   userAuthentication: {
     endpoint: "/sockudo/user-auth",
     transport: "fetch",

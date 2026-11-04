@@ -32,6 +32,11 @@ use tracing::{error, info};
 struct Args {
     #[arg(short, long)]
     config: Option<String>,
+    /// Encrypt an app secret read from stdin for the app with this id, using
+    /// SOCKUDO_APP_SECRET_ENCRYPTION_KEY or SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE,
+    /// print the `secret_enc` column value, and exit.
+    #[arg(long, value_name = "APP_ID")]
+    encrypt_app_secret: Option<String>,
     /// Rewrite compact append versions of the configured version store as
     /// self-contained records, then exit. Rollback maintenance: stop every
     /// server writing to the store first.
@@ -54,6 +59,45 @@ struct Args {
     rollback_append_storage: bool,
 }
 
+/// Reports a configuration file that could not be loaded and exits non-zero.
+/// Logging is not initialized yet, so this writes straight to stderr.
+fn exit_with_config_error(message: &str) -> ! {
+    eprintln!("sockudo: {message}");
+    std::process::exit(1);
+}
+
+/// Prints the `secret_enc` value for `app_id`, sealing the secret read from
+/// stdin with the configured app secret encryption key.
+fn encrypt_app_secret(app_id: &str) -> Result<()> {
+    use std::io::Read;
+
+    let cipher = sockudo_app::AppSecretCipher::from_env()?.ok_or_else(|| {
+        Error::Configuration(format!(
+            "set {} or {} to encrypt app secrets",
+            sockudo_app::secret_cipher::KEY_ENV,
+            sockudo_app::secret_cipher::KEY_FILE_ENV
+        ))
+    })?;
+    let mut secret = String::new();
+    std::io::stdin()
+        .read_to_string(&mut secret)
+        .map_err(|e| Error::Internal(format!("failed to read secret from stdin: {e}")))?;
+    let secret = secret.trim_end_matches(['\r', '\n']);
+    if secret.is_empty() {
+        return Err(Error::Configuration(
+            "no secret on stdin to encrypt".to_string(),
+        ));
+    }
+    println!("{}", cipher.encrypt(app_id, secret)?);
+    Ok(())
+}
+
+/// Message produced before logging is initialized, replayed once it is.
+enum StartupNote {
+    Info(String),
+    Error(String),
+}
+
 // jemalloc is the default allocator, Windows MSVC falls back to the system allocator.
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -70,42 +114,68 @@ async fn main() -> Result<()> {
             Error::Internal(format!("Failed to install default crypto provider: {e:?}"))
         })?;
 
-    let mut config = ServerOptions::default();
-    info!("Starting with default configuration");
-
-    // Try TOML first, fall back to JSON for backward compatibility
-    if let Ok(file_config) = ServerOptions::load_from_file("config/config.toml").await {
-        config = file_config;
-        info!(
-            config_path = "config/config.toml",
-            "Loaded configuration file"
-        );
-    } else if let Ok(file_config) = ServerOptions::load_from_file("config/config.json").await {
-        config = file_config;
-        info!(
-            config_path = "config/config.json",
-            "Loaded configuration file"
-        );
-    } else {
-        info!("No config/config.toml or config/config.json found. Using defaults.");
+    if let Some(app_id) = args.encrypt_app_secret.as_deref() {
+        return encrypt_app_secret(app_id);
     }
 
-    if let Some(config_path) = args.config {
-        match ServerOptions::load_from_file(&config_path).await {
+    // Logging is initialized from the loaded configuration, so anything worth
+    // reporting while loading it is buffered here and replayed afterwards.
+    let mut startup_notes: Vec<StartupNote> = Vec::new();
+    let mut config = ServerOptions::default();
+
+    if let Some(config_path) = args.config.as_deref() {
+        // An explicitly requested file must load; silently falling back to the
+        // bundled sample (or defaults) hides misconfiguration in production.
+        match ServerOptions::load_from_file(config_path).await {
             Ok(file_config) => {
                 config = file_config;
-                info!(config_path = %config_path, "explicit configuration applied");
+                startup_notes.push(StartupNote::Info(format!(
+                    "explicit configuration applied: {config_path}"
+                )));
             }
             Err(error) => {
-                error!(config_path = %config_path, error = %error, "explicit configuration load failed, retaining previous");
+                let message = format!("failed to load configuration file '{config_path}': {error}");
+                exit_with_config_error(&message);
             }
+        }
+    } else {
+        // Try TOML first, fall back to JSON for backward compatibility
+        let mut loaded = false;
+        for candidate in ["config/config.toml", "config/config.json"] {
+            if !tokio::fs::try_exists(candidate).await.unwrap_or(false) {
+                continue;
+            }
+            match ServerOptions::load_from_file(candidate).await {
+                Ok(file_config) => {
+                    config = file_config;
+                    startup_notes.push(StartupNote::Info(format!(
+                        "loaded configuration file: {candidate}"
+                    )));
+                    loaded = true;
+                    break;
+                }
+                Err(error) => {
+                    let message =
+                        format!("failed to load configuration file '{candidate}': {error}");
+                    exit_with_config_error(&message);
+                }
+            }
+        }
+        if !loaded {
+            startup_notes.push(StartupNote::Info(
+                "no config/config.toml or config/config.json found; using defaults".to_string(),
+            ));
         }
     }
 
     match config.override_from_env().await {
-        Ok(()) => info!("Applied environment variable overrides"),
+        Ok(()) => startup_notes.push(StartupNote::Info(
+            "applied environment variable overrides".to_string(),
+        )),
         Err(error) => {
-            error!(error = %error, "environment variable overrides failed")
+            let message = format!("environment variable overrides failed: {error}");
+            eprintln!("sockudo: {message}");
+            startup_notes.push(StartupNote::Error(message));
         }
     }
 
@@ -148,6 +218,12 @@ async fn main() -> Result<()> {
     );
     if config.logging.is_some() {
         info!("custom logging configuration applied");
+    }
+    for note in startup_notes {
+        match note {
+            StartupNote::Info(message) => info!("{message}"),
+            StartupNote::Error(message) => error!("{message}"),
+        }
     }
 
     #[cfg(not(feature = "versioned-messages"))]

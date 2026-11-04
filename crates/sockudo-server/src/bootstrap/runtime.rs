@@ -24,6 +24,7 @@ use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::signal;
+use tokio_util::sync::CancellationToken;
 use tower::Layer;
 #[cfg(unix)]
 use tracing::debug;
@@ -470,9 +471,9 @@ impl SockudoServer {
             || self.shutdown_signal(),
             &self.state.running,
             Duration::from_secs(self.config.shutdown_grace_period),
-            Some(|| {
+            Some(|cancel: CancellationToken| {
                 let server = self;
-                async move { server.close_all_connections().await }
+                async move { server.close_all_connections_paced(&cancel).await }
             }),
             name,
         )
@@ -503,20 +504,53 @@ impl SockudoServer {
         }
     }
 
-    /// Close every live websocket with `4200 Server shutting down` so clients
-    /// reconnect immediately instead of waiting for the listener grace period
-    /// or an LB deregistration cutoff.
+    /// Close every live websocket with `4200 Server shutting down` at once.
+    /// Used by direct `stop()` callers; the signal path uses
+    /// [`Self::close_all_connections_paced`].
     pub(crate) async fn close_all_connections(&self) {
-        let mut connections_to_cleanup: Vec<(String, WebSocketRef)> = Vec::new();
+        let connections = self.collect_live_connections().await;
+        close_in_batches(
+            connections,
+            Duration::ZERO,
+            &CancellationToken::new(),
+            close_for_shutdown,
+        )
+        .await;
+    }
+
+    /// Close every live websocket with `4200 Server shutting down` so clients
+    /// reconnect before the listener grace period or an LB deregistration
+    /// cutoff ends. Waits `shutdown_close_delay_ms` first (while `/ready`
+    /// already reports 503) and spreads the closes over
+    /// `shutdown_close_spread_ms` so a node's whole population does not
+    /// reconnect onto the remaining nodes in the same instant. Cancelling
+    /// `cancel` (a second shutdown signal) closes the remainder immediately.
+    pub(crate) async fn close_all_connections_paced(&self, cancel: &CancellationToken) {
+        let delay = Duration::from_millis(self.config.shutdown_close_delay_ms);
+        let spread = Duration::from_millis(self.config.shutdown_close_spread_ms);
+        if !delay.is_zero() {
+            info!(
+                delay_ms = self.config.shutdown_close_delay_ms,
+                "waiting before closing connections so load balancers observe draining"
+            );
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = cancel.cancelled() => {}
+            }
+        }
+        let connections = self.collect_live_connections().await;
+        close_in_batches(connections, spread, cancel, close_for_shutdown).await;
+    }
+
+    async fn collect_live_connections(&self) -> Vec<WebSocketRef> {
+        let mut connections = Vec::new();
 
         match self.state.connection_manager.get_namespaces().await {
             Ok(namespaces_vec) => {
                 for (app_id, namespace_obj) in namespaces_vec {
                     match namespace_obj.get_sockets().await {
                         Ok(sockets_vec) => {
-                            for (_socket_id, ws_raw_obj) in sockets_vec {
-                                connections_to_cleanup.push((app_id.clone(), ws_raw_obj.clone()));
-                            }
+                            connections.extend(sockets_vec.into_iter().map(|(_, ws)| ws));
                         }
                         Err(e) => {
                             warn!(%app_id, error = %e, "failed to get sockets for namespace during shutdown");
@@ -530,26 +564,10 @@ impl SockudoServer {
         }
 
         info!(
-            connection_count = connections_to_cleanup.len(),
+            connection_count = connections.len(),
             "collected connections to cleanup"
         );
-
-        if !connections_to_cleanup.is_empty() {
-            let cleanup_futures =
-                connections_to_cleanup
-                    .into_iter()
-                    .map(|(_app_id, ws_raw_obj)| async move {
-                        let mut ws = ws_raw_obj.inner.lock().await;
-                        if let Err(e) = ws.close(4200, "Server shutting down".to_string()).await {
-                            error!(error = %e, "failed to close websocket");
-                        }
-                    });
-
-            join_all(cleanup_futures).await;
-            info!("All connection cleanup tasks have been processed.");
-        } else {
-            info!("No connections to cleanup.");
-        }
+        connections
     }
 
     pub(crate) async fn stop(&self) -> Result<()> {
@@ -659,17 +677,87 @@ impl SockudoServer {
     }
 }
 
+async fn close_for_shutdown(ws: WebSocketRef) {
+    let mut ws = ws.inner.lock().await;
+    if let Err(e) = ws.close(4200, "Server shutting down".to_string()).await {
+        error!(error = %e, "failed to close websocket");
+    }
+}
+
+/// Granularity of paced shutdown closes: connections are closed in at most
+/// one batch per tick of the spread window.
+const SHUTDOWN_CLOSE_TICK: Duration = Duration::from_millis(10);
+
+/// Runs `close` for every item, spreading the work evenly over `spread` in
+/// batches no more frequent than [`SHUTDOWN_CLOSE_TICK`]. A zero `spread`
+/// closes everything at once; cancelling `cancel` closes the remainder at once.
+async fn close_in_batches<T, F, Fut>(
+    items: Vec<T>,
+    spread: Duration,
+    cancel: &CancellationToken,
+    close: F,
+) where
+    F: Fn(T) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let total = items.len();
+    if total == 0 {
+        info!("No connections to cleanup.");
+        return;
+    }
+
+    let ticks = (spread.as_millis() / SHUTDOWN_CLOSE_TICK.as_millis()).max(1);
+    let max_batches = usize::try_from(ticks).unwrap_or(usize::MAX).min(total);
+    let batch_size = total.div_ceil(max_batches);
+    // Rounding the batch size up can leave fewer batches than ticks; pace
+    // over the batches that actually exist so the last lands near `spread`.
+    let batches = total.div_ceil(batch_size);
+    let interval = spread / u32::try_from(batches).unwrap_or(u32::MAX);
+    if batches > 1 {
+        info!(
+            connection_count = total,
+            spread_ms = spread.as_millis() as u64,
+            batch_size,
+            "closing connections spread over the shutdown window"
+        );
+    }
+
+    let started = tokio::time::Instant::now();
+    let mut remaining = items.into_iter();
+    let mut batch_index: u32 = 0;
+    loop {
+        let take = if cancel.is_cancelled() {
+            remaining.len()
+        } else {
+            batch_size
+        };
+        let batch: Vec<T> = remaining.by_ref().take(take).collect();
+        join_all(batch.into_iter().map(&close)).await;
+        if remaining.len() == 0 {
+            break;
+        }
+        batch_index = batch_index.saturating_add(1);
+        tokio::select! {
+            _ = tokio::time::sleep_until(started + interval * batch_index) => {}
+            _ = cancel.cancelled() => {}
+        }
+    }
+    info!("All connection cleanup tasks have been processed.");
+}
+
 /// Runs `server` until a shutdown signal, closes existing connections via
 /// `on_shutdown` (typically with code 4200 so clients reconnect immediately),
-/// then keeps the listener open for `grace_period` so load balancers can
-/// observe the 503s from `/up` and `/ready` before it closes. A second signal
-/// ends the grace period early.
+/// and keeps the listener open until `grace_period` after the signal so load
+/// balancers can observe the 503s from `/up` and `/ready` before it closes.
+/// The listener keeps serving while `on_shutdown` runs. A second signal
+/// cancels the token passed to `on_shutdown` (which should then finish its
+/// closes at once) and ends the grace period early.
 async fn serve_until_shutdown<F, S, T>(
     server: F,
     shutdown: impl Fn() -> S,
     running: &AtomicBool,
     grace_period: Duration,
-    on_shutdown: Option<impl FnOnce() -> T>,
+    on_shutdown: Option<impl FnOnce(CancellationToken) -> T>,
     name: &str,
 ) where
     F: IntoFuture<Output = std::io::Result<()>>,
@@ -691,11 +779,30 @@ async fn serve_until_shutdown<F, S, T>(
             running.store(false, Ordering::SeqCst);
         }
     }
+    let grace_deadline = tokio::time::Instant::now() + grace_period;
 
-    // Close existing connections before the grace period so clients get the
+    // Close existing connections inside the grace period so clients get the
     // WebSocket Close frame (4200) instead of an LB cutoff or process kill.
     if let Some(on_shutdown) = on_shutdown {
-        on_shutdown().await;
+        let cancel = CancellationToken::new();
+        let closing = on_shutdown(cancel.clone());
+        tokio::pin!(closing);
+        tokio::select! {
+            () = &mut closing => {}
+            result = &mut server => {
+                if let Err(err) = result {
+                    error!(error = %err, "{name} server error");
+                }
+                closing.await;
+                return;
+            }
+            _ = shutdown() => {
+                info!("Second shutdown signal received, closing remaining connections now");
+                cancel.cancel();
+                closing.await;
+                return;
+            }
+        }
     }
 
     if grace_period.is_zero() {
@@ -712,7 +819,7 @@ async fn serve_until_shutdown<F, S, T>(
                 error!(error = %err, "{name} server error");
             }
         }
-        _ = tokio::time::sleep(grace_period) => {}
+        _ = tokio::time::sleep_until(grace_deadline) => {}
         _ = shutdown() => {
             info!("Second shutdown signal received, ending grace period early");
         }
@@ -940,7 +1047,7 @@ mod tests {
                 },
                 &server_running,
                 grace_period,
-                None::<fn() -> std::future::Ready<()>>,
+                None::<fn(CancellationToken) -> std::future::Ready<()>>,
                 "test",
             )
             .await;
@@ -1032,7 +1139,7 @@ mod tests {
                 },
                 &server_running,
                 grace_period,
-                Some(move || {
+                Some(move |_cancel: CancellationToken| {
                     let hook_closed = hook_closed.clone();
                     async move {
                         hook_closed.store(true, Ordering::SeqCst);
@@ -1069,5 +1176,156 @@ mod tests {
         );
 
         handle.await.unwrap();
+    }
+
+    async fn record_close_times(
+        count: usize,
+        spread: Duration,
+        cancel: &CancellationToken,
+    ) -> Vec<Duration> {
+        let started = Instant::now();
+        let times = Arc::new(std::sync::Mutex::new(Vec::new()));
+        close_in_batches((0..count).collect(), spread, cancel, |_item: usize| {
+            let times = times.clone();
+            async move { times.lock().unwrap().push(started.elapsed()) }
+        })
+        .await;
+        Arc::try_unwrap(times).unwrap().into_inner().unwrap()
+    }
+
+    #[tokio::test]
+    async fn zero_spread_closes_every_connection_at_once() {
+        let times = record_close_times(500, Duration::ZERO, &CancellationToken::new()).await;
+        assert_eq!(times.len(), 500);
+        assert!(times.iter().all(|t| *t < Duration::from_millis(50)));
+    }
+
+    #[tokio::test]
+    async fn spread_closes_connections_evenly_over_the_window() {
+        let spread = Duration::from_millis(300);
+        let times = record_close_times(100, spread, &CancellationToken::new()).await;
+        assert_eq!(times.len(), 100);
+
+        let first = *times.iter().min().unwrap();
+        let last = *times.iter().max().unwrap();
+        assert!(
+            first < Duration::from_millis(50),
+            "first close at {first:?}"
+        );
+        // 25 batches of 4 connections, one every 12 ms.
+        assert!(last >= Duration::from_millis(250), "last close at {last:?}");
+        assert!(last < Duration::from_millis(600), "last close at {last:?}");
+        let early = times
+            .iter()
+            .filter(|t| **t < Duration::from_millis(100))
+            .count();
+        assert!(early < 60, "{early} of 100 closed in the first third");
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_spread_closes_the_remainder_immediately() {
+        let cancel = CancellationToken::new();
+        let canceller = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            canceller.cancel();
+        });
+        let started = Instant::now();
+        let times = record_close_times(100, Duration::from_secs(30), &cancel).await;
+        assert_eq!(times.len(), 100);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// The listener must keep answering `/ready` with 503 while a slow
+    /// on_shutdown hook (delayed / spread closes) is still running, and the
+    /// grace period is measured from the signal, not from the end of the hook.
+    #[tokio::test]
+    async fn listener_serves_while_paced_closes_run() {
+        let grace_period = Duration::from_millis(600);
+        let running = Arc::new(AtomicBool::new(true));
+        let signal = Arc::new(tokio::sync::Notify::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hook_done = Arc::new(AtomicBool::new(false));
+
+        let server_running = running.clone();
+        let server_signal = signal.clone();
+        let hook_flag = hook_done.clone();
+        let signalled_at = Instant::now();
+        let handle = tokio::spawn(async move {
+            serve_until_shutdown(
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/ready", get(|| async { StatusCode::SERVICE_UNAVAILABLE })),
+                ),
+                || {
+                    let signal = server_signal.clone();
+                    async move { signal.notified().await }
+                },
+                &server_running,
+                grace_period,
+                Some(move |_cancel: CancellationToken| async move {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    hook_flag.store(true, Ordering::SeqCst);
+                }),
+                "test",
+            )
+            .await;
+        });
+
+        signal.notify_one();
+        wait_until_draining(&running).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!hook_done.load(Ordering::SeqCst));
+        assert_eq!(
+            ready_status_line(addr).await.unwrap(),
+            "HTTP/1.1 503 Service Unavailable"
+        );
+
+        handle.await.unwrap();
+        assert!(hook_done.load(Ordering::SeqCst));
+        let elapsed = signalled_at.elapsed();
+        assert!(elapsed >= grace_period, "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(950), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn second_signal_cancels_paced_closes() {
+        let running = Arc::new(AtomicBool::new(true));
+        let signal = Arc::new(tokio::sync::Notify::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        let server_running = running.clone();
+        let server_signal = signal.clone();
+        let hook_cancelled = cancelled.clone();
+        let handle = tokio::spawn(async move {
+            serve_until_shutdown(
+                axum::serve(listener, Router::new()),
+                || {
+                    let signal = server_signal.clone();
+                    async move { signal.notified().await }
+                },
+                &server_running,
+                Duration::from_secs(60),
+                Some(move |cancel: CancellationToken| async move {
+                    cancel.cancelled().await;
+                    hook_cancelled.store(true, Ordering::SeqCst);
+                }),
+                "test",
+            )
+            .await;
+        });
+
+        signal.notify_one();
+        wait_until_draining(&running).await;
+        signal.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("second signal did not end paced closes")
+            .unwrap();
+        assert!(cancelled.load(Ordering::SeqCst));
     }
 }

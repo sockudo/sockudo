@@ -19,6 +19,9 @@ runtime variable parsed by the server and push subsystem.
 | `port` | Bind port for WebSocket and HTTP API. |
 | `max_connections` | Per-node WebSocket connection limit. When exceeded the server returns close code 4100 so clients reconnect with backoff. `0` disables the limit. |
 | `debug` | Enables verbose diagnostics for local development. |
+| `shutdown_grace_period` | Seconds the listener stays open after SIGTERM/SIGINT while `/ready` reports 503. Default `10`. |
+| `shutdown_close_delay_ms` | Milliseconds to wait after the shutdown signal before closing existing WebSockets with 4200, so load balancers see the node draining first. Default `0`. |
+| `shutdown_close_spread_ms` | Milliseconds over which existing WebSockets are closed with 4200, evenly in small batches, so clients do not all reconnect at once. Default `0` (all at once). Delay plus spread must not exceed `shutdown_grace_period`. |
 | `server_role` | Deployment topology role. `"default"` runs the full server. `"api"` runs HTTP publish, history, mutable messages, and push — without WebSocket listeners, cluster heartbeats, or presence sync. Default: `"default"`. |
 
 ## Server role
@@ -100,7 +103,7 @@ current state and rejected connection count.
 
 | Section | Purpose |
 | --- | --- |
-| `[app_manager]` | Select app storage driver. |
+| `[app_manager]` | Select app storage driver: `memory`, `mysql`, `pgsql` (aliases `postgres`, `postgresql`), `dynamodb`, `surrealdb` (alias `surreal`), or `scylladb` (alias `scylla`). `availability_check_interval_seconds` (default `15`, `0` disables) sets how often each node closes live connections of apps that were disabled (close code 4003) or deleted (4001). The `[app_manager.cache]` TTL adds to that delay. |
 | `[app_manager.array]` | Static in-config app definitions. |
 | `[[app_manager.array.apps]]` | App ID, key, secret, enabled flag, limits, and policy. |
 
