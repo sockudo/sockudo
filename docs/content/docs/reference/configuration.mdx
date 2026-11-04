@@ -144,21 +144,48 @@ a dependency/readiness check and does not fail because of memory pressure. Use
 `sockudo_memory_pressure_shedding` and `sockudo_memory_pressure_rejections_total` to alert on the
 current state and rejected connection count.
 
-## WebSocket receive buffer
+## WebSocket buffers and per-connection memory
 
-Each WebSocket connection allocates a receive buffer when it opens and keeps it while idle:
+`[websocket]` bounds what each connection may queue and sizes its receive and write buffers:
 
 ```toml
 [websocket]
-read_buffer_size = 2048 # bytes, minimum 1024
+max_messages = 1000       # queued outbound messages per source (direct replies, broadcasts)
+# max_bytes = 4194304     # optional byte bound; with only max_bytes set, the message bound is 10000
+disconnect_on_buffer_full = true
+read_buffer_size = 2048   # initial receive buffer per connection, in bytes, minimum 1024
+write_buffer_size = 16384 # initial capacity of the per-connection frame buffer, in bytes
 ```
 
-Client frames are small (pings, subscribes, resumes), so the 2 KiB default fits nearly all of them.
-A larger frame grows the buffer for that frame, and the buffer shrinks back once the connection is
-quiet again. With 2,000 idle Protocol V2 connections, the previous fixed 64 KiB buffer used about
-70 KiB more RSS per connection than the 2 KiB default. Raise it (for example to `16384` or `65536`)
-when clients regularly send large frames, such as large client events. `WEBSOCKET_READ_BUFFER_SIZE`
-overrides it.
+`max_messages` and `max_bytes` are limits, not preallocations. The outbound queue allocates in
+small blocks as messages arrive and releases them as the writer drains them, so an idle connection
+does not pay for a large bound. When a slow consumer reaches either limit, Sockudo disconnects it
+(`disconnect_on_buffer_full = true`) or drops the new message and logs a warning.
+
+The two largest fixed parts of an idle connection are buffers in the `sockudo-ws` transport:
+
+| Buffer | Size | Configurable |
+| --- | --- | --- |
+| Receive buffer | `read_buffer_size`, default 2 KiB, allocated when the connection opens | Yes (`WEBSOCKET_READ_BUFFER_SIZE`) |
+| Frame write buffer | `write_buffer_size`, default 16 KiB | Yes (`WEBSOCKET_WRITE_BUFFER_SIZE`) |
+
+Client frames are small (pings, subscribes, resumes), so the 2 KiB receive buffer fits nearly all
+of them. A larger frame grows the buffer for that frame, and the buffer shrinks back once the
+connection is quiet again. With 2,000 idle Protocol V2 connections, the previous fixed 64 KiB
+receive buffer used about 70 KiB more RSS per connection than the 2 KiB default. Raise it (for
+example to `16384` or `65536`) when clients regularly send large frames, such as large client
+events.
+
+The write buffer holds one encoded frame at a time and grows to fit a larger frame, so
+`write_buffer_size = 4096` (or `WEBSOCKET_WRITE_BUFFER_SIZE=4096`) suits typical message sizes and
+saves up to 12 KiB per connection.
+
+On hosts where transparent huge pages are set to `always`, the kernel can back the untouched
+part of those buffers with resident memory, adding up to about 60 KiB per connection. Check
+`/sys/kernel/mm/transparent_hugepage/enabled`. To keep jemalloc's memory out of huge pages,
+append `thp:never` to the allocator configuration, for example
+`_RJEM_MALLOC_CONF=background_thread:true,thp:never`. If you deploy with the Helm chart, add it
+to the chart's existing `_RJEM_MALLOC_CONF` value.
 
 ## App manager
 

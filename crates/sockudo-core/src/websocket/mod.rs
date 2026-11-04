@@ -19,6 +19,11 @@ pub use state::{ConnectionState, ConnectionStatus, ConnectionTimeouts, Disconnec
 use sockudo_ws::axum_integration::WebSocketReader;
 use std::time::Duration;
 
+/// Shard count for maps that exist once per socket and hold a few entries (per-channel state,
+/// rewind gates, rate-limit keys). `DashMap::new()` creates `4 * available_parallelism()`
+/// cache-padded 128-byte shards, which is 16 KiB per map on a 32-thread host.
+pub const PER_SOCKET_MAP_SHARDS: usize = 4;
+
 /// Outer guard for [`finish_peer_close`]. sockudo-ws bounds the Close reply
 /// with its own `close_timeout` (5 s by default); this only protects cleanup
 /// from a driver that never reports terminal state.
