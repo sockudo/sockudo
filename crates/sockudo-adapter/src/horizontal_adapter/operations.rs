@@ -20,6 +20,7 @@ impl HorizontalAdapter {
             metrics: OnceLock::new(),
             cluster_presence_registry: Arc::new(RwLock::new(AHashMap::new())),
             node_heartbeats: Arc::new(RwLock::new(AHashMap::new())),
+            dead_nodes_awaiting_cleanup: Arc::new(RwLock::new(HashSet::new())),
             sequence_counter: Arc::new(AtomicU64::new(0)),
             cluster_channel_counts: Arc::new(fast_dashmap()),
             dirty_channel_counts: Arc::new(fast_dashmap()),
@@ -272,7 +273,14 @@ impl HorizontalAdapter {
                         }
                     };
 
+                    drop(heartbeats);
+
                     if is_new_node {
+                        // A node heard from again is alive; its presence is not orphaned.
+                        self.dead_nodes_awaiting_cleanup
+                            .write()
+                            .await
+                            .remove(&request.node_id);
                         info!(node_id = %request.node_id, "new node detected");
                         // Note: State sync will be handled by the caller
                         // Return a special response that indicates new node detected
@@ -298,6 +306,10 @@ impl HorizontalAdapter {
                         let mut heartbeats = self.node_heartbeats.write().await;
                         heartbeats.remove(dead_node_id);
                     }
+                    self.dead_nodes_awaiting_cleanup
+                        .write()
+                        .await
+                        .remove(dead_node_id);
 
                     // Clean up local presence registry only
                     self.cleanup_local_presence_registry(dead_node_id).await;
@@ -1033,6 +1045,30 @@ impl HorizontalAdapter {
     pub async fn remove_dead_node(&self, dead_node_id: &str) {
         let mut heartbeats = self.node_heartbeats.write().await;
         heartbeats.remove(dead_node_id);
+    }
+
+    /// Adds the dead nodes still awaiting cleanup from earlier rounds to
+    /// `expired`, the nodes that timed out this round.
+    pub async fn with_dead_nodes_awaiting_cleanup(&self, mut expired: Vec<String>) -> Vec<String> {
+        let awaiting = self.dead_nodes_awaiting_cleanup.read().await;
+        for node in awaiting.iter() {
+            if !expired.contains(node) {
+                expired.push(node.clone());
+            }
+        }
+        expired
+    }
+
+    /// Records the outcome of a cleanup round's election: the leader takes the
+    /// round's dead nodes off the awaiting set, a follower keeps them there
+    /// until the leader's NodeDead broadcast arrives.
+    pub async fn record_dead_node_round(&self, dead_nodes: &[String], is_leader: bool) {
+        let mut awaiting = self.dead_nodes_awaiting_cleanup.write().await;
+        if is_leader {
+            awaiting.retain(|node| !dead_nodes.contains(node));
+        } else {
+            awaiting.extend(dead_nodes.iter().cloned());
+        }
     }
 
     /// Clean up local presence registry for a dead node (followers only)

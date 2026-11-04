@@ -985,7 +985,11 @@ where
                     break;
                 }
 
-                let dead_nodes = horizontal.get_dead_nodes(node_timeout_ms).await;
+                let expired = horizontal.get_dead_nodes(node_timeout_ms).await;
+                // Nodes expired in earlier rounds while another node led stay in the round
+                // until their cleanup is seen: if that leader died before broadcasting
+                // NodeDead, their presence would otherwise never be cleaned up.
+                let dead_nodes = horizontal.with_dead_nodes_awaiting_cleanup(expired).await;
 
                 if !dead_nodes.is_empty() {
                     // Expire locally FIRST, on EVERY node, before any network work.
@@ -1016,6 +1020,9 @@ where
 
                     // Single leader election for entire cleanup round
                     let is_leader = horizontal.is_cleanup_leader(&dead_nodes).await;
+                    horizontal
+                        .record_dead_node_round(&dead_nodes, is_leader)
+                        .await;
 
                     if is_leader {
                         info!(
