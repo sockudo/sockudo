@@ -134,6 +134,22 @@ drained in ordered batches without a lock held across delivery. Overflow closes
 the affected connection because the live-plus-replay sequence can no longer be
 proven.
 
+Publishes are delivered as soon as their serial is reserved, while the durable append commits
+asynchronously. Recovery therefore targets the stream's reserved head, not only the committed one:
+
+- The hot replay buffer only holds publishes made on the node the client reconnects to. With
+  durable history enabled, a hot replay that ends before the durable reserved head (for example
+  because another node published while the client was away) falls through to durable recovery.
+- Durable recovery waits up to 500 ms for reserved serials to commit. If they do not, the channel
+  fails with `code: "persistence_unavailable"` and `reason: "durable_history_write_in_flight"`.
+- Live messages held by the resume gate are dropped when their serial is already part of the
+  replay, so a message is not delivered twice.
+
+Send `resume` after the channel's subscription has succeeded on the new connection, as
+`@sockudo/client` does from its next release. A resume sent before the channel is re-subscribed is still
+accepted, but it cannot be gapless: a message published between the replay and the subscribe
+reaches neither.
+
 If the durable stream is degraded or reset-required, Sockudo fails closed instead of pretending the
 stream is continuous.
 

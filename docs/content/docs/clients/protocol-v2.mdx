@@ -126,11 +126,18 @@ sequenceDiagram
   S-->>C: subscription_succeeded with stream_id and serial
   S-->>C: order.updated serial 42
   C--xS: connection lost
-  C->>S: reconnect and sockudo:resume with serial 42
+  C->>S: reconnect and subscribe orders
+  S-->>C: subscription_succeeded
+  C->>S: sockudo:resume with serial 42
   Note over S: Hot replay buffer, then durable history
   S-->>C: missed messages 43 to 47
   S-->>C: sockudo:resume_success
 ```
+
+Send `sockudo:resume` for a channel after its `sockudo_internal:subscription_succeeded` on the new
+connection, using the position saved before the disconnect (not the new acknowledgement's serial).
+A resume sent before the channel is re-subscribed is accepted for compatibility but cannot be
+gapless: a message published between the replay and the subscribe reaches neither.
 
 Recovery is authoritative only when Sockudo returns a successful resume. If the stream reset, the
 buffer expired, or continuity cannot be proven, the client must resubscribe and rebuild state.

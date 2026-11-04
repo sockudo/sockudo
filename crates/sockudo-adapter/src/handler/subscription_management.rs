@@ -608,10 +608,16 @@ impl ConnectionHandler {
             let Some(buffered) = connection.drain_rewind_gate_batch(&request.channel).await? else {
                 break;
             };
-            let live_messages = filter_buffered_rewind_messages(
+            let mut live_messages = filter_buffered_rewind_messages(
                 buffered,
                 history_head_serial,
                 &delivered_message_ids,
+            );
+            crate::v2_broadcast::retain_messages_allowed_by_subscription(
+                &connection,
+                &request.channel,
+                &mut live_messages,
+                self.tag_filtering_enabled(),
             );
             live_count = live_count.saturating_add(live_messages.len());
             for message in live_messages {
@@ -926,7 +932,14 @@ impl ConnectionHandler {
             let Some(buffered) = connection.drain_rewind_gate_batch(channel).await? else {
                 break;
             };
-            for message in filter_buffered_attach_messages(buffered) {
+            let mut messages = filter_buffered_attach_messages(buffered);
+            crate::v2_broadcast::retain_messages_allowed_by_subscription(
+                &connection,
+                channel,
+                &mut messages,
+                self.tag_filtering_enabled(),
+            );
+            for message in messages {
                 self.send_message_to_socket(&app_config.id, socket_id, message)
                     .await?;
             }
