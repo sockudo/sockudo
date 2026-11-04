@@ -182,6 +182,18 @@ fn matching_subscription_requires_document(socket: &WebSocketRef, channel: &str)
         })
 }
 
+/// Drops buffered continuity-gate messages that the socket's subscription
+/// view rejects. Fanout buffers gated sockets before applying predicates, so
+/// every gate drain must apply them once the view is installed.
+pub(crate) fn retain_messages_allowed_by_subscription(
+    socket: &WebSocketRef,
+    channel: &str,
+    messages: &mut Vec<PusherMessage>,
+    filtering_enabled: bool,
+) {
+    messages.retain(|message| socket_allows_message(socket, channel, message, filtering_enabled));
+}
+
 pub(crate) fn socket_allows_message(
     socket: &WebSocketRef,
     channel: &str,

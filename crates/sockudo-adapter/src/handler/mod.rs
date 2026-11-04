@@ -653,6 +653,20 @@ impl ConnectionHandler {
         &self.webhook_integration
     }
 
+    /// Whether live fanout applies tag filters; gate drains must match it.
+    #[cfg(feature = "tag-filtering")]
+    pub(crate) fn tag_filtering_enabled(&self) -> bool {
+        self.local_adapter
+            .as_ref()
+            .is_none_or(|adapter| adapter.is_tag_filtering_enabled())
+    }
+
+    /// Without the feature, live fanout never filters, so gate drains must not either.
+    #[cfg(not(feature = "tag-filtering"))]
+    pub(crate) fn tag_filtering_enabled(&self) -> bool {
+        false
+    }
+
     pub fn metrics(&self) -> &Option<Arc<dyn MetricsInterface + Send + Sync>> {
         &self.metrics
     }
