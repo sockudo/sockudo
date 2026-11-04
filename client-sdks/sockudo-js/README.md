@@ -147,6 +147,15 @@ immediately, so a node's whole population returns at once. Set
 `retryJitterMs` to wait a random 0 to `retryJitterMs` milliseconds before
 those retries. It defaults to `0`. TLS-upgrade retries stay immediate.
 
+Within one reconnect attempt, a connection that fails quickly (for example a
+refused TCP connection while the server is down) is retried after a short
+jittered backoff of 0.5-1 s, growing to 2.5-5 s, instead of waiting out the
+15 s attempt timeout.
+
+With `connectionRecovery: true`, each channel's `resume` is sent after that
+channel's `subscription_succeeded` on the new connection, which is what lets
+Sockudo prove the replay and live delivery have no gap between them.
+
 ```ts
 const client = new Sockudo("app-key", {
   cluster: "local",

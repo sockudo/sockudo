@@ -37,6 +37,7 @@ import type {
 import {
   setProtocolVersion,
   prefixedEvent,
+  prefixedInternal,
   isInternalEvent,
   isPlatformEvent,
 } from "./protocol_prefix";
@@ -116,6 +117,9 @@ export default class Sockudo {
   capabilityTokenAuth?: CapabilityTokenAuthData;
   lastCapabilityTokenExpired?: CapabilityTokenExpiredData;
   private channelPositions: Map<string, RecoveryPosition> = new Map();
+  // Positions captured at reconnect, resumed per channel once the server has
+  // re-attached that channel's subscription.
+  private pendingResumePositions: Map<string, RecoveryPosition> = new Map();
   private connectionRecoveryEnabled: boolean = false;
   private readonly authOptions: Pick<Options, "authCallback" | "authUrl" | "token">;
   private normalizedAuthToken?: NormalizedAuthToken;
@@ -198,17 +202,16 @@ export default class Sockudo {
 
     this.connection.bind("connected", () => {
       this.scheduleCapabilityTokenRefresh();
-      this.subscribeAll();
-      if (this.connectionRecoveryEnabled && this.channelPositions.size > 0) {
-        const channelPositions: Record<string, RecoveryPosition> = {};
+      // A resume sent before its channel is re-attached cannot be gapless:
+      // messages published between the replay and the server-side subscribe
+      // reach neither. Resume each channel after its subscription succeeds.
+      this.pendingResumePositions = new Map();
+      if (this.connectionRecoveryEnabled) {
         this.channelPositions.forEach((position, channel) => {
-          channelPositions[channel] = { ...position };
+          this.pendingResumePositions.set(channel, { ...position });
         });
-        this.send_event(
-          prefixedEvent("resume"),
-          JSON.stringify({ channel_positions: channelPositions }),
-        );
       }
+      this.subscribeAll();
       if (this.timelineSender) {
         this.timelineSender.send(this.connection.isUsingTLS());
       }
@@ -256,6 +259,19 @@ export default class Sockudo {
           this.global_emitter.emit("error", new TokenRevokedError(expired.reason));
         }
         return;
+      }
+
+      if (
+        eventName === prefixedInternal("subscription_succeeded") &&
+        event.channel &&
+        this.pendingResumePositions.has(event.channel)
+      ) {
+        const position = this.pendingResumePositions.get(event.channel)!;
+        this.pendingResumePositions.delete(event.channel);
+        this.send_event(
+          prefixedEvent("resume"),
+          JSON.stringify({ channel_positions: { [event.channel]: position } }),
+        );
       }
 
       // Track serial per channel for connection recovery
@@ -634,6 +650,7 @@ export default class Sockudo {
     }
 
     this.channelPositions.delete(channel_name);
+    this.pendingResumePositions.delete(channel_name);
 
     // Clear delta compression state for this channel to prevent stale base messages
     // on resubscribe. The server also clears its state, so both sides start fresh.

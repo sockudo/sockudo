@@ -47,6 +47,10 @@ const getDefaultStrategy = (
     loop: true,
     timeout: 15000,
     timeoutLimit: 60000,
+    // A connection that fails before the timeout is retried after 0.5-1 s,
+    // backing off to 2.5-5 s, instead of after the full timeout.
+    retryDelay: 1000,
+    retryDelayLimit: 5000,
   };
 
   const wsManager = new TransportManager({
