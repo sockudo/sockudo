@@ -151,9 +151,19 @@ impl RateLimiter for MemoryRateLimiter {
     }
 
     async fn increment(&self, key: &str) -> Result<RateLimitResult> {
+        self.increment_with_limit(key, 1, self.config.max_requests, self.config.window_secs)
+            .await
+    }
+
+    async fn increment_with_limit(
+        &self,
+        key: &str,
+        cost: u32,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> Result<RateLimitResult> {
         let now = Instant::now();
-        let window_duration = Duration::from_secs(self.config.window_secs);
-        let max_requests = self.config.max_requests;
+        let window_duration = Duration::from_secs(window_secs);
 
         let mut entry = self
             .limits
@@ -170,7 +180,7 @@ impl RateLimiter for MemoryRateLimiter {
             entry.expiry = now + window_duration;
         }
 
-        entry.count += 1;
+        entry.count = entry.count.saturating_add(cost);
         let new_count = entry.count;
 
         let remaining = max_requests.saturating_sub(new_count);
