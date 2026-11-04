@@ -101,6 +101,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "WEBSOCKET_WRITE_BUFFER_SIZE",
         options.websocket.write_buffer_size,
     );
+    options.websocket.read_buffer_size = parse_env::<usize>(
+        "WEBSOCKET_READ_BUFFER_SIZE",
+        options.websocket.read_buffer_size,
+    );
     options.websocket.max_backpressure = parse_env::<usize>(
         "WEBSOCKET_MAX_BACKPRESSURE",
         options.websocket.max_backpressure,

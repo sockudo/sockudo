@@ -584,6 +584,7 @@ unchanged by the V2 switches.
 | `WEBSOCKET_MAX_MESSAGE_SIZE` | WebSocket message size limit. |
 | `WEBSOCKET_MAX_FRAME_SIZE` | WebSocket frame size limit. |
 | `WEBSOCKET_WRITE_BUFFER_SIZE` | WebSocket write buffer size. |
+| `WEBSOCKET_READ_BUFFER_SIZE` | Receive buffer allocated per WebSocket connection, in bytes (default `2048`, minimum `1024`). Raise it when clients regularly send large frames. |
 | `WEBSOCKET_MAX_BACKPRESSURE` | WebSocket backpressure limit. |
 | `WEBSOCKET_AUTO_PING` | Enables native WebSocket Ping/Pong keepalive for Protocol V2. Protocol V1 retains its Pusher-compatible application heartbeat. |
 | `WEBSOCKET_PING_INTERVAL` | Inbound inactivity in seconds before a Protocol V2 native Ping. `0` disables proactive native Ping frames; nonzero values are bounded to at least half of `ACTIVITY_TIMEOUT` (and at least 5 seconds). |
