@@ -549,6 +549,14 @@ memory_threshold = 0.90
 # memory_limit_bytes = 2147483648
 sample_interval_ms = 500
 
+# Load shedding for HTTP publishes: when even the fastest publish of an
+# interval misses target_latency_ms, publishes over the concurrency the node
+# can serve within the target get 503 with Retry-After instead of queueing.
+[http_api.publish_admission]
+enabled = true
+target_latency_ms = 500
+interval_ms = 1000
+
 [webhooks]
 request_timeout_ms = 10000
 

@@ -58,7 +58,7 @@ Every other setting lives in a table. Use this index to find the section that ow
 
 | Group | Sections | Controls |
 | --- | --- | --- |
-| Listener and transport | `[ssl]`, `[unix_socket]`, `[cors]`, `[http_api]`, `[http_api.readiness]`, `[http_api.accept_traffic]`, `[websocket]`, `[instance]` | TLS, Unix socket listener, browser CORS, HTTP body limit and operator endpoints, probes and admission, per-connection buffers and heartbeats, and node identity. |
+| Listener and transport | `[ssl]`, `[unix_socket]`, `[cors]`, `[http_api]`, `[http_api.readiness]`, `[http_api.accept_traffic]`, `[http_api.publish_admission]`, `[websocket]`, `[instance]` | TLS, Unix socket listener, browser CORS, HTTP body limit and operator endpoints, probes and admission, per-connection buffers and heartbeats, and node identity. |
 | Apps and limits | `[app_manager]`, `[channel_limits]`, `[event_limits]`, `[presence]` | Where apps are stored, plus global channel, event, and presence limits that apps inherit. |
 | Runtime backends | `[adapter]`, `[cache]`, `[queue]`, `[rate_limiter]`, `[database]`, `[database_pooling]`, `[cleanup]` | Cross-node fanout, shared cache, background work, rate limits, database connections, and disconnect cleanup. |
 | Protocol features | `[connection_recovery]`, `[history]`, `[presence_history]`, `[versioned_messages]`, `[annotations]`, `[delta_compression]`, `[tag_filtering]`, `[idempotency]`, `[ephemeral]`, `[echo_control]`, `[event_name_filtering]` | Protocol V2 continuity, durable state, and delivery controls. |
@@ -143,6 +143,36 @@ The sampler fails open when RSS or a finite limit is unavailable, including on n
 a dependency/readiness check and does not fail because of memory pressure. Use
 `sockudo_memory_pressure_shedding` and `sockudo_memory_pressure_rejections_total` to alert on the
 current state and rejected connection count.
+
+## HTTP publish load shedding
+
+`[http_api.publish_admission]` keeps an overloaded node answering publishes instead of letting
+them queue until callers time out. It is on by default and applies to `POST /apps/{appId}/events`
+and `POST /apps/{appId}/batch_events`:
+
+```toml
+[http_api.publish_admission]
+enabled = true
+target_latency_ms = 500 # the fastest publish of an interval must beat this
+interval_ms = 1000
+```
+
+Each interval, Sockudo records the fastest publish. When even that one took longer than
+`target_latency_ms`, the node is overloaded, whether from CPU, the history database, or anything
+else on the publish path. For the next interval it admits only the concurrency it just showed it
+can serve within the target (publishes completed per second times `target_latency_ms`). Publishes
+over that cap get `503` with `"code": "backpressure"` and `Retry-After: 1` before their body is
+read or their signature checked, so a rejection costs almost nothing. Once publishes meet the
+target again, the cap doubles each interval, and it is lifted after an interval in which it did not
+have to reject anything.
+
+A healthy node never sheds: a single publish under the target in an interval keeps every publish
+admitted. In a test at 5% of a CPU with 80 publishes per second offered to 2,000 subscribers and a
+2 s client timeout, 914 of 1,600 publishes timed out with shedding off. With the default 500 ms
+target, 158 timed out and 608 got a `503` in about 50 ms. With `target_latency_ms = 250`, 27 timed
+out. Lower the target when callers use short timeouts; set `enabled = false` to queue every
+publish as before. `sockudo_http_publish_shedding` and `sockudo_http_publish_shed_total` report
+the state and the rejected count.
 
 ## WebSocket buffers and per-connection memory
 

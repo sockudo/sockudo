@@ -115,6 +115,8 @@ pub struct PrometheusMetricsDriver {
     pub(super) connection_errors_total: CounterVec,
     pub(super) memory_pressure_rejections_total: CounterVec,
     pub(super) memory_pressure_shedding: Gauge,
+    pub(super) publish_shed_total: CounterVec,
+    pub(super) publish_shedding: Gauge,
     pub(super) socket_bytes_received: CounterVec,
     pub(super) socket_bytes_transmitted: CounterVec,
     pub(super) ws_messages_received: CounterVec,
@@ -384,6 +386,21 @@ impl PrometheusMetricsDriver {
         let memory_pressure_shedding = register_gauge!(Opts::new(
             format!("{prefix}memory_pressure_shedding"),
             "Whether the node is currently shedding new connections due to memory pressure"
+        ))
+        .unwrap();
+
+        let publish_shed_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}http_publish_shed_total"),
+                "Total number of HTTP publishes rejected by publish admission control"
+            ),
+            &["port"]
+        )
+        .unwrap();
+
+        let publish_shedding = register_gauge!(Opts::new(
+            format!("{prefix}http_publish_shedding"),
+            "Whether the node is currently shedding HTTP publishes because publish latency is over target"
         ))
         .unwrap();
 
@@ -1263,6 +1280,8 @@ impl PrometheusMetricsDriver {
             connection_errors_total,
             memory_pressure_rejections_total,
             memory_pressure_shedding,
+            publish_shed_total,
+            publish_shedding,
             socket_bytes_received,
             socket_bytes_transmitted,
             ws_messages_received,

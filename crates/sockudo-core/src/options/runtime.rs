@@ -43,8 +43,24 @@ where
 pub struct HttpApiConfig {
     pub request_limit_in_mb: u32,
     pub accept_traffic: AcceptTraffic,
+    pub publish_admission: PublishAdmission,
     pub readiness: Readiness,
     pub usage_enabled: bool,
+}
+
+/// Latency-based load shedding for HTTP publishes (`events`, `batch_events`).
+///
+/// When even the fastest publish of an interval took longer than
+/// `target_latency_ms`, the node is overloaded. For the next interval it
+/// admits at most (publishes completed per second x `target_latency_ms`)
+/// concurrent publishes and answers the rest at once with `503` and
+/// `Retry-After`, instead of letting every request queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PublishAdmission {
+    pub enabled: bool,
+    pub target_latency_ms: u64,
+    pub interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -551,6 +567,7 @@ impl Default for HttpApiConfig {
         Self {
             request_limit_in_mb: 10,
             accept_traffic: AcceptTraffic::default(),
+            publish_admission: PublishAdmission::default(),
             readiness: Readiness::default(),
             usage_enabled: true,
         }
@@ -581,6 +598,28 @@ impl AcceptTraffic {
         }
         if self.sample_interval_ms == 0 {
             return Err("sample_interval_ms must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl Default for PublishAdmission {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            target_latency_ms: 500,
+            interval_ms: 1000,
+        }
+    }
+}
+
+impl PublishAdmission {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target_latency_ms == 0 {
+            return Err("target_latency_ms must be greater than 0".to_string());
+        }
+        if self.interval_ms == 0 {
+            return Err("interval_ms must be greater than 0".to_string());
         }
         Ok(())
     }

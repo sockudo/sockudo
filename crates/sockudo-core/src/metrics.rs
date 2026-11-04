@@ -23,6 +23,12 @@ pub trait MetricsInterface: Send + Sync {
     /// Update whether the node is currently shedding new connections.
     fn update_memory_pressure_shedding(&self, _shedding: bool) {}
 
+    /// Track an HTTP publish rejected by publish admission control.
+    fn mark_publish_shed(&self) {}
+
+    /// Update whether the node is currently shedding HTTP publishes.
+    fn update_publish_shedding(&self, _shedding: bool) {}
+
     /// Track a rate limit check
     fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str);
 
