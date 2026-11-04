@@ -9,6 +9,7 @@ pub mod mysql_app_manager;
 pub mod pg_app_manager;
 #[cfg(feature = "scylladb")]
 pub mod scylla_app_manager;
+pub mod secret_cipher;
 #[cfg(feature = "surrealdb")]
 pub mod surrealdb_app_manager;
 
@@ -23,5 +24,6 @@ pub use mysql_app_manager::MySQLAppManager;
 pub use pg_app_manager::PgSQLAppManager;
 #[cfg(feature = "scylladb")]
 pub use scylla_app_manager::{ScyllaDbAppManager, ScyllaDbConfig};
+pub use secret_cipher::AppSecretCipher;
 #[cfg(feature = "surrealdb")]
 pub use surrealdb_app_manager::{SurrealDbAppManager, SurrealDbConfig};

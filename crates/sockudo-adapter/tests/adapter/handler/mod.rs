@@ -1,5 +1,6 @@
 pub mod activity_timeout_test;
 pub mod annotations_test;
+pub mod app_availability_test;
 pub mod auth_token_user_index_tests;
 pub mod authentication_test;
 pub mod clustered_runtime_rewind_recovery_redis_test;

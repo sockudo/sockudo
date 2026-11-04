@@ -17,6 +17,9 @@ describe("connection manager reconnection", () => {
     expect(defaults.maxReconnectAttempts).toBe(6);
     expect(defaults.maxReconnectGapInSeconds).toBe(120);
     expect(defaults.reconnectJitter).toBe(0);
+    expect(defaults.retryJitterMs).toBe(0);
+    expect(getConfig({ cluster: "local", retryJitterMs: -5 }, {}).retryJitterMs).toBe(0);
+    expect(getConfig({ cluster: "local", retryJitterMs: 2500.4 }, {}).retryJitterMs).toBe(2500);
     expect(unlimited.maxReconnectAttempts).toBeNull();
   });
 
@@ -160,6 +163,26 @@ describe("connection manager reconnection", () => {
     manager.errorCallbacks.tls_only({ action: "tls_only" });
     expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 0 });
   });
+
+  it("spreads immediate retries over retryJitterMs but keeps TLS upgrades immediate", () => {
+    const { manager, timeline } = createManager({
+      maxReconnectAttempts: null,
+      retryJitterMs: 3000,
+    });
+
+    const delays = new Set<number>();
+    for (let i = 0; i < 200; i++) {
+      manager.errorCallbacks.retry({ action: "retry" });
+      const delay = lastRetryDelay(timeline);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThanOrEqual(3000);
+      delays.add(delay);
+    }
+    expect(delays.size).toBeGreaterThan(1);
+
+    manager.errorCallbacks.tls_only({ action: "tls_only" });
+    expect(timeline.info).toHaveBeenLastCalledWith({ action: "retry", delay: 0 });
+  });
 });
 
 function lastRetryDelay(timeline: { info: ReturnType<typeof vi.fn> }): number {
@@ -173,6 +196,7 @@ function createManager(
     maxReconnectAttempts: number | null;
     maxReconnectGapInSeconds: number;
     reconnectJitter: number;
+    retryJitterMs: number;
     beforeConnect: (reason: "initial" | "reconnect") => Promise<void>;
   }> = {},
 ) {
@@ -199,6 +223,7 @@ function createManager(
       overrides.maxReconnectAttempts === undefined ? 6 : overrides.maxReconnectAttempts,
     maxReconnectGapInSeconds: overrides.maxReconnectGapInSeconds ?? 120,
     reconnectJitter: overrides.reconnectJitter ?? 0,
+    retryJitterMs: overrides.retryJitterMs ?? 0,
     beforeConnect: overrides.beforeConnect,
   });
 

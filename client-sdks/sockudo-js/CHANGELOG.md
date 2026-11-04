@@ -6,6 +6,8 @@
 
 * public TypeScript declarations for push proxy APIs and typed Apple Live Activity direct and
   broadcast publishing
+* `retryJitterMs` option that waits a random delay before immediate protocol retries (such as the
+  `4200` server-shutdown close), so a draining node's clients do not reconnect in the same instant
 
 ## [2.2.0] - 2026-08-17
 

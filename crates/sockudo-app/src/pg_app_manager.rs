@@ -1,3 +1,4 @@
+use crate::secret_cipher::{AppSecretCipher, resolve_row_secret, seal_row_secret};
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use moka::future::Cache;
@@ -19,6 +20,7 @@ pub struct PgSQLAppManager {
     config: DatabaseConnection,
     pool: PgPool,
     app_cache: Cache<String, App>,
+    secret_cipher: Option<AppSecretCipher>,
 }
 
 impl PgSQLAppManager {
@@ -56,11 +58,19 @@ impl PgSQLAppManager {
             config,
             pool,
             app_cache,
+            secret_cipher: None,
         };
 
         manager.ensure_table_exists().await?;
 
         Ok(manager)
+    }
+
+    /// Encrypt app secrets at rest in the `secret_enc` column with `cipher`.
+    /// Rows that still only have a plaintext `secret` keep working.
+    pub fn with_secret_cipher(mut self, cipher: Option<AppSecretCipher>) -> Self {
+        self.secret_cipher = cipher;
+        self
     }
 
     /// Create the applications table if it doesn't exist
@@ -71,6 +81,7 @@ impl PgSQLAppManager {
                 id VARCHAR(255) PRIMARY KEY,
                 key VARCHAR(255) UNIQUE NOT NULL,
                 secret VARCHAR(255) NOT NULL,
+                secret_enc TEXT,
                 max_connections INTEGER NOT NULL,
                 enable_client_messages BOOLEAN NOT NULL DEFAULT FALSE,
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -108,6 +119,7 @@ impl PgSQLAppManager {
             ("idempotency", "JSONB"),
             ("connection_recovery", "JSONB"),
             ("policy", "JSONB"),
+            ("secret_enc", "TEXT"),
         ];
 
         for (column_name, column_type) in columns_to_add {
@@ -141,7 +153,7 @@ impl PgSQLAppManager {
 
         let query = format!(
             r#"SELECT
-                id, key, secret, max_connections,
+                id, key, secret, secret_enc, max_connections,
                 enable_client_messages, enabled,
                 max_backend_events_per_second,
                 max_client_events_per_second,
@@ -175,7 +187,7 @@ impl PgSQLAppManager {
             })?;
 
         if let Some(app_row) = app_result {
-            let app = app_row.into_app();
+            let app = app_row.into_app(self.secret_cipher.as_ref())?;
             self.app_cache.insert(app_id.to_string(), app.clone()).await;
             Ok(Some(app))
         } else {
@@ -189,7 +201,7 @@ impl PgSQLAppManager {
 
         let query = format!(
             r#"SELECT
-                id, key, secret, max_connections,
+                id, key, secret, secret_enc, max_connections,
                 enable_client_messages, enabled,
                 max_backend_events_per_second,
                 max_client_events_per_second,
@@ -223,7 +235,7 @@ impl PgSQLAppManager {
             })?;
 
         if let Some(app_row) = app_result {
-            let app = app_row.into_app();
+            let app = app_row.into_app(self.secret_cipher.as_ref())?;
             self.app_cache.insert(app.id.clone(), app.clone()).await;
             Ok(Some(app))
         } else {
@@ -235,6 +247,8 @@ impl PgSQLAppManager {
     pub async fn create_app(&self, app: App) -> Result<()> {
         info!(app_id = %app.id, "app registering");
         let policy = app.policy();
+        let (secret_column, secret_enc) =
+            seal_row_secret(self.secret_cipher.as_ref(), &app.id, &app.secret)?;
 
         let query = format!(
             r#"INSERT INTO {} (
@@ -245,15 +259,15 @@ impl PgSQLAppManager {
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size, enable_user_authentication,
                 enable_watchlist_events, policy, webhooks, allowed_origins,
-                channel_delta_compression, idempotency, connection_recovery
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)"#,
+                channel_delta_compression, idempotency, connection_recovery, secret_enc
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)"#,
             self.config.table_name
         );
 
         sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .bind(&app.id)
             .bind(&app.key)
-            .bind(&app.secret)
+            .bind(&secret_column)
             .bind(policy.limits.max_connections as i32)
             .bind(policy.features.enable_client_messages)
             .bind(app.enabled)
@@ -292,6 +306,7 @@ impl PgSQLAppManager {
             ))
             .bind(sqlx::types::Json(&policy.idempotency))
             .bind(sqlx::types::Json(&policy.connection_recovery))
+            .bind(&secret_enc)
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -308,6 +323,8 @@ impl PgSQLAppManager {
     pub async fn update_app(&self, app: App) -> Result<()> {
         info!(app_id = %app.id, "app updating");
         let policy = app.policy();
+        let (secret_column, secret_enc) =
+            seal_row_secret(self.secret_cipher.as_ref(), &app.id, &app.secret)?;
 
         let query = format!(
             r#"UPDATE {} SET
@@ -323,14 +340,15 @@ impl PgSQLAppManager {
                 channel_delta_compression = $21,
                 idempotency = $22,
                 connection_recovery = $23,
+                secret_enc = $24,
                 updated_at = CURRENT_TIMESTAMP
-                WHERE id = $24"#,
+                WHERE id = $25"#,
             self.config.table_name
         );
 
         let result = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .bind(&app.key)
-            .bind(&app.secret)
+            .bind(&secret_column)
             .bind(policy.limits.max_connections as i32)
             .bind(policy.features.enable_client_messages)
             .bind(app.enabled)
@@ -369,6 +387,7 @@ impl PgSQLAppManager {
             ))
             .bind(sqlx::types::Json(&policy.idempotency))
             .bind(sqlx::types::Json(&policy.connection_recovery))
+            .bind(&secret_enc)
             .bind(&app.id)
             .execute(&self.pool)
             .await
@@ -416,7 +435,7 @@ impl PgSQLAppManager {
 
         let query = format!(
             r#"SELECT
-            id, key, secret, max_connections,
+            id, key, secret, secret_enc, max_connections,
             enable_client_messages, enabled,
             max_backend_events_per_second,
             max_client_events_per_second,
@@ -450,9 +469,21 @@ impl PgSQLAppManager {
 
         warn!(apps_count = app_rows.len(), "app rows fetched");
 
-        let apps = stream::iter(app_rows)
-            .map(|row| async {
-                let app = row.into_app();
+        let apps: Vec<App> = app_rows
+            .into_iter()
+            .filter_map(|row| {
+                let app_id = row.id.clone();
+                match row.into_app(self.secret_cipher.as_ref()) {
+                    Ok(app) => Some(app),
+                    Err(e) => {
+                        error!(app_id = %app_id, error = %e, "skipping app with unreadable secret");
+                        None
+                    }
+                }
+            })
+            .collect();
+        let apps = stream::iter(apps)
+            .map(|app| async {
                 self.app_cache.insert(app.id.clone(), app.clone()).await;
                 app
             })
@@ -544,6 +575,7 @@ struct AppRow {
     id: String,
     key: String,
     secret: String,
+    secret_enc: Option<String>,
     max_connections: i32,
     enable_client_messages: bool,
     enabled: bool,
@@ -575,15 +607,22 @@ struct AppRow {
 }
 
 impl AppRow {
-    fn into_app(self) -> App {
+    fn into_app(self, cipher: Option<&AppSecretCipher>) -> Result<App> {
+        let secret = resolve_row_secret(cipher, &self.id, self.secret, self.secret_enc.as_deref())?;
         if let Some(policy) = self.policy {
-            return App::from_policy(self.id, self.key, self.secret, self.enabled, policy);
+            return Ok(App::from_policy(
+                self.id,
+                self.key,
+                secret,
+                self.enabled,
+                policy,
+            ));
         }
 
-        App::from_policy(
+        Ok(App::from_policy(
             self.id,
             self.key,
-            self.secret,
+            secret,
             self.enabled,
             sockudo_core::app::AppPolicy {
                 limits: sockudo_core::app::AppLimitsPolicy {
@@ -627,7 +666,7 @@ impl AppRow {
                 history: None,
                 presence_history: None,
             },
-        )
+        ))
     }
 }
 
@@ -678,6 +717,7 @@ impl Clone for PgSQLAppManager {
             config: self.config.clone(),
             pool: self.pool.clone(),
             app_cache: self.app_cache.clone(),
+            secret_cipher: self.secret_cipher.clone(),
         }
     }
 }
@@ -744,6 +784,80 @@ mod tests {
                 presence_history: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn test_secret_encryption_at_rest() {
+        let table = "apps_test_secret_enc";
+        let cipher =
+            AppSecretCipher::from_encoded_key("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+                .unwrap();
+        let manager = PgSQLAppManager::new(get_test_db_config(table), DatabasePooling::default())
+            .await
+            .unwrap()
+            .with_secret_cipher(Some(cipher.clone()));
+        for id in ["enc_a", "enc_b", "plain_c"] {
+            let _ = manager.delete_app(id).await;
+        }
+
+        manager.create_app(create_test_app("enc_a")).await.unwrap();
+        manager.create_app(create_test_app("enc_b")).await.unwrap();
+
+        let (secret, secret_enc): (String, Option<String>) = sqlx::query_as(sqlx::AssertSqlSafe(
+            format!("SELECT secret, secret_enc FROM {table} WHERE id = 'enc_a'"),
+        ))
+        .fetch_one(&manager.pool)
+        .await
+        .unwrap();
+        assert_eq!(secret, "");
+        let secret_enc = secret_enc.unwrap();
+        assert!(secret_enc.starts_with("v1:"));
+        assert!(!secret_enc.contains("enc_a_secret"));
+
+        // A fresh manager (empty cache) decrypts the stored secret.
+        let reader = PgSQLAppManager::new(get_test_db_config(table), DatabasePooling::default())
+            .await
+            .unwrap()
+            .with_secret_cipher(Some(cipher.clone()));
+        let app = reader.find_by_id("enc_a").await.unwrap().unwrap();
+        assert_eq!(app.secret, "enc_a_secret");
+        let app = reader.find_by_key("enc_b_key").await.unwrap().unwrap();
+        assert_eq!(app.secret, "enc_b_secret");
+
+        // Without the key, encrypted rows fail closed.
+        let keyless = PgSQLAppManager::new(get_test_db_config(table), DatabasePooling::default())
+            .await
+            .unwrap();
+        assert!(keyless.find_by_id("enc_a").await.is_err());
+
+        // A ciphertext copied onto another app's row does not decrypt.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE {table} SET secret_enc = $1 WHERE id = 'enc_b'"
+        )))
+        .bind(&secret_enc)
+        .execute(&manager.pool)
+        .await
+        .unwrap();
+        let reader = PgSQLAppManager::new(get_test_db_config(table), DatabasePooling::default())
+            .await
+            .unwrap()
+            .with_secret_cipher(Some(cipher.clone()));
+        assert!(reader.find_by_id("enc_b").await.is_err());
+        let listed = reader.get_apps().await.unwrap();
+        assert!(listed.iter().any(|app| app.id == "enc_a"));
+        assert!(!listed.iter().any(|app| app.id == "enc_b"));
+
+        // Plaintext rows keep working while a key is configured.
+        keyless
+            .create_app(create_test_app("plain_c"))
+            .await
+            .unwrap();
+        let app = reader.find_by_id("plain_c").await.unwrap().unwrap();
+        assert_eq!(app.secret, "plain_c_secret");
+
+        for id in ["enc_a", "enc_b", "plain_c"] {
+            manager.delete_app(id).await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1270,6 +1384,7 @@ mod tests {
             id: "app".to_string(),
             key: "key".to_string(),
             secret: "secret".to_string(),
+            secret_enc: None,
             max_connections: 1,
             enable_client_messages: false,
             enabled: true,
@@ -1306,7 +1421,7 @@ mod tests {
             connection_recovery: None,
         };
 
-        let app = row.into_app();
+        let app = row.into_app(None).unwrap();
         let history = app.policy.history.unwrap();
         assert_eq!(history.enabled, Some(true));
         assert_eq!(history.rewind_enabled, Some(false));

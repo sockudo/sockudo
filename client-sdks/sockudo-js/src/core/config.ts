@@ -29,6 +29,7 @@ export interface Config {
   maxReconnectAttempts: number | null;
   maxReconnectGapInSeconds: number;
   reconnectJitter: number;
+  retryJitterMs: number;
   useTLS: boolean;
   wsHost: string;
   wsPath: string;
@@ -71,6 +72,7 @@ export function getConfig(opts: Options, sockudo): Config {
         : opts.maxReconnectAttempts,
     maxReconnectGapInSeconds: opts.maxReconnectGapInSeconds ?? Defaults.maxReconnectGapInSeconds,
     reconnectJitter: clampJitter(opts.reconnectJitter ?? Defaults.reconnectJitter),
+    retryJitterMs: clampRetryJitterMs(opts.retryJitterMs ?? Defaults.retryJitterMs),
     wsPath: opts.wsPath || Defaults.wsPath,
     wsPort: opts.wsPort || Defaults.wsPort,
     wssPort: opts.wssPort || Defaults.wssPort,
@@ -110,6 +112,13 @@ function clampJitter(jitter: number): number {
     return 0;
   }
   return Math.min(jitter, 1);
+}
+
+function clampRetryJitterMs(jitterMs: number): number {
+  if (!Number.isFinite(jitterMs) || jitterMs <= 0) {
+    return 0;
+  }
+  return Math.round(jitterMs);
 }
 
 function getHttpHost(opts: Options): string {

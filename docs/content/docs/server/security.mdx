@@ -22,6 +22,48 @@ Keep these server-side only:
 
 Use secret managers or Kubernetes Secrets. Do not bake secrets into images or public environment bundles.
 
+### App secrets at rest (MySQL and PostgreSQL)
+
+By default the MySQL and PostgreSQL app managers store each app's `secret` as plaintext in the
+`applications` table. To keep secrets out of the database, its backups, and dumps, give Sockudo
+a 32-byte key, encoded as base64 or hex, through one of:
+
+- `SOCKUDO_APP_SECRET_ENCRYPTION_KEY`: the key itself
+- `SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE`: a file that holds it, for example one mounted from a
+  secret store
+
+With a key set, the app manager writes each secret to the `secret_enc` column, sealed with
+AES-256-GCM (`v1:<base64>`), and writes the plaintext `secret` column empty. The app id is bound
+into the ciphertext, so a `secret_enc` value copied onto another app's row fails to decrypt.
+The column is added automatically on startup. Rows that only have a plaintext `secret` keep
+working, so you can migrate one app at a time:
+
+```bash
+openssl rand -base64 32 > /run/secrets/sockudo-app-secret-key
+export SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE=/run/secrets/sockudo-app-secret-key
+
+# Prints the secret_enc value for app "my-app"; the secret is read from stdin.
+printf '%s' "$APP_SECRET" | sockudo --encrypt-app-secret my-app
+```
+
+```sql
+UPDATE applications SET secret_enc = 'v1:...', secret = '' WHERE id = 'my-app';
+```
+
+Sockudo fails closed. A row with `secret_enc` but no configured key, or a key that does not
+match, is rejected: lookups for that app return an error, and app listings skip it. An invalid
+key setting stops startup. Every node needs the same key. To rotate the key, re-encrypt each
+row with the new key, then switch nodes over.
+
+## Disabling an app
+
+Setting `enabled = false` on an app, or deleting it, rejects new connections once the app cache
+expires. Each node also re-checks the apps of its live connections every
+`app_manager.availability_check_interval_seconds` (default `15`). It closes sockets of disabled
+apps with code `4003` and sockets of deleted apps with `4001`. Clients do not reconnect after
+either code. The worst-case delay is the check interval plus `[app_manager.cache] ttl`. If an
+app lookup fails, for example during a database outage, the check keeps the connections open.
+
 ## Origin policy
 
 Configure allowed origins for browser clients. Do not use wildcard origins for authenticated apps.

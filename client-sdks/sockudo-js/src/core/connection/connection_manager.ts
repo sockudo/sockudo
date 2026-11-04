@@ -40,6 +40,7 @@ import { prefixedEvent } from "../protocol_prefix";
  * - maxReconnectAttempts - maximum retries before disconnecting; null is unlimited
  * - maxReconnectGapInSeconds - cap for quadratic reconnect delay
  * - reconnectJitter - fraction of the delay to randomize, 0 (off) to 1 (full jitter)
+ * - retryJitterMs - max random delay before an immediate protocol retry, 0 (off)
  *
  * @param {String} key application key
  * @param {Object} options
@@ -273,8 +274,14 @@ export default class ConnectionManager extends EventsDispatcher {
   }
 
   private reconnectDelay(action?: "tls_only" | "backoff" | "retry"): number {
-    if (action === "retry" || action === "tls_only") {
+    if (action === "tls_only") {
       return 0;
+    }
+    if (action === "retry") {
+      // Spread immediate retries (e.g. 4200 server shutdown) so a whole
+      // node's clients do not reconnect onto the remaining nodes at once.
+      const retryJitterMs = this.options.retryJitterMs ?? 0;
+      return retryJitterMs > 0 ? Runtime.randomInt(retryJitterMs + 1) : 0;
     }
     const intervalSeconds = this.reconnectAttempts * this.reconnectAttempts;
     const delay = Math.min(intervalSeconds, this.options.maxReconnectGapInSeconds) * 1000;

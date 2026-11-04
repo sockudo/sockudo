@@ -123,14 +123,19 @@ the core client directly, lifecycle cleanup is your responsibility.
 
 Unexpected disconnects emit `reconnecting` and use quadratic backoff (0s, 1s,
 4s, 9s) capped at 120 seconds. Configure `maxReconnectAttempts` (default `6`,
-`null` for unlimited) and `maxReconnectGapInSeconds`; protocol retry and
-TLS-upgrade close codes remain immediate.
+`null` for unlimited) and `maxReconnectGapInSeconds`. `reconnectJitter`
+(0 to 1) randomizes that fraction of each backoff delay. Protocol retry close
+codes, such as `4200` during a server shutdown, reconnect immediately unless
+`retryJitterMs` is set, in which case each client waits a random 0 to
+`retryJitterMs` milliseconds first. TLS-upgrade retries remain immediate.
 
 ```ts
 const client = new Sockudo("app-key", {
   cluster: "local",
   maxReconnectAttempts: 10,
   maxReconnectGapInSeconds: 60,
+  reconnectJitter: 0.5,
+  retryJitterMs: 2000,
 });
 
 client.connection.bind("reconnecting", () => console.log("reconnecting"));

@@ -20,14 +20,17 @@ scylladb = ["sockudo-core/scylladb", "dep:scylla", "dep:futures"]
 [dependencies]
 sockudo-core = { workspace = true }
 
+aes-gcm = { workspace = true }
 ahash = { workspace = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
+base64 = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 moka = { workspace = true }
+rand = { workspace = true }
 regex = { workspace = true, optional = true }
 scylla = { workspace = true, optional = true }
 serde = { workspace = true }
