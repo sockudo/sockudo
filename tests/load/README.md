@@ -93,3 +93,33 @@ this checkout for the host architecture with `SOCKUDO_FEATURES` (default
 `TICK_MS` of 2000, 500 and 250 offer 1,000, 4,000 and 8,000 deliveries per
 second. Against a local binary instead, run it with
 `tests/load/v2-capacity-probe.toml` and pass `PID` in place of `CONTAINER`.
+
+On Docker Desktop (macOS) the numbers need two corrections before they can be
+compared with a Linux host:
+
+- A fractional CPU limit makes the same work bill more CPU time. A fixed
+  sha256 of 64 MiB costs about 0.14 s of CPU with `--cpus 1` or more, 0.15 s at
+  0.5 and 0.24 s at 0.25. Runs at 0.25 CPU also switch between two modes about
+  1.5x apart in user and system time alike, for the same deliveries, faults and
+  context switches. Compare runs only within one mode, and repeat each step.
+- Through the published port, about half of Sockudo's CPU is the VM's network
+  path (bridge, netfilter, conntrack and virtio in softirq), which is charged to
+  the sending container. Sockudo makes one `sendto` per delivered frame. To
+  take that path out, run the probe in Sockudo's network namespace:
+
+```bash
+docker run --rm --network container:v2-capacity-sockudo-1 \
+  -v "$PWD/tests/load:/probe:ro" -e STEPS=2000 -e TICK_MS=500 \
+  node:22-slim node /probe/v2-capacity-probe.mjs
+```
+
+That form has no `docker` CLI for `CONTAINER`, so read `cpu.stat` from the host
+around the publish phase. Measured on an Apple Silicon Mac at 0.25 CPU, 2,000
+clients, both feature sets within the same mode (`full,monolith` and
+`redis,postgres` were within 5% of each other):
+
+| Path | 1,000/s | 4,000/s | 8,000/s |
+| --- | --- | --- | --- |
+| published port | 27-41m | 99-168m | 174-238m, 503s in 5 of 6 runs |
+| loopback, slow mode | 25-27m | 74-86m | 162-163m |
+| loopback, fast mode | 17m | 50-54m | 100-114m, all delivered |

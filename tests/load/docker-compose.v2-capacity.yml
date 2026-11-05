@@ -46,6 +46,9 @@ services:
       DATABASE_POSTGRES_USERNAME: probe
       DATABASE_POSTGRES_PASSWORD: probe-local-only
       DATABASE_POSTGRES_DATABASE: sockudo
+      # The published image's `monolith` feature starts the push pipeline,
+      # whose default memory drivers production mode otherwise refuses.
+      PUSH_ALLOW_MEMORY_DRIVERS: "true"
     ports: ["6001:6001", "127.0.0.1:9601:9601"]
     depends_on:
       postgres: { condition: service_healthy }
