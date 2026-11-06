@@ -20,6 +20,13 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/sockudo/sockudo/releases"><img src="https://img.shields.io/github/downloads/sockudo/sockudo/total?color=8b4dff&label=release%20downloads&logo=github" alt="Release downloads"></a>
+  <a href="https://crates.io/crates/sockudo"><img src="https://img.shields.io/crates/d/sockudo?color=8b4dff&label=crates.io%20downloads&logo=rust" alt="crates.io downloads"></a>
+  <a href="https://www.npmjs.com/package/@sockudo/client"><img src="https://img.shields.io/npm/dm/@sockudo/client?color=8b4dff&label=%40sockudo%2Fclient&logo=npm" alt="npm downloads"></a>
+  <a href="https://pypi.org/project/sockudo-python/"><img src="https://img.shields.io/pypi/dm/sockudo-python?color=8b4dff&label=sockudo-python&logo=pypi&logoColor=white" alt="PyPI downloads"></a>
+</p>
+
+<p align="center">
   <a href="https://sockudo.io"><b>Website</b></a> ·
   <a href="https://sockudo.io/docs"><b>Documentation</b></a> ·
   <a href="https://sockudo.io/docs/getting-started/installation"><b>Install</b></a> ·
@@ -240,15 +247,15 @@ Protocol defaults vary by SDK; check each SDK page before assuming V2 is enabled
 
 ### Realtime clients
 
-| Runtime | Package | Docs |
-| --- | --- | --- |
-| JavaScript / TypeScript | `@sockudo/client` | [Guide](https://sockudo.io/docs/clients/javascript) |
-| Swift / Apple platforms | `SockudoSwift` via SwiftPM (`https://github.com/sockudo/sockudo-swift`) | [Guide](https://sockudo.io/docs/clients/swift) |
-| Kotlin / JVM / Android | `io.sockudo:sockudo-kotlin` | [Guide](https://sockudo.io/docs/clients/kotlin) |
-| Flutter | `sockudo_flutter` | [Guide](https://sockudo.io/docs/clients/flutter) |
-| .NET | `Sockudo.Client` | [Guide](https://sockudo.io/docs/clients/dotnet) |
-| Python | `sockudo-python` | [Guide](https://sockudo.io/docs/clients/python) |
-| AI Transport (TypeScript) | `@sockudo/ai-transport` | [Overview](https://sockudo.io/docs/server/ai-transport-overview) |
+| Runtime | Package | Docs | Downloads |
+| --- | --- | --- | --- |
+| JavaScript / TypeScript | `@sockudo/client` | [Guide](https://sockudo.io/docs/clients/javascript) | [![downloads](https://img.shields.io/npm/dm/@sockudo/client?label=&color=8b4dff)](https://www.npmjs.com/package/@sockudo/client) |
+| Swift / Apple platforms | `SockudoSwift` via SwiftPM (`https://github.com/sockudo/sockudo-swift`) | [Guide](https://sockudo.io/docs/clients/swift) | — |
+| Kotlin / JVM / Android | `io.sockudo:sockudo-kotlin` | [Guide](https://sockudo.io/docs/clients/kotlin) | — |
+| Flutter | `sockudo_flutter` | [Guide](https://sockudo.io/docs/clients/flutter) | [![downloads](https://img.shields.io/pub/dm/sockudo_flutter?label=&color=8b4dff)](https://pub.dev/packages/sockudo_flutter) |
+| .NET | `Sockudo.Client` | [Guide](https://sockudo.io/docs/clients/dotnet) | [![downloads](https://img.shields.io/nuget/dt/Sockudo.Client?label=&color=8b4dff)](https://www.nuget.org/packages/Sockudo.Client) |
+| Python | `sockudo-python` | [Guide](https://sockudo.io/docs/clients/python) | [![downloads](https://img.shields.io/pypi/dm/sockudo-python?label=&color=8b4dff)](https://pypi.org/project/sockudo-python/) |
+| AI Transport (TypeScript) | `@sockudo/ai-transport` | [Overview](https://sockudo.io/docs/server/ai-transport-overview) | [![downloads](https://img.shields.io/npm/dm/@sockudo/ai-transport?label=&color=8b4dff)](https://www.npmjs.com/package/@sockudo/ai-transport) |
 
 ### Server SDKs
 
@@ -256,18 +263,18 @@ Server SDKs publish events, sign private and presence channel auth, authenticate
 webhooks, query channel state, and expose Sockudo-native APIs such as idempotent publishing,
 history, mutable messages, annotations and push where implemented.
 
-| Language | Package | Docs |
-| --- | --- | --- |
-| Node.js | `sockudo` | [Guide](https://sockudo.io/docs/server-sdks/node) |
-| Python | `sockudo-http-python` | [Guide](https://sockudo.io/docs/server-sdks/python) |
-| PHP | `sockudo/sockudo-php-server` | [Guide](https://sockudo.io/docs/server-sdks/php) |
-| Laravel | `sockudo/laravel` | [Guide](https://sockudo.io/docs/server-sdks/laravel) |
-| Ruby | `sockudo` | [Guide](https://sockudo.io/docs/server-sdks/ruby) |
-| Go | `github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2` | [Guide](https://sockudo.io/docs/server-sdks/go) |
-| Rust | `sockudo-http` | [Guide](https://sockudo.io/docs/server-sdks/rust) |
-| Java | `io.sockudo:sockudo-http-java` | [Guide](https://sockudo.io/docs/server-sdks/java) |
-| .NET | `SockudoServer` | [Guide](https://sockudo.io/docs/server-sdks/dotnet) |
-| Swift | `Sockudo` via SwiftPM (`https://github.com/sockudo/sockudo-http-swift`) | [Guide](https://sockudo.io/docs/server-sdks/swift) |
+| Language | Package | Docs | Downloads |
+| --- | --- | --- | --- |
+| Node.js | `sockudo` | [Guide](https://sockudo.io/docs/server-sdks/node) | [![downloads](https://img.shields.io/npm/dm/sockudo?label=&color=8b4dff)](https://www.npmjs.com/package/sockudo) |
+| Python | `sockudo-http-python` | [Guide](https://sockudo.io/docs/server-sdks/python) | [![downloads](https://img.shields.io/pypi/dm/sockudo-http-python?label=&color=8b4dff)](https://pypi.org/project/sockudo-http-python/) |
+| PHP | `sockudo/sockudo-php-server` | [Guide](https://sockudo.io/docs/server-sdks/php) | [![downloads](https://img.shields.io/packagist/dt/sockudo/sockudo-php-server?label=&color=8b4dff)](https://packagist.org/packages/sockudo/sockudo-php-server) |
+| Laravel | `sockudo/laravel` | [Guide](https://sockudo.io/docs/server-sdks/laravel) | [![downloads](https://img.shields.io/packagist/dt/sockudo/laravel?label=&color=8b4dff)](https://packagist.org/packages/sockudo/laravel) |
+| Ruby | `sockudo` | [Guide](https://sockudo.io/docs/server-sdks/ruby) | [![downloads](https://img.shields.io/gem/dt/sockudo?label=&color=8b4dff)](https://rubygems.org/gems/sockudo) |
+| Go | `github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2` | [Guide](https://sockudo.io/docs/server-sdks/go) | — |
+| Rust | `sockudo-http` | [Guide](https://sockudo.io/docs/server-sdks/rust) | [![downloads](https://img.shields.io/crates/d/sockudo-http?label=&color=8b4dff)](https://crates.io/crates/sockudo-http) |
+| Java | `io.sockudo:sockudo-http-java` | [Guide](https://sockudo.io/docs/server-sdks/java) | — |
+| .NET | `SockudoServer` | [Guide](https://sockudo.io/docs/server-sdks/dotnet) | [![downloads](https://img.shields.io/nuget/dt/SockudoServer?label=&color=8b4dff)](https://www.nuget.org/packages/SockudoServer) |
+| Swift | `Sockudo` via SwiftPM (`https://github.com/sockudo/sockudo-http-swift`) | [Guide](https://sockudo.io/docs/server-sdks/swift) | — |
 
 Python example:
 
