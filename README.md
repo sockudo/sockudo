@@ -144,13 +144,35 @@ channels.
 
 ## Install
 
-| Path | Command | Notes |
-| --- | --- | --- |
-| Linux binary | `curl --proto '=https' --tlsv1.2 -sSfL https://sockudo.io/install.sh \| sh` | x86_64 and ARM64, GNU libc or musl, SHA-256 verified, installs to `~/.local/bin` |
-| Docker | `docker run -p 6001:6001 ghcr.io/sockudo/sockudo:latest` | See the quick start above for a demo app |
-| Cargo | `cargo install sockudo --locked` | Add `--features "redis,postgres,push"` for production backends |
-| Helm | `helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 5.2.0` | The chart is published at the release version |
-| Source | `cargo run -p sockudo` | Use `--release --features full` for every integration |
+**Linux binary.** x86_64 or ARM64, GNU libc or musl, SHA-256 verified, installed to `~/.local/bin`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSfL https://sockudo.io/install.sh | sh
+```
+
+**Docker.** See the [quick start](#quick-start) for a demo app:
+
+```bash
+docker run -p 6001:6001 ghcr.io/sockudo/sockudo:latest
+```
+
+**Cargo.** Add `--features "redis,postgres,push"` for production backends:
+
+```bash
+cargo install sockudo --locked
+```
+
+**Helm.** The chart is published at the release version:
+
+```bash
+helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 5.2.0
+```
+
+**From source.** Use `--release --features full` for every integration:
+
+```bash
+cargo run -p sockudo
+```
 
 ### Docker Compose (full local stack)
 
