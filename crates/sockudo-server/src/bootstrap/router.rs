@@ -8,7 +8,8 @@ use crate::http_handler::{
     publish_annotation, ready, revoke_capability_tokens, stats, terminate_user_connections, up,
     update_message, usage,
 };
-use crate::middleware::pusher_api_auth_middleware;
+use crate::middleware::{AppApiRateLimiter, pusher_api_auth_middleware};
+use crate::publish_admission::{PublishAdmissionController, publish_admission_middleware};
 #[cfg(feature = "push")]
 use crate::push_http::{
     batch_publish as push_batch_publish, delete_channel_subscriptions, delete_device,
@@ -226,19 +227,40 @@ impl SockudoServer {
             "configuring http body limit"
         );
 
+        // Outermost on the publish routes, so a shed request costs neither
+        // a body read nor a signature check.
+        let publish_admission = self.config.http_api.publish_admission.enabled.then(|| {
+            Arc::new(PublishAdmissionController::new(
+                &self.config.http_api.publish_admission,
+                self.state.metrics.clone(),
+            ))
+        });
+        let with_publish_admission =
+            |route: axum::routing::MethodRouter<_>| match &publish_admission {
+                Some(controller) => route.route_layer(axum_middleware::from_fn_with_state(
+                    controller.clone(),
+                    publish_admission_middleware,
+                )),
+                None => route,
+            };
+
         let mut api_router = Router::new()
             .route(
                 "/apps/{appId}/events",
-                post(events).route_layer(axum_middleware::from_fn_with_state(
-                    self.handler.clone(),
-                    pusher_api_auth_middleware,
+                with_publish_admission(post(events).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
                 )),
             )
             .route(
                 "/apps/{appId}/batch_events",
-                post(batch_events).route_layer(axum_middleware::from_fn_with_state(
-                    self.handler.clone(),
-                    pusher_api_auth_middleware,
+                with_publish_admission(post(batch_events).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
                 )),
             )
             .route(
@@ -605,6 +627,10 @@ impl SockudoServer {
                 response
             },
         ));
+
+        if let Some(limiter) = self.state.app_api_rate_limiter.clone() {
+            api_router = api_router.layer(axum::Extension(AppApiRateLimiter(limiter)));
+        }
 
         if let Some(middleware) = api_rate_limiter_middleware_layer {
             api_router = api_router.layer(middleware);

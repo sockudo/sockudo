@@ -53,6 +53,16 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .set(if shedding { 1.0 } else { 0.0 });
     }
 
+    fn mark_publish_shed(&self) {
+        self.publish_shed_total
+            .with_label_values(&[&self.port.to_string()])
+            .inc();
+    }
+
+    fn update_publish_shedding(&self, shedding: bool) {
+        self.publish_shedding.set(if shedding { 1.0 } else { 0.0 });
+    }
+
     fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str) {
         self.mark_rate_limit_check_with_context(app_id, limiter_type, "unknown");
     }

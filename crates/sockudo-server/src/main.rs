@@ -11,6 +11,7 @@ mod logging;
 mod mcp;
 mod middleware;
 mod presence_history;
+mod publish_admission;
 #[cfg(feature = "push")]
 mod push_http;
 #[cfg(feature = "opentelemetry")]

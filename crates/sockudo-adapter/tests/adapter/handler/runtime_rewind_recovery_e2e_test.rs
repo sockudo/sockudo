@@ -62,6 +62,7 @@ impl ClientReader {
 struct GateHistoryStore {
     inner: Arc<MemoryHistoryStore>,
     gate: Arc<Mutex<Option<ReadGate>>>,
+    head_gate: Arc<Mutex<Option<ReadGate>>>,
 }
 
 struct ReadGate {
@@ -74,7 +75,20 @@ impl GateHistoryStore {
         Self {
             inner,
             gate: Arc::new(Mutex::new(None)),
+            head_gate: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Blocks the next `channel_head` call, which the subscribe path uses to
+    /// capture the attach serial after the socket has joined the channel.
+    async fn arm_head_gate(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (continue_tx, continue_rx) = oneshot::channel();
+        *self.head_gate.lock().await = Some(ReadGate {
+            started_tx: Some(started_tx),
+            continue_rx,
+        });
+        (started_rx, continue_tx)
     }
 
     async fn arm_gate(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
@@ -118,6 +132,21 @@ impl HistoryStore for GateHistoryStore {
 
     async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
         self.inner.runtime_status().await
+    }
+
+    async fn channel_head(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> sockudo_core::error::Result<sockudo_core::history::HistoryRetentionStats> {
+        let head = self.inner.channel_head(app_id, channel).await?;
+        if let Some(mut gate) = self.head_gate.lock().await.take() {
+            if let Some(started_tx) = gate.started_tx.take() {
+                let _ = started_tx.send(());
+            }
+            let _ = gate.continue_rx.await;
+        }
+        Ok(head)
     }
 
     async fn stream_inspection(
@@ -1423,6 +1452,67 @@ async fn resume_success_precedes_live_messages_published_during_replay_e2e() {
         resumed_data["recovered"][0]["position"]["serial"].as_u64(),
         Some(2)
     );
+}
+
+/// sockudo/sockudo#535: a message broadcast while a subscribe is between
+/// joining the channel and installing its subscription view must be held by
+/// the attach gate and delivered after the ack, not dropped by fanout.
+#[tokio::test]
+async fn message_published_during_subscribe_is_delivered_after_ack_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.connection_recovery.enabled = true;
+    let harness = build_harness(options).await;
+
+    let (socket_id, mut reader) = connect_v2_socket(&harness).await;
+    let (started_rx, continue_tx) = harness.history_store.arm_head_gate().await;
+    let handler = harness.handler.clone();
+    let app = harness.app.clone();
+    let subscribe_task = tokio::spawn(async move {
+        handler
+            .handle_subscribe_request(
+                &socket_id,
+                &app,
+                SubscriptionRequest {
+                    channel: "mid-subscribe".to_string(),
+                    auth: None,
+                    channel_data: None,
+                    #[cfg(feature = "tag-filtering")]
+                    tags_filter: None,
+                    #[cfg(feature = "tag-filtering")]
+                    predicate: None,
+                    #[cfg(feature = "delta")]
+                    delta: None,
+                    rewind: None,
+                    event_name_filter: None,
+                    annotation_subscribe: false,
+                },
+            )
+            .await
+            .unwrap();
+    });
+
+    started_rx.await.unwrap();
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            "mid-subscribe",
+            live_message("mid-subscribe", "published-mid-subscribe", "mid-msg-1"),
+            None,
+        )
+        .await
+        .unwrap();
+    let _ = continue_tx.send(());
+    subscribe_task.await.unwrap();
+
+    let subscribed = recv_message(&mut reader).await;
+    assert_eq!(
+        subscribed.event.as_deref(),
+        Some("sockudo_internal:subscription_succeeded")
+    );
+    let live = recv_message(&mut reader).await;
+    assert_eq!(live.event.as_deref(), Some("published-mid-subscribe"));
 }
 
 #[tokio::test]

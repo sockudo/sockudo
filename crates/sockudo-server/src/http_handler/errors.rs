@@ -205,6 +205,9 @@ impl From<sockudo_core::error::Error> for AppError {
                 retry_after_seconds: 1,
             },
             sockudo_core::error::Error::Auth(s) => AppError::ApiAuthFailed(s),
+            sockudo_core::error::Error::ApplicationDisabled => {
+                AppError::Forbidden("Application is disabled".to_string())
+            }
             sockudo_core::error::Error::AiTransport {
                 code,
                 name,

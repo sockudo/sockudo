@@ -130,6 +130,9 @@ top-level keys and `[http_api]` in the [configuration reference](/docs/reference
 | `HTTP_API_ACCEPT_TRAFFIC_MEMORY_THRESHOLD` | Fraction of the effective memory limit that closes new-connection admission. Defaults to `0.9`; valid range is greater than `0` through `1`. |
 | `HTTP_API_ACCEPT_TRAFFIC_MEMORY_LIMIT_BYTES` | Optional explicit memory limit in bytes. When unset, Linux cgroup v2/v1 limits are discovered. |
 | `HTTP_API_ACCEPT_TRAFFIC_SAMPLE_INTERVAL_MS` | Independent memory-pressure sampling interval in milliseconds. Defaults to `500`. |
+| `HTTP_API_PUBLISH_ADMISSION_ENABLED` | Enables load shedding for HTTP publishes (`events`, `batch_events`): `503` with `Retry-After` when publish latency stays over target. Defaults to `true`. |
+| `HTTP_API_PUBLISH_ADMISSION_TARGET_LATENCY_MS` | Shedding starts when even the fastest publish of an interval took longer than this. Defaults to `500`. |
+| `HTTP_API_PUBLISH_ADMISSION_INTERVAL_MS` | Measurement interval for publish load shedding, in milliseconds. Defaults to `1000`. |
 
 ## Logging
 
@@ -250,9 +253,9 @@ deployments. For several apps or detailed policy, use the app manager instead.
 | `SOCKUDO_DEFAULT_APP_SECRET` | Default app secret created from environment. |
 | `SOCKUDO_DEFAULT_APP_ENABLED` | Enables or disables default app registration. |
 | `SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS` | Default app connection limit. |
-| `SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND` | Default app backend publish rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND` | Default app limit on events published through the HTTP API per second (default `100`, `0` = unlimited). Enforced when `[rate_limiter]` is enabled. |
 | `SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND` | Default app client event rate limit. |
-| `SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND` | Default app read API rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND` | Default app limit on signed HTTP API `GET` requests per second (default `100`, `0` = unlimited). Enforced when `[rate_limiter]` is enabled. |
 | `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL` | Default app presence member limit per channel. |
 | `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB` | Default app presence member payload size limit. |
 | `SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH` | Default app channel name length limit. |
@@ -584,6 +587,7 @@ unchanged by the V2 switches.
 | `WEBSOCKET_MAX_MESSAGE_SIZE` | WebSocket message size limit. |
 | `WEBSOCKET_MAX_FRAME_SIZE` | WebSocket frame size limit. |
 | `WEBSOCKET_WRITE_BUFFER_SIZE` | WebSocket write buffer size. |
+| `WEBSOCKET_READ_BUFFER_SIZE` | Receive buffer allocated per WebSocket connection, in bytes (default `2048`, minimum `1024`). Raise it when clients regularly send large frames. |
 | `WEBSOCKET_MAX_BACKPRESSURE` | WebSocket backpressure limit. |
 | `WEBSOCKET_AUTO_PING` | Enables native WebSocket Ping/Pong keepalive for Protocol V2. Protocol V1 retains its Pusher-compatible application heartbeat. |
 | `WEBSOCKET_PING_INTERVAL` | Inbound inactivity in seconds before a Protocol V2 native Ping. `0` disables proactive native Ping frames; nonzero values are bounded to at least half of `ACTIVITY_TIMEOUT` (and at least 5 seconds). |

@@ -1,3 +1,4 @@
+use super::PER_SOCKET_MAP_SHARDS;
 use super::buffer::{
     BufferedRewindMessage, ByteCounter, MessageSenderHandle, RewindGate, RewindGateAdmission,
     RewindGateDrain, SizedMessage, SizedMessageSenderHandle, WebSocketBufferConfig,
@@ -71,8 +72,9 @@ impl WebSocketRef {
         let echo_messages = websocket.state.echo_messages;
         let append_mode = websocket.state.append_mode;
 
-        let channel_state = Arc::new(DashMap::with_capacity(
+        let channel_state = Arc::new(DashMap::with_capacity_and_shard_amount(
             websocket.state.subscribed_channels.len(),
+            PER_SOCKET_MAP_SHARDS,
         ));
         for (channel, filter) in &websocket.state.subscribed_channels {
             channel_state.insert(
@@ -88,7 +90,7 @@ impl WebSocketRef {
             broadcast_tx,
             message_sender,
             channel_state,
-            continuity_gates: Arc::new(DashMap::new()),
+            continuity_gates: Arc::new(DashMap::with_shard_amount(PER_SOCKET_MAP_SHARDS)),
             socket_id,
             buffer_config,
             byte_counter,

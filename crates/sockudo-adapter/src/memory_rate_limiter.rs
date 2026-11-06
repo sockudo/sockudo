@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use sockudo_core::error::Result;
 use sockudo_core::rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
+use sockudo_core::websocket::PER_SOCKET_MAP_SHARDS;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -107,7 +108,11 @@ impl MemoryRateLimiter {
 
     /// Create a new memory-based rate limiter with a specific configuration
     pub fn with_config(config: RateLimitConfig) -> Self {
-        let limits = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        // One limiter exists per socket and holds a handful of keys.
+        let limits = Arc::new(DashMap::with_hasher_and_shard_amount(
+            ahash::RandomState::new(),
+            PER_SOCKET_MAP_SHARDS,
+        ));
         SharedLimiterCleanup::global().register(&limits);
 
         Self { limits, config }
@@ -151,9 +156,19 @@ impl RateLimiter for MemoryRateLimiter {
     }
 
     async fn increment(&self, key: &str) -> Result<RateLimitResult> {
+        self.increment_with_limit(key, 1, self.config.max_requests, self.config.window_secs)
+            .await
+    }
+
+    async fn increment_with_limit(
+        &self,
+        key: &str,
+        cost: u32,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> Result<RateLimitResult> {
         let now = Instant::now();
-        let window_duration = Duration::from_secs(self.config.window_secs);
-        let max_requests = self.config.max_requests;
+        let window_duration = Duration::from_secs(window_secs);
 
         let mut entry = self
             .limits
@@ -170,7 +185,7 @@ impl RateLimiter for MemoryRateLimiter {
             entry.expiry = now + window_duration;
         }
 
-        entry.count += 1;
+        entry.count = entry.count.saturating_add(cost);
         let new_count = entry.count;
 
         let remaining = max_requests.saturating_sub(new_count);

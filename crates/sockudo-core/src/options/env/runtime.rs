@@ -201,6 +201,19 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.http_api.accept_traffic.sample_interval_ms,
     );
 
+    options.http_api.publish_admission.enabled = parse_bool_env(
+        "HTTP_API_PUBLISH_ADMISSION_ENABLED",
+        options.http_api.publish_admission.enabled,
+    );
+    options.http_api.publish_admission.target_latency_ms = parse_env::<u64>(
+        "HTTP_API_PUBLISH_ADMISSION_TARGET_LATENCY_MS",
+        options.http_api.publish_admission.target_latency_ms,
+    );
+    options.http_api.publish_admission.interval_ms = parse_env::<u64>(
+        "HTTP_API_PUBLISH_ADMISSION_INTERVAL_MS",
+        options.http_api.publish_admission.interval_ms,
+    );
+
     // --- Rate Limiter ---
     options.rate_limiter.enabled =
         parse_bool_env("RATE_LIMITER_ENABLED", options.rate_limiter.enabled);

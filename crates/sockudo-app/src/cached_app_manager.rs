@@ -1,3 +1,4 @@
+use crate::secret_cipher::AppSecretCipher;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use sockudo_core::app::{App, AppManager};
@@ -12,6 +13,15 @@ use tracing::{debug, warn};
 const CACHE_PREFIX_ID: &str = "app:id";
 const CACHE_PREFIX_KEY: &str = "app:key";
 const SHARED_CACHE_ACCESS_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Shared-cache form of an app when a secret encryption key is configured:
+/// the app is stored with an empty `secret` and the sealed secret beside it,
+/// so the plaintext secret never reaches the shared cache (e.g. Redis).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SealedCachedApp {
+    app: App,
+    secret_enc: String,
+}
 
 #[derive(Clone)]
 struct LocalAppEntry {
@@ -31,6 +41,7 @@ pub struct CachedAppManager {
     inner: Arc<dyn AppManager + Send + Sync>,
     cache: Arc<dyn CacheManager + Send + Sync>,
     settings: CacheSettings,
+    secret_cipher: Option<AppSecretCipher>,
     local_apps_by_id: DashMap<String, LocalAppEntry>,
     local_app_id_by_key: DashMap<String, String>,
 }
@@ -45,9 +56,17 @@ impl CachedAppManager {
             inner,
             cache,
             settings,
+            secret_cipher: None,
             local_apps_by_id: DashMap::new(),
             local_app_id_by_key: DashMap::new(),
         }
+    }
+
+    /// Seal app secrets with `cipher` before they are written to the shared
+    /// cache. Entries are decrypted on read and only kept in memory in clear.
+    pub fn with_secret_cipher(mut self, cipher: Option<AppSecretCipher>) -> Self {
+        self.secret_cipher = cipher;
+        self
     }
 
     fn cache_key_for_id(app_id: &str) -> String {
@@ -240,10 +259,58 @@ impl CachedAppManager {
         }
     }
 
+    /// Reads an app from the shared cache. With a cipher configured only
+    /// sealed entries are accepted; a plaintext or undecryptable entry is a
+    /// miss, so it is reloaded from the app manager and overwritten sealed.
+    async fn get_app(&self, key: &str) -> Option<App> {
+        let Some(cipher) = self.secret_cipher.as_ref() else {
+            return self.get::<App>(key).await;
+        };
+        let SealedCachedApp {
+            mut app,
+            secret_enc,
+        } = self.get::<SealedCachedApp>(key).await?;
+        match cipher.decrypt(&app.id, &secret_enc) {
+            Ok(secret) => {
+                app.secret = secret;
+                Some(app)
+            }
+            Err(e) => {
+                warn!(
+                    cache_index = Self::cache_index_label(key),
+                    error = %e,
+                    "app cache entry secret decrypt failed"
+                );
+                None
+            }
+        }
+    }
+
+    async fn set_app(&self, key: &str, app: &App) {
+        let Some(cipher) = self.secret_cipher.as_ref() else {
+            self.set(key, app).await;
+            return;
+        };
+        let secret_enc = match cipher.encrypt(&app.id, &app.secret) {
+            Ok(secret_enc) => secret_enc,
+            Err(e) => {
+                warn!(
+                    cache_index = Self::cache_index_label(key),
+                    error = %e,
+                    "app cache entry secret encrypt failed"
+                );
+                return;
+            }
+        };
+        let mut app = app.clone();
+        app.secret = String::new();
+        self.set(key, &SealedCachedApp { app, secret_enc }).await;
+    }
+
     async fn cache_app(&self, app: &App) {
         self.remember_app(app);
-        self.set(&Self::cache_key_for_id(&app.id), app).await;
-        self.set(&Self::cache_key_for_key(&app.key), app).await;
+        self.set_app(&Self::cache_key_for_id(&app.id), app).await;
+        self.set_app(&Self::cache_key_for_key(&app.key), app).await;
     }
 
     async fn invalidate_app(&self, app_id: &str, app_key: &str) {
@@ -259,7 +326,7 @@ impl CachedAppManager {
         }
 
         let id_key = Self::cache_key_for_id(app_id);
-        if let Some(app) = self.get::<App>(&id_key).await {
+        if let Some(app) = self.get_app(&id_key).await {
             self.invalidate_app(app_id, &app.key).await;
         } else {
             self.forget_app(app_id, None);
@@ -289,7 +356,7 @@ impl AppManager for CachedAppManager {
         }
 
         let cache_key = Self::cache_key_for_id(app_id);
-        if let Some(app) = self.get::<App>(&cache_key).await {
+        if let Some(app) = self.get_app(&cache_key).await {
             self.remember_app(&app);
             return Ok(Some(app));
         }
@@ -313,7 +380,7 @@ impl AppManager for CachedAppManager {
         }
 
         let cache_key = Self::cache_key_for_key(key);
-        if let Some(app) = self.get::<App>(&cache_key).await {
+        if let Some(app) = self.get_app(&cache_key).await {
             self.remember_app(&app);
             return Ok(Some(app));
         }
@@ -707,6 +774,72 @@ mod tests {
             0,
             "warm init should not require shared cache reads"
         );
+    }
+
+    fn test_cipher() -> AppSecretCipher {
+        AppSecretCipher::from_encoded_key("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=").unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_shared_cache_never_holds_plaintext_secret_with_cipher() {
+        let inner = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let settings = CacheSettings {
+            enabled: true,
+            ttl: 300,
+        };
+        let manager = CachedAppManager::new(inner.clone(), cache.clone(), settings.clone())
+            .with_secret_cipher(Some(test_cipher()));
+        let mut app = create_test_app("sealed");
+        app.secret = "very-secret-value".to_string();
+        manager.create_app(app).await.unwrap();
+
+        for key in [
+            CachedAppManager::cache_key_for_id("sealed"),
+            CachedAppManager::cache_key_for_key("sealed_key"),
+        ] {
+            let raw = cache.get(&key).await.unwrap().expect("entry cached");
+            assert!(
+                !raw.contains("very-secret-value"),
+                "shared cache entry must not contain the plaintext secret"
+            );
+        }
+
+        // Another node with the same key reads the sealed entry from the
+        // shared cache (its local index is empty) and gets the clear secret.
+        let other =
+            CachedAppManager::new(inner, cache, settings).with_secret_cipher(Some(test_cipher()));
+        let found = other
+            .get_app(&CachedAppManager::cache_key_for_key("sealed_key"))
+            .await
+            .expect("sealed entry decrypts");
+        assert_eq!(found.secret, "very-secret-value");
+    }
+
+    #[tokio::test]
+    async fn test_plaintext_shared_cache_entry_is_a_miss_with_cipher() {
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let settings = CacheSettings {
+            enabled: true,
+            ttl: 300,
+        };
+        let key = CachedAppManager::cache_key_for_id("legacy");
+        let plain = CachedAppManager::new(
+            Arc::new(MemoryAppManager::new()),
+            cache.clone(),
+            settings.clone(),
+        );
+        plain.set_app(&key, &create_test_app("legacy")).await;
+
+        let sealed = CachedAppManager::new(Arc::new(MemoryAppManager::new()), cache, settings)
+            .with_secret_cipher(Some(test_cipher()));
+        assert!(sealed.get_app(&key).await.is_none());
     }
 
     #[tokio::test]
