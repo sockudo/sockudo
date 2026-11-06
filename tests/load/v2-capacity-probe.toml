@@ -1,0 +1,70 @@
+# Server for tests/load/v2-capacity-probe.mjs: the sockudo/sockudo#533 setup
+# (Redis adapter, durable Postgres history, recovery, rate limiter, metrics),
+# with the app defined here instead of in a Postgres app manager.
+host = "0.0.0.0"
+port = 6001
+mode = "production"
+activity_timeout = 25
+
+[adapter]
+driver = "redis"
+enable_socket_counting = true
+
+[adapter.redis]
+url = "${REDIS_URL:-redis://127.0.0.1:6379}"
+
+[app_manager]
+driver = "memory"
+
+[[app_manager.array.apps]]
+id = "probe-app"
+key = "probe-key"
+secret = "probe-secret"
+enabled = true
+
+[app_manager.array.apps.policy.limits]
+max_connections = 100000
+max_backend_events_per_second = 10000
+max_read_requests_per_second = 10000
+
+[cache]
+driver = "redis"
+
+[queue]
+driver = "redis"
+
+# All probe traffic comes from one IP, so the per-IP limits sit far above it.
+[rate_limiter]
+enabled = true
+driver = "redis"
+
+[rate_limiter.api_rate_limit]
+max_requests = 1000000
+window_seconds = 60
+
+[rate_limiter.websocket_rate_limit]
+max_requests = 1000000
+window_seconds = 60
+
+[metrics]
+enabled = true
+driver = "prometheus"
+host = "0.0.0.0"
+port = 9601
+
+[connection_recovery]
+enabled = true
+buffer_ttl_seconds = 120
+max_buffer_size = 100
+
+[history]
+enabled = true
+rewind_enabled = true
+backend = "postgres"
+retention_window_seconds = 120
+max_messages_per_channel = 100
+
+[websocket]
+auto_ping = true
+ping_interval = 25
+compression = "disabled"

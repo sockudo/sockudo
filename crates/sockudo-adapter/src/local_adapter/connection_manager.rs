@@ -264,7 +264,13 @@ impl ConnectionManager for LocalAdapter {
             self.send_to_v1_sockets(v1_all_sockets, &message).await?;
         }
 
+        // Gated sockets are buffered before subscription predicates run: a
+        // socket mid-subscribe has joined the channel but may not have its
+        // subscription view yet, and the predicates would drop it. The gate
+        // drain applies the predicates once the view is installed.
         let mut filtered_socket_refs = v2_target_sockets;
+        self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
+            .await;
         self.filter_v2_sockets_in_place(
             channel,
             &message,
@@ -272,8 +278,6 @@ impl ConnectionManager for LocalAdapter {
             except,
             &namespace,
         );
-        self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
-            .await;
 
         send_v2_append_mode_groups(self, message, filtered_socket_refs).await?;
 
@@ -328,7 +332,12 @@ impl ConnectionManager for LocalAdapter {
             self.send_to_v1_sockets(v1_all_sockets, &message).await?;
         }
 
+        // Buffer gated sockets before subscription predicates; see `send`.
         let mut filtered_socket_refs = v2_target_sockets;
+        filtered_socket_refs
+            .retain(|socket| socket.protocol_version == sockudo_protocol::ProtocolVersion::V2);
+        self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
+            .await;
         self.filter_v2_sockets_strict_in_place(
             channel,
             &message,
@@ -336,8 +345,6 @@ impl ConnectionManager for LocalAdapter {
             except,
             &namespace,
         );
-        self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
-            .await;
 
         let message = self.maybe_strip_tags(message, channel_settings);
 

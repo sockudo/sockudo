@@ -21,9 +21,11 @@ pub struct Namespace {
     pub users: DashMap<String, DashSet<SocketId>>,
     pub presence_data: DashMap<SocketId, HashMap<String, PresenceMemberInfo>>,
     // Reverse index of channels joined per socket, for O(channels-per-socket) disconnect cleanup.
-    socket_channels: DashMap<SocketId, DashSet<String>>,
+    // Plain sets: every access already holds the outer shard lock, and a `DashSet` per socket
+    // costs `4 * available_parallelism()` cache-padded shards (16 KiB on a 32-thread host).
+    socket_channels: DashMap<SocketId, AHashSet<String>>,
     // Reverse index: socket → set of user IDs associated with that socket.
-    socket_users: DashMap<SocketId, DashSet<String>>,
+    socket_users: DashMap<SocketId, AHashSet<String>>,
 }
 
 pub struct SocketInitOptions {
@@ -493,7 +495,7 @@ impl Namespace {
     /// deleted the entry under the shard write lock. Exactly one concurrent remover
     /// wins, so it pairs with `add`'s `activated`.
     pub fn remove_channel_from_socket(&self, channel: &str, socket_id: &SocketId) -> (bool, bool) {
-        if let Some(socket_channels_ref) = self.socket_channels.get(socket_id) {
+        if let Some(mut socket_channels_ref) = self.socket_channels.get_mut(socket_id) {
             socket_channels_ref.remove(channel);
         }
 
@@ -531,8 +533,7 @@ impl Namespace {
 
         // 4. Exhaustive channel cleanup via reverse index.
         if let Some((_, channels)) = self.socket_channels.remove(socket_id) {
-            for ch in channels.iter() {
-                let channel = ch.key();
+            for channel in &channels {
                 self.channels.remove_if(channel, |_, set| {
                     set.remove(socket_id);
                     set.is_empty()
@@ -704,7 +705,7 @@ impl Namespace {
             socket_ids.remove(socket_id);
             socket_ids.is_empty()
         });
-        self.socket_users.remove_if(socket_id, |_, user_ids| {
+        self.socket_users.remove_if_mut(socket_id, |_, user_ids| {
             user_ids.remove(user_id);
             user_ids.is_empty()
         });
@@ -712,8 +713,7 @@ impl Namespace {
 
     fn remove_socket_from_all_users(&self, socket_id: &SocketId) {
         if let Some((_, user_ids)) = self.socket_users.remove(socket_id) {
-            for user_id_entry in user_ids.iter() {
-                let user_id = user_id_entry.key();
+            for user_id in &user_ids {
                 self.users.remove_if(user_id.as_str(), |_, socket_ids| {
                     socket_ids.remove(socket_id);
                     socket_ids.is_empty()
@@ -1070,8 +1070,7 @@ mod tests {
     fn assert_user_index_bidirectional(namespace: &Namespace) {
         for entry in namespace.socket_users.iter() {
             let socket_id = entry.key();
-            for user_id_entry in entry.value().iter() {
-                let user_id = user_id_entry.key();
+            for user_id in entry.value().iter() {
                 assert!(
                     namespace
                         .users

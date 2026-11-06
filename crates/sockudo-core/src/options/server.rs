@@ -189,6 +189,10 @@ impl ServerOptions {
             .accept_traffic
             .validate()
             .map_err(|error| format!("http_api.accept_traffic: {error}"))?;
+        self.http_api
+            .publish_admission
+            .validate()
+            .map_err(|error| format!("http_api.publish_admission: {error}"))?;
         self.opentelemetry
             .validate()
             .map_err(|error| format!("opentelemetry: {error}"))?;

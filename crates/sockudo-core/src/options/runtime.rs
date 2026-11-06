@@ -43,8 +43,24 @@ where
 pub struct HttpApiConfig {
     pub request_limit_in_mb: u32,
     pub accept_traffic: AcceptTraffic,
+    pub publish_admission: PublishAdmission,
     pub readiness: Readiness,
     pub usage_enabled: bool,
+}
+
+/// Latency-based load shedding for HTTP publishes (`events`, `batch_events`).
+///
+/// When even the fastest publish of an interval took longer than
+/// `target_latency_ms`, the node is overloaded. For the next interval it
+/// admits at most (publishes completed per second x `target_latency_ms`)
+/// concurrent publishes and answers the rest at once with `503` and
+/// `Retry-After`, instead of letting every request queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PublishAdmission {
+    pub enabled: bool,
+    pub target_latency_ms: u64,
+    pub interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +208,10 @@ pub struct WebSocketConfig {
     pub max_message_size: usize,
     pub max_frame_size: usize,
     pub write_buffer_size: usize,
+    /// Receive buffer each connection allocates up front. Client frames are
+    /// small, so a small window saves memory per idle connection; larger
+    /// frames grow the buffer and it shrinks back once the connection is quiet.
+    pub read_buffer_size: usize,
     pub max_backpressure: usize,
     pub auto_ping: bool,
     pub ping_interval: u32,
@@ -208,6 +228,7 @@ impl Default for WebSocketConfig {
             max_message_size: 64 * 1024 * 1024,
             max_frame_size: 16 * 1024 * 1024,
             write_buffer_size: 16 * 1024,
+            read_buffer_size: 2 * 1024,
             max_backpressure: 1024 * 1024,
             auto_ping: true,
             ping_interval: 30,
@@ -295,6 +316,7 @@ impl WebSocketConfig {
             .max_message_size(self.max_message_size)
             .max_frame_size(self.max_frame_size)
             .write_buffer_size(self.write_buffer_size)
+            .read_buffer_size(self.read_buffer_size)
             .max_backpressure(self.max_backpressure)
             .idle_timeout(if use_native_heartbeat {
                 self.idle_timeout
@@ -339,6 +361,21 @@ mod websocket_config_tests {
 
         assert!(!config.auto_ping);
         assert_eq!(config.idle_timeout, 0);
+    }
+
+    #[test]
+    fn read_buffer_size_defaults_small_and_reaches_the_socket_config() {
+        let config = WebSocketConfig::default().to_sockudo_ws_config(64, 120);
+        assert_eq!(config.read_buffer_size, 2 * 1024);
+
+        let websocket = WebSocketConfig {
+            read_buffer_size: 64 * 1024,
+            ..WebSocketConfig::default()
+        };
+        assert_eq!(
+            websocket.to_sockudo_ws_config(64, 120).read_buffer_size,
+            64 * 1024
+        );
     }
 
     #[test]
@@ -530,6 +567,7 @@ impl Default for HttpApiConfig {
         Self {
             request_limit_in_mb: 10,
             accept_traffic: AcceptTraffic::default(),
+            publish_admission: PublishAdmission::default(),
             readiness: Readiness::default(),
             usage_enabled: true,
         }
@@ -560,6 +598,28 @@ impl AcceptTraffic {
         }
         if self.sample_interval_ms == 0 {
             return Err("sample_interval_ms must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl Default for PublishAdmission {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            target_latency_ms: 500,
+            interval_ms: 1000,
+        }
+    }
+}
+
+impl PublishAdmission {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target_latency_ms == 0 {
+            return Err("target_latency_ms must be greater than 0".to_string());
+        }
+        if self.interval_ms == 0 {
+            return Err("interval_ms must be greater than 0".to_string());
         }
         Ok(())
     }

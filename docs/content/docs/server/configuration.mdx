@@ -402,6 +402,18 @@ With `driver = "memory"`, each node counts independently, so the effective clust
 per-node limit multiplied by the node count.
 </Callout>
 
+The `[rate_limiter]` limits above are per client IP. Each app can also cap its own HTTP API usage,
+enforced cluster-wide through the same rate limiter driver whenever `[rate_limiter] enabled = true`:
+
+| App limit | Counts | Over the limit |
+| --- | --- | --- |
+| `max_backend_events_per_second` | Events published with `POST /apps/{appId}/events` (1 each) and `POST /apps/{appId}/batch_events` (1 per event in the batch). | `429` with `Retry-After: 1` |
+| `max_read_requests_per_second` | Signed `GET` requests under `/apps/{appId}/...` (channels, users, history, presence history, message versions). | `429` with `Retry-After: 1` |
+
+An unset or `0` limit is unlimited. The default app created from `SOCKUDO_DEFAULT_APP_*`
+environment variables sets both to `100` unless overridden. Message mutations, annotations, and
+revocations are not counted. If the limiter backend is unavailable, requests are allowed.
+
 ## Environment variables
 
 Use environment variables for secrets and deployment-specific settings:

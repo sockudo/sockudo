@@ -645,6 +645,13 @@ impl ConnectionHandler {
         &self.webhook_integration
     }
 
+    /// Whether live fanout applies tag filters; gate drains must match it.
+    pub(crate) fn tag_filtering_enabled(&self) -> bool {
+        self.local_adapter
+            .as_ref()
+            .is_none_or(|adapter| adapter.is_tag_filtering_enabled())
+    }
+
     pub fn metrics(&self) -> &Option<Arc<dyn MetricsInterface + Send + Sync>> {
         &self.metrics
     }
