@@ -250,7 +250,7 @@ Protocol defaults vary by SDK; check each SDK page before assuming V2 is enabled
 | Runtime | Package | Docs | Downloads |
 | --- | --- | --- | --- |
 | JavaScript / TypeScript | `@sockudo/client` | [Guide](https://sockudo.io/docs/clients/javascript) | [![downloads](https://img.shields.io/npm/dm/@sockudo/client?label=&color=8b4dff)](https://www.npmjs.com/package/@sockudo/client) |
-| Swift / Apple platforms | `SockudoSwift` via SwiftPM (`https://github.com/sockudo/sockudo-swift`) | [Guide](https://sockudo.io/docs/clients/swift) | — |
+| Swift / Apple platforms | `SockudoSwift` ([SwiftPM](https://github.com/sockudo/sockudo-swift)) | [Guide](https://sockudo.io/docs/clients/swift) | — |
 | Kotlin / JVM / Android | `io.sockudo:sockudo-kotlin` | [Guide](https://sockudo.io/docs/clients/kotlin) | — |
 | Flutter | `sockudo_flutter` | [Guide](https://sockudo.io/docs/clients/flutter) | [![downloads](https://img.shields.io/pub/dm/sockudo_flutter?label=&color=8b4dff)](https://pub.dev/packages/sockudo_flutter) |
 | .NET | `Sockudo.Client` | [Guide](https://sockudo.io/docs/clients/dotnet) | [![downloads](https://img.shields.io/nuget/dt/Sockudo.Client?label=&color=8b4dff)](https://www.nuget.org/packages/Sockudo.Client) |
@@ -274,7 +274,7 @@ history, mutable messages, annotations and push where implemented.
 | Rust | `sockudo-http` | [Guide](https://sockudo.io/docs/server-sdks/rust) | [![downloads](https://img.shields.io/crates/d/sockudo-http?label=&color=8b4dff)](https://crates.io/crates/sockudo-http) |
 | Java | `io.sockudo:sockudo-http-java` | [Guide](https://sockudo.io/docs/server-sdks/java) | — |
 | .NET | `SockudoServer` | [Guide](https://sockudo.io/docs/server-sdks/dotnet) | [![downloads](https://img.shields.io/nuget/dt/SockudoServer?label=&color=8b4dff)](https://www.nuget.org/packages/SockudoServer) |
-| Swift | `Sockudo` via SwiftPM (`https://github.com/sockudo/sockudo-http-swift`) | [Guide](https://sockudo.io/docs/server-sdks/swift) | — |
+| Swift | `Sockudo` ([SwiftPM](https://github.com/sockudo/sockudo-http-swift)) | [Guide](https://sockudo.io/docs/server-sdks/swift) | — |
 
 Python example:
 
