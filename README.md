@@ -250,12 +250,15 @@ Protocol defaults vary by SDK; check each SDK page before assuming V2 is enabled
 | Runtime | Package | Docs | Downloads |
 | --- | --- | --- | --- |
 | JavaScript / TypeScript | `@sockudo/client` | [Guide](https://sockudo.io/docs/clients/javascript) | [![downloads](https://img.shields.io/npm/dm/@sockudo/client?label=&color=8b4dff)](https://www.npmjs.com/package/@sockudo/client) |
-| Swift / Apple platforms | `SockudoSwift` ([SwiftPM](https://github.com/sockudo/sockudo-swift)) | [Guide](https://sockudo.io/docs/clients/swift) | — |
-| Kotlin / JVM / Android | `io.sockudo:sockudo-kotlin` | [Guide](https://sockudo.io/docs/clients/kotlin) | — |
+| Swift / Apple platforms | `SockudoSwift` ([SwiftPM](https://github.com/sockudo/sockudo-swift)) | [Guide](https://sockudo.io/docs/clients/swift) | [![SwiftPM](https://img.shields.io/github/v/tag/sockudo/sockudo-swift?label=swiftpm&color=8b4dff)](https://github.com/sockudo/sockudo-swift) |
+| Kotlin / JVM / Android | `io.sockudo:sockudo-kotlin` | [Guide](https://sockudo.io/docs/clients/kotlin) | [![Maven Central](https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2F%2Frepo1.maven.org%2Fmaven2%2Fio%2Fsockudo%2Fsockudo-kotlin%2Fmaven-metadata.xml&label=maven&color=8b4dff)](https://central.sonatype.com/artifact/io.sockudo/sockudo-kotlin) |
 | Flutter | `sockudo_flutter` | [Guide](https://sockudo.io/docs/clients/flutter) | [![downloads](https://img.shields.io/pub/dm/sockudo_flutter?label=&color=8b4dff)](https://pub.dev/packages/sockudo_flutter) |
 | .NET | `Sockudo.Client` | [Guide](https://sockudo.io/docs/clients/dotnet) | [![downloads](https://img.shields.io/nuget/dt/Sockudo.Client?label=&color=8b4dff)](https://www.nuget.org/packages/Sockudo.Client) |
 | Python | `sockudo-python` | [Guide](https://sockudo.io/docs/clients/python) | [![downloads](https://img.shields.io/pypi/dm/sockudo-python?label=&color=8b4dff)](https://pypi.org/project/sockudo-python/) |
 | AI Transport (TypeScript) | `@sockudo/ai-transport` | [Overview](https://sockudo.io/docs/server/ai-transport-overview) | [![downloads](https://img.shields.io/npm/dm/@sockudo/ai-transport?label=&color=8b4dff)](https://www.npmjs.com/package/@sockudo/ai-transport) |
+
+Maven Central, Go modules and SwiftPM do not publish download counts, so those rows show the latest
+published version instead.
 
 ### Server SDKs
 
@@ -270,11 +273,14 @@ history, mutable messages, annotations and push where implemented.
 | PHP | `sockudo/sockudo-php-server` | [Guide](https://sockudo.io/docs/server-sdks/php) | [![downloads](https://img.shields.io/packagist/dt/sockudo/sockudo-php-server?label=&color=8b4dff)](https://packagist.org/packages/sockudo/sockudo-php-server) |
 | Laravel | `sockudo/laravel` | [Guide](https://sockudo.io/docs/server-sdks/laravel) | [![downloads](https://img.shields.io/packagist/dt/sockudo/laravel?label=&color=8b4dff)](https://packagist.org/packages/sockudo/laravel) |
 | Ruby | `sockudo` | [Guide](https://sockudo.io/docs/server-sdks/ruby) | [![downloads](https://img.shields.io/gem/dt/sockudo?label=&color=8b4dff)](https://rubygems.org/gems/sockudo) |
-| Go | `github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2` | [Guide](https://sockudo.io/docs/server-sdks/go) | — |
+| Go | `github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2` | [Guide](https://sockudo.io/docs/server-sdks/go) | [![Go Reference](https://pkg.go.dev/badge/github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2.svg)](https://pkg.go.dev/github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2) |
 | Rust | `sockudo-http` | [Guide](https://sockudo.io/docs/server-sdks/rust) | [![downloads](https://img.shields.io/crates/d/sockudo-http?label=&color=8b4dff)](https://crates.io/crates/sockudo-http) |
-| Java | `io.sockudo:sockudo-http-java` | [Guide](https://sockudo.io/docs/server-sdks/java) | — |
+| Java | `io.sockudo:sockudo-http-java` | [Guide](https://sockudo.io/docs/server-sdks/java) | [![Maven Central](https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2F%2Frepo1.maven.org%2Fmaven2%2Fio%2Fsockudo%2Fsockudo-http-java%2Fmaven-metadata.xml&label=maven&color=8b4dff)](https://central.sonatype.com/artifact/io.sockudo/sockudo-http-java) |
 | .NET | `SockudoServer` | [Guide](https://sockudo.io/docs/server-sdks/dotnet) | [![downloads](https://img.shields.io/nuget/dt/SockudoServer?label=&color=8b4dff)](https://www.nuget.org/packages/SockudoServer) |
-| Swift | `Sockudo` ([SwiftPM](https://github.com/sockudo/sockudo-http-swift)) | [Guide](https://sockudo.io/docs/server-sdks/swift) | — |
+| Swift | `Sockudo` ([SwiftPM](https://github.com/sockudo/sockudo-http-swift)) | [Guide](https://sockudo.io/docs/server-sdks/swift) | [![SwiftPM](https://img.shields.io/github/v/tag/sockudo/sockudo-http-swift?label=swiftpm&color=8b4dff)](https://github.com/sockudo/sockudo-http-swift) |
+
+Maven Central, Go modules and SwiftPM do not publish download counts, so those rows show the latest
+published version instead.
 
 Python example:
 
