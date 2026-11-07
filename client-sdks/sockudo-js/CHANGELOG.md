@@ -9,6 +9,12 @@
 * `retryJitterMs` option that waits a random delay before immediate protocol retries (such as the
   `4200` server-shutdown close), so a draining node's clients do not reconnect in the same instant
 
+### Fixed
+
+* retry a connection attempt that fails before its 15 s timeout after a short jittered backoff
+  (0.5-1 s, growing to 2.5-5 s) instead of waiting out the full timeout, so clients come back
+  within seconds of an outage ending (sockudo/sockudo#532)
+
 ## [2.2.0] - 2026-08-17
 
 ### Added
