@@ -76,4 +76,69 @@ describe("sequential strategy retry", () => {
     await vi.advanceTimersByTimeAsync(20000);
     expect(attempts).toHaveLength(1);
   });
+
+  it("keeps the base timeout for an attempt that follows fast failures", async () => {
+    vi.useFakeTimers();
+    const starts: number[] = [];
+    const aborts: number[] = [];
+    const strategy = new SequentialStrategy(
+      [
+        {
+          isSupported: () => true,
+          connect: (_minPriority, callback) => {
+            starts.push(Date.now());
+            if (starts.length <= 3) {
+              setTimeout(() => callback(true), 0);
+            }
+            return { abort: () => aborts.push(Date.now()), forceMinPriority: () => {} };
+          },
+        } as Strategy,
+      ],
+      { loop: true, timeout: 15000, timeoutLimit: 60000, retryDelay: 1000, retryDelayLimit: 5000 },
+    );
+
+    const runner = strategy.connect(0, () => {});
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(starts.length).toBeGreaterThanOrEqual(4);
+    expect(aborts[0] - starts[3]).toBe(15000);
+    runner.abort();
+  });
+
+  it("doubles the timeout after an attempt times out", async () => {
+    vi.useFakeTimers();
+    const starts: number[] = [];
+    const strategy = new SequentialStrategy(
+      [
+        {
+          isSupported: () => true,
+          connect: (_minPriority, _callback) => {
+            starts.push(Date.now());
+            return { abort: () => {}, forceMinPriority: () => {} };
+          },
+        } as Strategy,
+      ],
+      { loop: true, timeout: 15000, timeoutLimit: 60000, retryDelay: 1000, retryDelayLimit: 5000 },
+    );
+
+    const runner = strategy.connect(0, () => {});
+    await vi.advanceTimersByTimeAsync(15000 + 30000 + 60000);
+    const gaps = starts.slice(1).map((time, i) => time - starts[i]);
+    expect(gaps).toEqual([15000, 30000, 60000]);
+    runner.abort();
+  });
+
+  it("ignores a failure reported after abort", async () => {
+    vi.useFakeTimers();
+    const attempts: number[] = [];
+    const strategy = new SequentialStrategy([failingStrategy(attempts)], {
+      loop: true,
+      timeout: 15000,
+      retryDelay: 1000,
+    });
+
+    const runner = strategy.connect(0, () => {});
+    runner.abort();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(attempts).toHaveLength(1);
+  });
 });

@@ -14,6 +14,8 @@
 * retry a connection attempt that fails before its 15 s timeout after a short jittered backoff
   (0.5-1 s, growing to 2.5-5 s) instead of waiting out the full timeout, so clients come back
   within seconds of an outage ending (sockudo/sockudo#532)
+* stop retrying when a connection attempt is aborted, even if its transport reports a failure
+  afterwards
 
 ## [2.2.0] - 2026-08-17
 

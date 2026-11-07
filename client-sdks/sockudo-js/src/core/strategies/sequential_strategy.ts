@@ -48,6 +48,7 @@ export default class SequentialStrategy implements Strategy {
     let timeout = this.timeout;
     let runner = null;
     let attempts = 0;
+    let aborted = false;
 
     const nextRetryDelay = () => {
       if (!this.retryDelay) {
@@ -63,7 +64,10 @@ export default class SequentialStrategy implements Strategy {
       return delay - half + Runtime.randomInt(half + 1);
     };
 
-    const tryNextStrategy = (error, handshake) => {
+    const tryNextStrategy = (error, handshake, fastRetry = false) => {
+      if (aborted) {
+        return;
+      }
       if (handshake) {
         callback(null, handshake);
       } else {
@@ -73,7 +77,7 @@ export default class SequentialStrategy implements Strategy {
         }
 
         if (current < strategies.length) {
-          if (timeout) {
+          if (timeout && !fastRetry) {
             timeout = timeout * 2;
             if (this.timeoutLimit) {
               timeout = Math.min(timeout, this.timeoutLimit);
@@ -100,6 +104,7 @@ export default class SequentialStrategy implements Strategy {
 
     return {
       abort: function () {
+        aborted = true;
         runner.abort();
       },
       forceMinPriority: function (p) {
@@ -133,7 +138,7 @@ export default class SequentialStrategy implements Strategy {
           // retry after a short backoff instead of waiting out the timeout
           timer.ensureAborted();
           timer = new Timer(options.retryDelay, function () {
-            callback(error);
+            callback(error, undefined, true);
           });
         }
         // otherwise advance to the next strategy after the timeout
