@@ -304,6 +304,13 @@ For realtime rewind, the selected durable/versioned message is collected before
 `ATTACHED`; `HAS_BACKLOG` is set exactly when a replay item follows that frame.
 Rewind accepts positive message counts and positive `s`, `m`, or `h` time forms,
 is capped by the resolved channel history policy, and is delivered oldest first.
+With versioned messages enabled, `rewind` also accepts a message `serial` (for
+example the serial a publish ack returns): every message published after it, and
+every update or append to any message after it, is replayed up to the attach
+position; the message itself is not. The serial must still be retained:
+an unknown or expired serial fails the attach with `90003`, more than 1,000
+messages after it with `90004`, and a changed stream with `90005`. A bare integer
+is always a message count, and `rewindCount` never takes a serial.
 An `ATTACH_RESUME` request retains the channel position but does not replay the
 rewind selection a second time.
 
