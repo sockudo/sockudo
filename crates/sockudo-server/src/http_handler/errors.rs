@@ -280,6 +280,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn application_disabled_maps_to_forbidden_response() {
+        let response =
+            AppError::from(sockudo_core::error::Error::ApplicationDisabled).into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["code"].as_str(), Some("forbidden"));
+        assert_eq!(json["status"].as_u64(), Some(403));
+        assert_eq!(json["error"].as_str(), Some("Application is disabled"));
+    }
+
+    #[tokio::test]
     async fn internal_error_response_does_not_expose_backend_details() {
         let response = AppError::InternalError(
             "pool failed for postgresql://user:sensitive-password@db/app".to_string(),
