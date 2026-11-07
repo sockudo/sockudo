@@ -6,6 +6,8 @@ export default class SequentialStrategy implements Strategy {
     failFast: boolean;
     timeout: number;
     timeoutLimit: number;
+    retryDelay: number;
+    retryDelayLimit: number;
     constructor(strategies: Strategy[], options: StrategyOptions);
     isSupported(): boolean;
     connect(minPriority: number, callback: Function): {
