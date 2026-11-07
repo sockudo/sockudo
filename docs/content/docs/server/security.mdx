@@ -95,6 +95,11 @@ match, is rejected: lookups for that app return an error, and app listings skip 
 key setting stops startup. Every node needs the same key. To rotate the key, re-encrypt each
 row with the new key, then switch nodes over.
 
+The key also protects the shared app cache. With `[app_manager.cache] enabled = true` and a shared
+cache driver such as Redis, cached apps are stored with an empty `secret` and the sealed secret
+beside it, and are decrypted in memory on read. Plaintext cache entries written before the key
+was configured are ignored and replaced, so the secret is never readable in the cache.
+
 ## Disabling an app
 
 Setting `enabled = false` on an app, or deleting it, rejects new connections once the app cache
@@ -106,6 +111,11 @@ app lookup fails, for example during a database outage, the check keeps the conn
 
 This is your kill switch for a compromised or abusive tenant: disable the app in the app manager and
 its traffic stops within that window, without a restart.
+
+Signed HTTP API requests for a disabled app return `403` with `"code": "forbidden"` once the
+node's cached copy of the app reflects the change (at most `[app_manager.cache] ttl`). The
+disabled check runs only after the request signature is verified, so unsigned callers cannot
+tell a disabled app from an invalid key.
 
 ## Origin policy
 
