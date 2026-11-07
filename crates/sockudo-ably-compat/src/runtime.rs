@@ -552,6 +552,16 @@ struct AblyChannelPosition {
     serial: u64,
 }
 
+/// A resolved Ably channel `rewind` parameter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AblyRewind {
+    /// A message count or a duration.
+    Window(SubscriptionRewind),
+    /// Every message published after the one with this message serial; the
+    /// message itself is not replayed.
+    AfterSerial(MessageSerial),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AblyChannelKey {
     app_id: String,
@@ -982,6 +992,8 @@ const ABLY_FILTER_CACHE_MAX_BYTES: usize = 1024 * 1024;
 const ABLY_ATTACH_GATE_MAX_MESSAGES: usize = ABLY_COMPAT_MAX_REPLAY_MESSAGES;
 const ABLY_ATTACH_GATE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const ABLY_DELIVERY_DEDUPE_MAX_ENTRIES: usize = ABLY_COMPAT_MAX_REPLAY_MESSAGES;
+/// Ably sends at most 1,000 messages for a rewind.
+const ABLY_REWIND_SERIAL_MAX_MESSAGES: usize = 1_000;
 const ABLY_REVOCATION_MAX_ENTRIES: usize = ABLY_COMPAT_MAX_TOKENS;
 const ABLY_REVOCATION_MAX_BYTES: usize = 64 * 1024 * 1024;
 const ABLY_CONNECTION_KEY_MAX_BYTES: usize = 512;
@@ -1075,17 +1087,30 @@ fn parse_ably_rewind_param(raw: &str) -> Option<SubscriptionRewind> {
         .map(SubscriptionRewind::Seconds)
 }
 
+/// Sockudo message serials always contain `:`; requiring it keeps unparseable
+/// counts and durations rejected instead of treating them as unknown serials.
+fn parse_ably_rewind_serial(raw: &str) -> Option<MessageSerial> {
+    let raw = raw.trim();
+    raw.contains(':')
+        .then(|| MessageSerial::new(raw).ok())
+        .flatten()
+}
+
 fn resolve_ably_rewind(
     params: &HashMap<String, String>,
     attach_resume: bool,
-) -> Option<SubscriptionRewind> {
+) -> Option<AblyRewind> {
     if attach_resume {
         return None;
     }
-    params
-        .get("rewindCount")
-        .or_else(|| params.get("rewind"))
-        .and_then(|raw| parse_ably_rewind_param(raw))
+    // `rewindCount` is the legacy numeric form and never carries a serial.
+    if let Some(raw) = params.get("rewindCount") {
+        return parse_ably_rewind_param(raw).map(AblyRewind::Window);
+    }
+    let raw = params.get("rewind")?;
+    parse_ably_rewind_param(raw)
+        .map(AblyRewind::Window)
+        .or_else(|| parse_ably_rewind_serial(raw).map(AblyRewind::AfterSerial))
 }
 
 fn build_ably_rewind_history_request(
