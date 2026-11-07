@@ -10,6 +10,8 @@ interface StrategyOptions {
   ignoreNullOrigin?: boolean;
   key?: string;
   loop?: boolean;
+  retryDelay?: number;
+  retryDelayLimit?: number;
   timeline?: Timeline;
   timeout?: number;
   timeoutLimit?: number;

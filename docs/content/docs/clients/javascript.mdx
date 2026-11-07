@@ -706,6 +706,11 @@ delay. Protocol retry close codes, such as `4200` during a server shutdown, reco
 unless `retryJitterMs` is set, in which case each client waits a random 0 to `retryJitterMs`
 milliseconds first. TLS-upgrade retries remain immediate.
 
+While the server is unreachable, one attempt keeps retrying until it connects: a fast failure, such
+as a refused TCP connection, is retried after a jittered 0.5–1 s backoff growing to 2.5–5 s, and an
+attempt that hangs is abandoned after 15 s, doubling to 60 s if hangs repeat. `maxReconnectAttempts`
+counts reconnects after a connection closes or stops responding, not these retries.
+
 ```ts title="reconnect.ts"
 const client = new Sockudo("app-key", {
   wsHost: "realtime.example.com",

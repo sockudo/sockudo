@@ -1,6 +1,7 @@
 import * as Collections from "../utils/collections";
 import Util from "../util";
 import { OneOffTimer as Timer } from "../utils/timers";
+import Runtime from "runtime";
 import Strategy from "./strategy";
 import StrategyOptions from "./strategy_options";
 
@@ -10,6 +11,10 @@ import StrategyOptions from "./strategy_options";
  * - loop - whether it should loop through the substrategy list
  * - timeout - initial timeout for a single substrategy
  * - timeoutLimit - maximum timeout
+ * - retryDelay - base delay before retrying a substrategy that failed before
+ *   its timeout; doubles per attempt with jitter. Without it, a fast failure
+ *   waits out the full timeout.
+ * - retryDelayLimit - maximum retryDelay
  *
  * @param {Strategy[]} strategies
  * @param {Object} options
@@ -20,6 +25,8 @@ export default class SequentialStrategy implements Strategy {
   failFast: boolean;
   timeout: number;
   timeoutLimit: number;
+  retryDelay: number;
+  retryDelayLimit: number;
 
   constructor(strategies: Strategy[], options: StrategyOptions) {
     this.strategies = strategies;
@@ -27,6 +34,8 @@ export default class SequentialStrategy implements Strategy {
     this.failFast = Boolean(options.failFast);
     this.timeout = options.timeout;
     this.timeoutLimit = options.timeoutLimit;
+    this.retryDelay = options.retryDelay;
+    this.retryDelayLimit = options.retryDelayLimit;
   }
 
   isSupported(): boolean {
@@ -38,8 +47,27 @@ export default class SequentialStrategy implements Strategy {
     let current = 0;
     let timeout = this.timeout;
     let runner = null;
+    let attempts = 0;
+    let aborted = false;
 
-    const tryNextStrategy = (error, handshake) => {
+    const nextRetryDelay = () => {
+      if (!this.retryDelay) {
+        return 0;
+      }
+      const delay = Math.min(
+        this.retryDelay * 2 ** attempts,
+        this.retryDelayLimit || Number.POSITIVE_INFINITY,
+      );
+      attempts += 1;
+      // Equal jitter keeps clients dropped together from retrying in lockstep.
+      const half = Math.floor(delay / 2);
+      return delay - half + Runtime.randomInt(half + 1);
+    };
+
+    const tryNextStrategy = (error, handshake, fastRetry = false) => {
+      if (aborted) {
+        return;
+      }
       if (handshake) {
         callback(null, handshake);
       } else {
@@ -49,7 +77,7 @@ export default class SequentialStrategy implements Strategy {
         }
 
         if (current < strategies.length) {
-          if (timeout) {
+          if (timeout && !fastRetry) {
             timeout = timeout * 2;
             if (this.timeoutLimit) {
               timeout = Math.min(timeout, this.timeoutLimit);
@@ -58,7 +86,7 @@ export default class SequentialStrategy implements Strategy {
           runner = this.tryStrategy(
             strategies[current],
             minPriority,
-            { timeout, failFast: this.failFast },
+            { timeout, failFast: this.failFast, retryDelay: nextRetryDelay() },
             tryNextStrategy,
           );
         } else {
@@ -70,12 +98,13 @@ export default class SequentialStrategy implements Strategy {
     runner = this.tryStrategy(
       strategies[current],
       minPriority,
-      { timeout: timeout, failFast: this.failFast },
+      { timeout: timeout, failFast: this.failFast, retryDelay: nextRetryDelay() },
       tryNextStrategy,
     );
 
     return {
       abort: function () {
+        aborted = true;
         runner.abort();
       },
       forceMinPriority: function (p) {
@@ -105,7 +134,14 @@ export default class SequentialStrategy implements Strategy {
 
     runner = strategy.connect(minPriority, function (error, handshake) {
       if (error && timer && timer.isRunning() && !options.failFast) {
-        // advance to the next strategy after the timeout
+        if (options.retryDelay > 0) {
+          // retry after a short backoff instead of waiting out the timeout
+          timer.ensureAborted();
+          timer = new Timer(options.retryDelay, function () {
+            callback(error, undefined, true);
+          });
+        }
+        // otherwise advance to the next strategy after the timeout
         return;
       }
       if (timer) {
