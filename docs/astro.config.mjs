@@ -12,9 +12,6 @@ export default defineConfig({
   site: 'https://sockudo.io',
   trailingSlash: 'ignore',
   prefetch: { prefetchAll: true, defaultStrategy: 'hover' },
-  redirects: {
-    '/install.sh': 'https://github.com/sockudo/sockudo/releases/latest/download/install.sh',
-  },
   markdown: {
     remarkPlugins: [remarkDiagrams],
     rehypePlugins: [rehypeHeadingIds, rehypeProse],
