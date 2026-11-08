@@ -188,6 +188,8 @@ tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
 redis = { workspace = true }
+md5 = { workspace = true }
+chrono = { workspace = true }
 
 [package.metadata.binstall]
 pkg-url = "https://github.com/sockudo/sockudo/releases/download/v{version}/sockudo-v{version}-{target}{archive-suffix}"

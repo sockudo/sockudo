@@ -203,7 +203,14 @@ impl SockudoServer {
             match RateLimiterFactory::create_app_api(&config.rate_limiter, &config.database.redis)
                 .await
             {
-                Ok(limiter) => Some(limiter),
+                Ok(limiter) => {
+                    info!(
+                        limiter = "app_api",
+                        driver = ?config.rate_limiter.driver,
+                        "rate limiter initialized"
+                    );
+                    Some(limiter)
+                }
                 Err(e) => {
                     error!(error = %e, limiter = "app_api", "rate limiter initialization failed, per-app API limits not enforced");
                     None

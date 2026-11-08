@@ -180,14 +180,18 @@ impl RateLimiter for MemoryRateLimiter {
             entry.expiry = now + window_duration;
         }
 
-        entry.count = entry.count.saturating_add(cost);
-        let new_count = entry.count;
+        // All-or-nothing, like the Redis sliding-window script: a denied
+        // request, however large, uses no budget.
+        let allowed = entry.count.saturating_add(cost) <= max_requests;
+        if allowed {
+            entry.count += cost;
+        }
 
-        let remaining = max_requests.saturating_sub(new_count);
+        let remaining = max_requests.saturating_sub(entry.count);
         let reset_after = entry.expiry.saturating_duration_since(now).as_secs();
 
         Ok(RateLimitResult {
-            allowed: new_count <= max_requests,
+            allowed,
             remaining,
             reset_after,
             limit: max_requests,
@@ -237,6 +241,25 @@ mod tests {
 
         let reset = limiter.increment("socket-1").await.unwrap();
         assert!(reset.allowed);
+    }
+
+    #[tokio::test]
+    async fn denied_batch_consumes_no_budget() {
+        let limiter = MemoryRateLimiter::new(100, 60);
+
+        let batch = limiter
+            .increment_with_limit("app", 10_000, 100, 60)
+            .await
+            .unwrap();
+        assert!(!batch.allowed);
+        assert_eq!(batch.remaining, 100);
+
+        let single = limiter
+            .increment_with_limit("app", 1, 100, 60)
+            .await
+            .unwrap();
+        assert!(single.allowed);
+        assert_eq!(single.remaining, 99);
     }
 
     #[tokio::test]

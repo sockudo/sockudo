@@ -76,7 +76,7 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
 local count = redis.call('ZCARD', KEYS[1])
 local limit = tonumber(ARGV[4])
 local should_increment = ARGV[5] == '1'
-local cost = tonumber(ARGV[7] or '1')
+local cost = tonumber(ARGV[7])
 local already_counted = should_increment and redis.call('ZSCORE', KEYS[1], ARGV[6]) ~= false
 local allowed = 0
 

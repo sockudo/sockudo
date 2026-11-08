@@ -92,6 +92,15 @@
 
 ### Fixed
 
+- Per-app HTTP API rate limits (#534): `max_backend_events_per_second` and
+  `max_read_requests_per_second` are now enforced on the signed HTTP API through
+  the configured `[rate_limiter]` driver (key prefix `rl_app:`). Publishes cost
+  one unit per event (batch events count per event); signed `GET`/`HEAD` reads
+  cost one unit each. Over-limit requests answer `429` with `Retry-After`. Unset
+  or `0` limits are unlimited; a limiter backend outage fails open.
+- The memory rate limiter no longer counts denied requests, matching the Redis
+  drivers: an oversized `batch_events` request is rejected without consuming the
+  app's budget, so subsequent publishes in the same window still succeed.
 - A ping or pong received after the server sent its Close frame no longer marks
   the connection active again, which allowed sends after the Close.
 - Push queue work can run on standard SQS queues (`QUEUE_DRIVER=sqs`). The push queue attached a
