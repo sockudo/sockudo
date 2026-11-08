@@ -43,6 +43,16 @@ pub trait RateLimiter: Send + Sync + 'static {
     /// Increment the counter for a key and check if the request is allowed
     /// Returns the same result as `check` but also increments the counter
     async fn increment(&self, key: &str) -> Result<RateLimitResult>;
+    /// Consume `cost` units for a key against an explicit `max_requests` per
+    /// `window_secs` instead of the limiter's configured limit, so limits that
+    /// differ per key (e.g. per-app API limits) share one backend.
+    async fn increment_with_limit(
+        &self,
+        key: &str,
+        cost: u32,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> Result<RateLimitResult>;
     /// Reset the counter for a key
     async fn reset(&self, key: &str) -> Result<()>;
     /// Get the remaining requests for a key without incrementing

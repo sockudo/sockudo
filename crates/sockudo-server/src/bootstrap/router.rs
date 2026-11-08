@@ -8,7 +8,7 @@ use crate::http_handler::{
     publish_annotation, ready, revoke_capability_tokens, stats, terminate_user_connections, up,
     update_message, usage,
 };
-use crate::middleware::pusher_api_auth_middleware;
+use crate::middleware::{AppApiRateLimiter, pusher_api_auth_middleware};
 #[cfg(feature = "push")]
 use crate::push_http::{
     batch_publish as push_batch_publish, delete_channel_subscriptions, delete_device,
@@ -605,6 +605,10 @@ impl SockudoServer {
                 response
             },
         ));
+
+        if let Some(limiter) = self.state.app_api_rate_limiter.clone() {
+            api_router = api_router.layer(axum::Extension(AppApiRateLimiter(limiter)));
+        }
 
         if let Some(middleware) = api_rate_limiter_middleware_layer {
             api_router = api_router.layer(middleware);

@@ -49,6 +49,29 @@ impl RateLimiterFactory {
         .await
     }
 
+    /// Backend for per-app HTTP API limits (`max_backend_events_per_second`,
+    /// `max_read_requests_per_second`). Callers pass each app's limit with
+    /// `increment_with_limit`; the configured limit here is never used.
+    pub async fn create_app_api(
+        config: &RateLimiterConfig,
+        global_redis_conn_details: &RedisConnection,
+    ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
+        let limit = RateLimit {
+            max_requests: u32::MAX,
+            window_seconds: 1,
+            identifier: Some("app_api".to_owned()),
+            trust_hops: Some(0),
+        };
+        Self::create_for_limit(
+            config,
+            &limit,
+            "Per-app HTTP API",
+            "rl_app:",
+            global_redis_conn_details,
+        )
+        .await
+    }
+
     pub async fn create_push_acceptance(
         config: &RateLimiterConfig,
         max_requests: u32,

@@ -199,6 +199,24 @@ impl SockudoServer {
             "rate limiter initialized"
         );
 
+        let app_api_rate_limiter_instance = if config.rate_limiter.enabled {
+            match RateLimiterFactory::create_app_api(&config.rate_limiter, &config.database.redis)
+                .await
+            {
+                Ok(limiter) => Some(limiter),
+                Err(e) => {
+                    error!(error = %e, limiter = "app_api", "rate limiter initialization failed, per-app API limits not enforced");
+                    None
+                }
+            }
+        } else {
+            info!(
+                limiter = "app_api",
+                "rate limiting disabled, per-app API limits not enforced"
+            );
+            None
+        };
+
         #[cfg(feature = "push")]
         let push_acceptance_rps = std::env::var("PUSH_ACCEPTANCE_RATE_LIMIT")
             .ok()
@@ -835,6 +853,7 @@ impl SockudoServer {
             running: Arc::new(AtomicBool::new(true)),
             http_api_rate_limiter: Some(http_api_rate_limiter_instance.clone()),
             websocket_rate_limiter: Some(websocket_rate_limiter_instance.clone()),
+            app_api_rate_limiter: app_api_rate_limiter_instance,
             #[cfg(feature = "push")]
             push_acceptance_rate_limiter: push_acceptance_rate_limiter_instance.clone(),
             debug_enabled,

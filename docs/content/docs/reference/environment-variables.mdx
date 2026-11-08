@@ -250,9 +250,9 @@ deployments. For several apps or detailed policy, use the app manager instead.
 | `SOCKUDO_DEFAULT_APP_SECRET` | Default app secret created from environment. |
 | `SOCKUDO_DEFAULT_APP_ENABLED` | Enables or disables default app registration. |
 | `SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS` | Default app connection limit. |
-| `SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND` | Default app backend publish rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND` | Default app limit on events published through the HTTP API per second (default `100`, `0` = unlimited). Enforced when `[rate_limiter]` is enabled. |
 | `SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND` | Default app client event rate limit. |
-| `SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND` | Default app read API rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND` | Default app limit on signed HTTP API `GET` requests per second (default `100`, `0` = unlimited). Enforced when `[rate_limiter]` is enabled. |
 | `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL` | Default app presence member limit per channel. |
 | `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB` | Default app presence member payload size limit. |
 | `SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH` | Default app channel name length limit. |

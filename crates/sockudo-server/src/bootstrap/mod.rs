@@ -59,6 +59,9 @@ struct ServerState {
     running: Arc<AtomicBool>,
     http_api_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     websocket_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
+    /// Enforces per-app `max_backend_events_per_second` and
+    /// `max_read_requests_per_second`; `None` when rate limiting is disabled.
+    app_api_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     #[cfg(feature = "push")]
     push_acceptance_rate_limiter: Arc<dyn RateLimiter + Send + Sync>,
     debug_enabled: bool,
