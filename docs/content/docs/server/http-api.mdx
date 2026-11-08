@@ -75,7 +75,7 @@ Every handler error returns JSON with a stable machine-readable `code`:
 | `404` | `app_not_found`, `not_found` | Unknown app key, or the message, device, or resource does not exist. |
 | `413` | `payload_too_large` | Event data exceeds `max_event_payload_in_kb`, or the body exceeds `http_api.request_limit_in_mb`. |
 | `422` | `feature_disabled` | The feature (history, versioned messages, annotations) is disabled for this app or channel. |
-| `429` | `rate_limited` | A rate limit was hit. Includes `Retry-After`. |
+| `429` | `rate_limited` | A rate limit was hit. Includes `Retry-After`. Besides the per-IP limits, per-app `max_backend_events_per_second` and `max_read_requests_per_second` produce this response; see [Configuration](/docs/server/configuration#per-app-http-api-limits) for what each counts. Per-app `429`s may also carry `X-RateLimit-*` headers from the per-IP limiter; those headers describe the per-IP budget, not the per-app budget. |
 | `503` | `service_unavailable`, `backpressure`, `draining` | A shared backend is unavailable, an idempotent request is still in flight, or the node is shutting down. `backpressure` and `draining` include `Retry-After`. |
 | `5xx` | `internal_error` and others | Server or backend dependency failure. |
 

@@ -70,9 +70,27 @@ impl RedisClusterRateLimiter {
         key: &str,
         increment: bool,
     ) -> Result<RateLimitResult> {
+        self.run_sliding_window(
+            key,
+            increment,
+            1,
+            self.config.max_requests,
+            self.config.window_secs,
+        )
+        .await
+    }
+
+    async fn run_sliding_window(
+        &self,
+        key: &str,
+        increment: bool,
+        cost: u32,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> Result<RateLimitResult> {
         let redis_key = self.get_key(key);
         let now_ms = crate::redis_window::current_time_ms();
-        let window_start_ms = crate::redis_window::window_start_ms(now_ms, self.config.window_secs);
+        let window_start_ms = crate::redis_window::window_start_ms(now_ms, window_secs);
         let member = if increment {
             crate::redis_window::entry_member(now_ms)
         } else {
@@ -82,8 +100,9 @@ impl RedisClusterRateLimiter {
             key: &redis_key,
             now_ms,
             window_start_ms,
-            window_secs: self.config.window_secs,
-            max_requests: self.config.max_requests,
+            window_secs,
+            max_requests,
+            cost,
             increment,
             member: &member,
         };
@@ -138,6 +157,17 @@ impl RateLimiter for RedisClusterRateLimiter {
 
     async fn increment(&self, key: &str) -> Result<RateLimitResult> {
         self.run_sliding_window_check(key, true).await
+    }
+
+    async fn increment_with_limit(
+        &self,
+        key: &str,
+        cost: u32,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> Result<RateLimitResult> {
+        self.run_sliding_window(key, true, cost, max_requests, window_secs)
+            .await
     }
 
     async fn reset(&self, key: &str) -> Result<()> {

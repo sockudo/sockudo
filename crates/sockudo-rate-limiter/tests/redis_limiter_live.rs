@@ -59,6 +59,50 @@ async fn redis_limiter_counts_each_request_in_same_second() {
 
 #[tokio::test]
 #[ignore = "requires a live Redis-compatible server, such as Valkey, on REDIS_URL or localhost:6379"]
+async fn redis_limiter_denied_batch_consumes_no_budget() {
+    let client = redis::Client::open(redis_url()).expect("valid Redis URL");
+    let prefix = unique_prefix("batch");
+    let redis_key = format!("{prefix}:rl:app-1");
+    let limiter = RedisRateLimiter::new(client.clone(), prefix, 100, 60)
+        .await
+        .expect("Redis limiter should connect");
+
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("direct Redis connection should connect");
+    let _: usize = conn.del(&redis_key).await.expect("test key cleanup");
+
+    let batch = limiter
+        .increment_with_limit("app-1", 10_000, 100, 60)
+        .await
+        .expect("oversized batch increment");
+    let fitting = limiter
+        .increment_with_limit("app-1", 10, 100, 60)
+        .await
+        .expect("fitting batch increment");
+    let single = limiter
+        .increment_with_limit("app-1", 1, 100, 60)
+        .await
+        .expect("single increment");
+
+    let count: usize = conn
+        .zcard(&redis_key)
+        .await
+        .expect("read limiter zset size");
+    let _: usize = conn.del(&redis_key).await.expect("test key cleanup");
+
+    assert!(!batch.allowed);
+    assert_eq!(batch.remaining, 100);
+    assert!(fitting.allowed);
+    assert_eq!(fitting.remaining, 90);
+    assert!(single.allowed);
+    assert_eq!(single.remaining, 89);
+    assert_eq!(count, 11);
+}
+
+#[tokio::test]
+#[ignore = "requires a live Redis-compatible server, such as Valkey, on REDIS_URL or localhost:6379"]
 async fn redis_limiter_removes_expired_window_entries() {
     let client = redis::Client::open(redis_url()).expect("valid Redis URL");
     let prefix = unique_prefix("cleanup");
