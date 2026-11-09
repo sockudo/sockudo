@@ -128,6 +128,18 @@ impl DeltaCompressionManager {
         enabled: Option<bool>,
         algorithm: Option<DeltaAlgorithm>,
     ) {
+        // Opting out on a socket without delta state is a no-op. Creating the
+        // (enabled) socket state here would turn delta compression on for
+        // every other channel, including on binary wire formats where the
+        // connection-level enable was refused.
+        if enabled == Some(false) && !self.socket_states.contains_key(socket_id) {
+            tracing::debug!(
+                socket_id = %socket_id,
+                channel,
+                "per-channel delta opt-out on a socket without delta state"
+            );
+            return;
+        }
         let socket_state = self.socket_states.entry(*socket_id).or_insert_with(|| {
             Arc::new(SocketDeltaState {
                 enabled: true,
@@ -415,6 +427,18 @@ mod tests {
 
         // Now the channel should be enabled (and global socket state too)
         assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+    }
+
+    #[tokio::test]
+    async fn test_per_channel_opt_out_does_not_enable_socket() {
+        let manager = DeltaCompressionManager::new(DeltaCompressionConfig::default());
+        let socket_id = SocketId::new();
+
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(false), None);
+
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
     }
 
     #[tokio::test]
