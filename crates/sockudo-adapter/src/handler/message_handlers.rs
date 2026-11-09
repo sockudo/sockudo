@@ -43,13 +43,41 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    /// Notice sent when delta compression is refused for a socket or channel.
+    #[cfg(feature = "delta")]
+    pub(crate) fn delta_compression_refused(channel: Option<&str>, reason: &str) -> PusherMessage {
+        let mut data = sonic_rs::json!({ "enabled": false, "reason": reason });
+        if let Some(channel) = channel {
+            data["channel"] = sonic_rs::Value::from(channel);
+        }
+        PusherMessage {
+            event: Some("pusher:delta_compression_enabled".to_string()),
+            data: Some(sockudo_protocol::messages::MessageData::Json(data)),
+            channel: channel.map(str::to_string),
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        }
+    }
+
+    /// Delta bases are the server's JSON serialization of each message, which
+    /// a MessagePack or Protobuf client never sees and cannot reproduce, so
+    /// delta compression is only offered on the JSON wire format.
+    #[cfg(feature = "delta")]
+    pub(crate) const DELTA_REQUIRES_JSON: &'static str =
+        "delta compression requires the JSON wire format";
+
     #[cfg(feature = "delta")]
     pub async fn handle_enable_delta_compression(&self, socket_id: &SocketId) -> Result<()> {
-        tracing::info!(socket_id = %socket_id, "enabling delta compression");
-
-        // Enable delta compression in the manager
-        self.delta_compression.enable_for_socket(socket_id);
-
         // Update connection state to track that delta compression is enabled
         let connection_manager = &self.connection_manager;
 
@@ -60,6 +88,22 @@ impl ConnectionHandler {
         for app in apps {
             if let Some(connection) = connection_manager.get_connection(socket_id, &app.id).await {
                 let mut conn_locked = connection.inner.lock().await;
+                if conn_locked.state.wire_format.is_binary() {
+                    drop(conn_locked);
+                    tracing::info!(
+                        socket_id = %socket_id,
+                        "refusing delta compression on a binary wire format"
+                    );
+                    self.send_message_to_socket(
+                        &app.id,
+                        socket_id,
+                        Self::delta_compression_refused(None, Self::DELTA_REQUIRES_JSON),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                tracing::info!(socket_id = %socket_id, "enabling delta compression");
+                self.delta_compression.enable_for_socket(socket_id);
                 conn_locked.state.delta_compression_enabled = true;
 
                 let algorithm = self.delta_compression.get_algorithm();

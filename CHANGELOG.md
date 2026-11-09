@@ -97,6 +97,13 @@
 
 ### Fixed
 
+- Delta compression is refused on MessagePack and Protobuf connections.
+  Delta bases are the server's JSON serialization of each message, which a
+  binary-format client never receives and cannot reproduce, so every delta
+  failed its checksum (Fossil) or decoded to wrong data (VCDIFF, which has no
+  checksum). `enable_delta_compression` and per-subscription `delta` settings
+  on those connections now answer `delta_compression_enabled` with
+  `{"enabled": false, "reason": ...}` and messages are sent in full.
 - `presence_update` with an object `data` on the JSON wire format (as the
   .NET and Swift clients send it) was rejected with "presence_update channel
   is required": the frame decoded as structured data, which lifted `channel`
