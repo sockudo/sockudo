@@ -650,9 +650,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-dynamodb"
-version = "1.135.0"
+version = "1.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dcea66375262f0025ba34d87ce72d30ae94b8760167db9497e6e93f286d85b2"
+checksum = "41515f51bd2b5608268336bda372065e8fd5d1ca2f684b63e5c25ae4abb62c53"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -676,9 +676,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-lambda"
-version = "1.155.0"
+version = "1.156.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "013ae6c7865b2602950c1af79455c895fddc070d4e8ec4cccea518eea7ce4374"
+checksum = "54eb230a1a836e7aba150ce63a979960b7222c3e46f0ba9298ecf62987237662"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -702,9 +702,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-sns"
-version = "1.120.0"
+version = "1.121.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be2af3230311e18da88c862760cdb69a2ba1ec0aa42779dbaabf54efac45692"
+checksum = "a794cbd36edfbd178189c9197ee79f764b49e2899a92cc0894638c426ae51adc"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -728,9 +728,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-sqs"
-version = "1.118.0"
+version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "103fe2eca01b4e7c9a0e8ac7c0d1e5f94245a0b530c53fe07fb0f53abdceb9e5"
+checksum = "86e08dcb1abb0a0d3771fa7eac3af7550fd1708628e79f89db9bf41da8d2c030"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -1002,9 +1002,9 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-schema"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bec8dae1015a6d959a5faf86fbdf77486cfe19e4ccb6ee009d8a46efc45028a4"
+checksum = "9543fc722ed4865ab29fb66bd7ed0bef7b029d265ba8c587144511e30006d431"
 dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
@@ -2763,7 +2763,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
+ "windows-link 0.1.3",
  "windows-result 0.4.1",
 ]
 
@@ -6016,9 +6016,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.8.0"
+version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7acd809e80afa754c63f586955699d8990efe1c4b6613183ee5f027a11fbc8b5"
+checksum = "db7f3d75b5a3301746bff39a767bf4c5c42506b08513527308b3875bfb64a031"
 dependencies = [
  "arc-swap",
  "arcstr",
@@ -7826,9 +7826,9 @@ dependencies = [
 
 [[package]]
 name = "sockudo-ws"
-version = "3.1.0"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed5f19c13fe5ffe390d4e30c4617ed65117e83d2792d7bb0092f4efd62536e0"
+checksum = "2a4c1d672d3e2a594a681273179516d8c93c9e29844c49791acb06866d2b71bc"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -9129,7 +9129,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.9.5",
+ "rand 0.10.3",
 ]
 
 [[package]]
