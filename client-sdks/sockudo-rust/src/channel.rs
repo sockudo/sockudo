@@ -228,9 +228,15 @@ pub(crate) struct ChannelState {
     pub attach_serial: Option<u64>,
     pub members: Members,
     pub secret: Option<SharedSecret>,
-    /// While a key-rotation re-authorization is in flight (encrypted
-    /// channels), the encrypted events that arrive meanwhile, in order.
-    pub reauthorizing: Option<VecDeque<Arc<Event>>>,
+    /// A key-rotation re-authorization in flight (encrypted channels).
+    pub reauthorizing: Option<Reauthorization>,
+}
+
+/// Encrypted events held, in order, while a rotated key is fetched. Bound to
+/// the connection that started the refresh: a reconnect discards it.
+pub(crate) struct Reauthorization {
+    epoch: u64,
+    queue: VecDeque<Arc<Event>>,
 }
 
 pub(crate) struct ChannelInner {
@@ -685,7 +691,7 @@ impl ChannelInner {
             let mut state = self.state.lock();
             // While the key is being refreshed, queue everything so events
             // are delivered in order once it arrives.
-            if let Some(queue) = state.reauthorizing.as_mut() {
+            if let Some(Reauthorization { queue, .. }) = state.reauthorizing.as_mut() {
                 if queue.len() >= MAX_REAUTH_QUEUE {
                     drop(state);
                     shared.report_error(Error::Decryption(format!(
@@ -717,7 +723,10 @@ impl ChannelInner {
                     shared.report_error(error);
                     return;
                 };
-                self.state.lock().reauthorizing = Some(VecDeque::from([Arc::clone(event)]));
+                self.state.lock().reauthorizing = Some(Reauthorization {
+                    epoch,
+                    queue: VecDeque::from([Arc::clone(event)]),
+                });
                 tracing::debug!(channel = %self.name, %error, "decryption failed; re-authorizing");
                 let shared = Arc::clone(shared);
                 tokio::spawn(async move {
@@ -737,7 +746,7 @@ impl ChannelInner {
                         }
                     }
                     .await;
-                    channel.drain_reauthorized(&shared, refreshed);
+                    channel.drain_reauthorized(&shared, epoch, refreshed);
                 });
             }
         }
@@ -751,7 +760,19 @@ impl ChannelInner {
 
     /// Deliver the events queued during a key refresh, in order, then resume
     /// direct decryption.
-    fn drain_reauthorized(&self, shared: &Shared, refreshed: Result<()>) {
+    ///
+    /// Only the refresh that owns the queue (same connection `epoch`) drains
+    /// it; a refresh outliving its connection leaves a newer queue alone.
+    fn drain_reauthorized(&self, shared: &Shared, epoch: u64, refreshed: Result<()>) {
+        if self
+            .state
+            .lock()
+            .reauthorizing
+            .as_ref()
+            .is_none_or(|reauth| reauth.epoch != epoch)
+        {
+            return;
+        }
         if let Err(error) = &refreshed {
             shared.report_error(Error::Decryption(format!(
                 "key refresh for '{}' failed: {error}",
@@ -761,8 +782,9 @@ impl ChannelInner {
         loop {
             let (batch, secret) = {
                 let mut state = self.state.lock();
-                let Some(queue) = state.reauthorizing.as_mut() else {
-                    return;
+                let queue = match state.reauthorizing.as_mut() {
+                    Some(reauth) if reauth.epoch == epoch => &mut reauth.queue,
+                    _ => return,
                 };
                 if queue.is_empty() {
                     state.reauthorizing = None;
@@ -970,6 +992,9 @@ pub(crate) fn disconnect_all(shared: &Shared) {
         state.members.reset();
         state.secret = None;
         state.attach_serial = None;
+        // Events held for a key refresh belong to the lost connection; the
+        // new session re-authorizes and recovery replays what it needs.
+        state.reauthorizing = None;
     }
     if !forget.is_empty() {
         let mut channels = shared.channels.write();

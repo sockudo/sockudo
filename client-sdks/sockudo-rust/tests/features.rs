@@ -310,6 +310,80 @@ async fn encrypted_channels_decrypt_and_rotate_keys() {
     ));
 }
 
+#[cfg(feature = "encryption")]
+#[tokio::test]
+async fn reconnect_during_key_refresh_keeps_new_messages() {
+    use crypto_secretbox::XSalsa20Poly1305;
+    use crypto_secretbox::aead::{Aead, KeyInit};
+
+    let keys = Arc::new(parking_lot::Mutex::new([1u8; 32]));
+    let auths = Arc::new(AtomicUsize::new(0));
+    let k = Arc::clone(&keys);
+    let a = Arc::clone(&auths);
+    let mut server = MockServer::start().await;
+    let client = client_for(&server)
+        .channel_authorizer(move |_request: ChannelAuthRequest| {
+            let key = *k.lock();
+            // The second call is the key refresh: keep it in flight across
+            // the reconnect below.
+            let slow = a.fetch_add(1, Ordering::SeqCst) == 1;
+            async move {
+                if slow {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+                Ok(ChannelAuthData::new("app-key:sig").with_shared_secret(b64(&key)))
+            }
+        })
+        .build()
+        .unwrap();
+    let channel = client.subscribe("private-encrypted-docs");
+    let plaintexts = Recorder::default();
+    let p = plaintexts.clone();
+    channel.bind("doc", move |event| p.push(event.value()));
+    client.connect().unwrap();
+
+    let encrypt = |key: [u8; 32], nonce: [u8; 24], text: &str| {
+        let cipher = XSalsa20Poly1305::new_from_slice(&key).unwrap();
+        let ciphertext = cipher.encrypt(&nonce.into(), text.as_bytes()).unwrap();
+        json!({"ciphertext": b64(&ciphertext), "nonce": b64(&nonce)})
+    };
+    let mut conn = server.accept().await;
+    conn.establish("1.1");
+    conn.expect_event("sockudo:subscribe").await;
+    conn.subscription_succeeded("private-encrypted-docs", &json!({}));
+
+    // Rotate: starts the slow key refresh on the first connection.
+    *keys.lock() = [2u8; 32];
+    conn.send_event(
+        "doc",
+        Some("private-encrypted-docs"),
+        &encrypt([2; 32], [8; 24], r#"{"v":2}"#),
+    );
+    eventually(|| auths.load(Ordering::SeqCst) == 2).await;
+
+    // Reconnect while it is in flight; the new session authorizes itself.
+    conn.close(4200, "reconnect");
+    let mut conn = server.accept().await;
+    conn.establish("2.2");
+    conn.expect_event("sockudo:subscribe").await;
+    conn.subscription_succeeded("private-encrypted-docs", &json!({}));
+    conn.send_event(
+        "doc",
+        Some("private-encrypted-docs"),
+        &encrypt([2; 32], [7; 24], r#"{"v":3}"#),
+    );
+    eventually(|| plaintexts.len() == 1).await;
+    // The stale refresh finishing must not swallow the new session's events.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    conn.send_event(
+        "doc",
+        Some("private-encrypted-docs"),
+        &encrypt([2; 32], [6; 24], r#"{"v":4}"#),
+    );
+    eventually(|| plaintexts.len() == 2).await;
+    assert_eq!(plaintexts.snapshot(), [json!({"v": 3}), json!({"v": 4})]);
+}
+
 #[tokio::test]
 async fn user_sign_in_server_channel_and_watchlist() {
     let mut server = MockServer::start().await;
