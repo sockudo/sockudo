@@ -559,6 +559,11 @@ jobs:
           cargo test --no-default-features
           cargo package --allow-dirty --no-verify
 
+      - name: Install server build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config protobuf-compiler libprotobuf-dev
+
       - name: Build Sockudo server
         working-directory: .
         run: cargo build -p sockudo
