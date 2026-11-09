@@ -47,12 +47,16 @@ function sample() {
 }
 
 const sockets = [];
-let subscribed = 0;
+let subscribed = 0; // open sockets whose subscription succeeded
+let opened = 0; // monotonic, so channel assignment stays stable
+const subscribedByChannel = new Array(CHANNELS).fill(0);
 const arrivals = new Map();
 
-function open(i) {
+function open() {
+  const i = opened++;
   const ws = new WebSocket(`ws://${HOST}/app/${KEY}?protocol=2`);
   const channel = `private-probe-${i % CHANNELS}`;
+  let didSubscribe = false;
   ws.onmessage = (ev) => {
     const msg = JSON.parse(String(ev.data));
     if (msg.event === "sockudo:connection_established") {
@@ -60,11 +64,24 @@ function open(i) {
       const sig = createHmac("sha256", SECRET).update(`${socketId}:${channel}`).digest("hex");
       ws.send(JSON.stringify({ event: "sockudo:subscribe", data: { channel, auth: `${KEY}:${sig}` } }));
     } else if (msg.event === "sockudo_internal:subscription_succeeded") {
-      subscribed++;
+      if (!didSubscribe) {
+        didSubscribe = true;
+        subscribed++;
+        subscribedByChannel[i % CHANNELS]++;
+      }
     } else if (msg.event === "probe") {
       const s = JSON.parse(msg.data).s;
       if (!arrivals.has(s)) arrivals.set(s, []);
       arrivals.get(s).push(Date.now());
+    }
+  };
+  ws.onclose = () => {
+    const at = sockets.indexOf(ws);
+    if (at >= 0) sockets.splice(at, 1);
+    if (didSubscribe) {
+      didSubscribe = false;
+      subscribed--;
+      subscribedByChannel[i % CHANNELS]--;
     }
   };
   sockets.push(ws);
@@ -103,34 +120,43 @@ const base = sample();
 if (base) console.log(`idle memory ${fmtMem(base.memKiB)}`);
 let prev = { n: 0, mem: base?.memKiB };
 for (const n of STEPS) {
-  while (sockets.length < n) {
-    open(sockets.length);
-    if (sockets.length % 200 === 0) await sleep(250);
+  const growDeadline = Date.now() + 60_000;
+  while (sockets.length < n && Date.now() < growDeadline) {
+    open();
+    if (opened % 200 === 0) await sleep(250);
   }
   const t = Date.now();
   while (subscribed < n && Date.now() - t < 60_000) await sleep(100);
   await sleep(3000);
   const now = sample();
+  if (subscribed < n) {
+    console.log(`${n} requested, ${sockets.length} open, ${subscribed} subscribed: target not reached, no memory sample`);
+    prev = { n: sockets.length, mem: now?.memKiB ?? prev.mem };
+    continue;
+  }
+  const perStep = now && subscribed > prev.n && prev.mem != null
+    ? `${((now.memKiB - prev.mem) / (subscribed - prev.n)).toFixed(1)} KiB/conn over the previous step, `
+    : "";
   const mem = now
-    ? `, memory ${fmtMem(now.memKiB)}, ${((now.memKiB - prev.mem) / (n - prev.n)).toFixed(1)} KiB/conn over the previous step, ${((now.memKiB - base.memKiB) / n).toFixed(1)} KiB/conn overall`
+    ? `, memory ${fmtMem(now.memKiB)}, ${perStep}${((now.memKiB - base.memKiB) / subscribed).toFixed(1)} KiB/conn overall`
     : "";
   console.log(`${n} connections, ${subscribed} subscribed${mem}`);
-  prev = { n, mem: now?.memKiB };
+  prev = { n: subscribed, mem: now?.memKiB };
 }
 
 if (process.env.PUBLISH !== "0") {
   const sent = [], statuses = {}, byStatus = {};
-  const before = sample(), t0 = Date.now();
+  const before = sample(), t0 = Date.now(), offered = subscribed;
   const end = t0 + DURATION_MS;
   const inflight = [];
   let seq = 0;
   while (Date.now() < end) {
     for (let k = 0; k < CHANNELS; k++) {
-      const s = seq++, at = Date.now();
+      const s = seq++, at = Date.now(), subs = subscribedByChannel[k];
       inflight.push(publish(`private-probe-${k}`, s).then((st) => {
         statuses[st] = (statuses[st] ?? 0) + 1;
         (byStatus[st] ??= []).push(Date.now() - at);
-        sent.push({ s, at, k });
+        sent.push({ s, at, k, subs });
       }));
     }
     await sleep(TICK_MS);
@@ -141,10 +167,10 @@ if (process.env.PUBLISH !== "0") {
   const lat = [];
   let expected = 0;
   for (const p of sent) {
-    expected += sockets.filter((_, i) => i % CHANNELS === p.k).length;
+    expected += p.subs;
     for (const t of arrivals.get(p.s) ?? []) lat.push(t - p.at);
   }
-  const deliveriesPerSec = (sockets.length * 1000) / TICK_MS;
+  const deliveriesPerSec = (offered * 1000) / TICK_MS;
   console.log(`publish phase: ${deliveriesPerSec.toFixed(0)} deliveries/s offered for ${DURATION_MS} ms`);
   if (before && after) {
     console.log(`server cpu ${((after.cpuUsec - before.cpuUsec) / elapsed).toFixed(0)}m`);
@@ -155,5 +181,5 @@ if (process.env.PUBLISH !== "0") {
   }
   console.log(`delivery p50/p95/p99 ${pct(lat, 0.5)}/${pct(lat, 0.95)}/${pct(lat, 0.99)} ms, delivered ${lat.length}/${expected}`);
 }
-for (const ws of sockets) ws.close();
+for (const ws of [...sockets]) ws.close();
 process.exit(0);
