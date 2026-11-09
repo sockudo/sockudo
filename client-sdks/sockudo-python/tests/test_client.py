@@ -759,8 +759,8 @@ async def test_presence_update_sends_platform_event() -> None:
     assert sent == [
         (
             "sockudo:presence_update",
-            {"user_info": {"role": "writer"}},
-            "presence-lobby",
+            '{"channel":"presence-lobby","data":{"role":"writer"}}',
+            None,
         )
     ]
 
@@ -896,3 +896,30 @@ async def test_versioned_message_proxy_request_decodes_typed_ack() -> None:
     assert ack.version_serial == 12
     assert ack.history_serial == 13
     assert ack.delivery_serial == 14
+
+
+@pytest.mark.asyncio
+async def test_server_to_user_channel_events_reach_the_user_facade() -> None:
+    client = SockudoClient("app-key", SockudoOptions(cluster="local", force_tls=False))
+    received: list[object] = []
+    client.user.bind("invoice-ready", lambda data, _: received.append(data))
+
+    async def fake_send_event(
+        name: str, data: object, channel_name: Optional[str]
+    ) -> bool:
+        return True
+
+    client.send_event = fake_send_event  # type: ignore[method-assign]
+    await client.user.handle_sign_in_success({"user_data": '{"id":"u7"}'})
+    assert "#server-to-user-u7" in client.channels
+
+    await client._handle_raw_message(
+        json.dumps(
+            {
+                "event": "invoice-ready",
+                "channel": "#server-to-user-u7",
+                "data": json.dumps({"id": 1}),
+            }
+        )
+    )
+    assert received == [{"id": 1}]
