@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDelta as fossilCreate } from "fossil-delta";
 import DeltaCompressionManager from "../src/core/delta/manager";
-import ChannelState, {
-  MAX_EVENT_BASE_GROUPS,
-} from "../src/core/delta/channel_state";
+import ChannelState, { MAX_EVENT_BASE_GROUPS } from "../src/core/delta/channel_state";
 
 function encode(base: string, next: string): string {
   const encoder = new TextEncoder();
@@ -84,9 +82,7 @@ describe("delta bases per (event, conflation key)", () => {
       base_index: 6,
     });
     expect(result).toBeNull();
-    expect(sent.some(([event]) => event.endsWith("delta_sync_error"))).toBe(
-      true,
-    );
+    expect(sent.some(([event]) => event.endsWith("delta_sync_error"))).toBe(true);
   });
 });
 
@@ -103,9 +99,9 @@ describe("event base group limit", () => {
     expect(state.findEventBase("hot", undefined, 1)).toBe("h1");
     // "e0" was the least recently used group: it must resync, not guess.
     expect(state.findEventBase("e0", undefined, 0)).toBeNull();
-    expect(
-      state.findEventBase(`e${MAX_EVENT_BASE_GROUPS - 1}`, undefined, 0),
-    ).toBe(`m${MAX_EVENT_BASE_GROUPS - 1}`);
+    expect(state.findEventBase(`e${MAX_EVENT_BASE_GROUPS - 1}`, undefined, 0)).toBe(
+      `m${MAX_EVENT_BASE_GROUPS - 1}`,
+    );
   });
 });
 

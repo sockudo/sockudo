@@ -86,10 +86,7 @@ export default class ChannelState {
    * Get base message for a conflation key at specific index
    * Note: baseIndex is the sequence number, not array index
    */
-  getBaseMessage(
-    conflationKeyValue?: string,
-    baseIndex?: number,
-  ): string | null {
+  getBaseMessage(conflationKeyValue?: string, baseIndex?: number): string | null {
     if (!this.conflationKey) {
       // Legacy mode: return single base
       return this.baseMessage;
@@ -264,9 +261,6 @@ export default class ChannelState {
   }
 }
 
-function eventBaseKey(
-  event: string,
-  conflationKeyValue: string | undefined,
-): string {
+function eventBaseKey(event: string, conflationKeyValue: string | undefined): string {
   return `${event}\u0000${conflationKeyValue ?? ""}`;
 }
