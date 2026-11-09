@@ -14,6 +14,9 @@ on:
       - "server-sdks/**"
       # sockudo-ai-transport-js replays the server AI conformance goldens.
       - "tests/ai-conformance/**"
+      # The Rust client's wire-conformance suite runs against the server codecs.
+      - "crates/sockudo-protocol/**"
+      - "scripts/rust-client-live.sh"
   push:
     branches: [main, master, develop, beta]
     paths:
@@ -26,6 +29,9 @@ on:
       - "server-sdks/**"
       # sockudo-ai-transport-js replays the server AI conformance goldens.
       - "tests/ai-conformance/**"
+      # The Rust client's wire-conformance suite runs against the server codecs.
+      - "crates/sockudo-protocol/**"
+      - "scripts/rust-client-live.sh"
 
 permissions:
   contents: read
@@ -515,6 +521,53 @@ jobs:
           go vet ./...
           go test ./...
           go list -m all
+
+  rust-client-sdk:
+    name: Rust Client SDK
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client-sdks/sockudo-rust/target
+            target
+          key: ${{ runner.os }}-cargo-rust-client-${{ hashFiles('client-sdks/sockudo-rust/Cargo.lock', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-rust-client-
+
+      - name: Verify Rust client package
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --all-targets --no-default-features -- -D warnings
+          cargo test --all-features
+          cargo test --no-default-features
+          cargo package --allow-dirty --no-verify
+
+      - name: Build Sockudo server
+        working-directory: .
+        run: cargo build -p sockudo
+
+      - name: Live tests against the server
+        working-directory: .
+        run: |
+          scripts/rust-client-live.sh
+          scripts/rust-client-live.sh --compression
 
   rust-server-sdk:
     name: Rust Server SDK

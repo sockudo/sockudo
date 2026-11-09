@@ -21,4 +21,5 @@ the repository root.
 | `@sockudo/client` | `client-sdks/sockudo-js` |
 | `io.sockudo:sockudo-kotlin` | `client-sdks/sockudo-kotlin` |
 | `sockudo-python` | `client-sdks/sockudo-python` |
+| `sockudo-client` (Rust) | `client-sdks/sockudo-rust` |
 | `SockudoSwift` via SwiftPM (`sockudo/sockudo-swift`) | `client-sdks/sockudo-swift` |

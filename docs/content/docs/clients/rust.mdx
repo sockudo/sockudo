@@ -1,0 +1,282 @@
+---
+title: Rust
+description: Use the async sockudo-client Rust realtime client with Protocol V2, protected channels, recovery, filters, deltas, history, and encrypted payloads.
+icon: FileCode
+---
+
+`sockudo-client` is the official asynchronous realtime client for Rust. It is
+built for long-running services, agents, workers, trading and telemetry
+consumers, CLIs, and desktop apps that need a WebSocket connection to Sockudo.
+It is different from [`sockudo-http`](/docs/server-sdks/rust), the trusted
+server-side HTTP SDK used to publish and sign authorization responses.
+
+The client runs on Tokio, uses [`sockudo-ws`](https://crates.io/crates/sockudo-ws)
+for WebSockets and [`sonic-rs`](https://crates.io/crates/sonic-rs) for JSON,
+requires Rust 1.88 or newer, and uses Protocol V2 by default.
+
+## Install
+
+Until the crate is published, depend on the monorepo:
+
+```toml
+[dependencies]
+sockudo-client = { git = "https://github.com/sockudo/sockudo", package = "sockudo-client" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+Inside a checkout, use `sockudo-client = { path = "client-sdks/sockudo-rust" }`.
+
+## Connect and subscribe
+
+Create one client per process, bind handlers, then connect:
+
+```rust
+use serde::Deserialize;
+use sockudo_client::{Result, SockudoClient};
+
+#[derive(Debug, Deserialize)]
+struct Price {
+    symbol: String,
+    price: f64,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let client = SockudoClient::builder("app-key")
+        .ws_host("realtime.example.com")
+        .build()?;
+
+    let channel = client.subscribe("prices");
+    channel.bind("price-updated", |event| {
+        if let Ok(price) = event.json::<Price>() {
+            println!("{price:?}");
+        }
+    });
+
+    client.connect()?;
+    println!("socket id: {}", client.connected().await?);
+    tokio::signal::ctrl_c().await?;
+    client.disconnect().await;
+    Ok(())
+}
+```
+
+`connect()` starts the connection task and returns immediately;
+`connected().await` resolves with the socket id or fails once the client stops
+retrying. Callbacks run on the connection task in wire order — keep them short,
+or consume a bounded `EventStream` (`channel.stream(capacity)`) from your own
+task. Events beyond a stream's capacity are dropped and counted rather than
+buffered without limit.
+
+### Self-hosted connection options
+
+| Builder method | Purpose | Production guidance |
+| --- | --- | --- |
+| `ws_host` / `cluster` | WebSocket host, or `ws-{cluster}.sockudo.io` | Use the public load balancer or ingress hostname |
+| `ws_port` / `wss_port` | Plaintext and TLS ports | Usually `80` and `443` behind a proxy |
+| `force_tls(false)` | Allow `ws://` (TLS is the default) | Keep TLS outside local development |
+| `protocol_version` | `V2` for Sockudo features, `V1` for Pusher compatibility | Prefer `V2` for new applications |
+| `connection_recovery(true)` | Resume from the last `stream_id` and `serial` | Enable when missed events matter |
+| `max_reconnect_attempts` | Retry budget; `None` means unlimited | Defaults to `Some(6)` |
+| `max_reconnect_gap` / `reconnect_jitter` | Backoff cap and randomization | Add jitter for large fleets |
+| `wire_format` | JSON, MessagePack, or Protobuf | Use a binary format only when every endpoint supports it |
+| `tls_config` | Custom rustls configuration | For private CAs or client certificates |
+| `permessage_deflate` | Offer WebSocket compression (default on) | Used only when the server sets `[websocket] compression` |
+| `enable_stats` / `stats_host` | Opt-in connection timeline telemetry | Off by default |
+
+## Lifecycle and cleanup
+
+```rust
+client.on_state_change(|change| println!("{} -> {}", change.previous, change.current));
+client.on_error(|error| eprintln!("{error} (code {:?})", error.code()));
+```
+
+States are `initialized`, `connecting`, `connected`, `reconnecting`,
+`unavailable`, `disconnected` and `failed`. Unexpected drops reconnect with a
+quadratic delay (0s, 1s, 4s, 9s … capped at 120s). Close codes follow Pusher:
+`4000` reconnects over TLS, `4001`–`4099` and `≥4300` stop, `4100`–`4199` back
+off, and `4200`–`4299` reconnect immediately. `client.unsubscribe(name)` also
+clears the channel's recovery and delta state. Dropping the last client handle
+closes the connection.
+
+## Private and presence authorization
+
+The client sends its `socket_id` and channel name to your backend, which
+authenticates the user, authorizes the exact channel, and signs the response
+with a [server SDK](/docs/server-sdks). Never put the app secret in the client.
+
+```rust
+use sockudo_client::{Endpoint, SockudoClient};
+
+let client = SockudoClient::builder("app-key")
+    .ws_host("realtime.example.com")
+    .channel_auth_endpoint(
+        Endpoint::new("https://api.example.com/sockudo/auth")
+            .headers_provider(|| vec![("Authorization".into(), session_header())]),
+    )
+    .user_auth_endpoint("https://api.example.com/sockudo/user-auth")
+    .build()?;
+```
+
+The endpoint receives a form POST with `socket_id` and `channel_name` and
+returns `{"auth", "channel_data"?, "shared_secret"?}`. Use
+`.channel_authorizer(|request| async { ... })` to call your backend another
+way. Failures emit `sockudo:subscription_error` on the channel and reach
+`on_error`.
+
+Presence channels expose membership and V2 member updates:
+
+```rust
+let lobby = client.subscribe("presence-lobby");
+lobby.bind("sockudo:member_added", |event| println!("joined {}", event.value()));
+if let Some(members) = lobby.members() {
+    println!("{} online, me = {:?}", members.count(), members.me());
+}
+lobby.update_presence(&sonic_rs::json!({"status": "away"})).await?;
+```
+
+## Capability-token authentication
+
+```rust
+use std::time::Duration;
+use sockudo_client::{TokenAuthData, TokenRequest};
+
+let client = SockudoClient::builder("app-key")
+    .ws_host("realtime.example.com")
+    .token_provider(|request: TokenRequest| async move {
+        let token = fetch_token(request.reason.as_str()).await?;
+        Ok(TokenAuthData::new(token).with_expires_in(Duration::from_secs(300)))
+    })
+    .build()?;
+```
+
+The client refreshes with `sockudo:auth` at 80% of the token lifetime (no later
+than `auth_refresh_leeway` before expiry), again on `40142`, and before each
+reconnect. JWT `exp`/`iat` claims are used when no lifetime is supplied. A
+static `.token(...)` is never refreshed. Revocation (`40160`) is reported and
+not retried in place. Token options are rejected under Protocol V1.
+
+## Filters, event selection, and delta compression
+
+```rust
+use sockudo_client::{ChannelDeltaSettings, DeltaOptions, Filter, SubscribeOptions};
+
+let client = SockudoClient::builder("app-key")
+    .ws_host("realtime.example.com")
+    .delta_compression(DeltaOptions::default())
+    .build()?;
+
+let ticker = client.subscribe_with(
+    "ticker:btc",
+    SubscribeOptions::new()
+        .filter(Filter::and([Filter::eq("market", "spot"), Filter::gt("spread", "0")]))
+        .events(["price.updated"])
+        .expression("data.price >= `100`")
+        .delta(ChannelDeltaSettings::enabled()),
+)?;
+println!("{:?}", client.delta_stats());
+```
+
+Fossil and Xdelta3 deltas are reconstructed against bases tracked per event and
+conflation key, exactly as the server caches them. A missing or corrupt base
+sends `delta_sync_error` and the server resends a full message. Delta
+compression requires the JSON wire format.
+
+## Recovery, rewind, and late joins
+
+```rust
+use sockudo_client::{Rewind, SubscribeOptions};
+use sockudo_client::rest::ChannelHistoryParams;
+
+let feed = client.subscribe_with("market:btc", SubscribeOptions::new().rewind(Rewind::Seconds(30)))?;
+client.bind("sockudo:resume_failed", |event| {
+    let failed = sockudo_client::recovery::ResumeFailed::from_event(event);
+    eprintln!("reload {}: {}", failed.channel, failed.reason);
+});
+
+// Persist positions across restarts.
+let positions = client.recovery_positions();
+client.set_recovery_positions(positions);
+
+// Gap-free late join: history up to the subscription's attach serial.
+let page = feed.history(ChannelHistoryParams::new().until_attach()).await?;
+```
+
+With recovery enabled, the client sends `resume` after every reconnect, once
+all channels have been resubscribed. A failed resume drops the channel's
+position and resubscribes it. Durable-history items returned through the proxy
+are versioned envelopes (`sockudo:message.create`) with the publisher's event
+name in `Event::name`; `page.events()` maps them to events and
+`event.logical_name()` returns the publisher's name for either shape.
+
+## History, presence history, and versioned messages
+
+These reads and mutations go through a proxy on your backend:
+
+```rust
+use sockudo_client::ProxyOptions;
+
+let client = SockudoClient::builder("app-key")
+    .ws_host("realtime.example.com")
+    .versioned_messages(ProxyOptions::endpoint("https://api.example.com/sockudo/messages"))
+    .presence_history(ProxyOptions::endpoint("https://api.example.com/sockudo/presence"))
+    .build()?;
+```
+
+Each call POSTs `{"channel", "action", ...}` — `channel_history`,
+`get_message`, `get_message_versions`, `publish_annotation`,
+`delete_annotation`, `list_annotations`, `create`, `append`, `update`, `delete`,
+or (presence proxy) `history` and `snapshot`. Forward the request to the REST
+API with server credentials and return the response unchanged. Pages expose
+`has_next()` and `next().await`, and
+`sockudo_client::versioned::reduce_mutable_message_events` folds mutations into
+the latest message state.
+
+## WebSocket compression
+
+The client offers permessage-deflate (RFC 7692) on every connection. It is
+negotiated only when the server enables `[websocket] compression`; otherwise the
+offer is ignored and frames stay uncompressed. `client.is_compressed()` reports
+the negotiated state, and `.permessage_deflate(false)` disables the offer.
+Compression trades CPU for bandwidth and is independent of delta compression.
+
+## Encrypted channels
+
+`private-encrypted-*` payloads are decrypted with the `shared_secret` returned
+by your auth endpoint. When decryption fails because the key rotated, the
+client re-authorizes once and retries. Client events are not supported on
+encrypted channels.
+
+## User sign-in
+
+```rust
+let user = client.user();
+user.bind("invoice-ready", |event| println!("{}", event.value()));
+user.watchlist().bind("online", |event| println!("{}", event.value()));
+client.sign_in()?;
+```
+
+Sign-in runs immediately when connected and again after every reconnect; the
+client then subscribes the user's server-to-user channel.
+
+## Connection telemetry
+
+`.enable_stats(true)` sends a bounded timeline of connection events — state
+changes, retries and errors, never payloads, tokens or auth data — to
+`stats_host` (default `stats.sockudo.io`) on connect and every 60 seconds, in
+the same format as the JavaScript client's `enableStats`. Add your own fields
+with `.timeline_param(name, value)`. It is off by default and failures are
+never surfaced to the application.
+
+## Error handling and production checklist
+
+- Match on `sockudo_client::Error`; `error.code()` returns the protocol code.
+- Put timeouts and authentication on every proxy and auth endpoint.
+- Use TLS and a public load-balancer hostname outside local development.
+- Keep callbacks fast; move blocking work to your own tasks or use streams.
+- Make handlers idempotent: reconnects and retries can repeat logical work even
+  with deduplication enabled.
+- On a failed resume or delta resync, reload authoritative state.
+- Unsubscribe unused channels and call `disconnect().await` during shutdown.
+- Use the [Rust server SDK](/docs/server-sdks/rust) for publishing, signing
+  auth, webhooks, history administration, and push.

@@ -32,6 +32,11 @@
   histogram of published message size (64 B to 1 MiB buckets), observed once
   per message on the origin node.
 
+- Official Rust realtime client `sockudo-client` in `client-sdks/sockudo-rust`
+  (Protocol V1/V2, all channel types, recovery, delta, filters, tokens, JSON /
+  MessagePack / Protobuf, permessage-deflate). Its CI runs a live suite against
+  a server built from source, with and without WebSocket compression.
+
 ### Changed
 
 - An explicit `--config` file that fails to load now exits with status 1, and
@@ -92,6 +97,10 @@
 
 ### Fixed
 
+- `presence_update` with an object `data` on the JSON wire format (as the
+  .NET and Swift clients send it) was rejected with "presence_update channel
+  is required": the frame decoded as structured data, which lifted `channel`
+  out of the payload the handler reads. The handler now restores it.
 - Per-app HTTP API rate limits (#534): `max_backend_events_per_second` and
   `max_read_requests_per_second` are now enforced on the signed HTTP API through
   the configured `[rate_limiter]` driver (key prefix `rl_app:`). Publishes cost
