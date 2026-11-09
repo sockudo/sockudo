@@ -376,6 +376,7 @@ export default class Sockudo {
             fullMessage,
             sequence,
             conflationKey,
+            event.event,
           );
         }
       }

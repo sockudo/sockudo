@@ -188,9 +188,19 @@ export default class DeltaCompressionManager {
         return null;
       }
 
-      // Get base message
+      // Get base message: the (event, conflation key) cache is authoritative
+      // when present; cache-sync and legacy single-base state are fallbacks.
       let baseMessage: string | null;
-      if (channelState.conflationKey) {
+      const eventBase = channelState.findEventBase(event, conflationKey, baseIndex);
+      if (eventBase === null) {
+        this.error(
+          `No base message for channel ${channel}, event ${event}, key ${conflationKey}, index ${baseIndex}`,
+        );
+        this.requestResync(channel);
+        return null;
+      } else if (eventBase !== undefined) {
+        baseMessage = eventBase;
+      } else if (channelState.conflationKey) {
         baseMessage = channelState.getBaseMessage(conflationKey, baseIndex);
         if (!baseMessage) {
           this.error(
@@ -236,6 +246,7 @@ export default class DeltaCompressionManager {
         throw Error(`Unknown algorithm: ${algorithm}`);
       }
 
+      channelState.storeEventBase(event, conflationKey, reconstructedMessage, sequence);
       // Update conflation cache with reconstructed message
       if (channelState.conflationKey) {
         channelState.updateConflationCache(conflationKey, reconstructedMessage, sequence);
@@ -306,6 +317,7 @@ export default class DeltaCompressionManager {
     rawMessage: string,
     sequence?: number,
     conflationKey?: string,
+    event?: string,
   ): void {
     if (!sequence && sequence !== 0) {
       // Attempt to extract __delta_seq from payload when not provided separately
@@ -347,6 +359,10 @@ export default class DeltaCompressionManager {
 
     // Use the provided conflationKey parameter (already extracted by sockudo.ts from original message)
     const finalConflationKey = conflationKey;
+
+    if (event !== undefined) {
+      channelState.storeEventBase(event, finalConflationKey, rawMessage, sequence);
+    }
 
     // Initialize conflation if we have a conflation key
     if (finalConflationKey !== undefined && !channelState.conflationKey) {
