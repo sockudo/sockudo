@@ -436,9 +436,9 @@ impl ConnectionHandler {
         debug!(socket_id = %socket_id, "handling socket disconnect");
 
         // Try async cleanup first if queue is available and circuit breaker allows
-        if self.should_use_async_cleanup().await {
-            // should_use_async_cleanup() already verified cleanup_queue exists
-            let cleanup_queue = self.cleanup_queue.as_ref().unwrap();
+        if self.should_use_async_cleanup().await
+            && let Some(cleanup_queue) = self.cleanup_queue.as_ref()
+        {
             match self
                 .handle_disconnect_async(
                     app_id,
