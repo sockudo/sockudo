@@ -824,3 +824,41 @@ async fn production_v1_presence_lifecycle_preserves_member_events_and_single_use
         "last disconnect must remove the presence user's routing entry"
     );
 }
+
+#[tokio::test]
+async fn presence_subscribe_frame_without_channel_data_is_rejected_not_panicking() {
+    let harness = make_presence_harness().await;
+    let (socket_id, _client) = add_presence_socket(&harness).await;
+    let channel = "presence-user-42";
+
+    // With no channel_data the server signs `socket_id:channel`, so this
+    // signature authenticates and presence validation is reached.
+    let signature = Token::new(harness.app.key.clone(), harness.app.secret.clone())
+        .sign(&format!("{socket_id}:{channel}"));
+    let frame = sonic_rs::json!({
+        "event": "pusher:subscribe",
+        "data": {
+            "channel": channel,
+            "auth": format!("{}:{signature}", harness.app.key),
+        },
+    })
+    .to_string();
+    let message = sonic_rs::from_str::<PusherMessage>(&frame).unwrap();
+
+    let request = SubscriptionRequest::from_message(
+        &message,
+        &sockudo_core::options::EventNameFilteringConfig::default(),
+    )
+    .expect("parsing a presence subscribe without channel_data must not panic");
+    assert_eq!(request.channel_data, None);
+
+    let err = harness
+        .handler
+        .handle_subscribe_request(&socket_id, &harness.app, request)
+        .await
+        .expect_err("missing channel_data must be rejected");
+    assert!(
+        matches!(err, sockudo_core::error::Error::InvalidMessageFormat(_)),
+        "unexpected error: {err:?}"
+    );
+}
