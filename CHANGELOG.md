@@ -106,7 +106,10 @@
   `{"enabled": false, "reason": ...}` and messages are sent in full.
 - A per-subscription `delta: false` on a socket that had not enabled delta
   compression created enabled delta state for the socket, turning deltas on
-  for every other channel it subscribed to. The opt-out is now a no-op there.
+  for every other channel it subscribed to. The opt-out is now recorded
+  without enabling the socket, and a later `enable_delta_compression` or
+  per-subscription opt-in keeps it (the enable used to discard earlier
+  per-channel settings).
 - `presence_update` with an object `data` on the JSON wire format (as the
   .NET and Swift clients send it) was rejected with "presence_update channel
   is required": the frame decoded as structured data, which lifted `channel`

@@ -110,14 +110,12 @@ impl DeltaCompressionManager {
 
     /// Enable delta compression for a specific socket
     pub fn enable_for_socket(&self, socket_id: &SocketId) {
-        self.socket_states.insert(
-            *socket_id,
-            Arc::new(SocketDeltaState {
-                enabled: true,
-                channel_states: DashMap::new(),
-                channel_delta_settings: DashMap::new(),
-            }),
-        );
+        // Keep per-channel settings made before the enable (opt-outs from
+        // earlier subscriptions must survive it).
+        self.socket_states
+            .entry(*socket_id)
+            .or_insert_with(|| Arc::new(SocketDeltaState::new(true)))
+            .enable();
     }
 
     /// Set per-channel delta settings for a socket (from subscription negotiation)
@@ -128,25 +126,19 @@ impl DeltaCompressionManager {
         enabled: Option<bool>,
         algorithm: Option<DeltaAlgorithm>,
     ) {
-        // Opting out on a socket without delta state is a no-op. Creating the
-        // (enabled) socket state here would turn delta compression on for
-        // every other channel, including on binary wire formats where the
-        // connection-level enable was refused.
-        if enabled == Some(false) && !self.socket_states.contains_key(socket_id) {
-            tracing::debug!(
-                socket_id = %socket_id,
-                channel,
-                "per-channel delta opt-out on a socket without delta state"
-            );
-            return;
+        // An opt-out alone must not turn delta compression on for the
+        // socket (that would enable every other channel, including on binary
+        // wire formats where the connection-level enable was refused), but it
+        // is remembered so a later enable or opt-in keeps this channel off.
+        let opt_out = enabled == Some(false);
+        let socket_state = self
+            .socket_states
+            .entry(*socket_id)
+            .or_insert_with(|| Arc::new(SocketDeltaState::new(!opt_out)))
+            .clone();
+        if !opt_out {
+            socket_state.enable();
         }
-        let socket_state = self.socket_states.entry(*socket_id).or_insert_with(|| {
-            Arc::new(SocketDeltaState {
-                enabled: true,
-                channel_states: DashMap::new(),
-                channel_delta_settings: DashMap::new(),
-            })
-        });
 
         let settings = PerChannelDeltaSettings {
             enabled: enabled.unwrap_or(true),
@@ -439,6 +431,25 @@ mod tests {
         assert!(!manager.is_enabled_for_socket(&socket_id));
         assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
         assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
+
+        // A later opt-in enables the socket but keeps channel-a's opt-out.
+        manager.set_channel_delta_settings(&socket_id, "channel-b", Some(true), None);
+        assert!(manager.is_enabled_for_socket(&socket_id));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+    }
+
+    #[tokio::test]
+    async fn test_enable_for_socket_keeps_earlier_opt_outs() {
+        let manager = DeltaCompressionManager::new(DeltaCompressionConfig::default());
+        let socket_id = SocketId::new();
+
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(false), None);
+        manager.enable_for_socket(&socket_id);
+
+        assert!(manager.is_enabled_for_socket(&socket_id));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
     }
 
     #[tokio::test]
