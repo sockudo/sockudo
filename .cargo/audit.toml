@@ -8,4 +8,10 @@ ignore = [
     # Never compiled: only an unused Cargo.lock entry under surrealdb's geo
     # deps. Safe to ignore until that dep tree changes.
     "RUSTSEC-2023-0089",
+    # RUSTSEC-2026-0459 — libsqlite3-sys < 0.39 bundles a vulnerable SQLite.
+    # Never compiled: only an unused Cargo.lock entry under sqlx's optional
+    # SQLite driver, which Sockudo does not enable (`cargo tree -i
+    # libsqlite3-sys --all-features` finds no path). sqlx 0.9.0, the latest
+    # release, still pins 0.37. Remove once sqlx ships libsqlite3-sys >= 0.39.
+    "RUSTSEC-2026-0459",
 ]
