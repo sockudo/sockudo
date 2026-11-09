@@ -11,6 +11,8 @@
 
 ### Fixed
 
+* honour `delta_compression_enabled` with `enabled: false`; `data.enabled || true` always reported
+  delta compression as enabled
 * track delta bases per event and conflation key, as the server does; a single base per channel
   applied one event's delta to another event's base whenever events interleaved, failing the
   checksum and forcing a resync

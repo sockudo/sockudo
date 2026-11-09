@@ -84,3 +84,16 @@ describe("delta bases per (event, conflation key)", () => {
     expect(sent.some(([event]) => event.endsWith("delta_sync_error"))).toBe(true);
   });
 });
+
+describe("delta negotiation", () => {
+  it("honours a server refusal", () => {
+    const delta = manager();
+    delta.handleEnabled({ enabled: true, algorithm: "fossil" });
+    expect(delta.isEnabled()).toBe(true);
+    delta.handleEnabled({
+      enabled: false,
+      reason: "delta compression requires the JSON wire format",
+    });
+    expect(delta.isEnabled()).toBe(false);
+  });
+});

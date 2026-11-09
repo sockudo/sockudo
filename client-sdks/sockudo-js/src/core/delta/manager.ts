@@ -128,7 +128,9 @@ export default class DeltaCompressionManager {
    * Handle delta compression enabled confirmation
    */
   handleEnabled(data: any): void {
-    this.enabled = data.enabled || true;
+    // The server reports `enabled: false` when it refuses delta compression
+    // (for example on binary wire formats); `|| true` used to ignore that.
+    this.enabled = data.enabled !== false;
     if (data.algorithm) {
       this.defaultAlgorithm = data.algorithm;
     }
