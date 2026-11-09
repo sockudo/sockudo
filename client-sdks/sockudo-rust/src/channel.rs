@@ -141,9 +141,19 @@ impl SubscribeOptions {
         self == &Self::default()
     }
 
-    pub(crate) fn validate(&self, protocol: ProtocolVersion) -> Result<()> {
+    pub(crate) fn validate(
+        &self,
+        protocol: ProtocolVersion,
+        wire_format: crate::WireFormat,
+    ) -> Result<()> {
         if protocol == ProtocolVersion::V1 && !self.is_empty() {
             return Err(Error::invalid("subscription options require Protocol V2"));
+        }
+        // The server only offers delta compression on the JSON wire format.
+        if wire_format.is_binary() && self.delta.is_some_and(|delta| delta.enabled != Some(false)) {
+            return Err(Error::invalid(
+                "delta compression requires the JSON wire format",
+            ));
         }
         if let Some(filter) = self.filter.as_ref() {
             filter
@@ -1009,32 +1019,55 @@ mod tests {
     fn validates_subscription_options() {
         assert!(
             SubscribeOptions::new()
-                .validate(ProtocolVersion::V1)
+                .validate(ProtocolVersion::V1, crate::WireFormat::Json)
                 .is_ok()
         );
         assert!(
             SubscribeOptions::new()
                 .rewind(Rewind::Count(5))
-                .validate(ProtocolVersion::V1)
+                .validate(ProtocolVersion::V1, crate::WireFormat::Json)
                 .is_err()
         );
         assert!(
             SubscribeOptions::new()
                 .filter(Filter::eq("a", ""))
-                .validate(ProtocolVersion::V2)
+                .validate(ProtocolVersion::V2, crate::WireFormat::Json)
                 .is_err()
         );
         assert!(
             SubscribeOptions::new()
                 .events([""])
-                .validate(ProtocolVersion::V2)
+                .validate(ProtocolVersion::V2, crate::WireFormat::Json)
                 .is_err()
         );
         assert!(
             SubscribeOptions::new()
                 .rewind(Rewind::Count(0))
-                .validate(ProtocolVersion::V2)
+                .validate(ProtocolVersion::V2, crate::WireFormat::Json)
                 .is_err()
+        );
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn rejects_delta_settings_on_binary_formats() {
+        let enabled = SubscribeOptions::new().delta(ChannelDeltaSettings::enabled());
+        assert!(
+            enabled
+                .validate(ProtocolVersion::V2, crate::WireFormat::Protobuf)
+                .is_err()
+        );
+        assert!(
+            enabled
+                .validate(ProtocolVersion::V2, crate::WireFormat::Json)
+                .is_ok()
+        );
+        // Explicitly opting out is always allowed.
+        let disabled = SubscribeOptions::new().delta(ChannelDeltaSettings::disabled());
+        assert!(
+            disabled
+                .validate(ProtocolVersion::V2, crate::WireFormat::Protobuf)
+                .is_ok()
         );
     }
 }

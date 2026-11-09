@@ -17,4 +17,6 @@
   versioned-message mutations; client-side mutable-message reducer; push registration client.
 - Reconnect with quadratic backoff, jitter, bounded attempts and Pusher close-code semantics.
 - permessage-deflate WebSocket compression and opt-in connection timeline telemetry.
+- Delta compression is rejected with binary wire formats, at build time and for per-subscription
+  settings, matching the server's refusal.
 - Null `extras.headers` values and string `extras.ai.codec` ids in every wire format.

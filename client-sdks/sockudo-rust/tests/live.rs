@@ -499,8 +499,10 @@ async fn rewind_replays_recent_history_on_subscribe() {
     let channel = client
         .subscribe_with(&name, SubscribeOptions::new().rewind(Rewind::Count(2)))
         .unwrap();
-    // Depending on the server version, replays arrive as the original event
-    // or as a `sockudo:message.create` envelope; `logical_name` covers both.
+    // Older servers replayed `sockudo:message.create` envelopes; current
+    // servers replay the original event, exactly like live delivery, so
+    // handlers bound by event name also see rewound history. The client
+    // accepts both (via `logical_name`); this suite pins the current shape.
     let (sender, mut events) = mpsc::unbounded_channel();
     channel.bind_global(move |event| {
         if event.logical_name() == "e" {
@@ -512,6 +514,7 @@ async fn rewind_replays_recent_history_on_subscribe() {
     let first = next(&mut events).await;
     let second = next(&mut events).await;
     assert_eq!((first.logical_name(), second.logical_name()), ("e", "e"));
+    assert_eq!((first.event.as_str(), second.event.as_str()), ("e", "e"));
     assert_eq!(
         (first.value()["n"].as_i64(), second.value()["n"].as_i64()),
         (Some(2), Some(3))
@@ -674,4 +677,77 @@ async fn server_accepts_object_shaped_presence_updates() {
         update.value()["user_info"]["status"].as_str(),
         Some("typing")
     );
+}
+
+/// Delta bases are the server's JSON bytes, so the server refuses delta
+/// compression on binary wire formats at both negotiation points, while JSON
+/// sockets keep it.
+#[cfg(feature = "protobuf")]
+#[tokio::test]
+async fn server_refuses_delta_on_binary_wire_formats() {
+    let Some(live) = live() else { return };
+    let notices = |client: &SockudoClient| {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        client.bind("sockudo:delta_compression_enabled", move |event| {
+            let _ = sender.send(event.value());
+        });
+        receiver
+    };
+    let recv = |mut receiver: mpsc::UnboundedReceiver<Value>| async move {
+        tokio::time::timeout(WAIT, receiver.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    };
+
+    let binary = live
+        .builder()
+        .wire_format(WireFormat::Protobuf)
+        .build()
+        .unwrap();
+    let refused = notices(&binary);
+    connect(&binary).await;
+    binary
+        .send_event(
+            "sockudo:enable_delta_compression",
+            &json!({"algorithms": ["fossil"]}),
+            None,
+        )
+        .await
+        .unwrap();
+    let notice = recv(refused).await;
+    assert_eq!(notice["enabled"].as_bool(), Some(false));
+    assert!(
+        notice["reason"]
+            .as_str()
+            .unwrap()
+            .contains("JSON wire format")
+    );
+
+    let refused = notices(&binary);
+    let channel = unique("ticker:binary");
+    binary
+        .send_event(
+            "sockudo:subscribe",
+            &json!({"channel": channel.as_str(), "auth": "", "delta": true}),
+            None,
+        )
+        .await
+        .unwrap();
+    let notice = recv(refused).await;
+    assert_eq!(notice["enabled"].as_bool(), Some(false));
+    assert_eq!(notice["channel"].as_str(), Some(channel.as_str()));
+
+    let json_client = live.builder().build().unwrap();
+    let accepted = notices(&json_client);
+    connect(&json_client).await;
+    json_client
+        .send_event(
+            "sockudo:enable_delta_compression",
+            &json!({"algorithms": ["fossil"]}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(recv(accepted).await["enabled"].as_bool(), Some(true));
 }

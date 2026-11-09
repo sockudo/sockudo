@@ -180,7 +180,9 @@ println!("{:?}", client.delta_stats());
 Fossil and Xdelta3 deltas are reconstructed against bases tracked per event and
 conflation key, exactly as the server caches them. A missing or corrupt base
 sends `delta_sync_error` and the server resends a full message. Delta
-compression requires the JSON wire format.
+compression requires the JSON wire format: the client rejects it with a binary
+format at build or subscribe time, and the server refuses it on binary
+connections.
 
 ## Recovery, rewind, and late joins
 
@@ -201,6 +203,10 @@ client.set_recovery_positions(positions);
 // Gap-free late join: history up to the subscription's attach serial.
 let page = feed.history(ChannelHistoryParams::new().until_attach()).await?;
 ```
+
+Rewound messages are delivered as the original events, exactly like live
+delivery, so handlers bound by event name see them first; the channel then
+emits `sockudo:rewind_complete` and live delivery continues.
 
 With recovery enabled, the client sends `resume` after every reconnect, once
 all channels have been resubscribed. A failed resume drops the channel's

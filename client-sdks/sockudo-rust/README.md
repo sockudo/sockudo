@@ -222,7 +222,11 @@ Enable delta handling on the client with
 `(event, conflation key)` exactly like the server cache; a missing or
 corrupt base triggers `delta_sync_error` and the server resends a full message.
 `client.delta_stats()` reports bandwidth saved. Delta compression requires the
-JSON wire format (bases are the server's JSON bytes).
+JSON wire format (bases are the server's JSON bytes): the client rejects it with
+a binary format, and the server refuses it on binary connections.
+
+Rewound messages arrive as the original events, like live delivery, followed
+by `sockudo:rewind_complete`.
 
 ## Recovery
 
@@ -418,7 +422,8 @@ defaults (`app-key` on `127.0.0.1:6001`).
 - `presence_update` data is sent as a JSON-encoded string on the JSON wire
   format. Current servers also accept the object form, but servers released
   before that fix reject it; the string form works with every version.
-- Delta compression requires the JSON wire format.
+- Delta compression requires the JSON wire format; servers refuse it on
+  MessagePack and Protobuf connections.
 - `extras.idempotency_key` is serialized with the server's spelling,
   `idempotencyKey`, and accepted in either spelling.
 

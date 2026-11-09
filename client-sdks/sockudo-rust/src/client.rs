@@ -579,7 +579,8 @@ impl SockudoClient {
         if name.is_empty() {
             return Err(Error::invalid("channel name must not be empty"));
         }
-        options.validate(self.shared().config.protocol)?;
+        let config = &self.shared().config;
+        options.validate(config.protocol, config.wire_format)?;
         Ok(crate::channel::subscribe(
             self.shared(),
             name,
