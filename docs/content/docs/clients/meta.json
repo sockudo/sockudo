@@ -9,6 +9,7 @@
     "flutter",
     "dotnet",
     "python",
+    "rust",
     "protocol-v2",
     "filters-delta",
     "presence-history"

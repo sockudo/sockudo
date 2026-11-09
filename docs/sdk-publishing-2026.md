@@ -135,7 +135,7 @@ The workflow uses RubyGems trusted publishing and does not need a RubyGems API t
 
 ### crates.io
 
-Package: `sockudo-http`
+Packages: `sockudo-http`, `sockudo-client`
 
 1. Publish the first crate version manually if the crate does not yet exist.
 2. Open the crate owner settings on crates.io.
@@ -225,6 +225,7 @@ read-only and direct issues and pull requests back to this monorepo.
 | `sockudo_flutter` | `dart format`, analyze, test, publish dry-run | `client-flutter-vX.Y.Z` |
 | `io.sockudo:sockudo-kotlin` | Gradle check and `publishToMavenLocal` | `client-kotlin-vX.Y.Z` |
 | `sockudo-python` | Ruff format/check, pytest, build, twine check | `client-python-vX.Y.Z` |
+| `sockudo-client` (Rust) | cargo fmt, clippy and tests (all and no features), live suite against a server built from source, package | `client-rust-vX.Y.Z` |
 | `SockudoSwift` | Swift build/test and SwiftLint | `client-swift-vX.Y.Z` |
 | `sockudo` Node server SDK | npm lint/typecheck/local-test and `npm pack --dry-run` | `server-node-vX.Y.Z` |
 | `sockudo-http-python` | Ruff format/check, pytest, build, twine check | `server-python-vX.Y.Z` |

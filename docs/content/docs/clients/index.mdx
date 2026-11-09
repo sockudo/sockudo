@@ -23,6 +23,7 @@ archived/legacy mirrors.
 | [Flutter / Dart](/docs/clients/flutter) | `sockudo_flutter` | Flutter | Protocol V1 compatibility |
 | [.NET realtime](/docs/clients/dotnet) | `Sockudo.Client` | .NET apps | Protocol V2 |
 | [Python realtime](/docs/clients/python) | `sockudo-python` | Python 3.10+ and asyncio | Protocol V2 |
+| [Rust realtime](/docs/clients/rust) | `sockudo-client` | Rust 1.88+ and Tokio | Protocol V2 |
 
 Every SDK page follows the same order: install, connect, subscribe, protected channels, Protocol V2
 features, connection lifecycle, error handling, and platform notes.
@@ -50,6 +51,7 @@ sure you choose the package whose role matches your process.
 | --- | --- | --- |
 | JavaScript / TypeScript | `@sockudo/client` | `sockudo` |
 | Python | `sockudo-python` | `sockudo-http-python` |
+| Rust | `sockudo-client` | `sockudo-http` |
 | .NET | `Sockudo.Client` | `SockudoServer` |
 | Swift | `SockudoSwift` | `Sockudo` server package |
 
@@ -201,6 +203,7 @@ See [Push notifications](/docs/server/push-notifications) for the backend side.
   <Card title="Flutter" href="/docs/clients/flutter" description="Flutter client examples with auth, recovery, and push helpers." />
   <Card title=".NET realtime" href="/docs/clients/dotnet" description="Protocol V2 by default for .NET applications." />
   <Card title="Python realtime" href="/docs/clients/python" description="Asyncio client for services, agents, workers, and CLIs." />
+  <Card title="Rust realtime" href="/docs/clients/rust" description="Tokio client for high-throughput services, agents, and CLIs." />
   <Card title="Protocol V2" href="/docs/clients/protocol-v2" description="Recovery, history, and native metadata." />
   <Card title="Filters and delta compression" href="/docs/clients/filters-delta" description="Reduce delivered traffic per subscription." />
 </Cards>

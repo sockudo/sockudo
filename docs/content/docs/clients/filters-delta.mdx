@@ -148,6 +148,14 @@ constructed with `deltaCompression` decodes them; otherwise they reach the chann
 `sockudo:delta` events. Encrypted channels ignore per-subscription delta settings.
 </Callout>
 
+<Callout type="info" title="JSON wire format only">
+Delta bases are the server's JSON serialization of each message, which a MessagePack or Protobuf
+connection never receives and cannot reproduce. On those wire formats the server refuses both
+`enable_delta_compression` and per-subscription `delta` settings and answers with
+`sockudo:delta_compression_enabled` carrying `{"enabled": false, "reason": "delta compression
+requires the JSON wire format"}` (plus `channel` for a subscription); messages arrive in full.
+</Callout>
+
 Use deltas when messages are frequent and similar, such as document snapshots, sports state, price
 books, or device telemetry. A publisher can force a full message for one publish with
 `"delta": false` in the HTTP event body.

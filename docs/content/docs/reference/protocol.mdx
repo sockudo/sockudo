@@ -207,6 +207,33 @@ connection and `member_removed` on their last disconnect, not once per socket.
 }
 ```
 
+### Presence update
+
+A V2 member replaces its own `user_info` with `presence_update`. The channel travels inside
+`data`, which may be a JSON object or a JSON-encoded string:
+
+```json
+{
+  "event": "sockudo:presence_update",
+  "data": { "channel": "presence-room-1", "data": { "status": "typing" } }
+}
+```
+
+Other members receive the new info:
+
+```json
+{
+  "event": "sockudo_internal:presence_update",
+  "channel": "presence-room-1",
+  "data": "{\"user_id\":\"user-42\",\"user_info\":{\"status\":\"typing\"}}"
+}
+```
+
+The sender must be a current member of the channel, the update must be at most 1024 bytes, and
+updates are rate-limited per member. Servers released before this fix reject the object form of
+`data` with "presence_update channel is required"; clients that must support them should send the
+JSON-encoded string form, which every server version accepts.
+
 ### Capability-token refresh
 
 V2 clients that connected with `?token=` refresh before expiry by sending `sockudo:auth` with a new

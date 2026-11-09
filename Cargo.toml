@@ -20,6 +20,7 @@ members = [
   "benches/ai",
 ]
 exclude = [
+  "client-sdks/sockudo-rust",
   "server-sdks/sockudo-http-rust",
 ]
 resolver = "3"

@@ -2,7 +2,7 @@
 Default to using Bun instead of Node.js.
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
+- Tests use Vitest (`bun run test` runs `vitest run`); do not use `bun:test`
 - Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
 - Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
 - Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
@@ -21,19 +21,24 @@ Default to using Bun instead of Node.js.
 
 ## Testing
 
-Use `bun test` to run tests.
+This package's tests run on Vitest: `bun run test` (`vitest run`). Import the
+test API from `vitest`, as every file under `test/` does; `bun:test` imports
+fail under Vitest.
 
-```ts#index.test.ts
-import { test, expect } from "bun:test";
+```ts#test/example.test.ts
+import { describe, expect, it } from "vitest";
 
-test("hello world", () => {
-  expect(1).toBe(1);
+describe("example", () => {
+  it("works", () => {
+    expect(1).toBe(1);
+  });
 });
 ```
 
 ## Frontend
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+The SDK bundles are built with Vite (`vite.config.*.ts`, `bun run build:all`); keep using it here.
+For standalone demo apps, use HTML imports with `Bun.serve()`. HTML imports fully support React, CSS, Tailwind.
 
 Server:
 

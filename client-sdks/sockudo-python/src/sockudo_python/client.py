@@ -1143,12 +1143,45 @@ class ProtocolCodec:
             }
         return value
 
+    # The server serializes MessagePack extras with rmp_serde, which writes
+    # structs as positional arrays.
+    _messagepack_extras_fields = [
+        "headers",
+        "ephemeral",
+        "idempotency_key",
+        "echo",
+        "ai",
+    ]
+
+    @staticmethod
+    def _messagepack_ai_to_dict(ai: Any) -> Any:
+        if not isinstance(ai, list):
+            return ai
+        result: Dict[str, Any] = {}
+        if len(ai) > 2 and isinstance(ai[2], dict):
+            result.update(ai[2])
+        if len(ai) > 0 and ai[0] is not None:
+            result["transport"] = ai[0]
+        if len(ai) > 1 and ai[1] is not None:
+            result["codec"] = ai[1]
+        return result
+
     @staticmethod
     def _decode_extras(raw_extras: Any) -> Optional[MessageExtras]:
         if raw_extras is None:
             return None
         if isinstance(raw_extras, MessageExtras):
             return raw_extras
+        if isinstance(raw_extras, list):
+            raw_extras = {
+                field: raw_extras[index]
+                for index, field in enumerate(ProtocolCodec._messagepack_extras_fields)
+                if index < len(raw_extras) and raw_extras[index] is not None
+            }
+            if "ai" in raw_extras:
+                raw_extras["ai"] = ProtocolCodec._messagepack_ai_to_dict(
+                    raw_extras["ai"]
+                )
         if not isinstance(raw_extras, dict):
             return None
         raw = {
@@ -1169,7 +1202,8 @@ class ProtocolCodec:
         return MessageExtras(
             headers=headers if isinstance(headers, dict) else None,
             ephemeral=raw.get("ephemeral"),
-            idempotency_key=raw.get("idempotency_key"),
+            # The server's JSON spelling is camelCase.
+            idempotency_key=raw.get("idempotency_key", raw.get("idempotencyKey")),
             echo=raw.get("echo"),
             ai=ai if isinstance(ai, dict) else None,
             raw=raw,
@@ -1876,10 +1910,15 @@ class PresenceChannel(PrivateChannel):
         )
 
     async def update(self, data: Any) -> bool:
+        if self.client.options.protocol_version < 2:
+            raise UnsupportedFeature("presence updates require protocol_version=2")
+        # The server reads {"channel", "data"} from the frame data. Sending it
+        # JSON-encoded reaches the presence handler intact on every wire
+        # format and server version.
         return await self.client.send_event(
             self.client.prefix.event("presence_update"),
-            {"user_info": data},
-            self.name,
+            json.dumps({"channel": self.name, "data": data}, separators=(",", ":")),
+            None,
         )
 
 
@@ -3239,6 +3278,8 @@ class SockudoClient:
                 )
             )
             self.server_channel = channel
+            # Register it so incoming frames for the channel are routed to it.
+            self.client.channels[channel.name] = channel
             channel.subscribe_if_possible()
 
         def _cleanup(self) -> None:
@@ -3246,6 +3287,7 @@ class SockudoClient:
             if self.server_channel is not None:
                 self.server_channel.unbind()
                 self.server_channel.disconnect()
+                self.client.channels.pop(self.server_channel.name, None)
                 self.server_channel = None
 
     class WatchlistFacade:

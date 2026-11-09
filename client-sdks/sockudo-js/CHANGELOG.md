@@ -11,6 +11,11 @@
 
 ### Fixed
 
+* honour `delta_compression_enabled` with `enabled: false`; `data.enabled || true` always reported
+  delta compression as enabled
+* track delta bases per event and conflation key, as the server does; a single base per channel
+  applied one event's delta to another event's base whenever events interleaved, failing the
+  checksum and forcing a resync
 * retry a connection attempt that fails before its 15 s timeout after a short jittered backoff
   (0.5-1 s, growing to 2.5-5 s) instead of waiting out the full timeout, so clients come back
   within seconds of an outage ending (sockudo/sockudo#532)

@@ -4,11 +4,29 @@
 
 import { CachedMessage, CacheSyncData, ChannelDeltaStats } from "./types";
 
+/**
+ * Most (event, conflation key) groups kept per channel. The least recently
+ * used group is evicted beyond this, protecting memory on long-lived channels
+ * whose event names or conflation keys keep changing.
+ */
+export const MAX_EVENT_BASE_GROUPS = 4096;
+
 export default class ChannelState {
   channelName: string;
   conflationKey: string | null;
   maxMessagesPerKey: number;
   conflationCaches: Map<string, CachedMessage[]>;
+
+  /**
+   * Bases keyed by event name and conflation key. The server caches bases per
+   * (event, conflation key) with independent sequences, so two events on one
+   * channel can both be at sequence 0; a single per-channel base cannot tell
+   * them apart.
+   */
+  eventBases: Map<string, CachedMessage[]>;
+
+  /** A group was evicted, so an unknown key may be one we dropped. */
+  eventBasesEvicted: boolean;
 
   // Legacy single-base tracking (for non-conflation channels)
   baseMessage: string | null;
@@ -24,6 +42,8 @@ export default class ChannelState {
     this.conflationKey = null;
     this.maxMessagesPerKey = 30; // Increased to 30 to prevent base eviction
     this.conflationCaches = new Map();
+    this.eventBases = new Map();
+    this.eventBasesEvicted = false;
 
     this.baseMessage = null;
     this.baseSequence = null;
@@ -181,4 +201,66 @@ export default class ChannelState {
       totalMessages: this.deltaCount + this.fullMessageCount,
     };
   }
+
+  /**
+   * Record a base for (event, conflation key), matching the server cache.
+   */
+  storeEventBase(
+    event: string,
+    conflationKeyValue: string | undefined,
+    message: string,
+    sequence: number,
+  ): void {
+    const key = eventBaseKey(event, conflationKeyValue);
+    let cache = this.eventBases.get(key);
+    if (cache) {
+      // Re-insert to mark the group most recently used (Map keeps order).
+      this.eventBases.delete(key);
+    } else {
+      cache = [];
+      while (this.eventBases.size >= MAX_EVENT_BASE_GROUPS) {
+        const oldest = this.eventBases.keys().next().value;
+        if (oldest === undefined) break;
+        this.eventBases.delete(oldest);
+        this.eventBasesEvicted = true;
+      }
+    }
+    this.eventBases.set(key, cache);
+    cache.push({ content: message, sequence });
+    while (cache.length > this.maxMessagesPerKey) {
+      cache.shift();
+    }
+  }
+
+  /**
+   * Find the base for a delta.
+   *
+   * Returns `undefined` when nothing is known for this (event, conflation key)
+   * so callers can fall back to cache-sync or legacy single-base state, and
+   * `null` when the key is known (or may have been evicted) but the requested
+   * base is not cached, which must trigger a resync rather than a guess.
+   */
+  findEventBase(
+    event: string,
+    conflationKeyValue: string | undefined,
+    baseIndex: number | undefined,
+  ): string | null | undefined {
+    const cache = this.eventBases.get(eventBaseKey(event, conflationKeyValue));
+    if (!cache || cache.length === 0) {
+      return this.eventBasesEvicted ? null : undefined;
+    }
+    if (baseIndex === undefined) {
+      return cache[cache.length - 1].content;
+    }
+    for (let index = cache.length - 1; index >= 0; index--) {
+      if (cache[index].sequence === baseIndex) {
+        return cache[index].content;
+      }
+    }
+    return null;
+  }
+}
+
+function eventBaseKey(event: string, conflationKeyValue: string | undefined): string {
+  return `${event}\u0000${conflationKeyValue ?? ""}`;
 }

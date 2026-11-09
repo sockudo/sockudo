@@ -307,7 +307,7 @@ fn encrypt(sockudo: &Sockudo, channel: &str, data: &EventData) -> Result<String>
 fn encrypt_secretbox(sockudo: &Sockudo, channel: &str, data: &EventData) -> Result<String> {
     use crypto_secretbox::{
         XSalsa20Poly1305,
-        aead::{Aead, AeadCore, KeyInit},
+        aead::{Aead, KeyInit},
     };
 
     // Ensure master key is present
@@ -330,15 +330,14 @@ fn encrypt_secretbox(sockudo: &Sockudo, channel: &str, data: &EventData) -> Resu
         }
     })?;
 
-    // Generate random nonce
-    let nonce = XSalsa20Poly1305::generate_nonce().map_err(|_| SockudoError::Encryption {
-        message: "failed to generate encryption nonce".to_string(),
-    })?;
+    // Random 24-byte nonce from the OS-seeded thread CSPRNG.
+    let mut nonce = [0u8; 24];
+    rand::fill(&mut nonce);
 
     // Encrypt the data
     let data_string = data.to_string();
     let ciphertext = cipher
-        .encrypt(&nonce, data_string.as_bytes())
+        .encrypt(&nonce.into(), data_string.as_bytes())
         .map_err(|_| SockudoError::Encryption {
             message: "Encryption failed".to_string(),
         })?;
@@ -527,6 +526,50 @@ pub async fn trigger_batch(
 mod tests {
     use super::*;
     use sonic_rs::json;
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_payloads_decrypt_with_the_channel_secret() {
+        use crypto_secretbox::{
+            XSalsa20Poly1305,
+            aead::{Aead, KeyInit},
+        };
+        use sonic_rs::JsonValueTrait;
+
+        let config = crate::Config::builder()
+            .app_id("app-id")
+            .key("app-key")
+            .secret("app-secret")
+            .encryption_master_key(vec![7u8; 32])
+            .unwrap()
+            .build()
+            .unwrap();
+        let sockudo = Sockudo::new(config).unwrap();
+        let channel = "private-encrypted-docs";
+        let data = EventData::from_json(json!({"doc": "secret"}));
+
+        let first = encrypt(&sockudo, channel, &data).unwrap();
+        let second = encrypt(&sockudo, channel, &data).unwrap();
+        let first: sonic_rs::Value = sonic_rs::from_str(&first).unwrap();
+        let second: sonic_rs::Value = sonic_rs::from_str(&second).unwrap();
+        assert_ne!(
+            first["nonce"], second["nonce"],
+            "every message gets a fresh nonce"
+        );
+
+        let nonce = BASE64.decode(first["nonce"].as_str().unwrap()).unwrap();
+        assert_eq!(nonce.len(), 24);
+        let nonce: [u8; 24] = nonce.try_into().unwrap();
+        let ciphertext = BASE64
+            .decode(first["ciphertext"].as_str().unwrap())
+            .unwrap();
+        let key = sockudo.channel_shared_secret(channel).unwrap();
+        let plaintext = XSalsa20Poly1305::new_from_slice(&key)
+            .unwrap()
+            .decrypt(&nonce.into(), ciphertext.as_slice())
+            .unwrap();
+        assert_eq!(plaintext, br#"{"doc":"secret"}"#);
+    }
 
     #[test]
     fn test_event_data_conversions() {

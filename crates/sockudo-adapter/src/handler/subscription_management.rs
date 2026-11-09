@@ -351,8 +351,13 @@ impl ConnectionHandler {
         // This allows clients to negotiate delta compression on a per-channel basis
         #[cfg(feature = "delta")]
         {
-            self.apply_subscription_delta_settings(socket_id, &request.channel, &request.delta)
-                .await;
+            self.apply_subscription_delta_settings(
+                socket_id,
+                &app_config.id,
+                &request.channel,
+                &request.delta,
+            )
+            .await;
 
             // Send delta compression cache sync if enabled for this socket and channel
             tracing::debug!(
@@ -1057,6 +1062,7 @@ impl ConnectionHandler {
     async fn apply_subscription_delta_settings(
         &self,
         socket_id: &SocketId,
+        app_id: &str,
         channel: &str,
         delta_settings: &Option<SubscriptionDeltaSettings>,
     ) {
@@ -1064,6 +1070,37 @@ impl ConnectionHandler {
         let Some(settings) = delta_settings else {
             return;
         };
+
+        // Delta bases are JSON bytes; refuse anything but an explicit opt-out
+        // on binary wire formats.
+        if settings.should_enable() != Some(false) {
+            let binary = match self
+                .connection_manager
+                .get_connection(socket_id, app_id)
+                .await
+            {
+                Some(connection) => connection.inner.lock().await.state.wire_format.is_binary(),
+                None => false,
+            };
+            if binary {
+                tracing::info!(
+                    socket_id = %socket_id,
+                    channel = %channel,
+                    "refusing per-subscription delta on a binary wire format"
+                );
+                let notice =
+                    Self::delta_compression_refused(Some(channel), Self::DELTA_REQUIRES_JSON);
+                if let Err(e) = self.send_message_to_socket(app_id, socket_id, notice).await {
+                    tracing::warn!(
+                        socket_id = %socket_id,
+                        channel = %channel,
+                        error = %e,
+                        "failed to send delta refusal"
+                    );
+                }
+                return;
+            }
+        }
 
         // Skip encrypted channels - delta compression is useless for them
         if DeltaCompressionManager::is_encrypted_channel(channel) {

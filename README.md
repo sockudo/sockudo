@@ -255,6 +255,7 @@ Protocol defaults vary by SDK; check each SDK page before assuming V2 is enabled
 | Flutter | `sockudo_flutter` | [Guide](https://sockudo.io/docs/clients/flutter) | [![downloads](https://img.shields.io/pub/dm/sockudo_flutter?label=&color=8b4dff)](https://pub.dev/packages/sockudo_flutter) |
 | .NET | `Sockudo.Client` | [Guide](https://sockudo.io/docs/clients/dotnet) | [![downloads](https://img.shields.io/nuget/dt/Sockudo.Client?label=&color=8b4dff)](https://www.nuget.org/packages/Sockudo.Client) |
 | Python | `sockudo-python` | [Guide](https://sockudo.io/docs/clients/python) | [![downloads](https://img.shields.io/pypi/dm/sockudo-python?label=&color=8b4dff)](https://pypi.org/project/sockudo-python/) |
+| Rust | `sockudo-client` | [Guide](https://sockudo.io/docs/clients/rust) | [source](client-sdks/sockudo-rust) (not yet on crates.io) |
 | AI Transport (TypeScript) | `@sockudo/ai-transport` | [Overview](https://sockudo.io/docs/server/ai-transport-overview) | [![downloads](https://img.shields.io/npm/dm/@sockudo/ai-transport?label=&color=8b4dff)](https://www.npmjs.com/package/@sockudo/ai-transport) |
 
 Maven Central, Go modules and SwiftPM do not publish download counts, so those rows show the latest
