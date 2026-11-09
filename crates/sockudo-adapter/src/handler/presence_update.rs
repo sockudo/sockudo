@@ -6,7 +6,7 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
-use sonic_rs::{JsonValueTrait, Value};
+use sonic_rs::{JsonValueMutTrait, JsonValueTrait, Value};
 use std::sync::Arc;
 
 const MAX_PRESENCE_UPDATE_BYTES: usize = 1024;
@@ -112,8 +112,17 @@ fn parse_presence_update(message: &PusherMessage) -> Result<(String, Value)> {
         Some(MessageData::Json(value)) => value.clone(),
         Some(MessageData::String(raw)) => sonic_rs::from_str(raw)
             .map_err(|_| ai_presence_error("presence_update data must be a JSON object"))?,
-        Some(MessageData::Structured { extra, .. }) => sonic_rs::to_value(extra)
-            .map_err(|e| Error::Serialization(format!("failed to decode structured data: {e}")))?,
+        // A JSON object `data` decodes as `Structured`, which lifts `channel`
+        // out of `extra`; put it back so the object is read as sent.
+        Some(MessageData::Structured { channel, extra, .. }) => {
+            let mut value = sonic_rs::to_value(extra).map_err(|e| {
+                Error::Serialization(format!("failed to decode structured data: {e}"))
+            })?;
+            if let (Some(channel), Some(object)) = (channel, value.as_object_mut()) {
+                object.insert("channel", Value::from(channel.as_str()));
+            }
+            value
+        }
         Some(MessageData::Binary(_)) => {
             return Err(ai_presence_error(
                 "presence_update data must be a JSON object",
@@ -179,6 +188,31 @@ mod tests {
         let (channel, data) = parse_presence_update(&message).unwrap();
         assert_eq!(channel, "presence-agent");
         assert_eq!(data.get("status").and_then(Value::as_str), Some("thinking"));
+    }
+
+    /// Regression: the JSON wire decodes an object `data` as `Structured`,
+    /// which used to drop `channel` and reject every object-shaped update.
+    #[test]
+    fn parse_presence_update_accepts_object_data_from_the_json_wire() {
+        let frame = br#"{"event":"sockudo:presence_update","data":{"channel":"presence-agent","data":{"status":"thinking"}}}"#;
+        let message =
+            sockudo_protocol::wire::deserialize_message(frame, sockudo_protocol::WireFormat::Json)
+                .unwrap();
+        assert!(matches!(message.data, Some(MessageData::Structured { .. })));
+        let (channel, data) = parse_presence_update(&message).unwrap();
+        assert_eq!(channel, "presence-agent");
+        assert_eq!(data.get("status").and_then(Value::as_str), Some("thinking"));
+    }
+
+    #[test]
+    fn parse_presence_update_accepts_string_data_from_the_json_wire() {
+        let frame = br#"{"event":"sockudo:presence_update","data":"{\"channel\":\"presence-agent\",\"data\":{\"status\":\"idle\"}}"}"#;
+        let message =
+            sockudo_protocol::wire::deserialize_message(frame, sockudo_protocol::WireFormat::Json)
+                .unwrap();
+        let (channel, data) = parse_presence_update(&message).unwrap();
+        assert_eq!(channel, "presence-agent");
+        assert_eq!(data.get("status").and_then(Value::as_str), Some("idle"));
     }
 
     #[test]
