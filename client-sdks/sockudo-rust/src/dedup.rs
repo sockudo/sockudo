@@ -1,4 +1,8 @@
-//! Bounded message deduplication by `message_id`.
+//! Bounded message deduplication by `(channel, message_id)`.
+//!
+//! A multi-channel publish keeps one `message_id` on every target channel, so
+//! the channel is part of the key: only a repeat on the same channel is a
+//! duplicate.
 
 use std::collections::{HashSet, VecDeque};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -45,9 +49,10 @@ impl Deduplicator {
         }
     }
 
-    /// Returns `true` when `id` was already seen; otherwise records it.
-    pub(crate) fn check_and_track(&mut self, id: &str) -> bool {
-        let key = self.keys.hash_one(id);
+    /// Returns `true` when `id` was already seen on `channel`; otherwise
+    /// records it.
+    pub(crate) fn check_and_track(&mut self, channel: Option<&str>, id: &str) -> bool {
+        let key = self.keys.hash_one((channel, id));
         if !self.seen.insert(key) {
             return true;
         }
@@ -71,26 +76,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn same_id_on_other_channels_is_not_a_duplicate() {
+        let mut dedup = Deduplicator::new(8);
+        assert!(!dedup.check_and_track(Some("a"), "m1"));
+        assert!(!dedup.check_and_track(Some("b"), "m1"));
+        assert!(dedup.check_and_track(Some("a"), "m1"));
+        assert!(dedup.check_and_track(Some("b"), "m1"));
+    }
+
+    #[test]
     fn detects_repeats_and_evicts_oldest() {
         let mut dedup = Deduplicator::new(3);
-        assert!(!dedup.check_and_track("a"));
-        assert!(dedup.check_and_track("a"));
-        assert!(!dedup.check_and_track("b"));
-        assert!(!dedup.check_and_track("c"));
-        assert!(!dedup.check_and_track("d")); // evicts "a"
+        assert!(!dedup.check_and_track(None, "a"));
+        assert!(dedup.check_and_track(None, "a"));
+        assert!(!dedup.check_and_track(None, "b"));
+        assert!(!dedup.check_and_track(None, "c"));
+        assert!(!dedup.check_and_track(None, "d")); // evicts "a"
         assert_eq!(dedup.len(), 3);
-        assert!(!dedup.check_and_track("a"));
-        assert!(dedup.check_and_track("d"));
+        assert!(!dedup.check_and_track(None, "a"));
+        assert!(dedup.check_and_track(None, "d"));
     }
 
     #[test]
     fn handles_large_windows() {
         let mut dedup = Deduplicator::new(10_000);
         for index in 0..10_000 {
-            assert!(!dedup.check_and_track(&format!("m{index}")));
+            assert!(!dedup.check_and_track(None, &format!("m{index}")));
         }
         for index in 0..10_000 {
-            assert!(dedup.check_and_track(&format!("m{index}")));
+            assert!(dedup.check_and_track(None, &format!("m{index}")));
         }
     }
 }

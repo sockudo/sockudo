@@ -63,6 +63,17 @@ pub(crate) fn close_action(code: u16) -> Option<CloseAction> {
 }
 
 /// Entry point of the connection task.
+/// Run the delta statistics callback outside the delta lock.
+fn notify_delta_stats(
+    notice: Option<(crate::delta::DeltaStatsCallback, crate::delta::DeltaStats)>,
+) {
+    if let Some((callback, stats)) = notice
+        && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&stats))).is_err()
+    {
+        tracing::error!("delta stats callback panicked");
+    }
+}
+
 pub(crate) async fn run(shared: Arc<Shared>, generation: u64) {
     // Waiting for the receiver also waits for a previous task to exit.
     let mut commands = Arc::clone(&shared.cmd_rx).lock_owned().await;
@@ -247,7 +258,8 @@ impl Supervisor {
             };
 
             let transport = self.next_transport(&transports);
-            tracing::debug!(url = %transport::display_url(&self.shared.config, transport), "connecting");
+            // No URL: it carries the app key and infrastructure endpoints.
+            tracing::debug!(tls = matches!(transport, Transport::Wss), "connecting");
             let attempt = tokio::time::timeout(
                 self.shared.config.connect_timeout,
                 transport::connect(&shared, transport, token.as_deref()),
@@ -633,17 +645,22 @@ impl<'a> Session<'a> {
                 event.channel.as_deref(),
             )
         {
-            delta.lock().handle_full_message(
-                channel,
-                name,
-                event.conflation_key.as_deref(),
-                sequence,
-                &event.raw,
-            );
+            let notice = {
+                let mut delta = delta.lock();
+                delta.handle_full_message(
+                    channel,
+                    name,
+                    event.conflation_key.as_deref(),
+                    sequence,
+                    &event.raw,
+                );
+                delta.take_stats_notice()
+            };
+            notify_delta_stats(notice);
         }
 
         if let (Some(dedup), Some(id)) = (self.sup.dedup.as_mut(), event.message_id.as_deref())
-            && dedup.check_and_track(id)
+            && dedup.check_and_track(event.channel.as_deref(), id)
         {
             return;
         }
@@ -936,7 +953,12 @@ impl<'a> Session<'a> {
         if shared.channel(channel).is_none() {
             return; // in flight after unsubscribe
         }
-        let result = delta.lock().handle_delta(channel, &event.data);
+        let (result, notice) = {
+            let mut delta = delta.lock();
+            let result = delta.handle_delta(channel, &event.data);
+            (result, delta.take_stats_notice())
+        };
+        notify_delta_stats(notice);
         match result {
             Ok(reconstructed) => match codec::json::decode(reconstructed.bytes) {
                 Ok(mut full) => {

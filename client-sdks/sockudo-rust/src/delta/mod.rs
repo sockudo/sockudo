@@ -342,6 +342,8 @@ pub(crate) struct DeltaManager {
     channels: HashMap<String, ChannelDelta, ahash::RandomState>,
     stats: DeltaStats,
     max_output: usize,
+    /// Statistics changed since the last [`DeltaManager::take_stats_notice`].
+    stats_pending: bool,
 }
 
 impl fmt::Debug for DeltaManager {
@@ -362,6 +364,7 @@ impl DeltaManager {
             channels: HashMap::default(),
             stats: DeltaStats::default(),
             max_output,
+            stats_pending: false,
         }
     }
 
@@ -535,10 +538,19 @@ impl DeltaManager {
         }
     }
 
-    fn emit_stats(&self) {
-        if let Some(callback) = self.options.on_stats.as_ref() {
-            callback(&self.stats());
+    fn emit_stats(&mut self) {
+        self.stats_pending = self.options.on_stats.is_some();
+    }
+
+    /// The statistics callback and a snapshot to pass it, when they changed.
+    /// The caller invokes it after releasing the manager's lock, so the
+    /// callback may call back into the client (`delta_stats()` and friends).
+    pub(crate) fn take_stats_notice(&mut self) -> Option<(DeltaStatsCallback, DeltaStats)> {
+        if !std::mem::take(&mut self.stats_pending) {
+            return None;
         }
+        let callback = self.options.on_stats.clone()?;
+        Some((callback, self.stats()))
     }
 }
 

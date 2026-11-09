@@ -13,6 +13,41 @@ use sonic_rs::{JsonValueTrait, json};
 use support::{MockServer, Recorder, client_for, data_of, eventually};
 
 #[tokio::test]
+async fn state_callbacks_may_call_connect() {
+    let mut server = MockServer::start().await;
+    let client = client_for(&server).build().unwrap();
+    let handle = client.clone();
+    let states = Recorder::default();
+    let s = states.clone();
+    client.on_state_change(move |change| {
+        // Re-entering the client from a callback must not deadlock.
+        handle.connect().unwrap();
+        s.push(change.current);
+    });
+    client.connect().unwrap();
+    let conn = server.accept().await;
+    conn.establish("1.2");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), client.connected())
+            .await
+            .expect("connect() from a state callback deadlocked")
+            .unwrap(),
+        "1.2"
+    );
+    assert_eq!(
+        states.snapshot(),
+        vec![ConnectionState::Connecting, ConnectionState::Connected]
+    );
+    assert!(
+        server
+            .try_accept(Duration::from_millis(200))
+            .await
+            .is_none(),
+        "re-entrant connect() opened a second socket"
+    );
+}
+
+#[tokio::test]
 async fn connects_with_the_documented_query_and_reports_state() {
     let mut server = MockServer::start().await;
     let client = client_for(&server).build().unwrap();

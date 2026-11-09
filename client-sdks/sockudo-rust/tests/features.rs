@@ -255,7 +255,11 @@ async fn encrypted_channels_decrypt_and_rotate_keys() {
         .channel_authorizer(move |_request: ChannelAuthRequest| {
             let key = *k.lock();
             a.fetch_add(1, Ordering::SeqCst);
-            async move { Ok(ChannelAuthData::new("app-key:sig").with_shared_secret(b64(&key))) }
+            async move {
+                // Slow enough that the rotation burst below arrives mid-auth.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(ChannelAuthData::new("app-key:sig").with_shared_secret(b64(&key)))
+            }
         })
         .build()
         .unwrap();
@@ -282,15 +286,22 @@ async fn encrypted_channels_decrypt_and_rotate_keys() {
     eventually(|| plaintexts.len() == 1).await;
     assert_eq!(plaintexts.snapshot()[0], json!({"v": 1}));
 
-    // Rotate: the next payload uses a new key; the client re-authorizes once.
+    // Rotate: a burst under the new key. The client re-authorizes once and
+    // delivers every event, in order, including those that arrived while
+    // the key refresh was in flight.
     *keys.lock() = [2u8; 32];
-    conn.send_event(
-        "doc",
-        Some("private-encrypted-docs"),
-        &encrypt([2; 32], [8; 24], r#"{"v":2}"#),
+    for (version, nonce) in [(2u8, 8u8), (3, 7), (4, 6)] {
+        conn.send_event(
+            "doc",
+            Some("private-encrypted-docs"),
+            &encrypt([2; 32], [nonce; 24], &format!(r#"{{"v":{version}}}"#)),
+        );
+    }
+    eventually(|| plaintexts.len() == 4).await;
+    assert_eq!(
+        plaintexts.snapshot()[1..],
+        [json!({"v": 2}), json!({"v": 3}), json!({"v": 4})]
     );
-    eventually(|| plaintexts.len() == 2).await;
-    assert_eq!(plaintexts.snapshot()[1], json!({"v": 2}));
     assert_eq!(auths.load(Ordering::SeqCst), 2);
 
     assert!(matches!(
@@ -522,15 +533,23 @@ async fn delta_compression_reconstructs_and_resyncs() {
     let mut server = MockServer::start().await;
     let stats_calls = Arc::new(AtomicUsize::new(0));
     let s = Arc::clone(&stats_calls);
+    // The callback reads the client's delta statistics: it must not run
+    // under the client's delta lock.
+    let handle = Arc::new(std::sync::OnceLock::<sockudo_client::SockudoClient>::new());
+    let h = Arc::clone(&handle);
     let client = client_for(&server)
         .delta_compression(DeltaOptions {
             on_stats: Some(Arc::new(move |_| {
+                if let Some(client) = h.get() {
+                    let _ = client.delta_stats();
+                }
                 s.fetch_add(1, Ordering::SeqCst);
             })),
             ..DeltaOptions::default()
         })
         .build()
         .unwrap();
+    let _ = handle.set(client.clone());
     let channel = client.subscribe("ticker:btc");
     let prices = Recorder::default();
     let p = prices.clone();

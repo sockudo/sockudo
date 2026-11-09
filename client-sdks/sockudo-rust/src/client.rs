@@ -215,11 +215,19 @@ impl Shared {
     }
 
     pub(crate) fn set_state(&self, next: ConnectionState) {
+        if let Some(change) = self.transition(next) {
+            self.notify_state(&change);
+        }
+    }
+
+    /// Record a state change without running user callbacks; pair with
+    /// [`Shared::notify_state`] once no internal lock is held.
+    pub(crate) fn transition(&self, next: ConnectionState) -> Option<StateChange> {
         let previous = {
             let mut conn = self.conn.lock();
             let previous = conn.state;
             if previous == next {
-                return;
+                return None;
             }
             conn.state = next;
             if next != ConnectionState::Connected {
@@ -230,10 +238,15 @@ impl Shared {
         tracing::debug!(from = %previous, to = %next, "connection state");
         self.log_timeline(|| sonic_rs::json!({ "state": next.as_str() }));
         self.state_tx.send_replace(next);
-        let change = StateChange {
+        Some(StateChange {
             previous,
             current: next,
-        };
+        })
+    }
+
+    /// Run the state callbacks for `change`.
+    pub(crate) fn notify_state(&self, change: &StateChange) {
+        let change = *change;
         for (_, callback) in self.state_listeners.snapshot().iter() {
             if catch_unwind(AssertUnwindSafe(|| callback(&change))).is_err() {
                 tracing::error!("state callback panicked");
@@ -511,9 +524,21 @@ impl SockudoClient {
         shared.generation.store(generation, Ordering::SeqCst);
         shared.manual_disconnect.store(false, Ordering::SeqCst);
         shared.conn.lock().last_error = None;
-        shared.set_state(ConnectionState::Connecting);
+        let change = shared.transition(ConnectionState::Connecting);
+        // The task waits until the `Connecting` callbacks have run, so their
+        // order is kept; the callbacks run without `lifecycle` held, so they
+        // may call back into the client (including `connect()`).
+        let (start, started) = tokio::sync::oneshot::channel::<()>();
         let task_shared = Arc::clone(shared);
-        lifecycle.task = Some(runtime.spawn(crate::connection::run(task_shared, generation)));
+        lifecycle.task = Some(runtime.spawn(async move {
+            let _ = started.await;
+            crate::connection::run(task_shared, generation).await;
+        }));
+        drop(lifecycle);
+        if let Some(change) = change {
+            shared.notify_state(&change);
+        }
+        let _ = start.send(());
         Ok(())
     }
 

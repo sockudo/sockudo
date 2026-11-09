@@ -938,7 +938,7 @@ impl Channel {
     /// Fetch a page of channel history.
     pub async fn history(&self, params: ChannelHistoryParams) -> Result<ChannelHistoryPage> {
         let shared = self.proxy_shared()?;
-        let mut wire = params.clone();
+        let mut wire = params;
         if wire.until_attach && wire.attach_serial.is_none() {
             wire.attach_serial = self.attach_serial();
         }
@@ -958,9 +958,11 @@ impl Channel {
         });
         let response = call(&shared, options, action, body).await?;
         let mut page: ChannelHistoryPage = from_value(&response)?;
+        // Later pages keep the first page's resolved attach bound, so a
+        // reconnect mid-walk cannot move the history window.
         page.next = Some(NextChannelHistory {
             channel: self.clone(),
-            params,
+            params: wire,
         });
         Ok(page)
     }

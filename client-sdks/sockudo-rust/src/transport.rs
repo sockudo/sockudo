@@ -144,20 +144,6 @@ fn authority_host(host: &str) -> String {
     }
 }
 
-/// The connection URL without credentials, for diagnostics.
-pub(crate) fn display_url(config: &Config, transport: Transport) -> String {
-    let (scheme, port) = match transport {
-        Transport::Ws => ("ws", config.ws_port),
-        Transport::Wss => ("wss", config.wss_port),
-    };
-    format!(
-        "{scheme}://{}:{port}{}/app/{}",
-        authority_host(&config.ws_host),
-        config.ws_path,
-        config.key
-    )
-}
-
 fn ws_config(config: &Config) -> sockudo_ws::Config {
     sockudo_ws::Config {
         max_message_size: config.max_message_size,
@@ -410,17 +396,6 @@ mod tests {
         assert!(path.starts_with("/app/k?protocol=7&client=rust"));
         assert!(!path.contains("format="));
         assert!(!path.contains("echo_messages"));
-    }
-
-    #[test]
-    fn display_url_hides_query_and_brackets_ipv6() {
-        let config = config(
-            ClientBuilder::new("k")
-                .ws_host("::1")
-                .force_tls(false)
-                .ws_port(6001),
-        );
-        assert_eq!(display_url(&config, Transport::Ws), "ws://[::1]:6001/app/k");
     }
 
     #[test]

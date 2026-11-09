@@ -148,7 +148,7 @@ pub mod __private {
         }
         /// Check and track.
         pub fn check(&mut self, id: &str) -> bool {
-            self.0.check_and_track(id)
+            self.0.check_and_track(Some("bench"), id)
         }
     }
 

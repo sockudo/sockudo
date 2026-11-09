@@ -1,5 +1,6 @@
 //! Channels and subscriptions.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Weak};
 
@@ -227,8 +228,9 @@ pub(crate) struct ChannelState {
     pub attach_serial: Option<u64>,
     pub members: Members,
     pub secret: Option<SharedSecret>,
-    /// A key-rotation re-authorization is in flight (encrypted channels).
-    pub reauthorizing: bool,
+    /// While a key-rotation re-authorization is in flight (encrypted
+    /// channels), the encrypted events that arrive meanwhile, in order.
+    pub reauthorizing: Option<VecDeque<Arc<Event>>>,
 }
 
 pub(crate) struct ChannelInner {
@@ -444,7 +446,7 @@ impl ChannelInner {
                 attach_serial: None,
                 members: Members::default(),
                 secret: None,
-                reauthorizing: false,
+                reauthorizing: None,
             }),
         }
     }
@@ -470,8 +472,22 @@ impl ChannelInner {
     }
 
     /// Side effects of a successful authorization.
-    fn apply_auth(&self, shared: &Shared, auth: &ChannelAuthData) -> Result<()> {
-        match self.kind {
+    /// Apply an auth response's channel state (encryption key, presence
+    /// identity) if `current` still holds under the channel lock. Returns
+    /// `false` when the response is stale (its connection or subscription
+    /// has since been replaced) and was ignored.
+    fn apply_auth(
+        &self,
+        shared: &Shared,
+        auth: &ChannelAuthData,
+        current: impl FnOnce(&ChannelState) -> bool,
+    ) -> Result<bool> {
+        enum Update {
+            Secret(SharedSecret),
+            MyId(String),
+            Nothing,
+        }
+        let update = match self.kind {
             ChannelKind::PrivateEncrypted => {
                 let secret = auth.shared_secret.as_deref().ok_or_else(|| {
                     Error::auth(
@@ -482,7 +498,7 @@ impl ChannelInner {
                         ),
                     )
                 })?;
-                self.state.lock().secret = Some(SharedSecret::from_base64(secret)?);
+                Update::Secret(SharedSecret::from_base64(secret)?)
             }
             ChannelKind::Presence => {
                 let from_channel_data = auth
@@ -502,11 +518,20 @@ impl ChannelInner {
                         format!("invalid auth response for presence channel '{}'", self.name),
                     ));
                 };
-                self.state.lock().members.set_my_id(Some(my_id));
+                Update::MyId(my_id)
             }
-            _ => {}
+            _ => Update::Nothing,
+        };
+        let mut state = self.state.lock();
+        if !current(&state) {
+            return Ok(false);
         }
-        Ok(())
+        match update {
+            Update::Secret(secret) => state.secret = Some(secret),
+            Update::MyId(my_id) => state.members.set_my_id(Some(my_id)),
+            Update::Nothing => {}
+        }
+        Ok(true)
     }
 
     fn fail_subscription(&self, shared: &Shared, epoch: u64, error: Error) {
@@ -656,64 +681,112 @@ impl ChannelInner {
     }
 
     fn handle_encrypted(&self, shared: &Arc<Shared>, event: &Arc<Event>) {
-        let secret = self.state.lock().secret.clone();
+        let secret = {
+            let mut state = self.state.lock();
+            // While the key is being refreshed, queue everything so events
+            // are delivered in order once it arrives.
+            if let Some(queue) = state.reauthorizing.as_mut() {
+                if queue.len() >= MAX_REAUTH_QUEUE {
+                    drop(state);
+                    shared.report_error(Error::Decryption(format!(
+                        "dropped encrypted event on '{}': key refresh backlog full",
+                        self.name
+                    )));
+                    return;
+                }
+                queue.push_back(Arc::clone(event));
+                return;
+            }
+            state.secret.clone()
+        };
         let decrypted = secret
             .as_ref()
             .ok_or_else(|| Error::Decryption("no shared secret for channel".into()))
             .and_then(|secret| crate::crypto::decrypt(secret, &event.data));
         match decrypted {
-            Ok(plaintext) => {
-                let mut clear = (**event).clone();
-                clear.data = Payload::Text(plaintext);
-                self.dispatcher.emit(&Arc::new(clear));
-            }
+            Ok(plaintext) => self.emit_decrypted(event, plaintext),
             Err(error) => {
-                // The key may have rotated: re-authorize once and retry. Only
+                // The key may have rotated: re-authorize once, then decrypt
+                // this event and everything queued behind it, in order. Only
                 // one re-authorization runs at a time so a burst of
                 // undecryptable payloads cannot flood the auth endpoint.
                 let Some(channel) = shared.channel(&self.name) else {
                     return;
                 };
-                {
-                    let mut state = self.state.lock();
-                    if state.reauthorizing {
-                        drop(state);
-                        shared.report_error(error);
-                        return;
-                    }
-                    state.reauthorizing = true;
-                }
+                let Some(epoch) = shared.connected_epoch() else {
+                    shared.report_error(error);
+                    return;
+                };
+                self.state.lock().reauthorizing = Some(VecDeque::from([Arc::clone(event)]));
                 tracing::debug!(channel = %self.name, %error, "decryption failed; re-authorizing");
                 let shared = Arc::clone(shared);
-                let event = Arc::clone(event);
                 tokio::spawn(async move {
-                    let retried = async {
+                    let refreshed = async {
                         let socket_id = shared.socket_id().ok_or(Error::NotConnected)?;
                         let auth = authorize(&shared, &channel.name, socket_id).await?;
-                        channel.apply_auth(&shared, &auth)?;
-                        let secret = channel
-                            .state
-                            .lock()
-                            .secret
-                            .clone()
-                            .ok_or_else(|| Error::Decryption("no shared secret".into()))?;
-                        crate::crypto::decrypt(&secret, &event.data)
+                        // Ignore the key if the connection was replaced while
+                        // authorizing: the new session authorizes itself.
+                        let current = |state: &ChannelState| {
+                            state.sub == SubState::Subscribed
+                                && shared.connected_epoch() == Some(epoch)
+                        };
+                        if channel.apply_auth(&shared, &auth, current)? {
+                            Ok(())
+                        } else {
+                            Err(Error::NotConnected)
+                        }
                     }
                     .await;
-                    channel.state.lock().reauthorizing = false;
-                    match retried {
-                        Ok(plaintext) => {
-                            let mut clear = (*event).clone();
-                            clear.data = Payload::Text(plaintext);
-                            channel.dispatcher.emit(&Arc::new(clear));
-                        }
-                        Err(error) => shared.report_error(error),
-                    }
+                    channel.drain_reauthorized(&shared, refreshed);
                 });
             }
         }
     }
+
+    fn emit_decrypted(&self, event: &Arc<Event>, plaintext: String) {
+        let mut clear = (**event).clone();
+        clear.data = Payload::Text(plaintext);
+        self.dispatcher.emit(&Arc::new(clear));
+    }
+
+    /// Deliver the events queued during a key refresh, in order, then resume
+    /// direct decryption.
+    fn drain_reauthorized(&self, shared: &Shared, refreshed: Result<()>) {
+        if let Err(error) = &refreshed {
+            shared.report_error(Error::Decryption(format!(
+                "key refresh for '{}' failed: {error}",
+                self.name
+            )));
+        }
+        loop {
+            let (batch, secret) = {
+                let mut state = self.state.lock();
+                let Some(queue) = state.reauthorizing.as_mut() else {
+                    return;
+                };
+                if queue.is_empty() {
+                    state.reauthorizing = None;
+                    return;
+                }
+                let batch: Vec<Arc<Event>> = queue.drain(..).collect();
+                (batch, state.secret.clone())
+            };
+            for event in batch {
+                let decrypted = match (&refreshed, secret.as_ref()) {
+                    (Ok(()), Some(secret)) => crate::crypto::decrypt(secret, &event.data),
+                    _ => Err(Error::Decryption("no usable shared secret".into())),
+                };
+                match decrypted {
+                    Ok(plaintext) => self.emit_decrypted(&event, plaintext),
+                    Err(error) => shared.report_error(error),
+                }
+            }
+        }
+    }
 }
+
+/// Most encrypted events held while a channel's key is being refreshed.
+const MAX_REAUTH_QUEUE: usize = 1024;
 
 pub(crate) fn unsubscribe_frame(shared: &Shared, name: &str) -> Result<Message> {
     let data = codec::to_json(&sonic_rs::json!({ "channel": name }))?;
@@ -822,12 +895,19 @@ pub(crate) async fn authorized_frame(
     let socket_id = shared.socket_id()?;
     let result = async {
         let auth = authorize(shared, &channel.name, socket_id).await?;
-        channel.apply_auth(shared, &auth)?;
-        channel.subscribe_frame(shared, Some(&auth))
+        // A response for a replaced connection or subscription must not
+        // overwrite the current key or presence identity.
+        let pending = |state: &ChannelState| {
+            matches!(state.sub, SubState::Pending { epoch: e, .. } if e == epoch)
+        };
+        if !channel.apply_auth(shared, &auth, pending)? {
+            return Ok(None);
+        }
+        channel.subscribe_frame(shared, Some(&auth)).map(Some)
     }
     .await;
     match result {
-        Ok(message) if channel.is_pending_for(epoch) => Some(message),
+        Ok(Some(message)) if channel.is_pending_for(epoch) => Some(message),
         Ok(_) => None,
         Err(error) => {
             channel.fail_subscription(shared, epoch, error);
