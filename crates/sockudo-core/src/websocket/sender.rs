@@ -56,8 +56,7 @@ impl MessageSender {
         byte_counter: Option<Arc<ByteCounter>>,
         shutdown_token: CancellationToken,
     ) -> Self {
-        let combined_capacity = buffer_capacity.saturating_mul(2);
-        let (outbound_sender, receiver) = mpsc::bounded_async::<OutboundFrame>(combined_capacity);
+        let (outbound_sender, receiver) = mpsc::unbounded_async::<OutboundFrame>();
         let direct_pending = Arc::new(AtomicUsize::new(0));
         let broadcast_pending = Arc::new(AtomicUsize::new(0));
         let sender = MessageSenderHandle::new(
@@ -209,8 +208,7 @@ impl MessageSender {
     }
 
     pub fn new(mut socket: WebSocketWriter, buffer_capacity: usize) -> Self {
-        let combined_capacity = buffer_capacity.saturating_mul(2);
-        let (outbound_sender, receiver) = mpsc::bounded_async::<OutboundFrame>(combined_capacity);
+        let (outbound_sender, receiver) = mpsc::unbounded_async::<OutboundFrame>();
         let direct_pending = Arc::new(AtomicUsize::new(0));
         let broadcast_pending = Arc::new(AtomicUsize::new(0));
         let sender = MessageSenderHandle::new(

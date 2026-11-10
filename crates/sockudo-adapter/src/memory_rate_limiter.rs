@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use sockudo_core::error::Result;
 use sockudo_core::rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
+use sockudo_core::websocket::PER_SOCKET_MAP_SHARDS;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -107,7 +108,11 @@ impl MemoryRateLimiter {
 
     /// Create a new memory-based rate limiter with a specific configuration
     pub fn with_config(config: RateLimitConfig) -> Self {
-        let limits = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        // One limiter exists per socket and holds a handful of keys.
+        let limits = Arc::new(DashMap::with_hasher_and_shard_amount(
+            ahash::RandomState::new(),
+            PER_SOCKET_MAP_SHARDS,
+        ));
         SharedLimiterCleanup::global().register(&limits);
 
         Self { limits, config }
