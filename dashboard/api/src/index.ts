@@ -38,7 +38,7 @@ app.route("/api/v1/users", createUsersRoutes(dashboard.users));
 app.route("/api/v1/apps", createAppsRoutes(appsRepo, dashboard.users));
 app.route("/api/v1/apps", createWebhooksRoutes(appsRepo, dashboard.users));
 app.route("/api/v1/apps", createPushRoutes(appsRepo, dashboard.users));
-app.route("/api/v1/ops", createOpsRoutes(dashboard.users, appsRepo));
+app.route("/api/v1/ops", createOpsRoutes(dashboard.users));
 
 const server = Bun.serve({
   port: config.port,

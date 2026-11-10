@@ -132,7 +132,7 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
-/// GET /stats and /operator/stats
+/// GET /stats and /operator/stats on the client-facing listener.
 ///
 /// Requires Pusher HTTP API signature auth (`pusher_api_auth_middleware`) and reports only
 /// the signing app: one tenant's credentials never reveal other tenants' ids or occupancy
@@ -142,6 +142,25 @@ pub async fn stats(
     State(handler): State<Arc<ConnectionHandler>>,
     Extension(app): Extension<App>,
 ) -> Result<impl IntoResponse, AppError> {
+    build_stats(&handler, Some(&app.id)).await
+}
+
+/// GET /stats on the internal metrics listener: every app, no credentials.
+///
+/// The metrics listener already exports every `app_id` through `/metrics`, so the
+/// cross-tenant operator view adds no exposure there. Keep that listener private.
+#[instrument(skip(handler), fields(service = "operator_stats"))]
+pub async fn operator_stats(
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    build_stats(&handler, None).await
+}
+
+/// Build the stats payload for one app (`Some`) or every app (`None`).
+async fn build_stats(
+    handler: &Arc<ConnectionHandler>,
+    only_app: Option<&str>,
+) -> Result<(StatusCode, Json<StatsResponse>), AppError> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
@@ -174,14 +193,23 @@ pub async fn stats(
     let mut app_stats = Vec::new();
     let mut totals = GlobalStats::default();
 
-    let namespace = handler
+    let namespaces: Vec<_> = handler
         .connection_manager()
         .get_namespaces()
         .await?
         .into_iter()
-        .find_map(|(app_id, namespace)| (app_id == app.id).then_some(namespace));
-    if let Some(namespace) = namespace {
-        let app_id = app.id.clone();
+        .filter(|(app_id, _)| only_app.is_none_or(|only| only == app_id))
+        .collect();
+    if let Some(only) = only_app
+        && namespaces.is_empty()
+    {
+        totals.apps = 1;
+        app_stats.push(AppStats {
+            app_id: only.to_string(),
+            ..Default::default()
+        });
+    }
+    for (app_id, namespace) in namespaces {
         let mut app_stat = AppStats {
             app_id,
             connections: namespace.sockets.len(),
@@ -236,13 +264,9 @@ pub async fn stats(
         totals.occupancy.presence_members += app_stat.occupancy.presence_members;
 
         app_stats.push(app_stat);
-    } else {
-        totals.apps = 1;
-        app_stats.push(AppStats {
-            app_id: app.id.clone(),
-            ..Default::default()
-        });
     }
+
+    app_stats.sort_by(|a, b| a.app_id.cmp(&b.app_id));
 
     let server_role = handler.server_options().server_role;
 
@@ -413,7 +437,7 @@ pub async fn ready(
 pub async fn up(
     app_id: Option<Path<String>>,
     State(handler): State<Arc<ConnectionHandler>>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<axum::http::Response<String>, AppError> {
     // Once shutdown begins, fail readiness so the orchestrator removes this pod
     // from its load-balancer endpoints and routes no new connections here while
     // existing ones drain.
@@ -450,26 +474,79 @@ pub async fn up(
         )]),
     };
 
+    health_response(&handler, health_status, app_id_str)
+}
+
+/// GET /up/{appId} on the internal metrics listener.
+///
+/// Keeps the pre-5.2.1 app-specific readiness contract (`404` unknown, `503` disabled) for
+/// probes and operators on the private listener. Only ids of existing apps become metric
+/// labels, so cardinality stays bounded by the configured apps.
+#[instrument(level = "debug", skip(handler, app_id))]
+pub async fn app_health(
+    Path(app_id): Path<String>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<axum::http::Response<String>, AppError> {
+    if !handler.is_accepting() {
+        return Ok(axum::http::Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("X-Health-Check", "DRAINING")
+            .body("DRAINING".to_string())?);
+    }
+
+    let timeout_duration = Duration::from_millis(handler.server_options().health_check_timeout_ms);
+    let app_check = timeout(timeout_duration, handler.app_manager().find_by_id(&app_id)).await;
+    let (health_status, label) = match app_check {
+        Ok(Ok(Some(app))) if app.enabled => (
+            check_system_health(&handler, timeout_duration).await,
+            app.id,
+        ),
+        Ok(Ok(Some(app))) => (
+            HealthStatus::Error(vec!["App is disabled".to_string()]),
+            app.id,
+        ),
+        Ok(Ok(None)) => (HealthStatus::NotFound, "system".to_string()),
+        Ok(Err(e)) => (
+            HealthStatus::Error(vec![format!("App manager: {e}")]),
+            "system".to_string(),
+        ),
+        Err(_) => (
+            HealthStatus::Error(vec![format!(
+                "App manager timeout (>{}ms)",
+                timeout_duration.as_millis()
+            )]),
+            "system".to_string(),
+        ),
+    };
+
+    health_response(&handler, health_status, &label)
+}
+
+fn health_response(
+    handler: &Arc<ConnectionHandler>,
+    health_status: HealthStatus,
+    metric_label: &str,
+) -> Result<axum::http::Response<String>, AppError> {
     match &health_status {
         HealthStatus::Ok => {
-            debug!(app_id = %app_id_str, "health check passed");
+            debug!(app_id = %metric_label, "health check passed");
         }
         HealthStatus::Degraded(reasons) => {
             warn!(
-                app_id = %app_id_str,
+                app_id = %metric_label,
                 reasons = %reasons.join(", "),
                 "health check degraded"
             );
         }
         HealthStatus::Error(reasons) => {
             error!(
-                app_id = %app_id_str,
+                app_id = %metric_label,
                 reasons = %reasons.join(", "),
                 "health check failed"
             );
         }
         HealthStatus::NotFound => {
-            warn!(app_id = %app_id_str, "health check for non-existent app");
+            debug!("health check for non-existent app");
         }
     }
 
@@ -483,15 +560,13 @@ pub async fn up(
     // Directly, not through `record_api_metrics`: that helper opens its own `info` span, which
     // would export as a root span on every probe now that `up` opens none at the default level.
     if let Some(metrics) = handler.metrics() {
-        metrics.mark_api_message(app_id_str, 0, status_text.len());
+        metrics.mark_api_message(metric_label, 0, status_text.len());
     }
 
-    let response_val = axum::http::Response::builder()
+    Ok(axum::http::Response::builder()
         .status(status_code)
         .header("X-Health-Check", header_value)
-        .body(status_text.to_string())?;
-
-    Ok(response_val)
+        .body(status_text.to_string())?)
 }
 
 /// Fallback handler for unmatched routes.
@@ -985,6 +1060,44 @@ mod tests {
             !exported.contains("probe-"),
             "unvalidated app ids must never become metric labels:\n{exported}"
         );
+    }
+
+    #[tokio::test]
+    async fn metrics_listener_keeps_operator_stats_and_app_specific_health() {
+        let metrics = Arc::new(
+            sockudo_metrics::PrometheusMetricsDriver::new(0, Some("ghsa_internal_test_")).await,
+        );
+        let handler = multi_tenant_handler(Some(metrics.clone())).await;
+        let router = crate::bootstrap::router::metrics_listener_router(&handler, true);
+
+        let (status, body) = get(&router, "/stats").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = sonic_rs::from_str(&body).unwrap();
+        assert_eq!(json["totals"]["apps"].as_u64(), Some(2), "{body}");
+        assert_eq!(json["apps"][0]["app_id"].as_str(), Some("tenant-a"));
+        assert_eq!(json["apps"][1]["app_id"].as_str(), Some("tenant-b"));
+
+        assert_eq!(get(&router, "/up/tenant-a").await.0, StatusCode::OK);
+        assert_eq!(get(&router, "/up/probe-1").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&router, "/usage").await.0, StatusCode::OK);
+        assert_eq!(get(&router, "/metrics").await.0, StatusCode::OK);
+
+        let exported =
+            sockudo_core::metrics::MetricsInterface::get_metrics_as_plaintext(metrics.as_ref())
+                .await;
+        assert!(
+            !exported.contains("probe-1"),
+            "unknown app ids must never become metric labels:\n{exported}"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_listener_omits_stats_when_usage_is_disabled() {
+        let handler = multi_tenant_handler(None).await;
+        let router = crate::bootstrap::router::metrics_listener_router(&handler, false);
+        assert_eq!(get(&router, "/stats").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&router, "/usage").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&router, "/up/tenant-a").await.0, StatusCode::OK);
     }
 
     #[tokio::test]

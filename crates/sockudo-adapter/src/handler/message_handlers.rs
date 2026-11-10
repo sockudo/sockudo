@@ -167,10 +167,37 @@ impl ConnectionHandler {
         #[cfg(feature = "recovery")]
         if self.pending_resumes.contains_key(socket_id) {
             let channel = request.channel.clone();
+            // Hold live traffic from before the socket joins until the parked replay has been
+            // sent, so newer live messages never overtake older replayed ones. Rewind
+            // subscriptions manage their own gate.
+            let held = if request.rewind.is_none() && self.has_pending_resume(socket_id, &channel) {
+                self.connection_manager
+                    .get_connection(socket_id, &app_config.id)
+                    .await
+            } else {
+                None
+            };
+            if let Some(connection) = held.as_ref() {
+                connection.start_rewind_gate(channel.clone());
+            }
+
             let result = self.subscribe_request(socket_id, app_config, request).await;
             let flushed = self
                 .resume_pending_after_subscribe(socket_id, app_config, &channel, result.is_ok())
                 .await;
+
+            // Release whatever the replay did not (failed, expired, or denied resume), or
+            // discard it when the subscription itself failed.
+            if let Some(connection) = held.as_ref()
+                && connection.has_rewind_gate(&channel)
+            {
+                if result.is_ok() {
+                    self.drain_recovery_gate(connection, socket_id, &app_config.id, &channel, None)
+                        .await?;
+                } else {
+                    let _ = connection.finish_rewind_gate(&channel).await;
+                }
+            }
             return result.and(flushed);
         }
 

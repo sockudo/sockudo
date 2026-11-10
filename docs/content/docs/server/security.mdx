@@ -144,6 +144,8 @@ Upgrade notes for 5.2.1:
 
 - `GET /stats` and `GET /operator/stats` require a Pusher-signed request and report only
   the signing app.
-- `GET /up/{appId}` returns the same response as `GET /up`.
+- `GET /up/{appId}` returns the same response as `GET /up` on the public port. The
+  app-specific probe and the cross-tenant `GET /stats` are on the internal metrics
+  listener (default `9601`), which must stay private.
 - Recovery replays only channels the connection is subscribed to; see
   [History and recovery](/docs/server/history-recovery).

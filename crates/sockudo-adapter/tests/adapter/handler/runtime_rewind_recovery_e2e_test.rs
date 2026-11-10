@@ -8,6 +8,11 @@ use sockudo_adapter::handler::{
 };
 use sockudo_adapter::local_adapter::LocalAdapter;
 use sockudo_app::memory_app_manager::MemoryAppManager;
+use sockudo_core::annotations::{
+    AnnotationEventLookupRequest, AnnotationEventsRequest, AnnotationProjectionRequest,
+    AnnotationProjectionsForChannelRequest, AnnotationStore, MemoryAnnotationStore,
+    RawAnnotationReplayRequest, StoredAnnotationEvent, StoredAnnotationProjection,
+};
 use sockudo_core::app::{App, AppManager};
 use sockudo_core::history::{
     HistoryAppendRecord, HistoryPage, HistoryReadRequest, HistoryRetentionPolicy,
@@ -2068,4 +2073,251 @@ async fn writer_queue_full_fault_rejects_publish_without_live_delivery() {
     }
 
     expect_no_message(&mut reader, Duration::from_millis(200)).await;
+}
+
+/// Delegates to the in-memory store but can pause the subscribe-time summary snapshot.
+#[derive(Default)]
+struct GatedAnnotationStore {
+    inner: MemoryAnnotationStore,
+    gate: Mutex<Option<ReadGate>>,
+}
+
+impl GatedAnnotationStore {
+    async fn arm(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (continue_tx, continue_rx) = oneshot::channel();
+        *self.gate.lock().await = Some(ReadGate {
+            started_tx: Some(started_tx),
+            continue_rx,
+        });
+        (started_rx, continue_tx)
+    }
+}
+
+#[async_trait]
+impl AnnotationStore for GatedAnnotationStore {
+    async fn append_event(
+        &self,
+        record: StoredAnnotationEvent,
+    ) -> sockudo_core::error::Result<StoredAnnotationProjection> {
+        self.inner.append_event(record).await
+    }
+    async fn get_events(
+        &self,
+        request: AnnotationEventsRequest,
+    ) -> sockudo_core::error::Result<Vec<StoredAnnotationEvent>> {
+        self.inner.get_events(request).await
+    }
+    async fn replay_raw(
+        &self,
+        request: RawAnnotationReplayRequest,
+    ) -> sockudo_core::error::Result<Vec<StoredAnnotationEvent>> {
+        self.inner.replay_raw(request).await
+    }
+    async fn get_event_by_serial(
+        &self,
+        request: AnnotationEventLookupRequest,
+    ) -> sockudo_core::error::Result<Option<StoredAnnotationEvent>> {
+        self.inner.get_event_by_serial(request).await
+    }
+    async fn get_projection(
+        &self,
+        request: AnnotationProjectionRequest,
+    ) -> sockudo_core::error::Result<Option<StoredAnnotationProjection>> {
+        self.inner.get_projection(request).await
+    }
+    async fn list_projections_for_channel_with_rebuild_count(
+        &self,
+        request: AnnotationProjectionsForChannelRequest,
+    ) -> sockudo_core::error::Result<(Vec<StoredAnnotationProjection>, usize)> {
+        let result = self
+            .inner
+            .list_projections_for_channel_with_rebuild_count(request)
+            .await;
+        if let Some(mut gate) = self.gate.lock().await.take() {
+            if let Some(started_tx) = gate.started_tx.take() {
+                let _ = started_tx.send(());
+            }
+            let _ = gate.continue_rx.await;
+        }
+        result
+    }
+    async fn rebuild_projection(
+        &self,
+        request: AnnotationProjectionRequest,
+    ) -> sockudo_core::error::Result<StoredAnnotationProjection> {
+        self.inner.rebuild_projection(request).await
+    }
+}
+
+/// A second node that shares `history_store` with another harness but has its own
+/// adapter and empty hot replay buffer, so recovery must read durable history.
+async fn build_peer_harness(
+    options: ServerOptions,
+    history_store: Arc<GateHistoryStore>,
+    app: App,
+    annotation_store: Option<Arc<GatedAnnotationStore>>,
+) -> TestHarness {
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(app.clone()).await.unwrap();
+    let adapter = Arc::new(LocalAdapter::new());
+    let version_store = Arc::new(MemoryVersionStore::new());
+    let handler = ConnectionHandler::builder(
+        app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(MockCacheManager::new()),
+        options,
+    )
+    .local_adapter(adapter.clone())
+    .history_store(history_store.clone() as Arc<dyn HistoryStore + Send + Sync>)
+    .version_store(version_store.clone() as Arc<dyn VersionStore + Send + Sync>)
+    .metrics(Arc::new(MockMetricsInterface::new()));
+    let handler = match annotation_store {
+        Some(store) => handler.annotation_store(store as Arc<dyn AnnotationStore + Send + Sync>),
+        None => handler,
+    }
+    .build();
+    TestHarness {
+        handler,
+        app,
+        app_manager,
+        adapter,
+        history_store,
+        version_store,
+    }
+}
+
+/// A resume parked before its subscription must not let live traffic overtake the
+/// replay: live messages published while the replay is in flight are held and released
+/// after the replayed (older) messages.
+#[tokio::test]
+async fn parked_resume_holds_live_messages_until_replay_completes_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.connection_recovery.enabled = true;
+    options.history.max_page_size = 100;
+    let node_a = build_harness(options.clone()).await;
+    let channel = "ordered";
+
+    let (source, mut source_reader) = connect_v2_socket(&node_a).await;
+    subscribe_v2(&node_a, &source, &mut source_reader, channel, None).await;
+    for (event, id) in [("o-1", "o-msg-1"), ("o-2", "o-msg-2"), ("o-3", "o-msg-3")] {
+        node_a
+            .handler
+            .broadcast_to_channel(&node_a.app, channel, live_message(channel, event, id), None)
+            .await
+            .unwrap();
+    }
+    let first = recv_message(&mut source_reader).await;
+
+    let annotations = Arc::new(GatedAnnotationStore::default());
+    let node_b = build_peer_harness(
+        options,
+        node_a.history_store.clone(),
+        node_a.app.clone(),
+        Some(annotations.clone()),
+    )
+    .await;
+    let (socket, mut reader) = connect_v2_socket(&node_b).await;
+
+    // Resume first (parked: not subscribed yet), as SDKs do while private auth is pending.
+    node_b
+        .handler
+        .handle_resume(
+            &socket,
+            &node_b.app,
+            &PusherMessage {
+                event: Some("sockudo:resume".to_string()),
+                channel: None,
+                data: Some(MessageData::Json(sonic_rs::json!({
+                    "channel_positions": {
+                        channel: {
+                            "stream_id": first.stream_id,
+                            "serial": first.serial,
+                            "last_message_id": first.message_id,
+                        }
+                    }
+                }))),
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+        )
+        .await
+        .unwrap();
+    let parked = recv_message(&mut reader).await;
+    assert_eq!(parked.event.as_deref(), Some("sockudo:resume_success"));
+
+    // Pause inside the subscribe after its delivery state is installed (the V2 annotation
+    // summary snapshot) and before the parked replay runs, then publish live traffic.
+    let (started_rx, continue_tx) = annotations.arm().await;
+    let subscriber = node_b.handler.clone();
+    let app = node_b.app.clone();
+    let subscribe = tokio::spawn(async move {
+        subscriber
+            .handle_subscribe_request(
+                &socket,
+                &app,
+                SubscriptionRequest {
+                    channel: channel.to_string(),
+                    auth: None,
+                    channel_data: None,
+                    #[cfg(feature = "tag-filtering")]
+                    tags_filter: None,
+                    #[cfg(feature = "tag-filtering")]
+                    predicate: None,
+                    #[cfg(feature = "delta")]
+                    delta: None,
+                    rewind: None,
+                    event_name_filter: None,
+                    annotation_subscribe: false,
+                },
+            )
+            .await
+    });
+    timeout(Duration::from_secs(2), started_rx)
+        .await
+        .expect("subscription acknowledgement did not start")
+        .unwrap();
+
+    node_b
+        .handler
+        .broadcast_to_channel(
+            &node_b.app,
+            channel,
+            live_message(channel, "o-live", "o-msg-live"),
+            None,
+        )
+        .await
+        .unwrap();
+    continue_tx.send(()).unwrap();
+    subscribe.await.unwrap().unwrap();
+
+    // The held live message is released right after the per-channel resume_success.
+    let mut frames = recv_until_event(&mut reader, "sockudo:resume_success").await;
+    if !frames
+        .iter()
+        .any(|frame| frame.message_id.as_deref() == Some("o-msg-live"))
+    {
+        frames.push(recv_message(&mut reader).await);
+    }
+    let order: Vec<&str> = frames
+        .iter()
+        .filter_map(|frame| frame.message_id.as_deref())
+        .filter(|id| id.starts_with("o-msg"))
+        .collect();
+    assert_eq!(
+        order,
+        vec!["o-msg-2", "o-msg-3", "o-msg-live"],
+        "live traffic overtook the replay"
+    );
 }

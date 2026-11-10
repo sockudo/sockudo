@@ -53,9 +53,10 @@ Fixed in 5.2.1 (all affect 5.2.0). Reported by apudiu.
 | GHSA-4795-c9wj-3q58 | See advisory | Presence subscribe without `channel_data` panicked the connection task. |
 | GHSA-xfrj-v26g-242j | See advisory | Unauthenticated `/stats`, `/operator/stats`, and `/up/{appId}` disclosed tenants and app ids. |
 
-5.2.1 changes operator-visible behavior: native `/stats` and `/operator/stats` require a
-Pusher-signed request and return only the signing app, and `/up/{appId}` answers exactly
-like `/up`. See the security page in the docs for upgrade notes and 5.2.0 workarounds.
+5.2.1 changes operator-visible behavior: on the client-facing listener, native `/stats` and
+`/operator/stats` require a Pusher-signed request and return only the signing app, and
+`/up/{appId}` answers exactly like `/up`. The unsigned operator views moved to the internal
+metrics listener. See the security page in the docs for upgrade notes and 5.2.0 workarounds.
 
 ## Scope
 

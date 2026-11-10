@@ -431,6 +431,8 @@ consumer_offset_durability = "replicated"
 enabled = false
 driver = "memory"
 
+# Internal listener: /metrics plus unauthenticated operator routes (/stats for all
+# apps, /usage, /up, /up/{appId}). Keep it off public networks.
 [metrics]
 enabled = true
 driver = "prometheus"

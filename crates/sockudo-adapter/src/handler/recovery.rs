@@ -368,6 +368,15 @@ impl ConnectionHandler {
                 .is_ok()
     }
 
+    /// Whether `channel` has a parked resume on this socket. The subscribe path then leaves
+    /// its continuity gate for the recovery replay to drain, so held live traffic is released
+    /// after the older replayed messages instead of before them.
+    pub(crate) fn has_pending_resume(&self, socket_id: &SocketId, channel: &str) -> bool {
+        self.pending_resumes
+            .get(socket_id)
+            .is_some_and(|pending| pending.contains_key(channel))
+    }
+
     fn park_pending_resume(
         &self,
         socket_id: &SocketId,
@@ -431,6 +440,7 @@ impl ConnectionHandler {
     ) -> Result<()> {
         let mut recovered = Vec::new();
         let mut gated_channels = HashSet::new();
+        let mut replayed_through: HashMap<String, u64> = HashMap::new();
         for (channel, _) in &ready {
             connection.start_rewind_gate(channel.clone());
             gated_channels.insert(channel.clone());
@@ -462,6 +472,9 @@ impl ConnectionHandler {
                     };
                     if let Some(metrics) = self.metrics.as_ref() {
                         metrics.mark_history_recovery_success(&app_config.id, source);
+                    }
+                    if let Some(serial) = delivery.position.as_ref().map(|p| p.serial) {
+                        replayed_through.insert(channel.clone(), serial);
                     }
                     recovered.push(json!({
                         "channel": channel,
@@ -521,7 +534,8 @@ impl ConnectionHandler {
         }
 
         for channel in gated_channels {
-            self.drain_recovery_gate(connection, socket_id, &app_config.id, &channel)
+            let through = replayed_through.get(&channel).copied();
+            self.drain_recovery_gate(connection, socket_id, &app_config.id, &channel, through)
                 .await?;
         }
 
@@ -1176,12 +1190,15 @@ impl ConnectionHandler {
         }));
     }
 
-    async fn drain_recovery_gate(
+    /// Release live messages held while a channel was being recovered. Messages at or
+    /// before `replayed_through` were already delivered by the replay and are skipped.
+    pub(crate) async fn drain_recovery_gate(
         &self,
         connection: &sockudo_core::websocket::WebSocketRef,
         socket_id: &SocketId,
         app_id: &str,
         channel: &str,
+        replayed_through: Option<u64>,
     ) -> Result<()> {
         loop {
             let batch = connection
@@ -1198,6 +1215,13 @@ impl ConnectionHandler {
             buffered.sort_by_key(|message| message.serial.unwrap_or(u64::MAX));
 
             for buffered_message in buffered {
+                if replayed_through.is_some_and(|through| {
+                    buffered_message
+                        .serial
+                        .is_some_and(|serial| serial <= through)
+                }) {
+                    continue;
+                }
                 let message = crate::v2_broadcast::apply_append_mode(
                     std::sync::Arc::unwrap_or_clone(buffered_message.message),
                     connection.append_mode,

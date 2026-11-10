@@ -58,7 +58,10 @@ that race by parking positions for channels that are not subscribed yet:
 
 - The immediate `resume_success` lists them under `pending`.
 - When that channel's subscription succeeds, Sockudo replays it after
-  `subscription_succeeded` and sends a second `resume_success` for that channel.
+  `subscription_succeeded` and sends a second `resume_success` for that channel. Live
+  messages published while the subscription and replay are in progress are held in the
+  bounded continuity gate and released after the replay, in serial order, skipping any the
+  replay already delivered, so live traffic never overtakes older replayed messages.
 - If the subscription fails, the parked position is dropped silently (the client
   already received the subscription error).
 - Parked positions are bounded to 100 channels per connection, expire after 30 seconds,

@@ -1,110 +1,18 @@
-import { createHmac } from "node:crypto";
 import { config } from "../config.ts";
-import type { AppRecord } from "../types/app.ts";
-
-const STATS_PATH = "/stats";
-const STATS_FETCH_CONCURRENCY = 8;
 
 /**
- * Sockudo only serves `/stats` to Pusher-signed requests and scopes the
- * response to the signing app (GHSA-xfrj-v26g-242j).
+ * The cross-tenant operator stats are served on Sockudo's internal metrics
+ * listener (the same one as `/metrics`). The client-facing `/stats` only
+ * reports the app that signed the request (GHSA-xfrj-v26g-242j).
  */
-export function createSignedSockudoStatsUrl(
-  app: AppRecord,
-  nowSeconds = Math.floor(Date.now() / 1_000),
-  baseUrl = config.sockudoHttpUrl,
-): string {
-  const params: Record<string, string> = {
-    auth_key: app.key,
-    auth_timestamp: String(nowSeconds),
-    auth_version: "1.0",
-  };
-  const canonical = Object.keys(params)
-    .sort()
-    .map((key) => `${key}=${params[key]}`)
-    .join("&");
-  const signature = createHmac("sha256", app.secret)
-    .update(["GET", STATS_PATH, canonical].join("\n"), "utf8")
-    .digest("hex");
-
-  const url = new URL(STATS_PATH, baseUrl);
-  for (const key of Object.keys(params).sort()) {
-    url.searchParams.append(key, params[key]!);
+export async function fetchSockudoStats() {
+  const res = await fetch(`${config.sockudoMetricsUrl}/stats`, {
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!res.ok) {
+    throw new Error(`Sockudo /stats returned ${res.status}`);
   }
-  url.searchParams.append("auth_signature", signature);
-  return url.toString();
-}
-
-type StatsTotals = Record<string, unknown>;
-
-export interface SockudoStats {
-  server_role?: unknown;
-  memory?: unknown;
-  history?: unknown;
-  presence_history?: unknown;
-  totals: StatsTotals;
-  apps: Array<{ app_id: string } & Record<string, unknown>>;
-}
-
-function addNumericFields(target: StatsTotals, source: StatsTotals): StatsTotals {
-  for (const [key, value] of Object.entries(source)) {
-    if (typeof value === "number") {
-      target[key] = (typeof target[key] === "number" ? (target[key] as number) : 0) + value;
-    } else if (value && typeof value === "object" && !Array.isArray(value)) {
-      const nested =
-        target[key] && typeof target[key] === "object"
-          ? (target[key] as StatsTotals)
-          : {};
-      target[key] = addNumericFields(nested, value as StatsTotals);
-    }
-  }
-  return target;
-}
-
-/** Merge per-app `/stats` responses into the operator-wide view. */
-export function mergeSockudoStats(responses: SockudoStats[]): SockudoStats {
-  const [first] = responses;
-  if (!first) {
-    return { totals: {}, apps: [] };
-  }
-  const totals: StatsTotals = {};
-  for (const response of responses) {
-    addNumericFields(totals, response.totals ?? {});
-  }
-  return {
-    ...(first.server_role === undefined ? {} : { server_role: first.server_role }),
-    memory: first.memory,
-    history: first.history,
-    presence_history: first.presence_history,
-    totals,
-    apps: responses
-      .flatMap((response) => response.apps ?? [])
-      .sort((left, right) => left.app_id.localeCompare(right.app_id)),
-  };
-}
-
-export async function fetchSockudoStats(apps: AppRecord[]): Promise<SockudoStats> {
-  if (apps.length === 0) {
-    throw new Error("No apps are configured to authenticate Sockudo /stats");
-  }
-  const responses: SockudoStats[] = [];
-  for (let start = 0; start < apps.length; start += STATS_FETCH_CONCURRENCY) {
-    const batch = apps.slice(start, start + STATS_FETCH_CONCURRENCY);
-    responses.push(
-      ...(await Promise.all(
-        batch.map(async (app) => {
-          const res = await fetch(createSignedSockudoStatsUrl(app), {
-            signal: AbortSignal.timeout(5_000),
-          });
-          if (!res.ok) {
-            throw new Error(`Sockudo /stats returned ${res.status}`);
-          }
-          return (await res.json()) as SockudoStats;
-        }),
-      )),
-    );
-  }
-  return mergeSockudoStats(responses);
+  return res.json();
 }
 
 export async function fetchSockudoUsage() {
@@ -118,8 +26,12 @@ export async function fetchSockudoUsage() {
 }
 
 export async function fetchSockudoHealth(appId?: string) {
-  const path = appId ? `/up/${encodeURIComponent(appId)}` : "/up";
-  const res = await fetch(`${config.sockudoHttpUrl}${path}`, {
+  // App-specific readiness (404 unknown, 503 disabled) is only answered on the
+  // internal metrics listener; the public `/up/{appId}` mirrors `/up`.
+  const url = appId
+    ? `${config.sockudoMetricsUrl}/up/${encodeURIComponent(appId)}`
+    : `${config.sockudoHttpUrl}/up`;
+  const res = await fetch(url, {
     signal: AbortSignal.timeout(5_000),
   });
   return {

@@ -269,7 +269,13 @@ Ably `GET /stats` accepts interval IDs or epoch milliseconds for `start` and
 direction, a bounded `limit`, and opaque cursors carried in `Link` headers.
 Pagination is anchored to interval IDs and a fixed query horizon.
 
-Native stats are signed like other Pusher HTTP API calls (`GET\n/stats\n<sorted query>`
+The internal metrics listener (`[metrics]`, default port `9601`) serves the operator
+variants without credentials: `GET /metrics`, `GET /up`, `GET /up/{appId}` (real
+per-app check: `404` unknown, `503` disabled), and, when `usage_enabled`,
+`GET /usage` and `GET /stats` (every app). Keep that listener off public networks; it
+already exposes every `app_id` through Prometheus labels.
+
+Native stats on the client-facing listener are signed like other Pusher HTTP API calls (`GET\n/stats\n<sorted query>`
 with the app secret) and only ever describe the signing app, so one tenant's credentials
 cannot enumerate other tenants. Before 5.2.1 these routes were unauthenticated
 (GHSA-xfrj-v26g-242j). Disable `/usage` and operator aggregation stats in exposed

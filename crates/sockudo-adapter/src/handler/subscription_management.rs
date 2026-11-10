@@ -341,7 +341,7 @@ impl ConnectionHandler {
             )
             .await?;
 
-            if attach_serial.is_some() {
+            if attach_serial.is_some() && !self.recovery_owns_gate(socket_id, &request.channel) {
                 self.drain_attach_gate(socket_id, app_config, &request.channel)
                     .await?;
             }
@@ -906,6 +906,19 @@ impl ConnectionHandler {
         }
 
         Some(replay_buffer.current_position(&app_config.id, channel))
+    }
+
+    /// A parked resume for this channel drains the gate after its replay instead.
+    fn recovery_owns_gate(&self, socket_id: &SocketId, channel: &str) -> bool {
+        #[cfg(feature = "recovery")]
+        {
+            self.has_pending_resume(socket_id, channel)
+        }
+        #[cfg(not(feature = "recovery"))]
+        {
+            let _ = (socket_id, channel);
+            false
+        }
     }
 
     async fn drain_attach_gate(

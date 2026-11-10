@@ -23,11 +23,14 @@ docs page for 5.2.0 workarounds.
 
 ### Changed
 
-- **Breaking:** unsigned `GET /stats` and `GET /operator/stats` requests are rejected, and the
-  response lists only the signing app. `GET /up/{appId}` no longer returns `404` for unknown apps
-  or `503` for disabled apps. The dashboard now signs one stats request per app.
+- **Breaking:** on the client-facing listener, unsigned `GET /stats` and `GET /operator/stats`
+  requests are rejected and the response lists only the signing app, and `GET /up/{appId}` no
+  longer returns `404` for unknown apps or `503` for disabled apps. The unsigned cross-tenant
+  `GET /stats`, `GET /usage`, and the app-specific `GET /up/{appId}` are now served on the
+  internal metrics listener (default port `9601`); the dashboard reads them there.
 - `resume_success` may include a `pending` channel list, followed by a per-channel
-  `resume_success` once a parked channel is replayed.
+  `resume_success` once a parked channel is replayed. Live messages published during that
+  subscribe and replay are held and released after the replay, without duplicates.
 
 ## [5.2.0] - 2026-10-22
 

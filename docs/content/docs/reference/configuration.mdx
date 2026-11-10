@@ -67,10 +67,11 @@ Watermarks must satisfy `0 <= low_watermark < high_watermark <= 1`. A zero
 `/up` for dependency health and rollout checks, and `/live` for process liveness.
 Capacity does not change `/up`, so a full pod can still pass deployment health checks.
 
-`GET /up/{appId}` is kept for existing probes but returns exactly the same status and
-body as `GET /up`: it does not reveal whether the app id exists or is disabled, and the
-path id is never used as a metric label. Since 5.2.1 it no longer returns `404` for
-unknown apps or `503` for disabled apps.
+On the client-facing listener, `GET /up/{appId}` returns exactly the same status and body
+as `GET /up`: it does not reveal whether the app id exists or is disabled, and the path id
+is never used as a metric label. The app-specific check (`404` unknown, `503` disabled)
+moved to the internal metrics listener (`[metrics] host`/`port`, default `9601`), so point
+probes that need it at `http://<pod>:9601/up/<app-id>`.
 
 ## Operator stats endpoints
 
@@ -87,9 +88,11 @@ unauthenticated.
 usage_enabled = true # set false to remove /usage, /stats and /operator/stats entirely
 ```
 
-This is a breaking change for scripts that scraped `/stats` without credentials; sign the
-request with an app key, use the Prometheus `/metrics` listener, or set
-`usage_enabled = false`.
+Unsigned, cross-tenant stats are served on the internal metrics listener instead:
+`GET http://<pod>:9601/stats` returns every app without credentials, alongside `/usage`,
+`/up`, and `/up/{appId}`. That listener already exports every `app_id` through `/metrics`,
+so it must stay on a private network either way. Scripts that scraped the public `/stats`
+without credentials should move to the metrics port.
 
 Standalone Redis adapter health probes reuse a dedicated reconnecting connection,
 separate from command, event, and blocking queue connections. Probes still execute
