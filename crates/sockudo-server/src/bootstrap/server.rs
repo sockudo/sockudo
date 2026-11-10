@@ -1108,6 +1108,17 @@ impl SockudoServer {
                     replay_buf.evict_expired();
                 }
             });
+
+            // Parked resume positions (resume sent before its subscription) expire after a
+            // fixed TTL; sweep them so idle sockets do not hold them until disconnect.
+            let pending_handler = handler.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+                loop {
+                    interval.tick().await;
+                    pending_handler.evict_expired_pending_resumes().await;
+                }
+            });
             info!(
                 interval_seconds = eviction_interval.as_secs(),
                 "connection recovery replay eviction task started"

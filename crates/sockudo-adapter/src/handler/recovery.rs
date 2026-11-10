@@ -39,6 +39,21 @@ struct ResumeDeliveryPosition {
     last_message_id: Option<String>,
 }
 
+/// The last position a recovery replay delivered for a channel.
+#[derive(Debug, Clone)]
+pub(crate) struct ReplayedThrough {
+    stream_id: Option<String>,
+    serial: u64,
+}
+
+impl ReplayedThrough {
+    /// Whether a held live message was already delivered by the replay. Serials are only
+    /// comparable within one stream generation, so a message from another stream never is.
+    fn covers(&self, stream_id: Option<&str>, serial: Option<u64>) -> bool {
+        stream_id == self.stream_id.as_deref() && serial.is_some_and(|serial| serial <= self.serial)
+    }
+}
+
 struct ResumeDelivery {
     delivered: usize,
     position: Option<ResumeDeliveryPosition>,
@@ -131,12 +146,17 @@ pub(crate) const MAX_PENDING_RESUME_CHANNELS: usize = 100;
 pub(crate) const PENDING_RESUME_TTL: Duration = Duration::from_secs(30);
 /// Channel names longer than this are never parked (Pusher caps names at 200 bytes).
 const MAX_PENDING_RESUME_CHANNEL_BYTES: usize = 256;
+/// `stream_id` / `last_message_id` longer than this are never parked. Real values are UUIDs
+/// or short server-assigned ids, so this only bounds what an idle socket can retain.
+const MAX_PENDING_RESUME_ID_BYTES: usize = 128;
 
 /// A resume position received before the socket held the matching subscription.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingResume {
     position: ResumePosition,
     received_at: Instant,
+    /// Lets the periodic sweep tell the socket its parked position expired.
+    app_id: String,
 }
 
 /// Per-socket parked resume positions keyed by channel. Bounded by
@@ -215,6 +235,15 @@ impl ConnectionHandler {
             return Err(Error::ConnectionNotFound);
         };
 
+        // Positions parked by an earlier resume that expired before their subscription
+        // arrived get an explicit outcome instead of disappearing.
+        let mut failed = Vec::new();
+        for channel in self.take_expired_pending_resumes(socket_id) {
+            let failure = access_denied_failure("not_subscribed", "pending_resume_expired");
+            self.record_resume_failure(socket_id, app_config, &channel, &failure, &mut failed)
+                .await;
+        }
+
         let mut ready = Vec::new();
         let mut pending = Vec::new();
         let mut rejected = Vec::new();
@@ -228,14 +257,13 @@ impl ConnectionHandler {
                 } else {
                     rejected.push((channel, "channel_access_denied"));
                 }
-            } else if self.park_pending_resume(socket_id, &channel, position) {
+            } else if self.park_pending_resume(socket_id, &app_config.id, &channel, position) {
                 pending.push(channel);
             } else {
                 rejected.push((channel, "pending_resume_limit_exceeded"));
             }
         }
 
-        let mut failed = Vec::new();
         for (channel, reason) in &rejected {
             let failure = access_denied_failure("not_subscribed", reason);
             self.record_resume_failure(socket_id, app_config, channel, &failure, &mut failed)
@@ -408,14 +436,22 @@ impl ConnectionHandler {
     fn park_pending_resume(
         &self,
         socket_id: &SocketId,
+        app_id: &str,
         channel: &str,
         position: ResumePosition,
     ) -> bool {
-        if channel.is_empty() || channel.len() > MAX_PENDING_RESUME_CHANNEL_BYTES {
+        let id_too_long = |id: &Option<String>| {
+            id.as_ref()
+                .is_some_and(|id| id.len() > MAX_PENDING_RESUME_ID_BYTES)
+        };
+        if channel.is_empty()
+            || channel.len() > MAX_PENDING_RESUME_CHANNEL_BYTES
+            || id_too_long(&position.stream_id)
+            || id_too_long(&position.last_message_id)
+        {
             return false;
         }
         let mut pending = self.pending_resumes.entry(*socket_id).or_default();
-        pending.retain(|_, entry| entry.received_at.elapsed() <= PENDING_RESUME_TTL);
         if !pending.contains_key(channel) && pending.len() >= MAX_PENDING_RESUME_CHANNELS {
             return false;
         }
@@ -424,9 +460,70 @@ impl ConnectionHandler {
             PendingResume {
                 position,
                 received_at: Instant::now(),
+                app_id: app_id.to_string(),
             },
         );
         true
+    }
+
+    /// Remove this socket's parked positions that are older than [`PENDING_RESUME_TTL`] and
+    /// return their channels so the caller can report them.
+    fn take_expired_pending_resumes(&self, socket_id: &SocketId) -> Vec<String> {
+        let Some(mut pending) = self.pending_resumes.get_mut(socket_id) else {
+            return Vec::new();
+        };
+        let mut expired = Vec::new();
+        pending.retain(|channel, entry| {
+            let live = entry.received_at.elapsed() <= PENDING_RESUME_TTL;
+            if !live {
+                expired.push(channel.clone());
+            }
+            live
+        });
+        let now_empty = pending.is_empty();
+        drop(pending);
+        if now_empty {
+            self.pending_resumes
+                .remove_if(socket_id, |_, pending| pending.is_empty());
+        }
+        expired
+    }
+
+    /// Drop parked resume positions older than [`PENDING_RESUME_TTL`] on every socket, so
+    /// idle connections do not retain them until disconnect, and send each affected socket a
+    /// `resume_failed` (`pending_resume_expired`) so a channel reported as `pending` always
+    /// gets an outcome. Called periodically by the server's recovery maintenance task;
+    /// returns how many positions were dropped.
+    pub async fn evict_expired_pending_resumes(&self) -> usize {
+        self.evict_pending_resumes_older_than(PENDING_RESUME_TTL)
+            .await
+    }
+
+    /// [`Self::evict_expired_pending_resumes`] with an explicit age limit.
+    pub async fn evict_pending_resumes_older_than(&self, ttl: Duration) -> usize {
+        let mut expired: Vec<(SocketId, String, String)> = Vec::new();
+        self.pending_resumes.retain(|socket_id, pending| {
+            pending.retain(|channel, entry| {
+                let live = entry.received_at.elapsed() <= ttl;
+                if !live {
+                    expired.push((*socket_id, entry.app_id.clone(), channel.clone()));
+                }
+                live
+            });
+            !pending.is_empty()
+        });
+
+        let failure = access_denied_failure("not_subscribed", "pending_resume_expired");
+        for (socket_id, app_id, channel) in &expired {
+            // The socket may have disconnected meanwhile; there is nobody left to tell.
+            let _ = self
+                .send_resume_failed(socket_id, app_id, channel, &failure)
+                .await;
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.mark_history_recovery_failure(app_id, failure.code);
+            }
+        }
+        expired.len()
     }
 
     fn take_pending_resumes(
@@ -468,7 +565,7 @@ impl ConnectionHandler {
     ) -> Result<()> {
         let mut recovered = Vec::new();
         let mut gated_channels = HashSet::new();
-        let mut replayed_through: HashMap<String, u64> = HashMap::new();
+        let mut replayed_through: HashMap<String, ReplayedThrough> = HashMap::new();
         for (channel, _) in &ready {
             connection.start_rewind_gate(channel.clone());
             gated_channels.insert(channel.clone());
@@ -501,8 +598,14 @@ impl ConnectionHandler {
                     if let Some(metrics) = self.metrics.as_ref() {
                         metrics.mark_history_recovery_success(&app_config.id, source);
                     }
-                    if let Some(serial) = delivery.position.as_ref().map(|p| p.serial) {
-                        replayed_through.insert(channel.clone(), serial);
+                    if let Some(position) = delivery.position.as_ref() {
+                        replayed_through.insert(
+                            channel.clone(),
+                            ReplayedThrough {
+                                stream_id: position.stream_id.clone(),
+                                serial: position.serial,
+                            },
+                        );
                     }
                     recovered.push(json!({
                         "channel": channel,
@@ -562,7 +665,7 @@ impl ConnectionHandler {
         }
 
         for channel in gated_channels {
-            let through = replayed_through.get(&channel).copied();
+            let through = replayed_through.get(&channel);
             self.drain_recovery_gate(connection, socket_id, &app_config.id, &channel, through)
                 .await?;
         }
@@ -1202,7 +1305,7 @@ impl ConnectionHandler {
         failed: &mut Vec<sonic_rs::Value>,
     ) {
         let _ = self
-            .send_resume_failed(socket_id, app_config, channel, failure)
+            .send_resume_failed(socket_id, &app_config.id, channel, failure)
             .await;
         if let Some(metrics) = self.metrics.as_ref() {
             metrics.mark_history_recovery_failure(&app_config.id, failure.code);
@@ -1218,15 +1321,16 @@ impl ConnectionHandler {
         }));
     }
 
-    /// Release live messages held while a channel was being recovered. Messages at or
-    /// before `replayed_through` were already delivered by the replay and are skipped.
+    /// Release live messages held while a channel was being recovered. Messages of the
+    /// replayed stream at or before `replayed_through` were already delivered by the replay
+    /// and are skipped; messages of any other stream (e.g. after a reset) are always sent.
     pub(crate) async fn drain_recovery_gate(
         &self,
         connection: &sockudo_core::websocket::WebSocketRef,
         socket_id: &SocketId,
         app_id: &str,
         channel: &str,
-        replayed_through: Option<u64>,
+        replayed_through: Option<&ReplayedThrough>,
     ) -> Result<()> {
         loop {
             let batch = connection
@@ -1244,9 +1348,10 @@ impl ConnectionHandler {
 
             for buffered_message in buffered {
                 if replayed_through.is_some_and(|through| {
-                    buffered_message
-                        .serial
-                        .is_some_and(|serial| serial <= through)
+                    through.covers(
+                        buffered_message.message.stream_id.as_deref(),
+                        buffered_message.serial,
+                    )
                 }) {
                     continue;
                 }
@@ -1270,7 +1375,7 @@ impl ConnectionHandler {
     async fn send_resume_failed(
         &self,
         socket_id: &SocketId,
-        app_config: &App,
+        app_id: &str,
         channel: &str,
         failure: &ResumeFailure,
     ) -> Result<()> {
@@ -1301,7 +1406,7 @@ impl ConnectionHandler {
             delta_sequence: None,
             delta_conflation_key: None,
         };
-        self.send_message_to_socket(&app_config.id, socket_id, fail_msg)
+        self.send_message_to_socket(app_id, socket_id, fail_msg)
             .await
     }
 
@@ -2023,26 +2128,29 @@ mod tests {
         for index in 0..MAX_PENDING_RESUME_CHANNELS {
             assert!(handler.park_pending_resume(
                 &socket_id,
+                "app",
                 &format!("private-{index}"),
                 parked_position()
             ));
         }
         assert!(
-            !handler.park_pending_resume(&socket_id, "private-overflow", parked_position()),
+            !handler.park_pending_resume(&socket_id, "app", "private-overflow", parked_position()),
             "parking beyond the per-socket cap must be rejected"
         );
         assert!(
-            handler.park_pending_resume(&socket_id, "private-0", parked_position()),
+            handler.park_pending_resume(&socket_id, "app", "private-0", parked_position()),
             "re-parking an existing channel replaces it"
         );
         assert!(!handler.park_pending_resume(
             &socket_id,
+            "app",
             &"x".repeat(MAX_PENDING_RESUME_CHANNEL_BYTES + 1),
             parked_position()
         ));
-        assert!(!handler.park_pending_resume(&socket_id, "", parked_position()));
+        assert!(!handler.park_pending_resume(&socket_id, "app", "", parked_position()));
 
-        // Expired entries are evicted before the cap is checked.
+        // `handle_resume` takes (and reports) expired entries before parking new ones, so
+        // they never count against the cap.
         let expired_at = Instant::now()
             .checked_sub(PENDING_RESUME_TTL + Duration::from_secs(1))
             .unwrap();
@@ -2054,7 +2162,17 @@ mod tests {
         {
             entry.received_at = expired_at;
         }
-        assert!(handler.park_pending_resume(&socket_id, "private-overflow", parked_position()));
+        assert_eq!(
+            handler.take_expired_pending_resumes(&socket_id).len(),
+            MAX_PENDING_RESUME_CHANNELS
+        );
+        assert!(!handler.pending_resumes.contains_key(&socket_id));
+        assert!(handler.park_pending_resume(
+            &socket_id,
+            "app",
+            "private-overflow",
+            parked_position()
+        ));
         assert_eq!(handler.pending_resumes.get(&socket_id).unwrap().len(), 1);
 
         let taken =
@@ -2064,6 +2182,67 @@ mod tests {
             !handler.pending_resumes.contains_key(&socket_id),
             "an emptied socket entry is removed"
         );
+    }
+
+    #[tokio::test]
+    async fn pending_resumes_reject_oversized_ids_and_expire_without_traffic() {
+        let handler = build_handler(false);
+        let socket_id = SocketId::new();
+        let long_id = "x".repeat(MAX_PENDING_RESUME_ID_BYTES + 1);
+
+        let mut oversized_stream = parked_position();
+        oversized_stream.stream_id = Some(long_id.clone());
+        assert!(!handler.park_pending_resume(&socket_id, "app", "private-a", oversized_stream));
+        let mut oversized_message_id = parked_position();
+        oversized_message_id.last_message_id = Some(long_id);
+        assert!(!handler.park_pending_resume(&socket_id, "app", "private-a", oversized_message_id));
+
+        assert!(handler.park_pending_resume(&socket_id, "app", "private-a", parked_position()));
+        assert!(handler.park_pending_resume(&socket_id, "app", "private-b", parked_position()));
+        assert_eq!(handler.evict_expired_pending_resumes().await, 0);
+
+        let expired_at = Instant::now()
+            .checked_sub(PENDING_RESUME_TTL + Duration::from_secs(1))
+            .unwrap();
+        handler
+            .pending_resumes
+            .get_mut(&socket_id)
+            .unwrap()
+            .get_mut("private-a")
+            .unwrap()
+            .received_at = expired_at;
+        assert_eq!(handler.evict_expired_pending_resumes().await, 1);
+        assert!(handler.has_pending_resume(&socket_id, "private-b"));
+
+        handler
+            .pending_resumes
+            .get_mut(&socket_id)
+            .unwrap()
+            .get_mut("private-b")
+            .unwrap()
+            .received_at = expired_at;
+        assert_eq!(handler.evict_expired_pending_resumes().await, 1);
+        assert!(
+            !handler.pending_resumes.contains_key(&socket_id),
+            "a socket with no parked positions left is removed"
+        );
+    }
+
+    #[test]
+    fn replayed_through_only_covers_the_replayed_stream() {
+        let through = ReplayedThrough {
+            stream_id: Some("stream-a".to_string()),
+            serial: 5,
+        };
+        assert!(through.covers(Some("stream-a"), Some(5)));
+        assert!(through.covers(Some("stream-a"), Some(1)));
+        assert!(!through.covers(Some("stream-a"), Some(6)));
+        assert!(!through.covers(Some("stream-a"), None));
+        assert!(
+            !through.covers(Some("stream-b"), Some(1)),
+            "a reset stream restarts serials and must never be deduplicated against the old one"
+        );
+        assert!(!through.covers(None, Some(1)));
     }
 
     #[tokio::test]

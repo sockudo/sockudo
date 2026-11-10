@@ -17,6 +17,7 @@ use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppManager, AppPolicy};
 use sockudo_core::history::{HistoryStore, MemoryHistoryStore, MemoryHistoryStoreConfig};
 use sockudo_core::options::ServerOptions;
+use sockudo_core::version_store::{MemoryVersionStore, VersionStore};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
@@ -60,6 +61,14 @@ async fn build_harness_with_history(
     options: ServerOptions,
     history_store: Arc<dyn HistoryStore + Send + Sync>,
 ) -> Harness {
+    build_harness_with_stores(options, history_store, None).await
+}
+
+async fn build_harness_with_stores(
+    options: ServerOptions,
+    history_store: Arc<dyn HistoryStore + Send + Sync>,
+    version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
+) -> Harness {
     let app = test_app("app");
     let other_app = test_app("other-app");
     let app_manager = Arc::new(MemoryAppManager::new());
@@ -68,15 +77,18 @@ async fn build_harness_with_history(
 
     let adapter = Arc::new(LocalAdapter::new());
     adapter.init().await;
-    let handler = ConnectionHandler::builder(
+    let builder = ConnectionHandler::builder(
         app_manager as Arc<dyn AppManager + Send + Sync>,
         adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(MockCacheManager::new()),
         options,
     )
     .local_adapter(adapter)
-    .history_store(history_store)
-    .build();
+    .history_store(history_store);
+    let handler = match version_store {
+        Some(version_store) => builder.version_store(version_store).build(),
+        None => builder.build(),
+    };
 
     Harness {
         handler,
@@ -718,5 +730,254 @@ async fn oversized_multibyte_event_filter_returns_error_and_keeps_connection() {
         .await;
     let frame = client.recv().await.expect("error frame");
     assert!(event_is(&frame, "error"), "got {frame:?}");
+    client.assert_alive().await;
+}
+
+// ---------------------------------------------------------------------------
+// Resume after re-subscribing on a node that has not seen the channel yet
+// ---------------------------------------------------------------------------
+
+/// With versioned messages enabled, live delivery uses the version store's stream. A socket
+/// that re-subscribes on a fresh node (empty hot buffer) and then resumes must recover from
+/// durable state instead of failing as a stream reset because the subscribe seeded the hot
+/// buffer with a different (history) stream generation.
+#[tokio::test]
+async fn versioned_resume_after_subscribe_on_fresh_node_recovers_cold() {
+    let mut options = recovery_options();
+    options.history.enabled = true;
+    options.versioned_messages.enabled = true;
+    let history_store: Arc<dyn HistoryStore + Send + Sync> =
+        Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+    let version_store: Arc<dyn VersionStore + Send + Sync> = Arc::new(MemoryVersionStore::new());
+
+    let origin = build_harness_with_stores(
+        options.clone(),
+        history_store.clone(),
+        Some(version_store.clone()),
+    )
+    .await;
+    let mut member = connect(&origin.handler, &origin.app, ProtocolVersion::V2).await;
+    member.subscribe_public("chat").await;
+    member.drain().await;
+    for index in 1..=3 {
+        publish(
+            &origin,
+            &origin.app,
+            "chat",
+            "chat-event",
+            &format!("msg-{index}"),
+        )
+        .await;
+    }
+    let frames = member.drain().await;
+    let first = frames
+        .iter()
+        .find(|frame| frame["message_id"].as_str() == Some("msg-1"))
+        .unwrap_or_else(|| panic!("member did not receive traffic: {}", render(&frames)))
+        .clone();
+    let position = json!({
+        "stream_id": first["stream_id"].as_str().expect("V2 delivery carries stream_id"),
+        "serial": first["serial"].as_u64().expect("V2 delivery carries serial"),
+        "last_message_id": "msg-1",
+    });
+
+    // Same durable stores, fresh node: nothing in its hot replay buffer.
+    let fresh = build_harness_with_stores(options, history_store, Some(version_store)).await;
+    let mut client = connect(&fresh.handler, &fresh.app, ProtocolVersion::V2).await;
+    client.subscribe_public("chat").await;
+    client.send_resume(json!({ "chat": position })).await;
+    let frames = client.recv_until("resume_success").await;
+
+    // Versioned channels deliver publishes as `message.create` carrying the original name.
+    let replayed: Vec<&str> = frames
+        .iter()
+        .filter(|frame| frame["name"].as_str() == Some("chat-event"))
+        .filter_map(|frame| frame["message_id"].as_str())
+        .collect();
+    assert_eq!(replayed, vec!["msg-2", "msg-3"], "{}", render(&frames));
+    let summary = frame_data(frames.last().unwrap());
+    assert!(
+        summary["failed"].as_array().unwrap().is_empty(),
+        "resume failed: {summary:?}"
+    );
+    let recovered = summary["recovered"].as_array().unwrap();
+    assert_eq!(recovered.len(), 1, "{summary:?}");
+    assert_eq!(recovered[0]["source"].as_str(), Some("cold"));
+    assert_eq!(recovered[0]["replayed"].as_u64(), Some(2));
+}
+
+/// Parked positions are retained per socket until their subscription arrives, so the
+/// client-supplied identifiers they carry are bounded: oversized ones are refused up front
+/// and a later subscribe replays nothing for them.
+#[tokio::test]
+async fn resume_positions_with_oversized_ids_are_not_parked() {
+    let harness = build_harness(recovery_options()).await;
+    let (position, stream_id) = restricted_position(&harness, "private-secret").await;
+
+    let mut client = connect(&harness.handler, &harness.app, ProtocolVersion::V2).await;
+    for key in ["stream_id", "last_message_id"] {
+        let mut oversized = position.clone();
+        oversized
+            .as_object_mut()
+            .unwrap()
+            .insert(key, json!("x".repeat(4096)));
+        client
+            .send_resume(json!({ "private-secret": oversized }))
+            .await;
+        let frames = client.recv_until("resume_success").await;
+        let summary = frame_data(frames.last().unwrap());
+        assert!(
+            summary
+                .get("pending")
+                .is_none_or(|pending| pending.is_null()),
+            "oversized {key} must not be parked: {summary:?}"
+        );
+        let failed = summary["failed"].as_array().unwrap();
+        assert_eq!(failed.len(), 1, "{summary:?}");
+        assert_eq!(
+            failed[0]["reason"].as_str(),
+            Some("pending_resume_limit_exceeded")
+        );
+        assert_no_leak(&frames, &stream_id);
+    }
+
+    client
+        .subscribe_private(&harness.app, "private-secret")
+        .await;
+    let frames = client.drain().await;
+    assert!(
+        !frames.iter().any(|frame| event_is(frame, "resume_success")
+            || frame["event"].as_str() == Some("secret-event")),
+        "a refused position must not replay on subscribe: {}",
+        render(&frames)
+    );
+    client.assert_alive().await;
+}
+
+/// The position advertised in `subscription_succeeded` for a versioned channel that has no
+/// messages yet must be on the stream its first message is delivered on. A client that
+/// disconnects before any traffic and later resumes from that position (on a node that
+/// never saw the traffic) must then recover everything published meanwhile.
+#[tokio::test]
+async fn versioned_empty_channel_subscribe_position_is_resumable_across_nodes() {
+    let mut options = recovery_options();
+    options.history.enabled = true;
+    options.versioned_messages.enabled = true;
+    let history_store: Arc<dyn HistoryStore + Send + Sync> =
+        Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+    let version_store: Arc<dyn VersionStore + Send + Sync> = Arc::new(MemoryVersionStore::new());
+    let node_a = build_harness_with_stores(
+        options.clone(),
+        history_store.clone(),
+        Some(version_store.clone()),
+    )
+    .await;
+    let node_b = build_harness_with_stores(options, history_store, Some(version_store)).await;
+
+    let mut early = connect(&node_a.handler, &node_a.app, ProtocolVersion::V2).await;
+    early
+        .send_prefixed("subscribe", json!({ "channel": "chat" }))
+        .await;
+    let subscribed = early.recv().await.expect("subscription response");
+    assert!(
+        event_is(&subscribed, "subscription_succeeded"),
+        "{subscribed:?}"
+    );
+    let advertised_stream = subscribed["stream_id"]
+        .as_str()
+        .expect("V2 subscribe advertises a stream_id")
+        .to_string();
+    let advertised_serial = subscribed["serial"].as_u64().expect("and a serial");
+    drop(early);
+
+    let mut member = connect(&node_b.handler, &node_b.app, ProtocolVersion::V2).await;
+    member.subscribe_public("chat").await;
+    member.drain().await;
+    for index in 1..=2 {
+        publish(
+            &node_b,
+            &node_b.app,
+            "chat",
+            "chat-event",
+            &format!("msg-{index}"),
+        )
+        .await;
+    }
+    let delivered = member.drain().await;
+    let delivered_stream = delivered
+        .iter()
+        .find_map(|frame| frame["stream_id"].as_str())
+        .unwrap_or_else(|| panic!("no delivery: {}", render(&delivered)));
+    assert_eq!(
+        delivered_stream, advertised_stream,
+        "subscribe advertised a stream that live delivery does not use"
+    );
+
+    let mut client = connect(&node_a.handler, &node_a.app, ProtocolVersion::V2).await;
+    client.subscribe_public("chat").await;
+    client
+        .send_resume(json!({ "chat": {
+            "stream_id": advertised_stream,
+            "serial": advertised_serial,
+        }}))
+        .await;
+    let frames = client.recv_until("resume_success").await;
+    let replayed: Vec<&str> = frames
+        .iter()
+        .filter(|frame| frame["name"].as_str() == Some("chat-event"))
+        .filter_map(|frame| frame["message_id"].as_str())
+        .collect();
+    assert_eq!(replayed, vec!["msg-1", "msg-2"], "{}", render(&frames));
+    let summary = frame_data(frames.last().unwrap());
+    assert!(
+        summary["failed"].as_array().unwrap().is_empty(),
+        "resume failed: {summary:?}"
+    );
+}
+
+/// A position parked for a channel the client never subscribes to gets an explicit
+/// `resume_failed` once it expires, even if the socket sends nothing else.
+#[tokio::test]
+async fn expired_parked_resume_is_reported_without_further_traffic() {
+    let harness = build_harness(recovery_options()).await;
+    let (position, stream_id) = restricted_position(&harness, "private-secret").await;
+
+    let mut client = connect(&harness.handler, &harness.app, ProtocolVersion::V2).await;
+    client
+        .send_resume(json!({ "private-secret": position }))
+        .await;
+    let frames = client.recv_until("resume_success").await;
+    let summary = frame_data(frames.last().unwrap());
+    assert_eq!(
+        summary["pending"].as_array().map(|pending| pending.len()),
+        Some(1),
+        "{summary:?}"
+    );
+
+    // Nothing has expired yet: the sweep must leave the parked position alone.
+    assert_eq!(harness.handler.evict_expired_pending_resumes().await, 0);
+    assert!(client.drain().await.is_empty());
+
+    // The periodic sweep with a zero age limit stands in for the TTL elapsing (the TTL
+    // boundary itself is covered by the recovery unit tests).
+    assert_eq!(
+        harness
+            .handler
+            .evict_pending_resumes_older_than(Duration::ZERO)
+            .await,
+        1
+    );
+
+    let frames = client.drain().await;
+    let failure = frames
+        .iter()
+        .find(|frame| event_is(frame, "resume_failed"))
+        .unwrap_or_else(|| panic!("expiry produced no resume_failed: {}", render(&frames)));
+    assert_eq!(failure["channel"].as_str(), Some("private-secret"));
+    assert_eq!(
+        frame_data(failure)["reason"].as_str(),
+        Some("pending_resume_expired")
+    );
+    assert_no_leak(&frames, &stream_id);
     client.assert_alive().await;
 }

@@ -1615,9 +1615,11 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
         .iter()
         .find(|msg| msg.event.as_deref() == Some("sockudo:message.append"))
         .expect("expected append replay");
+    // Replay goes through the subscriber's delivery path, so a default (delta append mode)
+    // socket receives the appended fragment exactly as live delivery would.
     assert_eq!(
         appended_message.data,
-        Some(MessageData::String("patched world".to_string()))
+        Some(MessageData::String(" world".to_string()))
     );
 }
 
