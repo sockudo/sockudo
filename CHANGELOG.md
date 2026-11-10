@@ -60,9 +60,10 @@ docs page for 5.2.0 workarounds.
 
 ### Changed
 
-- OpenTelemetry crates updated to 0.33.1 (`tracing-opentelemetry` 0.34.0). The OTLP
-  exporters now retry failed exports by default (3 retries with exponential backoff);
-  opt out with `RetryPolicy::disabled()`. Schemeless gRPC endpoints now default to
+- OpenTelemetry crates updated to 0.33.1 (`tracing-opentelemetry` 0.34.0). OTLP
+  exports retry failed batches by default (3 retries, upstream exponential
+  backoff); `[opentelemetry] max_retries` or `SOCKUDO_OTEL_MAX_RETRIES` changes
+  that, and `0` disables retries. Schemeless gRPC endpoints now default to
   `https://`; set `OTEL_EXPORTER_OTLP_INSECURE=true` for plaintext.
 - **Breaking:** on the client-facing listener, unsigned `GET /stats` and `GET /operator/stats`
   requests are rejected and the response lists only the signing app, and `GET /up/{appId}` no
@@ -100,15 +101,12 @@ docs page for 5.2.0 workarounds.
   upgrades the transitive `crypto-bigint` dependency from 0.5.5 to 0.7.9 and
   `ctutils` to 0.4.5, clearing RUSTSEC-2026-0387 and RUSTSEC-2026-0385 timing
   side-channel advisories.
-- OTLP `zstd` compression stays available. The exporter still links `zstd`
-  0.13.3 / `zstd-safe` 7.3.0 through `opentelemetry-otlp` 0.32.0, so
-  RUSTSEC-2026-0391 and RUSTSEC-2026-0395 through RUSTSEC-2026-0406 are
-  ignored until a release with the upstream fix (zstd 0.14.3,
-  opentelemetry-rust PR #3819) ships: the three vulnerability-severity
-  advisories in `deny.toml`, the full set in `.cargo/audit.toml`. Only
-  `zstd::bulk::{compress, decompress}` is reached; the affected streaming,
-  `Seekable`, `InBuffer` and `OutBuffer` APIs are not used, and the gRPC path
-  already uses the fixed line via `tonic` 0.14.8.
+- OTLP `zstd` compression links patched `zstd` 0.13.4 / `zstd-safe` 7.4.0, which
+  backport the fixes for RUSTSEC-2026-0391, RUSTSEC-2026-0398 and
+  RUSTSEC-2026-0403; the `deny.toml` ignores are removed. Only
+  `zstd::bulk::{compress, decompress}` is reached; the streaming, `Seekable`,
+  `InBuffer` and `OutBuffer` APIs are not used, and the gRPC path uses `zstd`
+  0.14.3 via `tonic` 0.14.8.
 - Failed webhook deliveries are now retried by the queue backend instead of
   being acknowledged and lost. All drivers apply their normal retry and
   dead-letter policy (`queue.reliability.max_attempts`, default 5). Receivers

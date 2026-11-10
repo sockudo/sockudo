@@ -175,6 +175,7 @@ These variables map directly to the `[opentelemetry]` configuration block:
 | `SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS` | `60000` | Periodic metric export interval. |
 | `SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT` | `true` | Enables W3C `traceparent` and `tracestate` extraction and injection. |
 | `SOCKUDO_OTEL_PROPAGATION_BAGGAGE` | `true` | Enables W3C baggage extraction and injection. |
+| `SOCKUDO_OTEL_MAX_RETRIES` | `3` | Retry attempts after a failed OTLP export. `0` disables retries. |
 
 ### Standard OpenTelemetry SDK and OTLP variables
 

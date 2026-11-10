@@ -9,7 +9,9 @@ use opentelemetry::propagation::{
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::{KeyValue, global};
 use opentelemetry_http::HeaderExtractor;
-use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_otlp::{
+    Protocol, RetryPolicy, WithExportConfig, WithHttpConfig, WithTonicConfig,
+};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
@@ -522,11 +524,19 @@ fn exporter_timeout_override(config: &OpenTelemetryConfig, signal: Signal) -> Op
     .then(|| Duration::from_millis(config.export_timeout_ms))
 }
 
+fn retry_policy(config: &OpenTelemetryConfig) -> RetryPolicy {
+    if config.max_retries == 0 {
+        return RetryPolicy::disabled();
+    }
+    RetryPolicy::default().with_max_retries(config.max_retries)
+}
+
 macro_rules! build_exporter {
     ($exporter:ident, $config:expr, $signal:expr) => {{
         let transport = transport($signal)?;
         let endpoint = endpoint_override($config, $signal, transport);
         let timeout = exporter_timeout_override($config, $signal);
+        let retry = retry_policy($config);
         let exporter = match transport {
             Transport::Grpc => {
                 let mut builder = opentelemetry_otlp::$exporter::builder()
@@ -538,6 +548,7 @@ macro_rules! build_exporter {
                 if let Some(timeout) = timeout {
                     builder = builder.with_timeout(timeout);
                 }
+                builder = builder.with_retry_policy(retry);
                 builder.build()
             }
             Transport::HttpProtobuf | Transport::HttpJson => {
@@ -550,6 +561,7 @@ macro_rules! build_exporter {
                 if let Some(timeout) = timeout {
                     builder = builder.with_timeout(timeout);
                 }
+                builder = builder.with_retry_policy(retry);
                 builder.build()
             }
         };
