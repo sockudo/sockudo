@@ -926,6 +926,7 @@ batch_max_export_batch_size = 512
 metric_export_interval_ms = 60000
 propagation_trace_context = true
 propagation_baggage = true
+max_retries = 3
 ```
 
 | Key | Default | Purpose |
@@ -946,6 +947,7 @@ propagation_baggage = true
 | `metric_export_interval_ms` | `60000` | Periodic metric export interval. |
 | `propagation_trace_context` | `true` | Extracts and injects W3C `traceparent` and `tracestate`. |
 | `propagation_baggage` | `true` | Extracts and injects W3C baggage. Do not place secrets in baggage. |
+| `max_retries` | `3` | Retry attempts after a failed OTLP export, using upstream exponential backoff. `0` disables retries. |
 
 Use standard `OTEL_*` environment variables for the OTLP protocol (`grpc`, `http/protobuf`, or
 `http/json`), signal-specific endpoints, headers, compression, sampling, and SDK limits.

@@ -95,6 +95,7 @@ mod tests {
         "SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS",
         "SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT",
         "SOCKUDO_OTEL_PROPAGATION_BAGGAGE",
+        "SOCKUDO_OTEL_MAX_RETRIES",
         "OTEL_SERVICE_NAME",
     ];
     const IGGY_CLUSTER_ENV_KEYS: &[&str] = &[
@@ -322,6 +323,7 @@ mod tests {
                     ("SOCKUDO_OTEL_METRIC_EXPORT_INTERVAL_MS", "61000"),
                     ("SOCKUDO_OTEL_PROPAGATION_TRACE_CONTEXT", "false"),
                     ("SOCKUDO_OTEL_PROPAGATION_BAGGAGE", "false"),
+                    ("SOCKUDO_OTEL_MAX_RETRIES", "5"),
                 ],
             );
             let mut options = ServerOptions::default();
@@ -355,6 +357,7 @@ mod tests {
             assert_eq!(config.metric_export_interval_ms, 61_000);
             assert!(!config.propagation_trace_context);
             assert!(!config.propagation_baggage);
+            assert_eq!(config.max_retries, 5);
         }
     }
 }

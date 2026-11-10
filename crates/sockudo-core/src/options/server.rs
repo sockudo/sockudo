@@ -623,6 +623,7 @@ mod tests {
         assert_eq!(config.metric_export_interval_ms, 60_000);
         assert!(config.propagation_trace_context);
         assert!(config.propagation_baggage);
+        assert_eq!(config.max_retries, 3);
     }
 
     #[test]
@@ -711,6 +712,10 @@ mod tests {
                 .unwrap_err()
                 .contains("must not exceed batch_max_queue_size")
         );
+
+        options.opentelemetry = OpenTelemetryConfig::default();
+        options.opentelemetry.max_retries = 11;
+        assert!(options.validate().unwrap_err().contains("max_retries"));
     }
 
     #[test]

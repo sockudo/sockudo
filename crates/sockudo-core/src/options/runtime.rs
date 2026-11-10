@@ -179,6 +179,7 @@ pub struct OpenTelemetryConfig {
     pub metric_export_interval_ms: u64,
     pub propagation_trace_context: bool,
     pub propagation_baggage: bool,
+    pub max_retries: usize,
 }
 
 /// WebSocket connection buffer configuration
@@ -622,6 +623,7 @@ impl Default for OpenTelemetryConfig {
             metric_export_interval_ms: 60_000,
             propagation_trace_context: true,
             propagation_baggage: true,
+            max_retries: 3,
         }
     }
 }
@@ -650,6 +652,9 @@ impl OpenTelemetryConfig {
             return Err(
                 "batch_max_export_batch_size must not exceed batch_max_queue_size".to_string(),
             );
+        }
+        if self.max_retries > 10 {
+            return Err("max_retries must not exceed 10".to_string());
         }
 
         Ok(())

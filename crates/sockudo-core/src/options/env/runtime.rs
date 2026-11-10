@@ -171,6 +171,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "SOCKUDO_OTEL_PROPAGATION_BAGGAGE",
         options.opentelemetry.propagation_baggage,
     );
+    options.opentelemetry.max_retries = parse_env::<usize>(
+        "SOCKUDO_OTEL_MAX_RETRIES",
+        options.opentelemetry.max_retries,
+    );
 
     // --- HTTP API ---
     options.http_api.readiness.high_watermark = parse_env::<f64>(

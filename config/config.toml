@@ -478,6 +478,7 @@ batch_max_export_batch_size = 512
 metric_export_interval_ms = 60000
 propagation_trace_context = true
 propagation_baggage = true
+max_retries = 3
 
 [ssl]
 enabled = false
