@@ -60,6 +60,10 @@ docs page for 5.2.0 workarounds.
 
 ### Changed
 
+- OpenTelemetry crates updated to 0.33.1 (`tracing-opentelemetry` 0.34.0). The OTLP
+  exporters now retry failed exports by default (3 retries with exponential backoff);
+  opt out with `RetryPolicy::disabled()`. Schemeless gRPC endpoints now default to
+  `https://`; set `OTEL_EXPORTER_OTLP_INSECURE=true` for plaintext.
 - **Breaking:** on the client-facing listener, unsigned `GET /stats` and `GET /operator/stats`
   requests are rejected and the response lists only the signing app, and `GET /up/{appId}` no
   longer returns `404` for unknown apps or `503` for disabled apps. The unsigned cross-tenant
