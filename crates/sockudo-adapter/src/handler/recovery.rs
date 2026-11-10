@@ -136,6 +136,25 @@ fn recovery_window_failure(
     }
 }
 
+/// How long a cold resume waits for reserved serials to be committed.
+const DURABLE_WRITE_CATCH_UP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const DURABLE_WRITE_CATCH_UP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Highest serial reserved for publishing on the durable stream, which can be
+/// ahead of the committed `newest_serial` while appends are in flight.
+fn reserved_durable_head(
+    inspection: &sockudo_core::history::HistoryStreamInspection,
+) -> Option<u64> {
+    let reserved = inspection
+        .next_serial
+        .map(|next| next.saturating_sub(1))
+        .filter(|&serial| serial > 0);
+    match (reserved, inspection.retained.newest_serial) {
+        (Some(reserved), Some(newest)) => Some(reserved.max(newest)),
+        (reserved, newest) => reserved.or(newest),
+    }
+}
+
 fn exceeds_recovery_window(count: u64, max_replay_messages: usize) -> bool {
     count > u64::try_from(max_replay_messages).unwrap_or(u64::MAX)
 }
@@ -712,10 +731,23 @@ impl ConnectionHandler {
                         }),
                     ));
                 }
-                return ResumeOutcome::Recovered {
-                    source: "hot",
-                    messages,
-                };
+                let count = messages.len();
+                if self
+                    .hot_replay_reaches_durable_head(app_config, channel, position, count)
+                    .await
+                {
+                    return ResumeOutcome::Recovered {
+                        source: "hot",
+                        messages,
+                    };
+                }
+                warn!(
+                    app_id = %app_config.id,
+                    channel,
+                    requested_serial = position.serial,
+                    hot_replayed = count,
+                    "hot replay ends before the durable reserved head; attempting durable recovery"
+                );
             }
             ReplayLookup::StreamReset { current_stream_id } => {
                 return ResumeOutcome::Failed(ResumeFailure {
@@ -1025,6 +1057,53 @@ impl ConnectionHandler {
         }
     }
 
+    /// The replay buffer only holds this node's publishes, so a contiguous hot
+    /// replay can still end before serials another node reserved and
+    /// broadcast while the client was away. With durable history the shared
+    /// reserved head is the authority; a shorter hot replay must go cold.
+    async fn hot_replay_reaches_durable_head(
+        &self,
+        app_config: &App,
+        channel: &str,
+        position: &ResumePosition,
+        replayed: usize,
+    ) -> bool {
+        if position.legacy_serial_only
+            || self.server_options().versioned_messages.enabled
+            || !app_config
+                .resolved_history(channel, &self.server_options().history)
+                .enabled
+        {
+            return true;
+        }
+        let replayed_through = position
+            .serial
+            .saturating_add(u64::try_from(replayed).unwrap_or(u64::MAX));
+        match self
+            .history_store()
+            .stream_inspection(&app_config.id, channel)
+            .await
+        {
+            // A stream with no reserved or committed serial has no shared head
+            // to check against.
+            Ok(inspection) => match reserved_durable_head(&inspection) {
+                None => true,
+                Some(reserved) => {
+                    inspection
+                        .stream_id
+                        .as_deref()
+                        .or(inspection.retained.stream_id.as_deref())
+                        == position.stream_id.as_deref()
+                        && reserved <= replayed_through
+                }
+            },
+            Err(error) => {
+                warn!(error = %error, "history store inspection failed during hot resume");
+                false
+            }
+        }
+    }
+
     async fn collect_resume_from_history(
         &self,
         app_config: &App,
@@ -1035,11 +1114,51 @@ impl ConnectionHandler {
     ) -> std::result::Result<Vec<Bytes>, ResumeFailure> {
         // Freeze the durable head before pagination. History cursors embed their query bounds, so
         // changing the end bound after page one would invalidate an otherwise healthy cursor.
-        let frozen_inspection = self
+        let mut frozen_inspection = self
             .history_store()
             .stream_inspection(&app_config.id, channel)
             .await
             .map_err(|error| map_history_read_error(position, error))?;
+        // Publishes are broadcast once their serial is reserved, while the
+        // durable append commits asynchronously. Recovering only up to the
+        // committed head would skip a reserved serial the client never saw
+        // live (e.g. published by another node while it was disconnected), so
+        // wait a bounded time for in-flight writes and fail closed otherwise.
+        // A stream with no committed rows (never written, or fully purged) is
+        // left to the empty-stream checks below, which already fail closed.
+        if frozen_inspection.retained.newest_serial.is_some()
+            && let Some(reserved_head) = reserved_durable_head(&frozen_inspection)
+            && position.serial < reserved_head
+        {
+            let deadline = tokio::time::Instant::now() + DURABLE_WRITE_CATCH_UP_TIMEOUT;
+            while frozen_inspection
+                .stream_id
+                .as_deref()
+                .or(frozen_inspection.retained.stream_id.as_deref())
+                == position.stream_id.as_deref()
+                && frozen_inspection
+                    .retained
+                    .newest_serial
+                    .is_none_or(|newest| newest < reserved_head)
+            {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(ResumeFailure {
+                        code: "persistence_unavailable",
+                        reason: "durable_history_write_in_flight",
+                        expected_stream_id: position.stream_id.clone(),
+                        current_stream_id: frozen_inspection.retained.stream_id,
+                        oldest_available_serial: frozen_inspection.retained.oldest_serial,
+                        newest_available_serial: frozen_inspection.retained.newest_serial,
+                    });
+                }
+                tokio::time::sleep(DURABLE_WRITE_CATCH_UP_POLL).await;
+                frozen_inspection = self
+                    .history_store()
+                    .stream_inspection(&app_config.id, channel)
+                    .await
+                    .map_err(|error| map_history_read_error(position, error))?;
+            }
+        }
         let frozen_head = frozen_inspection.retained;
         if frozen_head.stream_id.as_deref() != position.stream_id.as_deref() {
             return Err(ResumeFailure {
@@ -1354,20 +1473,32 @@ impl ConnectionHandler {
                 break;
             };
             buffered.sort_by_key(|message| message.serial.unwrap_or(u64::MAX));
+            let mut messages = buffered
+                .into_iter()
+                .filter(|buffered_message| {
+                    // Already part of the replay; a live copy would duplicate it.
+                    !replayed_through.is_some_and(|through| {
+                        through.covers(
+                            buffered_message.message.stream_id.as_deref(),
+                            buffered_message.serial,
+                        )
+                    })
+                })
+                .map(|message| std::sync::Arc::unwrap_or_clone(message.message))
+                .collect::<Vec<_>>();
+            // Gate drains must apply the same subscription predicate and tag
+            // filter as live fanout; fanout buffers gated sockets before its
+            // predicates run.
+            crate::v2_broadcast::retain_messages_allowed_by_subscription(
+                connection,
+                channel,
+                &mut messages,
+                self.tag_filtering_enabled(),
+            );
 
-            for buffered_message in buffered {
-                if replayed_through.is_some_and(|through| {
-                    through.covers(
-                        buffered_message.message.stream_id.as_deref(),
-                        buffered_message.serial,
-                    )
-                }) {
-                    continue;
-                }
-                let message = crate::v2_broadcast::apply_append_mode(
-                    std::sync::Arc::unwrap_or_clone(buffered_message.message),
-                    connection.append_mode,
-                );
+            for message in messages {
+                let message =
+                    crate::v2_broadcast::apply_append_mode(message, connection.append_mode);
                 self.send_message_to_socket(app_id, socket_id, message)
                     .await
                     .map_err(|error| {
@@ -2750,6 +2881,129 @@ mod tests {
                 assert_eq!(count, 2);
             }
             other => panic!("expected shared-store cold recovery, got {other:?}"),
+        }
+    }
+
+    fn resume_from(serial: u64) -> ResumePosition {
+        ResumePosition {
+            serial,
+            stream_id: Some("stream-1".to_string()),
+            last_message_id: None,
+            legacy_serial_only: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn hot_replay_short_of_durable_head_falls_back_to_cold() {
+        // Node B's hot buffer only saw its own publishes (2, 3); node A
+        // published 4 while the client was away (sockudo/sockudo#535).
+        let shared_history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let node_a = build_handler_with_history_store(true, shared_history.clone());
+        let node_b = build_handler_with_history_store(true, shared_history);
+        append_history(&node_a, "app", "chat", &[1, 2, 3, 4], "stream-1").await;
+        let replay_buffer = node_b.replay_buffer().unwrap().clone();
+        for serial in [2, 3] {
+            replay_buffer.store(
+                "app",
+                "chat",
+                Some("stream-1"),
+                serial,
+                Bytes::from_static(b"hot"),
+            );
+        }
+
+        let outcome = node_b
+            .resume_channel(
+                &SocketId::new(),
+                &test_app("app"),
+                &replay_buffer,
+                "chat",
+                &resume_from(1),
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Recovered {
+                source, messages, ..
+            } => {
+                let count = messages.len();
+                assert_eq!(source, "cold");
+                assert_eq!(count, 3, "serial 4 must be replayed");
+            }
+            other => panic!("expected cold recovery through the durable head, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_resume_waits_for_reserved_serial_to_commit() {
+        let shared_history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let publisher = Arc::new(build_handler_with_history_store(
+            true,
+            shared_history.clone(),
+        ));
+        let node_b = build_handler_with_history_store(true, shared_history.clone());
+        append_history(&publisher, "app", "chat", &[1, 2, 3], "stream-1").await;
+        // Serial 4 is reserved and broadcast, but its durable append lands later.
+        let reservation = shared_history
+            .reserve_publish_position("app", "chat")
+            .await
+            .unwrap();
+        assert_eq!(reservation.serial, 4);
+        let delayed = Arc::clone(&publisher);
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            append_history(&delayed, "app", "chat", &[4], "stream-1").await;
+        });
+
+        let outcome = node_b
+            .resume_channel(
+                &SocketId::new(),
+                &test_app("app"),
+                node_b.replay_buffer().unwrap(),
+                "chat",
+                &resume_from(1),
+            )
+            .await;
+        writer.await.unwrap();
+
+        match outcome {
+            ResumeOutcome::Recovered {
+                source, messages, ..
+            } => {
+                let count = messages.len();
+                assert_eq!(source, "cold");
+                assert_eq!(count, 3, "the in-flight serial 4 must be replayed");
+            }
+            other => panic!("expected recovery including the in-flight serial, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_resume_fails_closed_when_reserved_serial_never_commits() {
+        let shared_history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let node_b = build_handler_with_history_store(true, shared_history.clone());
+        append_history(&node_b, "app", "chat", &[1, 2, 3], "stream-1").await;
+        shared_history
+            .reserve_publish_position("app", "chat")
+            .await
+            .unwrap();
+
+        let outcome = node_b
+            .resume_channel(
+                &SocketId::new(),
+                &test_app("app"),
+                node_b.replay_buffer().unwrap(),
+                "chat",
+                &resume_from(1),
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "persistence_unavailable");
+                assert_eq!(failure.reason, "durable_history_write_in_flight");
+            }
+            other => panic!("expected fail-closed resume, got {other:?}"),
         }
     }
 

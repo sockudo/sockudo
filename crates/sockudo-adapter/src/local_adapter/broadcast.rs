@@ -1006,6 +1006,34 @@ impl LocalAdapter {
                 continue;
             }
 
+            // A socket whose subscription view is installed can be predicate-checked now:
+            // buffering nonmatching traffic would only burn bounded gate capacity and can
+            // close the connection at overflow, for messages the drain would discard anyway.
+            // A socket still between joining the channel and installing its view must buffer
+            // everything; the gate drain applies the predicates once the view is in place.
+            #[cfg(feature = "recovery")]
+            let view_installed =
+                crate::v2_broadcast::has_matching_subscription(&sockets[index], channel);
+            #[cfg(not(feature = "recovery"))]
+            let view_installed = sockets[index].channel_state.contains_key(channel);
+            #[cfg(feature = "tag-filtering")]
+            let filtering_enabled = self
+                .tag_filtering_enabled
+                .load(std::sync::atomic::Ordering::Acquire);
+            #[cfg(not(feature = "tag-filtering"))]
+            let filtering_enabled = false;
+            if view_installed
+                && !crate::v2_broadcast::socket_allows_message(
+                    &sockets[index],
+                    channel,
+                    message,
+                    filtering_enabled,
+                )
+            {
+                sockets.swap_remove(index);
+                continue;
+            }
+
             let shared_message =
                 Arc::clone(shared_message.get_or_insert_with(|| Arc::new(message.clone())));
             let message_size = *message_size.get_or_insert_with(|| {
