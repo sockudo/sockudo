@@ -1192,6 +1192,20 @@ impl ConnectionHandler {
                 });
             }
 
+            // The retention window filters every page, so an expired entry can
+            // surface after the first one when publish timestamps are not in
+            // serial order. Report it as expiry, not as a continuity gap.
+            if page.truncated_by_retention {
+                return Err(ResumeFailure {
+                    code: "position_expired",
+                    reason: "retention_boundary_crossed_during_reconnect",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: page.retained.stream_id.clone(),
+                    oldest_available_serial: page.retained.oldest_serial,
+                    newest_available_serial: page.retained.newest_serial,
+                });
+            }
+
             let count_this_page = page.items.len();
             let page_items = page.items;
             let projected_messages = self
@@ -2015,7 +2029,21 @@ mod tests {
         stream_id: &str,
     ) {
         let base_ts = sockudo_core::history::now_ms();
-        for serial in serials {
+        let entries = serials
+            .iter()
+            .map(|serial| (*serial, base_ts + *serial as i64))
+            .collect::<Vec<_>>();
+        append_history_at(handler, app_id, channel, &entries, stream_id).await;
+    }
+
+    async fn append_history_at(
+        handler: &ConnectionHandler,
+        app_id: &str,
+        channel: &str,
+        entries: &[(u64, i64)],
+        stream_id: &str,
+    ) {
+        for (serial, published_at_ms) in entries {
             handler
                 .history_store()
                 .append(HistoryAppendRecord {
@@ -2023,7 +2051,7 @@ mod tests {
                     channel: channel.to_string(),
                     stream_id: stream_id.to_string(),
                     serial: *serial,
-                    published_at_ms: base_ts + *serial as i64,
+                    published_at_ms: *published_at_ms,
                     message_id: Some(format!("msg-{serial}")),
                     event_name: Some("evt".to_string()),
                     operation_kind: "append".to_string(),
@@ -2939,6 +2967,65 @@ mod tests {
                 );
             }
             other => panic!("expected retention-boundary failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_entry_after_first_page_fails_as_position_expired() {
+        // Serial 4 expired while 2, 3 and 5 are fresh: publish timestamps are
+        // not in serial order, so the expired entry lands on the second page.
+        let inner = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let store = Arc::new(sockudo_core::history::RetentionWindowHistoryStore::new(
+            inner,
+            Arc::new(MemoryAppManager::new()),
+            sockudo_core::options::HistoryConfig {
+                enabled: true,
+                retention_window_seconds: 120,
+                ..Default::default()
+            },
+        ));
+        let handler = build_handler_with_history_store_and_page_size(true, store, 2);
+        let now = sockudo_core::history::now_ms();
+        append_history_at(
+            &handler,
+            "app",
+            "chat",
+            &[
+                (2, now - 2_000),
+                (3, now - 1_500),
+                (4, now - 130_000),
+                (5, now - 1_000),
+            ],
+            "stream-1",
+        )
+        .await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "position_expired");
+                assert_eq!(
+                    failure.reason,
+                    "retention_boundary_crossed_during_reconnect"
+                );
+            }
+            other => panic!("expected expiry on the second page, got {other:?}"),
         }
     }
 

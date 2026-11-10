@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::options::HistoryConfig;
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::warn;
 
 /// Enforces the history retention window on reads.
 ///
@@ -35,39 +36,43 @@ impl RetentionWindowHistoryStore {
         }
     }
 
-    /// Oldest `published_at_ms` still inside the retention window, or `None`
-    /// when the window is unbounded.
-    async fn cutoff_ms(&self, app_id: &str, channel: &str) -> Option<i64> {
+    /// Oldest `published_at_ms` still inside the retention window.
+    ///
+    /// A window of `0` expires everything, matching how the backends prune on
+    /// write. Global `[history] retention_window_seconds = 0` is rejected at
+    /// config validation; an app or namespace override of `0` keeps this
+    /// meaning. A failed app lookup fails the read: substituting the global
+    /// window could serve entries past a shorter app window.
+    async fn cutoff_ms(&self, app_id: &str, channel: &str) -> Result<i64> {
         let retention_window_seconds = match self.app_manager.find_by_id(app_id).await {
             Ok(Some(app)) => {
                 app.resolved_history(channel, &self.global)
                     .retention_window_seconds
             }
-            _ => self.global.retention_window_seconds,
+            Ok(None) => self.global.retention_window_seconds,
+            Err(error) => {
+                warn!(
+                    app_id = %app_id,
+                    error = %error,
+                    "failed to resolve history retention policy"
+                );
+                return Err(error);
+            }
         };
-        if retention_window_seconds == 0 {
-            return None;
-        }
         let window_ms =
             i64::try_from(retention_window_seconds.saturating_mul(1_000)).unwrap_or(i64::MAX);
-        Some(now_ms().saturating_sub(window_ms))
+        Ok(now_ms().saturating_sub(window_ms))
     }
 }
 
-/// Removes expired items from `page`. Serials grow with publish time, so in
-/// newest-first order expired items are the tail of the remaining stream
-/// and pagination stops there; in oldest-first order they lead and later
-/// pages still hold fresh items. The page is marked truncated only when it
+/// Removes expired items from `page` and marks it truncated only when it
 /// actually lost items, so a read (or resume) that starts after the expired
-/// entries is unaffected while they wait for the purge.
+/// entries is unaffected while they wait for the purge. Newest-first
+/// pagination stops only when a whole page expired: publish timestamps are
+/// taken before serials are allocated, so a fresh entry can sit behind an
+/// expired one and must stay reachable. Oldest-first pagination always
+/// continues to the fresh entries.
 fn drop_expired_items(page: &mut HistoryPage, direction: HistoryDirection, cutoff_ms: i64) {
-    if page
-        .retained
-        .oldest_published_at_ms
-        .is_none_or(|oldest| oldest >= cutoff_ms)
-    {
-        return;
-    }
     let before = page.items.len();
     page.items.retain(|item| item.published_at_ms >= cutoff_ms);
     if page.items.len() == before {
@@ -76,17 +81,23 @@ fn drop_expired_items(page: &mut HistoryPage, direction: HistoryDirection, cutof
 
     page.truncated_by_retention = true;
     page.complete = false;
-    match direction {
-        HistoryDirection::NewestFirst => {
-            page.has_more = false;
-            page.next_cursor = None;
-        }
-        HistoryDirection::OldestFirst => {
-            if let Some(first) = page.items.first() {
-                page.retained.oldest_serial = Some(first.serial);
-                page.retained.oldest_published_at_ms = Some(first.published_at_ms);
-            }
-        }
+    if direction == HistoryDirection::NewestFirst && page.items.is_empty() {
+        page.has_more = false;
+        page.next_cursor = None;
+    }
+}
+
+/// The stored floor names the oldest row still stored, which can predate the
+/// window while it waits for the purge job. When it does, the readable floor is
+/// unknown, so continuity reports null instead of an entry reads skip. While
+/// the stored floor is inside the window it is readable, so it stays.
+fn window_retained_floor(retained: &mut HistoryRetentionStats, cutoff_ms: i64) {
+    if retained
+        .oldest_published_at_ms
+        .is_some_and(|oldest| oldest < cutoff_ms)
+    {
+        retained.oldest_serial = None;
+        retained.oldest_published_at_ms = None;
     }
 }
 
@@ -105,12 +116,11 @@ impl HistoryStore for RetentionWindowHistoryStore {
     }
 
     async fn read_page(&self, request: HistoryReadRequest) -> Result<HistoryPage> {
-        let cutoff_ms = self.cutoff_ms(&request.app_id, &request.channel).await;
         let direction = request.direction;
+        let cutoff_ms = self.cutoff_ms(&request.app_id, &request.channel).await?;
         let mut page = self.inner.read_page(request).await?;
-        if let Some(cutoff_ms) = cutoff_ms {
-            drop_expired_items(&mut page, direction, cutoff_ms);
-        }
+        drop_expired_items(&mut page, direction, cutoff_ms);
+        window_retained_floor(&mut page.retained, cutoff_ms);
         Ok(page)
     }
 
@@ -131,7 +141,10 @@ impl HistoryStore for RetentionWindowHistoryStore {
         app_id: &str,
         channel: &str,
     ) -> Result<HistoryStreamInspection> {
-        self.inner.stream_inspection(app_id, channel).await
+        let cutoff_ms = self.cutoff_ms(app_id, channel).await?;
+        let mut inspection = self.inner.stream_inspection(app_id, channel).await?;
+        window_retained_floor(&mut inspection.retained, cutoff_ms);
+        Ok(inspection)
     }
 
     async fn reset_stream(
@@ -168,11 +181,15 @@ impl HistoryStore for RetentionWindowHistoryStore {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::error::Error;
     use crate::history::{MemoryHistoryStore, MemoryHistoryStoreConfig};
     use bytes::Bytes;
     use std::time::Duration;
 
-    struct OneAppManager(App);
+    struct OneAppManager {
+        app: App,
+        fail_lookup: bool,
+    }
 
     #[async_trait]
     impl AppManager for OneAppManager {
@@ -189,13 +206,16 @@ mod tests {
             Ok(())
         }
         async fn get_apps(&self) -> Result<Vec<App>> {
-            Ok(vec![self.0.clone()])
+            Ok(vec![self.app.clone()])
         }
         async fn find_by_key(&self, _key: &str) -> Result<Option<App>> {
-            Ok(Some(self.0.clone()))
+            Ok(Some(self.app.clone()))
         }
         async fn find_by_id(&self, _app_id: &str) -> Result<Option<App>> {
-            Ok(Some(self.0.clone()))
+            if self.fail_lookup {
+                return Err(Error::Internal("app manager unavailable".to_string()));
+            }
+            Ok(Some(self.app.clone()))
         }
         async fn check_health(&self) -> Result<()> {
             Ok(())
@@ -203,6 +223,14 @@ mod tests {
     }
 
     async fn store_with_entries(published_at_ms: &[i64]) -> RetentionWindowHistoryStore {
+        store_with_window(published_at_ms, 120, false).await
+    }
+
+    async fn store_with_window(
+        published_at_ms: &[i64],
+        retention_window_seconds: u64,
+        fail_lookup: bool,
+    ) -> RetentionWindowHistoryStore {
         // The inner store keeps everything, like a backend between purges.
         let inner = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig {
             retention_window: Duration::from_secs(365 * 24 * 3600),
@@ -237,10 +265,11 @@ mod tests {
         };
         let global = HistoryConfig {
             enabled: true,
-            retention_window_seconds: 120,
+            retention_window_seconds,
             ..HistoryConfig::default()
         };
-        RetentionWindowHistoryStore::new(inner, Arc::new(OneAppManager(app)), global)
+        let app_manager = OneAppManager { app, fail_lookup };
+        RetentionWindowHistoryStore::new(inner, Arc::new(app_manager), global)
     }
 
     fn request(direction: HistoryDirection) -> HistoryReadRequest {
@@ -270,6 +299,7 @@ mod tests {
         assert!(page.truncated_by_retention);
         assert!(!page.complete);
         assert!(!page.has_more);
+        assert_eq!(page.retained.oldest_serial, None);
 
         let page = store
             .read_page(request(HistoryDirection::OldestFirst))
@@ -280,7 +310,6 @@ mod tests {
             vec![3]
         );
         assert!(page.truncated_by_retention);
-        assert_eq!(page.retained.oldest_serial, Some(3));
     }
 
     #[tokio::test]
@@ -318,5 +347,113 @@ mod tests {
         assert_eq!(page.items.len(), 2);
         assert!(!page.truncated_by_retention);
         assert!(page.complete);
+    }
+
+    #[tokio::test]
+    async fn expired_entry_between_fresh_entries_is_not_served() {
+        // Publish timestamps are not monotonic in serial, so the physical
+        // floor being fresh proves nothing about the rest of the page.
+        let now = now_ms();
+        let store = store_with_entries(&[now - 1_000, now - 130_000, now - 500]).await;
+
+        let page = store
+            .read_page(request(HistoryDirection::OldestFirst))
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.iter().map(|i| i.serial).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert!(page.truncated_by_retention);
+        assert!(!page.complete);
+        // The stored floor (serial 1) is inside the window, so it is also the
+        // first readable entry even though serial 2 expired.
+        assert_eq!(page.retained.oldest_serial, Some(1));
+    }
+
+    #[tokio::test]
+    async fn newest_first_continues_past_a_partly_expired_page() {
+        // Serial 2 expired while 1 and 3 are fresh: publish timestamps are not
+        // monotonic in serial, so pagination must keep reaching serial 1.
+        let now = now_ms();
+        let store = store_with_entries(&[now - 1_000, now - 130_000, now - 500]).await;
+
+        let mut first = request(HistoryDirection::NewestFirst);
+        first.limit = 2;
+        let page = store.read_page(first).await.unwrap();
+        assert_eq!(
+            page.items.iter().map(|i| i.serial).collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert!(page.has_more);
+        assert!(page.next_cursor.is_some());
+
+        let mut second = request(HistoryDirection::NewestFirst);
+        second.limit = 2;
+        second.cursor = page.next_cursor;
+        let page = store.read_page(second).await.unwrap();
+        assert_eq!(
+            page.items.iter().map(|i| i.serial).collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
+
+    #[tokio::test]
+    async fn newest_first_stops_at_a_fully_expired_page() {
+        let now = now_ms();
+        let store = store_with_entries(&[now - 130_000, now - 125_000]).await;
+
+        let page = store
+            .read_page(request(HistoryDirection::NewestFirst))
+            .await
+            .unwrap();
+        assert!(page.items.is_empty());
+        assert!(page.truncated_by_retention);
+        assert!(!page.has_more);
+        assert!(page.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn continuity_hides_the_floor_while_rows_await_purge() {
+        let now = now_ms();
+        let store = store_with_entries(&[now - 130_000, now - 2_000, now - 1_000]).await;
+
+        let page = store
+            .read_page(request(HistoryDirection::NewestFirst))
+            .await
+            .unwrap();
+        assert_eq!(page.retained.oldest_serial, None);
+        assert_eq!(page.retained.oldest_published_at_ms, None);
+
+        let inspection = store.stream_inspection("app", "chan").await.unwrap();
+        assert_eq!(inspection.retained.oldest_serial, None);
+        assert_eq!(inspection.retained.oldest_published_at_ms, None);
+        assert_eq!(inspection.retained.newest_serial, Some(3));
+    }
+
+    #[tokio::test]
+    async fn app_lookup_failure_fails_the_read() {
+        let store = store_with_window(&[now_ms() - 1_000], 120, true).await;
+
+        let error = store
+            .read_page(request(HistoryDirection::NewestFirst))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Internal(_)));
+    }
+
+    #[tokio::test]
+    async fn zero_window_expires_every_entry() {
+        let now = now_ms();
+        let store = store_with_window(&[now - 2_000, now - 1_000], 0, false).await;
+
+        let page = store
+            .read_page(request(HistoryDirection::NewestFirst))
+            .await
+            .unwrap();
+        assert!(page.items.is_empty());
+        assert!(page.truncated_by_retention);
+        assert_eq!(page.retained.oldest_serial, None);
+        assert_eq!(page.retained.oldest_published_at_ms, None);
     }
 }
