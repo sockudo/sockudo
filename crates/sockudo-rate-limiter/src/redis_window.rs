@@ -32,6 +32,8 @@ pub(crate) struct SlidingWindowRequest<'a> {
     pub(crate) window_start_ms: u64,
     pub(crate) window_secs: u64,
     pub(crate) max_requests: u32,
+    /// Units consumed by this request; admitted only if all of them fit.
+    pub(crate) cost: u32,
     pub(crate) increment: bool,
     pub(crate) member: &'a str,
 }
@@ -51,6 +53,7 @@ where
         .arg(request.max_requests)
         .arg(u8::from(request.increment))
         .arg(request.member)
+        .arg(request.cost.max(1))
         .invoke_async(connection)
         .await?;
 
@@ -73,16 +76,20 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
 local count = redis.call('ZCARD', KEYS[1])
 local limit = tonumber(ARGV[4])
 local should_increment = ARGV[5] == '1'
+local cost = tonumber(ARGV[7])
 local already_counted = should_increment and redis.call('ZSCORE', KEYS[1], ARGV[6]) ~= false
 local allowed = 0
 
 if already_counted then
   allowed = 1
-elseif count < limit then
+elseif count + cost <= limit then
   allowed = 1
   if should_increment then
     redis.call('ZADD', KEYS[1], ARGV[2], ARGV[6])
-    count = count + 1
+    for i = 2, cost do
+      redis.call('ZADD', KEYS[1], ARGV[2], ARGV[6] .. ':' .. i)
+    end
+    count = count + cost
   end
 end
 

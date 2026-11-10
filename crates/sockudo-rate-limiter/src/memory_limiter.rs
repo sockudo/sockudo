@@ -154,9 +154,19 @@ impl RateLimiter for MemoryRateLimiter {
     }
 
     async fn increment(&self, key: &str) -> Result<RateLimitResult> {
+        self.increment_with_limit(key, 1, self.config.max_requests, self.config.window_secs)
+            .await
+    }
+
+    async fn increment_with_limit(
+        &self,
+        key: &str,
+        cost: u32,
+        max_requests: u32,
+        window_secs: u64,
+    ) -> Result<RateLimitResult> {
         let now = Instant::now();
-        let window_duration = Duration::from_secs(self.config.window_secs);
-        let max_requests = self.config.max_requests;
+        let window_duration = Duration::from_secs(window_secs);
 
         let mut entry = self
             .limits
@@ -174,16 +184,20 @@ impl RateLimiter for MemoryRateLimiter {
             entry.expiry = now + window_duration;
         }
 
-        // Increment the counter atomically (we hold the entry lock)
-        entry.count += 1;
-        let new_count = entry.count;
+        // Consume the cost only when it fully fits (we hold the entry lock),
+        // matching the Redis sliding-window script's all-or-nothing admission:
+        // a denied request, however large, uses no budget.
+        let allowed = entry.count.saturating_add(cost) <= max_requests;
+        if allowed {
+            entry.count += cost;
+        }
 
         // Calculate result while still holding the lock
-        let remaining = max_requests.saturating_sub(new_count);
+        let remaining = max_requests.saturating_sub(entry.count);
         let reset_after = entry.expiry.saturating_duration_since(now).as_secs();
 
         Ok(RateLimitResult {
-            allowed: new_count <= max_requests,
+            allowed,
             remaining,
             reset_after,
             limit: max_requests,
@@ -241,6 +255,43 @@ mod tests {
         let result = limiter.increment("test_key").await.unwrap();
         assert!(!result.allowed);
         assert_eq!(result.remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn test_denied_batch_consumes_no_budget() {
+        let limiter = MemoryRateLimiter::new(100, 60);
+
+        let batch = limiter
+            .increment_with_limit("test_key", 10_000, 100, 60)
+            .await
+            .unwrap();
+        assert!(!batch.allowed);
+        assert_eq!(batch.remaining, 100);
+
+        let single = limiter
+            .increment_with_limit("test_key", 1, 100, 60)
+            .await
+            .unwrap();
+        assert!(
+            single.allowed,
+            "an oversized batch must not starve later requests"
+        );
+        assert_eq!(single.remaining, 99);
+    }
+
+    #[tokio::test]
+    async fn test_batch_that_fits_consumes_its_full_cost() {
+        let limiter = MemoryRateLimiter::new(10, 60);
+
+        let batch = limiter
+            .increment_with_limit("test_key", 10, 10, 60)
+            .await
+            .unwrap();
+        assert!(batch.allowed);
+        assert_eq!(batch.remaining, 0);
+
+        let single = limiter.increment("test_key").await.unwrap();
+        assert!(!single.allowed);
     }
 
     #[tokio::test]

@@ -1,0 +1,96 @@
+---
+const rows: [string, string, string][] = [
+  ['Event prefixes', '<code>pusher:</code>', '<code>sockudo:</code>'],
+  ['Pusher wire compatibility', 'Strict', 'Sockudo-native'],
+  ['<code>serial</code> + <code>message_id</code>', '—', '✓'],
+  ['Recovery & rewind', '—', 'Hot replay + durable history'],
+  ['Mutable messages', '—', '✓'],
+  ['Annotations', '—', '✓'],
+  ['Tag filtering & deltas', '—', '✓'],
+  ['AI Transport', '—', 'Optional feature'],
+];
+---
+
+<section class="sec protocols" aria-labelledby="proto-title">
+  <div class="sec-inner">
+    <div class="sec-head" data-reveal>
+      <span class="eyebrow">Choose per app</span>
+      <h2 id="proto-title" class="sec-title">Compatible today. <span class="grad">Native tomorrow.</span></h2>
+    </div>
+    <div class="ptable glass" data-reveal>
+      <div class="prow phead">
+        <span>Capability</span><span>Protocol V1</span><span class="v2">Protocol V2</span>
+      </div>
+      {
+        rows.map(([a, b, c], i) => (
+          <div class="prow" style={`--i:${i}`}>
+            <span set:html={a} />
+            <span class="muted" set:html={b} />
+            <span class="v2" set:html={c} />
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .ptable {
+    max-width: 920px;
+    margin: 0 auto;
+    border-radius: 24px;
+    overflow: hidden;
+  }
+  .prow {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr 1.2fr;
+    gap: 16px;
+    padding: 15px 24px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.93rem;
+    opacity: 0;
+    transform: translateY(10px);
+    transition:
+      opacity 0.6s var(--ease-out),
+      transform 0.6s var(--ease-out),
+      background 0.2s;
+    transition-delay: calc(var(--i, 0) * 60ms + 150ms), calc(var(--i, 0) * 60ms + 150ms), 0s;
+  }
+  .ptable.in .prow,
+  html:not(.js) .prow {
+    opacity: 1;
+    transform: none;
+  }
+  .prow:last-child {
+    border-bottom: 0;
+  }
+  .prow:not(.phead):hover {
+    background: var(--accent-soft);
+  }
+  .phead {
+    font-size: 0.75rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-subtle);
+    background: var(--accent-soft);
+  }
+  .muted {
+    color: var(--fg-subtle);
+  }
+  .v2 {
+    color: var(--accent-text);
+    font-weight: 560;
+  }
+  .prow :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.84em;
+  }
+  @media (max-width: 620px) {
+    .prow {
+      grid-template-columns: 1.2fr 0.7fr 1fr;
+      padding: 12px 14px;
+      font-size: 0.82rem;
+    }
+  }
+</style>

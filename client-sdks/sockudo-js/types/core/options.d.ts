@@ -52,6 +52,12 @@ export interface Options {
     maxReconnectGapInSeconds?: number;
     /** Fraction of the reconnect delay to randomize, 0 (off) to 1 (full jitter). */
     reconnectJitter?: number;
+    /**
+     * Upper bound in milliseconds for a random delay before an immediate
+     * protocol retry (for example after a 4200 server-shutdown close). 0 (the
+     * default) retries at once.
+     */
+    retryJitterMs?: number;
     echoMessages?: boolean;
     enableStats?: boolean;
     disableStats?: boolean;

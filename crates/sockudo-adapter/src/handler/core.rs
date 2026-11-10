@@ -349,6 +349,28 @@ impl ConnectionHandler {
             .await
     }
 
+    /// Disconnect after the peer's Close frame. A Close that answers this node's own Close frame
+    /// is not a voluntary leave: it keeps the presence lease so the last-leave webhook waits for a
+    /// reconnect elsewhere. It races the reader's cancellation, which already takes the ungraceful
+    /// path, so both orderings must agree. During drain any server Close counts, not only the
+    /// shutdown one. Any other peer Close is a leave.
+    pub async fn handle_peer_close(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        let answers_server_close = !self.is_accepting()
+            && match self
+                .connection_manager
+                .get_connection(socket_id, app_id)
+                .await
+            {
+                Some(connection) => connection.inner.lock().await.state.is_closed_by_server(),
+                None => false,
+            };
+        if answers_server_close {
+            self.handle_ungraceful_disconnect(app_id, socket_id).await
+        } else {
+            self.handle_disconnect(app_id, socket_id).await
+        }
+    }
+
     pub async fn handle_ungraceful_disconnect(
         &self,
         app_id: &str,
@@ -414,9 +436,9 @@ impl ConnectionHandler {
         debug!(socket_id = %socket_id, "handling socket disconnect");
 
         // Try async cleanup first if queue is available and circuit breaker allows
-        if self.should_use_async_cleanup().await {
-            // should_use_async_cleanup() already verified cleanup_queue exists
-            let cleanup_queue = self.cleanup_queue.as_ref().unwrap();
+        if self.should_use_async_cleanup().await
+            && let Some(cleanup_queue) = self.cleanup_queue.as_ref()
+        {
             match self
                 .handle_disconnect_async(
                     app_id,

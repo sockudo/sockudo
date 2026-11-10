@@ -4,22 +4,27 @@ description: Configure Sockudo with TOML or JSON, understand environment precede
 icon: FileCog
 ---
 
+This page explains exactly how Sockudo resolves its configuration at startup: which file it reads,
+how environment variables override it, and where secrets belong. Read it before writing a
+production config for any platform; the Linux, Docker, and Kubernetes guides all build on it.
+
 Sockudo supports a static TOML file, a legacy-compatible JSON file, and runtime environment
 overrides. Use a file for the complete deployment shape. Use environment variables for the subset
 of settings that vary per environment and for secret references supplied by the platform.
 
 ## Loading order
 
-Configuration is resolved in this order; each later source wins:
+Configuration is resolved once, at startup, in this order:
 
-1. compiled defaults
-2. `config/config.toml` from the process working directory, when it exists and parses
-3. otherwise `config/config.json` from the process working directory
-4. the file passed with `--config`, when it loads successfully
-5. supported environment-variable overrides
-6. final configuration validation
+1. Start from compiled defaults.
+2. If `--config <path>` (short form `-c`) is passed, load that file and nothing else.
+3. Otherwise, look in the process working directory for `config/config.toml`, then
+   `config/config.json`, and load the first one that exists. If neither exists, keep the compiled
+   defaults.
+4. Apply supported environment-variable overrides on top of the loaded values.
+5. Validate the final configuration.
 
-An explicit `.toml` path is parsed as TOML. Other filename extensions are parsed as JSON. Prefer a
+An explicit `.toml` path is parsed as TOML. Any other filename extension is parsed as JSON. Prefer a
 `.toml` or `.json` suffix so the format is obvious.
 
 ```bash
@@ -27,17 +32,42 @@ sockudo --config /etc/sockudo/config.toml
 sockudo --config /etc/sockudo/config.json
 ```
 
-Use `--config` to select a non-default path. The `CONFIG_FILE` environment variable present in some
-container environments does not select the file by itself; the published image's default command
-passes it an explicit path.
+The selected file becomes the complete file-based configuration. An explicit `--config` file is not
+merged with an auto-discovered `config/config.toml`; fields missing from the file receive compiled
+defaults, not values from another file.
 
-The current server logs an explicit file read or parse failure and retains the configuration
-resolved before that file. In production, alert on `explicit configuration load failed` and require
-the `explicit configuration applied` log before sending traffic. Validate the file in CI rather
-than relying only on process startup.
+<Callout type="warn" title="A file that fails to load stops startup">
+If the selected file (explicit or auto-discovered) cannot be read, contains an unresolved
+`${VAR}` placeholder, or fails to parse, Sockudo prints
+`sockudo: failed to load configuration file '<path>': <error>` to stderr and exits with status 1.
+It does not fall back to defaults. A failed final validation also stops startup with
+`Configuration validation failed: <reason>`. Treat a crash loop after a config change as a config
+error first.
+</Callout>
 
-Configuration is read at startup. Change it through a rollout or service restart; there is no
+Environment overrides behave differently: if applying them fails, Sockudo logs
+`environment variable overrides failed: <error>` and continues starting. Alert on that log line.
+
+Use `--config` in every production deployment. Relying on auto-discovery makes the result depend on
+the working directory. The `CONFIG_FILE` environment variable present in the published container
+image does not select the file by itself; the image's default command passes an explicit
+`--config` path.
+
+Configuration is read only at startup. Change it through a rollout or service restart; there is no
 general-purpose hot reload.
+
+### Startup log lines
+
+Once logging is initialized, Sockudo records which source it used. Expect one of these:
+
+| Log message | Meaning |
+| --- | --- |
+| `explicit configuration applied: <path>` | The `--config` file loaded. |
+| `loaded configuration file: config/config.toml` | Auto-discovery found a file (or `config/config.json`). |
+| `no config/config.toml or config/config.json found; using defaults` | No file was found; only defaults and environment variables apply. |
+| `applied environment variable overrides` | Environment overrides were applied. |
+
+In production, require the `explicit configuration applied` line before sending traffic.
 
 ## TOML or JSON?
 
@@ -47,16 +77,50 @@ general-purpose hot reload.
 | JSON | A chart, control plane, or program generates the file. | Useful for Helm `configJson` and legacy installations; comments are not allowed. |
 | Environment only | A small, single-app deployment uses only supported overrides. | Not every nested policy has an environment equivalent. |
 
-TOML and JSON deserialize into the same `ServerOptions` structure. Missing fields receive code
-defaults; a static file is not merged field-by-field with the auto-discovered file. The selected
-file becomes the complete file-based configuration, then environment overrides are applied.
+TOML and JSON deserialize into the same `ServerOptions` structure, so every key works in both.
+The annotated reference file is `config/config.toml` in the repository.
+
+## Environment placeholders in config files
+
+Before parsing, Sockudo replaces `${VAR}` and `${VAR:-default}` placeholders in the file with values
+from the process environment. This lets a committed file reference a secret without containing it,
+including nested values that have no dedicated environment variable:
+
+```toml title="config.toml"
+[metrics]
+port = ${METRICS_PORT:-9601}
+
+[[app_manager.array.apps]]
+id = "production"
+key = "${PROD_APP_KEY}"
+secret = "${PROD_APP_SECRET}"
+enabled = true
+```
+
+Rules worth knowing:
+
+- An environment variable that is set but empty is treated as unset, so `${VAR:-default}` uses the
+  default.
+- A placeholder without a default whose variable is unset fails the load and lists every
+  unresolved variable in the error.
+- Substitution is plain text over the whole file before parsing, including comments. A `${...}` in a
+  comment must also resolve.
+- The value is inserted verbatim. Quote placeholders for string fields, and avoid values containing
+  `"` or `\` in TOML or JSON strings, because they would change the file's syntax.
+
+<Callout type="tip" title="Placeholders versus environment overrides">
+Placeholders work for any key in the file, but they resolve only once, when the file is read. The
+dedicated environment variables in the [environment variable reference](/docs/reference/environment-variables)
+are applied after the file and always win. Use placeholders for secrets and nested values; use
+dedicated variables for per-environment switches.
+</Callout>
 
 ## Equivalent single-node files
 
 This TOML profile keeps all state in one process and is suitable for a first production-like test,
 not for failover:
 
-```toml
+```toml title="config.toml"
 mode = "production"
 host = "0.0.0.0"
 port = 6001
@@ -106,9 +170,12 @@ enable_user_authentication = true
 allowed_origins = ["https://app.example.com"]
 ```
 
+The top-level `max_connections` caps sockets on this node across all apps (`0` disables the cap).
+The app's `policy.limits.max_connections` is a separate per-app quota.
+
 The equivalent JSON is:
 
-```json
+```json title="config.json"
 {
   "mode": "production",
   "host": "0.0.0.0",
@@ -165,15 +232,15 @@ The equivalent JSON is:
 }
 ```
 
-Replace the example credentials before use. For a committed production file, remove the entire
-inline app definition and bootstrap the app from a secret-backed environment, or use a persistent
-app manager.
+Replace the example credentials before use. For a committed production file, replace the literal
+key and secret with `${...}` placeholders, bootstrap the app from a secret-backed environment, or
+use a persistent app manager.
 
 ## Clustered Redis profile
 
 The stable structure can remain in TOML:
 
-```toml
+```toml title="config.toml" {9-10}
 mode = "production"
 host = "0.0.0.0"
 port = 6001
@@ -182,6 +249,7 @@ shutdown_grace_period = 30
 
 [adapter]
 driver = "redis"
+# Fail startup instead of silently running as an isolated local node.
 fallback_to_local = false
 
 [cache]
@@ -203,9 +271,12 @@ host = "0.0.0.0"
 port = 9601
 ```
 
+`fallback_to_local` defaults to `true`. Leaving it on lets a node that cannot reach Redis at startup
+run alone, splitting clients into groups that never see each other's events.
+
 Inject the shared address, node identity, and one immutable app at runtime:
 
-```bash
+```bash title="sockudo.env"
 REDIS_URL=rediss://sockudo@redis.internal:6379/0
 INSTANCE_PROCESS_ID=sockudo-a-01
 SOCKUDO_DEFAULT_APP_ENABLED=true
@@ -213,11 +284,23 @@ SOCKUDO_DEFAULT_APP_ID=production
 SOCKUDO_DEFAULT_APP_KEY=secret-store-value
 SOCKUDO_DEFAULT_APP_SECRET=secret-store-value
 SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS=https://app.example.com
+SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS=50000
 ```
 
 `REDIS_URL` updates the Redis adapter, cache, queue, and rate limiter connection. Driver selection
 still must be `redis`, either in the file or through `ADAPTER_DRIVER`, `CACHE_DRIVER`,
 `QUEUE_DRIVER`, and `RATE_LIMITER_DRIVER`.
+
+`INSTANCE_PROCESS_ID` names the node. When it is unset, Sockudo generates a random UUID at every
+start, which is unique but changes on each restart. Set it explicitly when logs, metrics, or Iggy
+consumers need a stable identity, and never put one shared value in a file that every replica
+loads.
+
+<Callout type="warn" title="The environment-bootstrapped app defaults to 100 connections">
+An app registered through `SOCKUDO_DEFAULT_APP_*` gets a per-app connection quota of `100` unless
+`SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS` is set. Clients beyond the quota are rejected even when the
+node has capacity. Set it deliberately, as in the example above.
+</Callout>
 
 Use a persistent app manager instead of environment bootstrap when operators create, rotate, or
 disable multiple applications without rebuilding the deployment.
@@ -229,9 +312,9 @@ disable multiple applications without rebuilding the deployment.
 | Driver selection and feature gates | Yes | Optional rollout override | No |
 | Nested app/channel policy | Yes, or persistent app manager | Only the documented subset | Credentials only |
 | Retention, buffer, and queue reliability | Yes | Use supported overrides sparingly | No |
-| Per-environment hostnames and ports | Template or generated file | Yes | Only if address contains credentials |
-| App keys and secrets | Avoid in committed files | Inject from secret reference | Yes |
-| Redis, SQL, broker passwords | Avoid | Inject from secret reference | Yes |
+| Per-environment hostnames and ports | Template, generated file, or `${VAR}` placeholder | Yes | Only if address contains credentials |
+| App keys and secrets | Avoid literals in committed files; use `${VAR}` placeholders | Inject from secret reference | Yes |
+| Redis, SQL, broker passwords | Avoid literals | Inject from secret reference | Yes |
 | TLS private keys and push provider keys | File path or credential reference | Path/reference only | Yes |
 
 Do not place secrets in image layers, Helm values committed to Git, Kubernetes ConfigMaps, process
@@ -241,13 +324,18 @@ arguments, or Terraform plan output.
 
 Environment variables are explicit mappings in the Sockudo configuration loader, not a generic
 `SECTION_FIELD=value` translation. The [environment variable reference](/docs/reference/environment-variables)
-is the authoritative list.
+is the authoritative list. An unknown variable name is ignored without a warning, so check spelling
+against the reference.
 
 Several app-bootstrap variables have deliberate replacement behavior:
 
 - a complete `SOCKUDO_DEFAULT_APP_ID`, `SOCKUDO_DEFAULT_APP_KEY`, and
   `SOCKUDO_DEFAULT_APP_SECRET` set registers the environment-backed default app
-- `SOCKUDO_DEFAULT_APP_ENABLED=false` disables that registration
+- setting any of those three, or `SOCKUDO_DEFAULT_APP_ENABLED=false`, removes the apps declared
+  inline in the file
+- `SOCKUDO_DEFAULT_APP_ENABLED=false` disables the environment-backed registration
+- a partial set (for example an ID and key without a secret) registers nothing and logs
+  `default app env configured but id, key, and secret were not all provided`
 - `SOCKUDO_SKIP_INLINE_APPS=true` skips apps declared inside the file
 - `APP_MANAGER_REGISTER_INLINE_APPS=false` also prevents inline registration
 
@@ -284,27 +372,52 @@ volumes:
       name: sockudo-config
 ```
 
-The Helm chart also accepts `configJson` for advanced generated configuration and
-`extraEnvFrom` for Secret or ConfigMap references.
+With `${VAR}` placeholders in the ConfigMap, the Secret supplies the values and the ConfigMap stays
+safe to commit. The Helm chart also accepts `configJson` for advanced generated configuration and
+`extraEnvFrom` for Secret or ConfigMap references; see [Kubernetes and Helm](/docs/deployment/kubernetes).
 
 ## Validate before rollout
 
-At minimum:
+<Steps>
 
-```bash
-taplo check config.toml
-jq empty config.json
-sockudo --config /etc/sockudo/config.toml
-```
+1. Check syntax in CI so a typo never reaches a host:
 
-For the startup check, use the same binary, features, environment, working directory, and mounted
-secrets as production. Confirm:
+   ```bash
+   taplo check config.toml
+   jq empty config.json
+   ```
 
-- `explicit configuration applied`
-- `Applied environment variable overrides`
-- no `configuration validation failed`
-- `/live` returns success
-- `/up/<app-id>` returns success after shared dependencies are available
+   Both commands print nothing and exit `0` when the file parses.
 
-Then continue with the [Linux](/docs/deployment/linux),
-[Docker](/docs/deployment/docker), or [Kubernetes](/docs/deployment/kubernetes) guide.
+2. Start the exact production binary with the same features, environment, working directory, and
+   mounted secrets:
+
+   ```bash
+   sockudo --config /etc/sockudo/config.toml
+   ```
+
+   The process must keep running. The logs must contain `explicit configuration applied` and
+   `applied environment variable overrides`, and must not contain
+   `environment variable overrides failed` or `Configuration validation failed`.
+
+3. Check the process and app health from the same host:
+
+   ```bash
+   curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:6001/live
+   curl -fsS http://127.0.0.1:6001/up/<app-id>
+   ```
+
+   Expect `200` from `/live`. `/up/<app-id>` prints `OK` once shared dependencies are reachable,
+   `DEGRADED` (still `200`) when a non-critical check reports degradation, and fails with `503` or
+   `404` when a dependency is down or the app does not exist.
+
+</Steps>
+
+## Next steps
+
+<Cards>
+  <Card title="Linux host" href="/docs/deployment/linux" description="Run the validated config under systemd with correct file limits." />
+  <Card title="Docker and Compose" href="/docs/deployment/docker" description="Mount the config read-only and inject secrets into a container." />
+  <Card title="Kubernetes and Helm" href="/docs/deployment/kubernetes" description="Supply the config through chart values, a ConfigMap, or a Secret." />
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Every configuration key with its default." />
+</Cards>

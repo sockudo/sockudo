@@ -4,6 +4,10 @@ port = 6001
 mode = "development"
 path_prefix = "/"
 shutdown_grace_period = 2
+# Wait before closing existing connections with 4200, then spread the closes.
+# Delay + spread must fit inside shutdown_grace_period.
+shutdown_close_delay_ms = 0
+shutdown_close_spread_ms = 0
 websocket_max_payload_kb = 64
 max_connections = 0 # 0 = disabled (no per-pod limit)
 user_authentication_timeout = 3600
@@ -82,6 +86,8 @@ prefix = "sockudo_adapter:"
 request_timeout_ms = 5000
 use_connection_manager = true
 pubsub_ping_interval_ms = 10000
+broadcast_mode = "legacy"
+broadcast_buckets = 3
 
 [adapter.cluster_health]
 enabled = true
@@ -95,9 +101,10 @@ cleanup_interval_ms = 10000
 # memory is node-local and loses push state on restart or dead-node loss.
 # Use a durable storage driver for production and clustered push.
 storage_driver = "mysql"
-# memory is node-local and cannot survive queue owner loss. Durable queue driver
-# values mirror [queue].driver.
-queue_driver = "redis"
+# memory is node-local and cannot survive queue owner loss. A broker driver must
+# name the same driver as [queue].driver (Sockudo refuses to start otherwise) and
+# support per-message delay: redis, redis-cluster, sqs (standard queue) or pulsar.
+queue_driver = "memory"
 # Production mode rejects memory push storage/queues unless this is explicitly
 # set true for local/dev acknowledgment.
 allow_memory_drivers = false
@@ -243,6 +250,8 @@ table_name = "applications"
 
 [app_manager]
 driver = "memory"
+# Close live connections of disabled/deleted apps (seconds, 0 = off).
+availability_check_interval_seconds = 15
 
 [app_manager.array]
 [[app_manager.array.apps]]
@@ -698,6 +707,7 @@ disconnect_on_buffer_full = false
 max_message_size = 67108864
 max_frame_size = 16777216
 write_buffer_size = 16384
+read_buffer_size = 2048
 max_backpressure = 1048576
 auto_ping = true
 ping_interval = 30

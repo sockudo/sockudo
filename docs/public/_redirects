@@ -1,0 +1,4 @@
+# Netlify-style static redirects, honored by Cloudflare Pages.
+# curl/wget do not follow HTML meta-refresh, so /install.sh must be a real
+# HTTP redirect, not the Astro-generated meta-refresh page.
+/install.sh https://github.com/sockudo/sockudo/releases/latest/download/install.sh 302

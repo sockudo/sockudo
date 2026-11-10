@@ -4,17 +4,29 @@ description: Use sockudo-kotlin on Android and JVM with auth, recovery, rewind, 
 icon: Smartphone
 ---
 
-`sockudo-kotlin` is the official Android and JVM realtime SDK. It uses OkHttp for WebSockets and exposes the same channel model as other Sockudo clients.
+`sockudo-kotlin` is the official Android and JVM realtime SDK. It opens a
+WebSocket to Sockudo through OkHttp, subscribes to channels, and delivers
+events to your callbacks using the same subscribe/bind model as other Sockudo
+clients. It supports public, private, presence, and encrypted channels, user
+sign-in, client events, and the Protocol V2 feature set: connection recovery,
+rewind, tag filters, delta compression, mutable messages, and proxy-backed
+history helpers.
 
-The current package targets JVM 17, supports Android API 26+ (Android 8.0+), and uses Protocol V2 by default. Set
-`protocolVersion = 1` only when strict Pusher Protocol V1 compatibility is
-required.
+The current package targets JVM 17 and supports Android API 26+ (Android
+8.0+); the build fails on any JDK API missing from that level.
+
+<Callout type="note" title="Protocol V2 is the default">
+Unlike the JavaScript and Swift clients, `sockudo-kotlin` uses Protocol V2 by
+default. Set `protocolVersion = 1` only when strict Pusher Protocol V1
+compatibility is required.
+</Callout>
 
 ## Install
 
-Install the published package from Maven Central:
+Install the published package from Maven Central. Requirements: Java 17 or
+higher, Kotlin 1.9+, and Android API 26+ for Android apps.
 
-```kotlin
+```kotlin title="build.gradle.kts"
 dependencies {
     implementation("io.sockudo:sockudo-kotlin:2.3.1")
 }
@@ -22,7 +34,7 @@ dependencies {
 
 For Maven projects:
 
-```xml
+```xml title="pom.xml"
 <dependency>
   <groupId>io.sockudo</groupId>
   <artifactId>sockudo-kotlin</artifactId>
@@ -30,9 +42,17 @@ For Maven projects:
 </dependency>
 ```
 
+For local monorepo development, run `./gradlew :lib:publishToMavenLocal` from
+`client-sdks/sockudo-kotlin`.
+
 ## Connect
 
-```kotlin
+A `SockudoClient` owns one WebSocket connection for your process. Over that
+connection you subscribe to **channels**: named streams such as
+`public-updates` that your backend publishes events to. The client holds only
+the public app key; the app secret stays on your server.
+
+```kotlin title="Realtime.kt"
 import io.sockudo.client.SockudoClient
 import io.sockudo.client.SockudoOptions
 import io.sockudo.client.SockudoTransport
@@ -61,17 +81,63 @@ client.connect()
 ```
 
 For production, point `wsHost` at the public load balancer or ingress, set
-`forceTls = true`, and use the secure WebSocket port. Keep one long-lived
-client per application process or signed-in mobile session.
+`forceTls = true`, use the secure WebSocket port, and drop the
+`enabledTransports` restriction. Keep one long-lived client per application
+process or signed-in mobile session.
 
-## Lifecycle and cleanup
+### Connection options
 
-Connection and channel events use the same binding model as application events:
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `cluster` | `String` | required | Cluster name. Must be non-blank. |
+| `protocolVersion` | `Int` | `2` | `2` is Protocol V2; `1` is Pusher-compatible V1. |
+| `forceTls` | `Boolean?` | `null` | Force `wss://`. Use `true` in production. |
+| `enabledTransports` | `List<SockudoTransport>?` | `null` | Restrict to `SockudoTransport.ws` and/or `wss`. |
+| `wsHost` | `String?` | `null` | Sockudo hostname. |
+| `wsPort` | `Int` | `80` | Port for `ws://`. |
+| `wssPort` | `Int` | `443` | Port for `wss://`. |
+| `wsPath` | `String` | `""` | Path prefix for the WebSocket URL. |
+| `activityTimeout` | `Duration` | `120.seconds` | Idle time before the client checks liveness. |
+| `pongTimeout` | `Duration` | `30.seconds` | Time to wait for a pong. |
+| `unavailableTimeout` | `Duration` | `10.seconds` | Time before a stalled connection is reported `UNAVAILABLE`. |
+| `channelAuthorization` | `ChannelAuthorizationOptions` | endpoint `/sockudo/auth` | Private, presence, and encrypted channel auth. |
+| `userAuthentication` | `UserAuthenticationOptions` | endpoint `/sockudo/user-auth` | User sign-in auth. |
+| `presenceHistory` | `PresenceHistoryOptions?` | `null` | Backend proxy for presence history and snapshots. |
+| `versionedMessages` | `VersionedMessagesOptions?` | `null` | Backend proxy for channel history, annotations, and mutable-message helpers. |
+| `deltaCompression` | `DeltaOptions?` | `null` | Connection-level delta negotiation. |
+| `messageDeduplication` | `Boolean` | `true` | Drop repeated `message_id` values. |
+| `messageDeduplicationCapacity` | `Int` | `1000` | Size of the deduplication window. |
+| `connectionRecovery` | `Boolean` | `false` | Track positions and resume after reconnect. |
+| `echoMessages` | `Boolean` | `true` | Receive your own published messages. |
+| `wireFormat` | `SockudoWireFormat` | `json` | `json`, `messagepack`, or `protobuf`. |
+| `appendMode` | `SockudoAppendMode` | `delta` | `delta` or `full` delivery of message appends. |
+| `appendRollupWindow` | `Int?` | `null` | Append rollup window in milliseconds: `0`, `20`, `40`, `100`, or `500`. |
+| `maxReconnectAttempts` | `Int?` | `6` | Reconnect attempts before giving up; `null` is unlimited. |
+| `maxReconnectGapInSeconds` | `Double` | `120.0` | Upper bound on reconnect delay. |
+| `reconnectJitter` | `Double` | `0.0` | Fraction (0 to 1) of each reconnect delay to randomize. |
+| `authToken` | `String?` | `null` | Static Protocol V2 capability token. |
+| `authTokenProvider` | `ClientAuthTokenProvider?` | `null` | Refreshing Protocol V2 capability-token provider. |
 
-```kotlin
+`SockudoOptions` validates itself on construction and throws
+`SockudoException.InvalidOptions` for token auth below Protocol V2 or an
+unsupported `appendRollupWindow`.
+
+## Subscribe and bind events
+
+`subscribe(channelName, options)` returns a `SockudoChannel` immediately; the
+subscription completes asynchronously once the socket is connected (and, for
+protected channels, once your auth endpoint responds). `bind` attaches a
+callback for one event name and returns an `EventBindingToken`:
+
+```kotlin title="PriceFeed.kt"
 val stateToken =
     client.bind("state_change") { change, _ ->
         println("connection: $change")
+    }
+
+val readyToken =
+    channel.bind("sockudo:subscription_succeeded") { _, _ ->
+        println("public-updates is live")
     }
 
 val eventToken =
@@ -79,26 +145,64 @@ val eventToken =
         println(data)
     }
 
+// Later, when the owner no longer needs updates:
 channel.unbind("price-updated", eventToken)
+channel.unbind("sockudo:subscription_succeeded", readyToken)
 client.unbind("state_change", stateToken)
 client.unsubscribe("public-updates")
-client.disconnect()
 ```
 
-Wait for the channel subscription-success event before treating channel state
-as live. Unsubscribe and unbind when an Android lifecycle owner no longer needs
-updates; disconnect on explicit sign-out. A temporary network loss should be
-left to the SDK's reconnect path.
+System events use the protocol prefix: `sockudo:` on Protocol V2 and `pusher:`
+on Protocol V1. Use `bindGlobal` to observe every event name, and
+`unbindAll()` only when the owner is being torn down.
 
-Unexpected disconnects emit `ConnectionState.RECONNECTING` and use quadratic
-backoff (0s, 1s, 4s, 9s) capped at 120 seconds. Configure
-`maxReconnectAttempts` (default `6`, `null` for unlimited) and
-`maxReconnectGapInSeconds`; protocol retry and TLS-upgrade close codes remain
-immediate.
+### Typed listeners
 
-## Auth
+As an alternative to string event names, bind a typed channel listener. It
+receives the full `SockudoEvent`, including `serial`, `messageId`, and
+`extras`:
+
+```kotlin title="PriceFeed.kt"
+val listenerToken =
+    channel.bindChannelListener(
+        object : SockudoChannelEventListener {
+            override fun onSubscriptionSucceeded(channel: SockudoChannel) {
+                println("${channel.name} is live")
+            }
+
+            override fun onAuthenticationFailure(channel: SockudoChannel, error: SockudoAuthError) {
+                println("auth failed: ${error.message}")
+            }
+
+            override fun onEvent(channel: SockudoChannel, event: SockudoEvent) {
+                println("${event.event}: ${event.data}")
+            }
+        },
+    )
+
+channel.unbindChannelListener(listenerToken)
+```
+
+### Client events
+
+Private and presence channels can send `client-` prefixed events directly to
+other subscribers. `trigger` throws `SockudoException.BadEventName` for any
+other name:
 
 ```kotlin
+channel.trigger("client-typing", mapOf("user" to "alice"))
+```
+
+## Private and presence channels
+
+Anyone with your public app key can open a socket, so Sockudo cannot decide by
+itself who may join `private-*`, `presence-*`, or `private-encrypted-*`
+channels. Instead, the client sends its `socket_id` and the requested channel
+name to **your** backend, which checks the user's session and returns a
+signature made with the app secret. Sockudo verifies that signature before
+completing the subscription.
+
+```kotlin title="Realtime.kt"
 import io.sockudo.client.*
 
 val client =
@@ -112,18 +216,64 @@ val client =
             channelAuthorization =
                 ChannelAuthorizationOptions(
                     endpoint = "https://api.example.com/sockudo/auth",
+                    headersProvider = { mapOf("Authorization" to "Bearer ${session.token}") },
                 ),
         ),
     )
 ```
 
+`ChannelAuthorizationOptions` accepts `endpoint` (default `/sockudo/auth`),
+static `headers` and `params`, `headersProvider` and `paramsProvider` lambdas
+evaluated per request, and a `customHandler` when you need to perform the
+request yourself:
+
+```kotlin
+ChannelAuthorizationOptions(
+    customHandler =
+        ChannelAuthorizationHandler { request ->
+            // request.socketId and request.channelName; call your backend here
+            backend.authorizeChannel(request.socketId, request.channelName)
+        },
+)
+```
+
+The handler is a `suspend` function that returns `ChannelAuthorizationData`
+(`auth`, optional `channelData`, optional `sharedSecret`).
+`userAuthentication` has the same shape (default endpoint `/sockudo/user-auth`)
+and is used by `client.signIn()` for user-targeted events and watchlists.
+
+<Callout type="warn" title="Authorize the exact channel">
 Your auth endpoint must validate the application session and authorize the
 exact requested channel. For presence, derive `user_id` from the server-side
 identity. Never ship the app secret or an encryption master key in the APK.
+</Callout>
+
+### Presence
+
+```kotlin title="Lobby.kt"
+val presence = client.subscribe("presence-lobby") as PresenceChannel
+
+presence.bind("sockudo:subscription_succeeded") { _, _ ->
+    println("members: ${presence.members.count}, me: ${presence.members.myId}")
+}
+presence.bind("sockudo:member_added") { member, _ -> println("joined: $member") }
+presence.bind("sockudo:member_removed") { member, _ -> println("left: $member") }
+presence.bind("sockudo:presence_update") { member, _ -> println("updated: $member") }
+
+presence.update(mapOf("status" to "typing"))
+```
+
+Wait for the subscription-success event before treating the initial membership
+set as authoritative. `presence.members` exposes `count`, `myId`, `me`,
+`member(id)`, and `forEach`. `update` changes V2 presence member data without a
+leave/rejoin cycle and throws `SockudoException.UnsupportedFeature` on
+Protocol V1.
+
+### Capability tokens
 
 Protocol V2 capability tokens can be supplied with a refresh provider:
 
-```kotlin
+```kotlin title="Realtime.kt"
 val client =
     SockudoClient(
         "app-key",
@@ -141,28 +291,82 @@ val client =
     )
 ```
 
-JWT expiry metadata enables proactive refresh, and the provider is called
-before reconnects. Only expiry code `40142` refreshes in place; revocation code
-`40160` and static tokens are not resent. Token auth is rejected outside
-Protocol V2.
+`ClientAuthTokenProvider.token` is a `suspend` function. `request.reason` is
+one of `INITIAL`, `RECONNECT`, `REFRESH`, or `EXPIRED`. For JWTs, the client
+reads `iat` / `exp` without validating the signature and schedules a proactive
+refresh at 80% of the token lifetime. The provider is called before every
+reconnect, including for opaque tokens. Only expiry code `40142` refreshes in
+place through `sockudo:auth`; revocation code `40160` and static `authToken`
+values are not resent. Token auth is rejected outside Protocol V2.
 
-## Presence
+## Protocol V2 features
 
-```kotlin
-val presence = client.subscribe("presence-lobby") as PresenceChannel
+See [Protocol V2](/docs/clients/protocol-v2) for the wire-level contract
+behind these features.
 
-presence.bind("sockudo:member_added") { member, _ -> println("joined: $member") }
-presence.bind("sockudo:member_removed") { member, _ -> println("left: $member") }
-presence.bind("sockudo:presence_update") { member, _ -> println("updated: $member") }
+### Recovery and rewind
 
-presence.update(mapOf("status" to "typing"))
+With `connectionRecovery = true`, the client records a `RecoveryPosition` per
+channel and asks Sockudo to resume from it after a reconnect. `rewind` replays
+recent history when a subscription starts.
+
+```kotlin title="Market.kt"
+val channel =
+    client.subscribe(
+        "market:BTC",
+        SubscriptionOptions(rewind = SubscriptionRewind.Seconds(30)),
+    )
+
+channel.bind("trade") { _, _ ->
+    println(client.getRecoveryPosition("market:BTC"))
+}
+
+channel.bind("sockudo:rewind_complete") { data, _ ->
+    println(data)
+}
+
+client.bind("sockudo:resume_success") { data, _ ->
+    println(data)
+}
+
+client.bind("sockudo:resume_failed") { data, _ ->
+    println("rebuild state: $data")
+}
 ```
 
-The update method changes V2 presence member data without a leave/rejoin cycle.
+`SubscriptionRewind` is `Count(n)` or `Seconds(n)`. `getRecoveryPositions()`
+and `setRecoveryPositions(...)` let you persist positions across process
+restarts. On `sockudo:resume_failed`, discard derived state and reload an
+authoritative snapshot.
 
-## Filters and deltas
+### Channel history and late join
 
-```kotlin
+`channel.attachSerial` holds the history head captured when the subscription
+attached. History, snapshots, and versioned-message helpers are `suspend`
+functions that call your `versionedMessages` proxy:
+
+```kotlin title="Chat.kt"
+suspend fun loadBacklog(channel: SockudoChannel) {
+    println(channel.attachSerial)
+    var page = channel.channelHistory(ChannelHistoryParams(limit = 50, untilAttach = true))
+    render(page.items)
+    while (page.hasNext()) {
+        page = page.next()
+        render(page.items)
+    }
+}
+```
+
+Use `untilAttach = true` when building a gap-free late join: combine those
+items with live events received after attach.
+
+### Filters and deltas
+
+Tag filters, event-name filters, and JMESPath expressions are evaluated on the
+server, so non-matching messages never reach the device. Delta compression
+sends only the difference against the previous message.
+
+```kotlin title="Market.kt"
 val channel =
     client.subscribe(
         "price:btc",
@@ -178,27 +382,65 @@ val channel =
     )
 ```
 
-## Recovery and rewind
+`Filter` provides `eq`, `neq`, `inside` (`in`), `notIn` (`nin`), `exists`,
+`notExists`, `startsWith`, `endsWith`, `contains`, `gt`, `gte`, `lt`, `lte`,
+`and`, `or`, and `not`. Delta algorithms are `DeltaAlgorithm.fossil` and
+`DeltaAlgorithm.xdelta3`. See
+[Filters and delta compression](/docs/clients/filters-delta).
 
-```kotlin
-val channel =
-    client.subscribe(
-        "market:BTC",
-        SubscriptionOptions(rewind = SubscriptionRewind.Seconds(30)),
-    )
+### Mutable messages
 
-channel.bind("message") { _, _ ->
-    println(client.getRecoveryPosition("market:BTC"))
-}
+Protocol V2 mutable messages arrive as update, delete, and append actions for
+an existing `message_serial`. Apply them in serial order:
 
-client.bind("sockudo:resume_success") { data, _ ->
-    println(data)
+- an update replaces local data with the full event payload
+- a delete becomes the latest visible version and may carry `null` data
+- an append concatenates onto a known string base
+
+Reduce them with `reduceMutableMessageEvent` from a typed channel listener,
+which receives the full `SockudoEvent` including its `extras` headers:
+
+```kotlin title="Chat.kt"
+val states = mutableMapOf<String, MutableMessageState>()
+
+channel.bindChannelListener(
+    object : SockudoChannelEventListener {
+        override fun onEvent(channel: SockudoChannel, event: SockudoEvent) {
+            val info = getMutableMessageInfo(event) ?: return
+            try {
+                states[info.messageSerial] =
+                    reduceMutableMessageEvent(states[info.messageSerial], event)
+            } catch (e: IllegalStateException) {
+                println("mutable message reduction failed: ${e.message}")
+            }
+        }
+    },
+)
+```
+
+If an append arrives before its base, the reducer throws; fetch the latest
+message with `channel.getMessage(messageSerial)` before applying subsequent
+actions.
+
+Configure `VersionedMessagesOptions.endpoint` for proxy-backed writes. The
+client never signs Sockudo REST requests itself:
+
+```kotlin title="Chat.kt"
+suspend fun sendAndEdit(chat: SockudoChannel) {
+    val ack = chat.createMessage("chat.message", mapOf("text" to "hello"))
+    chat.appendMessage(ack.messageSerial, " world")
+    chat.updateMessage(ack.messageSerial, mapOf("text" to "edited"))
+    chat.deleteMessage(ack.messageSerial)
 }
 ```
 
-## Presence history proxy
+Each helper accepts optional `extras`, `socketId`, `idempotencyKey`, and
+(for mutations) `expectedVersionSerial`, and times out after 10 seconds by
+default.
 
-```kotlin
+### Presence history
+
+```kotlin title="Lobby.kt"
 val client =
     SockudoClient(
         "app-key",
@@ -214,35 +456,28 @@ val client =
         ),
     )
 
-val channel = client.subscribe("presence-lobby") as PresenceChannel
-val page = channel.history(PresenceHistoryParams(limit = 50, direction = "newest_first"))
-val snapshot = channel.snapshot(PresenceSnapshotParams(atSerial = 4))
+suspend fun loadPresence() {
+    val channel = client.subscribe("presence-lobby") as PresenceChannel
+    val page = channel.history(PresenceHistoryParams(limit = 50, direction = "newest_first"))
+    if (page.hasNext()) {
+        val nextPage = page.next()
+    }
+    val snapshot = channel.snapshot(PresenceSnapshotParams(atSerial = 4))
+}
 ```
 
-History, snapshots, and versioned-message helpers call your trusted proxy. The
-proxy must authenticate the caller, authorize the channel, bound page sizes,
-and sign the upstream Sockudo request. Use channel history with
-`untilAttach = true` when building a gap-free late join.
+The proxy accepts `{channel, params, action}`, must authenticate the caller,
+authorize the channel, bound page sizes, and sign the upstream Sockudo
+request. See [Presence history](/docs/clients/presence-history).
 
-## Mutable messages
+### Binary wire formats
 
-Apply V2 message actions in serial order. An update replaces local data, a
-delete becomes the latest visible version, and an append concatenates to a
-known string base. Configure `VersionedMessagesOptions.endpoint` for
-proxy-backed writes:
+Set `wireFormat = SockudoWireFormat.messagepack` or `protobuf` to negotiate a
+binary encoding. Both preserve `ByteArray` message data as native binary. The
+MessagePack representation uses the additive `["binary", <bin>]` tagged value;
+existing string and JSON variants are unchanged.
 
-```kotlin
-val chat = client.subscribe("chat:room-1")
-val ack = chat.createMessage("chat.message", mapOf("text" to "hello"))
-chat.appendMessage(ack.messageSerial, " world")
-chat.updateMessage(ack.messageSerial, mapOf("text" to "edited"))
-chat.deleteMessage(ack.messageSerial)
-```
-
-If an append arrives before its base, fetch the latest message through the
-proxy before applying subsequent actions.
-
-## Encrypted channels
+### Encrypted channels
 
 `private-encrypted-*` subscriptions decrypt automatically when the auth
 response includes the derived channel shared secret:
@@ -252,13 +487,139 @@ val encrypted = client.subscribe("private-encrypted-documents")
 encrypted.bind("doc-updated") { payload, _ -> println(payload) }
 ```
 
-Encrypted channels still require TLS and normal channel authorization.
+An auth response without `shared_secret` fails the subscription. Encrypted
+channels still require TLS and normal channel authorization.
 
-## Android push registration
+## Connection lifecycle and reconnection
 
-Use Firebase Messaging or the platform provider to obtain a token, then register through your backend.
+`client.connectionState` exposes the current `ConnectionState`:
+`INITIALIZED`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `DISCONNECTED`,
+`UNAVAILABLE`, or `FAILED`. Observe transitions with a typed listener or the
+raw Pusher-compatible `state_change` event:
+
+```kotlin title="Realtime.kt"
+val connectionToken =
+    client.bindConnectionListener(
+        object : SockudoConnectionEventListener {
+            override fun onConnectionStateChange(change: ConnectionStateChange) {
+                println("${change.previous} -> ${change.current}")
+            }
+
+            override fun onError(error: SockudoError) {
+                println("connection error: ${error.message}")
+            }
+        },
+    )
+
+client.unbindConnectionListener(connectionToken)
+```
+
+Every transition also emits an event named after the new state in lower case,
+such as `reconnecting` or `connected`.
+
+A connected socket can still have a pending or rejected channel. Wait for the
+channel subscription-success event before treating channel state as live.
+
+Unexpected disconnects emit `ConnectionState.RECONNECTING` and use quadratic
+backoff (0s, 1s, 4s, 9s) capped by `maxReconnectGapInSeconds` (default 120),
+for up to `maxReconnectAttempts` (default `6`, `null` for unlimited). The
+attempt counter resets after a successful connection and on explicit
+`connect()` or `disconnect()` calls.
+
+```kotlin title="Realtime.kt"
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            maxReconnectAttempts = 10,
+            maxReconnectGapInSeconds = 60.0,
+            reconnectJitter = 0.5,
+        ),
+    )
+
+client.bind("reconnecting") { _, _ -> println("reconnecting") }
+```
+
+Because the base delay is identical for every client, clients dropped by a
+single event would retry in lockstep. `reconnectJitter` randomizes each delay
+by that fraction: `0.5` picks uniformly from 50–100% of the delay, `1.0` from
+0–100%. Close codes `4200`–`4299` and the TLS-upgrade code `4000` reconnect
+immediately; codes `4001`–`4099` are refused and move to `DISCONNECTED`
+without retrying.
+
+### Disconnect versus close
+
+`disconnect()` closes the socket but keeps the client reusable; call
+`connect()` to start again. `close()` disconnects and also shuts down the
+client's event loop. Use it when the client is discarded for good.
 
 ```kotlin
+client.unsubscribe("public-updates")
+client.disconnect() // reversible: connect() again later
+client.close()      // permanent shutdown
+```
+
+## Error handling
+
+- **Construction:** `SockudoClient` throws `SockudoException.InvalidAppKey`
+  for a blank key and `SockudoException.InvalidOptions` for a blank cluster or
+  invalid options.
+- **Connection:** `SockudoConnectionEventListener.onError` and the raw
+  `"error"` event report transport failures and server errors as
+  `SockudoError` (`message`, optional `code`, optional `cause`).
+- **Subscription:** a failed auth request emits `sockudo:subscription_error`
+  on the channel with `type` and `error` keys, and calls
+  `onAuthenticationFailure` on typed listeners. Treat it as a permission
+  failure instead of reconnecting.
+- **Overload:** inbound frames are decoded on a bounded queue. If your
+  callbacks fall behind, frames are dropped and an error with code
+  `client_overloaded` is reported.
+- **Helpers:** `suspend` helpers throw `SockudoException.UnsupportedFeature`
+  when their proxy endpoint is not configured; call them inside `try`/`catch`
+  so a failed proxy request does not crash the calling coroutine.
+
+```kotlin
+client.bind("error") { error, _ -> println("Sockudo error: $error") }
+
+channel.bind("sockudo:subscription_error") { error, _ ->
+    println("subscription failed: $error")
+}
+```
+
+See [Errors](/docs/reference/errors) for server error and close codes.
+
+## Platform notes
+
+### Threading
+
+Decoding and subscriber callbacks run on a dedicated `sockudo-event` thread,
+never on OkHttp's reader thread. Connection listeners run synchronously on the
+thread performing the transition. In both cases, switch to the main thread
+before touching Android views, and keep callbacks short: move blocking work to
+your own dispatcher so the bounded inbound queue does not overflow.
+
+### Android lifecycle
+
+Tie subscriptions to an Android lifecycle owner, and unsubscribe and unbind
+when it no longer needs updates so configuration changes do not create
+duplicate bindings. Disconnect on explicit sign-out. A temporary network loss
+should be left to the SDK's reconnect path.
+
+### Heartbeats
+
+Sockudo servers use native WebSocket ping/pong frames for automatic heartbeat
+traffic. Kotlin/JVM runtimes may still use lightweight `sockudo:ping` /
+`sockudo:pong` fallback messages for client-side activity checks; those are
+excluded from V2 recovery metadata such as `message_id`, `serial`, and
+`stream_id`.
+
+### Push registration
+
+Use Firebase Messaging or the platform provider to obtain a token, then
+register it through your backend:
+
+```kotlin title="PushTokenService.kt"
 class PushTokenService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
         registerDeviceWithBackend(
@@ -270,16 +631,59 @@ class PushTokenService : FirebaseMessagingService() {
 }
 ```
 
-The backend should call Sockudo push registration APIs with app credentials. The Android app should not hold Sockudo secrets.
+The backend calls Sockudo push registration APIs with app credentials.
+`SockudoPushRegistration` wraps device registration, channel subscription,
+and publish calls against **your** authenticated proxy. `publish()` and
+`publishBatch()` always send `sync = false` and expect `202 Accepted` with a
+`publish_id`; list helpers use `limit` and `cursor`.
 
-## Production checklist
+```kotlin title="Push.kt"
+val push =
+    SockudoPushRegistration(
+        PushRegistrationOptions(
+            endpoint = "https://api.example.com/sockudo/push",
+            headers = mapOf("Authorization" to "Bearer session-token"),
+        ),
+    )
+
+suspend fun notifyOrders() {
+    val publish =
+        push.publish(
+            mapOf(
+                "recipients" to listOf(mapOf("type" to "channel", "channel" to "orders")),
+                "payload" to mapOf("title" to "Order updated", "body" to "Ready for pickup"),
+            ),
+        )
+    println(publish["publish_id"])
+
+    val page = push.listChannelSubscriptions(PushSubscriptionParams(deviceId = "device-1", limit = 20))
+    println(page["next_cursor"])
+}
+```
+
+<Callout type="warn" title="No secrets in the APK">
+The Android app should not hold Sockudo app secrets, provider credentials, or
+push-admin credentials. Every push helper must point at your authenticated
+backend.
+</Callout>
+
+### Production checklist
 
 - Tie subscriptions to an Android lifecycle owner and avoid duplicate bindings
   after configuration changes.
-- Keep callbacks short; move blocking work off the WebSocket callback path.
+- Keep callbacks short; move blocking work off the callback thread.
 - Treat auth failures as permission failures instead of endlessly reconnecting.
 - On `sockudo:resume_failed`, reload authoritative application state.
 - Bound rewind and proxy history requests.
 - Refresh FCM tokens through the backend when `onNewToken` fires.
 - Test airplane-mode transitions, process recreation, capability-token expiry,
   and rolling Sockudo restarts.
+
+## Next steps
+
+<Cards>
+  <Card title="Protocol V2" href="/docs/clients/protocol-v2" description="Recovery, rewind, history, and native event semantics." />
+  <Card title="Filters and delta compression" href="/docs/clients/filters-delta" description="Cut delivered traffic with server-side filters and deltas." />
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="Build the backend auth endpoint for private and presence channels." />
+  <Card title="Push notifications" href="/docs/server/push-notifications" description="Register devices and publish through your backend." />
+</Cards>

@@ -221,6 +221,20 @@ impl MockTransport {
         on_request(request).await
     }
 
+    /// Hand `broadcast` to this node's broadcast listener and wait for it to finish, as if a
+    /// peer had published it.
+    pub async fn deliver_broadcast(&self, broadcast: BroadcastMessage) -> Result<()> {
+        let on_broadcast = self
+            .handlers
+            .lock()
+            .await
+            .as_ref()
+            .map(|handlers| handlers.on_broadcast.clone())
+            .ok_or_else(|| Error::Internal("listeners not started".to_string()))?;
+        on_broadcast(broadcast).await;
+        Ok(())
+    }
+
     /// Get access to published requests for testing
     pub async fn get_published_requests(
         &self,

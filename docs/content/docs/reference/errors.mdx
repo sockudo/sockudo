@@ -4,27 +4,117 @@ description: Interpret Sockudo HTTP, WebSocket, authentication, history, recover
 icon: OctagonAlert
 ---
 
-Sockudo uses HTTP status codes for REST failures and protocol events for WebSocket failures.
+Sockudo reports failures in two places: HTTP status codes plus a JSON error body for REST calls,
+and `error` frames or WebSocket close codes for realtime connections. Find the status or code you
+received below, then follow the likely cause and fix.
+
+## HTTP error body
+
+Every native HTTP API error returns the same JSON shape. `code` is a stable, machine-readable
+string; branch on it rather than on `error`, which is human-readable text.
+
+```json
+{
+  "error": "Request must contain 'channels' (list) or 'channel' (string)",
+  "code": "missing_channel_info",
+  "status": 400
+}
+```
+
+AI Transport validation errors add an `ai_code` field with the numeric AI Transport registry code.
+
+<Callout type="note" title="Server errors are deliberately generic">
+HTTP `5xx` bodies expose a stable error code and a generic public message. Backend driver
+diagnostics, connection strings, credentials, and internal failure details are never returned to
+the caller; use credential-safe server metrics and logs for operator diagnosis.
+</Callout>
 
 ## HTTP status
 
-| Status | Meaning | Action |
-| --- | --- | --- |
-| `202` | Async work accepted. | Store returned IDs and inspect status later. |
-| `400` | Invalid request. | Validate request body and feature flags. |
-| `401` | Authentication failed. | Check app key, secret, timestamp, and signature. |
-| `403` | Forbidden or disabled. | Check app policy and feature enablement. |
-| `404` | Not found. | Check app ID, channel, message serial, device ID, or publish ID. |
-| `409` | Conflict. | Check idempotency, version, or resource lifecycle. |
-| `413` | Payload too large. | Reduce event or push payload size. |
-| `429` | Rate limited. | Back off and inspect quota policy. |
-| `503` | Backpressure or required coordination backend unavailable. | Honor `Retry-After` when present and retry idempotent publishes with the same key. |
-| `5xx` | Server or dependency failure. | Inspect logs, metrics, adapter, cache, queue, or provider status. |
+| Status | Meaning | Likely cause | Action |
+| --- | --- | --- | --- |
+| `202` | Async work accepted. | Push publish, device, and subscription writes are admitted and processed later. | Store returned IDs and inspect status later. |
+| `400` | Invalid request. | Malformed body, invalid channel name, limit exceeded, or an idempotency key reused with a different payload. | Validate the request body against the endpoint and check feature flags. |
+| `401` | Authentication failed. | Wrong app key or secret, stale `auth_timestamp`, or a signature over a different method, path, query, or body. | Check app key, secret, timestamp, and signature. |
+| `403` | Forbidden or disabled. | The app policy, push capability, or channel policy does not allow the operation. | Check app policy and feature enablement. |
+| `404` | Not found. | Unknown app ID, channel, message serial, device ID, template, or publish ID. Also returned for live-state routes on `server_role = "api"` pods. | Check the identifier, and route live-state calls to a full server. |
+| `413` | Payload too large. | Event, request body, or push payload exceeds the configured limit. | Reduce event or push payload size, or raise the limit. |
+| `422` | Feature disabled. | The endpoint's feature is not configured at runtime, for example APNs Live Activity broadcast without `[push.apns]` broadcast settings. | Configure and enable the feature. |
+| `429` | Rate limited. | The API rate limiter or a push acceptance quota rejected the request. | Back off, honor `Retry-After`, and inspect quota policy. |
+| `501` | Not implemented. | The selected backend does not implement the operation. | Choose a backend that supports it. |
+| `503` | Unavailable. | Backpressure, a required coordination backend is down, an idempotent publish with the same key is still in flight, or the server is draining. | Honor `Retry-After` when present and retry idempotent publishes with the same key. |
+| `5xx` | Server or dependency failure. | Adapter, cache, queue, database, or provider failure. | Inspect logs, metrics, adapter, cache, queue, or provider status. |
 
-HTTP `5xx` bodies expose a stable error code and a generic public message. Backend
-driver diagnostics, connection strings, credentials, and internal failure details
-are never returned to the caller; use credential-safe server metrics and logs for
-operator diagnosis.
+## HTTP error codes
+
+| `code` | Status | Meaning and fix |
+| --- | --- | --- |
+| `auth_failed` | `401` | Request signing failed. Re-check the key, secret, clock skew, and the exact canonical path you signed. |
+| `forbidden` | `403` | Authenticated, but not allowed. Check app policy, channel namespace permissions, and push capability headers. |
+| `app_not_found` | `404` | No app matches the ID or key. Check the app manager and its cache TTL after creating an app. |
+| `not_found` | `404` | The addressed resource does not exist or its retention expired. |
+| `missing_channel_info` | `400` | A publish omitted both `channel` and `channels`. |
+| `invalid_input` | `400` | The body or parameters failed validation. The `error` text names the field. |
+| `limit_exceeded` | `400` | A configured limit, such as channels per event or batch size, was exceeded. |
+| `payload_too_large` | `413` | The payload exceeds the event, push, or AI Transport size limit. |
+| `feature_disabled` | `422` | The feature is not configured or enabled at runtime. |
+| `rate_limited` | `429` | Rate limit or quota hit. Retry after the `Retry-After` interval. |
+| `backpressure` | `503` | Sockudo is shedding load or an idempotent publish is still in progress. Retry after `Retry-After`. |
+| `service_unavailable` | `503` | A required dependency is unavailable. |
+| `draining` | `503` | The node is shutting down. Retry against another node. |
+| `not_implemented` | `501` | The backend cannot perform the operation. |
+| `internal_error`, `serialization_error`, `header_build_error`, `app_validation_failed`, `termination_failed` | `500` | Internal failure. Check server logs and metrics. |
+
+<Callout type="tip" title="Idempotency and retries">
+Reusing an idempotency key with a different payload returns `400 invalid_input`. Retrying while the
+first publish with that key is still in progress returns `503 backpressure` with `Retry-After: 1`.
+Always retry an ambiguous publish with the same key so Sockudo can deduplicate it.
+</Callout>
+
+## WebSocket error and close codes
+
+Realtime errors arrive as an `error` frame with a numeric `code`, and fatal errors also close the
+connection with the same code. The range tells a client how to react, following Pusher
+conventions.
+
+| Range | Client behavior |
+| --- | --- |
+| `4000`–`4099` | Do not reconnect automatically; fix the cause first. |
+| `4100`–`4199` | Reconnect with backoff. |
+| `4200`–`4299` | Reconnect immediately. |
+| `4300`–`4399` | Other errors; the connection may stay open. |
+
+| Code | Meaning | Likely cause and fix |
+| --- | --- | --- |
+| `4000` | SSL required, or a generic non-reconnectable error. | The app only accepts `wss://`; connect over TLS. Also the fallback for errors without a dedicated code. |
+| `4001` | Application does not exist. | Wrong app key in the connection URL, or the app was deleted. |
+| `4003` | Application disabled. | The app was disabled; live connections are closed by the app availability check. |
+| `4004` | Application is over its connection quota. | Raise the app's connection limit or reduce connections. |
+| `4005` | Path not found. | The upgrade URL is not `/app/{appKey}`. |
+| `4006` | Invalid version string format. | Malformed client version parameters. |
+| `4007` | Unsupported protocol version. | Upgrade or reconfigure the client library. |
+| `4008` | No protocol version supplied. | The client did not send a protocol version. |
+| `4009` | Unauthorized. | Invalid channel or user auth signature, disallowed origin, or invalid capability token. |
+| `4100` | Over capacity. | The node reached `max_connections`, is shedding for memory pressure, or the client's outbound buffer is full. Reconnect with backoff. |
+| `4200` | Reconnect immediately. | Server-initiated reconnect, for example during shutdown draining or a `force_reconnect` call. |
+| `4201` | Pong reply not received. | Network stall or a client that does not answer pings. |
+| `4202` | Closed after inactivity. | No traffic within the activity timeout. |
+| `4300` | Channel error. | Invalid channel name, unknown namespace, or missing channel or message. |
+| `4301` | Client event rejected. | Client event rate limit exceeded or client event invalid. Also sent when a `resume` arrives and connection recovery is not enabled. |
+| `4302` | Watchlist limit exceeded. | Too many watchlist entries. Also sent when a `resume` frame contains no channel positions. |
+| `4303` | Broadcast error. | Server-side fanout failure; check server logs. |
+
+## Capability-token errors
+
+Protocol V2 capability-token expiry emits `sockudo:token_expired` with code `40142`; clients should
+call their backend for a fresh token and send `sockudo:auth` during the 30 second grace window.
+Revocation emits the same event with code `40160`; clients should obtain a new authenticated
+session before reconnecting.
+
+| Code | Reason | Fix |
+| --- | --- | --- |
+| `40142` | `expired` | Fetch a new token and send `sockudo:auth` within 30 seconds. |
+| `40160` | `revoked` | Do not refresh with the same identity; start a new authenticated session. |
 
 ## Auth failures
 
@@ -39,8 +129,6 @@ Most auth failures are caused by:
 - expired or revoked Protocol V2 capability tokens
 - capability-token `kid`, `alg`, `jti`, `exp`, or channel-operation map violations
 
-Protocol V2 capability-token expiry emits `sockudo:token_expired` with code `40142`; clients should call their backend for a fresh token and send `sockudo:auth` during the 30 second grace window. Revocation emits the same event with code `40160`; clients should obtain a new authenticated session before reconnecting.
-
 ## Recovery failures
 
 Recovery can fail when:
@@ -51,20 +139,47 @@ Recovery can fail when:
 - the reconnect landed after retention was purged
 - adapter or cache state was unavailable
 
+Each failed channel receives `sockudo:resume_failed` with one of these codes:
+
+| Code | Meaning | Fix |
+| --- | --- | --- |
+| `position_expired` | The requested position is older than the hot buffer and durable window, or the gap exceeds `connection_recovery.max_buffer_size`. | Resubscribe, then backfill with `channel_history` and `until_attach: true`. |
+| `stream_reset` | The channel's `stream_id` changed, so earlier serials no longer apply. | Discard local state for the channel and rebuild it. |
+| `continuity_unverifiable` | The position is ahead, non-contiguous, duplicate, or non-progressing. | Resubscribe and backfill instead of advancing the client cursor. |
+| `persistence_unavailable` | Durable history could not be read to prove continuity. | Retry later, or resubscribe and rebuild state. |
+
 Clients should rebuild state after recovery failure.
 
-For `resume_failed` with `code: "position_expired"`, V2 clients should resubscribe and request WebSocket `channel_history` with `until_attach: true`. That backfills retained durable history up to the new subscription attach serial while live delivery continues above it.
+For `resume_failed` with `code: "position_expired"`, V2 clients should resubscribe and request
+WebSocket `channel_history` with `until_attach: true`. That backfills retained durable history up
+to the new subscription attach serial while live delivery continues above it.
 
 ## Push errors
 
+Push publish admission can succeed while provider delivery fails later. Errors at admission are
+returned synchronously; provider failures appear in publish status.
+
 | Error class | Typical cause |
 | --- | --- |
-| Device not found | Registration missing or deleted. |
+| Device not found | Registration missing or deleted. Returns `404`. |
 | Provider token invalid | APNs, FCM, Web Push, HMS, or WNS rejected the token. |
 | Credential missing | Provider credentials are not configured. |
-| Publish not found | Status retention expired or ID is wrong. |
+| Publish not found | Status retention expired or ID is wrong. Returns `404`. |
+| Template not found | The referenced push template does not exist. |
 | Scheduled push invalid | Missing `notBeforeMs` or scheduled time is invalid. |
 | Provider throttled | Provider rate limits or campaign burst. |
 | Payload too large | Platform-specific push payload limit exceeded. |
 
-Push publish admission can succeed while provider delivery fails later. Always inspect publish status for notification incidents.
+<Callout type="warn" title="Accepted is not delivered">
+A `202` from `/push/publish` only means the request was admitted. Always inspect
+`GET /apps/{appId}/push/publish/{publishId}/status` for notification incidents.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card title="Troubleshooting" href="/docs/getting-started/troubleshooting" description="Step-by-step fixes for connection, auth, delivery, and push problems." />
+  <Card title="HTTP endpoints" href="/docs/reference/http-endpoints" description="Every route, its auth, and its request controls." />
+  <Card title="Protocol reference" href="/docs/reference/protocol" description="Frame shapes for error, resume, and token events." />
+  <Card title="Security" href="/docs/server/security" description="Auth model, origin policy, and rate limiting." />
+</Cards>

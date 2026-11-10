@@ -1,0 +1,79 @@
+---
+import { getCollection, render, type CollectionEntry } from 'astro:content';
+import { ArrowLeft } from '@lucide/astro';
+import Base from '@/layouts/Base.astro';
+import { mdxComponents } from '@/components/mdx';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('blog');
+  return posts.map((post) => ({ params: { slug: post.id }, props: { post } }));
+}
+const { post } = Astro.props as { post: CollectionEntry<'blog'> };
+const { Content } = await render(post);
+const date = new Date(post.data.date).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+---
+
+<Base title={post.data.title} description={post.data.description}>
+  <main id="main-content" class="blog-post" data-pagefind-body>
+    <a class="back" href="/blog" data-pagefind-ignore><ArrowLeft size={15} /> All posts</a>
+    <header data-reveal>
+      <div class="meta" data-pagefind-ignore>
+        <span class="pill">{post.data.category}</span>
+        <time datetime={post.data.date}>{date}</time>
+        <span>· {post.data.author}</span>
+      </div>
+      <h1 data-pagefind-meta="title">{post.data.title}</h1>
+      {post.data.description && <p class="lede">{post.data.description}</p>}
+    </header>
+    <article class="prose" data-reveal style="--d:120ms">
+      <Content components={mdxComponents} />
+    </article>
+    {
+      post.data.tags.length > 0 && (
+        <div class="tags" data-pagefind-ignore>
+          {post.data.tags.map((t) => (
+            <span class="pill">#{t}</span>
+          ))}
+        </div>
+      )
+    }
+  </main>
+</Base>
+
+<style>
+  .blog-post {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 48px 20px 80px;
+  }
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    margin-bottom: 32px;
+  }
+  .back:hover {
+    color: var(--accent-text);
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5vw, 3.4rem);
+    line-height: 1.05;
+    letter-spacing: -0.04em;
+    margin: 16px 0;
+  }
+  .lede {
+    font-size: 1.2rem;
+    color: var(--fg-muted);
+    margin: 0 0 40px;
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tags {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 48px;
+  }
+</style>

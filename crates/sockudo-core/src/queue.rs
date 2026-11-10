@@ -89,6 +89,17 @@ impl QueueBackendKind {
             Self::Sns => "sns",
         }
     }
+
+    /// Longest per-job `delay_ms` the backend accepts natively, when it is bounded.
+    /// Callers needing a later delivery must re-defer once the job arrives.
+    #[must_use]
+    pub const fn max_delay_ms(self) -> Option<u64> {
+        match self {
+            // SQS caps `DelaySeconds` at 900.
+            Self::Sqs => Some(900_000),
+            _ => None,
+        }
+    }
 }
 
 /// Machine-readable backend behavior. Unsupported operations must fail instead
@@ -200,6 +211,15 @@ pub trait QueueInterface: Send + Sync {
     /// Registers a processor. A successful callback acknowledges a delivery;
     /// an error requests retry according to backend/configured policy.
     async fn process_queue(&self, queue_name: &str, callback: JobProcessorFnAsync) -> Result<()>;
+
+    /// Verifies backend-specific delivery guarantees before a queue is consumed.
+    ///
+    /// Backends that own retry and dead-letter handling keep the default. SQS
+    /// records whether an operator-managed `RedrivePolicy` exists and fails only
+    /// when `queue.sqs.require_redrive_policy` is set.
+    async fn validate_delivery_guarantees(&self, _queue_name: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Stops claiming new jobs and drains or releases in-flight deliveries.
     /// This operation must never delete durable shared queue contents.

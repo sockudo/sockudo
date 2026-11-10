@@ -7,7 +7,7 @@ use sockudo_core::{
     app::AppPolicy, options::MemoryCacheOptions, versioned_messages::MessageAction,
 };
 use sockudo_protocol::messages::AiHeaderLimits;
-use sockudo_protocol::messages::{AiExtras, MessageExtras};
+use sockudo_protocol::messages::{AiCodec, AiExtras, ExtrasValue, MessageExtras};
 use sockudo_protocol::versioned_messages::apply_runtime_metadata;
 use sockudo_ws::{
     Config as WsConfig, Http1, Stream as WsStream, WebSocketStream, axum_integration::WebSocket,
@@ -172,6 +172,98 @@ fn publish_preserves_upstream_ai_codec_metadata() {
         .unwrap()
         .unwrap();
     decoded.validate_ai_headers().unwrap();
+    assert_eq!(ably_extras_from_message_extras(&decoded), Some(extras));
+}
+
+#[test]
+fn publish_preserves_upstream_ai_codec_id_verbatim() {
+    // An Ably decoder skips any message whose `extras.ai.codec` is not its own
+    // codec id, so the id must round-trip verbatim.
+    let extras = json!({
+        "ai": {
+            "codec": "vercel-ai-sdk-ui-message",
+            "type": "text-delta",
+            "fields": { "id": "m1" },
+            "stream": true
+        }
+    });
+    let message = AblyMessage {
+        name: Some("ai".to_string()),
+        extras: Some(extras.clone()),
+        ..AblyMessage::default()
+    };
+    validate_ably_publish_message(&message, false, AiHeaderLimits::default()).unwrap();
+    let decoded = ably_extras_to_message_extras(message.extras)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        decoded
+            .ai
+            .as_ref()
+            .and_then(|ai| ai.codec.as_ref())
+            .and_then(AiCodec::id),
+        Some("vercel-ai-sdk-ui-message")
+    );
+    assert_eq!(decoded.ai_codec_headers(), None);
+    assert_eq!(ably_extras_from_message_extras(&decoded), Some(extras));
+}
+
+#[test]
+fn publish_rejects_ai_codec_that_is_neither_id_nor_headers() {
+    for (codec, expected) in [
+        (
+            json!(42),
+            "expected a codec id string or a string-to-string map",
+        ),
+        (
+            json!(["openai-responses"]),
+            "expected a codec id string or a string-to-string map",
+        ),
+        (
+            json!({ "k": 1 }),
+            "extras.ai.codec header 'k' must be a string",
+        ),
+    ] {
+        let message = AblyMessage {
+            extras: Some(json!({ "ai": { "codec": codec } })),
+            ..AblyMessage::default()
+        };
+        let error = validate_ably_publish_message(&message, false, AiHeaderLimits::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(expected),
+            "error for extras.ai.codec = {codec} was '{error}'"
+        );
+    }
+    let oversized = AblyMessage {
+        extras: Some(json!({ "ai": { "codec": "x".repeat(257) } })),
+        ..AblyMessage::default()
+    };
+    assert!(validate_ably_publish_message(&oversized, false, AiHeaderLimits::default()).is_err());
+}
+
+#[test]
+fn publish_preserves_null_header_values() {
+    // A null header value round-trips through publish and delivery unchanged.
+    let extras = json!({
+        "headers": { "trace": null, "tenant": "acme", "retry": false }
+    });
+    let message = AblyMessage {
+        extras: Some(extras.clone()),
+        ..AblyMessage::default()
+    };
+    validate_ably_publish_message(&message, false, AiHeaderLimits::default()).unwrap();
+    let decoded = ably_extras_to_message_extras(message.extras)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        decoded
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("trace")),
+        Some(&ExtrasValue::Null)
+    );
     assert_eq!(ably_extras_from_message_extras(&decoded), Some(extras));
 }
 
@@ -561,8 +653,249 @@ fn attach_resume_suppresses_rewind_params() {
     assert_eq!(resolve_ably_rewind(&params, true), None);
     assert_eq!(
         resolve_ably_rewind(&params, false),
-        Some(SubscriptionRewind::Seconds(60))
+        Some(AblyRewind::Window(SubscriptionRewind::Seconds(60)))
     );
+}
+
+#[test]
+fn rewind_accepts_a_message_serial_only_on_the_rewind_param() {
+    let serial = "00000001794076062116:node-a:00000000000000000026";
+    let params = HashMap::from([("rewind".to_string(), serial.to_string())]);
+    assert_eq!(
+        resolve_ably_rewind(&params, false),
+        Some(AblyRewind::AfterSerial(MessageSerial::new(serial).unwrap()))
+    );
+
+    let legacy = HashMap::from([("rewindCount".to_string(), serial.to_string())]);
+    assert_eq!(resolve_ably_rewind(&legacy, false), None);
+    // Values that are neither a window nor a serial stay invalid.
+    let garbage = HashMap::from([("rewind".to_string(), "forever".to_string())]);
+    assert_eq!(resolve_ably_rewind(&garbage, false), None);
+}
+
+struct RewindTestAppManager;
+
+#[async_trait::async_trait]
+impl sockudo_core::app::AppManager for RewindTestAppManager {
+    async fn init(&self) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
+    async fn create_app(&self, _config: App) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
+    async fn update_app(&self, _config: App) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
+    async fn delete_app(&self, _app_id: &str) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
+    async fn get_apps(&self) -> sockudo_core::error::Result<Vec<App>> {
+        Ok(Vec::new())
+    }
+    async fn find_by_key(&self, _key: &str) -> sockudo_core::error::Result<Option<App>> {
+        Ok(None)
+    }
+    async fn find_by_id(&self, _app_id: &str) -> sockudo_core::error::Result<Option<App>> {
+        Ok(None)
+    }
+    async fn check_health(&self) -> sockudo_core::error::Result<()> {
+        Ok(())
+    }
+}
+
+mod serial_rewind {
+    use super::*;
+    use sockudo_core::version_store::{MemoryVersionStore, StoredVersionRecord, VersionStore};
+    use sockudo_core::versioned_messages::{MessageAppend, VersionMetadata, VersionedMessage};
+
+    const CHANNEL: &str = "room";
+
+    fn version(serial: &str) -> VersionMetadata {
+        VersionMetadata {
+            serial: VersionSerial::new(serial).unwrap(),
+            client_id: None,
+            timestamp_ms: now_ms(),
+            description: None,
+            metadata: None,
+        }
+    }
+
+    /// Message serials in production shape: `<ms>:<node>:<counter>`, where the
+    /// prefix differs per message.
+    fn message_serial(n: u64) -> String {
+        format!("{:020}:node-a:{n:020}", 1_794_076_062_000 + n)
+    }
+
+    fn create(n: u64, delivery_serial: u64) -> StoredVersionRecord {
+        StoredVersionRecord {
+            app_id: "app".to_string(),
+            channel: CHANNEL.to_string(),
+            original_client_id: None,
+            envelope: None,
+            message: VersionedMessage::new_create(
+                MessageSerial::new(message_serial(n)).unwrap(),
+                version(&message_serial(n)),
+                n,
+                delivery_serial,
+                Some("note".to_string()),
+                Some(MessageData::String(format!("m{n}"))),
+                None,
+            ),
+        }
+    }
+
+    fn append(base: &StoredVersionRecord, delivery_serial: u64) -> StoredVersionRecord {
+        StoredVersionRecord {
+            message: base
+                .message
+                .apply_append(
+                    version(&format!("{}:append", base.message_serial().as_str())),
+                    delivery_serial,
+                    MessageAppend {
+                        data_fragment: "+".to_string(),
+                        extras: None,
+                    },
+                )
+                .unwrap(),
+            ..base.clone()
+        }
+    }
+
+    async fn handler(records: Vec<StoredVersionRecord>) -> Arc<ConnectionHandler> {
+        let store = Arc::new(MemoryVersionStore::new());
+        for record in records {
+            store.append_version(record).await.unwrap();
+        }
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.history.enabled = true;
+        options.versioned_messages.enabled = true;
+        Arc::new(
+            ConnectionHandler::builder(
+                Arc::new(RewindTestAppManager),
+                Arc::new(sockudo_adapter::local_adapter::LocalAdapter::new()),
+                Arc::new(MemoryCacheManager::new(
+                    "serial-rewind".to_string(),
+                    MemoryCacheOptions::default(),
+                )),
+                options,
+            )
+            .version_store(store)
+            .build(),
+        )
+    }
+
+    fn test_app() -> App {
+        App {
+            id: "app".to_string(),
+            ..App::default()
+        }
+    }
+
+    async fn rewind(
+        handler: &Arc<ConnectionHandler>,
+        serial: &str,
+        high_water: Option<u64>,
+    ) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
+        let stream_id = handler
+            .version_store()
+            .ensure_stream_id("app", CHANNEL)
+            .await
+            .unwrap();
+        let high_water = high_water.map(|serial| AblyChannelPosition { stream_id, serial });
+        realtime::collect_ably_rewind(
+            handler,
+            &test_app(),
+            CHANNEL,
+            &AblyRewind::AfterSerial(MessageSerial::new(serial).unwrap()),
+            high_water.as_ref(),
+        )
+        .await
+    }
+
+    fn delivery_serials(replay: &[AblyProtocolMessage]) -> Vec<u64> {
+        replay
+            .iter()
+            .map(|message| {
+                parse_ably_channel_serial(message.channel_serial.as_deref().unwrap())
+                    .unwrap()
+                    .serial
+            })
+            .collect()
+    }
+
+    fn message_serials(replay: &[AblyProtocolMessage]) -> Vec<String> {
+        replay
+            .iter()
+            .map(|message| {
+                message.messages.as_ref().unwrap()[0]
+                    .serial
+                    .clone()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn replays_after_the_target_including_appends_to_older_messages() {
+        let a = create(1, 1);
+        let records = vec![a.clone(), create(2, 2), create(3, 3), append(&a, 4)];
+        let handler = handler(records).await;
+
+        let replay = rewind(&handler, &message_serial(2), Some(4)).await.unwrap();
+
+        // channelSerial stays the delivery position live delivery stamps.
+        assert_eq!(delivery_serials(&replay), vec![3, 4]);
+        assert_eq!(
+            message_serials(&replay),
+            vec![message_serial(3), message_serial(1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn stops_at_the_attach_high_water() {
+        let handler = handler((1..=5).map(|n| create(n, n)).collect()).await;
+
+        let replay = rewind(&handler, &message_serial(1), Some(3)).await.unwrap();
+        assert_eq!(delivery_serials(&replay), vec![2, 3]);
+
+        let at_head = rewind(&handler, &message_serial(5), Some(5)).await.unwrap();
+        assert!(at_head.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fails_closed_for_unknown_serials_stream_changes_and_oversized_backlogs() {
+        let count = ABLY_REWIND_SERIAL_MAX_MESSAGES as u64 + 2;
+        let handler = handler((1..=count).map(|n| create(n, n)).collect()).await;
+
+        let unknown = rewind(&handler, &message_serial(count + 10), Some(count))
+            .await
+            .unwrap_err();
+        assert_eq!(unknown.code, 90003);
+
+        let too_many = rewind(&handler, &message_serial(1), Some(count))
+            .await
+            .unwrap_err();
+        assert_eq!(too_many.code, 90004);
+        let within_cap = rewind(&handler, &message_serial(2), Some(count))
+            .await
+            .unwrap();
+        assert_eq!(within_cap.len(), ABLY_REWIND_SERIAL_MAX_MESSAGES);
+
+        let other_stream = AblyChannelPosition {
+            stream_id: "other-stream".to_string(),
+            serial: count,
+        };
+        let changed = realtime::collect_ably_rewind(
+            &handler,
+            &test_app(),
+            CHANNEL,
+            &AblyRewind::AfterSerial(MessageSerial::new(message_serial(1)).unwrap()),
+            Some(&other_stream),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(changed.code, 90005);
+    }
 }
 
 #[test]
@@ -4998,10 +5331,10 @@ fn append_projection_uses_delta_for_mutations_and_aggregate_for_history() {
             ai: Some(AiExtras {
                 opaque: Default::default(),
                 transport: None,
-                codec: Some(HashMap::from([(
+                codec: Some(AiCodec::Headers(HashMap::from([(
                     "status".to_string(),
                     "complete".to_string(),
-                )])),
+                )]))),
             }),
             ..Default::default()
         }),

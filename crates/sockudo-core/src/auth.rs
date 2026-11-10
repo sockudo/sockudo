@@ -204,14 +204,25 @@ impl AuthValidator {
 
         debug!("Validated API request signature with redacted signature values");
 
-        if secure_compare(
+        if !secure_compare(
             &generated_signature,
             &auth_params_from_query_struct.auth_signature,
         ) {
-            Ok(app_config)
-        } else {
-            Err(Error::Auth("Invalid API signature".to_string()))
+            return Err(Error::Auth("Invalid API signature".to_string()));
         }
+
+        // Checked only after the signature is verified, so unauthenticated
+        // callers cannot probe whether an app exists but is disabled.
+        if !app_config.enabled {
+            debug!(
+                app_id = %app_config.id,
+                reason = "app_disabled",
+                "api request authentication failed"
+            );
+            return Err(Error::ApplicationDisabled);
+        }
+
+        Ok(app_config)
     }
 
     /// Validates a Pusher-compatible API request signature.

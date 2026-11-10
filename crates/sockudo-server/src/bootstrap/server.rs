@@ -199,6 +199,31 @@ impl SockudoServer {
             "rate limiter initialized"
         );
 
+        let app_api_rate_limiter_instance = if config.rate_limiter.enabled {
+            match RateLimiterFactory::create_app_api(&config.rate_limiter, &config.database.redis)
+                .await
+            {
+                Ok(limiter) => {
+                    info!(
+                        limiter = "app_api",
+                        driver = ?config.rate_limiter.driver,
+                        "rate limiter initialized"
+                    );
+                    Some(limiter)
+                }
+                Err(e) => {
+                    error!(error = %e, limiter = "app_api", "rate limiter initialization failed, per-app API limits not enforced");
+                    None
+                }
+            }
+        } else {
+            info!(
+                limiter = "app_api",
+                "rate limiting disabled, per-app API limits not enforced"
+            );
+            None
+        };
+
         #[cfg(feature = "push")]
         let push_acceptance_rps = std::env::var("PUSH_ACCEPTANCE_RATE_LIMIT")
             .ok()
@@ -518,6 +543,15 @@ impl SockudoServer {
                 }
                 Arc::new(integration)
             }
+            // Reached only with `require_redrive_policy = true` (or another invalid
+            // config): fail the rollout instead of silently disabling webhooks.
+            Err(error @ Error::Config(_)) => {
+                error!(
+                    error = %error,
+                    "webhook queue does not meet required delivery guarantees"
+                );
+                return Err(error);
+            }
             Err(e) => {
                 warn!(error = %e, "webhook integration initialization failed, using disabled instance");
                 let disabled_config = WebhookConfig {
@@ -826,6 +860,7 @@ impl SockudoServer {
             running: Arc::new(AtomicBool::new(true)),
             http_api_rate_limiter: Some(http_api_rate_limiter_instance.clone()),
             websocket_rate_limiter: Some(websocket_rate_limiter_instance.clone()),
+            app_api_rate_limiter: app_api_rate_limiter_instance,
             #[cfg(feature = "push")]
             push_acceptance_rate_limiter: push_acceptance_rate_limiter_instance.clone(),
             debug_enabled,
@@ -1076,6 +1111,30 @@ impl SockudoServer {
             info!(
                 interval_seconds = eviction_interval.as_secs(),
                 "connection recovery replay eviction task started"
+            );
+        }
+
+        // Close live connections of apps that were disabled or removed; the app
+        // manager alone only rejects new connections.
+        if !config.server_role.is_api()
+            && config.app_manager.availability_check_interval_seconds > 0
+        {
+            let handler_clone = handler.clone();
+            let interval = std::time::Duration::from_secs(
+                config.app_manager.availability_check_interval_seconds,
+            );
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    handler_clone.close_connections_of_unavailable_apps().await;
+                }
+            });
+            info!(
+                interval_seconds = interval.as_secs(),
+                "app availability check task started"
             );
         }
 

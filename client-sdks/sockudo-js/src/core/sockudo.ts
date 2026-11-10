@@ -171,6 +171,7 @@ export default class Sockudo {
       maxReconnectAttempts: this.config.maxReconnectAttempts,
       maxReconnectGapInSeconds: this.config.maxReconnectGapInSeconds,
       reconnectJitter: this.config.reconnectJitter,
+      retryJitterMs: this.config.retryJitterMs,
       beforeConnect:
         options.authCallback || options.authUrl
           ? (reason) => this.prepareCapabilityToken(reason)
@@ -375,6 +376,7 @@ export default class Sockudo {
             fullMessage,
             sequence,
             conflationKey,
+            event.event,
           );
         }
       }

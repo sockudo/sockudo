@@ -1,0 +1,17 @@
+---
+import { Star } from '@lucide/astro';
+import { formatStars, getStars, repoUrl } from '@/lib/github';
+import GithubIcon from './GithubIcon.astro';
+
+interface Props {
+  class?: string;
+  label?: string;
+}
+const { class: className = '', label = 'Star' } = Astro.props;
+const stars = await getStars();
+---
+
+<a class:list={['stars', className]} href={repoUrl} target="_blank" rel="noreferrer" aria-label={`Star Sockudo on GitHub (${stars} stars)`}>
+  <span class="gh"><GithubIcon /><span>{label}</span></span>
+  <span class="count"><Star /><span data-stars data-raw={stars}>{formatStars(stars)}</span></span>
+</a>

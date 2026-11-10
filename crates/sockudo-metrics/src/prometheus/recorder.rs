@@ -37,6 +37,11 @@ pub(super) const PUSH_SECONDS_HISTOGRAM_BUCKETS: &[f64] = &[
 pub(super) const PUSH_FANOUT_HISTOGRAM_BUCKETS: &[f64] =
     &[1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0, 1_000_000.0];
 
+// Serialized message size in bytes, 64 B to 1 MiB.
+pub(super) const WS_MESSAGE_BYTES_HISTOGRAM_BUCKETS: &[f64] = &[
+    64.0, 256.0, 1024.0, 4096.0, 16384.0, 65536.0, 262144.0, 1048576.0,
+];
+
 static PROMETHEUS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -66,6 +71,10 @@ pub(super) fn install_prometheus_recorder(
                 (
                     format!("{prefix}annotation_projection_rebuild_duration_seconds"),
                     ANNOTATION_REBUILD_HISTOGRAM_BUCKETS,
+                ),
+                (
+                    format!("{prefix}ws_message_bytes"),
+                    WS_MESSAGE_BYTES_HISTOGRAM_BUCKETS,
                 ),
                 (
                     "sockudo_push_dispatch_duration_seconds".to_owned(),

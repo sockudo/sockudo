@@ -1,193 +1,535 @@
 ---
 title: PHP
-description: Use the PHP server SDK for Laravel-compatible publishing, auth, state, history, and push notifications.
+description: Publish events, sign channel and user auth, validate webhooks, read state and history, edit versioned messages, and manage push from PHP with sockudo/sockudo-php-server.
 icon: FileCode
 ---
 
+`sockudo/sockudo-php-server` is the official PHP server SDK for Sockudo. It is a trusted backend
+library built on Guzzle: it holds your app secret, signs every HTTP API request, and signs the
+auth responses your realtime clients need. Use it from plain PHP or any framework; Laravel
+applications should use the [Laravel integration](/docs/server-sdks/laravel), which wraps this
+SDK.
+
+In PHP, the SDK gives you:
+
+- Signed HTTP publishing to one channel, up to 100 channels, or a batch, with synchronous and
+  Guzzle-promise APIs (`trigger`, `triggerAsync`, `triggerBatch`, `triggerBatchAsync`).
+- Idempotency keys on every publish, sent as both a body field and an `X-Idempotency-Key` header,
+  plus a built-in retry of `5xx` responses for synchronous publishes.
+- Private, presence, and end-to-end encrypted channel authorization, user authentication, and
+  user-targeted events.
+- Terminating or force-reconnecting all connections of a user.
+- Webhook signature validation, including decryption of encrypted-channel events.
+- Channel state, durable channel history, presence history, and presence snapshots.
+- Protocol V2 versioned-message reads and annotations.
+- Push notifications: devices, channel subscriptions, credentials, publish, schedule, status, and
+  Apple Live Activity broadcast channels.
+- Generic signed `get`, `post`, and `delete` helpers for endpoints without a typed wrapper.
+
 ## Install
 
-```bash
+```bash title="Terminal"
 composer require sockudo/sockudo-php-server:^2.0
 ```
 
-## Configure
+The current release is `2.2.0`. The SDK supports PHP 8.0 through 8.4 and requires the `curl` and
+`json` extensions. It depends on `guzzlehttp/guzzle` 7, `psr/log`, and
+`paragonie/sodium_compat` (used for encrypted channels when `ext-sodium` is unavailable).
 
-```php
+Packagist serves the package from the read-only `sockudo/sockudo-http-php` mirror. Development
+happens in the Sockudo monorepo under `server-sdks/sockudo-http-php`. To develop against a local
+checkout, add a Composer path repository:
+
+```json title="composer.json"
+{
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../sockudo/server-sdks/sockudo-http-php"
+        }
+    ],
+    "require": {
+        "sockudo/sockudo-php-server": "*"
+    }
+}
+```
+
+Then run `composer update sockudo/sockudo-php-server`.
+
+## Configure the client
+
+The constructor takes the app key, secret, and ID, then an options array, then an optional Guzzle
+client. Read credentials from the environment; never commit them.
+
+```php title="bootstrap/sockudo.php"
+<?php
+
+declare(strict_types=1);
+
 use Sockudo\Sockudo;
 
-$sockudo = new Sockudo(
-    'app-key',
-    'app-secret',
-    'app-id',
+$scheme = getenv('SOCKUDO_SCHEME') ?: 'https';
+
+return new Sockudo(
+    getenv('SOCKUDO_APP_KEY') ?: throw new RuntimeException('SOCKUDO_APP_KEY is not set'),
+    getenv('SOCKUDO_APP_SECRET') ?: throw new RuntimeException('SOCKUDO_APP_SECRET is not set'),
+    getenv('SOCKUDO_APP_ID') ?: throw new RuntimeException('SOCKUDO_APP_ID is not set'),
     [
-        'host' => '127.0.0.1',
-        'port' => 6001,
-        'useTLS' => false,
+        'host' => getenv('SOCKUDO_HOST') ?: '127.0.0.1',
+        'port' => (int) (getenv('SOCKUDO_PORT') ?: ($scheme === 'https' ? 443 : 6001)),
+        'scheme' => $scheme,
+        'useTLS' => $scheme === 'https',
+        'timeout' => 10,
+        // Only needed for private-encrypted-* channels.
+        'encryption_master_key_base64' => getenv('SOCKUDO_ENCRYPTION_MASTER_KEY_BASE64') ?: '',
     ],
 );
 ```
 
-Create the client once in your framework service container and reuse it. The
-important options are:
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string | `localhost` | HTTP API host. A leading `http://` or `https://` is stripped. |
+| `port` | int | `80`, or `443` when `useTLS` applies | HTTP API port. |
+| `scheme` | string | `http`, or `https` when `useTLS` applies | URL scheme. |
+| `useTLS` | bool | `true` | When true and neither `scheme` nor `port` is set, the client uses `https` on port `443`. |
+| `path` | string | `''` | Path prefix for every request, for a reverse proxy that mounts Sockudo under a sub-path. |
+| `timeout` | int | `30` | Per-request timeout in seconds, applied to every HTTP call. |
+| `auto_idempotency_key` | bool | `true` | Attach a generated idempotency key to publishes that do not supply one. |
+| `encryption_master_key_base64` | string | `''` | Base64 of a 32-byte key. Required to authorize, publish to, or decrypt webhooks from `private-encrypted-` channels. |
+| `cluster` | string | — | Legacy Pusher-style option: when `host` is absent, sets the host to `api-<cluster>.sockudo.com`. Self-hosted deployments set `host`. |
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `host` | `127.0.0.1` | Sockudo HTTP API host |
-| `port` | `6001` | HTTP API port |
-| `useTLS` / `scheme` | `false` / `http` | Select HTTPS in production |
-| `timeout` | `30` seconds | Bound each request |
-| `path` | none | Optional reverse-proxy path prefix |
+<Callout type="warn" title="Set scheme and port together">
+`useTLS` defaults to `true`, but it only switches the client to `https` on port `443` when you set
+neither `scheme` nor `port`. If you set `'port' => 6001` without a `scheme`, the client speaks plain
+`http`. Set `scheme`, `port`, and `useTLS` explicitly, as above.
+</Callout>
 
-Inject a configured Guzzle client when you need keep-alive, proxy, middleware,
-or retry policy:
+Pass a Guzzle client as the fifth argument when you need proxies, middleware, or a connect timeout.
+The SDK always sends its own `timeout` option per request, which overrides a `timeout` configured
+on the injected client, so set the request timeout through the SDK option:
 
-```php
-$http = new GuzzleHttp\Client([
-    'timeout' => 5.0,
+```php title="bootstrap/sockudo.php"
+use GuzzleHttp\Client;
+use Sockudo\Sockudo;
+
+$http = new Client([
     'connect_timeout' => 2.0,
 ]);
 
-$sockudo = new Sockudo(
-    'app-key',
-    'app-secret',
-    'app-id',
-    ['host' => '127.0.0.1', 'port' => 6001, 'useTLS' => false],
-    $http,
-);
+$sockudo = new Sockudo($key, $secret, $appId, [
+    'host' => 'sockudo.internal',
+    'port' => 443,
+    'scheme' => 'https',
+    'timeout' => 5,
+], $http);
 ```
 
-## Publish
+The client implements `Psr\Log\LoggerAwareInterface`. Attach a PSR-3 logger with
+`$sockudo->setLogger($logger)`; the SDK logs publish request bodies at debug level, so keep debug
+logging off in production if payloads may contain personal data.
 
-```php
-$sockudo->trigger('orders', 'order.created', ['id' => 'ord_123'], [
-    'idempotency_key' => 'order-created-ord_123',
-]);
+<Callout type="tip" title="Create once, reuse">
+Build the client once per process, for example in your service container, and reuse it. Each
+instance holds its own Guzzle client and the counter behind auto-generated idempotency keys.
+</Callout>
 
-$sockudo->triggerBatch([
-    ['channel' => 'orders', 'name' => 'order.created', 'data' => ['id' => 'ord_124']],
-    ['channel' => 'orders', 'name' => 'order.paid', 'data' => ['id' => 'ord_124']],
+The app secret must stay on the server. It signs every HTTP API call and every channel and user
+auth response, so anyone holding it can publish to any channel, read history, manage push, and
+impersonate any user on any private or presence channel. Never ship it to a browser, mobile app,
+or log line.
+
+## Publish an event
+
+```php title="publish.php"
+$result = $sockudo->trigger('orders', 'order.created', [
+    'id' => 'ord_123',
+    'status' => 'created',
+], [
+    'idempotency_key' => 'order.created:tenant-42:ord_123:v1',
 ]);
 ```
 
-Publish the same event to multiple channels with an array, and exclude the
-originating connection when it already applied the change:
+`$data` is JSON-encoded for you; pass `true` as the fifth argument when it is already a JSON
+string. `trigger` returns the decoded response as an object. Without the `info` parameter the
+server responds with `ok: true`; with `'info' => 'subscription_count'` (or `user_count` for
+presence channels) the response carries a `channels` array keyed by channel name.
 
-```php
+Exclude the connection that caused the change by passing its `socket_id`. The client that made the
+change usually applied it locally already, and excluding its socket prevents it from receiving an
+echo of its own update:
+
+```php title="publish.php"
+$sockudo->trigger('orders', 'order.updated', ['id' => 'ord_123', 'status' => 'paid'], [
+    'socket_id' => $socketId, // from the request that made the change, e.g. "123.456"
+]);
+```
+
+The SDK validates the socket ID format (`digits.digits`) and channel names before sending and
+throws `SockudoException` for invalid values. Any other keys in the parameters array, such as
+Protocol V2 `extras`, are merged into the request body unchanged.
+
+`triggerAsync` takes the same arguments and returns a Guzzle promise. Call `wait()` to block, or
+compose promises when your runtime supports it.
+
+## Publish to many channels or in a batch
+
+Pass an array of channel names to publish one event to several channels in a single request:
+
+```php title="publish.php"
 $sockudo->trigger(
     ['tenant-42:orders', 'user-7:orders'],
     'order.updated',
     ['id' => 'ord_123', 'status' => 'paid'],
+    ['idempotency_key' => 'order.paid:tenant-42:ord_123:v3'],
+);
+```
+
+Use a batch when each event has its own channel, name, or data:
+
+```php title="publish.php"
+$sockudo->triggerBatch([
     [
-        'socket_id' => '123.456',
-        'idempotency_key' => 'order-paid:ord_123:v3',
+        'channel' => 'orders',
+        'name' => 'order.created',
+        'data' => ['id' => 'ord_124'],
+        'idempotency_key' => 'order.created:tenant-42:ord_124:v1',
     ],
-);
+    [
+        'channel' => 'private-user-7',
+        'name' => 'order.receipt',
+        'data' => ['id' => 'ord_124'],
+        'socket_id' => $socketId,
+    ],
+]);
 ```
 
-A batch accepts up to 10 events. Use `triggerAsync` or `triggerBatchAsync` when
-the surrounding runtime can compose Guzzle promises; calling `wait()` makes the
-operation synchronous again. Every retryable publish needs a stable,
-business-derived idempotency key.
+Each batch item accepts `channel`, `name`, `data`, and optionally `socket_id`, `idempotency_key`,
+`extras`, and `info`. `triggerBatch` returns an empty object, or a `batch` array of per-event
+channel info when any item requests `info`. `triggerBatchAsync` is the promise-based variant.
 
-## Auth
+The SDK rejects more than 100 channels per `trigger` call before sending. The server enforces the
+remaining limits from its `[event_limits]` configuration:
 
-```php
-$private = $sockudo->authorizeChannel('private-orders', $socketId);
+| Limit | Server default |
+| --- | --- |
+| Channels per event (`max_channels_at_once`) | `100` |
+| Events per batch (`max_batch_size`) | `10` |
+| Payload size (`max_payload_in_kb`) | `100` KB |
+| Event and channel name length (`max_name_length`) | `200` |
 
-$presence = $sockudo->authorizePresenceChannel(
-    'presence-lobby',
-    $socketId,
-    'user-42',
-    ['name' => 'Ada']
-);
+## Idempotency and retries
+
+A timeout does not tell you whether the server published the event. It may have published and the
+response was lost. Retrying without an idempotency key can deliver the event twice; retrying with
+the same key lets the server recognise the duplicate.
+
+How the server handles keys:
+
+- The key can be sent as the `idempotency_key` body field or the `X-Idempotency-Key` header. When
+  both are present, the body field wins.
+- The `[idempotency]` defaults are `enabled = true`, `ttl_seconds = 120`, and
+  `max_key_length = 128`. Empty keys are rejected.
+- A duplicate within the TTL returns the original cached response with status `200` and does not
+  publish again.
+- For batches, `X-Idempotency-Key` identifies the whole batch and a per-item `idempotency_key`
+  identifies only that event. The two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
+
+How this SDK sets keys:
+
+- `trigger` and `triggerAsync` accept `idempotency_key` in the parameters array and send it as both
+  the body field and the `X-Idempotency-Key` header. Pass `true` to have the SDK generate a random
+  16-character key for that call (`Sockudo::generateIdempotencyKey()` does the same).
+- Batch items accept their own `idempotency_key` (a string or `true`). `triggerBatch` does not send
+  a batch-level `X-Idempotency-Key` header.
+- With `auto_idempotency_key` enabled (the default), publishes without a key get a generated one:
+  a random per-instance prefix plus a counter, with the item index appended for batch items. These
+  keys are unique per call, so they protect the SDK's own retries but not a retry you make by
+  calling `trigger` again.
+- Synchronous `trigger` and `triggerBatch` retry `5xx` responses immediately, up to three attempts
+  in total, reusing the same body and key. The async variants do not retry. Connection failures
+  and timeouts are not retried by the SDK; they surface as `ApiErrorException` with code `0`.
+
+```php title="jobs/PublishOrderPaid.php"
+// Derive the key from the business operation, not the HTTP attempt.
+$key = sprintf('order.paid:%s:%s:v%d', $tenantId, $orderId, $version);
+
+$sockudo->trigger("private-tenant-{$tenantId}-orders", 'order.paid', $payload, [
+    'idempotency_key' => $key,
+]);
 ```
 
-These methods sign a response; they do not decide whether a user may access a
-channel. Authenticate the session, validate the exact channel, and derive
-presence identity before calling them. Use `authenticateUser` for
-user-targeted events and `forceReconnectUser` when a user's permissions change.
+<Callout type="warn" title="One key, one logical operation">
+A key identifies a logical operation such as `order.created:tenant-42:order-123:v1`, not an HTTP
+attempt. Reuse it for every retry of that operation, including retries from a queue worker, and
+never reuse it for a different payload: within the TTL the server returns the first response and
+silently drops the new event.
+</Callout>
 
-## Webhooks
+## Authorize private and presence channels
 
-Pass the exact request headers and raw body to the SDK before JSON decoding:
+When a client subscribes to a `private-` or `presence-` channel, the client library asks your
+backend for a signed auth response. The SDK only produces the signature; signing is not
+authorization. Your endpoint must authenticate the session, decide whether this user may join this
+exact channel, and, for presence channels, derive `user_id` and `user_info` from your own session
+rather than from the request.
 
-```php
-try {
-    $webhook = $sockudo->webhook($requestHeaders, $rawBody);
-    foreach ($webhook->get_events() as $event) {
-        enqueueWebhookEvent($event);
-    }
-} catch (\Sockudo\SockudoException $error) {
-    return response('invalid signature', 401);
+The client posts form-encoded `socket_id` and `channel_name` fields. A complete plain-PHP endpoint:
+
+```php title="public/sockudo-auth.php"
+<?php
+
+declare(strict_types=1);
+
+use Sockudo\SockudoException;
+
+require __DIR__ . '/../vendor/autoload.php';
+$sockudo = require __DIR__ . '/../bootstrap/sockudo.php';
+
+session_start();
+$user = $_SESSION['user'] ?? null; // set by your login flow
+if ($user === null) {
+    http_response_code(401);
+    exit;
 }
+
+$socketId = (string) ($_POST['socket_id'] ?? '');
+$channel = (string) ($_POST['channel_name'] ?? '');
+
+// Your own policy: tenant membership, resource ownership, roles.
+if (!user_can_join_channel($user, $channel)) {
+    http_response_code(403);
+    exit;
+}
+
+try {
+    if (str_starts_with($channel, 'presence-')) {
+        $body = $sockudo->authorizePresenceChannel(
+            $channel,
+            $socketId,
+            (string) $user['id'],              // from the session, never from the request
+            ['name' => $user['display_name']],
+        );
+    } else {
+        $body = $sockudo->authorizeChannel($channel, $socketId);
+    }
+} catch (SockudoException $error) {
+    http_response_code(400); // invalid channel name or socket ID
+    exit;
+}
+
+header('Content-Type: application/json');
+echo $body;
 ```
 
-Signature failure throws. Do not normalize or log the body before validation.
+`authorizeChannel` and `authorizePresenceChannel` return a JSON string ready to send: `auth` for
+private channels, plus `channel_data` for presence channels. `authorizeChannel` also accepts a
+custom `channel_data` string as its third argument.
 
-## State and history
+<Callout type="warn" title="Signing is not authorization">
+The SDK signs whatever channel and user you pass it. If your endpoint signs every request it
+receives, every user can join every private and presence channel. Check the channel against your
+own authorization rules before calling the SDK.
+</Callout>
 
-```php
+### User authentication
+
+User authentication (the client's `signin` flow) binds a connection to a user ID so the server can
+deliver user-targeted events and terminate a user's connections. `authenticateUser` takes the
+socket ID and a user data array that must contain a non-empty `id`:
+
+```php title="public/sockudo-user-auth.php"
+header('Content-Type: application/json');
+echo $sockudo->authenticateUser($socketId, [
+    'id' => (string) $user['id'],
+    'name' => $user['display_name'],
+]);
+```
+
+It returns a JSON string with `auth` and `user_data`. Send events to every signed-in connection of a
+user with `sendToUser($userId, $event, $data)` or `sendToUserAsync`.
+
+### Encrypted channels
+
+`private-encrypted-` channels are end-to-end encrypted: the SDK encrypts event data before
+publishing and the server never sees plaintext. Configure `encryption_master_key_base64` with a
+base64-encoded 32-byte key, for example from `openssl rand -base64 32`; the constructor throws
+`SockudoException` if the value is not valid base64 or does not decode to 32 bytes.
+
+With the key configured, `authorizeChannel` adds the per-channel `shared_secret` to the auth
+response, `trigger` encrypts the payload, and `webhook` decrypts encrypted-channel events. Publish
+to one encrypted channel per call: the SDK rejects calls that mix encrypted and unencrypted
+channels. Authorizing an encrypted channel without a master key throws `SockudoException`.
+
+### Terminate user connections
+
+```php title="admin.php"
+// Disconnect every connection of the user.
+$sockudo->terminateUserConnections('user-42');
+
+// Close connections with code 4200 so clients reconnect and re-authorize.
+$sockudo->forceReconnectUser('user-42');
+```
+
+Use `forceReconnectUser` after changing a user's permissions so their clients re-run channel
+authorization. Both have `Async` variants that return Guzzle promises.
+
+## Validate webhooks
+
+Sockudo signs each webhook with an HMAC-SHA256 of the exact request body bytes, sent in the
+`X-Pusher-Signature` header alongside the app key in `X-Pusher-Key`. Validate against the raw body
+read from `php://input`: decoding and re-encoding JSON changes whitespace and key order, and the
+signature no longer matches.
+
+```php title="public/sockudo-webhook.php"
+<?php
+
+declare(strict_types=1);
+
+use Sockudo\SockudoException;
+
+require __DIR__ . '/../vendor/autoload.php';
+$sockudo = require __DIR__ . '/../bootstrap/sockudo.php';
+
+$rawBody = file_get_contents('php://input');
+
+// The SDK looks up these exact header names.
+$headers = [
+    'X-Pusher-Key' => $_SERVER['HTTP_X_PUSHER_KEY'] ?? '',
+    'X-Pusher-Signature' => $_SERVER['HTTP_X_PUSHER_SIGNATURE'] ?? '',
+];
+
+try {
+    $webhook = $sockudo->webhook($headers, $rawBody);
+} catch (SockudoException $error) {
+    http_response_code(401);
+    exit;
+}
+
+foreach ($webhook->get_events() as $event) {
+    // $event->name, $event->channel, ... Hand off to a queue; process idempotently.
+    enqueue_webhook_event($event, $webhook->get_time_ms());
+}
+
+http_response_code(200);
+```
+
+`webhook` verifies the signature, decodes the body, and returns a `Webhook` object with
+`get_events()` and `get_time_ms()`. It throws `SockudoException` when the key or signature does not
+match or the body is not valid JSON. Use `verifySignature($headers, $body)` to check the signature
+without decoding. Build the header array explicitly as above: the SDK reads the keys
+`X-Pusher-Key` and `X-Pusher-Signature` with exactly that capitalisation.
+
+Encrypted-channel events are decrypted when `encryption_master_key_base64` is configured; without
+it they are skipped with a warning log. Validation uses the single key and secret the client was
+built with. To rotate credentials, validate with a second client that holds the new key.
+
+Respond quickly and move work to a queue. Sockudo retries failed deliveries, so the same event can
+arrive more than once; make the handler idempotent.
+
+## Channel state and history
+
+```php title="state.php"
+// One channel: occupied, plus requested attributes.
+$info = $sockudo->getChannelInfo('presence-lobby', ['info' => 'user_count']);
+$info->occupied;
+$info->user_count;
+
+// All channels, optionally filtered. $channels->channels is an array keyed by name.
 $channels = $sockudo->getChannels([
     'filter_by_prefix' => 'presence-',
     'info' => 'user_count',
 ]);
-$users = $sockudo->getPresenceUsers('presence-lobby');
 
+// Members of a presence channel.
+$users = $sockudo->getPresenceUsers('presence-lobby');
+```
+
+Treat channel state as an operational snapshot; it can change as soon as the call returns.
+
+Durable history is paginated with opaque cursors. Pass `next_cursor` back exactly as received:
+
+```php title="history.php"
 $page = $sockudo->getChannelHistory('orders', [
     'limit' => 50,
     'direction' => 'newest_first',
 ]);
-$next = $sockudo->getChannelHistory('orders', [
-    'cursor' => $page->next_cursor,
+
+foreach ($page->items as $item) {
+    // $item->serial, $item->event_name, $item->message, ...
+}
+
+if ($page->has_more) {
+    $next = $sockudo->getChannelHistory('orders', ['cursor' => $page->next_cursor]);
+}
+```
+
+`getChannelHistory` also accepts `start_serial`, `end_serial`, `start_time_ms`, and `end_time_ms`
+bounds. For presence channels, `getPresenceHistory` returns join and leave transitions with the
+same query parameters, and `getPresenceSnapshot` reconstructs membership at a point in time with
+`at_time_ms` or `at_serial`. Both reject channels that do not start with `presence-`. See
+[History and recovery](/docs/server/history-recovery).
+
+## Versioned messages and annotations
+
+Protocol V2 versioned messages can be read and annotated through typed helpers:
+
+```php title="messages.php"
+$message = $sockudo->getMessage('orders', $messageSerial);
+$versions = $sockudo->getMessageVersions('orders', $messageSerial, ['limit' => 20]);
+
+$annotation = $sockudo->publishAnnotation('orders', $messageSerial, [
+    'type' => 'reaction',
+    'name' => 'confirmed',
 ]);
+$annotations = $sockudo->listAnnotations('orders', $messageSerial, ['limit' => 50]);
+$sockudo->deleteAnnotation('orders', $messageSerial, $annotation->annotationSerial);
 ```
 
-Treat application state as an operational snapshot. Keep history pages bounded
-and pass cursors back unchanged.
+<Callout type="warn" title="Mutations: use the signed post helper in 2.2.0">
+In `2.2.0`, `updateMessage`, `deleteMessage`, and `appendMessage` pass the parameters array to
+the HTTP layer without JSON-encoding it, so they fail with a PHP `TypeError`. Until that is fixed,
+send mutations through the generic `post` helper with a JSON-encoded body, as below.
+</Callout>
 
-## Laravel broadcasting
+```php title="messages.php"
+$base = '/channels/orders/messages/' . rawurlencode($messageSerial);
 
-For a first-class `sockudo` broadcasting connection, auto-discovered service
-provider, configuration check, and native SDK facade, install the
-[Laravel integration](/docs/server-sdks/laravel):
+$sockudo->post($base . '/update', json_encode([
+    'data' => json_encode(['status' => 'paid']),
+    'op_id' => 'order.paid:ord_123:v3',
+], JSON_THROW_ON_ERROR));
 
-```bash
-composer require sockudo/laravel
-php artisan sockudo:install
+$sockudo->post($base . '/append', json_encode([
+    'data' => ' more streamed text',
+], JSON_THROW_ON_ERROR));
+
+$sockudo->post($base . '/delete', json_encode([
+    'description' => 'removed by moderator',
+], JSON_THROW_ON_ERROR));
 ```
 
-The Pusher-compatible connection below remains supported for existing
-applications that do not want the Laravel integration package:
+Annotation publish and delete use their own authorization, separate from message mutations. See
+[Mutable messages](/docs/server/mutable-messages) for request fields, actor rules, and delivery
+semantics.
 
-```php
-'pusher' => [
-    'driver' => 'pusher',
-    'key' => env('SOCKUDO_APP_KEY'),
-    'secret' => env('SOCKUDO_APP_SECRET'),
-    'app_id' => env('SOCKUDO_APP_ID'),
-    'options' => [
-        'host' => env('SOCKUDO_HOST', '127.0.0.1'),
-        'port' => env('SOCKUDO_PORT', 6001),
-        'scheme' => 'http',
-        'useTLS' => false,
-    ],
-],
-```
+### Generic signed requests
 
-Store these values in Laravel's environment/secret configuration and enable
-TLS when the HTTP API crosses an untrusted network. Laravel broadcasting still
-uses your application authorization routes for private and presence channels.
+`get($path, $params = [], $associative = false)`, `post($path, $body, $params = [], $headers = [])`,
+`postAsync`, and `delete($path, $params = [])` sign and send a request to any app-scoped endpoint.
+Paths exclude the `/apps/<app_id>` prefix, which the SDK adds. `post` sends `$body` as-is, so
+JSON-encode it yourself. For fully custom transports, `Sockudo::build_auth_query_params()` returns
+the signed query parameters for a method, path, and query.
 
 ## Push notifications
 
-```php
-$sockudo->activateDevice([
-    'deviceId' => 'web-device-1',
-    'clientId' => 'user-42',
-    'platform' => 'webpush',
-    'providerToken' => $subscription,
-]);
+Push helpers send the `X-Sockudo-Push-Capability` header for you (`push-admin` by default, or
+`push-subscribe` when you pass a device identity token):
 
+```php title="push.php"
+$sockudo->activateDevice($device);                 // register or update a device (admin)
 $sockudo->upsertChannelPushSubscription([
     'deviceId' => 'web-device-1',
     'clientId' => 'user-42',
@@ -205,30 +547,76 @@ $accepted = $sockudo->publishPush([
     'publishId' => 'push-order-ord_123-packed',
 ]);
 
-$status = $sockudo->getPublishStatus($accepted->publish_id);
+$status = $sockudo->getPublishStatus($accepted->publishId);
 ```
 
-Push publishing is asynchronous by default. Use status APIs and provider callbacks for delivery diagnostics.
+`publishPush` always sends `sync: false`. Its response is an admission record (`publishId`,
+`status`, `expectedRecipients`), not a delivery result: workers fan out to providers afterwards, so
+inspect `getPublishStatus` asynchronously for the outcome. Reuse the same `publishId` when retrying
+a publish.
 
-Use `createApnsLiveActivityChannel`, `getApnsLiveActivityChannel`,
-`listApnsLiveActivityChannels`, and `deleteApnsLiveActivityChannel` for iOS 18 broadcast
-channels. Direct and broadcast publish bodies remain ordinary PHP arrays. See
-[Apple Live Activities](/docs/server/apple-live-activities) for the complete payload contract.
+The full surface:
 
-## Logging, errors, and retries
+| Area | Methods |
+| --- | --- |
+| Devices | `activateDevice` (alias `createDeviceActivation`; pass `['rotateDeviceIdentityToken' => true]` to rotate), `updateDeviceRegistration`, `getDeviceRegistration`, `listDeviceRegistrations`, `deleteDeviceRegistration`, `removeDeviceRegistrationsByClient` |
+| Channel subscriptions | `upsertChannelPushSubscription`, `listChannelPushSubscriptions`, `deleteChannelPushSubscriptions`, `listChannelPushSubscriptionChannels` |
+| Credentials | `listPushCredentials`, `putPushCredential` |
+| Publish | `publishPush` (alias `publishPushDirect`), `publishPushBatch`, `schedulePush` (requires `notBeforeMs`), `cancelScheduledPush` |
+| Status and feedback | `getPublishStatus`, `postPushDeliveryStatus` |
+| Live Activities | `createApnsLiveActivityChannel`, `getApnsLiveActivityChannel`, `listApnsLiveActivityChannels`, `deleteApnsLiveActivityChannel` |
 
-The client implements `Psr\Log\LoggerAwareInterface`, so attach the
-application's PSR-3 logger with `setLogger()`. Do not log request bodies,
-provider tokens, signed URLs, or credentials.
+For iOS 18 Live Activity broadcast channels, `createApnsLiveActivityChannel` accepts a storage
+policy of `noStorage` (default) or `mostRecent`. Direct-token and broadcast ActivityKit updates are
+ordinary `publishPush` request arrays. See [Push notifications](/docs/server/push-notifications)
+for request shapes and [Apple Live Activities](/docs/server/apple-live-activities) for the payload
+contract.
 
-Catch `ApiErrorException` for non-success API responses and
-`SockudoException` for SDK validation/configuration failures. Retry only
-transient network failures, `429`, and suitable `5xx` responses with bounded
-backoff. Retried publishes must retain their original idempotency key.
+## Errors and timeouts
 
-- Reuse the SDK and Guzzle clients from the service container.
-- Keep the SDK timeout below the PHP request or queue-job timeout.
-- Move large batches and push fanout to queue workers.
-- Rate-limit and authorize auth/history endpoints.
-- Test duplicate attempts, queue retries, credential rotation, and worker
-  shutdown.
+The SDK throws two exception types, both in the `Sockudo` namespace:
+
+- `ApiErrorException` (extends `SockudoException`): the API responded with an unexpected status.
+  `getCode()` is the HTTP status and `getMessage()` is the response body. Connection failures and
+  timeouts also raise it, with code `0`.
+- `SockudoException`: the SDK rejected the call before sending, for example an invalid channel
+  name, socket ID, or user ID, too many channels, a missing encryption key, or a JSON encoding
+  failure. It is also thrown for webhook signature failures.
+
+Other Guzzle transport errors can surface as `GuzzleHttp\Exception\GuzzleException`. Set the
+per-request limit with the `timeout` option (default 30 seconds) and keep it below your PHP
+request or queue-job timeout.
+
+```php title="publish.php"
+use Sockudo\ApiErrorException;
+use Sockudo\SockudoException;
+
+try {
+    $sockudo->trigger('orders', 'order.paid', $payload, ['idempotency_key' => $key]);
+} catch (ApiErrorException $error) {
+    $status = $error->getCode();
+    if ($status === 0 || $status === 429 || $status >= 500) {
+        // Transient: retry later with backoff and the SAME idempotency key.
+        throw new RetryLaterException(previous: $error);
+    }
+    // 400, 401, 403, 413: fix the request or credentials; retrying will not help.
+    report_failure('sockudo publish rejected', ['status' => $status]);
+} catch (SockudoException $error) {
+    // Invalid input caught before sending: a bug, not a transient failure.
+    throw $error;
+}
+```
+
+Retry network errors, timeouts, `429`, and `5xx` responses with bounded backoff, honouring
+`Retry-After` when present. Do not retry `400`, `401`, `403`, or `413`: the same request will fail
+again. Never log signed request URLs, the app secret, or raw request and response bodies; log the
+status code and your own operation identifiers instead.
+
+## Next steps
+
+<Cards>
+  <Card title="Laravel integration" href="/docs/server-sdks/laravel" description="Use this SDK as a native Laravel broadcasting driver with a facade." />
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="How clients request private, presence, and user auth from your backend." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Webhook events, delivery, retries, and configuration." />
+  <Card title="HTTP API" href="/docs/server/http-api" description="Every endpoint the SDK signs, including ones without a typed helper." />
+</Cards>

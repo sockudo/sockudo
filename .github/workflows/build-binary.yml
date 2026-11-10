@@ -64,6 +64,8 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-release-${{ inputs.target_triple }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-${{ inputs.target_triple }}-
 
       - name: Install GNU build dependencies
         if: ${{ !contains(inputs.target_triple, 'musl') }}

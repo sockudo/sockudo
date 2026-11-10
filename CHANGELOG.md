@@ -20,6 +20,43 @@ docs page for 5.2.0 workarounds.
 - GHSA-xfrj-v26g-242j: `/stats` and `/operator/stats` require a Pusher-signed request and report
   only the signing app. `/up/{appId}` answers exactly like `/up` and never creates metric labels
   from the path.
+- Webhook transport errors no longer include the endpoint URL in logs or
+  propagated errors.
+
+### Added
+
+- App secrets at rest (#527): with `SOCKUDO_APP_SECRET_ENCRYPTION_KEY` or
+  `SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE` set, the MySQL and PostgreSQL app
+  managers store secrets AES-256-GCM encrypted in a new `secret_enc` column,
+  bound to the app id. Plaintext rows keep working. `sockudo
+  --encrypt-app-secret <APP_ID>` prints the column value for a secret on stdin.
+- Disabled or deleted apps (#526): each node closes the live connections of
+  apps that are now disabled (`4003`) or deleted (`4001`) every
+  `app_manager.availability_check_interval_seconds` (default `15`, `0` off).
+- Paced shutdown (#528): `shutdown_close_delay_ms` and
+  `shutdown_close_spread_ms` (default `0`) delay and spread the `4200` closes
+  across the grace period. `@sockudo/client` adds `retryJitterMs`.
+- `SECURITY.md` with private vulnerability reporting instructions (#529).
+
+- Redis Cluster adapter: broadcast bucketing spreads broadcast fan-out across
+  shards. `adapter.cluster.broadcast_buckets` (1–64, default `3`, set to the
+  shard count) publishes each broadcast to one hash-tagged channel per bucket,
+  and each node subscribes to exactly one. `adapter.cluster.broadcast_mode`
+  (`legacy` default, `publish_both`, `subscribe_bucket`, `bucketed`) sequences
+  the live migration; any adjacent pair of modes delivers each broadcast exactly
+  once, so move one step per rollout. Non-legacy modes require
+  `use_sharded_pubsub = true` and a prefix without `{` or `}`. Env overrides:
+  `ADAPTER_CLUSTER_BROADCAST_MODE`, `ADAPTER_CLUSTER_BROADCAST_BUCKETS`.
+- Metrics: `sockudo_ws_control_frames_total{frame_type}` counts control frames
+  (pong, acks, errors, auth, cache miss, delta negotiation, history) sent
+  through the connection handler, and `sockudo_ws_message_bytes` is a
+  histogram of published message size (64 B to 1 MiB buckets), observed once
+  per message on the origin node.
+
+- Official Rust realtime client `sockudo-client` in `client-sdks/sockudo-rust`
+  (Protocol V1/V2, all channel types, recovery, delta, filters, tokens, JSON /
+  MessagePack / Protobuf, permessage-deflate). Its CI runs a live suite against
+  a server built from source, with and without WebSocket compression.
 
 ### Changed
 
@@ -31,6 +68,131 @@ docs page for 5.2.0 workarounds.
 - `resume_success` may include a `pending` channel list, followed by a per-channel
   `resume_success` once a parked channel is replayed. Live messages published during that
   subscribe and replay are held and released after the replay, without duplicates.
+- An explicit `--config` file that fails to load now exits with status 1, and
+  an existing auto-discovered `config/config.toml`/`config.json` that fails to
+  parse is fatal too, instead of silently falling back (#520).
+- `[app_manager] driver` accepts `postgres`/`postgresql` (and `surreal`,
+  `scylla`) in config files (#521).
+- `[database.postgres]` defaults to port `5432` and user `postgres` (#524).
+- The fresh SQL schemas no longer insert the demo app with public credentials;
+  it moved to dev/test-only `900_dev_seed_app.sql` (#522).
+- SurrealDB client upgraded to 4.0. It requires a SurrealDB 4.x server; a 4.0
+  server converts a 3.x datastore one-way on first start, so back it up first.
+
+- `sockudo_ws_messages_sent_total` now counts application deliveries on every
+  node. Before, only the node that received the publish counted, and only its
+  own sockets, so horizontal deployments undercounted fan-out. Control frames
+  such as `pusher:pong` and `subscription_succeeded` are no longer counted as
+  messages. Expect the rate, and `sockudo_socket_transmitted_bytes`, to jump
+  after upgrading on multi-node deployments. A publisher built without a local
+  adapter no longer counts cluster-wide recipients.
+
+- The Redis Cluster adapter transport no longer sets `RandomReplicaStrategy`
+  read routing. It issues no read commands, so the setting only opened idle
+  connections to every replica.
+- Web Push VAPID signing and RFC 8291 payload encryption no longer go through
+  `web-push-native`; `sockudo-push` now uses `p256` 0.14 and `ece-native` 0.5
+  directly (same wire format, `aes128gcm` content encoding unchanged). This
+  upgrades the transitive `crypto-bigint` dependency from 0.5.5 to 0.7.9 and
+  `ctutils` to 0.4.5, clearing RUSTSEC-2026-0387 and RUSTSEC-2026-0385 timing
+  side-channel advisories.
+- OTLP `zstd` compression stays available. The exporter still links `zstd`
+  0.13.3 / `zstd-safe` 7.3.0 through `opentelemetry-otlp` 0.32.0, so
+  RUSTSEC-2026-0391 and RUSTSEC-2026-0395 through RUSTSEC-2026-0406 are
+  ignored until a release with the upstream fix (zstd 0.14.3,
+  opentelemetry-rust PR #3819) ships: the three vulnerability-severity
+  advisories in `deny.toml`, the full set in `.cargo/audit.toml`. Only
+  `zstd::bulk::{compress, decompress}` is reached; the affected streaming,
+  `Seekable`, `InBuffer` and `OutBuffer` APIs are not used, and the gRPC path
+  already uses the fixed line via `tonic` 0.14.8.
+- Failed webhook deliveries are now retried by the queue backend instead of
+  being acknowledged and lost. All drivers apply their normal retry and
+  dead-letter policy (`queue.reliability.max_attempts`, default 5). Receivers
+  may see duplicate POSTs when one of several endpoints fails; make them
+  idempotent.
+- SQS: failed jobs are released with exponential backoff
+  (`queue.reliability.retry_*`) instead of immediately. This also applies to
+  push stage queues on SQS. At startup Sockudo reads the `webhooks` queue's
+  `RedrivePolicy`. With one, `maxReceiveCount` bounds delivery. Without one,
+  Sockudo logs a warning and deletes a failing job after `max_attempts`
+  receives. Set `QUEUE_SQS_REQUIRE_REDRIVE_POLICY=true` to fail startup instead.
+- SQS: a failed visibility renewal no longer aborts the in-flight delivery.
+- A client's reply to the server's Close frame no longer removes the socket
+  from presence immediately. The last-leave webhook now waits out the presence
+  lease (`presence.v2_ungraceful_timeout_seconds` for Protocol V2,
+  `presence.ungraceful_timeout_seconds` for V1, which defaults to 0), as it
+  already did when the reader was cancelled first; which one won was a race.
+  A client that closes on its own still leaves at once.
+
+### Fixed
+
+- Delta compression is refused on MessagePack and Protobuf connections.
+  Delta bases are the server's JSON serialization of each message, which a
+  binary-format client never receives and cannot reproduce, so every delta
+  failed its checksum (Fossil) or decoded to wrong data (VCDIFF, which has no
+  checksum). `enable_delta_compression` and per-subscription `delta` settings
+  on those connections now answer `delta_compression_enabled` with
+  `{"enabled": false, "reason": ...}` and messages are sent in full.
+- A per-subscription `delta: false` on a socket that had not enabled delta
+  compression created enabled delta state for the socket, turning deltas on
+  for every other channel it subscribed to. The opt-out is now recorded
+  without enabling the socket, and a later `enable_delta_compression` or
+  per-subscription opt-in keeps it (the enable used to discard earlier
+  per-channel settings).
+- `presence_update` with an object `data` on the JSON wire format (as the
+  .NET and Swift clients send it) was rejected with "presence_update channel
+  is required": the frame decoded as structured data, which lifted `channel`
+  out of the payload the handler reads. The handler now restores it.
+- Per-app HTTP API rate limits (#534): `max_backend_events_per_second` and
+  `max_read_requests_per_second` are now enforced on the signed HTTP API through
+  the configured `[rate_limiter]` driver (key prefix `rl_app:`). Publishes cost
+  one unit per event (batch events count per event); signed `GET`/`HEAD` reads
+  cost one unit each. Over-limit requests answer `429` with `Retry-After`. Unset
+  or `0` limits are unlimited; a limiter backend outage fails open.
+- The memory rate limiter no longer counts denied requests, matching the Redis
+  drivers: an oversized `batch_events` request is rejected without consuming the
+  app's budget, so subsequent publishes in the same window still succeed.
+- A ping or pong received after the server sent its Close frame no longer marks
+  the connection active again, which allowed sends after the Close.
+- Push queue work can run on standard SQS queues (`QUEUE_DRIVER=sqs`). The push queue attached a
+  deduplication key to every job, which standard SQS rejects (`SQS deduplication keys require a
+  FIFO queue`), so every push enqueue failed. It now sends the key only to backends that
+  deduplicate. Delays longer than SQS's 15-minute limit (scheduled sends, long provider
+  retry-after) are sent as 15 minutes, and a job that arrives before its `not_before` time goes
+  back to SQS for the rest of the wait, counted in `sockudo_push_queue_local_requeued_total` with
+  `reason="not_before_deferred"`.
+- SQS FIFO queues are rejected for push at startup. FIFO queues have no per-message delay, so
+  scheduled sends, nacks with a retry time and local-capacity requeues all failed with `SQS FIFO
+  queues do not support per-message delay`. The SQS driver now reports `delayed_delivery = false`
+  for FIFO queues.
+- The Pulsar queue driver no longer reports every enqueue as failed. It called `send_batch()` on a
+  producer built without batching, which always returns `not a batching producer` after the
+  messages were already sent, so webhook and push callers saw errors for delivered jobs and
+  retried them.
+- The Pulsar queue driver supports per-job delay (`delay_ms`) through Pulsar's native delayed
+  delivery and reports `delayed_delivery = true`, so push scheduled sends and retries run on
+  `QUEUE_DRIVER=pulsar`.
+- Push refuses to start on queue backends without per-message delay (`nats`, `rabbitmq`, `kafka`,
+  `iggy`, `google-pubsub`). Every delayed push enqueue (scheduled sends, retries, nacks,
+  local-capacity requeues) failed there with `queue backend X does not implement Queue v2 job
+  options`; before the deduplication fix above, every push enqueue did.
+- Push refuses to start when `push.queue_driver` does not match `queue.driver`. Push queue work
+  always ran on the `[queue]` backend, so `PUSH_QUEUE_DRIVER=sqs` with `QUEUE_DRIVER=redis` ran
+  push on Redis while reporting SQS. The shipped `config/config.toml` paired
+  `push.queue_driver = "redis"` with `queue.driver = "memory"`; it now sets
+  `push.queue_driver = "memory"`, which is node-local like the queue it ran on before.
+- Push queue message IDs are now random (`push-<uuid>`) instead of a per-process counter. Nodes
+  sharing a push queue backend, or a node restarted while its earlier jobs were still queued,
+  handed out the same IDs; the Redis and memory backends rejected the second enqueue with
+  `queue job ID ... already exists with a different payload` (surfacing as intermittent push
+  publish `500`s, failing planner and dispatch ticks, and later queue-age `429`s), and SQS FIFO
+  silently dropped the second job.
+- Nacked or locally deferred push queue jobs are requeued under a new message ID. Reusing the
+  original ID while the backend still held that job made Redis and the memory queue reject the
+  requeue, so the backend retried the original on its own backoff instead: the requested retry
+  time and push `attempt` were ignored, and deferrals (scheduled provider retries, open circuit
+  breakers, rate limiting) used up backend attempts until the job moved to the backend
+  dead-letter queue, outside the push dead-letter list and replay API.
 
 ## [5.2.0] - 2026-10-22
 

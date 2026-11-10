@@ -194,8 +194,9 @@ impl WebhookSender {
         log_webhook_processing_pusher_format(&app_id, job.payload.events.len());
 
         let signer = Token::new(job.app_key.clone(), job.app_secret.clone());
-        let mut tasks = Vec::with_capacity(relevant_webhooks.len());
-        for (_endpoint_key, (webhook_config, filtered_events)) in relevant_webhooks {
+        let total = relevant_webhooks.len();
+        let mut tasks = Vec::with_capacity(total);
+        for (endpoint_key, (webhook_config, filtered_events)) in relevant_webhooks {
             let filtered_body_json_string =
                 self.create_pusher_body(job.payload.time_ms, &filtered_events)?;
             let filtered_signature = signer.sign(&filtered_body_json_string);
@@ -209,24 +210,59 @@ impl WebhookSender {
                     Error::Other(format!("Failed to acquire webhook semaphore permit: {e}"))
                 })?;
 
-            let task = self.create_webhook_task(
-                webhook_config,
-                permit,
-                app_id.clone(),
-                app_key.clone(),
-                filtered_signature,
-                filtered_body_json_string,
-            );
-            tasks.push(task);
+            let delivery_method = if webhook_config.url.is_some() {
+                "http"
+            } else {
+                "lambda"
+            };
+            tasks.push((
+                endpoint_fingerprint(&endpoint_key),
+                delivery_method,
+                self.create_webhook_task(
+                    webhook_config,
+                    permit,
+                    app_id.clone(),
+                    app_key.clone(),
+                    filtered_signature,
+                    filtered_body_json_string,
+                ),
+            ));
         }
 
-        for task_handle in tasks {
-            if let Err(e) = task_handle.await {
-                error!(error = %e, "webhook task execution failed");
+        let mut failed = 0usize;
+        for (endpoint, delivery_method, task_handle) in tasks {
+            match task_handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => {
+                    // The sender logged the URL-free cause at the failure site.
+                    failed += 1;
+                    warn!(
+                        app_id = %app_id,
+                        delivery_method,
+                        endpoint_fingerprint = %endpoint,
+                        "webhook endpoint delivery failed; job will be retried"
+                    );
+                }
+                Err(join_error) => {
+                    failed += 1;
+                    error!(
+                        app_id = %app_id,
+                        delivery_method,
+                        endpoint_fingerprint = %endpoint,
+                        error = %join_error,
+                        "webhook task execution failed"
+                    );
+                }
             }
         }
 
-        Ok(())
+        if failed == 0 {
+            Ok(())
+        } else {
+            Err(Error::Other(format!(
+                "{failed} of {total} webhook endpoints failed"
+            )))
+        }
     }
 
     fn create_webhook_task(
@@ -237,7 +273,7 @@ impl WebhookSender {
         app_key: String,
         signature: String,
         body_to_send: String,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         if let Some(url) = &webhook_config.url {
             let params = HttpWebhookTaskParams {
                 url: url.clone(),
@@ -261,19 +297,19 @@ impl WebhookSender {
                     "lambda webhook configured but lambda feature not compiled in"
                 );
                 drop(permit);
-                tokio::spawn(async {})
+                tokio::spawn(async { Ok::<(), Error>(()) })
             }
         } else {
             warn!(app_id = %app_id, "webhook has neither url nor lambda config");
             drop(permit);
-            tokio::spawn(async {})
+            tokio::spawn(async { Ok::<(), Error>(()) })
         }
     }
 
     fn create_http_webhook_task(
         &self,
         params: HttpWebhookTaskParams,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         let client = self.client.clone();
         let url_str = params.url.to_string();
         let retry_policy =
@@ -292,7 +328,7 @@ impl WebhookSender {
         tokio::spawn(
             async move {
                 let _permit = params.permit;
-                let _ = send_pusher_webhook(
+                send_pusher_webhook(
                     &client,
                     PusherWebhookRequest {
                         url: url_str,
@@ -304,7 +340,7 @@ impl WebhookSender {
                         retry_config: retry_policy,
                     },
                 )
-                .await;
+                .await
             }
             .in_current_span(),
         )
@@ -317,7 +353,7 @@ impl WebhookSender {
         permit: tokio::sync::OwnedSemaphorePermit,
         app_id: String,
         body_to_send: String,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> tokio::task::JoinHandle<Result<()>> {
         let lambda_sender = self.lambda_sender.clone();
         let webhook_clone = webhook_config.clone();
         let payload_for_lambda: Value = sonic_rs::from_str(&body_to_send).unwrap_or(json!({}));
@@ -325,23 +361,10 @@ impl WebhookSender {
         tokio::spawn(
             async move {
                 let _permit = permit;
-                if let Err(e) = lambda_sender
+                // `invoke_lambda` already logs success and failure with the function name.
+                lambda_sender
                     .invoke_lambda(&webhook_clone, "batch_events", &app_id, payload_for_lambda)
                     .await
-                {
-                    error!(
-                        delivery_method = "lambda",
-                        app_id = %app_id,
-                        error = %e,
-                        "lambda webhook invocation failed"
-                    );
-                } else {
-                    debug!(
-                        delivery_method = "lambda",
-                        app_id = %app_id,
-                        "lambda webhook invoked successfully"
-                    );
-                }
             }
             .in_current_span(),
         )
@@ -381,6 +404,13 @@ fn resolve_retry_policy(
             .unwrap_or(global.initial_backoff_ms),
         max_backoff_ms: policy.max_backoff_ms.unwrap_or(global.max_backoff_ms),
     }
+}
+
+/// Logged instead of the endpoint key: URLs may carry credentials or query tokens.
+fn endpoint_fingerprint(key: &str) -> String {
+    let mut fingerprint = sockudo_core::idempotency::publish_fingerprint(key.as_bytes());
+    fingerprint.truncate(16);
+    fingerprint
 }
 
 fn should_retry_status(status: reqwest::StatusCode) -> bool {
@@ -555,6 +585,8 @@ async fn send_pusher_webhook_once(
         Err(e) => {
             span.record("otel.status_code", "ERROR");
             let ec = request_error_class(&e);
+            // reqwest's Display includes the request URL; query tokens are not redacted.
+            let e = e.without_url();
             debug!(
                 delivery_method = "http",
                 error_class = ec,
@@ -932,5 +964,34 @@ mod tests {
             filtered.is_empty(),
             "invalid channel_pattern must drop every event for the webhook"
         );
+    }
+
+    #[tokio::test]
+    async fn transport_error_does_not_leak_url_credentials() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let error = send_pusher_webhook(
+            &Client::new(),
+            PusherWebhookRequest {
+                url: format!("http://hook-user:hook-secret@{addr}/hook?token=query-secret"),
+                app_key: "key".to_string(),
+                signature: "sig".to_string(),
+                json_body: "{}".to_string(),
+                custom_headers: AHashMap::new(),
+                request_timeout_ms: 1_000,
+                retry_config: WebhookRetryConfig {
+                    enabled: false,
+                    ..WebhookRetryConfig::default()
+                },
+            },
+        )
+        .await
+        .expect_err("a closed port must fail");
+
+        let message = error.to_string();
+        assert!(!message.contains("hook-secret"), "{message}");
+        assert!(!message.contains("query-secret"), "{message}");
     }
 }

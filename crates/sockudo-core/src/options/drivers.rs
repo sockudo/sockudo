@@ -47,8 +47,11 @@ pub enum AppManagerDriver {
     Memory,
     Mysql,
     Dynamodb,
+    #[serde(alias = "postgres", alias = "postgresql")]
     PgSql,
+    #[serde(alias = "surreal")]
     SurrealDb,
+    #[serde(alias = "scylla")]
     ScyllaDb,
 }
 impl FromStr for AppManagerDriver {

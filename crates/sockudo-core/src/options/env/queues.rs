@@ -68,6 +68,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
     options.queue.sqs.concurrency =
         parse_env::<u32>("QUEUE_SQS_CONCURRENCY", options.queue.sqs.concurrency);
     options.queue.sqs.fifo = parse_bool_env("QUEUE_SQS_FIFO", options.queue.sqs.fifo);
+    options.queue.sqs.require_redrive_policy = parse_bool_env(
+        "QUEUE_SQS_REQUIRE_REDRIVE_POLICY",
+        options.queue.sqs.require_redrive_policy,
+    );
     if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
         options.queue.sqs.endpoint_url = Some(endpoint);
     }

@@ -69,6 +69,13 @@ pub struct ServerOptions {
     pub queue: QueueConfig,
     pub rate_limiter: RateLimiterConfig,
     pub shutdown_grace_period: u64,
+    /// Milliseconds to wait after a shutdown signal, while `/ready` already
+    /// reports 503, before closing existing websockets with 4200. Gives load
+    /// balancers time to mark the node down so reconnects land elsewhere.
+    pub shutdown_close_delay_ms: u64,
+    /// Milliseconds over which existing websockets are closed with 4200,
+    /// spread evenly in small batches. `0` closes every connection at once.
+    pub shutdown_close_spread_ms: u64,
     pub ssl: SslConfig,
     pub user_authentication_timeout: u64,
     pub webhooks: WebhooksConfig,
@@ -128,6 +135,8 @@ impl Default for ServerOptions {
             queue: QueueConfig::default(),
             rate_limiter: RateLimiterConfig::default(),
             shutdown_grace_period: 10,
+            shutdown_close_delay_ms: 0,
+            shutdown_close_spread_ms: 0,
             ssl: SslConfig::default(),
             user_authentication_timeout: 3600,
             webhooks: WebhooksConfig::default(),
@@ -184,6 +193,15 @@ impl ServerOptions {
             .validate()
             .map_err(|error| format!("opentelemetry: {error}"))?;
         self.push.apns.validate(self.push.apns_enabled)?;
+        let shutdown_close_window_ms = self
+            .shutdown_close_delay_ms
+            .saturating_add(self.shutdown_close_spread_ms);
+        if shutdown_close_window_ms > self.shutdown_grace_period.saturating_mul(1000) {
+            return Err(format!(
+                "shutdown_close_delay_ms + shutdown_close_spread_ms ({shutdown_close_window_ms} ms) must not exceed shutdown_grace_period ({} s)",
+                self.shutdown_grace_period
+            ));
+        }
         if self.push.dispatch_max_outbound_requests == 0 {
             return Err("push.dispatch_max_outbound_requests must be greater than 0".to_owned());
         }
@@ -194,6 +212,9 @@ impl ServerOptions {
                 &self.history,
                 &self.versioned_messages,
             )?;
+        }
+        if self.adapter.driver == AdapterDriver::RedisCluster {
+            self.adapter.cluster.validate()?;
         }
         let clustered = self.adapter.driver != AdapterDriver::Local;
         let shared_cache = matches!(
@@ -470,8 +491,112 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shutdown_close_window_must_fit_in_grace_period() {
+        let mut options = ServerOptions {
+            shutdown_grace_period: 20,
+            shutdown_close_delay_ms: 3_000,
+            shutdown_close_spread_ms: 15_000,
+            ..ServerOptions::default()
+        };
+        assert!(options.validate().is_ok());
+
+        options.shutdown_close_spread_ms = 17_001;
+        let error = options.validate().unwrap_err();
+        assert!(error.contains("shutdown_grace_period"), "{error}");
+
+        let defaults = ServerOptions::default();
+        assert_eq!(defaults.shutdown_close_delay_ms, 0);
+        assert_eq!(defaults.shutdown_close_spread_ms, 0);
+    }
+
+    #[test]
+    fn app_manager_driver_accepts_postgres_spellings_in_files() {
+        for spelling in ["pgsql", "postgres", "postgresql"] {
+            let toml_config: ServerOptions =
+                toml::from_str(&format!("[app_manager]\ndriver = \"{spelling}\"\n")).unwrap();
+            assert_eq!(toml_config.app_manager.driver, AppManagerDriver::PgSql);
+
+            let json_config: ServerOptions =
+                sonic_rs::from_str(&format!(r#"{{"app_manager":{{"driver":"{spelling}"}}}}"#))
+                    .unwrap();
+            assert_eq!(json_config.app_manager.driver, AppManagerDriver::PgSql);
+        }
+    }
+
+    #[test]
+    fn postgres_connection_defaults_to_postgres_port_and_user() {
+        let defaults = ServerOptions::default();
+        assert_eq!(defaults.database.postgres.port, 5432);
+        assert_eq!(defaults.database.postgres.username, "postgres");
+        assert_eq!(defaults.database.mysql.port, 3306);
+
+        let empty: ServerOptions = toml::from_str("").unwrap();
+        assert_eq!(empty.database.postgres.port, 5432);
+        assert_eq!(empty.database.mysql.port, 3306);
+
+        let partial: ServerOptions = toml::from_str(
+            r#"
+            [database.postgres]
+            host = "pg"
+            username = "u"
+            password = "p"
+
+            [database.mysql]
+            host = "my"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(partial.database.postgres.host, "pg");
+        assert_eq!(partial.database.postgres.username, "u");
+        assert_eq!(partial.database.postgres.port, 5432);
+        assert_eq!(partial.database.postgres.database, "sockudo");
+        assert_eq!(partial.database.mysql.port, 3306);
+        assert_eq!(partial.database.mysql.username, "root");
+
+        let explicit: ServerOptions =
+            sonic_rs::from_str(r#"{"database":{"postgres":{"port":6543}}}"#).unwrap();
+        assert_eq!(explicit.database.postgres.port, 6543);
+        assert_eq!(explicit.database.postgres.username, "postgres");
+
+        assert!(toml::from_str::<ServerOptions>("[database]\npostgres = 5\n").is_err());
+    }
+
+    #[test]
     fn default_health_check_timeout_leaves_probe_headroom() {
         assert_eq!(ServerOptions::default().health_check_timeout_ms, 2000);
+    }
+
+    #[test]
+    fn cluster_broadcast_configuration_is_validated() {
+        let mut options = ServerOptions::default();
+        options.adapter.driver = AdapterDriver::RedisCluster;
+        // Default idempotency requires a shared cache, unrelated to broadcast validation.
+        options.idempotency.enabled = false;
+
+        options.adapter.cluster.broadcast_buckets = 0;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "adapter.cluster.broadcast_buckets must be between 1 and 64"
+        );
+
+        options.adapter.cluster.broadcast_buckets = 3;
+        options.adapter.cluster.broadcast_mode = ClusterBroadcastMode::Bucketed;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "adapter.cluster.broadcast_mode requires adapter.cluster.use_sharded_pubsub=true"
+        );
+
+        options.adapter.cluster.use_sharded_pubsub = true;
+        options.adapter.cluster.prefix = "a{b}".to_string();
+        options.adapter.cluster.broadcast_mode = ClusterBroadcastMode::PublishBoth;
+        assert_eq!(
+            options.validate().unwrap_err(),
+            "adapter.cluster.prefix must not contain '{' or '}' when adapter.cluster.broadcast_mode is not legacy"
+        );
+
+        options.adapter.cluster.prefix = RedisClusterAdapterConfig::default().prefix;
+        options.adapter.cluster.broadcast_mode = ClusterBroadcastMode::Bucketed;
+        assert!(options.validate().is_ok(), "{:?}", options.validate().err());
     }
 
     #[test]

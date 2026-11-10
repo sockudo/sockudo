@@ -241,6 +241,22 @@ impl ConnectionState {
         self.last_ping = Instant::now();
     }
 
+    /// A ping or pong proves the peer is alive, but must not reopen a connection this node has
+    /// already closed: that would allow sends after the Close frame again.
+    pub fn mark_alive(&mut self) {
+        if !self.is_closed_by_server() {
+            self.status = ConnectionStatus::Active;
+        }
+    }
+
+    /// Whether this node has sent, or started sending, its own Close frame.
+    pub fn is_closed_by_server(&self) -> bool {
+        matches!(
+            self.status,
+            ConnectionStatus::Closing | ConnectionStatus::Closed
+        )
+    }
+
     pub fn get_app_key(&self) -> String {
         self.app
             .as_ref()
@@ -293,6 +309,27 @@ mod disconnect_cause_tests {
         state.record_disconnect_cause(DisconnectCause::ActivityTimeout);
         state.record_disconnect_cause(DisconnectCause::FatalError);
         assert_eq!(state.disconnect_cause, DisconnectCause::ActivityTimeout);
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn liveness_does_not_reopen_a_server_closed_connection() {
+        let mut state = ConnectionState::new();
+        state.status = ConnectionStatus::PingSent(Instant::now());
+        state.mark_alive();
+        assert_eq!(state.status, ConnectionStatus::Active);
+        assert!(!state.is_closed_by_server());
+
+        for closed in [ConnectionStatus::Closing, ConnectionStatus::Closed] {
+            state.status = closed;
+            state.mark_alive();
+            assert_eq!(state.status, closed);
+            assert!(state.is_closed_by_server());
+        }
     }
 }
 

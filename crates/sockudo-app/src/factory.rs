@@ -32,8 +32,15 @@ impl AppManagerFactory {
             #[cfg(feature = "mysql")]
             AppManagerDriver::Mysql => {
                 let mysql_db_config = db_config.mysql.clone();
+                let secret_cipher = crate::secret_cipher::AppSecretCipher::from_env()?;
+                if secret_cipher.is_some() {
+                    info!(
+                        app_manager = "mysql",
+                        "app secret encryption at rest enabled"
+                    );
+                }
                 match MySQLAppManager::new(mysql_db_config, pooling.clone()).await {
-                    Ok(manager) => Arc::new(manager),
+                    Ok(manager) => Arc::new(manager.with_secret_cipher(secret_cipher)),
                     Err(e) => {
                         warn!(
                             app_manager = "mysql",
@@ -71,8 +78,15 @@ impl AppManagerFactory {
             #[cfg(feature = "postgres")]
             AppManagerDriver::PgSql => {
                 let pgsql_db_config = db_config.postgres.clone();
+                let secret_cipher = crate::secret_cipher::AppSecretCipher::from_env()?;
+                if secret_cipher.is_some() {
+                    info!(
+                        app_manager = "postgres",
+                        "app secret encryption at rest enabled"
+                    );
+                }
                 match PgSQLAppManager::new(pgsql_db_config, pooling.clone()).await {
-                    Ok(manager) => Arc::new(manager),
+                    Ok(manager) => Arc::new(manager.with_secret_cipher(secret_cipher)),
                     Err(e) => {
                         warn!(
                             app_manager = "postgres",
@@ -181,11 +195,10 @@ impl AppManagerFactory {
         };
 
         if config.cache.enabled {
-            Ok(Arc::new(CachedAppManager::new(
-                inner,
-                cache_manager,
-                config.cache.clone(),
-            )))
+            Ok(Arc::new(
+                CachedAppManager::new(inner, cache_manager, config.cache.clone())
+                    .with_secret_cipher(crate::secret_cipher::AppSecretCipher::from_env()?),
+            ))
         } else {
             Ok(inner)
         }

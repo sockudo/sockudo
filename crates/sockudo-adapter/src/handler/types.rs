@@ -1,4 +1,3 @@
-use sockudo_core::channel::ChannelType;
 use sockudo_core::history::HistoryQueryBounds;
 use sockudo_core::options::EventNameFilteringConfig;
 #[cfg(feature = "delta")]
@@ -212,17 +211,9 @@ impl SubscriptionRequest {
                             "Missing channel field".into(),
                         )
                     })?;
-                    // `channel_data` is client-controlled. A presence subscribe without it is
-                    // a normal subscription error, never a panic (GHSA-4795-c9wj-3q58).
-                    let channel_data = if ChannelType::from_name(ch) == ChannelType::Presence {
-                        Some(channel_data.clone().ok_or_else(|| {
-                            sockudo_core::error::Error::InvalidMessageFormat(
-                                "Missing channel_data for presence channel".into(),
-                            )
-                        })?)
-                    } else {
-                        None
-                    };
+                    // Presence requires channel_data, but this runs pre-auth: reject it
+                    // in `validate_presence_subscription`, never here.
+                    let channel_data = channel_data.clone();
                     let auth = extra.get("auth").and_then(Value::as_str).map(String::from);
 
                     // Accept both "filter" (client-side) and "tags_filter" (server-side) for compatibility
@@ -820,23 +811,6 @@ mod tests {
         assert!(request.predicate.is_some());
     }
 
-    /// GHSA-4795-c9wj-3q58: the wire decoder produces `MessageData::Structured` for
-    /// `{"channel": ...}` objects; a presence channel without `channel_data` must be an error.
-    #[test]
-    fn presence_subscribe_without_channel_data_is_an_error_not_a_panic() {
-        for event in ["pusher:subscribe", "sockudo:subscribe"] {
-            let raw = format!(r#"{{"event":"{event}","data":{{"channel":"presence-x"}}}}"#);
-            let message: PusherMessage = sonic_rs::from_str(&raw).unwrap();
-            assert!(matches!(message.data, Some(MessageData::Structured { .. })));
-            let result =
-                SubscriptionRequest::from_message(&message, &event_name_filtering_config());
-            assert!(matches!(
-                result,
-                Err(sockudo_core::error::Error::InvalidMessageFormat(_))
-            ));
-        }
-    }
-
     #[test]
     fn oversized_multibyte_event_name_is_an_error_not_a_panic() {
         let filter = json!({ "events": [format!("a{}", "é".repeat(150))] });
@@ -851,6 +825,47 @@ mod tests {
             &event_name_filtering_config(),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn presence_subscribe_without_channel_data_parses_without_panicking() {
+        // An unauthenticated client can send this; parsing must not panic on it.
+        let data: MessageData = sonic_rs::from_str(r#"{"channel":"presence-user-42"}"#)
+            .expect("structured subscribe data parses");
+        assert!(matches!(
+            data,
+            MessageData::Structured {
+                channel_data: None,
+                ..
+            }
+        ));
+
+        let mut message =
+            PusherMessage::channel_event("sockudo:subscribe", "presence-user-42", json!({}));
+        message.data = Some(data);
+
+        let request = SubscriptionRequest::from_message(&message, &event_name_filtering_config())
+            .expect("presence subscribe without channel_data must parse");
+        assert_eq!(request.channel_data, None);
+    }
+
+    #[test]
+    fn channel_data_retention_matches_across_wire_encodings() {
+        let filter = event_name_filtering_config();
+        let object = sonic_rs::from_str::<PusherMessage>(
+            r#"{"event":"pusher:subscribe","data":{"channel":"private-x","channel_data":"abc"}}"#,
+        )
+        .expect("object-form subscribe parses");
+        let string = sonic_rs::from_str::<PusherMessage>(
+            r#"{"event":"pusher:subscribe","data":"{\"channel\":\"private-x\",\"channel_data\":\"abc\"}"}"#,
+        )
+        .expect("string-form subscribe parses");
+
+        let object = SubscriptionRequest::from_message(&object, &filter).unwrap();
+        let string = SubscriptionRequest::from_message(&string, &filter).unwrap();
+
+        assert_eq!(object.channel_data.as_deref(), Some("abc"));
+        assert_eq!(string.channel_data.as_deref(), Some("abc"));
     }
 
     #[test]

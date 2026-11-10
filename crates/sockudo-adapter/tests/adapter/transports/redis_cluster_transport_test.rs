@@ -1,7 +1,7 @@
 use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_adapter::transports::RedisClusterTransport;
 use sockudo_core::error::Result;
-use sockudo_core::options::RedisClusterAdapterConfig;
+use sockudo_core::options::{ClusterBroadcastMode, RedisClusterAdapterConfig};
 
 use super::test_helpers::*;
 
@@ -30,6 +30,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         use_sharded_pubsub: false,
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -44,6 +45,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         use_sharded_pubsub: false,
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -61,6 +63,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         use_sharded_pubsub: false,
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -80,6 +83,7 @@ async fn test_redis_cluster_invalid_config() {
         use_sharded_pubsub: false,
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     };
 
     let result = RedisClusterTransport::new(config).await;
@@ -98,6 +102,7 @@ async fn test_redis_cluster_invalid_config() {
         use_sharded_pubsub: false,
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     };
 
     let result = tokio::time::timeout(
@@ -421,6 +426,7 @@ async fn test_redis_cluster_node_count_is_real_time_conditional() {
         use_sharded_pubsub: true,
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     };
     let Ok(transport_sharded) = RedisClusterTransport::new(config_sharded).await else {
         return; // Skip if Redis Cluster not available
@@ -482,6 +488,7 @@ async fn test_redis_cluster_reply_channel_format() {
         use_sharded_pubsub: false,
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     };
     let Ok(transport) = RedisClusterTransport::new(config).await else {
         return; // Skip if Redis Cluster not available
@@ -521,4 +528,141 @@ async fn test_redis_cluster_publish_request_with_reply() {
         "publish_request_with_reply should succeed: {:?}",
         result.err()
     );
+}
+
+#[tokio::test]
+async fn test_cluster_bucketed_broadcast_reaches_every_bucket() -> Result<()> {
+    let config = RedisClusterAdapterConfig {
+        broadcast_mode: ClusterBroadcastMode::Bucketed,
+        broadcast_buckets: 3,
+        ..get_redis_cluster_config()
+    };
+
+    let node_ids = ["node-e", "node-a", "node-c"];
+    let mut collectors = Vec::new();
+    let mut listeners = Vec::new();
+    for node_id in node_ids {
+        let Ok(transport) = RedisClusterTransport::new(config.clone()).await else {
+            return Ok(()); // Skip if Redis Cluster not available
+        };
+        let collector = MessageCollector::new();
+        transport
+            .start_listeners(create_test_handlers_with_node_id(
+                collector.clone(),
+                node_id,
+            ))
+            .await?;
+        collectors.push(collector);
+        listeners.push(transport);
+    }
+
+    let Ok(publisher) = RedisClusterTransport::new(config).await else {
+        return Ok(());
+    };
+
+    // Give listeners time to subscribe
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    publisher
+        .publish_broadcast(&create_test_broadcast("cluster-bucketed"))
+        .await?;
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    for (node_id, collector) in node_ids.iter().zip(collectors.iter()) {
+        let broadcasts = collector.get_broadcasts().await;
+        assert_eq!(
+            broadcasts.len(),
+            1,
+            "node {node_id} should receive exactly one broadcast"
+        );
+        assert!(broadcasts[0].message.contains("cluster-bucketed"));
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cluster_adjacent_broadcast_modes_deliver_exactly_once() -> Result<()> {
+    let pairs = [
+        (
+            ClusterBroadcastMode::Legacy,
+            ClusterBroadcastMode::PublishBoth,
+        ),
+        (
+            ClusterBroadcastMode::PublishBoth,
+            ClusterBroadcastMode::SubscribeBucket,
+        ),
+        (
+            ClusterBroadcastMode::SubscribeBucket,
+            ClusterBroadcastMode::Bucketed,
+        ),
+    ];
+    let node_ids = ["node-e", "node-a", "node-c"];
+
+    for (first, second) in pairs {
+        let base = get_redis_cluster_config();
+        let first_config = RedisClusterAdapterConfig {
+            broadcast_mode: first,
+            broadcast_buckets: 3,
+            ..base.clone()
+        };
+        let second_config = RedisClusterAdapterConfig {
+            broadcast_mode: second,
+            ..base
+        };
+
+        let mut collectors = Vec::new();
+        let mut listeners = Vec::new();
+        for (mode_config, label) in [
+            (first_config.clone(), first.as_str()),
+            (second_config.clone(), second.as_str()),
+        ] {
+            for node_id in node_ids {
+                let Ok(transport) = RedisClusterTransport::new(mode_config.clone()).await else {
+                    return Ok(()); // Skip if Redis Cluster not available
+                };
+                let collector = MessageCollector::new();
+                transport
+                    .start_listeners(create_test_handlers_with_node_id(
+                        collector.clone(),
+                        node_id,
+                    ))
+                    .await
+                    .unwrap_or_else(|e| panic!("listener start failed for {label}/{node_id}: {e}"));
+                collectors.push((label, node_id, collector));
+                listeners.push(transport);
+            }
+        }
+
+        let publisher_first = RedisClusterTransport::new(first_config).await?;
+        let publisher_second = RedisClusterTransport::new(second_config).await?;
+
+        // Give listeners time to subscribe
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        publisher_first
+            .publish_broadcast(&create_test_broadcast("cluster-adjacent-1"))
+            .await?;
+        publisher_second
+            .publish_broadcast(&create_test_broadcast("cluster-adjacent-2"))
+            .await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+        assert_eq!(listeners.len(), 6);
+        for (label, node_id, collector) in &collectors {
+            let broadcasts = collector.get_broadcasts().await;
+            for event in ["cluster-adjacent-1", "cluster-adjacent-2"] {
+                let count = broadcasts
+                    .iter()
+                    .filter(|broadcast| broadcast.message.contains(event))
+                    .count();
+                assert_eq!(
+                    count, 1,
+                    "{label}/{node_id} should receive {event} exactly once"
+                );
+            }
+        }
+    }
+
+    Ok(())
 }

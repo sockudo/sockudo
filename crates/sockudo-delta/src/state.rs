@@ -5,6 +5,7 @@ use sockudo_core::delta_types::{DeltaAlgorithm, DeltaCompressionConfig};
 use sockudo_core::error::Result;
 use sockudo_core::utils::{is_wildcard_subscription_pattern, wildcard_pattern_matches};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::messages::CachedMessage;
@@ -211,18 +212,32 @@ impl Default for PerChannelDeltaSettings {
 /// Per-socket delta compression state
 #[derive(Debug)]
 pub(crate) struct SocketDeltaState {
-    pub(crate) enabled: bool,
+    /// Delta compression is on for this socket. `false` while the socket
+    /// only holds per-channel opt-outs.
+    pub(crate) enabled: AtomicBool,
     pub(crate) channel_states: DashMap<String, Arc<ChannelState>>,
     pub(crate) channel_delta_settings: DashMap<String, PerChannelDeltaSettings>,
 }
 
 impl SocketDeltaState {
+    pub(crate) fn new(enabled: bool) -> Self {
+        Self {
+            enabled: AtomicBool::new(enabled),
+            channel_states: DashMap::new(),
+            channel_delta_settings: DashMap::new(),
+        }
+    }
+
     pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn enable(&self) {
+        self.enabled.store(true, Ordering::Release);
     }
 
     pub(crate) fn is_enabled_for_channel(&self, channel: &str) -> bool {
-        if !self.enabled {
+        if !self.is_enabled() {
             return false;
         }
 
@@ -388,11 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socket_delta_state_channel_enabled_check() {
-        let state = SocketDeltaState {
-            enabled: true,
-            channel_states: DashMap::new(),
-            channel_delta_settings: DashMap::new(),
-        };
+        let state = SocketDeltaState::new(true);
 
         // Default: follows global enabled state
         assert!(state.is_enabled_for_channel("any-channel"));
@@ -412,11 +423,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socket_delta_state_algorithm_selection() {
-        let state = SocketDeltaState {
-            enabled: true,
-            channel_states: DashMap::new(),
-            channel_delta_settings: DashMap::new(),
-        };
+        let state = SocketDeltaState::new(true);
 
         let default_algo = DeltaAlgorithm::Fossil;
 
@@ -447,11 +454,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_channel_delta_settings() {
-        let state = SocketDeltaState {
-            enabled: true,
-            channel_states: DashMap::new(),
-            channel_delta_settings: DashMap::new(),
-        };
+        let state = SocketDeltaState::new(true);
 
         state.set_channel_delta_settings(
             "channel".to_string(),

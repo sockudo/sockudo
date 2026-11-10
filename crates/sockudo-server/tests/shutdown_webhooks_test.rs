@@ -197,11 +197,11 @@ fn assert_removal(events: &[Value]) {
 
 #[tokio::test]
 async fn v2_shutdown_preserves_default_lease_and_delivers_after_grace_expires() {
-    let (events, elapsed, _) = shutdown_case(2, 10, 15, 50, true, 30_000).await;
+    let (events, elapsed, log) = shutdown_case(2, 10, 15, 50, true, 30_000).await;
     assert_removal(&events);
     assert!(
         elapsed >= Duration::from_secs(18),
-        "do not shorten the presence lease or webhook delay"
+        "do not shorten the presence lease or webhook delay: shutdown finished in {elapsed:?}\n{log}"
     );
 }
 

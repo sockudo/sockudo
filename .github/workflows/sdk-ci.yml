@@ -14,6 +14,9 @@ on:
       - "server-sdks/**"
       # sockudo-ai-transport-js replays the server AI conformance goldens.
       - "tests/ai-conformance/**"
+      # The Rust client's wire-conformance suite runs against the server codecs.
+      - "crates/sockudo-protocol/**"
+      - "scripts/rust-client-live.sh"
   push:
     branches: [main, master, develop, beta]
     paths:
@@ -26,6 +29,9 @@ on:
       - "server-sdks/**"
       # sockudo-ai-transport-js replays the server AI conformance goldens.
       - "tests/ai-conformance/**"
+      # The Rust client's wire-conformance suite runs against the server codecs.
+      - "crates/sockudo-protocol/**"
+      - "scripts/rust-client-live.sh"
 
 permissions:
   contents: read
@@ -165,6 +171,15 @@ jobs:
         with:
           bun-version: 1.3.9
 
+      - name: Cache Bun dependencies
+        if: matrix.manager == 'bun' || matrix.name == '@sockudo/ai-transport'
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ matrix.name }}-${{ hashFiles(format('{0}/bun.lock*', matrix.path)) }}
+          restore-keys: |
+            ${{ runner.os }}-bun-${{ matrix.name }}-
+
       - name: Install latest npm CLI
         run: npm install --global npm@latest
 
@@ -286,6 +301,14 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ matrix.kind }}-${{ hashFiles(format('{0}/**/packages.lock.json', matrix.root)) }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-${{ matrix.kind }}-
+
       - name: Verify client package
         if: matrix.kind == 'client'
         working-directory: ${{ matrix.root }}
@@ -336,7 +359,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
@@ -499,6 +522,58 @@ jobs:
           go test ./...
           go list -m all
 
+  rust-client-sdk:
+    name: Rust Client SDK
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client-sdks/sockudo-rust/target
+            target
+          key: ${{ runner.os }}-cargo-rust-client-${{ hashFiles('client-sdks/sockudo-rust/Cargo.lock', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-rust-client-
+
+      - name: Verify Rust client package
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --all-targets --no-default-features -- -D warnings
+          cargo test --all-features
+          cargo test --no-default-features
+          cargo package --allow-dirty --no-verify
+
+      - name: Install server build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config protobuf-compiler libprotobuf-dev
+
+      - name: Build Sockudo server
+        working-directory: .
+        run: cargo build -p sockudo
+
+      - name: Live tests against the server
+        working-directory: .
+        run: |
+          scripts/rust-client-live.sh
+          scripts/rust-client-live.sh --compression
+
   rust-server-sdk:
     name: Rust Server SDK
     runs-on: ubuntu-24.04
@@ -514,6 +589,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server-sdks/sockudo-http-rust/target
+          key: ${{ runner.os }}-cargo-rust-sdk-${{ hashFiles('server-sdks/sockudo-http-rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-rust-sdk-
 
       - name: Verify Rust package
         run: |

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
 use std::collections::{BTreeMap, HashMap};
 
-use crate::messages::{AiExtras, ExtrasValue, MessageData, MessageExtras, PusherMessage};
+use crate::messages::{AiCodec, AiExtras, ExtrasValue, MessageData, MessageExtras, PusherMessage};
 use crate::versioned_messages::{MessageAction, MessageVersionMetadata, VersionedRealtimeMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -283,11 +283,16 @@ struct ProtoAiExtras {
     codec: HashMap<String, String>,
     #[prost(map = "string, string", tag = "3")]
     opaque_json: HashMap<String, String>,
+    /// Ably AI Transport codec id; set instead of `codec` when the message
+    /// carried a string under `extras.ai.codec`.
+    #[prost(string, optional, tag = "4")]
+    codec_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MsgpackMessageExtras {
-    headers: Option<HashMap<String, MsgpackExtrasValue>>,
+    /// A null header encodes as native msgpack nil, not as a new tagged kind.
+    headers: Option<HashMap<String, Option<MsgpackExtrasValue>>>,
     ephemeral: Option<bool>,
     idempotency_key: Option<String>,
     echo: Option<bool>,
@@ -297,7 +302,7 @@ struct MsgpackMessageExtras {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MsgpackAiExtras {
     transport: Option<HashMap<String, String>>,
-    codec: Option<HashMap<String, String>>,
+    codec: Option<AiCodec>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     opaque: BTreeMap<String, serde_json::Value>,
 }
@@ -641,11 +646,13 @@ impl From<MsgpackMessageData> for MessageData {
 impl From<MessageExtras> for ProtoMessageExtras {
     fn from(value: MessageExtras) -> Self {
         Self {
+            // Protobuf has no null header value; the key is omitted rather than
+            // mapped to a sentinel.
             headers: value
                 .headers
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(k, v)| (k, v.into()))
+                .filter_map(|(k, v)| ProtoExtrasValue::from_extras(v).map(|v| (k, v)))
                 .collect(),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
@@ -658,9 +665,12 @@ impl From<MessageExtras> for ProtoMessageExtras {
 impl From<MessageExtras> for MsgpackMessageExtras {
     fn from(value: MessageExtras) -> Self {
         Self {
-            headers: value
-                .headers
-                .map(|headers| headers.into_iter().map(|(k, v)| (k, v.into())).collect()),
+            headers: value.headers.map(|headers| {
+                headers
+                    .into_iter()
+                    .map(|(k, v)| (k, MsgpackExtrasValue::from_extras(v)))
+                    .collect()
+            }),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             echo: value.echo,
@@ -671,9 +681,15 @@ impl From<MessageExtras> for MsgpackMessageExtras {
 
 impl From<AiExtras> for ProtoAiExtras {
     fn from(value: AiExtras) -> Self {
+        let (codec, codec_id) = match value.codec {
+            Some(AiCodec::Headers(headers)) => (headers, None),
+            Some(AiCodec::Id(id)) => (HashMap::new(), Some(id)),
+            None => (HashMap::new(), None),
+        };
         Self {
             transport: value.transport.unwrap_or_default(),
-            codec: value.codec.unwrap_or_default(),
+            codec,
+            codec_id,
             opaque_json: value
                 .opaque
                 .into_iter()
@@ -718,9 +734,12 @@ impl TryFrom<ProtoMessageExtras> for MessageExtras {
 impl From<MsgpackMessageExtras> for MessageExtras {
     fn from(value: MsgpackMessageExtras) -> Self {
         Self {
-            headers: value
-                .headers
-                .map(|headers| headers.into_iter().map(|(k, v)| (k, v.into())).collect()),
+            headers: value.headers.map(|headers| {
+                headers
+                    .into_iter()
+                    .map(|(k, v)| (k, v.map_or(ExtrasValue::Null, Into::into)))
+                    .collect()
+            }),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             push: None,
@@ -735,9 +754,17 @@ impl TryFrom<ProtoAiExtras> for AiExtras {
     type Error = String;
 
     fn try_from(value: ProtoAiExtras) -> Result<Self, Self::Error> {
+        let codec = match (value.codec_id, value.codec.is_empty()) {
+            (Some(_), false) => {
+                return Err("extras.ai.codec cannot be both an id and headers".to_string());
+            }
+            (Some(id), true) => Some(AiCodec::Id(id)),
+            (None, false) => Some(AiCodec::Headers(value.codec)),
+            (None, true) => None,
+        };
         Ok(Self {
             transport: (!value.transport.is_empty()).then_some(value.transport),
-            codec: (!value.codec.is_empty()).then_some(value.codec),
+            codec,
             opaque: value
                 .opaque_json
                 .into_iter()
@@ -764,23 +791,25 @@ impl From<MsgpackAiExtras> for AiExtras {
     }
 }
 
-impl From<ExtrasValue> for ProtoExtrasValue {
-    fn from(value: ExtrasValue) -> Self {
+impl ProtoExtrasValue {
+    fn from_extras(value: ExtrasValue) -> Option<Self> {
         let kind = match value {
-            ExtrasValue::String(s) => Some(proto_extras_value::Kind::String(s)),
-            ExtrasValue::Number(n) => Some(proto_extras_value::Kind::Number(n)),
-            ExtrasValue::Bool(b) => Some(proto_extras_value::Kind::Bool(b)),
+            ExtrasValue::String(s) => proto_extras_value::Kind::String(s),
+            ExtrasValue::Number(n) => proto_extras_value::Kind::Number(n),
+            ExtrasValue::Bool(b) => proto_extras_value::Kind::Bool(b),
+            ExtrasValue::Null => return None,
         };
-        Self { kind }
+        Some(Self { kind: Some(kind) })
     }
 }
 
-impl From<ExtrasValue> for MsgpackExtrasValue {
-    fn from(value: ExtrasValue) -> Self {
+impl MsgpackExtrasValue {
+    fn from_extras(value: ExtrasValue) -> Option<Self> {
         match value {
-            ExtrasValue::String(s) => Self::String(s),
-            ExtrasValue::Number(n) => Self::Number(n),
-            ExtrasValue::Bool(b) => Self::Bool(b),
+            ExtrasValue::String(s) => Some(Self::String(s)),
+            ExtrasValue::Number(n) => Some(Self::Number(n)),
+            ExtrasValue::Bool(b) => Some(Self::Bool(b)),
+            ExtrasValue::Null => None,
         }
     }
 }
@@ -909,6 +938,7 @@ mod tests {
                         ExtrasValue::String("high".to_string()),
                     ),
                     ("ttl".to_string(), ExtrasValue::Number(5.0)),
+                    ("urgent".to_string(), ExtrasValue::Bool(true)),
                 ])),
                 ephemeral: Some(true),
                 idempotency_key: Some("extra-idem".to_string()),
@@ -944,28 +974,37 @@ mod tests {
 
     #[test]
     fn ai_codec_metadata_round_trips_in_all_wire_formats() {
-        let ai: AiExtras = serde_json::from_value(serde_json::json!({
-            "transport": { "run-id": "run-1" },
-            "codec": { "format": "test" },
-            "type": "text-delta",
-            "fields": { "id": "m1", "nested": [null, true, { "count": 3 }] },
-            "stream": true,
-            "ends": "message-1"
-        }))
-        .unwrap();
-        let mut message = sample_versioned_message();
-        message.message.extras.as_mut().unwrap().ai = Some(ai);
-        for format in [
-            WireFormat::Json,
-            WireFormat::MessagePack,
-            WireFormat::Protobuf,
+        // Sockudo writes a codec header map; Ably AI Transport writes its codec id.
+        for codec in [
+            serde_json::json!({ "format": "test" }),
+            serde_json::json!("openai-responses"),
         ] {
-            let bytes = serialize_message(&message.message, format).unwrap();
-            let decoded = deserialize_message(&bytes, format).unwrap();
-            assert_eq!(decoded.extras, message.message.extras, "{format:?}");
-            let bytes = serialize_versioned_message(&message, format).unwrap();
-            let decoded = deserialize_versioned_message(&bytes, format).unwrap();
-            assert_eq!(decoded.message.extras, message.message.extras, "{format:?}");
+            let ai: AiExtras = serde_json::from_value(serde_json::json!({
+                "transport": { "run-id": "run-1" },
+                "codec": codec,
+                "type": "text-delta",
+                "fields": { "id": "m1", "nested": [null, true, { "count": 3 }] },
+                "stream": true,
+                "ends": "message-1"
+            }))
+            .unwrap();
+            let mut message = sample_versioned_message();
+            message.message.extras.as_mut().unwrap().ai = Some(ai);
+            for format in [
+                WireFormat::Json,
+                WireFormat::MessagePack,
+                WireFormat::Protobuf,
+            ] {
+                let bytes = serialize_message(&message.message, format).unwrap();
+                let decoded = deserialize_message(&bytes, format).unwrap();
+                assert_eq!(decoded.extras, message.message.extras, "{format:?} {codec}");
+                let bytes = serialize_versioned_message(&message, format).unwrap();
+                let decoded = deserialize_versioned_message(&bytes, format).unwrap();
+                assert_eq!(
+                    decoded.message.extras, message.message.extras,
+                    "{format:?} {codec}"
+                );
+            }
         }
     }
 
@@ -977,9 +1016,22 @@ mod tests {
                 transport: HashMap::new(),
                 codec: HashMap::new(),
                 opaque_json: HashMap::from([(key.to_string(), raw.to_string())]),
+                codec_id: None,
             });
             assert!(deserialize_message(&proto.encode_to_vec(), WireFormat::Protobuf).is_err());
         }
+    }
+
+    #[test]
+    fn protobuf_rejects_ai_codec_id_alongside_codec_headers() {
+        let mut proto = ProtoPusherMessage::from(sample_message());
+        proto.extras.as_mut().unwrap().ai = Some(ProtoAiExtras {
+            transport: HashMap::new(),
+            codec: HashMap::from([("format".to_string(), "test".to_string())]),
+            opaque_json: HashMap::new(),
+            codec_id: Some("openai-responses".to_string()),
+        });
+        assert!(deserialize_message(&proto.encode_to_vec(), WireFormat::Protobuf).is_err());
     }
 
     #[test]
@@ -1045,6 +1097,45 @@ mod tests {
         let bytes = serialize_message(&msg, WireFormat::Protobuf).unwrap();
         let decoded = deserialize_message(&bytes, WireFormat::Protobuf).unwrap();
         assert_eq!(decoded.data, msg.data);
+    }
+
+    fn message_with_null_header() -> PusherMessage {
+        let mut msg = sample_message();
+        let headers = msg.extras.as_mut().unwrap().headers.as_mut().unwrap();
+        headers.insert("trace".to_string(), ExtrasValue::Null);
+        msg
+    }
+
+    #[test]
+    fn null_header_round_trips_in_json_and_messagepack() {
+        let msg = message_with_null_header();
+        for format in [WireFormat::Json, WireFormat::MessagePack] {
+            let bytes = serialize_message(&msg, format).unwrap();
+            let decoded = deserialize_message(&bytes, format).unwrap();
+            assert_eq!(decoded.extras, msg.extras, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn null_header_is_native_messagepack_nil() {
+        // The null is native msgpack nil, not a new tagged kind.
+        let bytes =
+            serialize_message(&message_with_null_header(), WireFormat::MessagePack).unwrap();
+        let wire: MsgpackPusherMessage = deserialize_msgpack_exact(&bytes).unwrap();
+        let headers = wire.extras.unwrap().headers.unwrap();
+        assert_eq!(headers.get("trace"), Some(&None));
+        assert!(headers.get("urgent").unwrap().is_some());
+    }
+
+    #[test]
+    fn protobuf_omits_null_header_and_keeps_the_rest() {
+        let msg = message_with_null_header();
+        let bytes = serialize_message(&msg, WireFormat::Protobuf).unwrap();
+        let decoded = deserialize_message(&bytes, WireFormat::Protobuf).unwrap();
+        let headers = decoded.extras.unwrap().headers.unwrap();
+        assert!(!headers.contains_key("trace"));
+        assert_eq!(headers.get("urgent"), Some(&ExtrasValue::Bool(true)));
+        assert_eq!(headers.len(), 3);
     }
 
     #[test]

@@ -1,0 +1,115 @@
+[package]
+name = "sockudo-client"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Official async Rust realtime client for Sockudo: Pusher-compatible Protocol V1 and Sockudo Protocol V2"
+repository = "https://github.com/sockudo/sockudo"
+homepage = "https://github.com/sockudo/sockudo/tree/master/client-sdks/sockudo-rust"
+documentation = "https://docs.rs/sockudo-client"
+readme = "README.md"
+keywords = ["sockudo", "pusher", "websocket", "realtime", "client"]
+categories = ["network-programming", "web-programming::websocket", "asynchronous"]
+include = ["src/**/*", "benches/**/*", "examples/**/*", "tests/**/*", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[features]
+default = ["tls", "http", "encryption", "xdelta3", "msgpack", "protobuf", "deflate"]
+# `wss://` support through rustls (aws-lc-rs) and the operating system trust store.
+tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-platform-verifier"]
+# Use the bundled Mozilla root store instead of the operating system trust store.
+tls-webpki-roots = ["tls", "dep:webpki-roots"]
+# HTTP endpoint support: channel/user auth endpoints, capability-token URLs,
+# history/versioned-message proxies, and the push registration client.
+http = ["dep:reqwest"]
+# `private-encrypted-*` channel decryption (NaCl secretbox).
+encryption = ["dep:crypto_secretbox"]
+# Xdelta3/VCDIFF delta decoding. Fossil decoding is always available.
+xdelta3 = ["dep:oxidelta"]
+# permessage-deflate (RFC 7692) WebSocket compression.
+deflate = ["sockudo-ws/permessage-deflate"]
+# MessagePack wire format.
+msgpack = ["dep:rmp-serde", "dep:serde_bytes"]
+# Protobuf wire format.
+protobuf = ["dep:prost"]
+
+[dependencies]
+ahash = "0.8.12"
+base64 = "0.23.1"
+bytes = "1.12.1"
+fastrand = "2.5.0"
+form_urlencoded = "1.2.2"
+memchr = "2.8.3"
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "sink"] }
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive"] }
+sockudo-ws = { version = "3.1.1", default-features = false, features = ["tokio-runtime", "simd", "fastrand"] }
+sonic-rs = "0.5.10"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt", "net", "time", "sync", "macros"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+
+# tls
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"], optional = true }
+rustls-platform-verifier = { version = "0.7.1", optional = true }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"], optional = true }
+webpki-roots = { version = "1.0.11", optional = true }
+
+# http
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"], optional = true }
+
+# encryption
+crypto_secretbox = { version = "0.1.1", optional = true }
+
+# delta
+oxidelta = { version = "0.1.4", default-features = false, features = ["adler32"], optional = true }
+
+# wire formats
+prost = { version = "0.14.4", optional = true }
+rmp-serde = { version = "1.3.1", optional = true }
+serde_bytes = { version = "0.11.19", optional = true }
+
+[dev-dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "form", "json"] }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+fossil-delta = "0.2.0"
+# The mock server negotiates permessage-deflate regardless of client features.
+sockudo-ws = { version = "3.1.1", default-features = false, features = ["tokio-runtime", "permessage-deflate"] }
+oxidelta = { version = "0.1.4", default-features = false, features = ["adler32"] }
+# Cross-codec conformance: frames encoded by this client must decode with the
+# server's own protocol crate, and frames the server encodes must decode here.
+sockudo-protocol = { version = "5.2.0", path = "../../crates/sockudo-protocol" }
+serde_json = "1.0.154"
+# Live tests sign auth and REST requests like a backend would.
+hmac = "0.13.0"
+md-5 = "0.11.0"
+sha2 = "0.11.1"
+tokio = { version = "1.54.1", features = ["full", "test-util"] }
+
+[[bench]]
+name = "client_hot_paths"
+harness = false
+
+[[example]]
+name = "basic"
+
+[[example]]
+name = "presence"
+required-features = ["http"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+# Independently released SDK: keep it out of the server workspace.
+[workspace]

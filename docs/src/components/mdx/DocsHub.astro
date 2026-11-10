@@ -1,0 +1,28 @@
+---
+import { ArrowRight, Star } from '@lucide/astro';
+import { getStars, repoUrl } from '@/lib/github';
+const stars = await getStars();
+---
+
+<section class="hub not-prose island">
+  <canvas class="hub-canvas" data-mini-hero aria-hidden="true"></canvas>
+  <div class="hub-fade" aria-hidden="true"></div>
+  <div class="hub-copy">
+    <span class="eyebrow">Sockudo documentation</span>
+    <h2>Ship Pusher-compatible realtime now. <span class="grad">Add durability when you need it.</span></h2>
+    <p>
+      Sockudo keeps the Pusher-shaped WebSocket and HTTP API familiar while giving teams a native Protocol V2 path for recovery, history,
+      mutable messages, annotations, push and horizontal fanout.
+    </p>
+    <div class="hub-ctas">
+      <a class="btn btn-primary" href="/docs/getting-started/installation">Start the production path <ArrowRight class="arrow" /></a>
+      <a class="btn btn-glass" href={repoUrl} target="_blank" rel="noreferrer"><Star size={15} style="color:#fbbf24;fill:#fbbf24" /> <span data-stars>{stars}</span> stars</a>
+    </div>
+    <dl class="hub-stats">
+      <div><dt>Drop-in surface</dt><dd>Protocol V1</dd></div>
+      <div><dt>Native layer</dt><dd>Protocol V2</dd></div>
+      <div><dt>Runtime</dt><dd>Rust + Tokio</dd></div>
+      <div><dt>Operations</dt><dd>Cluster ready</dd></div>
+    </dl>
+  </div>
+</section>

@@ -42,6 +42,7 @@ pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
         use_sharded_pubsub: false,     // Use standard pub/sub for tests
         tls: Default::default(),
         pubsub_ping_interval_ms: 10_000,
+        ..Default::default()
     }
 }
 
@@ -250,14 +251,23 @@ where
 pub fn create_test_handlers(
     collector: MessageCollector,
 ) -> sockudo_adapter::horizontal_transport::TransportHandlers {
+    create_test_handlers_with_node_id(collector, "test-node")
+}
+
+/// Create transport handlers for testing with an explicit node id
+pub fn create_test_handlers_with_node_id(
+    collector: MessageCollector,
+    node_id: &str,
+) -> sockudo_adapter::horizontal_transport::TransportHandlers {
     use sockudo_adapter::horizontal_transport::BoxFuture;
 
     let broadcast_collector = collector.clone();
     let request_collector = collector.clone();
     let response_collector = collector;
+    let response_node_id = node_id.to_string();
 
     sockudo_adapter::horizontal_transport::TransportHandlers {
-        node_id: "test-node".to_string(),
+        node_id: node_id.to_string(),
         on_broadcast: Arc::new(move |msg| {
             let collector = broadcast_collector.clone();
             Box::pin(async move {
@@ -266,12 +276,13 @@ pub fn create_test_handlers(
         }),
         on_request: Arc::new(move |msg| {
             let collector = request_collector.clone();
+            let response_node_id = response_node_id.clone();
             Box::pin(async move {
                 collector.collect_request(msg.clone()).await;
                 // Return a dummy response for testing
                 Ok(ResponseBody {
                     request_id: msg.request_id,
-                    node_id: "test-node".to_string(),
+                    node_id: response_node_id,
                     app_id: "test-app".to_string(),
                     members: AHashMap::new(),
                     channels_with_sockets_count: AHashMap::new(),

@@ -254,6 +254,12 @@ pub struct HorizontalAdapter {
     /// Track node heartbeats:AHashMap<node_id, last_heartbeat_received_time>
     pub node_heartbeats: Arc<RwLock<AHashMap<String, Instant>>>,
 
+    /// Dead nodes this node expired from `node_heartbeats` as a follower whose
+    /// presence cleanup it has not seen yet (no NodeDead broadcast arrived).
+    /// Kept so a later round still cleans them up if the elected leader dies
+    /// before broadcasting.
+    pub dead_nodes_awaiting_cleanup: Arc<RwLock<HashSet<String>>>,
+
     /// Sequence counter for conflict resolution
     pub sequence_counter: Arc<AtomicU64>,
 

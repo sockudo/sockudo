@@ -1,49 +1,13 @@
 ---
 title: Sockudo Documentation
-description: "Build, operate, and extend Sockudo: the Rust realtime server with Pusher compatibility, Protocol V2, clustered fanout, recovery, history, push, and official SDKs."
+description: "Build, operate, and extend Sockudo: the self-hosted Rust realtime server with Pusher compatibility, Protocol V2, clustered fanout, recovery, history, push, and official SDKs."
 icon: House
 full: true
 ---
 
-Sockudo is a self-hosted realtime platform for teams that want Pusher-compatible APIs with deeper control over protocol evolution, horizontal scaling, history, recovery, observability, and SDK behavior.
+Sockudo is a self-hosted realtime server written in Rust. It speaks the Pusher Channels protocol, so existing Pusher clients and server libraries work against it, and it adds a native protocol for durable history, connection recovery, mutable messages, and other features Pusher does not offer. Start here whether you are replacing Pusher, building a new realtime product, or evaluating Sockudo for a clustered production deployment.
 
-<section className="docs-control-center not-prose" aria-labelledby="docs-hub-heading">
-  <div className="docs-hub-panel">
-    <div className="docs-hub-top">
-      <div className="docs-hub-copy">
-        <span className="docs-hub-badge">Production realtime docs</span>
-        <h2 id="docs-hub-heading">Ship Pusher-compatible realtime now. Add durability when you need it.</h2>
-        <p>{"Sockudo keeps the Pusher-shaped WebSocket and HTTP API surface familiar while giving teams a native Protocol V2 path for recovery, history, mutable messages, annotations, push workflows, and horizontal fanout."}</p>
-        <a className="docs-hub-cta" href="/docs/getting-started/installation">
-          {"Start the production path "} <span aria-hidden="true">-&gt;</span>
-        </a>
-      </div>
-      <div className="docs-hub-narrative" aria-label="Sockudo documentation scope">
-        <p><strong>Keep existing clients moving.</strong>{" Protocol V1 preserves pusher-js, Laravel Echo, Pusher auth, and familiar server publish flows."}</p>
-        <p><strong>Add native capabilities deliberately.</strong>{" Protocol V2 adds serials, message IDs, rewind, deltas, tags, annotations, mutable messages, and recovery metadata without leaking into V1 delivery."}</p>
-        <p><strong>Operate it like infrastructure.</strong>{" Server docs cover adapters, app managers, queues, caches, metrics, rate limits, webhooks, push, and cluster failure paths."}</p>
-      </div>
-    </div>
-    <dl className="docs-hub-stats" aria-label="Sockudo documentation highlights">
-      <div>
-        <dt>Drop-in surface</dt>
-        <dd>Protocol V1</dd>
-      </div>
-      <div>
-        <dt>Native layer</dt>
-        <dd>Protocol V2</dd>
-      </div>
-      <div>
-        <dt>Runtime</dt>
-        <dd>Rust + Tokio</dd>
-      </div>
-      <div>
-        <dt>Operations</dt>
-        <dd>Cluster ready</dd>
-      </div>
-    </dl>
-  </div>
-</section>
+<DocsHub />
 
 <Cards>
   <Card title="Install and verify" href="/docs/getting-started/installation" description="Run Sockudo locally, choose features, inspect health probes, and understand the default development app." />
@@ -54,28 +18,37 @@ Sockudo is a self-hosted realtime platform for teams that want Pusher-compatible
   <Card title="Reference the API" href="/docs/reference/http-endpoints" description="Find every server endpoint for publishing, channel state, history, mutations, annotations, push, and operations." />
 </Cards>
 
+## Key terms
+
+These terms appear on every page of the documentation.
+
+| Term | Meaning |
+| --- | --- |
+| App | A tenant on the server. Each app has an `id`, a public `key` that clients use to connect, and a `secret` that only your backend holds and uses to sign requests. |
+| Channel | A named stream that clients subscribe to. The name prefix (`private-`, `presence-`, `private-encrypted-`) decides whether a subscription needs your backend's approval. |
+| Event | A named message published to one or more channels, such as `order.created`. |
+| Protocol V1 | The Pusher-compatible wire protocol. It is the default, so `pusher-js`, Laravel Echo, and Pusher server SDKs keep working unchanged. |
+| Protocol V2 | Sockudo's native wire protocol. Clients opt in, and V2 adds `message_id`, `serial`, and `stream_id` metadata plus recovery, rewind, deltas, filters, and more. |
+| Adapter | The layer that relays broadcasts and presence between Sockudo nodes. The `local` adapter serves a single node; Redis, NATS, Kafka, and others connect a cluster. |
+| App manager | Where app records live: inline in the config file (`memory`) or in a database such as PostgreSQL or MySQL. |
+
 ## Production topology
 
-Sockudo sits between realtime clients and trusted backends. Clients hold WebSocket connections and subscribe to public, private, presence, or encrypted channels. Backends use the HTTP API or server SDKs to publish events, sign channel auth, mutate V2 messages, manage push devices, and inspect operational state.
+Sockudo sits between realtime clients and your trusted backends. Clients hold long-lived WebSocket connections and subscribe to public, private, presence, or encrypted channels. Backends never hold a socket; they call the HTTP API, usually through a server SDK, to publish events, sign channel auth, mutate V2 messages, manage push devices, and inspect operational state.
 
-<div className="docs-topology-showcase not-prose">
-  <div className="docs-topology-copy">
-    <span>Runtime shape</span>
-    <h3>One protocol edge, multiple durability choices.</h3>
-    <p>{"Start with the in-memory local profile, then move app records, caches, queues, adapters, history, and push status into production backends as the deployment grows."}</p>
-    <ul>
-      <li><strong>WebSocket ingress:</strong>{" client connect, subscribe, auth, presence, and realtime delivery."}</li>
-      <li><strong>HTTP control plane:</strong>{" trusted publishes, channel state, history reads, message mutations, annotations, and push workflows."}</li>
-      <li><strong>Horizontal fanout:</strong>{" Redis, NATS, Kafka, RabbitMQ, Pulsar, Google Pub/Sub, Iggy, or another configured adapter."}</li>
-    </ul>
-  </div>
-  <figure>
-    <img src="/diagrams/architecture.svg" alt="Sockudo architecture with clients, the Rust server, and backend publish surfaces." />
-    <figcaption>{"Protocol V1 compatibility and Protocol V2 durability run through the same server edge."}</figcaption>
-  </figure>
-</div>
+- **WebSocket ingress:** client connect, subscribe, auth, presence, and realtime delivery.
+- **HTTP control plane:** trusted publishes, channel state, history reads, message mutations, annotations, and push workflows.
+- **Horizontal fanout:** Redis, NATS, Kafka, RabbitMQ, Pulsar, Google Pub/Sub, Iggy, or another configured adapter.
+
+Start with the in-memory local profile, then move app records, caches, queues, adapters, history, and push status into production backends as the deployment grows. Each move is a configuration change, not a code change in your clients.
+
+<FanoutDiagram caption="Protocol V1 compatibility and Protocol V2 durability run through the same server edge: publish once, fan out across nodes, deliver to every socket, and recover gaps from durable history." />
 
 ## Recommended path
+
+Follow these steps in order the first time. Each one builds on the previous page.
+
+<Steps>
 
 1. Run a local Sockudo server from [Installation](/docs/getting-started/installation).
 2. Publish and receive your first event from [First connection](/docs/getting-started/first-connection).
@@ -84,31 +57,51 @@ Sockudo sits between realtime clients and trusted backends. Clients hold WebSock
 5. Wire your client from [Realtime Clients](/docs/clients) and your backend from [Server SDKs](/docs/server-sdks).
 6. Follow the [Deployment guide](/docs/deployment), then harden the runtime with [Scaling](/docs/server/scaling), [Security](/docs/server/security), and [Observability](/docs/server/observability).
 
+</Steps>
+
 ## Developer quick loops
 
-The examples use the default development app. Keep these values local only:
+The snippets below form one complete loop: start a server, subscribe, publish, and confirm the event arrives. They all use the same local development app:
 
-```bash
-export SOCKUDO_APP_ID=app-id
-export SOCKUDO_APP_KEY=app-key
-export SOCKUDO_APP_SECRET=app-secret
-export SOCKUDO_HOST=127.0.0.1
-export SOCKUDO_PORT=6001
-```
+| Setting | Value |
+| --- | --- |
+| App ID | `app-id` |
+| App key | `app-key` |
+| App secret | `app-secret` |
+| WebSocket and HTTP API | `127.0.0.1:6001` |
+| Prometheus metrics | `127.0.0.1:9601` |
+
+<Callout type="warn" title="Development credentials only">
+These values are public examples. Replace every credential before exposing a server to a network, and keep the app secret on trusted servers only.
+</Callout>
 
 ### Run Sockudo and check health
 
+Start the published container image with the development app defined through environment variables:
+
 ```bash
-docker compose up sockudo redis
-curl -f http://127.0.0.1:6001/up
-curl -f http://127.0.0.1:9601/metrics | head
+docker run --rm --name sockudo \
+  -p 6001:6001 -p 9601:9601 \
+  -e SOCKUDO_DEFAULT_APP_ID=app-id \
+  -e SOCKUDO_DEFAULT_APP_KEY=app-key \
+  -e SOCKUDO_DEFAULT_APP_SECRET=app-secret \
+  ghcr.io/sockudo/sockudo:latest
 ```
 
-Use Docker Compose when you want Redis and repeatable local dependencies. Use `cargo run --release` when you want to validate a source build or a specific feature set.
+In a second terminal, check the health probe and the metrics endpoint:
+
+```bash
+curl -s http://127.0.0.1:6001/up
+curl -s http://127.0.0.1:9601/metrics | head -n 3
+```
+
+`/up` prints `OK` when the server is healthy and at least one app is configured. The metrics endpoint returns Prometheus text whose series start with `sockudo_`.
+
+Use `cargo run --release -p sockudo` instead when you want to validate a source build or a specific feature set. [Installation](/docs/getting-started/installation) covers every install path.
 
 ### Subscribe from a client
 
-```ts
+```ts title="client.ts"
 import Sockudo from "@sockudo/client";
 
 const client = new Sockudo("app-key", {
@@ -124,12 +117,12 @@ client.subscribe("orders").bind("order.created", (payload) => {
 });
 ```
 
-Set `protocolVersion: 2` when the client needs Sockudo-native recovery, rewind, message IDs, tags, deltas, annotations, or mutable messages. Leave existing Pusher-compatible clients on Protocol V1 until you are ready to adopt V2 behavior.
+Set `protocolVersion: 2` when the client needs Sockudo-native recovery, rewind, message IDs, tags, deltas, annotations, or mutable messages. Without it, the client connects with Protocol V1. Leave existing Pusher-compatible clients on V1 until you are ready to adopt V2 behavior.
 
 ### Publish from a trusted backend
 
-```ts
-import { Sockudo } from "sockudo";
+```ts title="publish.ts"
+import Sockudo from "sockudo";
 
 const sockudo = new Sockudo({
   appId: "app-id",
@@ -148,17 +141,17 @@ await sockudo.trigger(
 );
 ```
 
-Server SDKs sign requests, format payloads, and hide HMAC details. Use raw HTTP only when you are implementing or debugging an SDK.
+The client from the previous step logs `received { id: 'ord_123', total: 4200 }`. Server SDKs sign requests, format payloads, and hide HMAC details. Use raw HTTP only when you are implementing or debugging an SDK; [First connection](/docs/getting-started/first-connection#publish-over-raw-http) shows a signed `curl` request.
 
 ### Turn local config into a production shape
 
-```toml
+```toml title="config/config.toml"
 port = 6001
 host = "0.0.0.0"
 debug = false
 
 [app_manager]
-driver = "postgres"
+driver = "pgsql"
 
 [adapter]
 driver = "redis"
@@ -174,13 +167,25 @@ enabled = true
 port = 9601
 ```
 
+| Section | What it controls |
+| --- | --- |
+| `[app_manager]` | Where app IDs, keys, secrets, and policies are stored. `postgres` reads them from PostgreSQL instead of the config file. |
+| `[adapter]` | How nodes share broadcasts and presence. `redis` lets every node deliver events published on any other node. |
+| `[cache]` | Shared short-lived state such as idempotency keys and capability-token revocations. |
+| `[queue]` | Background work such as webhook delivery. |
+| `[metrics]` | The Prometheus endpoint, served on its own port. |
+
 The important move is not a single backend choice. It is separating connection fanout, app records, cache state, queue work, durable history, push status, and metrics so each subsystem can fail, scale, and be observed independently.
+
+<Callout type="note" title="Backends are Cargo features">
+Drivers such as `redis` and `postgres` must be compiled into the binary. The prebuilt Linux binaries and container images include them; source builds need the matching `--features`. See [Feature flags](/docs/getting-started/installation#feature-flags).
+</Callout>
 
 ## Local baseline
 
-The examples use the default development app:
+Running the binary from a repository checkout loads `config/config.toml`, which defines the same development app inline:
 
-```toml
+```toml title="config/config.toml"
 port = 6001
 host = "0.0.0.0"
 
@@ -205,3 +210,11 @@ For production, replace every example credential, enable TLS at the edge, use ma
 - **Idempotency:** attach stable keys to retried publishes, message mutations, push requests, and backend workflows.
 - **Observability:** scrape `/metrics`, alert on connection churn, publish failures, adapter errors, webhook retries, push provider outcomes, and recovery failures.
 - **Operations:** document feature flags, runtime config, secret rotation, rollout order, and rollback behavior for every backend dependency.
+
+## Next steps
+
+<Cards>
+  <Card title="Overview" href="/docs/getting-started/overview" description="The mental model: surfaces, protocols, channel types, and production shape." />
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Every config key, its default, and what it controls." />
+  <Card title="Troubleshooting" href="/docs/getting-started/troubleshooting" description="Diagnose connection, auth, publish, fanout, recovery, and push problems." />
+</Cards>

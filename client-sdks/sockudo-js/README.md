@@ -142,12 +142,25 @@ event retry in lockstep. Set `reconnectJitter` to randomize each delay by that
 fraction and spread the retries out: `0.5` picks uniformly from 50–100% of
 the delay, `1` from 0–100%. It defaults to `0`, which keeps the delays exact.
 
+Protocol retry closes, such as `4200` when a server node shuts down, reconnect
+immediately, so a node's whole population returns at once. Set
+`retryJitterMs` to wait a random 0 to `retryJitterMs` milliseconds before
+those retries. It defaults to `0`. TLS-upgrade retries stay immediate.
+
+While the server is unreachable, one attempt keeps retrying until it connects:
+a connection that fails quickly (for example a refused TCP connection) is
+retried after a jittered backoff of 0.5-1 s, growing to 2.5-5 s, and an
+attempt that hangs is abandoned after 15 s, doubling to 60 s if hangs repeat.
+`maxReconnectAttempts` counts reconnects after a connection closes or stops
+responding, not these retries.
+
 ```ts
 const client = new Sockudo("app-key", {
   cluster: "local",
   maxReconnectAttempts: 10,
   maxReconnectGapInSeconds: 60,
   reconnectJitter: 0.5,
+  retryJitterMs: 2000,
 });
 
 client.connection.bind("reconnecting", () => {

@@ -205,6 +205,9 @@ impl From<sockudo_core::error::Error> for AppError {
                 retry_after_seconds: 1,
             },
             sockudo_core::error::Error::Auth(s) => AppError::ApiAuthFailed(s),
+            sockudo_core::error::Error::ApplicationDisabled => {
+                AppError::Forbidden("Application is disabled".to_string())
+            }
             sockudo_core::error::Error::AiTransport {
                 code,
                 name,
@@ -274,6 +277,21 @@ mod tests {
             json["error"].as_str().is_some(),
             "error must include 'error' field"
         );
+    }
+
+    #[tokio::test]
+    async fn application_disabled_maps_to_forbidden_response() {
+        let response =
+            AppError::from(sockudo_core::error::Error::ApplicationDisabled).into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["code"].as_str(), Some("forbidden"));
+        assert_eq!(json["status"].as_u64(), Some(403));
+        assert_eq!(json["error"].as_str(), Some("Application is disabled"));
     }
 
     #[tokio::test]

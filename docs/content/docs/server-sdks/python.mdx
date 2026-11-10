@@ -1,251 +1,748 @@
 ---
 title: Python
-description: Use the Python sync or async SDK for publishing, auth, history, annotations, and push notifications.
+description: Publish events, sign channel and user auth, validate webhooks, read history, mutate versioned messages, and manage push from Python with the sync or asyncio Sockudo client.
 icon: FileCode
 ---
 
-`sockudo-http-python` is the trusted HTTP SDK for APIs, workers, and web
-frameworks. It publishes and signs requests; it does not maintain a WebSocket
-subscription. Use [`sockudo-python`](/docs/clients/python) for an asyncio
-realtime consumer.
+`sockudo-http-python` is the trusted backend library for calling the Sockudo HTTP API from Python
+3.9+. It runs inside your API servers, workers, and web frameworks, signs every request with your
+app secret, and ships two clients with the same method names: `Sockudo` for synchronous code and
+`AsyncSockudo` for asyncio. It does not hold a WebSocket subscription; use
+[`sockudo-python`](/docs/clients/python) for a realtime consumer.
+
+- Signed HTTP publishing to one channel, up to 100 channels, or a batch of events
+- Explicit, generated, and automatic idempotency keys, with built-in retries for 5xx and network
+  failures
+- Private, presence, encrypted-channel, and user (signin) authentication signing
+- Webhook signature validation and parsing, including decryption of `private-encrypted-*` events
+- Channel state, presence members, durable history, presence history, and operator history controls
+- Versioned messages (get, versions, update, delete, append) and annotations (publish, list, delete)
+- Push device registration, channel subscriptions, publish, publish status, and Apple Live
+  Activities
+- Terminate or force-reconnect every connection of a user
 
 ## Install
 
-```bash
+```bash title="Terminal"
 pip install sockudo-http-python
 ```
 
-## Configure
+The package requires Python 3.9 or newer and depends on `httpx[http2]` (0.27+) and `PyNaCl` (1.5+).
+Version 2.2.0 is the current release.
 
-```python
+Contributors working inside the Sockudo monorepo can install the package in editable mode with its
+test tooling:
+
+```bash title="Terminal"
+pip install -e "server-sdks/sockudo-http-python[dev]"
+```
+
+The distribution installs two import names: `sockudo_http_python` and the shorter alias
+`sockudo_http`. Both expose the same classes.
+
+## Configure the client
+
+```python title="sockudo_client.py"
+import os
+
 from sockudo_http_python import Sockudo, SockudoOptions
 
 sockudo = Sockudo(
-    "app-id",
-    "app-key",
-    "app-secret",
-    options=SockudoOptions(host="127.0.0.1", port=6001, use_tls=False),
+    os.environ["SOCKUDO_APP_ID"],
+    os.environ["SOCKUDO_KEY"],
+    os.environ["SOCKUDO_SECRET"],
+    # Optional: required only for private-encrypted-* channels.
+    encryption_master_key_base64=os.environ.get("SOCKUDO_ENCRYPTION_MASTER_KEY"),
+    options=SockudoOptions(
+        host=os.environ.get("SOCKUDO_HOST", "127.0.0.1"),
+        port=int(os.environ.get("SOCKUDO_PORT", "6001")),
+        use_tls=os.environ.get("SOCKUDO_USE_TLS") == "true",
+        timeout=4.0,
+        auto_idempotency=True,
+    ),
 )
 ```
 
-The package supports Python 3.9+. Create one client per process, reuse its
-HTTP pool, and close it during shutdown. Important options are:
+The constructor takes `app_id`, `key`, and `secret` (all required; an empty value raises
+`SockudoError`), an optional `encryption_master_key_base64`, an optional `options`, and an optional
+pre-built `client`. `SockudoOptions` holds the transport settings:
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `timeout` | `4.0` seconds | Bound each HTTP operation |
-| `max_retries` | `3` | Retry eligible network/server failures |
-| `retry_base_delay` | `0.1` seconds | Base for retry backoff |
-| `auto_idempotency` | `False` | Generate keys when the caller omits one |
-| `http2` | `True` | Allow HTTP/2 where supported |
-| `verify_tls` | `True` | Verify the server certificate or use a CA bundle |
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | `str` | `"127.0.0.1"` | Sockudo HTTP host. |
+| `port` | `int` | `6001` | Sockudo HTTP port. |
+| `use_tls` | `bool` | `False` | Use `https` instead of `http`. Enable it in production. |
+| `timeout` | `float` | `4.0` | `httpx` timeout in seconds for each attempt. |
+| `max_retries` | `int` | `3` | Total attempts per request, including the first. `1` disables retries; `0` sends nothing and returns a network error. |
+| `retry_base_delay` | `float` | `0.1` | Base delay in seconds for exponential backoff (`0.1`, `0.2`, ...). |
+| `auto_idempotency` | `bool` | `False` | Generate an idempotency key for publishes and batch items that omit one. |
+| `http2` | `bool` | `True` | Negotiate HTTP/2. Falls back to HTTP/1.1 if the `h2` package is missing. |
+| `verify_tls` | `bool` or `str` | `True` | Verify the server certificate; pass a CA bundle path for private PKI. |
 
-Use `use_tls=True` in production. Do not disable certificate verification to
-work around a deployment problem.
+Constructor arguments outside `SockudoOptions`:
 
-## Publish
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `encryption_master_key_base64` | `str` | `None` | Base64 key that must decode to exactly 32 bytes; validated at construction. |
+| `client` | `httpx.Client` / `httpx.AsyncClient` | `None` | Inject your own `httpx` client. The SDK then does not close it, and `timeout`, `http2`, and `verify_tls` do not apply. |
 
-```python
+You can also build a client from a `Config` dataclass, which flattens the same fields, or from a
+URL. `from_url` sets `host`, `port` (80 or 443 when omitted), and `use_tls` from the scheme; every
+other option keeps its default.
+
+```python title="alternative_constructors.py"
+import os
+
+from sockudo_http import Config, Sockudo
+
+from_config = Sockudo(
+    Config(
+        app_id=os.environ["SOCKUDO_APP_ID"],
+        key=os.environ["SOCKUDO_KEY"],
+        secret=os.environ["SOCKUDO_SECRET"],
+        host="sockudo.internal",
+        port=443,
+        use_tls=True,
+    )
+)
+
+# SOCKUDO_URL=https://app-key:app-secret@sockudo.internal/apps/app-id
+from_url = Sockudo.from_url(os.environ["SOCKUDO_URL"])
+```
+
+The asyncio client has the identical constructor and method names; every HTTP method is awaited:
+
+```python title="async_client.py"
+import os
+
+from sockudo_http_python import AsyncSockudo, SockudoOptions
+
+async def publish_order(order_id: str) -> None:
+    async with AsyncSockudo(
+        os.environ["SOCKUDO_APP_ID"],
+        os.environ["SOCKUDO_KEY"],
+        os.environ["SOCKUDO_SECRET"],
+        options=SockudoOptions(host="sockudo.internal", port=443, use_tls=True),
+    ) as sockudo:
+        await sockudo.trigger("orders", "order.created", {"id": order_id})
+```
+
+Use `Sockudo` in WSGI apps, scripts, and thread-based workers, and `AsyncSockudo` in ASGI apps and
+asyncio workers. Do not call the synchronous client from inside an event loop; it blocks the loop
+for the whole request, including retry backoff. Signing helpers such as `authenticate` and
+`validate_webhook_signature` do no I/O and are plain (non-async) methods on both clients.
+
+Runtime setters exist for `set_host`, `set_port`, `set_encrypted` (TLS), `set_auto_idempotency_key`,
+and `set_data_marshaller` (replace the default compact `json.dumps` used for event data).
+
+<Callout type="tip" title="Create once, reuse, close on shutdown">
+Each client owns an `httpx` connection pool. Create one per process at startup, share it across
+requests, and close it on shutdown with `sockudo.close()`, `await sockudo.close()`, or the
+`with` / `async with` context managers.
+</Callout>
+
+Keep the app secret on the server. It signs every HTTP API call and every channel and user auth
+response, so anyone holding it can publish to any channel, read history, and impersonate any user.
+Load it from environment variables or a secret manager, and never ship it to browsers or mobile
+apps. The same applies to the encryption master key.
+
+## Publish an event
+
+```python title="publish.py"
 from sockudo_http_python import TriggerOptions
 
-sockudo.trigger(
+result = sockudo.trigger(
     "orders",
     "order.created",
-    {"id": "ord_123"},
-    TriggerOptions(idempotency_key="order-created-ord_123"),
-)
-```
-
-Inspect the returned `Result` rather than assuming a non-throwing call
-succeeded:
-
-```python
-result = sockudo.trigger(
-    ["tenant-42:orders", "user-7:orders"],
-    "order.updated",
-    {"id": "ord_123", "status": "paid"},
-    TriggerOptions(
-        socket_id="123.456",
-        idempotency_key="order-paid:ord_123:v3",
-    ),
+    {"id": "ord_123", "total": 4200},
+    TriggerOptions(idempotency_key="order.created:tenant-42:ord_123:v1"),
 )
 
 if not result.ok:
-    raise RuntimeError(f"Sockudo publish failed: {result.status}")
+    raise RuntimeError(f"publish failed: {result.status.value} {result.status_code}")
 ```
 
-Use batch publishing for independent events that can share one request. A
-business-derived idempotency key is preferable to auto-generation when
-separate workers may retry the same logical operation.
+`trigger` returns a `Result` instead of raising for HTTP failures. It carries `status` (a `Status`
+enum), `status_code` (the HTTP status, or `None` for network errors), `message` (the raw response
+body), `ok`, and `json()` to decode the body. String data is sent as-is; any other value is
+JSON-encoded.
 
-## Async
+`TriggerOptions` accepts:
 
-```python
-from sockudo_http_python import AsyncSockudo, SockudoOptions
+- `socket_id`: exclude one connection from delivery.
+- `info`: a string or list of attributes, such as `["subscription_count"]`, to include in the response.
+- `idempotency_key`: a string, or `True` to generate a UUID for this call.
+- `tags`: a `dict[str, str]` used by Protocol V2 tag filtering.
+- `extras`: a `MessageExtras` with `headers`, `ephemeral`, `idempotency_key`, `echo`, and `tags`
+  for Protocol V2 message extras.
 
-async with AsyncSockudo(
-    "app-id",
-    "app-key",
-    "app-secret",
-    options=SockudoOptions(host="127.0.0.1", port=6001, use_tls=False),
-) as sockudo:
-    await sockudo.trigger("orders", "order.created", {"id": "ord_123"})
+Pass `socket_id` when a browser action triggered the publish. The user who clicked "Save" has
+already updated their own UI optimistically; excluding their connection prevents the server from
+echoing the same event back and applying it twice. Take the value from the request the client sent
+you (for example `sockudo.connection.socket_id` in the JavaScript client).
+
+To deliver to one authenticated user on all of their connections, use `send_to_user`, which
+publishes to the user's `#server-to-user-{user_id}` channel:
+
+```python title="send_to_user.py"
+sockudo.send_to_user("user-42", "notice", {"body": "Your export is ready"})
 ```
 
-Use the synchronous client in traditional WSGI code and `AsyncSockudo` in
-ASGI/asyncio code. Do not call the synchronous client directly on an event
-loop. The context manager closes `httpx` resources; call `sockudo.close()` for a
-long-lived synchronous instance during process shutdown.
+## Publish to many channels or in a batch
 
-## Auth
+Pass a list of channels to publish the same event to each of them in one request:
 
-```python
-from sockudo_http_python import PresenceUser
+```python title="multi_channel.py"
+from sockudo_http_python import TriggerOptions
 
-private_body = sockudo.authenticate("123.456", "private-orders")
-
-presence_body = sockudo.authenticate(
-    "123.456",
-    "presence-lobby",
-    PresenceUser("user-42", {"name": "Ada"}),
+sockudo.trigger(
+    ["tenant-42:orders", "user-7:orders"],
+    "order.updated",
+    {"id": "ord_123", "status": "paid"},
+    TriggerOptions(socket_id="123.456", idempotency_key="order.paid:ord_123:v3"),
 )
-
-user_body = sockudo.authenticate_user("123.456", {"id": "user-42"})
 ```
 
-Authentication helpers only produce signatures. Your route must first
-authenticate the application session and authorize the exact channel. Derive
-presence and user identity from trusted server-side data.
+Use `trigger_batch` for different events that can share one HTTP request. Each `Event` takes a
+`channel`, `name`, and `data`, plus optional `socket_id`, `info`, `idempotency_key`, `extras`, and
+`tags`:
 
-Configure `encryption_master_key_base64` to authorize and publish to
-`private-encrypted-*` channels. Keep that key in a secret manager and never
-return it to a client; the SDK returns only the derived shared secret.
+```python title="batch.py"
+from sockudo_http_python import Event
 
-## State, user controls, and pagination
+result = sockudo.trigger_batch(
+    [
+        Event("orders", "order.paid", {"id": "ord_123"}, idempotency_key="order.paid:ord_123:v1"),
+        Event("invoices", "invoice.issued", {"id": "inv_9"}, idempotency_key="invoice.issued:inv_9:v1"),
+    ]
+)
+```
 
-```python
-from sockudo_http_python import ChannelsParams, PresenceHistoryParams
+The SDK checks two limits before sending: a single `trigger` accepts at most 100 channels, and a
+publish to a `private-encrypted-*` channel cannot target more than one channel. Both raise
+`SockudoError`. The batch size is not checked locally. The server enforces its `[event_limits]`
+defaults:
 
-channels = sockudo.list_channels(
-    ChannelsParams(
-        filter_by_prefix="presence-",
-        info=["subscription_count", "user_count"],
+| Limit | Default |
+| --- | --- |
+| `max_channels_at_once` | `100` channels per publish |
+| `max_batch_size` | `10` events per batch |
+| `max_payload_in_kb` | `100` KB per event payload |
+| `max_name_length` | `200` characters per event or channel name |
+
+## Idempotency and retries
+
+A timeout does not tell you whether Sockudo published the event. The request may have failed
+before it arrived, or it may have published and the response was lost. Retrying without a key can
+deliver the event twice; an idempotency key lets the server recognise the retry.
+
+Server semantics:
+
+- The key can be sent as the body field `idempotency_key` or the `X-Idempotency-Key` header; the
+  body field wins when both are present. `trigger` sends the same key in both.
+- `[idempotency]` defaults: `enabled = true`, `ttl_seconds = 120`, `max_key_length = 128`. Empty
+  keys are rejected.
+- A duplicate inside the TTL returns the original cached `200` response without publishing again.
+- In a batch, `X-Idempotency-Key` identifies the whole batch and each item's `idempotency_key`
+  identifies only that event; the two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
+
+A key names a logical operation, such as `order.created:tenant-42:order-123:v1`, not an HTTP
+attempt. Never reuse a key for a different payload.
+
+How this SDK sets keys:
+
+| Mechanism | Scope | Survives an application-level retry? |
+| --- | --- | --- |
+| `TriggerOptions(idempotency_key="...")` / `Event(..., idempotency_key="...")` | One publish or batch item | Yes, if you derive it from business data |
+| `idempotency_key=True` | Fresh UUID per call | No, only covers the SDK's own retries |
+| `SockudoOptions(auto_idempotency=True)` | Process-local key per call; batch items get one key each | No, only covers the SDK's own retries |
+
+`trigger_batch` sends keys per item only; it does not send a batch-level `X-Idempotency-Key`
+header.
+
+Every HTTP call (publishes, reads, and push) retries automatically when the result is a
+`SERVER_ERROR` (any 5xx, including `503 backpressure`) or a `NETWORK_ERROR`, up to `max_retries`
+total attempts with exponential backoff from `retry_base_delay`. The retry reuses the same signed
+URL and body, so the same idempotency key travels with it. The SDK does not read `Retry-After` and
+does not retry `429`.
+
+<Callout type="warn" title="Built-in retries can duplicate unkeyed publishes">
+Because 5xx and network failures are retried by default, a publish without an idempotency key can
+be delivered twice when the first attempt actually succeeded. Pass a business-derived key, enable
+`auto_idempotency`, or set `max_retries=1` and own the retry policy yourself.
+</Callout>
+
+## Authorize private and presence channels
+
+When a client subscribes to a `private-` or `presence-` channel, it asks your backend for a
+signature. `authenticate` only produces that signature; it does not decide whether the user may
+join. Your route must check the session, decide whether this user may access this exact channel,
+and take presence identity from your own user record, never from the request body.
+
+This FastAPI app uses `AsyncSockudo` for its HTTP calls and its synchronous `authenticate` helper
+for signing. Reading form fields requires `python-multipart`:
+
+```bash title="Terminal"
+pip install fastapi uvicorn python-multipart
+```
+
+```python title="app.py"
+import os
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Request, Response
+from sockudo_http_python import AsyncSockudo, PresenceUser, SockudoOptions
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.sockudo = AsyncSockudo(
+        os.environ["SOCKUDO_APP_ID"],
+        os.environ["SOCKUDO_KEY"],
+        os.environ["SOCKUDO_SECRET"],
+        encryption_master_key_base64=os.environ.get("SOCKUDO_ENCRYPTION_MASTER_KEY"),
+        options=SockudoOptions(
+            host=os.environ.get("SOCKUDO_HOST", "127.0.0.1"),
+            port=int(os.environ.get("SOCKUDO_PORT", "6001")),
+            use_tls=os.environ.get("SOCKUDO_USE_TLS") == "true",
+            auto_idempotency=True,
+        ),
     )
-)
-users = sockudo.get_channel_users("presence-lobby")
-presence_page = sockudo.get_channel_presence_history(
-    "presence-lobby",
-    PresenceHistoryParams(limit=50, direction="newest_first"),
-)
+    yield
+    await app.state.sockudo.close()
 
+
+app = FastAPI(lifespan=lifespan)
+
+
+def current_user(request: Request):
+    """Return the signed-in user from your session layer, or None."""
+    ...
+
+
+def can_access(user, channel_name: str) -> bool:
+    """Your authorization rule, e.g. tenant membership for this channel."""
+    ...
+
+
+@app.post("/sockudo/auth")
+async def sockudo_auth(request: Request) -> Response:
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401)
+
+    form = await request.form()  # the JS client sends form-encoded fields
+    socket_id = str(form.get("socket_id", ""))
+    channel_name = str(form.get("channel_name", ""))
+    if not socket_id or not channel_name:
+        raise HTTPException(status_code=400)
+
+    if not can_access(user, channel_name):
+        raise HTTPException(status_code=403)
+
+    sockudo: AsyncSockudo = request.app.state.sockudo
+
+    if channel_name.startswith("presence-"):
+        # Identity comes from your session, never from the request body.
+        body = sockudo.authenticate(
+            socket_id,
+            channel_name,
+            PresenceUser(user.id, {"name": user.display_name}),
+        )
+    else:
+        body = sockudo.authenticate(socket_id, channel_name)
+
+    return Response(content=body, media_type="application/json")
+```
+
+`authenticate(socket_id, channel, presence_user=None)` returns the JSON response body as a string:
+`auth`, plus `channel_data` for presence channels and `shared_secret` for encrypted channels.
+`PresenceUser(user_id, user_info=None)` serializes to the `channel_data` the presence channel
+broadcasts to members.
+
+<Callout type="warn" title="Signing is not authorization">
+Anyone with a valid session can call your auth route with any `channel_name`. Always run your own
+access check before calling `authenticate`, and rate-limit the route.
+</Callout>
+
+### User authentication
+
+User authentication (signin) binds a connection to a user ID so the server can target it with
+`send_to_user`, `terminate_user_connections`, and `force_reconnect_user`. The `user_data` must
+contain an `id` taken from your session:
+
+```python title="app.py"
+@app.post("/sockudo/user-auth")
+async def sockudo_user_auth(request: Request) -> Response:
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401)
+
+    form = await request.form()
+    socket_id = str(form.get("socket_id", ""))
+    if not socket_id:
+        raise HTTPException(status_code=400)
+
+    body = request.app.state.sockudo.authenticate_user(
+        socket_id, {"id": user.id, "name": user.display_name}
+    )
+    return Response(content=body, media_type="application/json")
+```
+
+`authenticate_user` returns a JSON string with `auth` and `user_data`.
+
+### Encrypted channels
+
+`private-encrypted-*` channels carry end-to-end encrypted payloads. Configure
+`encryption_master_key_base64` with a base64 string that decodes to exactly 32 bytes; anything
+else raises `SockudoError` when the client is constructed. Generate one with
+`openssl rand -base64 32`.
+
+With the key configured, the SDK:
+
+- adds a per-channel `shared_secret` (SHA-256 of the channel name and master key) to
+  `authenticate` responses for encrypted channels, using the same route as above;
+- encrypts `trigger` and `trigger_batch` data for encrypted channels with NaCl SecretBox before
+  sending it, so Sockudo never sees plaintext;
+- decrypts encrypted channel events in `parse_webhook`.
+
+`channel_shared_secret(channel)` returns the raw 32-byte secret if you need it directly. Keep the
+master key in a secret manager and never send it to clients; they only ever receive the derived
+per-channel secret.
+
+### Terminate user connections
+
+```python title="user_controls.py"
+# Close every connection for a user, e.g. after a ban or password change.
 sockudo.terminate_user_connections("user-42")
+
+# Close every connection with code 4200 so clients reconnect (and re-authenticate).
 sockudo.force_reconnect_user("user-42")
 ```
 
-Treat state as an operational snapshot. Pass history cursors back unchanged and
-keep pages bounded.
+Both apply only to connections that completed user authentication and return a `Result`. They call
+`POST /apps/{app_id}/users/{user_id}/terminate_connections` and
+`POST /apps/{app_id}/users/{user_id}/force_reconnect`.
 
-## History and annotations
+## Validate webhooks
 
-```python
-from sockudo_http_python import HistoryParams, MessageMutation, PublishAnnotationRequest
+Sockudo signs each webhook with an HMAC-SHA256 of the exact request body bytes, using your app
+secret, and sends the app key in `X-Pusher-Key` and the signature in `X-Pusher-Signature`. Parsing
+the JSON and re-serializing it changes whitespace and key order, which breaks the signature, so
+validate the raw bytes before decoding anything.
 
-sockudo.get_channel_history("orders", HistoryParams(limit=50, direction="newest_first"))
-sockudo.get_message("orders", "42")
-sockudo.update_message("orders", "42", MessageMutation(data={"status": "paid"}))
+```python title="app.py"
+from fastapi import BackgroundTasks
+from sockudo_http_python import Validity, Webhook
+
+
+def handle_webhook(webhook: Webhook) -> None:
+    for event in webhook.events:
+        # Deduplicate on your side: delivery can be retried.
+        if event.name == "channel_occupied":
+            ...
+        elif event.name == "member_added":
+            ...
+
+
+@app.post("/sockudo/webhooks")
+async def sockudo_webhooks(request: Request, background: BackgroundTasks) -> Response:
+    raw_body = await request.body()  # exact bytes, before any JSON parsing
+    key = request.headers.get("X-Pusher-Key", "")
+    signature = request.headers.get("X-Pusher-Signature", "")
+
+    sockudo: AsyncSockudo = request.app.state.sockudo
+    validity = sockudo.validate_webhook_signature(key, signature, raw_body)
+    if validity is not Validity.VALID:
+        raise HTTPException(status_code=401)
+
+    webhook = sockudo.parse_webhook(key, signature, raw_body)
+    background.add_task(handle_webhook, webhook)
+    return Response(status_code=200)
+```
+
+`validate_webhook_signature` returns a `Validity`: `VALID`, `INVALID`, or `SIGNED_WITH_WRONG_KEY`
+(the key header does not match this client's key). The comparison is constant-time.
+`parse_webhook` validates again, raises `SockudoError` on a bad signature, and returns a `Webhook`
+with `time_ms` and a tuple of `WebhookEvent` objects (`name`, `channel`, `event`, `data`,
+`socket_id`, `user_id`, and the full `raw` payload, so fields added in future server versions are
+preserved). Encrypted channel events are decrypted when a master key is configured.
+
+Return `200` quickly and do the work asynchronously, as above or through your job queue. Sockudo
+may retry delivery, so make the handler idempotent. Do not log raw webhook bodies or signatures.
+
+The SDK validates against one key and secret. To rotate credentials, construct a second client with
+the new key and secret and accept a webhook if either client returns `Validity.VALID`.
+
+## Channel state and history
+
+```python title="state.py"
+from sockudo_http_python import ChannelParams, ChannelsParams
+
+channels = sockudo.list_channels(
+    ChannelsParams(filter_by_prefix="presence-", info=["user_count"])
+)
+orders = sockudo.get_channel("orders", ChannelParams(info=["subscription_count"]))
+members = sockudo.get_channel_users("presence-lobby")
+
+if channels.ok:
+    print(channels.json())
+```
+
+Each call returns a `Result`; decode the response with `result.json()`. `get(path, params=None)`
+is a signed `GET` helper for any app-scoped endpoint without a dedicated method; a path that does
+not start with `/apps/` is prefixed with `/apps/{app_id}`. For any other method,
+`signed_uri(method, path, body=None, parameters=None)` returns a fully signed URL you can send with
+your own HTTP client.
+
+### History
+
+`get_channel_history` reads durable history. `HistoryParams` accepts `limit`, `direction`
+(`"newest_first"` or `"oldest_first"`), `cursor`, `start_serial`, `end_serial`, `start_time_ms`,
+and `end_time_ms`. Responses contain `items`, `has_more`, and `next_cursor`. Cursors are opaque:
+pass `next_cursor` back unchanged and do not build or edit them.
+
+```python title="history.py"
+from sockudo_http_python import HistoryParams
+
+cursor = None
+while True:
+    page = sockudo.get_channel_history(
+        "orders", HistoryParams(limit=100, direction="newest_first", cursor=cursor)
+    )
+    if not page.ok:
+        raise RuntimeError(f"history failed: {page.status_code}")
+    body = page.json()
+    for item in body["items"]:
+        process(item)
+    if not body["has_more"]:
+        break
+    cursor = body["next_cursor"]
+```
+
+`get_channel_history_state(channel)` returns the retention and continuity state of a channel's
+stream. Operator controls require a non-empty `reason` and send the confirmation fields the server
+expects:
+
+```python title="history_ops.py"
+sockudo.reset_channel_history("orders", reason="corrupted import", requested_by="ops@example.com")
+sockudo.purge_channel_history(
+    "orders", mode="before_time_ms", before_time_ms=1767225600000, reason="retention policy"
+)
+```
+
+`mode` is `"all"`, `"before_serial"`, or `"before_time_ms"`.
+
+### Presence history
+
+Presence history records join and leave transitions, separate from current membership.
+
+```python title="presence_history.py"
+from sockudo_http_python import PresenceHistoryParams, PresenceSnapshotParams
+
+transitions = sockudo.get_channel_presence_history(
+    "presence-lobby", PresenceHistoryParams(limit=50, direction="newest_first")
+)
+snapshot = sockudo.get_channel_presence_snapshot(
+    "presence-lobby", PresenceSnapshotParams(at_time_ms=1767225600000)
+)
+```
+
+`PresenceHistoryParams` has the same fields as `HistoryParams`. `PresenceSnapshotParams` takes
+`at_serial` or `at_time_ms` to reconstruct membership at a point in time. Also available:
+`get_channel_presence_history_state(channel)` and
+`reset_channel_presence_history(channel, reason, requested_by=None)`.
+
+## Versioned messages and annotations
+
+Protocol V2 messages are addressed by `message_serial` and can be edited, deleted, or appended to
+after publishing. See [Mutable messages](/docs/server/mutable-messages) for the server model.
+
+```python title="versioned_messages.py"
+from sockudo_http_python import MessageMutation, MessageVersionsParams
+
+sockudo.get_message("orders", "msg:1")
+sockudo.get_message_versions("orders", "msg:1", MessageVersionsParams(limit=20))
+
+sockudo.update_message(
+    "orders",
+    "msg:1",
+    MessageMutation(data={"status": "paid"}, description="payment captured"),
+)
+sockudo.append_message("orders", "msg:1", " more streamed text")
+sockudo.delete_message("orders", "msg:1", MessageMutation(description="moderated"))
+```
+
+`MessageMutation` fields are `name`, `data`, `extras`, `clear_fields`, `client_id`, `socket_id`,
+`description`, and `metadata`; at least one must be set or `SockudoError` is raised. You may pass a
+plain `dict` instead. `append_message(channel, message_serial, data, socket_id=None)` requires a
+non-empty string. `MessageVersionsParams` takes `limit`, `direction`, and `cursor`.
+
+Annotations attach reactions and other summaries to a message:
+
+```python title="annotations.py"
+from sockudo_http_python import AnnotationEventsParams, PublishAnnotationRequest
+
 sockudo.publish_annotation(
     "orders",
-    "42",
+    "msg:1",
     PublishAnnotationRequest(
-        type="reactions:distinct.v1",
-        name="like",
-        client_id="user-42",
-        count=1,
+        type="reactions:distinct.v1", name="like", client_id="user-42", count=1
     ),
 )
+sockudo.list_annotations("orders", "msg:1", AnnotationEventsParams(limit=50))
+sockudo.delete_annotation("orders", "msg:1", "ann:1")
 ```
 
-Versioned update, append, and delete operations should use stable operation
-identities in the surrounding workflow. Preserve message and version serial
-order in downstream state. Annotation names and client IDs are application
-data; authorize them before publishing.
-
-## Webhooks
-
-Validate the signature against the exact raw request bytes before decoding
-JSON:
-
-```python
-validity = sockudo.validate_webhook_signature(
-    request.headers["X-Pusher-Key"],
-    request.headers["X-Pusher-Signature"],
-    raw_body,
-)
-
-if validity.value != "valid":
-    raise PermissionError("invalid Sockudo webhook")
-
-webhook = sockudo.parse_webhook(
-    request.headers["X-Pusher-Key"],
-    request.headers["X-Pusher-Signature"],
-    raw_body,
-)
-enqueue_events(webhook.events)
-```
-
-Configure your framework route so middleware does not replace or normalize the
-raw body before validation. Do not log the raw body or signature.
+`PublishAnnotationRequest` takes `type` plus optional `name`, `client_id`, `socket_id`, `count`,
+`data`, and `encoding`. `AnnotationEventsParams` takes `type`, `from_serial`, `limit`, and
+`socket_id`. Annotation names and client IDs are application data: authorize them in your backend
+before publishing on a user's behalf.
 
 ## Push notifications
 
-```python
-from sockudo_http_python import PushSubscriptionParams
+The SDK wraps the push API with typed methods; request bodies are plain dicts sent as-is, so their
+fields follow the server's camelCase push schema. Admin calls send
+`X-Sockudo-Push-Capability: push-admin`. See
+[Push notifications](/docs/server/push-notifications) for provider setup and delivery semantics.
 
-sockudo.activate_device({
-    "deviceId": "android-device-1",
-    "clientId": "user-42",
-    "platform": "fcm",
-    "providerToken": "provider-token",
-})
+```python title="push.py"
+import os
 
-sockudo.upsert_channel_push_subscription({
-    "deviceId": "android-device-1",
-    "clientId": "user-42",
-    "channel": "orders",
-})
+registration = sockudo.activate_device(
+    {
+        "appId": os.environ["SOCKUDO_APP_ID"],  # replaced by the app in the URL
+        "id": "android-device-1",
+        "clientId": "user-42",
+        "formFactor": "phone",
+        "platform": "android",
+        "deviceSecret": "issued-by-server",  # replaced on push-admin registration
+        "timezone": "Europe/Bucharest",
+        "locale": "en-US",
+        "push": {
+            "recipient": {"transportType": "gcm", "registrationToken": fcm_token},
+            "state": "ACTIVE",
+        },
+    }
+).json()
 
-accepted = sockudo.publish_push({
-    "recipients": [{"type": "channel", "channel": "orders"}],
-    "payload": {
-        "title": "Order updated",
-        "body": "Order ord_123 is packed",
-        "data": {"order_id": "ord_123"},
-    },
-    "publishId": "push-order-ord_123-packed",
-})
+# Returned once on first registration (or rotation); hand it to the device.
+device_identity_token = registration.get("deviceIdentityToken")
 
-sockudo.list_channel_push_subscriptions(PushSubscriptionParams(device_id="android-device-1"))
+sockudo.upsert_channel_push_subscription(
+    {
+        "appId": os.environ["SOCKUDO_APP_ID"],
+        "channel": "orders",
+        "deviceId": "android-device-1",
+        "clientId": "user-42",
+        "provider": "fcm",
+        "tokenHash": registration["tokenHash"],
+    }
+)
+
+accepted = sockudo.publish_push(
+    {
+        "publishId": "push-order-ord_123-packed",
+        "recipients": [
+            {"type": "channel", "channel": "orders"},
+            {"type": "client", "client_id": "user-42"},
+        ],
+        "payload": {"title": "Order updated", "body": "Order ord_123 is packed"},
+    }
+)
+status = sockudo.get_publish_status("push-order-ord_123-packed")
 ```
 
-Push helper methods force `sync = False` and return the API result for status inspection.
+`publish_push`, `publish_push_batch`, and `schedule_push` always send `"sync": false`. A successful
+response is an admission record (`publishId`, `status`, `expectedRecipients`, and rendered
+provider payloads), not proof of delivery: read `get_publish_status(publish_id)` later to see
+provider outcomes. Reuse the same `publishId` when retrying an ambiguous publish; the server
+deduplicates on it.
 
-For Apple Live Activities, the SDK exports typed event, priority, storage-policy, payload, and
-recipient helpers, plus sync and async `create/get/list/delete_apns_live_activity_channel`
-methods. See [Apple Live Activities](/docs/server/apple-live-activities) for direct-token and
-iOS 18 broadcast examples. Reuse the same `publishId` when retrying an ambiguous publish.
+Available push methods:
 
-## Errors and production guidance
+| Area | Methods |
+| --- | --- |
+| Devices | `activate_device(device, rotate_device_identity_token=False)`, `create_device_activation`, `update_device_registration(device, device_identity_token)`, `get_device_registration`, `delete_device_registration`, `list_device_registrations(PushCursorParams)`, `remove_device_registrations_by_client(client_id)` |
+| Channel subscriptions | `upsert_channel_push_subscription`, `list_channel_push_subscriptions(PushSubscriptionParams)`, `delete_channel_push_subscriptions(PushSubscriptionParams)`, `list_channel_push_subscription_channels` |
+| Publish | `publish_push`, `publish_push_direct`, `publish_push_batch`, `schedule_push` (requires `notBeforeMs`), `cancel_scheduled_push(publish_id)` |
+| Status and feedback | `get_publish_status(publish_id)`, `post_push_delivery_status(event)` |
+| Credentials | `list_push_credentials`, `put_push_credential(provider, credential)` |
 
-Ordinary HTTP operations return `Result` with `Status.SUCCESS`,
-`CLIENT_ERROR`, `AUTHENTICATION_ERROR`, `SERVER_ERROR`, or `NETWORK_ERROR`.
-Only retry when `result.status.should_retry()` is true, or when your policy
-explicitly handles `429`. Retried publishes must carry an idempotency key.
+Device and subscription methods that accept `device_identity_token` switch to the narrower
+`push-subscribe` capability and send `X-Sockudo-Device-Identity-Token`, so a device can only manage
+its own registration. `PushSubscriptionParams` filters by `channel` or `device_id` and pages with
+`limit` and `cursor`. Never log provider tokens, device identity tokens, or push credentials.
 
-- Reuse the sync or async client and close it cleanly.
-- Keep the SDK timeout shorter than the request or job deadline.
-- Use a trusted CA bundle through `verify_tls` for private PKI.
-- Keep app secrets, signed URLs, webhook bodies, and provider tokens out of
-  logs.
-- Rate-limit auth and history proxy routes.
-- Test duplicate publish attempts, token/key rotation, network interruption,
-  and graceful worker shutdown.
+### Apple Live Activities
+
+The SDK exports typed helpers for ActivityKit: `ApnsLiveActivityPayload`, `ApnsLiveActivityEvent`
+(`START`, `UPDATE`, `END`), `ApnsLiveActivityPriority`, `ApnsChannelStoragePolicy`
+(`NO_STORAGE`, `MOST_RECENT`), and the recipient builders `apns_live_activity_recipient(token)` and
+`apns_live_activity_broadcast_recipient(channel_id, storage_policy)`. Both clients expose
+`create_apns_live_activity_channel`, `get_apns_live_activity_channel`,
+`list_apns_live_activity_channels`, and `delete_apns_live_activity_channel` for iOS 18 broadcast
+channels. See [Apple Live Activities](/docs/server/apple-live-activities) for direct-token and
+broadcast examples.
+
+## Errors and timeouts
+
+The SDK separates two kinds of failure:
+
+- **HTTP and network failures are returned, not raised.** Every HTTP method returns a `Result`
+  whose `status` is `SUCCESS` (2xx), `AUTHENTICATION_ERROR` (401, 403), `CLIENT_ERROR` (other
+  4xx, including 413 and 429), `SERVER_ERROR` (5xx), or `NETWORK_ERROR` (connection failures and
+  timeouts; `status_code` is `None`). `result.status.should_retry()` is true for the last two.
+- **Local validation failures raise `SockudoError`**: missing credentials, an invalid encryption
+  master key, more than 100 channels, a multi-channel encrypted publish, an empty `MessageMutation`
+  or append, a missing history `reason`, a scheduled push without `notBeforeMs`, and invalid or
+  undecryptable webhooks in `parse_webhook`.
+
+```python title="errors.py"
+from sockudo_http_python import SockudoError, Status, TriggerOptions
+
+try:
+    result = sockudo.trigger(
+        "orders",
+        "order.created",
+        {"id": "ord_123"},
+        TriggerOptions(idempotency_key="order.created:tenant-42:ord_123:v1"),
+    )
+except SockudoError:
+    # A bug in the call itself: fix the input, do not retry.
+    raise
+
+if result.status is Status.SUCCESS:
+    pass
+elif result.status_code == 429 or result.status.should_retry():
+    # Built-in retries are exhausted: hand off to your job queue with the SAME key.
+    schedule_retry(key="order.created:tenant-42:ord_123:v1")
+else:
+    # 400, 401, 403, 413: retrying will not help.
+    log.error("sockudo publish rejected", extra={"status": result.status_code})
+```
+
+`timeout` (default `4.0` seconds) bounds each attempt, so the worst case for one call is roughly
+`max_retries * timeout` plus backoff. Keep that below your request or job deadline.
+
+What to retry: network errors, `429`, and 5xx, always with the same idempotency key. What not to
+retry: 400, 401, 403, and 413; they indicate a bad request, bad credentials, or an oversized
+payload. `Result.message` contains the server's response body, which is safe to log in truncated
+form. Never log signed URLs from `signed_uri` (they contain the signature), the app secret, the
+encryption master key, raw webhook bodies, or push provider tokens.
+
+<Callout type="note" title="Do not disable TLS verification">
+Fix certificate problems by passing a CA bundle path to `verify_tls`, not by setting it to `False`.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card title="Server SDKs" href="/docs/server-sdks" description="Compare capabilities across every server SDK." />
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="How clients request private, presence, and user auth from your backend." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Webhook events, delivery, and retry behaviour." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Durable history, cursors, and two-tier recovery." />
+</Cards>

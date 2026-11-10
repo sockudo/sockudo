@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 440" width="1280" height="440" role="img" aria-label="Sockudo: realtime infrastructure you own">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0713"/>
+      <stop offset="0.55" stop-color="#120a22"/>
+      <stop offset="1" stop-color="#1c0b2e"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0.74" cy="0.5" r="0.45">
+      <stop offset="0" stop-color="#8b4dff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#8b4dff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0.08" cy="1" r="0.5">
+      <stop offset="0" stop-color="#c026d3" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#c026d3" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="core" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.25" stop-color="#e9dcff"/>
+      <stop offset="0.6" stop-color="#a978ff"/>
+      <stop offset="1" stop-color="#6425d0"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a978ff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#a978ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="node" cx="0.5" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#3a2263"/>
+      <stop offset="1" stop-color="#1a1029"/>
+    </radialGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c4a5ff"/>
+      <stop offset="0.5" stop-color="#a978ff"/>
+      <stop offset="1" stop-color="#e879f9"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a978ff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#e879f9" stop-opacity="0.2"/>
+    </linearGradient>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.1" fill="#ffffff" fill-opacity="0.06"/>
+    </pattern>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <clipPath id="card"><rect width="1280" height="440" rx="28"/></clipPath>
+
+    <!-- message routes from the core to each node -->
+    <path id="r1" d="M940 220 Q 1030 120 1120 96"/>
+    <path id="r2" d="M940 220 Q 1060 200 1176 222"/>
+    <path id="r3" d="M940 220 Q 1040 320 1112 352"/>
+    <path id="r4" d="M940 220 Q 880 330 820 372"/>
+    <path id="r5" d="M940 220 Q 830 240 728 214"/>
+    <path id="r6" d="M940 220 Q 860 110 790 74"/>
+    <path id="r7" d="M940 220 Q 960 120 966 46"/>
+    <path id="r8" d="M940 220 Q 980 330 990 404"/>
+  </defs>
+
+  <g clip-path="url(#card)">
+    <rect width="1280" height="440" fill="url(#bg)"/>
+    <rect width="1280" height="440" fill="url(#dots)"/>
+    <rect width="1280" height="440" fill="url(#glowA)"/>
+    <rect width="1280" height="440" fill="url(#glowB)"/>
+
+    <!-- orbit rings -->
+    <g fill="none" stroke-width="1.2">
+      <ellipse cx="940" cy="220" rx="118" ry="42" stroke="#c4a5ff" stroke-opacity="0.35" transform="rotate(-18 940 220)">
+        <animateTransform attributeName="transform" type="rotate" from="-18 940 220" to="342 940 220" dur="40s" repeatCount="indefinite"/>
+      </ellipse>
+      <ellipse cx="940" cy="220" rx="150" ry="58" stroke="#e879f9" stroke-opacity="0.22" transform="rotate(24 940 220)">
+        <animateTransform attributeName="transform" type="rotate" from="24 940 220" to="-336 940 220" dur="55s" repeatCount="indefinite"/>
+      </ellipse>
+    </g>
+
+    <!-- routes -->
+    <g fill="none" stroke="url(#line)" stroke-width="1.4" stroke-dasharray="5 6">
+      <use href="#r1"/><use href="#r2"/><use href="#r3"/><use href="#r4"/>
+      <use href="#r5"/><use href="#r6"/><use href="#r7"/><use href="#r8"/>
+      <animate attributeName="stroke-dashoffset" from="0" to="-22" dur="1.2s" repeatCount="indefinite"/>
+    </g>
+
+    <!-- client nodes -->
+    <g>
+      <g transform="translate(1120 96)"><circle r="17" fill="url(#node)" stroke="#a978ff" stroke-opacity="0.7"/><circle r="4" fill="#e9dcff"><animate attributeName="r" values="4;6.5;4" dur="2.4s" begin="0.6s" repeatCount="indefinite"/></circle></g>
+      <g transform="translate(1176 222)"><circle r="15" fill="url(#node)" stroke="#a978ff" stroke-opacity="0.7"/><circle r="4" fill="#e9dcff"><animate attributeName="r" values="4;6.5;4" dur="2.4s" begin="0.9s" repeatCount="indefinite"/></circle></g>
+      <g transform="translate(1112 352)"><circle r="17" fill="url(#node)" stroke="#e879f9" stroke-opacity="0.7"/><circle r="4" fill="#fae8ff"><animate attributeName="r" values="4;6.5;4" dur="2.4s" begin="1.2s" repeatCount="indefinite"/></circle></g>
+      <g transform="translate(820 372)"><circle r="15" fill="url(#node)" stroke="#a978ff" stroke-opacity="0.7"/><circle r="4" fill="#e9dcff"><animate attributeName="r" values="4;6.5;4" dur="2.4s" begin="1.5s" repeatCount="indefinite"/></circle></g>
+      <g transform="translate(728 214)"><circle r="14" fill="url(#node)" stroke="#67e8f9" stroke-opacity="0.7"/><circle r="4" fill="#cffafe"><animate attributeName="r" values="4;6.5;4" dur="2.4s" begin="1.8s" repeatCount="indefinite"/></circle></g>
+      <g transform="translate(790 74)"><circle r="15" fill="url(#node)" stroke="#a978ff" stroke-opacity="0.7"/><circle r="4" fill="#e9dcff"><animate attributeName="r" values="4;6.5;4" dur="2.4s" begin="2.1s" repeatCount="indefinite"/></circle></g>
+      <g transform="translate(966 46)"><circle r="13" fill="url(#node)" stroke="#e879f9" stroke-opacity="0.7"/><circle r="3.5" fill="#fae8ff"><animate attributeName="r" values="3.5;6;3.5" dur="2.4s" begin="0.3s" repeatCount="indefinite"/></circle></g>
+      <g transform="translate(990 404)"><circle r="13" fill="url(#node)" stroke="#a978ff" stroke-opacity="0.7"/><circle r="3.5" fill="#e9dcff"><animate attributeName="r" values="3.5;6;3.5" dur="2.4s" begin="2.4s" repeatCount="indefinite"/></circle></g>
+    </g>
+
+    <!-- travelling packets -->
+    <g>
+      <g filter="url(#soft)" fill="#e879f9">
+        <circle r="6"><animateMotion dur="2.4s" begin="0s" repeatCount="indefinite"><mpath href="#r1"/></animateMotion></circle>
+        <circle r="6"><animateMotion dur="2.4s" begin="0.3s" repeatCount="indefinite"><mpath href="#r2"/></animateMotion></circle>
+        <circle r="6"><animateMotion dur="2.4s" begin="0.6s" repeatCount="indefinite"><mpath href="#r3"/></animateMotion></circle>
+        <circle r="6"><animateMotion dur="2.4s" begin="0.9s" repeatCount="indefinite"><mpath href="#r4"/></animateMotion></circle>
+        <circle r="6"><animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite"><mpath href="#r5"/></animateMotion></circle>
+        <circle r="6"><animateMotion dur="2.4s" begin="1.5s" repeatCount="indefinite"><mpath href="#r6"/></animateMotion></circle>
+        <circle r="6"><animateMotion dur="2.4s" begin="1.8s" repeatCount="indefinite"><mpath href="#r7"/></animateMotion></circle>
+        <circle r="6"><animateMotion dur="2.4s" begin="2.1s" repeatCount="indefinite"><mpath href="#r8"/></animateMotion></circle>
+      </g>
+      <g fill="#ffffff">
+        <circle r="2.6"><animateMotion dur="2.4s" begin="0s" repeatCount="indefinite"><mpath href="#r1"/></animateMotion></circle>
+        <circle r="2.6"><animateMotion dur="2.4s" begin="0.3s" repeatCount="indefinite"><mpath href="#r2"/></animateMotion></circle>
+        <circle r="2.6"><animateMotion dur="2.4s" begin="0.6s" repeatCount="indefinite"><mpath href="#r3"/></animateMotion></circle>
+        <circle r="2.6"><animateMotion dur="2.4s" begin="0.9s" repeatCount="indefinite"><mpath href="#r4"/></animateMotion></circle>
+        <circle r="2.6"><animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite"><mpath href="#r5"/></animateMotion></circle>
+        <circle r="2.6"><animateMotion dur="2.4s" begin="1.5s" repeatCount="indefinite"><mpath href="#r6"/></animateMotion></circle>
+        <circle r="2.6"><animateMotion dur="2.4s" begin="1.8s" repeatCount="indefinite"><mpath href="#r7"/></animateMotion></circle>
+        <circle r="2.6"><animateMotion dur="2.4s" begin="2.1s" repeatCount="indefinite"><mpath href="#r8"/></animateMotion></circle>
+      </g>
+    </g>
+
+    <!-- core -->
+    <circle cx="940" cy="220" r="92" fill="url(#halo)">
+      <animate attributeName="r" values="86;98;86" dur="3.2s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="940" cy="220" r="38" fill="url(#core)"/>
+    <circle cx="940" cy="220" r="38" fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="1.5"/>
+    <g transform="translate(940 220)" fill="none" stroke="#2e1065" stroke-width="2.4" stroke-linejoin="round">
+      <polygon points="0,-17 14.7,-8.5 14.7,8.5 0,17 -14.7,8.5 -14.7,-8.5">
+        <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="18s" repeatCount="indefinite"/>
+      </polygon>
+    </g>
+
+    <!-- wordmark -->
+    <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif">
+      <text x="80" y="104" font-size="15" font-weight="700" letter-spacing="3.5" fill="#c4a5ff">OPEN-SOURCE REALTIME SERVER · RUST</text>
+      <text x="76" y="196" font-size="96" font-weight="800" letter-spacing="-4" fill="#f5f1ff">Sockudo</text>
+      <text x="80" y="252" font-size="34" font-weight="700" letter-spacing="-1" fill="#e9e1fb">Realtime infrastructure <tspan fill="url(#word)">you own.</tspan></text>
+      <text x="80" y="298" font-size="18" fill="#a9a1bc">Pusher-compatible today. Durable, scalable and AI-native when you need it.</text>
+      <g font-size="14" font-weight="600" fill="#e9dcff">
+        <rect x="80" y="330" width="124" height="32" rx="16" fill="#8b4dff" fill-opacity="0.18" stroke="#a978ff" stroke-opacity="0.45"/>
+        <text x="142" y="351" text-anchor="middle">Protocol V1 + V2</text>
+        <rect x="214" y="330" width="138" height="32" rx="16" fill="#8b4dff" fill-opacity="0.18" stroke="#a978ff" stroke-opacity="0.45"/>
+        <text x="283" y="351" text-anchor="middle">Horizontal fanout</text>
+        <rect x="362" y="330" width="112" height="32" rx="16" fill="#8b4dff" fill-opacity="0.18" stroke="#a978ff" stroke-opacity="0.45"/>
+        <text x="418" y="351" text-anchor="middle">AI Transport</text>
+        <rect x="484" y="330" width="102" height="32" rx="16" fill="#c026d3" fill-opacity="0.16" stroke="#e879f9" stroke-opacity="0.45"/>
+        <text x="535" y="351" text-anchor="middle">16 SDKs</text>
+      </g>
+    </g>
+  </g>
+</svg>

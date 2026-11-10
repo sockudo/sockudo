@@ -1,0 +1,17 @@
+---
+import { Search } from '@lucide/astro';
+---
+
+<div class="search-dialog" data-search-dialog role="dialog" aria-modal="true" aria-label="Search documentation" transition:persist="search">
+  <div class="search-panel">
+    <div class="search-input-row">
+      <Search />
+      <input type="search" placeholder="Search Sockudo docs…" autocomplete="off" spellcheck="false" data-search-input aria-label="Search query" />
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" data-search-results data-lenis-prevent>
+      <div class="search-empty">Type to search 80+ pages of guides, references, and SDKs.</div>
+    </div>
+    <div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span><span><kbd>Esc</kbd> close</span></div>
+  </div>
+</div>

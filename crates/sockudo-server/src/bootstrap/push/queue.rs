@@ -13,6 +13,10 @@ const LOCAL_READY_CAP_PER_STAGE: usize = 4_096;
 const LOCAL_PENDING_CAP_PER_STAGE: usize = 8_192;
 #[cfg(feature = "push")]
 const LOCAL_LEASE_TIMEOUT_MS: u64 = 30_000;
+/// Longest wait for `not_before_ms` a consumer holds a job for on a backend with a delay
+/// ceiling; longer waits go back to the backend instead of pinning a worker.
+#[cfg(feature = "push")]
+const LOCAL_NOT_BEFORE_MAX_WAIT_MS: u64 = 1_000;
 
 #[cfg(feature = "push")]
 #[derive(Clone)]
@@ -74,8 +78,8 @@ impl QueueManagerPushQueueStageOwnership {
 }
 
 #[cfg(feature = "push")]
+#[derive(Default)]
 struct QueueManagerPushQueueState {
-    next_id: u64,
     started: std::collections::BTreeSet<sockudo_push::PushQueueStage>,
     ready: std::collections::BTreeMap<
         sockudo_push::PushQueueStage,
@@ -86,19 +90,6 @@ struct QueueManagerPushQueueState {
         QueueManagerPendingMessage,
     >,
     dead_letters: Vec<QueueManagerDeadLetterRecord>,
-}
-
-#[cfg(feature = "push")]
-impl Default for QueueManagerPushQueueState {
-    fn default() -> Self {
-        Self {
-            next_id: 1,
-            started: std::collections::BTreeSet::new(),
-            ready: std::collections::BTreeMap::new(),
-            pending: std::collections::BTreeMap::new(),
-            dead_letters: Vec::new(),
-        }
-    }
 }
 
 #[cfg(feature = "push")]
@@ -242,13 +233,6 @@ impl QueueManagerPushQueue {
         self
     }
 
-    async fn next_message_id(&self) -> String {
-        let mut state = self.state.lock().await;
-        let id = state.next_id;
-        state.next_id = state.next_id.saturating_add(1);
-        format!("push-{:020}", id)
-    }
-
     async fn enqueue_envelope(
         &self,
         envelope: PushQueueEnvelope,
@@ -261,17 +245,26 @@ impl QueueManagerPushQueue {
             .not_before_ms
             .map(|not_before| not_before.saturating_sub(push_queue_now_ms()))
             .unwrap_or_default();
+        // Past a backend's delay ceiling (SQS: 15 minutes) the job arrives early and
+        // `handle_queue_job` sends it back until `not_before_ms`.
+        let delay_ms = self
+            .manager
+            .backend()
+            .max_delay_ms()
+            .map_or(delay_ms, |max_delay_ms| delay_ms.min(max_delay_ms));
+        // Backends without deduplication (standard SQS) reject a key outright.
+        let deduplication_key = self
+            .manager
+            .capabilities()
+            .deduplication
+            .then(|| format!("{}:{}", envelope.stage.logical_topic(), envelope.message_id));
         self.manager
             .enqueue(
                 &queue_name,
                 job,
                 sockudo_core::queue::QueueJobOptions {
                     job_id: Some(envelope.message_id.clone()),
-                    deduplication_key: Some(format!(
-                        "{}:{}",
-                        envelope.stage.logical_topic(),
-                        envelope.message_id
-                    )),
+                    deduplication_key,
                     delay_ms,
                     max_attempts: None,
                 },
@@ -341,7 +334,19 @@ impl QueueManagerPushQueue {
         if let Some(not_before_ms) = envelope.not_before_ms {
             let now = push_queue_now_ms();
             if not_before_ms > now {
-                tokio::time::sleep(Duration::from_millis(not_before_ms - now)).await;
+                let wait_ms = not_before_ms - now;
+                if self.manager.backend().max_delay_ms().is_some()
+                    && wait_ms > LOCAL_NOT_BEFORE_MAX_WAIT_MS
+                {
+                    // The backend capped this job's delay. Enqueue it unchanged for the
+                    // rest of the wait; returning Ok only after that keeps at-least-once.
+                    let stage = push_queue_stage_label(envelope.stage);
+                    self.enqueue_envelope(envelope).await?;
+                    self.metrics
+                        .queue_local_requeued(&stage, "not_before_deferred");
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
             }
         }
 
@@ -499,7 +504,7 @@ impl QueueManagerPushQueue {
                         });
                 }
                 let dlq = PushQueueEnvelope {
-                    message_id: self.next_message_id().await,
+                    message_id: next_message_id(),
                     stage: sockudo_push::PushQueueStage::DeadLetters,
                     key: dead_letter.key.clone(),
                     payload: sockudo_push::PushQueuePayload::DeadLetter(Box::new(dead_letter)),
@@ -522,6 +527,10 @@ impl QueueManagerPushQueue {
         retry_at_ms: Option<u64>,
         reason: &'static str,
     ) -> sockudo_push::PushQueueResult<()> {
+        // The backend still holds the original job until this handler returns, so the successor
+        // needs its own ID: reusing it with a new attempt is a different payload under the same
+        // job ID, which Redis and the memory queue reject and deduplicating backends drop.
+        envelope.message_id = next_message_id();
         envelope.attempt = envelope.attempt.saturating_add(1);
         envelope.not_before_ms = retry_at_ms;
         self.metrics
@@ -591,7 +600,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
         key: String,
         payload: sockudo_push::PushQueuePayload,
     ) -> sockudo_push::PushQueueResult<String> {
-        let message_id = self.next_message_id().await;
+        let message_id = next_message_id();
         let dead_letter_marker = push_queue_direct_dead_letter(stage, &payload);
         self.enqueue_envelope(PushQueueEnvelope {
             message_id: message_id.clone(),
@@ -627,7 +636,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
         payload: sockudo_push::PushQueuePayload,
         not_before_ms: u64,
     ) -> sockudo_push::PushQueueResult<String> {
-        let message_id = self.next_message_id().await;
+        let message_id = next_message_id();
         let dead_letter_marker = push_queue_direct_dead_letter(stage, &payload);
         self.enqueue_envelope(PushQueueEnvelope {
             message_id: message_id.clone(),
@@ -762,7 +771,7 @@ impl sockudo_push::PushQueue for QueueManagerPushQueue {
             };
             (stage, key, payload)
         };
-        let message_id = self.next_message_id().await;
+        let message_id = next_message_id();
         self.enqueue_envelope(PushQueueEnvelope {
             message_id: message_id.clone(),
             stage: replay.0,
@@ -1054,6 +1063,15 @@ fn push_queue_stage_label(stage: sockudo_push::PushQueueStage) -> String {
         sockudo_push::PushQueueStage::DeadLetters => "dead_letters".to_owned(),
         sockudo_push::PushQueueStage::RetrySchedule => "retry_schedule".to_owned(),
     }
+}
+
+/// Push queue message IDs become the shared queue backend's job ID and deduplication key, so
+/// they must be unique across every node sharing that backend and across restarts. A
+/// per-process counter is neither: nodes hand out the same IDs, and the backend rejects or
+/// silently deduplicates the second enqueue.
+#[cfg(feature = "push")]
+fn next_message_id() -> String {
+    format!("push-{}", uuid::Uuid::new_v4().simple())
 }
 
 #[cfg(feature = "push")]
@@ -1377,15 +1395,282 @@ mod tests {
         assert!(replay.reason.unwrap().contains("original queue payload"));
     }
 
+    #[tokio::test]
+    async fn standard_sqs_enqueue_omits_deduplication_key_and_caps_delay() {
+        let (queue, sent) = sqs_queue(false);
+        queue
+            .produce(
+                PushQueueStage::PublishLog,
+                "app-1:publish-a".to_owned(),
+                PushQueuePayload::PublishLog(Box::new(sample_publish_log_event())),
+            )
+            .await
+            .unwrap();
+        queue
+            .retry_at(
+                PushQueueStage::PublishLog,
+                "app-1:publish-b".to_owned(),
+                PushQueuePayload::PublishLog(Box::new(sample_publish_log_event())),
+                push_queue_now_ms().saturating_add(3_600_000),
+            )
+            .await
+            .unwrap();
+
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(
+            sent.iter()
+                .all(|(_, options)| options.deduplication_key.is_none())
+        );
+        assert_eq!(sent[0].1.delay_ms, 0);
+        assert_eq!(sent[1].1.delay_ms, 900_000);
+    }
+
+    #[tokio::test]
+    async fn job_delivered_before_not_before_on_capped_backend_is_deferred_again() {
+        let stage = PushQueueStage::PublishLog;
+        let (queue, sent) = sqs_queue(false);
+        let not_before_ms = push_queue_now_ms().saturating_add(3_600_000);
+        let envelope = PushQueueEnvelope {
+            message_id: "push-deferred".to_owned(),
+            stage,
+            key: "app-1:publish-a".to_owned(),
+            payload: PushQueuePayload::PublishLog(Box::new(sample_publish_log_event())),
+            attempt: 2,
+            enqueued_at_ms: push_queue_now_ms(),
+            not_before_ms: Some(not_before_ms),
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            queue.handle_queue_job(push_queue_job_data(&envelope).unwrap()),
+        )
+        .await
+        .expect("an early job must go back to the backend, not wait in the handler")
+        .unwrap();
+
+        assert_eq!(local_depths(&queue, stage).await, (0, 0));
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let (job, options) = &sent[0];
+        assert!(options.delay_ms > 0 && options.delay_ms <= 900_000);
+        let deferred = parse_push_queue_job(job.clone()).unwrap();
+        assert_eq!(deferred.message_id, "push-deferred");
+        assert_eq!(deferred.attempt, 2);
+        assert_eq!(deferred.not_before_ms, Some(not_before_ms));
+    }
+
+    #[cfg(feature = "sqs")]
+    #[tokio::test]
+    async fn sqs_fifo_queue_is_rejected_for_push() {
+        let mut config = sockudo_core::options::ServerOptions::default();
+        config.push.queue_driver = sockudo_core::options::PushQueueDriver::Sqs;
+        let store: sockudo_push::DynPushStore = Arc::new(sockudo_push::MemoryPushStore::new());
+        let admission = super::super::PushAdmissionSnapshot::from_config(&config, &store).await;
+
+        let manager = |fifo| {
+            Arc::new(QueueManager::new(Box::new(SqsLikeDriver {
+                fifo,
+                sent: Default::default(),
+            })))
+        };
+        let error = match super::super::create_push_queue(&config, Some(manager(true)), &admission)
+        {
+            Ok(_) => panic!("SQS FIFO should be rejected for push"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("SQS FIFO"), "{error}");
+        super::super::create_push_queue(&config, Some(manager(false)), &admission).unwrap();
+    }
+
+    type SentJobs = Arc<
+        std::sync::Mutex<
+            Vec<(
+                sockudo_core::webhook_types::JobData,
+                sockudo_core::queue::QueueJobOptions,
+            )>,
+        >,
+    >;
+
+    /// Records enqueues and applies `SqsQueueManager`'s per-job option checks, so push
+    /// queue behaviour on SQS is testable without an SQS endpoint.
+    struct SqsLikeDriver {
+        fifo: bool,
+        sent: SentJobs,
+    }
+
+    #[async_trait::async_trait]
+    impl sockudo_core::queue::QueueInterface for SqsLikeDriver {
+        async fn add_to_queue(
+            &self,
+            _queue_name: &str,
+            _data: sockudo_core::webhook_types::JobData,
+        ) -> sockudo_core::error::Result<()> {
+            unimplemented!("push enqueues through enqueue")
+        }
+
+        async fn enqueue(
+            &self,
+            _queue_name: &str,
+            data: sockudo_core::webhook_types::JobData,
+            options: sockudo_core::queue::QueueJobOptions,
+        ) -> sockudo_core::error::Result<sockudo_core::queue::QueueJobId> {
+            if options.delay_ms > 900_000
+                || (self.fifo && options.delay_ms > 0)
+                || (!self.fifo && options.deduplication_key.is_some())
+            {
+                return Err(Error::Queue(format!(
+                    "SQS rejects these job options: {options:?}"
+                )));
+            }
+            let id = sockudo_core::queue::QueueJobId(options.job_id.clone().unwrap_or_default());
+            self.sent.lock().unwrap().push((data, options));
+            Ok(id)
+        }
+
+        async fn process_queue(
+            &self,
+            _queue_name: &str,
+            _callback: sockudo_core::webhook_types::JobProcessorFnAsync,
+        ) -> sockudo_core::error::Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> sockudo_core::error::Result<()> {
+            Ok(())
+        }
+
+        async fn check_health(&self) -> sockudo_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn backend(&self) -> sockudo_core::queue::QueueBackendKind {
+            sockudo_core::queue::QueueBackendKind::Sqs
+        }
+
+        fn capabilities(&self) -> sockudo_core::queue::QueueCapabilities {
+            sockudo_core::queue::QueueCapabilities {
+                delayed_delivery: !self.fifo,
+                deduplication: self.fifo,
+                ..Default::default()
+            }
+        }
+    }
+
+    fn sqs_queue(fifo: bool) -> (QueueManagerPushQueue, SentJobs) {
+        let sent = SentJobs::default();
+        let driver = SqsLikeDriver {
+            fifo,
+            sent: Arc::clone(&sent),
+        };
+        let queue = QueueManagerPushQueue::new(
+            sockudo_push::PushQueueBackendKind::Sqs,
+            Arc::new(QueueManager::new(Box::new(driver))),
+            QueueManagerPushQueueStageOwnership::testing([PushQueueStage::PublishLog]),
+        );
+        (queue, sent)
+    }
+
+    #[tokio::test]
+    async fn nodes_sharing_a_queue_backend_do_not_reuse_message_ids() {
+        let stage = PushQueueStage::PublishLog;
+        let manager = test_queue_manager();
+        let node_a = test_queue_on(&manager, stage);
+        let node_b = test_queue_on(&manager, stage);
+
+        let id_a = produce_publish_log(&node_a, "publish-a").await;
+        let id_b = produce_publish_log(&node_b, "publish-b").await;
+
+        assert_ne!(id_a, id_b);
+        assert_eq!(
+            consume_publish_log_keys(&node_a, 2).await,
+            ["app-1:publish-a", "app-1:publish-b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn restarted_node_does_not_reuse_message_ids_still_in_the_backend() {
+        let stage = PushQueueStage::PublishLog;
+        let manager = test_queue_manager();
+        let before_restart = test_queue_on(&manager, stage);
+        let id_before = produce_publish_log(&before_restart, "publish-a").await;
+        drop(before_restart);
+
+        let after_restart = test_queue_on(&manager, stage);
+        let id_after = produce_publish_log(&after_restart, "publish-b").await;
+
+        assert_ne!(id_before, id_after);
+        assert_eq!(
+            consume_publish_log_keys(&after_restart, 2).await,
+            ["app-1:publish-a", "app-1:publish-b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn nacked_message_is_requeued_while_the_backend_still_holds_the_original() {
+        let stage = PushQueueStage::PublishLog;
+        let manager = test_queue_manager();
+        let queue = test_queue_on(&manager, stage);
+        let first_id = produce_publish_log(&queue, "publish-a").await;
+
+        let first = next_message(&queue, stage).await;
+        assert_eq!(first.attempt, 1);
+        queue
+            .nack(first.ack, Some(push_queue_now_ms().saturating_add(50)))
+            .await
+            .unwrap();
+
+        let retried = next_message(&queue, stage).await;
+        assert_eq!(retried.key, "app-1:publish-a");
+        assert_eq!(retried.attempt, 2);
+        assert_ne!(retried.message_id, first_id);
+        queue.ack(retried.ack).await.unwrap();
+    }
+
     fn test_queue(ownership: QueueManagerPushQueueStageOwnership) -> QueueManagerPushQueue {
-        let driver = sockudo_queue::MemoryQueueManager::new();
-        driver.start_processing();
-        let manager = Arc::new(QueueManager::new(Box::new(driver)));
         QueueManagerPushQueue::new(
             sockudo_push::PushQueueBackendKind::Redis,
-            manager,
+            test_queue_manager(),
             ownership,
         )
+    }
+
+    fn test_queue_manager() -> Arc<QueueManager> {
+        let driver = sockudo_queue::MemoryQueueManager::new();
+        driver.start_processing();
+        Arc::new(QueueManager::new(Box::new(driver)))
+    }
+
+    fn test_queue_on(manager: &Arc<QueueManager>, stage: PushQueueStage) -> QueueManagerPushQueue {
+        QueueManagerPushQueue::new(
+            sockudo_push::PushQueueBackendKind::Redis,
+            Arc::clone(manager),
+            QueueManagerPushQueueStageOwnership::testing([stage]),
+        )
+    }
+
+    async fn produce_publish_log(queue: &QueueManagerPushQueue, publish_id: &str) -> String {
+        let mut event = sample_publish_log_event();
+        event.publish_id = publish_id.to_owned();
+        queue
+            .produce(
+                PushQueueStage::PublishLog,
+                event.queue_key(),
+                PushQueuePayload::PublishLog(Box::new(event)),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn consume_publish_log_keys(queue: &QueueManagerPushQueue, count: usize) -> Vec<String> {
+        let mut keys = Vec::with_capacity(count);
+        for _ in 0..count {
+            let message = next_message(queue, PushQueueStage::PublishLog).await;
+            keys.push(message.key.clone());
+            queue.ack(message.ack).await.unwrap();
+        }
+        keys.sort();
+        keys
     }
 
     async fn next_message(

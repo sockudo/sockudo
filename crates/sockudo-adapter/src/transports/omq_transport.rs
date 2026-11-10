@@ -124,23 +124,14 @@ impl HorizontalTransport for OmqTransport {
         let publisher = context.socket(SocketType::Pub, options.clone());
         let subscriber = context.socket(SocketType::Sub, options);
 
-        let bind_endpoint = config.bind_endpoint.parse().map_err(|e| {
-            Error::Other(format!(
-                "Failed to parse OMQ bind endpoint '{}': {e}",
-                config.bind_endpoint
-            ))
-        })?;
         let resolved = subscriber
-            .bind(bind_endpoint)
+            .bind(config.bind_endpoint.as_str())
             .await
             .map_err(|e| Error::Internal(format!("Failed to bind OMQ subscriber: {e}")))?;
 
         for endpoint in &config.connect_endpoints {
-            let endpoint = endpoint
-                .parse()
-                .map_err(|e| Error::Other(format!("Failed to parse OMQ peer endpoint: {e}")))?;
             publisher
-                .connect(endpoint)
+                .connect(endpoint.as_str())
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to connect OMQ publisher: {e}")))?;
         }

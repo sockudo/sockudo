@@ -5,6 +5,7 @@ pub mod ai_orphans;
 #[cfg(feature = "ai-transport")]
 mod ai_rollup;
 pub mod annotations;
+pub mod app_availability;
 pub mod auth_tokens;
 pub mod authentication;
 pub mod connection_management;
@@ -1052,7 +1053,7 @@ impl ConnectionHandler {
                     debug!(socket_id = %socket_id, "socket close frame received");
                     // Cleanup drops the split halves; let the Close reply leave first.
                     Box::pin(sockudo_core::websocket::finish_peer_close(&mut reader)).await;
-                    Box::pin(self.handle_disconnect(&app_config.id, socket_id)).await?;
+                    Box::pin(self.handle_peer_close(&app_config.id, socket_id)).await?;
                     break;
                 }
                 Message::Text(_) | Message::Binary(_) => {

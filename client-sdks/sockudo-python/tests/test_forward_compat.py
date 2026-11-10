@@ -318,3 +318,56 @@ def test_serial_coercion_accepts_integer_strings_and_rejects_unsafe_floats() -> 
 
     assert string_serial.serial == 9007199254740993
     assert unsafe_float_serial.serial is None
+
+
+def test_messagepack_decodes_server_positional_extras() -> None:
+    """The server writes extras as an rmp_serde positional array."""
+    payload = msgpack.packb(
+        [
+            "e",
+            "c",
+            ["string", "{}"],
+            None,
+            None,
+            None,
+            None,
+            None,
+            "m1",
+            None,
+            None,
+            None,
+            [
+                {"sockudo_action": ["string", "message.create"], "cleared": None},
+                True,
+                "idem-1",
+                False,
+                [{"turn-id": "t1"}, "vercel-ai-sdk-ui-message", {"type": "text-delta"}],
+            ],
+        ],
+        use_bin_type=True,
+    )
+
+    decoded = ProtocolCodec.decode_event(payload, SockudoWireFormat.MESSAGEPACK)
+
+    assert decoded.extras is not None
+    assert decoded.extras.headers == {
+        "sockudo_action": "message.create",
+        "cleared": None,
+    }
+    assert decoded.extras.ephemeral is True
+    assert decoded.extras.idempotency_key == "idem-1"
+    assert decoded.extras.echo is False
+    assert decoded.extras.ai == {
+        "type": "text-delta",
+        "transport": {"turn-id": "t1"},
+        "codec": "vercel-ai-sdk-ui-message",
+    }
+
+
+def test_json_extras_accept_the_server_idempotency_spelling() -> None:
+    decoded = ProtocolCodec.decode_event(
+        json.dumps({"event": "e", "extras": {"idempotencyKey": "k1"}}),
+        SockudoWireFormat.JSON,
+    )
+    assert decoded.extras is not None
+    assert decoded.extras.idempotency_key == "k1"

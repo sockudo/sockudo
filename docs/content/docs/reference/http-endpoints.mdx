@@ -4,13 +4,19 @@ description: Complete Sockudo endpoint matrix for WebSocket upgrades, HTTP APIs,
 icon: ListTree
 ---
 
+This page lists every route Sockudo serves, grouped by purpose, with the method, path, required
+authentication, and request controls for each. Routes are compiled in by Cargo features and
+filtered by runtime configuration, so each section states what must be enabled for it to exist.
+
 Sockudo exposes three endpoint groups:
 
 - the main server port, usually `6001`, for WebSocket upgrades and the signed app HTTP API
 - optional operational endpoints on the main server port
 - the metrics server port, usually `9601`, for Prometheus scraping
 
-Every route under `/apps/{appId}` requires Pusher-compatible signed query authentication. Push routes also evaluate the push capability headers described below.
+Every route under `/apps/{appId}` requires Pusher-compatible signed query authentication. Push
+routes also evaluate the push capability headers described below. Unmatched paths return a
+plain-text `404`.
 
 ## Availability by server role
 
@@ -28,7 +34,11 @@ Additional restrictions in API mode:
 
 ## WebSocket
 
-| Method | Path | Auth | Purpose |
+The upgrade endpoint for realtime clients. Protocol selection, wire format, and per-connection
+behavior are chosen with query parameters at connect time. New upgrades return `503` while the
+node is draining or shedding for memory pressure.
+
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/app/{appKey}` | App key and channel-level protocol auth after connect | WebSocket upgrade for Protocol V1 and Protocol V2 clients. |
 
@@ -36,28 +46,52 @@ Supported query parameters:
 
 | Parameter | Scope | Meaning |
 | --- | --- | --- |
-| `protocol` | WebSocket | `1` or omitted uses Pusher-compatible Protocol V1. `2` enables Sockudo Protocol V2. |
+| `protocol` | WebSocket | `1` or omitted uses Pusher-compatible Protocol V1. `2` enables Sockudo Protocol V2. Any other value falls back to V1. |
 | `client` | WebSocket | Client library identifier. Accepted for compatibility and observability. |
 | `version` | WebSocket | Client library version. Accepted for compatibility and observability. |
-| `format` | Protocol V2 | Wire format selector. Unknown V2 formats are rejected with `400 Bad Request`. |
+| `format` | Protocol V2 | Wire format selector: `json` (default), `msgpack` or `messagepack`, `protobuf` or `proto`. Unknown V2 formats are rejected with `400 Bad Request`. |
 | `echo_messages` | Protocol V2 | Overrides per-connection echo behavior when echo control is enabled. |
+| `append_mode` | Protocol V2 | Mutable-message append delivery: `delta` (default) or `full`. Unknown values are rejected with `400 Bad Request`. |
+| `append_rollup_window` | Protocol V2 | AI Transport append rollup window in milliseconds: `0`, `20`, `40`, `100`, or `500`, within the configured `[ai_transport.rollup]` bounds. Other values are rejected with `400 Bad Request`. |
 | `token` | Protocol V2 | Capability-token JWT alternative to unauthenticated app-key connect. The JWT header `kid` must match `{appKey}`. |
+
+```text
+wss://realtime.example.com/app/app-key?protocol=2&format=json&echo_messages=false
+```
 
 ## MCP
 
-| Method | Path | Auth | Purpose |
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `POST` / `GET` / `DELETE` | `/mcp` (configurable; optionally a dedicated port) | `Authorization: Bearer <mcp token>` | Model Context Protocol Streamable HTTP endpoint. Requires the `mcp` Cargo feature and `[mcp].enabled`. Tools are scope-gated (`read`, `write`, `admin`) and call the routes below in-process. See [MCP server](/docs/server/mcp). |
 
 ## Publish
 
-| Method | Path | Auth | Purpose |
+Trusted backends publish events and manage connections through these routes. All of them use the
+[signed app API](#signed-app-api-parameters).
+
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `POST` | `/apps/{appId}/events` | Signed app API | Publish one event to one or more channels. |
 | `POST` | `/apps/{appId}/batch_events` | Signed app API | Publish multiple events in one request. |
 | `POST` | `/apps/{appId}/revocations` | Signed app API | Revoke Protocol V2 capability tokens by `jti`, `client_id`, or both. Matching local sockets receive `sockudo:token_expired` and close. |
 | `POST` | `/apps/{appId}/users/{userId}/terminate_connections` | Signed app API | Disconnect every active socket for the supplied user ID. |
 | `POST` | `/apps/{appId}/users/{userId}/force_reconnect` | Signed app API | Close every active socket for the supplied user ID with code `4200`, prompting clients to reconnect. |
+
+A single-event publish body:
+
+```json
+{
+  "name": "order.created",
+  "channels": ["orders", "private-orders-42"],
+  "data": "{\"id\":\"ord_123\",\"total\":4200}",
+  "socket_id": "123.456",
+  "info": "subscription_count",
+  "tags": { "region": "eu" }
+}
+```
+
+`batch_events` wraps the same event objects in `{ "batch": [ ... ] }`, bounded by the app's maximum batch size.
 
 Useful request controls:
 
@@ -68,6 +102,8 @@ Useful request controls:
 | `x-idempotency-key` | publish endpoints | Deduplicates accepted publishes when idempotency is enabled. Coordination failure returns retryable `503` instead of publishing without a claim. |
 | `idempotency_key` | publish bodies | Body-level idempotency key accepted by Sockudo publish paths; retries must reuse the same key. |
 | `message_id` | publish bodies | SDK-facing idempotent create key for AI/versioned-message publishes. Duplicate values return the original serial acknowledgement. |
+| `tags` | publish bodies | Flat string tags used by Protocol V2 tag filtering. |
+| `extras` | publish bodies | Protocol V2 envelope: `headers`, `ephemeral`, `echo`, `idempotency_key`, `push`, and AI Transport metadata. Stripped from V1 deliveries. |
 
 Revocation request body:
 
@@ -81,17 +117,21 @@ Revocation request body:
 }
 ```
 
-At least one of `jti` or `client_id` is required. `ttl_seconds` overrides `expires_at`; otherwise revocations default to 24 hours. Use the token's remaining lifetime for the TTL when it is known.
+At least one of `jti` or `client_id` is required. `ttl_seconds` overrides `expires_at`; otherwise
+revocations default to 24 hours. Use the token's remaining lifetime for the TTL when it is known.
 
 ## Channel state
 
-| Method | Path | Auth | Purpose |
+Read live occupancy from the node's socket state. These routes are unavailable on
+`server_role = "api"` pods.
+
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/apps/{appId}/channels` | Signed app API | List occupied channels. |
 | `GET` | `/apps/{appId}/channels/{channelName}` | Signed app API | Read state for one channel. |
 | `GET` | `/apps/{appId}/channels/{channelName}/users` | Signed app API | List current members of a presence channel. |
 
-Supported `info` tokens:
+Supported `info` tokens, passed as a comma-separated `info` query parameter:
 
 | Token | Endpoints | Meaning |
 | --- | --- | --- |
@@ -104,7 +144,9 @@ For channels matched by `[ai_transport]`, `/channels/{channelName}` includes an
 
 ## Durable history
 
-| Method | Path | Auth | Purpose |
+Read and administer the retained event history of a channel. Requires `[history].enabled`.
+
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/apps/{appId}/channels/{channelName}/history` | Signed app API | Read durable event history for one channel. |
 | `GET` | `/apps/{appId}/channels/{channelName}/history/state` | Signed app API | Inspect stream continuity and degradation state. |
@@ -117,24 +159,31 @@ History query parameters:
 | --- | --- |
 | `limit` | Page size, bounded by server configuration. |
 | `cursor` | Opaque cursor returned by a previous page. |
-| `direction` | `newest_first` or `oldest_first`. |
+| `direction` | `newest_first` (default; aliases `backwards`, `reverse`) or `oldest_first` (aliases `forwards`, `forward`). |
 | `start_serial`, `end_serial` | Serial range filter. |
-| `start_time_ms`, `end_time_ms` | Millisecond timestamp range filter. |
+| `start_time_ms`, `end_time_ms` | Millisecond timestamp range filter. `start` and `end` are accepted as aliases. |
+
+<Callout type="warn" title="Reset and purge are destructive">
+`history/reset` rotates the stream, so clients holding older positions receive `stream_reset` on
+their next resume. `history/purge` deletes retained rows. Restrict these routes to operators.
+</Callout>
 
 ## Presence history
 
-| Method | Path | Auth | Purpose |
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/apps/{appId}/channels/{channelName}/presence/history` | Signed app API | Read retained presence join/leave history. |
 | `GET` | `/apps/{appId}/channels/{channelName}/presence/history/state` | Signed app API | Inspect presence-history continuity and degradation state. |
 | `POST` | `/apps/{appId}/channels/{channelName}/presence/history/reset` | Signed app API | Rotate and reset a presence-history stream. |
 | `GET` | `/apps/{appId}/channels/{channelName}/presence/history/snapshot` | Signed app API | Reconstruct a presence membership snapshot from retained history. |
 
-Presence history uses the same pagination and range controls as durable channel history. The `snapshot` endpoint is for operational reconstruction and should not be confused with `/users`, which returns current live members.
+Presence history uses the same pagination and range controls as durable channel history. The
+`snapshot` endpoint is for operational reconstruction and should not be confused with `/users`,
+which returns current live members.
 
 ## Versioned messages
 
-| Method | Path | Auth | Purpose |
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}` | Signed app API | Read the latest visible version of a mutable V2 message. |
 | `GET` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions` | Signed app API | List preserved versions of a mutable V2 message. |
@@ -142,11 +191,15 @@ Presence history uses the same pagination and range controls as durable channel 
 | `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/delete` | Signed app API | Apply a soft delete version. |
 | `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/append` | Signed app API | Append string content and store the rolled-up result. |
 
-Versioned-message endpoints require `versioned_messages.enabled = true` and a channel policy that permits mutable messages. They are Sockudo Protocol V2 surfaces. `update`, `delete`, and `append` accept optional `op_id` for mutation replay dedupe. Mutation responses include `channel`, `message_serial`, `action`, `accepted`, `version_serial`, `history_serial`, `delivery_serial`, and `status`.
+Versioned-message endpoints require `versioned_messages.enabled = true` and a channel policy that
+permits mutable messages. They are Sockudo Protocol V2 surfaces. `update`, `delete`, and `append`
+accept optional `op_id` for mutation replay dedupe. Mutation responses include `channel`,
+`message_serial`, `action`, `accepted`, `version_serial`, `history_serial`, `delivery_serial`, and
+`status`. See [Mutable messages](/docs/server/mutable-messages).
 
 ## Annotations
 
-| Method | Path | Auth | Purpose |
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/annotations` | Signed app API | List annotation create/delete events. |
 | `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/annotations` | Signed app API | Publish an annotation event. |
@@ -166,31 +219,32 @@ Annotation request fields:
 | `from_serial` | list | Return annotations after a known annotation serial. |
 | `limit` | list | Page size. |
 
-Annotations require versioned messages, global `annotations.enabled`, and channel-level annotation permission.
+Annotations require versioned messages, global `annotations.enabled`, and channel-level annotation
+permission.
 
-When built with `ably-compat`, the root compatibility router additionally
-exposes `GET` and `POST`
-`/channels/{channelName}/messages/{messageSerial}/annotations`. POST accepts an
-Ably annotation array for create or delete. GET negotiates JSON or MsgPack and
-returns relative `first`/`next` Link relations with an opaque cursor scoped to
-the app, channel, and message. Compatibility capabilities
-`annotation-publish`, `annotation-subscribe`, `annotation-delete-own`, and
+When built with `ably-compat`, the root compatibility router additionally exposes `GET` and `POST`
+`/channels/{channelName}/messages/{messageSerial}/annotations`. POST accepts an Ably annotation
+array for create or delete. GET negotiates JSON or MsgPack and returns relative `first`/`next`
+Link relations with an opaque cursor scoped to the app, channel, and message. Compatibility
+capabilities `annotation-publish`, `annotation-subscribe`, `annotation-delete-own`, and
 `annotation-delete-any` remain independent from message mutation capabilities.
 
 ## Push notifications
 
-Push notifications are a core Sockudo API surface. Push endpoints are available when the binary is built with the `push` feature. They use signed app authentication plus capability headers.
+Push notifications are a core Sockudo API surface. Push endpoints are available when the binary is
+built with the `push` feature; the Live Activities routes additionally require `push-apns`. They
+use signed app authentication plus capability headers.
 
-With `ably-compat`, the root router also exposes `/push/publish`,
-`/push/deviceRegistrations`, `/push/channelSubscriptions`, and `/push/channels`.
-These are DTO/auth projections over the same durable store, queue, planner,
-provider, feedback, retry, status, scheduler, and cleanup services listed below.
-The Ably realtime transport is a real `MessageService` provider delivery, not a
-synthetic provider success. Run the native monolith workers in an in-process
-deployment, or provide the corresponding external workers for the configured
-queue stages.
+With `ably-compat`, the root router also exposes `/push/publish`, `/push/deviceRegistrations`,
+`/push/channelSubscriptions`, and `/push/channels`. These are DTO/auth projections over the same
+durable store, queue, planner, provider, feedback, retry, status, scheduler, and cleanup services
+listed below. The Ably realtime transport is a real `MessageService` provider delivery, not a
+synthetic provider success. Run the native monolith workers in an in-process deployment, or
+provide the corresponding external workers for the configured queue stages.
 
-| Method | Path | Auth | Purpose |
+### Credentials and templates
+
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `POST` | `/apps/{appId}/push/credentials/fcm` | Signed app API, push admin | Create or replace Firebase Cloud Messaging credential material. |
 | `POST` | `/apps/{appId}/push/credentials/apns` | Signed app API, push admin | Create or replace APNs credential material. |
@@ -202,6 +256,11 @@ queue stages.
 | `GET` | `/apps/{appId}/push/templates` | Signed app API, push admin | List push templates. |
 | `GET` | `/apps/{appId}/push/templates/{id}` | Signed app API, push admin | Read one push template. |
 | `DELETE` | `/apps/{appId}/push/templates/{id}` | Signed app API, push admin | Delete one push template. |
+
+### Devices and channel subscriptions
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
 | `POST` | `/apps/{appId}/push/deviceRegistrations` | Signed app API, push admin or subscribe | Register or update a device. |
 | `GET` | `/apps/{appId}/push/deviceRegistrations` | Signed app API, push admin | List device registrations. |
 | `DELETE` | `/apps/{appId}/push/deviceRegistrations` | Signed app API, push admin | Delete devices by filter. Empty filters are rejected. |
@@ -211,17 +270,32 @@ queue stages.
 | `GET` | `/apps/{appId}/push/channelSubscriptions` | Signed app API, push admin | List channel push subscriptions. |
 | `DELETE` | `/apps/{appId}/push/channelSubscriptions` | Signed app API, push admin or subscribe | Delete subscriptions by channel or device. |
 | `GET` | `/apps/{appId}/push/channelSubscriptions/channels` | Signed app API, push admin | List channels with push subscriptions. |
+
+### Publishing and delivery
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
 | `POST` | `/apps/{appId}/push/publish` | Signed app API, push admin | Admit one push publish request. |
-| `POST` | `/apps/{appId}/push/liveActivities/channels` | Signed app API, push admin | Create an APNs Live Activity broadcast channel. |
-| `GET` | `/apps/{appId}/push/liveActivities/channels` | Signed app API, push admin | List every APNs broadcast channel for the configured bundle. |
-| `GET` | `/apps/{appId}/push/liveActivities/channels/{channelId}` | Signed app API, push admin | Read an APNs broadcast channel and storage policy. |
-| `DELETE` | `/apps/{appId}/push/liveActivities/channels/{channelId}` | Signed app API, push admin | Delete an APNs broadcast channel. |
 | `POST` | `/apps/{appId}/push/batch/publish` | Signed app API, push admin | Admit multiple push publish requests. |
 | `GET` | `/apps/{appId}/push/publish/{publishId}/status` | Signed app API, push admin | Read aggregate push publish status. |
 | `GET` | `/apps/{appId}/push/deadLetters` | Signed app API, push admin | List safe queue-native dead-letter metadata with optional `provider`, `sinceMs`, `untilMs`, `limit`, and `cursor` filters. |
 | `POST` | `/apps/{appId}/push/deadLetters/{deadLetterId}/replay` | Signed app API, push admin | Re-enqueue a replayable dead-letter's original queue item. |
 | `DELETE` | `/apps/{appId}/push/scheduled/{jobId}` | Signed app API, push admin | Cancel a scheduled publish before dispatch when possible. |
 | `POST` | `/apps/{appId}/push/deliveryStatus` | Signed app API, push admin | Ingest worker or provider delivery feedback. |
+
+### APNs Live Activities
+
+Requires the `push-apns` feature and APNs broadcast configuration; otherwise these routes return
+`422 feature_disabled`.
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `POST` | `/apps/{appId}/push/liveActivities/channels` | Signed app API, push admin | Create an APNs Live Activity broadcast channel. |
+| `GET` | `/apps/{appId}/push/liveActivities/channels` | Signed app API, push admin | List every APNs broadcast channel for the configured bundle. |
+| `GET` | `/apps/{appId}/push/liveActivities/channels/{channelId}` | Signed app API, push admin | Read an APNs broadcast channel and storage policy. |
+| `DELETE` | `/apps/{appId}/push/liveActivities/channels/{channelId}` | Signed app API, push admin | Delete an APNs broadcast channel. |
+
+### Push request semantics
 
 Push publish bodies accept `notBeforeMs` to delay provider dispatch and `expiresAtMs` to stop late
 delivery and retry. The public API does not expose `POST /push/scheduled`; delayed delivery is
@@ -234,9 +308,10 @@ over template overrides, and retries reuse the accepted rendered payload semanti
 templates, missing template variables, malformed overrides, and oversized provider payloads fail
 before provider dispatch.
 
-Publish status inspection is available through `GET /apps/{appId}/push/publish/{publishId}/status`.
-Dead-letter messages are retained in the configured queue backend and are not exposed through a
-public HTTP listing endpoint yet.
+Publish status inspection is available through
+`GET /apps/{appId}/push/publish/{publishId}/status`. Dead-letter messages are retained in the
+configured queue backend; list their safe metadata with `GET /apps/{appId}/push/deadLetters` and
+re-enqueue one with its `replay` route.
 
 Push headers:
 
@@ -251,7 +326,10 @@ Push list endpoints use cursor pagination with `limit` and opaque `cursor`.
 
 ## Operational endpoints
 
-| Method | Path | Auth | Purpose |
+Health probes and operator summaries for load balancers, orchestrators, and dashboards. They are
+unauthenticated, so expose them only on trusted networks.
+
+| Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/live` | None | Liveness probe. Does not perform dependency checks. |
 | `GET` | `/accept-traffic` | None | New-connection admission probe. Returns `503` while draining or shedding for memory pressure, without closing established connections. |
@@ -262,7 +340,19 @@ Push list endpoints use cursor pagination with `limit` and opaque `cursor`.
 | `GET` | `/stats` | Pusher signature, or Ably key / bearer token | Native summary for the signing app with a Pusher-signed request; Ably interval stats with an Ably key or bearer token. Unsigned requests are rejected. |
 | `GET` | `/operator/stats` | Pusher signature, when enabled | Unambiguous alias for the native occupancy, memory, and history-health response, scoped to the signing app. |
 | `GET` | `/operator/stats/aggregation` | None, with Ably compatibility | Stats-worker backlog, capacity, dropped observations, flush failures, batch count, observation count, and last flush lag. |
+| `GET` | `/operator/stats/ably-runtime` | None, with Ably compatibility | Ably compatibility runtime delivery metrics snapshot. |
 | `POST` | `/stats` | Ably key or bearer token | Conformance fixture ingestion through the real stats store; available only when `stats_fixture_ingest_enabled = true`. |
+
+`/stats` and `/operator/stats` are registered when `usage_enabled` is true or, in `ably-compat`
+builds, when `[ably_compat].enabled` is true. The two `/operator/stats/*` sub-routes exist only
+when `[ably_compat].enabled` is true.
+
+<Callout type="warn" title="Usage and stats are on by default">
+`[http_api].usage_enabled` defaults to `true`, so `/usage`, `/stats`, and `/operator/stats` are
+served without authentication out of the box. Disable `/usage`, `/operator/stats`, and operator
+aggregation stats in exposed production environments unless they are behind trusted ingress
+controls.
+</Callout>
 
 Ably `GET /stats` accepts interval IDs or epoch milliseconds for `start` and
 `end`, `unit`/`by` values `minute`, `hour`, `day`, or `month`, forward/backward
@@ -297,13 +387,26 @@ and `SHEDDING`; `X-Memory-Limit-Source` reports `configured`, `cgroup_v2`, `cgro
 `unavailable`. Keep `/up` as the dependency/readiness probe unless a load balancer can poll a
 separate admission endpoint.
 
+| Probe | Use it for | Fails on |
+| --- | --- | --- |
+| `/live` | Process liveness (restart the process). | Process not responding. |
+| `/up` | Dependency health and rollout checks. | Adapter, cache, queue, or app manager failure; draining. |
+| `/ready` | Load-balancer admission. | Everything `/up` checks, plus connection capacity. |
+| `/accept-traffic` | New-connection admission under memory pressure. | RSS above threshold; draining. |
+
 ## Metrics endpoint
 
-| Method | Path | Port | Auth | Purpose |
-| --- | --- | --- | --- | --- |
-| `GET` | `/metrics` | Metrics port, default `9601` | None by default | Prometheus plaintext scrape endpoint. |
+Served on its own listener, independent from the main WebSocket/API port, and enabled by
+`[metrics].enabled` / `METRICS_ENABLED` (default `true`, bound to `0.0.0.0:9601`).
 
-The metrics server is independent from the main WebSocket/API listener and is enabled by `METRICS_ENABLED`.
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `GET` | `/metrics` | None by default | Prometheus plaintext scrape endpoint on the metrics port, default `9601`. |
+
+<Callout type="tip" title="Keep the metrics port private">
+The metrics listener has no authentication. Bind it to an internal interface with `METRICS_HOST`
+or restrict it with network policy rather than exposing it publicly.
+</Callout>
 
 ## Signed app API parameters
 
@@ -317,4 +420,14 @@ All `/apps/*` requests use Pusher-style query signing:
 | `body_md5` | MD5 of the raw JSON body for body-bearing requests. |
 | `auth_signature` | HMAC-SHA256 over method, path, and sorted query string. |
 
-Use server SDKs for signing when possible. Custom signers must sign the canonical path exactly as routed, including `/apps/{appId}`.
+Use server SDKs for signing when possible. Custom signers must sign the canonical path exactly as
+routed, including `/apps/{appId}`.
+
+## Next steps
+
+<Cards>
+  <Card title="HTTP API guide" href="/docs/server/http-api" description="Signing, publishing, history, and push with worked examples." />
+  <Card title="Server SDKs" href="/docs/server-sdks" description="Official SDKs that sign and call these endpoints for you." />
+  <Card title="Error codes" href="/docs/reference/errors" description="Status codes and error bodies returned by these routes." />
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Enable the features and listeners behind each route." />
+</Cards>

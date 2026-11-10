@@ -275,6 +275,16 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         ),
     );
 
+    // --- Redis Cluster Adapter ---
+    options.adapter.cluster.broadcast_mode = parse_env::<ClusterBroadcastMode>(
+        "ADAPTER_CLUSTER_BROADCAST_MODE",
+        options.adapter.cluster.broadcast_mode,
+    );
+    options.adapter.cluster.broadcast_buckets = parse_env::<u16>(
+        "ADAPTER_CLUSTER_BROADCAST_BUCKETS",
+        options.adapter.cluster.broadcast_buckets,
+    );
+
     // --- OMQ Adapter ---
     if let Ok(endpoint) = std::env::var("OMQ_BIND_ENDPOINT") {
         options.adapter.omq.bind_endpoint = endpoint;

@@ -1,236 +1,721 @@
 ---
 title: Go
-description: Use the Go server SDK for publishing, auth, state queries, and push notifications.
+description: Publish events, sign channel and user auth, validate webhooks, read history, manage versioned messages, and run push workflows from net/http services with the Go server SDK.
 icon: FileCode
 ---
 
+`sockudo-http-go` is the official Go server SDK for Sockudo, published as the module
+`github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2` (package `sockudo`). It is a trusted
+backend library: it holds your app secret, signs every HTTP API request, and produces the
+signatures your realtime clients need to join private and presence channels. It depends only on
+the standard library and `golang.org/x/crypto`.
+
+What it does in Go:
+
+- Signed HTTP publishing to one channel, many channels, or a batch, with idempotency keys and a
+  built-in retry for network failures and `5xx` responses.
+- Private, presence, and encrypted channel authorization, user authentication, sending to a user,
+  and user connection termination.
+- Webhook signature validation from raw body bytes, with automatic decryption of encrypted channel
+  events.
+- Channel state, durable history, presence history, and presence snapshots.
+- Versioned message reads and mutations (get, versions, update, delete, append) and annotations.
+- Push notifications: device registrations, channel push subscriptions, publish, schedule, status,
+  provider credentials, and typed Apple Live Activity payloads and broadcast channels.
+
 ## Install
 
-Install the v2 Go module. Go resolves this package through the module path and the `v2.2.0` Git tag:
-
-```bash
-go get github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2
+```bash title="Terminal"
+go get github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2@v2.2.0
 ```
 
-## Configure
+The module lives in a subdirectory of the Sockudo monorepo, so its releases are tagged
+`server-sdks/sockudo-http-go/v2.2.0`; `go get` resolves `@v2.2.0` to that tag. The module's
+`go.mod` declares `go 1.25.0`, so you need Go 1.25 or later.
 
-```go
+```go title="main.go"
+import sockudo "github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2"
+```
+
+## Configure the client
+
+Build one `*sockudo.Client` at startup and share it across handlers and goroutines:
+
+```go title="sockudo.go"
 package main
 
-import sockudo "github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2"
+import (
+	"net/http"
+	"os"
+	"time"
 
-var client = sockudo.Client{
-    AppID:  "app-id",
-    Key:    "app-key",
-    Secret: "app-secret",
-    Host:   "127.0.0.1",
-    Port:   "6001",
-    Secure: false,
-}
-```
-
-Reuse the client for the lifetime of the process. Configure a custom
-`http.Client` to set the overall deadline and preserve connection pooling:
-
-```go
-client.HTTPClient = &http.Client{
-    Timeout: 5 * time.Second,
-    Transport: &http.Transport{
-        MaxIdleConns:        100,
-        MaxIdleConnsPerHost: 20,
-        IdleConnTimeout:     90 * time.Second,
-    },
-}
-```
-
-The default client timeout is five seconds. Set `Secure: true` for HTTPS in
-production. `ClientFromURL` and `ClientFromEnv("SOCKUDO_URL")` are convenient,
-but connection URLs contain credentials and must not be logged.
-
-## Publish
-
-```go
-data := map[string]string{"id": "ord_123"}
-key := "order-created-ord_123"
-
-_, err := client.TriggerWithParams(
-    "orders",
-    "order.created",
-    data,
-    sockudo.TriggerParams{IdempotencyKey: &key},
+	sockudo "github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2"
 )
+
+func newSockudoClient() *sockudo.Client {
+	return &sockudo.Client{
+		AppID:  os.Getenv("SOCKUDO_APP_ID"),
+		Key:    os.Getenv("SOCKUDO_APP_KEY"),
+		Secret: os.Getenv("SOCKUDO_APP_SECRET"),
+		Host:   os.Getenv("SOCKUDO_HOST"), // "127.0.0.1:6001" or "realtime.example.com"
+		Secure: os.Getenv("SOCKUDO_USE_TLS") != "false",
+
+		// Match the server's default 100 KB payload limit (the SDK checks 10 KB otherwise).
+		OverrideMaxMessagePayloadKB: 100,
+
+		HTTPClient: &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+	}
+}
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `AppID` | `string` | — | Sockudo app ID. |
+| `Key` | `string` | — | App key. Sent with every signed request and embedded in auth signatures. |
+| `Secret` | `string` | — | App secret. Signs API requests, channel auth, and user auth. |
+| `Host` | `string` | `localhost` | API host, or `host:port`, without a scheme. Used as-is when set. |
+| `Secure` | `bool` | `false` | Use HTTPS. Set `true` outside a trusted local network. |
+| `Cluster` | `string` | — | Builds `api-CLUSTER.sockudo.com` when `Host` is empty. Not needed for self-hosted servers. |
+| `HTTPClient` | `*http.Client` | `&http.Client{Timeout: 5 * time.Second}` | Client used for every request. The default is created on first use. |
+| `EncryptionMasterKeyBase64` | `string` | — | Base64 of a 32-byte key for `private-encrypted-*` channels. |
+| `EncryptionMasterKey` | `string` | — | Deprecated raw 32-byte key. Setting both key fields is an error. |
+| `OverrideMaxMessagePayloadKB` | `int` | `0` (10 KB check) | Client-side payload size check per event, in KB. |
+| `AutoIdempotencyKey` | `*bool` | `nil` (enabled) | Generate idempotency keys for publishes that do not set one. |
+
+You can also parse a connection URL. The path must be `/apps/APP_ID` with a numeric app ID, and
+an `https` scheme sets `Secure`:
+
+```go title="sockudo.go"
+// SOCKUDO_URL=https://APP_KEY:APP_SECRET@realtime.example.com/apps/12345
+client, err := sockudo.ClientFromEnv("SOCKUDO_URL")
 if err != nil {
-    panic(err)
+	// Parse errors can echo the URL, which contains the secret; do not log err verbatim.
+	log.Fatal("sockudo config: invalid SOCKUDO_URL")
+}
+
+// Or parse any string you choose:
+// client, err := sockudo.ClientFromURL(os.Getenv("REALTIME_URL"))
+```
+
+<Callout type="warn" title="The secret never leaves your backend">
+The app secret signs every API call and every channel and user auth response. Anyone holding it
+can publish to any channel, read history, and impersonate any user. Load it from a secret manager
+or environment, never ship it to browsers or mobile apps, and never log it or a connection URL
+that contains it.
+</Callout>
+
+<Callout type="note" title="Share one client, and set HTTPClient yourself">
+All methods use pointer receivers and the client fills some fields lazily on first use (the
+default HTTP client, the idempotency base ID, the decoded encryption key) without locking. Setting
+`HTTPClient` explicitly avoids one of those first-use writes and gives you connection pooling and
+an overall deadline you control. The SDK methods do not accept a `context.Context`; the
+`HTTPClient` timeout is the bound on each request.
+</Callout>
+
+## Publish an event
+
+```go title="orders.go"
+data := map[string]any{"id": "ord_123", "total_cents": 4200}
+
+if err := client.Trigger("private-orders-42", "order.created", data); err != nil {
+	return fmt.Errorf("publish order.created: %w", err)
 }
 ```
 
-Publish the same event to multiple channels with `TriggerMulti`, batch
-independent events with `TriggerBatch`, and exclude an originating socket with
-`TriggerParams.SocketID`:
+`Trigger` returns only an `error`. Use `TriggerWithParams` to pass options; it returns a
+`*sockudo.TriggerChannelsList` whose `Channels` map is filled when you request attributes with
+`Info` (for example `"user_count"` on presence channels). Data that is not a `string` or `[]byte`
+is encoded with `encoding/json`.
 
-```go
-socketID := "123.456"
-key := "order-paid:ord_123:v3"
+Exclude the originating connection when the publish comes from a user action that already updated
+that browser tab. The server skips that one connection, so the user does not receive an echo of
+their own change:
 
-_, err := client.TriggerWithParams(
-    "orders",
-    "order.updated",
-    map[string]string{"id": "ord_123", "status": "paid"},
-    sockudo.TriggerParams{
-        SocketID:       &socketID,
-        IdempotencyKey: &key,
-    },
-)
+```go title="orders.go"
+params := sockudo.TriggerParams{}
+if socketID := r.FormValue("socket_id"); socketID != "" {
+	params.SocketID = &socketID // must look like "123.456"
+}
+
+_, err := client.TriggerWithParams("private-orders-42", "order.updated", data, params)
 if err != nil {
-    return err
+	return err
 }
 ```
 
-Use a stable idempotency key for any publish a worker or HTTP handler may retry.
-Do not generate a new key for each attempt.
+`TriggerParams.Extras` carries Protocol V2 publish extras (`Headers`, `Ephemeral`, `Echo`,
+`IdempotencyKey`) as a `*sockudo.MessageExtras`.
 
-## Auth endpoint
+## Publish to many channels or in a batch
 
-```go
-func sockudoAuth(res http.ResponseWriter, req *http.Request) {
-    params, _ := io.ReadAll(req.Body)
-    if !currentUserCanAccess(req.Context(), requestedChannel(params)) {
-        http.Error(res, "forbidden", http.StatusForbidden)
-        return
-    }
-    response, err := client.AuthorizePrivateChannel(params)
-    if err != nil {
-        http.Error(res, "unauthorized", http.StatusUnauthorized)
-        return
-    }
-    fmt.Fprint(res, string(response))
+`TriggerMulti` and `TriggerMultiWithParams` publish the same event to several channels in one
+request:
+
+```go title="orders.go"
+channels := []string{"tenant-42-orders", "user-7-orders"}
+key := "order.updated:tenant-42:ord_123:v3"
+
+_, err := client.TriggerMultiWithParams(channels, "order.updated", data, sockudo.TriggerParams{
+	IdempotencyKey: &key,
+})
+if err != nil {
+	return err
 }
 ```
 
-## Presence auth
+`TriggerBatch` sends different events in one request and returns a
+`*sockudo.TriggerBatchChannelsList`:
 
-```go
-member := sockudo.MemberData{
-    UserID: "user-42",
-    UserInfo: map[string]string{
-        "name": "Ada",
-    },
+```go title="orders.go"
+createdKey := "order.created:ord_124"
+receiptKey := "order.receipt:ord_124"
+
+_, err := client.TriggerBatch([]sockudo.Event{
+	{Channel: "orders", Name: "order.created", Data: map[string]string{"id": "ord_124"}, IdempotencyKey: &createdKey},
+	{Channel: "private-user-7", Name: "order.receipt", Data: map[string]string{"id": "ord_124"}, IdempotencyKey: &receiptKey},
+})
+if err != nil {
+	return err
 }
-
-response, err := client.AuthorizePresenceChannel(params, member)
 ```
 
-The SDK signs the form body; your handler still owns session authentication and
-channel authorization. Populate `MemberData` from trusted application state.
-Use `AuthenticateUser` for user-targeted events, then
-`TerminateUserConnections` or `ForceReconnectUser` when access changes.
+Before sending, the SDK returns an error when a publish names more than 100 channels, when a
+channel name is invalid (letters, digits, and `-_=@,.;:`, at most 200 characters), when a socket
+ID is malformed, when a multi-channel publish includes a `private-encrypted-*` channel, or when an
+event's data exceeds the local payload check (10 KB unless `OverrideMaxMessagePayloadKB` is set).
+It does not cap batch size. The server enforces its `[event_limits]` defaults:
 
-## State and history
+| Limit | Default |
+| --- | --- |
+| `max_channels_at_once` | `100` channels per publish |
+| `max_batch_size` | `10` events per batch |
+| `max_payload_in_kb` | `100` KB per event payload |
+| `max_name_length` | `200` characters per event or channel name |
 
-```go
+## Idempotency and retries
+
+A timeout does not tell you whether the server published the event. If you retry without a key,
+subscribers can receive the event twice. An idempotency key makes the retry safe: within the TTL,
+the server returns the original cached response (`200`) instead of publishing again.
+
+Server semantics:
+
+- The key can be sent as the body field `idempotency_key` or the `X-Idempotency-Key` header. The
+  body field takes precedence.
+- `[idempotency]` defaults are `enabled = true`, `ttl_seconds = 120`, and `max_key_length = 128`.
+  Empty keys are rejected.
+- In a batch, `X-Idempotency-Key` identifies the whole batch and each event's `idempotency_key`
+  identifies only that event. The two key domains do not collide.
+- If the coordination backend is unavailable, the server returns `503 service_unavailable`. A
+  concurrent retry while the first attempt is still in flight gets `503 backpressure` with
+  `Retry-After: 1`. Retry both with the same key.
+
+How the Go SDK applies keys:
+
+- Set `TriggerParams.IdempotencyKey`. The SDK sends it as both the body field and the
+  `X-Idempotency-Key` header.
+- In `TriggerBatch`, set `Event.IdempotencyKey` on each event. The SDK does not send a batch-level
+  header, and it writes generated keys back into the slice you pass.
+- When `AutoIdempotencyKey` is unset or true, publishes without a key get a generated one in the
+  form `BASE:N` (and `BASE:N:INDEX` for batch events), where `BASE` is random per client. That key
+  protects only the SDK's own retry of the same call; a new call, process, or job attempt gets a
+  new key. Disable it with a `false` pointer.
+- `Trigger*`, `TriggerBatch`, `TerminateUserConnections`, and `ForceReconnectUser` make up to 3
+  attempts in total when the request fails at the network level or the server answers `5xx`. The
+  retries are immediate, without backoff, and ignore `Retry-After`. `4xx` responses, including
+  `429`, are returned without a retry.
+
+For retries you control, derive the key from the logical operation so every attempt shares it:
+
+```go title="worker.go"
+func publishOrderPaid(client *sockudo.Client, orderID string, version int) error {
+	key := fmt.Sprintf("order.paid:%s:v%d", orderID, version)
+	_, err := client.TriggerWithParams(
+		"private-orders-"+orderID,
+		"order.paid",
+		map[string]any{"id": orderID, "version": version},
+		sockudo.TriggerParams{IdempotencyKey: &key},
+	)
+	return err
+}
+```
+
+`sockudo.GenerateIdempotencyKey()` returns a random UUID v4. If you use it, generate it once when
+you create the job and store it with the job.
+
+<Callout type="warn" title="A key names an operation, not an attempt">
+Use keys like `order.created:tenant-42:order-123:v1`. Never generate a fresh key per retry, and
+never reuse a key for a different payload: the server would return the first result and drop the
+new event.
+</Callout>
+
+## Authorize private and presence channels
+
+When a client subscribes to a `private-*` or `presence-*` channel, it asks your backend for a
+signature. Your handler decides whether the current user may join; the SDK only signs the answer.
+For presence channels, take the user ID and info from your own session, never from the request, or
+any user could claim to be anyone.
+
+The client posts `socket_id` and `channel_name` form-encoded. The SDK parses that body itself, so
+read it once, inspect the channel, and pass the same bytes on:
+
+```go title="auth.go"
+func sockudoAuth(client *sockudo.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := currentUser(r) // your session lookup
+		if !ok {
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
+		if err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		form, err := url.ParseQuery(string(body))
+		if err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+
+		channel := form.Get("channel_name")
+		if !canSubscribe(user, channel) { // your authorization rules
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		var response []byte
+		if strings.HasPrefix(channel, "presence-") {
+			response, err = client.AuthorizePresenceChannel(body, sockudo.MemberData{
+				UserID:   user.ID,
+				UserInfo: map[string]string{"name": user.DisplayName},
+			})
+		} else {
+			response, err = client.AuthorizePrivateChannel(body)
+		}
+		if err != nil {
+			// Missing fields, malformed socket_id, or a missing encryption key.
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
+}
+```
+
+```go title="main.go"
+http.HandleFunc("POST /sockudo/auth", sockudoAuth(client))
+```
+
+The response is JSON bytes: `{"auth":"KEY:SIGNATURE"}` for private channels, plus `channel_data`
+for presence channels and `shared_secret` for encrypted channels. `MemberData.UserInfo` is a
+`map[string]string`.
+
+<Callout type="warn" title="Signing is not authorization">
+`AuthorizePrivateChannel` and `AuthorizePresenceChannel` sign whatever channel the body names.
+Authenticate the session, check the exact channel name against your own rules, and only then sign.
+A missing check here lets any logged-in user read any private channel.
+</Callout>
+
+### User authentication
+
+User authentication (sign-in) binds a connection to a user ID so the server can target that user
+and terminate their connections:
+
+```go title="auth.go"
+func sockudoUserAuth(client *sockudo.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := currentUser(r)
+		if !ok {
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
+		if err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+
+		response, err := client.AuthenticateUser(body, map[string]any{
+			"id":   user.ID, // must be a non-empty string
+			"name": user.DisplayName,
+		})
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
+}
+```
+
+The response is `{"auth":"...","user_data":"..."}`. To publish to every authenticated connection of
+one user, call `client.SendToUser(userID, eventName, data)`.
+
+### Encrypted channels
+
+`private-encrypted-*` channels are end-to-end encrypted: the server relays ciphertext it cannot
+read. Generate a 32-byte key and set `EncryptionMasterKeyBase64`:
+
+```bash title="Terminal"
+openssl rand -base64 32
+```
+
+```go title="sockudo.go"
+client := &sockudo.Client{
+	AppID:                     os.Getenv("SOCKUDO_APP_ID"),
+	Key:                       os.Getenv("SOCKUDO_APP_KEY"),
+	Secret:                    os.Getenv("SOCKUDO_APP_SECRET"),
+	Host:                      os.Getenv("SOCKUDO_HOST"),
+	Secure:                    true,
+	EncryptionMasterKeyBase64: os.Getenv("SOCKUDO_ENCRYPTION_MASTER_KEY"),
+}
+```
+
+The SDK encrypts event data with a per-channel key derived from the master key, adds that
+channel's `shared_secret` to auth responses, and decrypts encrypted channel events in validated
+webhooks. Publish to one encrypted channel per call: multi-channel publishes that include an
+encrypted channel return an error. Batches may contain encrypted events. The key must decode to
+exactly 32 bytes.
+
+### Terminate user connections
+
+When access changes, disconnect a user's sockets immediately:
+
+```go title="access.go"
+if err := client.TerminateUserConnections(user.ID); err != nil {
+	return err
+}
+
+// Or close every socket with code 4200 so clients reconnect and re-authenticate:
+if err := client.ForceReconnectUser(user.ID); err != nil {
+	return err
+}
+```
+
+## Validate webhooks
+
+Sockudo signs each webhook with HMAC-SHA256 over the exact request body bytes and sends the result
+in `X-Pusher-Signature`, with the app key in `X-Pusher-Key`. Validation must see the raw body:
+decoding and re-encoding the JSON changes the bytes and breaks the signature. Read the body with
+`io.ReadAll` and pass those bytes unchanged:
+
+```go title="webhooks.go"
+func sockudoWebhook(client *sockudo.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+
+		webhook, err := client.Webhook(r.Header, body)
+		if err != nil {
+			http.Error(w, "invalid webhook", http.StatusUnauthorized)
+			return
+		}
+
+		// Acknowledge fast; process the events on a queue.
+		enqueueWebhookEvents(webhook.Events)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+```
+
+`Webhook` compares signatures in constant time and returns an error for an unknown key, a bad
+signature, malformed JSON, or an encrypted event without a configured master key. A valid
+`*sockudo.Webhook` has `TimeMs` and `Events`; each `WebhookEvent` has `Name`, `Channel`, `Event`,
+`Data`, `SocketID`, and `UserID`, plus `RawData` and `Fields` that preserve the original JSON for
+nested data and future fields.
+
+Sockudo may deliver the same webhook more than once, so process events idempotently. The SDK
+validates against a single key pair. To accept both keys during a rotation, keep a second client
+configured with the previous key and secret and try it when the first returns an error.
+
+## Channel state and history
+
+```go title="state.go"
 prefix := "presence-"
 info := "user_count"
-channels, err := client.Channels(sockudo.ChannelsParams{
-    FilterByPrefix: &prefix,
-    Info:           &info,
-})
+channels, err := client.Channels(sockudo.ChannelsParams{FilterByPrefix: &prefix, Info: &info})
 if err != nil {
-    return err
+	return err
 }
 
-users, err := client.GetChannelUsers("presence-lobby")
+attrs := "user_count,subscription_count"
+lobby, err := client.Channel("presence-lobby", sockudo.ChannelParams{Info: &attrs})
+if err != nil {
+	return err
+}
 
+users, err := client.GetChannelUsers("presence-lobby") // users.List []User{ID}
+```
+
+State is an operational snapshot at the moment of the request; never use it as an authorization
+source.
+
+`ChannelHistory` returns a `*sockudo.HistoryPage` with `Items`, `HasMore`, `NextCursor`, `Bounds`,
+and `Continuity`. `HistoryParams` supports `Limit`, `Direction` (`"newest_first"` or
+`"oldest_first"`), `Cursor`, `StartSerial`, `EndSerial`, `StartTimeMS`, and `EndTimeMS`:
+
+```go title="history.go"
+limit := 100
+direction := "oldest_first"
+params := sockudo.HistoryParams{Limit: &limit, Direction: &direction}
+
+for {
+	page, err := client.ChannelHistory("orders", params)
+	if err != nil {
+		return err
+	}
+	for _, item := range page.Items {
+		export(item)
+	}
+	if !page.HasMore || page.NextCursor == nil {
+		break
+	}
+	params.Cursor = page.NextCursor
+}
+```
+
+Cursors are opaque: pass `NextCursor` back unchanged and do not parse or construct them. The server
+caps page sizes, so keep `Limit` bounded.
+
+Presence history records join and leave transitions, and a snapshot rebuilds membership at a serial
+or timestamp. Both reject channel names without the `presence-` prefix before sending:
+
+```go title="presence.go"
 limit := 50
 direction := "newest_first"
-page, err := client.ChannelHistory("orders", sockudo.HistoryParams{
-    Limit:     &limit,
-    Direction: &direction,
+transitions, err := client.ChannelPresenceHistory("presence-lobby", sockudo.PresenceHistoryParams{
+	Limit:     &limit,
+	Direction: &direction,
+})
+
+serial := int64(4)
+snapshot, err := client.ChannelPresenceSnapshot("presence-lobby", sockudo.PresenceSnapshotParams{
+	AtSerial: &serial, // or AtTimeMS
 })
 ```
 
-State is an operational snapshot, not an authorization source. History cursors
-are opaque and must be passed to the next call unchanged.
+The Go SDK has no exported generic signed-request helper; every supported endpoint has its own
+method.
 
-## Webhooks
+## Versioned messages and annotations
 
-Read and preserve the exact body bytes for signature validation:
+Protocol V2 messages can be read and mutated after publish. The SDK wraps the HTTP surface
+described in [Mutable messages](/docs/server/mutable-messages). Mutation bodies are any value that
+`encoding/json` can marshal, using the server's snake_case fields:
 
-```go
-body, err := io.ReadAll(req.Body)
+```go title="messages.go"
+latest, err := client.GetMessage("chat-room-1", messageSerial) // latest.Item
+
+limit := 20
+versions, err := client.GetMessageVersions("chat-room-1", messageSerial, sockudo.MessageVersionsParams{
+	Limit: &limit,
+})
+
+updated, err := client.UpdateMessage("chat-room-1", messageSerial, map[string]any{
+	"data":        "hello, edited",
+	"description": "fix typo",
+	"op_id":       "edit:" + messageSerial + ":2",
+})
 if err != nil {
-    http.Error(res, "invalid body", http.StatusBadRequest)
-    return
+	return err
 }
+log.Printf("message %s: %s (accepted=%t)", updated.MessageSerial, updated.Status, updated.Accepted)
 
-webhook, err := client.Webhook(req.Header, body)
-if err != nil {
-    http.Error(res, "invalid signature", http.StatusUnauthorized)
-    return
-}
-
-enqueueWebhookEvents(webhook.Events)
-res.WriteHeader(http.StatusAccepted)
+_, err = client.AppendMessage("chat-room-1", messageSerial, map[string]any{"data": " more text"})
+_, err = client.DeleteMessage("chat-room-1", messageSerial, map[string]any{"description": "removed"})
 ```
 
-Do not decode the JSON first or log the raw body and signature.
+`MutationResponse` exposes `Channel`, `MessageSerial`, `Action`, `Accepted`, `Status`,
+`VersionSerial`, `HistorySerial`, and `DeliverySerial`. `op_id` makes a mutation idempotent:
+replaying the same ID with the same operation returns the original acknowledgement. Without
+`socket_id`, a signed app-key request is a privileged server operation.
 
-## End-to-end encrypted channels
+Annotations attach typed reactions or flags to a message:
 
-Set `EncryptionMasterKeyBase64` to a base64-encoded 32-byte key and publish only
-to `private-encrypted-*` names. The server SDK encrypts payloads and produces
-the shared secret during channel auth. Keep the master key in a secret manager
-and do not mix encrypted and unencrypted channels in one logical publish.
+```go title="reactions.go"
+name := "thumbs_up"
+created, err := client.PublishAnnotation("chat-room-1", messageSerial, sockudo.PublishAnnotationRequest{
+	Type: "reactions:distinct.v1",
+	Name: &name,
+})
+if err != nil {
+	return err
+}
+
+annotationType := "reactions:distinct.v1"
+events, err := client.ListAnnotations("chat-room-1", messageSerial, sockudo.AnnotationEventsParams{
+	Type: &annotationType,
+})
+
+_, err = client.DeleteAnnotation("chat-room-1", messageSerial, created.AnnotationSerial, nil)
+```
 
 ## Push notifications
 
-```go
-_, err := client.ActivateDevice(sockudo.PushDeviceDetails{
-    "deviceId":      "android-device-1",
-    "clientId":      "user-42",
-    "platform":      "fcm",
-    "providerToken": "provider-token",
+The push helpers sign `/apps/APP_ID/push/*` requests and send the push capability header for you
+(`push-admin` by default, `push-subscribe` when you pass a device identity token). Request types
+such as `PushDeviceDetails` and `PushPublishRequest` are `map[string]interface{}` in the server's
+camelCase shape, and every method returns the raw JSON response as `[]byte`. See
+[Push notifications](/docs/server/push-notifications) for the full model.
+
+Register a device from your backend after you verify the user:
+
+```go title="push.go"
+raw, err := client.ActivateDevice(sockudo.PushDeviceDetails{
+	"appId":        os.Getenv("SOCKUDO_APP_ID"),
+	"id":           deviceID,
+	"clientId":     user.ID,
+	"formFactor":   "phone",
+	"platform":     "android",
+	"deviceSecret": "admin-registration-placeholder",
+	"timezone":     "UTC",
+	"locale":       "en",
+	"push": map[string]any{
+		"recipient": map[string]any{"transportType": "gcm", "registrationToken": fcmToken},
+		"state":     "ACTIVE",
+	},
 })
+if err != nil {
+	return err
+}
 
-_, err = client.UpsertChannelPushSubscription(sockudo.PushChannelSubscription{
-    "deviceId": "android-device-1",
-    "clientId": "user-42",
-    "channel":  "orders",
-}, "")
-
-accepted, err := client.PublishPush(sockudo.PushPublishRequest{
-    "recipients": []sockudo.PushRecipient{
-        {"type": "channel", "channel": "orders"},
-    },
-    "payload": map[string]interface{}{
-        "title": "Order updated",
-        "body":  "Order ord_123 is packed",
-    },
-    "publishId": "push-order-ord_123-packed",
-})
-
-_ = accepted
+var registration struct {
+	TokenHash           string `json:"tokenHash"`
+	DeviceIdentityToken string `json:"deviceIdentityToken"`
+}
+if err := json.Unmarshal(raw, &registration); err != nil {
+	return err
+}
 ```
 
-The Go push helpers sign `/push/*` requests and force async publish behavior.
+With admin capability the server ignores the `deviceSecret` value and issues a device identity
+token on first registration. Store it for device-scoped calls such as `UpdateDeviceRegistration`.
 
-`ApnsLiveActivityPayload` and the direct/broadcast recipient constructors provide the typed
-ActivityKit wire contract. Manage iOS 18 broadcast channels with
-`CreateApnsLiveActivityChannel`, `GetApnsLiveActivityChannel`,
-`ListApnsLiveActivityChannels`, and `DeleteApnsLiveActivityChannel`. See
-[Apple Live Activities](/docs/server/apple-live-activities) for lifecycle rules.
+Subscribe the device to a channel, publish, and check status:
 
-## Errors and production guidance
+```go title="push.go"
+_, err = client.UpsertChannelPushSubscription(sockudo.PushChannelSubscription{
+	"appId":     os.Getenv("SOCKUDO_APP_ID"),
+	"channel":   "private-orders-42",
+	"deviceId":  deviceID,
+	"clientId":  user.ID,
+	"provider":  "fcm",
+	"tokenHash": registration.TokenHash,
+}, "")
+if err != nil {
+	return err
+}
 
-Every network operation returns an `error`; check it before using the response.
-Retry only transient network errors, `429`, and suitable server failures with
-bounded exponential backoff. Because an HTTP error can be ambiguous after the
-server accepted a request, every retried publish needs an idempotency key.
+raw, err = client.PublishPush(sockudo.PushPublishRequest{
+	"publishId":  "push:order-ord_123:packed",
+	"recipients": []sockudo.PushRecipient{{"type": "channel", "channel": "private-orders-42"}},
+	"payload":    map[string]any{"title": "Order updated", "body": "Order ord_123 is packed"},
+})
+if err != nil {
+	return err
+}
 
-- Reuse one `Client` and one tuned `http.Client`.
-- Set a timeout below the enclosing request or job deadline.
-- Pass request-scoped cancellation through your own surrounding workflow.
-- Keep credentials, signed URLs, provider tokens, and raw webhook content out
-  of logs.
-- Bound channel-history page sizes and validate all auth endpoint input.
-- Test duplicate attempts, key rotation, network interruption, and graceful
-  worker shutdown.
+var accepted struct {
+	PublishID string `json:"publishId"`
+	Status    string `json:"status"`
+}
+if err := json.Unmarshal(raw, &accepted); err != nil {
+	return err
+}
+
+status, err := client.GetPublishStatus(accepted.PublishID)
+```
+
+`PublishPush` sets `"sync": false` on the map you pass. The `202` response is an admission record
+(`publishId`, `status`, `expectedRecipients`), not proof of delivery; inspect delivery
+asynchronously with `GetPublishStatus`. Reuse the same `publishId` when you retry a publish.
+
+Other push methods:
+
+| Area | Methods |
+| --- | --- |
+| Devices | `ActivateDevice` (alias `CreateDeviceActivation`), `UpdateDeviceRegistration`, `GetDeviceRegistration`, `ListDeviceRegistrations`, `DeleteDeviceRegistration`, `RemoveDeviceRegistrationsByClient` |
+| Subscriptions | `UpsertChannelPushSubscription`, `ListChannelPushSubscriptions`, `DeleteChannelPushSubscriptions`, `ListChannelPushSubscriptionChannels` |
+| Publishing | `PublishPush` (alias `PublishPushDirect`), `PublishPushBatch`, `SchedulePush` (requires `notBeforeMs`), `CancelScheduledPush`, `GetPublishStatus`, `PostPushDeliveryStatus` |
+| Credentials | `PutPushCredential`, `ListPushCredentials` |
+
+For Apple Live Activities, `ApnsLiveActivityPayload` with `NewApnsLiveActivityRecipient` and
+`NewApnsLiveActivityBroadcastRecipient` provide the typed ActivityKit wire contract. Manage iOS 18
+broadcast channels with `CreateApnsLiveActivityChannel` (`sockudo.ApnsChannelNoStorage` or
+`sockudo.ApnsChannelMostRecent`), `GetApnsLiveActivityChannel`, `ListApnsLiveActivityChannels`,
+and `DeleteApnsLiveActivityChannel`. See [Apple Live Activities](/docs/server/apple-live-activities)
+for lifecycle rules.
+
+## Errors and timeouts
+
+Every network operation returns an `error`; check it before using the result. The SDK has no typed
+error values:
+
+- Transport failures (connection refused, DNS, TLS, timeouts) are the `*url.Error` returned by
+  `http.Client.Do`.
+- Non-`2xx` responses are plain errors whose message is `Status Code: NNN - RESPONSE_BODY`.
+- Local validation failures (channel names, socket IDs, payload size, missing encryption key) are
+  plain errors returned before any request is sent.
+
+Retry network errors, `429`, and `5xx` with bounded backoff and the original idempotency key. Do
+not retry `400`, `401`, `403`, or `413`: the same request fails the same way.
+
+```go title="retry.go"
+func sockudoStatus(err error) int {
+	var code int
+	if _, scanErr := fmt.Sscanf(err.Error(), "Status Code: %d", &code); scanErr != nil {
+		return 0
+	}
+	return code
+}
+
+func retryable(err error) bool {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	code := sockudoStatus(err)
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
+func handleOrderPaid(client *sockudo.Client, orderID string, version int) error {
+	err := publishOrderPaid(client, orderID, version)
+	if err != nil && retryable(err) {
+		return scheduleRetry(orderID, version) // same key on the next attempt
+	}
+	return err
+}
+```
+
+The `HTTPClient` timeout (5 seconds by default) bounds each attempt, and the built-in retry can
+make up to 3 attempts, so keep `3 x timeout` below the enclosing request or job deadline.
+
+<Callout type="warn" title="Do not log transport errors verbatim">
+A `*url.Error` message includes the full request URL, which carries `auth_key`, `auth_signature`,
+and other signed query parameters. Log `urlErr.Err` or a status code instead, and never log the
+secret, raw webhook bodies, device or provider tokens, or event content.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card title="Authentication" href="/docs/getting-started/authentication" description="How private, presence, and user auth flow between client, backend, and server." />
+  <Card title="Webhooks" href="/docs/server/webhooks" description="Event types, delivery, retries, and signature rules." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Durable history, cursors, and connection recovery semantics." />
+  <Card title="HTTP API" href="/docs/server/http-api" description="Every endpoint the SDK signs, with request and response shapes." />
+</Cards>

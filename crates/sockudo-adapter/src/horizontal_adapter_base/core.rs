@@ -687,6 +687,21 @@ where
                             );
                         }
 
+                        // Count this node's deliveries. The publisher counts only its own
+                        // local sockets, and own broadcasts returned early above, so each
+                        // delivery is counted exactly once cluster-wide. No size observation
+                        // here: the size histogram is fed once per message on the origin node.
+                        if send_result.is_ok()
+                            && local_recipient_count > 0
+                            && let Some(metrics) = horizontal_lock.metrics.get()
+                        {
+                            metrics.mark_ws_messages_sent_batch(
+                                &broadcast.app_id,
+                                broadcast.message.len(),
+                                local_recipient_count,
+                            );
+                        }
+
                         // Track broadcast latency metrics using helper function
                         let metrics_ref = horizontal_lock.metrics.get().cloned();
 
@@ -970,7 +985,11 @@ where
                     break;
                 }
 
-                let dead_nodes = horizontal.get_dead_nodes(node_timeout_ms).await;
+                let expired = horizontal.get_dead_nodes(node_timeout_ms).await;
+                // Nodes expired in earlier rounds while another node led stay in the round
+                // until their cleanup is seen: if that leader died before broadcasting
+                // NodeDead, their presence would otherwise never be cleaned up.
+                let dead_nodes = horizontal.with_dead_nodes_awaiting_cleanup(expired).await;
 
                 if !dead_nodes.is_empty() {
                     // Expire locally FIRST, on EVERY node, before any network work.
@@ -1001,6 +1020,9 @@ where
 
                     // Single leader election for entire cleanup round
                     let is_leader = horizontal.is_cleanup_leader(&dead_nodes).await;
+                    horizontal
+                        .record_dead_node_round(&dead_nodes, is_leader)
+                        .await;
 
                     if is_leader {
                         info!(

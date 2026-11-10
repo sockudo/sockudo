@@ -79,15 +79,51 @@ impl Default for SurrealDbSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DatabaseConfig {
     pub mysql: DatabaseConnection,
+    /// Missing fields fall back to PostgreSQL defaults (port 5432, user
+    /// `postgres`), not the MySQL-flavoured `DatabaseConnection::default()`.
+    #[serde(deserialize_with = "deserialize_postgres_connection")]
     pub postgres: DatabaseConnection,
     pub redis: RedisConnection,
     pub dynamodb: DynamoDbSettings,
     pub surrealdb: SurrealDbSettings,
     pub scylladb: ScyllaDbSettings,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            mysql: DatabaseConnection::default(),
+            postgres: DatabaseConnection::postgres_default(),
+            redis: RedisConnection::default(),
+            dynamodb: DynamoDbSettings::default(),
+            surrealdb: SurrealDbSettings::default(),
+            scylladb: ScyllaDbSettings::default(),
+        }
+    }
+}
+
+/// Deserializes a (possibly partial) `[database.postgres]` table, filling
+/// missing fields from [`DatabaseConnection::postgres_default`].
+fn deserialize_postgres_connection<'de, D>(deserializer: D) -> Result<DatabaseConnection, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    let provided = serde_json::Value::deserialize(deserializer)?;
+    let serde_json::Value::Object(provided) = provided else {
+        return Err(D::Error::custom("database.postgres must be a table/object"));
+    };
+    let mut merged =
+        serde_json::to_value(DatabaseConnection::postgres_default()).map_err(D::Error::custom)?;
+    if let serde_json::Value::Object(base) = &mut merged {
+        base.extend(provided);
+    }
+    serde_json::from_value(merged).map_err(D::Error::custom)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +166,17 @@ impl Default for DatabaseConnection {
             cache_ttl: 300,
             cache_cleanup_interval: 60,
             cache_max_capacity: 100,
+        }
+    }
+}
+
+impl DatabaseConnection {
+    /// Defaults for the PostgreSQL connection (`[database.postgres]`).
+    pub fn postgres_default() -> Self {
+        Self {
+            port: 5432,
+            username: "postgres".to_string(),
+            ..Self::default()
         }
     }
 }

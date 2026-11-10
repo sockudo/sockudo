@@ -34,6 +34,10 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.app_manager.driver =
             parse_driver_enum(driver_str, options.app_manager.driver.clone(), "AppManager");
     }
+    options.app_manager.availability_check_interval_seconds = parse_env::<u64>(
+        "APP_MANAGER_AVAILABILITY_CHECK_INTERVAL_SECONDS",
+        options.app_manager.availability_check_interval_seconds,
+    );
     if let Ok(driver_str) = std::env::var("RATE_LIMITER_DRIVER") {
         options.rate_limiter.driver = parse_driver_enum(
             driver_str,

@@ -33,6 +33,10 @@ pub struct SqsQueueConfig {
     pub concurrency: u32,
     pub fifo: bool,
     pub message_group_id: Option<String>,
+    /// Fail startup when the webhooks queue has no operator-managed
+    /// `RedrivePolicy`. When false, a missing policy is logged once and failed
+    /// jobs are deleted after `queue.reliability.max_attempts` receives.
+    pub require_redrive_policy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +191,7 @@ impl Default for SqsQueueConfig {
             concurrency: 5,
             fifo: false,
             message_group_id: Some("default".to_string()),
+            require_redrive_policy: false,
         }
     }
 }

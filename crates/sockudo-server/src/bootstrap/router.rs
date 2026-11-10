@@ -8,7 +8,7 @@ use crate::http_handler::{
     events, fallback_404, force_reconnect_user, live, metrics, operator_stats, publish_annotation,
     ready, revoke_capability_tokens, stats, terminate_user_connections, up, update_message, usage,
 };
-use crate::middleware::pusher_api_auth_middleware;
+use crate::middleware::{AppApiRateLimiter, pusher_api_auth_middleware};
 #[cfg(feature = "push")]
 use crate::push_http::{
     batch_publish as push_batch_publish, delete_channel_subscriptions, delete_device,
@@ -636,6 +636,10 @@ impl SockudoServer {
             },
         ));
 
+        if let Some(limiter) = self.state.app_api_rate_limiter.clone() {
+            api_router = api_router.layer(axum::Extension(AppApiRateLimiter(limiter)));
+        }
+
         if let Some(middleware) = api_rate_limiter_middleware_layer {
             api_router = api_router.layer(middleware);
         }
@@ -699,6 +703,9 @@ impl SockudoServer {
                     "/stats",
                     get(
                         move |uri: axum::http::Uri,
+                              limiter: Option<
+                            axum::Extension<crate::middleware::AppApiRateLimiter>,
+                        >,
                               query: axum::extract::Query<sockudo_ably_compat::AblyStatsQuery>,
                               headers: axum::http::HeaderMap,
                               axum::extract::State(handler): axum::extract::State<
@@ -717,7 +724,11 @@ impl SockudoServer {
                                 } else {
                                     // Native stats require a Pusher-signed request.
                                     let app = match crate::middleware::authenticate_pusher_request(
-                                        &handler, "GET", &uri, None,
+                                        &handler,
+                                        limiter.as_ref().map(|axum::Extension(limiter)| limiter),
+                                        "GET",
+                                        &uri,
+                                        None,
                                     )
                                     .await
                                     {

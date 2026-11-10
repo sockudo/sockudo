@@ -11,10 +11,22 @@ complex app policy, retention, queue reliability, and feature structure in a sta
 persistent manager. See [Static configuration](/docs/deployment/static-configuration) for the full
 precedence and equivalent file examples.
 
-Values are parsed as strings unless the target option is numeric or boolean. Boolean values follow
-the server parser and accept common true/false forms.
+Values are parsed as strings unless the target option is numeric or boolean. Booleans accept
+`true`, `1`, `yes`, `on` and `false`, `0`, `no`, `off`, case-insensitively.
 
 This page lists every runtime environment variable referenced by the server, core configuration loader, push subsystem, app managers, adapters, queues, and provider workers.
+
+Precedence, from lowest to highest: compiled defaults, then the configuration file (after `${VAR}`
+interpolation), then the variables on this page. An environment variable that is set always
+overrides the matching file value; an unset variable leaves the file value in place. Values that
+fail to parse are logged and the previous value is kept.
+
+<Callout type="warn" title="Treat credential variables as secrets">
+Variables that carry secrets, such as `SOCKUDO_DEFAULT_APP_SECRET`, `DATABASE_*_PASSWORD`,
+`PUSH_CREDENTIAL_ENCRYPTION_KEY`, `SOCKUDO_ABLY_COMPAT_KEYS_JSON`, `MCP_TOKEN`, provider tokens,
+and `OTEL_EXPORTER_OTLP_HEADERS`, should come from your platform's secret store, never from a
+committed file or a command line.
+</Callout>
 
 ## Config File Interpolation
 
@@ -90,18 +102,23 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 
 ## Process and listener
 
+Bind address, process mode, timeouts, shutdown draining, and probe behavior. These map to the
+top-level keys and `[http_api]` in the [configuration reference](/docs/reference/configuration#top-level).
+
 | Variable | Purpose |
 | --- | --- |
-| `ENVIRONMENT` | Runtime mode label. |
-| `DEBUG` | Forces debug mode on when truthy. |
-| `DEBUG_MODE` | Overrides the configured debug flag. |
+| `ENVIRONMENT` | Sets `mode` (default `production`). `production` rejects node-local memory push drivers unless `PUSH_ALLOW_MEMORY_DRIVERS` is set; use `development` locally. |
+| `DEBUG` | Forces debug mode on when truthy. Takes precedence over `DEBUG_MODE`. |
+| `DEBUG_MODE` | Overrides the configured `debug` flag in either direction. |
 | `HOST` | Main HTTP and WebSocket bind host. |
 | `PORT` | Main HTTP and WebSocket bind port. |
-| `ACTIVITY_TIMEOUT` | Pusher protocol activity timeout. |
+| `ACTIVITY_TIMEOUT` | Pusher protocol activity timeout in seconds. Defaults to `120`. |
 | `SHUTDOWN_GRACE_PERIOD` | Seconds to keep the listener open after SIGTERM/SIGINT. Existing WebSockets close promptly with 4200; during this window `/up`, `/ready`, and `/accept-traffic` return 503 `DRAINING` and new upgrades are rejected with 503. HTTP API requests are still served. A second signal ends the window early. The [webhook drain](/docs/server/webhooks#shutdown-delivery) follows this window. |
-| `USER_AUTHENTICATION_TIMEOUT` | Timeout used by user authentication flows. |
+| `SHUTDOWN_CLOSE_DELAY_MS` | Milliseconds to wait after the shutdown signal, while `/ready` already reports 503, before closing existing WebSockets with 4200. Default `0`. |
+| `SHUTDOWN_CLOSE_SPREAD_MS` | Milliseconds over which existing WebSockets are closed with 4200, evenly in small batches. Default `0` (all at once). Delay plus spread must not exceed `SHUTDOWN_GRACE_PERIOD`. |
+| `USER_AUTHENTICATION_TIMEOUT` | Seconds a connection may stay open without user authentication when the app requires it. Defaults to `3600`. |
 | `SOCKUDO_MAX_CONNECTIONS` | Per-node WebSocket connection limit. `0` disables. |
-| `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. |
+| `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. Defaults to `64`. |
 | `SOCKUDO_SERVER_ROLE` | Deployment topology role. `"default"` or `"api"`. Overrides `server_role` in the config file. |
 | `INSTANCE_PROCESS_ID` | Stable node/process identity used by clustering and Iggy consumers. |
 | `HOSTNAME` | Fallback node identity for Iggy when `INSTANCE_PROCESS_ID` is not set. |
@@ -115,6 +132,8 @@ url = "${REDIS_URL:-redis://localhost:6379}"
 | `HTTP_API_ACCEPT_TRAFFIC_SAMPLE_INTERVAL_MS` | Independent memory-pressure sampling interval in milliseconds. Defaults to `500`. |
 
 ## Logging
+
+Log filters and output format. `RUST_LOG` wins over the Sockudo defaults.
 
 | Variable | Purpose |
 | --- | --- |
@@ -198,22 +217,31 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 
 ## Driver selection
 
+Choose the adapter, cache, queue, app manager, and rate limiter backends, and control how apps are
+loaded. The backend-specific connection settings follow in later sections.
+
 | Variable | Purpose |
 | --- | --- |
-| `ADAPTER_DRIVER` | Horizontal fanout driver. |
-| `CACHE_DRIVER` | Cache driver. |
-| `QUEUE_DRIVER` | Queue driver. |
-| `APP_MANAGER_DRIVER` | App manager driver. |
+| `ADAPTER_DRIVER` | Horizontal fanout driver. Defaults to `local`. |
+| `CACHE_DRIVER` | Cache driver. Defaults to `memory`. |
+| `QUEUE_DRIVER` | Queue driver. Defaults to `redis`. |
+| `APP_MANAGER_DRIVER` | App manager driver: `memory`, `mysql`, `pgsql` (aliases `postgres`, `postgresql`), `dynamodb`, `surrealdb`, or `scylladb`. |
 | `RATE_LIMITER_DRIVER` | Rate limiter backend driver. |
 | `ADAPTER_BUFFER_MULTIPLIER_PER_CPU` | Adapter fanout buffer sizing multiplier. |
 | `ADAPTER_ENABLE_SOCKET_COUNTING` | Enables adapter socket counting. |
 | `ADAPTER_AGGREGATE_COUNTS` | Enables gossiped aggregate channel counts for local count reads. |
 | `ADAPTER_FAST_PRESENCE_TRANSITIONS` | Uses the replicated presence registry for first-join/last-leave checks; faster but eventually consistent. |
 | `ADAPTER_FALLBACK_TO_LOCAL` | Falls back to the local adapter when a configured adapter cannot start. |
+| `APP_MANAGER_AVAILABILITY_CHECK_INTERVAL_SECONDS` | How often each node re-checks the apps of its live connections and closes sockets of disabled (4003) or deleted (4001) apps. Default `15`; `0` disables the check. The app cache TTL adds to the delay. |
+| `SOCKUDO_APP_SECRET_ENCRYPTION_KEY` | 32-byte key (base64 or hex) that encrypts app secrets at rest in the MySQL/PostgreSQL `secret_enc` column. See [app secrets at rest](/docs/server/security#app-secrets-at-rest-mysql-and-postgresql). |
+| `SOCKUDO_APP_SECRET_ENCRYPTION_KEY_FILE` | Path to a file that holds that key. Set only one of the two. |
 | `APP_MANAGER_REGISTER_INLINE_APPS` | Allows inline app definitions from config to be registered. |
 | `SOCKUDO_SKIP_INLINE_APPS` | Skips inline apps even if present in the config file. |
 
 ## Default app bootstrap
+
+Create a single app from the environment, which is convenient for containers and single-app
+deployments. For several apps or detailed policy, use the app manager instead.
 
 | Variable | Purpose |
 | --- | --- |
@@ -222,9 +250,9 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `SOCKUDO_DEFAULT_APP_SECRET` | Default app secret created from environment. |
 | `SOCKUDO_DEFAULT_APP_ENABLED` | Enables or disables default app registration. |
 | `SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS` | Default app connection limit. |
-| `SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND` | Default app backend publish rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND` | Default app limit on events published through the HTTP API per second (default `100`, `0` = unlimited). Enforced when `[rate_limiter]` is enabled. |
 | `SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND` | Default app client event rate limit. |
-| `SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND` | Default app read API rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND` | Default app limit on signed HTTP API `GET`/`HEAD` requests per second (default `100`, `0` = unlimited). Enforced when `[rate_limiter]` is enabled. |
 | `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL` | Default app presence member limit per channel. |
 | `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB` | Default app presence member payload size limit. |
 | `SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH` | Default app channel name length limit. |
@@ -240,6 +268,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `SOCKUDO_DEFAULT_APP_ANNOTATIONS_ENABLED` | Enables annotations for the default app channel policy. |
 
 ## Ably compatibility credentials
+
+Only read by binaries built with the `ably-compat` Cargo feature. They map to `[ably_compat]`.
 
 | Variable | Purpose |
 | --- | --- |
@@ -258,6 +288,9 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `SOCKUDO_ABLY_COMPAT_STATS_CAS_RETRIES` | Maximum compare-and-swap retries when merging a shared bucket. Defaults to `8`. |
 
 ## Redis
+
+Connection, authentication, Sentinel, cluster, and TLS settings shared by every Redis-backed
+adapter, cache, queue, and rate limiter.
 
 | Variable | Purpose |
 | --- | --- |
@@ -287,8 +320,12 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `DATABASE_REDIS_CLUSTER_USE_TLS` | Enables TLS for Redis Cluster with the default root store; use the master-TLS variables for private CA or mTLS material. |
 | `REDIS_CLUSTER_QUEUE_CONCURRENCY` | Redis Cluster queue worker concurrency. |
 | `REDIS_CLUSTER_QUEUE_PREFIX` | Redis Cluster queue key prefix. |
+| `ADAPTER_CLUSTER_BROADCAST_MODE` | Redis Cluster broadcast channel layout: `legacy` (default), `publish_both`, `subscribe_bucket`, or `bucketed`. |
+| `ADAPTER_CLUSTER_BROADCAST_BUCKETS` | Broadcast channels per broadcast in Redis Cluster, 1–64 (default: `3`). Set to the cluster's shard count. |
 
 ## SQL and app storage
+
+Connection settings for the MySQL and PostgreSQL app managers and database connection pooling.
 
 | Variable | Purpose |
 | --- | --- |
@@ -298,22 +335,20 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `DATABASE_MYSQL_PASSWORD` | MySQL password. |
 | `DATABASE_MYSQL_DATABASE` | MySQL database name. |
 | `DATABASE_MYSQL_TABLE_NAME` | MySQL app table name. |
-| `DATABASE_MYSQL_POOL_MIN` | MySQL minimum pool size. |
-| `DATABASE_MYSQL_POOL_MAX` | MySQL maximum pool size. |
 | `DATABASE_POSTGRES_HOST` | PostgreSQL host. |
-| `DATABASE_POSTGRES_PORT` | PostgreSQL port. |
-| `DATABASE_POSTGRES_USERNAME` | PostgreSQL username used by the core config loader. |
+| `DATABASE_POSTGRES_PORT` | PostgreSQL port. Defaults to `5432`. |
+| `DATABASE_POSTGRES_USERNAME` | PostgreSQL username used by the core config loader. Defaults to `postgres`. |
 | `DATABASE_POSTGRES_USER` | PostgreSQL username fallback used by the PostgreSQL app manager. |
 | `DATABASE_POSTGRES_PASSWORD` | PostgreSQL password. |
 | `DATABASE_POSTGRES_DATABASE` | PostgreSQL database name. |
-| `DATABASE_POSTGRES_POOL_MIN` | PostgreSQL minimum pool size. |
-| `DATABASE_POSTGRES_POOL_MAX` | PostgreSQL maximum pool size. |
 | `DATABASE_POOLING_ENABLED` | Enables database pooling. |
-| `DATABASE_POOL_MIN` | Global minimum pool size. |
-| `DATABASE_POOL_MAX` | Global maximum pool size. |
+| `DATABASE_POOL_MIN` | Global minimum pool size for MySQL and PostgreSQL when `DATABASE_POOLING_ENABLED` is on, unless their own `pool_min` is set in the file. |
+| `DATABASE_POOL_MAX` | Global maximum pool size for MySQL and PostgreSQL when `DATABASE_POOLING_ENABLED` is on, unless their own `pool_max` is set in the file. |
 | `DATABASE_CONNECTION_POOL_SIZE` | Global connection pool size applied to MySQL and PostgreSQL. |
 
 ## DynamoDB, SurrealDB, and ScyllaDB
+
+Connection settings for the non-SQL app manager backends.
 
 | Variable | Purpose |
 | --- | --- |
@@ -335,6 +370,9 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 
 ## Cache
 
+One value fans out to several cache settings at once, which keeps app, channel, and database
+caches consistent.
+
 | Variable | Purpose |
 | --- | --- |
 | `CACHE_TTL_SECONDS` | Cache TTL applied to app, channel, database, and memory cache settings. |
@@ -342,6 +380,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `CACHE_MAX_CAPACITY` | Cache maximum capacity for supported cache stores. |
 
 ## TLS, Unix sockets, and CORS
+
+Listener security and browser access. Terminate TLS here or at your load balancer.
 
 | Variable | Purpose |
 | --- | --- |
@@ -353,25 +393,28 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `UNIX_SOCKET_ENABLED` | Enables Unix socket listener mode. |
 | `UNIX_SOCKET_PATH` | Unix socket filesystem path. |
 | `UNIX_SOCKET_PERMISSION_MODE` | Unix socket permission mode in octal. |
-| `CORS_ORIGINS` | Comma-separated CORS origin patterns. |
+| `CORS_ORIGINS` | Comma-separated CORS origin patterns. Invalid patterns are rejected and the previous value is kept. |
 | `CORS_METHODS` | Comma-separated CORS methods. Defaults include `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` so browser clients can use every supported REST mutation route. |
 | `CORS_HEADERS` | Comma-separated allowed headers. |
 | `CORS_CREDENTIALS` | Enables CORS credentials. |
 
 ## Metrics and rate limiting
 
+The Prometheus listener and HTTP/WebSocket rate limits. The metrics listener is unauthenticated, so
+bind it to a private interface.
+
 | Variable | Purpose |
 | --- | --- |
 | `METRICS_DRIVER` | Metrics backend driver. |
-| `METRICS_ENABLED` | Enables the metrics server. |
-| `METRICS_HOST` | Metrics bind host. |
-| `METRICS_PORT` | Metrics bind port. |
+| `METRICS_ENABLED` | Enables the metrics server. Defaults to `true`. |
+| `METRICS_HOST` | Metrics bind host. Defaults to `0.0.0.0`. |
+| `METRICS_PORT` | Metrics bind port. Defaults to `9601`. |
 | `METRICS_PROMETHEUS_PREFIX` | Prefix for Prometheus metric names. |
 | `METRICS_TCP_EXPORTER_ENABLED` | Enables the metrics-rs TCP event exporter. |
 | `METRICS_TCP_EXPORTER_HOST` | TCP exporter bind host. |
 | `METRICS_TCP_EXPORTER_PORT` | TCP exporter bind port. |
 | `METRICS_TCP_EXPORTER_BUFFER_SIZE` | TCP exporter internal and per-client buffer size. |
-| `RATE_LIMITER_ENABLED` | Enables HTTP and WebSocket rate limiting. |
+| `RATE_LIMITER_ENABLED` | Enables HTTP and WebSocket rate limiting. Defaults to `true`. |
 | `RATE_LIMITER_API_MAX_REQUESTS` | API requests allowed per rate limit window. |
 | `RATE_LIMITER_API_WINDOW_SECONDS` | API rate limit window length. |
 | `RATE_LIMITER_API_TRUST_HOPS` | Client's one-based position from the right of `X-Forwarded-For` for API rate limits. `0` ignores both forwarding headers; `1` suits one NGINX appending proxy. See [client IP extraction](/docs/reference/configuration#rate-limiter-client-ip). |
@@ -382,12 +425,15 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 
 ## Queue backends
 
+Queue v2 reliability, Redis queue tuning, and AWS SQS/SNS settings. See
+[Queue v2 reliability](/docs/reference/configuration#queue-v2-reliability) for the semantics.
+
 | Variable | Purpose |
 | --- | --- |
 | `QUEUE_REDIS_CONCURRENCY` | Redis queue worker concurrency. |
 | `QUEUE_REDIS_PREFIX` | Redis queue key prefix. |
 | `QUEUE_REDIS_RESPONSE_TIMEOUT_MS` | Redis queue command response timeout in milliseconds. Defaults to `5000` so Sentinel failover invalidates stale primary connections promptly; set to `0` to disable the client-side deadline. |
-| `QUEUE_MAX_ATTEMPTS` | Maximum Queue v2 deliveries before dead-lettering. Defaults to `5`. |
+| `QUEUE_MAX_ATTEMPTS` | Maximum Queue v2 deliveries before dead-lettering. Defaults to `5`. On SQS, used only when the queue has no redrive policy; otherwise `maxReceiveCount` applies. |
 | `QUEUE_RETRY_BASE_DELAY_MS` | Initial retry delay. Defaults to `1000`. |
 | `QUEUE_RETRY_MAX_DELAY_MS` | Maximum exponential retry delay. Defaults to `60000`. |
 | `QUEUE_RETRY_JITTER` | Symmetric retry jitter fraction from `0.0` to `1.0`. Defaults to `0.2`. |
@@ -398,7 +444,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `QUEUE_WORKER_PREFETCH` | Maximum jobs processed concurrently or prefetched per worker for bounded broker I/O. SQS FIFO stays serial. Defaults to `16`. |
 | `QUEUE_SHUTDOWN_TIMEOUT_MS` | Budget for draining connection cleanup, presence leases, and webhooks after listener grace; also the separate queue worker shutdown timeout. Defaults to `30000` per phase. See [shutdown delivery](/docs/server/webhooks#shutdown-delivery). |
 | `QUEUE_COMPLETED_RETENTION` | Completed Redis job metadata retained per queue. `0` removes immediately. Defaults to `1000`. |
-| `QUEUE_FAILED_RETENTION` | Dead-letter jobs retained per queue. Defaults to `10000`. |
+| `QUEUE_FAILED_RETENTION` | Dead-letter jobs retained per queue. Defaults to `10000`. Not used by SQS. |
 | `QUEUE_EVENT_RETENTION` | Approximate Redis lifecycle event-stream retention. Defaults to `10000`. |
 | `QUEUE_DEDUPLICATION_TTL_MS` | Application deduplication-key lifetime. Defaults to `300000`. |
 | `QUEUE_MEMORY_CAPACITY` | Maximum outstanding jobs per in-memory logical queue. Capacity errors fail closed. Defaults to `100000`. |
@@ -406,6 +452,7 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `REDIS_CLUSTER_QUEUE_REQUEST_TIMEOUT_MS` | Redis Cluster queue command request timeout in milliseconds. Set to `0` to disable the cluster client deadline. |
 | `QUEUE_SQS_REGION` | SQS region. |
 | `QUEUE_SQS_VISIBILITY_TIMEOUT` | SQS visibility timeout. |
+| `QUEUE_SQS_REQUIRE_REDRIVE_POLICY` | Fail startup when the SQS webhooks queue has no `RedrivePolicy`. Defaults to `false`: a missing policy is logged and `QUEUE_MAX_ATTEMPTS` bounds delivery. |
 | `QUEUE_SQS_MAX_MESSAGES` | SQS receive batch size. |
 | `QUEUE_SQS_WAIT_TIME_SECONDS` | SQS long-poll wait time. |
 | `QUEUE_SQS_CONCURRENCY` | SQS worker concurrency. |
@@ -416,6 +463,9 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `QUEUE_SNS_ENDPOINT_URL` | SNS custom endpoint URL. |
 
 ## NATS, Pulsar, RabbitMQ, Pub/Sub, Kafka, Iggy, and OMQ
+
+Broker connection settings for the non-Redis adapters and queues. Each `*_NODES_NUMBER` is the
+expected Sockudo node count used for request/response aggregation, not a broker replica count.
 
 | Variable | Purpose |
 | --- | --- |
@@ -497,6 +547,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 
 ## Cleanup and cluster health
 
+Disconnect cleanup workers and cross-node heartbeat tracking.
+
 | Variable | Purpose |
 | --- | --- |
 | `CLEANUP_ASYNC_ENABLED` | Enables asynchronous cleanup. |
@@ -507,11 +559,21 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `CLEANUP_WORKER_THREADS` | Cleanup worker count or `auto`. |
 | `CLEANUP_MAX_RETRY_ATTEMPTS` | Cleanup retry limit. |
 | `CLUSTER_HEALTH_ENABLED` | Enables cluster health tracking. |
-| `CLUSTER_HEALTH_HEARTBEAT_INTERVAL` | Cluster heartbeat interval. |
-| `CLUSTER_HEALTH_NODE_TIMEOUT` | Node timeout before a peer is considered stale. A newly started node also keeps publishing cross-node for this long before it treats an empty peer list as a single-node deployment. |
-| `CLUSTER_HEALTH_CLEANUP_INTERVAL` | Cleanup interval for cluster health state. |
+| `CLUSTER_HEALTH_HEARTBEAT_INTERVAL` | Cluster heartbeat interval in milliseconds. |
+| `CLUSTER_HEALTH_NODE_TIMEOUT` | Node timeout in milliseconds before a peer is considered stale. A newly started node also keeps publishing cross-node for this long before it treats an empty peer list as a single-node deployment. |
+| `CLUSTER_HEALTH_CLEANUP_INTERVAL` | Cleanup interval for cluster health state in milliseconds. |
+
+<Callout type="warn" title="Cluster health variables and the adapter">
+The `CLUSTER_HEALTH_*` variables populate the top-level `cluster_health` section, while the
+horizontal adapter reads `[adapter.cluster_health]`. Until these are unified, configure cluster
+health in the file under `[adapter.cluster_health]` (`enabled`, `heartbeat_interval_ms`,
+`node_timeout_ms`, `cleanup_interval_ms`).
+</Callout>
 
 ## WebSocket and Protocol V2 features
+
+Per-connection buffers, heartbeats, and the Protocol V2 delivery features. Protocol V1 behavior is
+unchanged by the V2 switches.
 
 | Variable | Purpose |
 | --- | --- |
@@ -522,14 +584,15 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `WEBSOCKET_MAX_MESSAGE_SIZE` | WebSocket message size limit. |
 | `WEBSOCKET_MAX_FRAME_SIZE` | WebSocket frame size limit. |
 | `WEBSOCKET_WRITE_BUFFER_SIZE` | WebSocket write buffer size. |
+| `WEBSOCKET_READ_BUFFER_SIZE` | Receive buffer allocated per WebSocket connection, in bytes (default `2048`, minimum `1024`). Raise it when clients regularly send large frames. |
 | `WEBSOCKET_MAX_BACKPRESSURE` | WebSocket backpressure limit. |
 | `WEBSOCKET_AUTO_PING` | Enables native WebSocket Ping/Pong keepalive for Protocol V2. Protocol V1 retains its Pusher-compatible application heartbeat. |
 | `WEBSOCKET_PING_INTERVAL` | Inbound inactivity in seconds before a Protocol V2 native Ping. `0` disables proactive native Ping frames; nonzero values are bounded to at least half of `ACTIVITY_TIMEOUT` (and at least 5 seconds). |
 | `WEBSOCKET_IDLE_TIMEOUT` | Hard inbound-idle timeout in seconds for Protocol V2 native connections. `0` disables the hard idle deadline. |
 | `WEBSOCKET_COMPRESSION` | WebSocket compression mode. |
-| `CONNECTION_RECOVERY_ENABLED` | Enables Protocol V2 connection recovery. |
-| `CONNECTION_RECOVERY_BUFFER_TTL` | Recovery buffer TTL. |
-| `CONNECTION_RECOVERY_MAX_BUFFER_SIZE` | Recovery buffer maximum size. |
+| `CONNECTION_RECOVERY_ENABLED` | Enables Protocol V2 connection recovery. Defaults to `false`. |
+| `CONNECTION_RECOVERY_BUFFER_TTL` | Recovery buffer TTL in seconds. Defaults to `120`. |
+| `CONNECTION_RECOVERY_MAX_BUFFER_SIZE` | Recovery buffer maximum size per channel, also the bound for one durable fallback replay. Defaults to `100`. |
 | `EPHEMERAL_ENABLED` | Enables ephemeral event handling. |
 | `ECHO_CONTROL_ENABLED` | Enables per-connection echo control. |
 | `ECHO_CONTROL_DEFAULT_ECHO_MESSAGES` | Default echo behavior when echo control is enabled. |
@@ -539,6 +602,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 
 ## Presence
 
+Presence update rate and how long a member lingers after an abrupt disconnect.
+
 | Variable | Purpose |
 | --- | --- |
 | `PRESENCE_UPDATE_RATE_LIMIT_PER_MEMBER_PER_SECOND` | Maximum presence updates accepted per member per second. |
@@ -546,6 +611,8 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `PRESENCE_V2_UNGRACEFUL_TIMEOUT_SECONDS` | Protocol V2 presence lease after an abrupt disconnect. Defaults to 15 seconds. |
 
 ## History, idempotency, versioning, and annotations
+
+Durable state for Protocol V2. Retention and page-size limits bound storage and response size.
 
 | Variable | Purpose |
 | --- | --- |
@@ -568,9 +635,9 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `PRESENCE_HISTORY_MAX_PAGE_SIZE` | Maximum presence history page size. |
 | `PRESENCE_HISTORY_MAX_EVENTS_PER_CHANNEL` | Optional retained presence event limit per channel. |
 | `PRESENCE_HISTORY_MAX_BYTES_PER_CHANNEL` | Optional retained presence byte limit per channel. |
-| `IDEMPOTENCY_ENABLED` | Enables HTTP publish idempotency. |
-| `IDEMPOTENCY_TTL_SECONDS` | Idempotency cache TTL. |
-| `IDEMPOTENCY_MAX_KEY_LENGTH` | Maximum idempotency key length. |
+| `IDEMPOTENCY_ENABLED` | Enables HTTP publish idempotency. Defaults to `true`. |
+| `IDEMPOTENCY_TTL_SECONDS` | Idempotency cache TTL in seconds. Defaults to `120`. |
+| `IDEMPOTENCY_MAX_KEY_LENGTH` | Maximum idempotency key length. Defaults to `128`. |
 | `VERSIONED_MESSAGES_ENABLED` | Enables Protocol V2 mutable messages. |
 | `VERSIONED_MESSAGES_DRIVER` | Versioned message backend driver. |
 | `VERSIONED_MESSAGES_MAX_PAGE_SIZE` | Maximum versioned-message page size. |
@@ -579,6 +646,26 @@ change `/live` or `/up`. Invalid Sockudo configuration still fails validation at
 | `VERSIONED_MESSAGES_PURGE_BATCH_SIZE` | Versioned-message purge batch size. |
 | `VERSIONED_MESSAGES_MAX_PURGE_PER_TICK` | Maximum versioned-message rows purged per tick. |
 | `ANNOTATIONS_ENABLED` | Enables message annotations globally. |
+
+## AI Transport
+
+These variables map to `[ai_transport]` and `[ai_transport.rollup]` and are read only by binaries
+built with the `ai-transport` Cargo feature. Channel prefixes (`[[ai_transport.channels]]`) have no
+environment equivalent; set them in the file.
+
+| Variable | Maps to | Default |
+| --- | --- | --- |
+| `AI_TRANSPORT_ENABLED` | `ai_transport.enabled` | `false` |
+| `AI_TRANSPORT_MAX_ACCUMULATED_MESSAGE_BYTES` | `ai_transport.max_accumulated_message_bytes` | `1048576` |
+| `AI_TRANSPORT_MAX_APPENDS_PER_MESSAGE` | `ai_transport.max_appends_per_message` | `4096` |
+| `AI_TRANSPORT_MAX_OPEN_STREAMING_MESSAGES_PER_CHANNEL` | `ai_transport.max_open_streaming_messages_per_channel` | `1024` |
+| `AI_TRANSPORT_ROLLUP_ENABLED` | `ai_transport.rollup.enabled` | `true` |
+| `AI_TRANSPORT_ROLLUP_DEFAULT_WINDOW_MS` | `ai_transport.rollup.default_window_ms` | `40` |
+| `AI_TRANSPORT_ROLLUP_MIN_WINDOW_MS` | `ai_transport.rollup.min_window_ms` | `0` |
+| `AI_TRANSPORT_ROLLUP_MAX_WINDOW_MS` | `ai_transport.rollup.max_window_ms` | `500` |
+| `AI_TRANSPORT_ROLLUP_ORPHAN_TTL_MS` | `ai_transport.rollup.orphan_ttl_ms` | `60000` |
+| `AI_TRANSPORT_ROLLUP_WHEEL_TICK_MS` | `ai_transport.rollup.wheel_tick_ms` | `5` |
+| `AI_TRANSPORT_ROLLUP_SHARDS` | `ai_transport.rollup.shards` | `64` |
 
 ## MCP
 
@@ -614,6 +701,8 @@ The standalone `sockudo-mcp` binary reads `SOCKUDO_URL`, `SOCKUDO_MCP_APPS`, `SO
 
 ## Webhooks
 
+Batching for outbound webhooks. Retry and timeout settings live in `[webhooks]` in the file.
+
 | Variable | Purpose |
 | --- | --- |
 | `WEBHOOK_BATCHING_ENABLED` | Enables webhook batching. |
@@ -621,6 +710,9 @@ The standalone `sockudo-mcp` binary reads `SOCKUDO_URL`, `SOCKUDO_MCP_APPS`, `SO
 | `WEBHOOK_BATCHING_SIZE` | Webhook batching size. |
 
 ## Push core
+
+Push storage, queues, workers, retries, quotas, and backpressure. Read only by binaries built with
+the `push` Cargo feature.
 
 | Variable | Purpose |
 | --- | --- |
@@ -666,6 +758,9 @@ The standalone `sockudo-mcp` binary reads `SOCKUDO_URL`, `SOCKUDO_MCP_APPS`, `SO
 
 ## Push providers
 
+Per-provider switches and credentials for dispatch workers. Most variables have an unprefixed name
+and a `PUSH_`-prefixed alias; set only one of each pair.
+
 | Variable | Purpose |
 | --- | --- |
 | `PUSH_FCM_ENABLED` | Enables FCM dispatch. |
@@ -673,6 +768,7 @@ The standalone `sockudo-mcp` binary reads `SOCKUDO_URL`, `SOCKUDO_MCP_APPS`, `SO
 | `PUSH_FCM_PROJECT_ID` | FCM project ID alias. |
 | `FCM_SERVICE_ACCOUNT_JSON_PATH` | Path to FCM service account JSON for auto-refreshing OAuth tokens. |
 | `PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH` | FCM service account JSON path alias. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Fallback path to the FCM service account JSON when neither inline JSON nor an explicit path variable is set. An empty value is an error. |
 | `FCM_SERVICE_ACCOUNT_JSON` | Inline FCM service account JSON for auto-refreshing OAuth tokens. |
 | `PUSH_FCM_SERVICE_ACCOUNT_JSON` | Inline FCM service account JSON alias. |
 | `FCM_APP_ID` | App ID used to load stored FCM credentials. |
@@ -735,3 +831,12 @@ The standalone `sockudo-mcp` binary reads `SOCKUDO_URL`, `SOCKUDO_MCP_APPS`, `SO
 | `PUSH_WNS_ENABLED` | Enables WNS dispatch. |
 | `WNS_PROVIDER_TOKEN` | WNS provider token. |
 | `PUSH_WNS_PROVIDER_TOKEN` | WNS provider token alias. |
+
+## Next steps
+
+<Cards>
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="Every section these variables override, with defaults." />
+  <Card title="Static configuration" href="/docs/deployment/static-configuration" description="Loading order and what belongs in files versus the environment." />
+  <Card title="Logging" href="/docs/reference/logging" description="Log filters, structured output, and data-safety policy." />
+  <Card title="Docker deployment" href="/docs/deployment/docker" description="Pass these variables to the published container image." />
+</Cards>

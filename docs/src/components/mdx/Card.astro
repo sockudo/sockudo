@@ -1,0 +1,17 @@
+---
+import { ArrowUpRight } from '@lucide/astro';
+
+interface Props {
+  title: string;
+  href?: string;
+  description?: string;
+}
+const { title, href, description } = Astro.props;
+const Tag = href ? 'a' : 'div';
+---
+
+<Tag class="card-link glass" href={href}>
+  <span class="card-title">{title}{href && <ArrowUpRight />}</span>
+  {description && <span class="card-desc">{description}</span>}
+  <slot />
+</Tag>

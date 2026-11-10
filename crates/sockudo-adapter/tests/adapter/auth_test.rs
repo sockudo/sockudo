@@ -437,6 +437,62 @@ async fn test_api_auth_rejects_route_app_id_mismatch() {
 }
 
 #[tokio::test]
+async fn test_api_auth_rejects_disabled_app_after_valid_signature() {
+    let manager = MemoryAppManager::new();
+    let mut app = test_app("disabled-app-id", "disabled-app-key", "disabled-app-secret");
+    app.enabled = false;
+    manager.create_app(app).await.unwrap();
+    let auth_validator = AuthValidator::new(Arc::new(manager));
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "disabled-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    query_params.insert("auth_version".to_string(), "1.0".to_string());
+
+    let request_path = "/apps/disabled-app-id/events";
+    let auth_query = |signature: String| EventQuery {
+        auth_key: "disabled-app-key".to_string(),
+        auth_timestamp: current_timestamp.clone(),
+        auth_version: "1.0".to_string(),
+        body_md5: "".to_string(),
+        auth_signature: signature,
+    };
+
+    // A correctly signed request for a disabled app is refused as disabled.
+    let signature = generate_valid_signature(
+        "disabled-app-key",
+        "disabled-app-secret",
+        "GET",
+        request_path,
+        &query_params,
+    );
+    let result = auth_validator
+        .authenticate_pusher_api_request(
+            &auth_query(signature),
+            "GET",
+            request_path,
+            &query_params,
+            None,
+        )
+        .await;
+    assert!(matches!(result, Err(Error::ApplicationDisabled)));
+
+    // A bad signature still fails as an auth error, so the disabled state
+    // is not revealed to unauthenticated callers.
+    let result = auth_validator
+        .authenticate_pusher_api_request(
+            &auth_query("bad".to_string()),
+            "GET",
+            request_path,
+            &query_params,
+            None,
+        )
+        .await;
+    assert!(matches!(result, Err(Error::Auth(_))));
+}
+
+#[tokio::test]
 async fn test_api_auth_post_with_body_md5() {
     let app_manager = create_test_app_manager().await;
     let auth_validator = AuthValidator::new(app_manager);

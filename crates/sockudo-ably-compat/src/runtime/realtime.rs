@@ -2338,7 +2338,7 @@ pub(super) async fn collect_ably_rewind(
     handler: &Arc<ConnectionHandler>,
     app: &App,
     channel: &str,
-    rewind: &SubscriptionRewind,
+    rewind: &AblyRewind,
     high_water: Option<&AblyChannelPosition>,
 ) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
     let policy = app.resolved_history(channel, &handler.server_options().history);
@@ -2348,6 +2348,13 @@ pub(super) async fn collect_ably_rewind(
             format!("channel rewind is disabled by policy for channel '{channel}'"),
         ));
     }
+    let rewind = match rewind {
+        AblyRewind::Window(window) => window,
+        AblyRewind::AfterSerial(message_serial) => {
+            return collect_ably_serial_rewind(handler, app, channel, message_serial, high_water)
+                .await;
+        }
+    };
     let limit = rewind.limit().min(policy.max_page_size).max(1);
 
     if handler.server_options().versioned_messages.enabled {
@@ -2475,6 +2482,109 @@ pub(super) async fn collect_ably_rewind(
                 channel,
                 &stored.message,
                 AblyMessageProjection::Aggregate,
+                channel_serial,
+            )?,
+        });
+    }
+    Ok(replay)
+}
+
+/// Replays every delivery after the create record of `message_serial`, up to
+/// the attach high-water. The message serial is resolved to its delivery
+/// position through the version store, so appends and updates to older
+/// messages that land after the target are replayed too.
+async fn collect_ably_serial_rewind(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    channel: &str,
+    message_serial: &MessageSerial,
+    high_water: Option<&AblyChannelPosition>,
+) -> Result<Vec<AblyProtocolMessage>, AblyRecoveryFailure> {
+    let unavailable = |code: u32, reason: &str| {
+        AblyRecoveryFailure::channel(
+            code,
+            format!("unable to rewind channel '{channel}': {reason}"),
+        )
+    };
+    if !handler.server_options().versioned_messages.enabled {
+        return Err(unavailable(
+            40000,
+            "serial rewind requires versioned messages",
+        ));
+    }
+    let version_store = handler.version_store();
+    let state = version_store
+        .stream_state(&app.id, channel)
+        .await
+        .map_err(|error| unavailable(90000, &error.to_string()))?;
+    let Some(stream_id) = state.stream_id else {
+        return Err(unavailable(90003, "the serial is not retained"));
+    };
+    if high_water.is_some_and(|position| position.stream_id != stream_id) {
+        return Err(unavailable(90005, "the stream changed"));
+    }
+    let target = version_store
+        .get_versions(sockudo_core::version_store::VersionStoreReadRequest {
+            app_id: app.id.clone(),
+            channel: channel.to_string(),
+            message_serial: message_serial.clone(),
+            direction: sockudo_core::version_store::VersionStoreDirection::OldestFirst,
+            limit: 1,
+            cursor: None,
+        })
+        .await
+        .map_err(|error| unavailable(90000, &error.to_string()))?
+        .items
+        .first()
+        .map(|record| record.delivery_serial())
+        .ok_or_else(|| unavailable(90003, "the serial is not retained"))?;
+    if state
+        .oldest_available_delivery_serial
+        .is_some_and(|oldest| target.saturating_add(1) < oldest)
+    {
+        return Err(unavailable(90003, "messages expired"));
+    }
+    let store_newest = state.newest_available_delivery_serial.unwrap_or(target);
+    let newest = high_water.map_or(store_newest, |position| position.serial.min(store_newest));
+    if newest <= target {
+        return Ok(Vec::new());
+    }
+    let missing = usize::try_from(newest - target)
+        .ok()
+        .filter(|missing| *missing <= ABLY_REWIND_SERIAL_MAX_MESSAGES)
+        .ok_or_else(|| unavailable(90004, "the message limit was exceeded"))?;
+    let records = version_store
+        .replay_after(sockudo_core::version_store::VersionReplayRequest {
+            app_id: app.id.clone(),
+            channel: channel.to_string(),
+            after_delivery_serial: target,
+            limit: missing,
+        })
+        .await
+        .map_err(|error| unavailable(90003, &error.to_string()))?;
+    if records.len() != missing {
+        return Err(unavailable(90003, "continuity is unprovable"));
+    }
+
+    let mut replay = Vec::with_capacity(records.len());
+    for record in records {
+        let runtime = handler.build_runtime_message_from_record(&record, Some(stream_id.clone()));
+        let channel_serial = Some(encode_ably_channel_serial(
+            &stream_id,
+            record.delivery_serial(),
+        ));
+        replay.push(match record.envelope.as_ref() {
+            Some(envelope) => ably_protocol_message_from_envelope(
+                channel,
+                &runtime,
+                envelope,
+                AblyMessageProjection::Mutation,
+                channel_serial,
+            )?,
+            None => ably_protocol_message_from_pusher(
+                channel,
+                &runtime,
+                AblyMessageProjection::Mutation,
                 channel_serial,
             )?,
         });

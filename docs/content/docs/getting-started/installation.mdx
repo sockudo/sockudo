@@ -1,86 +1,25 @@
 ---
 title: Installation
-description: Run Sockudo locally or build a production binary with the right feature set.
+description: Run Sockudo with Docker, a prebuilt Linux binary, Cargo, or Helm, choose the right feature set, and verify the server with health probes.
 icon: Download
 ---
 
-The fastest way to evaluate Sockudo is Docker Compose. On Linux, the release installer downloads a
-verified prebuilt binary. For container platforms, pull the published image from GitHub Container
-Registry or Docker Hub. Other operating systems can build from crates.io or source.
+This page gets a Sockudo server running and proves it is healthy. Pick the install path that matches where you are: a container for the quickest local evaluation, a prebuilt binary for Linux hosts, Cargo for other platforms or custom feature sets, and Helm for Kubernetes. Every path ends at the same [verification](#verify) step.
 
-## Docker Compose
+## Choose an install path
 
-```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo
-docker compose up sockudo redis
-```
+The paths differ mainly in which backends are compiled in. Sockudo uses Cargo features to include drivers such as Redis or PostgreSQL, so a binary can only use the backends it was built with.
 
-The default server listens on:
+| Path | Best for | Features included | Needs a Rust toolchain |
+| --- | --- | --- | --- |
+| [Container image](#pull-a-container-image) | Local evaluation, containers, CI | `full` and `monolith` | No |
+| [Docker Compose](#docker-compose) | Local development with Redis from a repository checkout | `full` and `monolith` (built from the repository Dockerfile) | No |
+| [Linux binary](#install-a-linux-binary) | VMs and bare-metal Linux hosts | `full` | No |
+| [crates.io](#install-from-cratesio) | macOS, Windows, or other platforms | Defaults (`local`, `v2`, `opentelemetry`) unless you add `--features` | Yes |
+| [Source](#run-from-source) | Contributors and custom feature sets | Whatever you select | Yes |
+| [Helm](#kubernetes-with-helm) | Kubernetes clusters | Same as the container image | No |
 
-| Service | URL |
-| --- | --- |
-| HTTP and WebSocket API | `http://127.0.0.1:6001` |
-| Prometheus metrics | `http://127.0.0.1:9601/metrics` |
-
-Use Compose when you want Redis, local configuration, and repeatable development infrastructure without compiling Rust first.
-
-## Install a Linux binary
-
-The installer supports x86_64 and ARM64 Linux, detects GNU libc or musl, and verifies the release
-archive against its published SHA-256 checksum. It installs to `~/.local/bin` by default.
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSfL \
-  https://sockudo.io/install.sh | sh
-```
-
-`sockudo.io/install.sh` is the stable public URL. It redirects to the installer attached to the
-latest GitHub release; the installer then downloads and verifies the selected version from GitHub.
-
-Pin the binary version in deployments:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSfL \
-  https://sockudo.io/install.sh \
-  | sh -s -- --version 5.2.0
-```
-
-Choose another writable installation directory with `--bin-dir`:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSfL \
-  https://sockudo.io/install.sh \
-  | sh -s -- --bin-dir "$HOME/bin"
-```
-
-Run the installed binary with a local configuration file:
-
-```bash
-sockudo --config ./config/config.toml
-```
-
-Only Linux binaries are published. `cargo binstall sockudo` remains available for the same Linux
-release assets; use a source build on macOS, Windows, and other platforms.
-
-## Install from crates.io
-
-Use `cargo install` when you prefer building the published crate on the target host or need a
-platform without a prebuilt binary:
-
-```bash
-cargo install sockudo --locked
-```
-
-Pin a release or enable the same production-oriented features you would use from source:
-
-```bash
-cargo install sockudo --version 5.2.0 --locked
-cargo install sockudo --locked --features "redis,postgres,push"
-```
-
-This path compiles on the machine where you run it, so it needs a Rust toolchain and any native
-libraries required by the selected storage or adapter features.
+All paths serve the WebSocket server and HTTP API on port `6001` and Prometheus metrics on port `9601` by default.
 
 ## Pull a container image
 
@@ -115,6 +54,16 @@ docker run --rm --name sockudo \
   ghcr.io/sockudo/sockudo:latest
 ```
 
+| Variable | What it does |
+| --- | --- |
+| `HOST` | Interface the WebSocket and HTTP server binds to. `0.0.0.0` is required inside a container. |
+| `PORT` | Port for the WebSocket server and HTTP API. Defaults to `6001`. |
+| `METRICS_PORT` | Port for the Prometheus endpoint. Defaults to `9601`. |
+| `METRICS_ENABLED` | Turns the Prometheus endpoint on or off. |
+| `SOCKUDO_DEFAULT_APP_ID`, `SOCKUDO_DEFAULT_APP_KEY`, `SOCKUDO_DEFAULT_APP_SECRET` | Define one app from the environment. When any of these is set, it replaces the apps defined inline in the config file. |
+
+The guides in this documentation use `app-id`, `app-key`, and `app-secret`. Set the three `SOCKUDO_DEFAULT_APP_*` variables to those values if you want to copy examples without editing them.
+
 Mount a checked-in configuration file when you need the same settings locally, in CI, and in
 production:
 
@@ -127,39 +76,148 @@ docker run --rm --name sockudo \
   sockudo --config /app/config/config.toml
 ```
 
+## Docker Compose
+
+Use Compose from a repository checkout when you want Redis and repeatable local dependencies:
+
+```bash
+git clone https://github.com/sockudo/sockudo.git
+cd sockudo
+docker compose up sockudo redis
+```
+
+The Compose file builds the image from the repository's `Dockerfile`, so the first `up` compiles Sockudo inside Docker. You do not need a local Rust toolchain, but expect the first build to take several minutes.
+
+The default server listens on:
+
+| Service | URL |
+| --- | --- |
+| HTTP and WebSocket API | `http://127.0.0.1:6001` |
+| Prometheus metrics | `http://127.0.0.1:9601/metrics` |
+
+The Compose service runs the Redis adapter, cache, queue, and rate limiter, and defines its app through environment variables:
+
+| Setting | Value under Compose |
+| --- | --- |
+| App ID | `demo-app` |
+| App key | `demo-key` |
+| App secret | `demo-secret` |
+| Client events | Enabled |
+| User authentication | Disabled |
+
+<Callout type="warn" title="Compose uses different credentials">
+`docker-compose.yml` sets `SOCKUDO_DEFAULT_APP_ID=demo-app`, which replaces the `app-id` app from the config file. Use `demo-app`, `demo-key`, and `demo-secret` with Compose, or edit those variables to `app-id`, `app-key`, and `app-secret` to match the rest of the documentation.
+</Callout>
+
+## Install a Linux binary
+
+The installer supports x86_64 and ARM64 Linux, detects GNU libc or musl, and verifies the release
+archive against its published SHA-256 checksum. It installs to `~/.local/bin` by default.
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSfL \
+  https://sockudo.io/install.sh | sh
+```
+
+`sockudo.io/install.sh` is the stable public URL. It redirects to the installer attached to the
+latest GitHub release; the installer then downloads and verifies the selected version from GitHub.
+On success it prints the installed version and path, and reminds you to add the directory to `PATH`
+if it is not already there.
+
+Pin the binary version in deployments:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSfL \
+  https://sockudo.io/install.sh \
+  | sh -s -- --version 5.2.0
+```
+
+Choose another writable installation directory with `--bin-dir`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSfL \
+  https://sockudo.io/install.sh \
+  | sh -s -- --bin-dir "$HOME/bin"
+```
+
+| Installer option | Environment variable | What it does |
+| --- | --- | --- |
+| `--version <version>` | `SOCKUDO_VERSION` | Installs a specific release instead of the latest one. |
+| `--bin-dir <directory>` | `SOCKUDO_INSTALL_DIR` | Installs into this directory instead of `~/.local/bin`. |
+
+Run the installed binary with a local configuration file:
+
+```bash
+sockudo --config ./config/config.toml
+```
+
+Only Linux binaries are published, and they are built with the `full` feature set. `cargo binstall sockudo` remains available for the same Linux
+release assets; use a source build on macOS, Windows, and other platforms.
+
+## Install from crates.io
+
+Use `cargo install` when you prefer building the published crate on the target host or need a
+platform without a prebuilt binary:
+
+```bash
+cargo install sockudo --locked
+```
+
+Pin a release or enable the same production-oriented features you would use from source:
+
+```bash
+cargo install sockudo --version 5.2.0 --locked
+cargo install sockudo --locked --features "redis,postgres,push"
+```
+
+This path compiles on the machine where you run it, so it needs a Rust toolchain and any native
+libraries required by the selected storage or adapter features.
+
+<Callout type="warn" title="Default features are local-only">
+A plain `cargo install sockudo` builds only the default features. It runs a single node with in-memory backends, and a config that selects `driver = "redis"` or `driver = "postgres"` needs a binary built with those features. Add every backend you plan to configure to `--features`.
+</Callout>
+
 ## Run from source
+
+The repository is a Cargo workspace with several binaries, so select the server package with `-p sockudo`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 git clone https://github.com/sockudo/sockudo.git
 cd sockudo
-cargo run --release
+cargo run --release -p sockudo
 ```
+
+Run from the repository root, the server loads `config/config.toml`, which defines the `app-id` development app used throughout the guides. The compiled binary is written to `target/release/sockudo`.
 
 The default feature set is intentionally local-friendly. Add only the backends your deployment needs:
 
 ```bash
-cargo build --release --features "redis,postgres"
-cargo build --release --features "redis-cluster,mysql"
-cargo build --release --features "nats,postgres"
-cargo build --release --features "kafka,postgres"
-cargo build --release --features "iggy,postgres"
-cargo build --release --features full
+cargo build --release -p sockudo --features "redis,postgres"
+cargo build --release -p sockudo --features "redis-cluster,mysql"
+cargo build --release -p sockudo --features "nats,postgres"
+cargo build --release -p sockudo --features "kafka,postgres"
+cargo build --release -p sockudo --features "iggy,postgres"
+cargo build --release -p sockudo --features full
 ```
 
 ## Feature flags
 
 | Feature | Enables |
 | --- | --- |
-| `local` | In-memory app, cache, queue, adapter, and rate limit implementations. |
-| `v2` | Sockudo-native protocol features. Enabled by default. |
+| `local` | Default marker for the single-node development profile. The in-memory app manager, cache, queue, adapter, and rate limiter are always compiled in. |
+| `v2` | Sockudo-native protocol features: `recovery`, `delta`, and `tag-filtering`. Enabled by default. |
 | `recovery` | Serial continuity, `message_id`, replay buffers, resume events, and rewind. |
 | `delta` | Fossil and Xdelta3/VCDIFF delta compression for V2 clients. |
 | `tag-filtering` | Server-side tag filter expressions for V2 subscriptions. |
+| `opentelemetry` | OTLP traces, metrics, and logs export. Enabled by default. |
 | `redis` | Redis adapter, cache, queue, and rate limiter support. |
 | `redis-cluster` | Cluster-aware Redis transport and adapter support. |
 | `nats`, `kafka`, `rabbitmq`, `pulsar`, `google-pubsub`, `iggy` | Horizontal transport adapters. |
-| `mysql`, `postgres`, `dynamodb`, `scylladb`, `surrealdb` | Persistent app manager backends. |
+| `mysql`, `postgres`, `dynamodb`, `scylladb`, `surrealdb` | Persistent app manager backends, plus the matching durable history and push storage. |
+| `push` | The push notification platform. Provider support is added with `push-fcm`, `push-apns`, `push-webpush`, `push-hms`, and `push-wns`. |
+| `versioned-messages` | Versioned mutable messages. |
+| `ai-transport` | AI Transport. Also enables `versioned-messages`. |
 | `full` | All production backends and optional integrations. |
 
 ## Minimal Pusher-compatible build
@@ -167,20 +225,30 @@ cargo build --release --features full
 If you only need a small Pusher-compatible server, build without default features:
 
 ```bash
-cargo build --release --no-default-features
+cargo build --release -p sockudo --no-default-features
 ```
 
 Add V2 features explicitly when needed:
 
 ```bash
-cargo build --release --no-default-features --features "recovery,delta,tag-filtering"
+cargo build --release -p sockudo --no-default-features --features "recovery,delta,tag-filtering"
 ```
 
 ## Configuration file
 
-Sockudo prefers TOML configuration. The server looks for `config/config.toml` first, with JSON kept as a fallback.
+Sockudo prefers TOML configuration and resolves settings in this order:
 
-```toml
+<Steps>
+
+1. If you pass `--config <path>`, Sockudo loads that file. If it cannot be read or parsed, the server exits instead of falling back to defaults.
+2. Without `--config`, Sockudo looks for `config/config.toml`, then `config/config.json`, relative to the working directory. If neither exists, it starts from built-in defaults.
+3. Environment variables are applied on top, so `PORT`, `ADAPTER_DRIVER`, `SOCKUDO_DEFAULT_APP_ID`, and similar variables override the file.
+
+</Steps>
+
+Config files can reference the environment with `${VAR}` or `${VAR:-default}` placeholders, which keeps secrets out of checked-in files. A placeholder whose variable is unset and has no default is reported as an error at startup.
+
+```toml title="config/config.toml"
 port = 6001
 host = "0.0.0.0"
 debug = false
@@ -202,13 +270,26 @@ max_connections = 10000
 enable_client_messages = false
 ```
 
+| Key | Default | What it does |
+| --- | --- | --- |
+| `port` | `6001` | Port for the WebSocket server and HTTP API. |
+| `host` | `0.0.0.0` | Interface the server binds to. |
+| `debug` | `false` | Turns on verbose debug-level logging. Keep it off in production. |
+| `app_manager.driver` | `memory` | Where apps are stored. `memory` reads them from `app_manager.array.apps` in this file. |
+| `apps.id`, `apps.key`, `apps.secret` | none | The app's identity. Clients connect with `key`; backends sign with `secret`. |
+| `apps.enabled` | none | A disabled app rejects new WebSocket connections. |
+| `apps.policy.limits.max_connections` | none | Maximum concurrent connections for this app. |
+| `apps.policy.features.enable_client_messages` | `false` | Allows clients to send `client-` events directly to other subscribers on private and presence channels. |
+
 For exact loading precedence, equivalent JSON, secret injection, and clustered examples, see
-[Static configuration](/docs/deployment/static-configuration).
+[Static configuration](/docs/deployment/static-configuration). Every key is listed in the [Configuration reference](/docs/reference/configuration).
 
 ## Kubernetes with Helm
 
+The Helm chart is published alongside each release, and its version matches the Sockudo release version.
+
 ```bash
-helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 4.7.0 \
+helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 5.2.0 \
   --set config.adapterDriver=redis \
   --set redis.host=redis-master \
   --set autoscaling.enabled=true \
@@ -217,15 +298,60 @@ helm install sockudo oci://ghcr.io/sockudo/charts/sockudo --version 4.7.0 \
   --set serviceMonitor.enabled=true
 ```
 
+| Value | What it does |
+| --- | --- |
+| `config.adapterDriver` | Adapter used to fan out between pods. Use a shared adapter such as `redis` for more than one replica. |
+| `redis.host` | Redis host used by the Redis adapter and backends. |
+| `autoscaling.enabled` | Creates a HorizontalPodAutoscaler. |
+| `pdb.enabled` | Creates a PodDisruptionBudget so voluntary disruptions keep pods available. |
+| `ingress.enabled` | Creates an Ingress for external traffic. |
+| `serviceMonitor.enabled` | Creates a Prometheus Operator ServiceMonitor for metrics scraping. |
+
 Use Kubernetes when you need autoscaling, service monitors, disruption budgets, secret-backed app credentials, and cluster-level rollout controls. Continue with the production
 [Kubernetes and Helm guide](/docs/deployment/kubernetes).
 
 ## Verify
+
+Check the health probe and the metrics endpoint:
 
 ```bash
 curl -f http://127.0.0.1:6001/up
 curl -f http://127.0.0.1:9601/metrics | head
 ```
 
+A healthy server answers `/up` with HTTP `200` and the body `OK`, and the metrics endpoint returns Prometheus text whose series start with `sockudo_`:
+
+```text
+OK
+# HELP sockudo_http_received_bytes Total amount of bytes that sockudo's REST API received
+# TYPE sockudo_http_received_bytes counter
+```
+
+Sockudo exposes several probes on the main port. Use them for load balancers and orchestrators:
+
+| Probe | Healthy response | What it checks |
+| --- | --- | --- |
+| `/up` | `200 OK` | The app manager responds and at least one app is configured, plus dependency health. Returns `503 ERROR` on failure and `503 DRAINING` during shutdown. A `200 DEGRADED` body means the server is up with a degraded dependency. |
+| `/up/{app_id}` | `200 OK` | The same checks for one app. Returns `404 NOT_FOUND` for an unknown app ID. |
+| `/ready` | `200 OK` | The `/up` checks plus capacity. Returns `503 CAPACITY` when the node should stop receiving new connections. |
+| `/live` | `200` | The process is running. |
+| `/accept-traffic` | `200 ACCEPTING` | Admission for new connections. Returns `503 MEMORY_PRESSURE` or `503 DRAINING`. |
+
+<Callout type="tip" title="Check the app you expect">
+`curl http://127.0.0.1:6001/up/app-id` confirms that a specific app exists. A `404` usually means the server loaded different credentials than you expected, for example `demo-app` under Docker Compose.
+</Callout>
+
+<Callout type="warn" title="No apps means unhealthy">
+Started without a config file and without the `SOCKUDO_DEFAULT_APP_*` variables, Sockudo has no apps and `/up` returns `503 ERROR`. Define at least one app before pointing a load balancer at the server.
+</Callout>
+
 When health is green, continue with [First connection](/docs/getting-started/first-connection). Before
 shipping, follow the [Deployment guide](/docs/deployment).
+
+## Next steps
+
+<Cards>
+  <Card title="First connection" href="/docs/getting-started/first-connection" description="Subscribe a client and publish your first event." />
+  <Card title="Static configuration" href="/docs/deployment/static-configuration" description="Loading precedence, JSON equivalents, and secret injection." />
+  <Card title="Environment variables" href="/docs/reference/environment-variables" description="Every variable Sockudo reads and what it overrides." />
+</Cards>

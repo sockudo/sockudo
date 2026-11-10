@@ -1,4 +1,4 @@
-use crate::messages::{ExtrasValue, MessageData, MessageExtras, PusherMessage};
+use crate::messages::{AiCodec, ExtrasValue, MessageData, MessageExtras, PusherMessage};
 use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
 use std::collections::HashMap;
@@ -291,6 +291,7 @@ fn is_terminal_ai_append(extras: Option<&MessageExtras>) -> bool {
     let status = ai
         .codec
         .as_ref()
+        .and_then(AiCodec::headers)
         .and_then(|headers| headers.get("status"))
         .or_else(|| {
             ai.transport
@@ -515,10 +516,10 @@ mod tests {
             extras: Some(MessageExtras {
                 ai: Some(crate::messages::AiExtras {
                     opaque: Default::default(),
-                    codec: Some(HashMap::from([(
+                    codec: Some(AiCodec::Headers(HashMap::from([(
                         "status".to_string(),
                         "complete".to_string(),
-                    )])),
+                    )]))),
                     transport: None,
                 }),
                 ..Default::default()

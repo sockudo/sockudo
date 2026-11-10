@@ -10,10 +10,36 @@ REST and WebSocket compatibility, excluding Live Objects**. It also supports
 Ably AI Transport clients through Sockudo's native mutable-message, history,
 recovery, presence, annotation, stats, and push services.
 
-> **Community support notice:** Sockudo and this compatibility layer are
-> community-built and community-maintained. They are not Ably products, and
-> Ably does not provide support for them. Use the Sockudo community and project
-> support channels for help.
+Use this page when you want existing `ably-js`, `ably-go`, or
+`@ably/ai-transport` clients to talk to a Sockudo server, or when you need to know
+exactly which behaviors are covered by test evidence. The compatibility layer is
+a translation facade: it decodes Ably frames and REST requests and calls the same
+native services that Protocol V2 clients use, so there is no second copy of
+message, presence, or history state.
+
+<Callout type="note" title="Community support notice">
+Sockudo and this compatibility layer are community-built and
+community-maintained. They are not Ably products, and Ably does not provide
+support for them. Use the Sockudo community and project support channels for
+help.
+</Callout>
+
+<Callout type="warn" title="Describe the scope precisely">
+Use **Ably REST and WebSocket compatibility, excluding Live Objects** in public
+material. Do not describe this as full Ably compatibility.
+</Callout>
+
+## How the facade fits
+
+```mermaid
+flowchart LR
+  A[Ably SDK client] --> F[Ably compat facade]
+  F --> M[Native message service]
+  F --> P[Native presence service]
+  M --> V[Version store]
+  M --> H[Durable history]
+  M --> N[Native fanout]
+```
 
 The facade lives in the optional `sockudo-ably-compat` workspace crate. The
 server constructs one `AblyCompatRuntime` per server instance and merges its
@@ -23,8 +49,11 @@ shared authorities described below. Ably realtime is WebSocket-only: Comet,
 XHR polling or streaming, SSE, long polling, and other fallback transports are
 intentionally unsupported.
 
-Use **Ably REST and WebSocket compatibility, excluding Live Objects** in public
-material. Do not describe this as full Ably compatibility.
+The `ably-compat` Cargo feature also enables the `ai-transport` and `push`
+features. Runtime options live under `[ably_compat]`; see the
+[configuration reference](/docs/reference/configuration).
+
+## Evidence status
 
 The pinned manifest classifies 41 target files. Exactly the two Live Objects
 files and the multiple/non-WebSocket transport file are excluded, and there are
@@ -39,15 +68,22 @@ unit and JSON/MsgPack integration suites, and the complete AI Transport unit
 and integration suites. The structurally defined exceptions are the two Live
 Objects files, the multi-transport file, the Comet inventory assertion, and two
 local-routing TLS/port assertions. The Go and AI Transport suites have no test
-exclusions.
+exclusions. A second gate installs the newest published `ably`,
+`@ably/pubsub-device`, `@ably/pubsub-server`, and `@ably/ai-transport` packages
+and runs the local smoke harness against them.
 
-Fresh pinned source-build evidence is green: Node defaults are 575/575,
-strict completeness is 250/250, Chromium defaults are 574/574 with no browser
-boundary errors, Chromium strict is 250/250, and AI Transport is 50/50. A new
-published Sockudo tag must still pass the released-binary workflow before that
-tag is promoted as verified.
+| Lane | Pinned source-build result |
+| --- | --- |
+| Node defaults | 575/575 |
+| Strict completeness | 250/250 |
+| Chromium defaults | 574/574, no browser boundary errors |
+| Chromium strict | 250/250 |
+| AI Transport | 50/50 |
 
-## Compatibility Matrix
+A new published Sockudo tag must still pass the released-binary workflow before
+that tag is promoted as verified.
+
+## Compatibility matrix
 
 | Surface | Status | Scope |
 | --- | --- | --- |
@@ -98,6 +134,11 @@ the operation receipt in the configured `VersionStore`. The compatibility layer
 only decodes/encodes Ably JSON or MsgPack shapes. It has no parallel mutable
 state, counter, or handler-to-handler call.
 
+## Protocol behavior
+
+The sections below describe how the facade handles specific Ably protocol
+surfaces on top of those shared authorities.
+
 ### Publish identity and retries
 
 Ably messages may omit `name`, `data`, or both; the facade does not manufacture
@@ -107,12 +148,17 @@ client ID, originating connection ID, and server publish timestamp. Live
 delivery, durable history, rewind, recovery, message reads, and mutation
 projections all read those same commit-time facts.
 
-The facade also preserves AI Transport 0.9 codec metadata under `extras.ai`,
+The facade also preserves AI Transport codec metadata under `extras.ai`,
 including `type`, nested `fields`, `stream`, and `ends`. These values are opaque
 to Sockudo; native `transport` and `codec` headers retain their existing
-validation. `extras.ephemeral` accepts a boolean and is returned on live
-deliveries. With ephemeral handling enabled, ephemeral messages bypass durable
-history, replay storage, and webhooks through the native publish pipeline.
+validation. `extras.ai.codec` may also be the string codec id that Ably AI
+Transport stamps on every message; it is relayed verbatim so Ably decoders can
+match it. `extras.headers` accepts string, number, boolean, and `null` values,
+as Ably does; `null` is returned as `null` on JSON and MessagePack deliveries
+and is omitted from Protobuf deliveries, which have no null header value.
+`extras.ephemeral` accepts a boolean and is returned on live deliveries. With
+ephemeral handling enabled, ephemeral messages bypass durable history, replay
+storage, and webhooks through the native publish pipeline.
 
 Live append delivery selects one projection per attachment: subscribers with a
 known message base receive the append fragment; new subscribers receive a full
@@ -258,6 +304,13 @@ For realtime rewind, the selected durable/versioned message is collected before
 `ATTACHED`; `HAS_BACKLOG` is set exactly when a replay item follows that frame.
 Rewind accepts positive message counts and positive `s`, `m`, or `h` time forms,
 is capped by the resolved channel history policy, and is delivered oldest first.
+With versioned messages enabled, `rewind` also accepts a message `serial` (for
+example the serial a publish ack returns): every message published after it, and
+every update or append to any message after it, is replayed up to the attach
+position; the message itself is not. The serial must still be retained:
+an unknown or expired serial fails the attach with `90003`, more than 1,000
+messages after it with `90004`, and a changed stream with `90005`. A bare integer
+is always a message count, and `rewindCount` never takes a serial.
 An `ATTACH_RESUME` request retains the channel position but does not replay the
 rewind selection a second time.
 
@@ -490,7 +543,6 @@ compatibility uses a broker-backed `push.queue_driver`.
 
 | Surface | Status | Scope |
 | --- | --- | --- |
-
 | History and recovery | Supported for tested Pub/Sub subset | The harness covers forward/backward REST pagination, `untilAttach`, history projection, and recovery of missed append fragments. Broader Ably history API parity is not claimed. |
 | Presence enter/update/leave | Supported for tested Pub/Sub subset | Realtime presence is ACKed, server-stamped, synchronized, and fanned out; REST current presence and durable presence history share the same base-channel authority. Full Ably presence API parity is not claimed. |
 | Message annotations | Supported for the pinned annotation suite | Realtime create/delete and raw subscription, summary projection, REST pagination, and JSON/MsgPack all use the native annotation subsystem. |
@@ -501,28 +553,40 @@ compatibility uses a broker-backed `push.queue_driver`.
 | Binary MsgPack Ably protocol | Supported for the tested surface | Realtime Pub/Sub and REST publish/history/time are selected from pinned `ably@2.21.0` with `useBinaryProtocol: true`. Full Ably platform MsgPack parity is not claimed. |
 | Full Ably platform API parity | Intentionally out of scope | This surface is for AI Transport compatibility, not a replacement for all Ably services. |
 
-## Test Commands
+## Test commands
 
-Start Sockudo locally with the Ably compatibility feature, AI Transport, durable
-history, and versioned messages enabled. The default repository config uses
-`app-key:app-secret` and an AI channel prefix of `private-ai-`.
+<Steps>
 
-```bash
-cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push,monolith" -- \
-  --config config/config.toml
-```
+1. Start Sockudo locally with the Ably compatibility feature, AI Transport,
+   durable history, and versioned messages enabled. The default repository
+   config uses `app-key:app-secret` and an AI channel prefix of `private-ai-`.
 
-Then run the compatibility lanes from the pinned harness:
+   ```bash
+   cargo run -p sockudo --features "v2,ai-transport,ably-compat,redis,postgres,push,monolith" -- \
+     --config config/config.toml
+   ```
 
-```bash
-cd sockudo-compatibility
-make conformance
-make strict-completeness
-make browser-install
-make browser-conformance
-make browser-strict
-make ait-conformance
-```
+2. From the pinned `sockudo-compatibility` harness checkout, install
+   dependencies:
+
+   ```bash
+   cd sockudo-compatibility
+   npm ci
+   ```
+
+3. Run the compatibility lanes. Each lane writes its own report:
+
+   ```bash
+   make conformance
+   make strict-completeness
+   make browser-install
+   make browser-conformance
+   make browser-strict
+   make go-conformance
+   make ait-conformance
+   ```
+
+</Steps>
 
 `make browser-matrix` runs Chromium first, then the pinned Firefox and WebKit
 revisions. Browser reports fail on console or page errors and leaked contexts in
@@ -548,9 +612,9 @@ The targets read these environment variables:
 
 `make ably-ai-demo` runs two headless demos:
 
-1. A stock `@ably/ai-transport@0.4.0` chat demo using
-   `@ably/ai-transport/vercel`, pinned `ably@2.21.0`, and Sockudo as the
-   configured endpoint.
+1. A stock `@ably/ai-transport@0.10.0` chat demo using `createTransport` with
+   the `@ably/ai-transport/vercel` codec, pinned `ably@2.30.0`, and Sockudo as
+   the configured endpoint.
 2. A recovery/history demo that disconnects during an AI output stream, appends
    additional fragments while offline, reconnects with an Ably recovery key, and
    verifies that only missed fragments replay and the final aggregate is intact.
@@ -558,7 +622,7 @@ The targets read these environment variables:
 These AI Transport demos are deliberately Node-based so CI can run them without
 a browser.
 
-## Evidence Files
+## Evidence files
 
 The working compatibility evidence lives in repository docs:
 
@@ -567,3 +631,12 @@ The working compatibility evidence lives in repository docs:
 - `docs/ably-compat/TEST_PLAN.md`
 
 Update those files whenever a supported/deferred status changes.
+
+## Next steps
+
+<Cards>
+  <Card title="AI Transport overview" href="/docs/server/ai-transport-overview" description="The native run lifecycle the facade maps onto." />
+  <Card title="Mutable messages" href="/docs/server/mutable-messages" description="Versioned messages behind appendMessage and updateMessage." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Durable history, rewind, and reconnect continuity." />
+  <Card title="Configuration reference" href="/docs/reference/configuration" description="The [ably_compat] keys and their defaults." />
+</Cards>

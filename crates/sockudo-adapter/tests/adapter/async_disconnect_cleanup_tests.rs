@@ -307,6 +307,14 @@ async fn add_v1_socket(
     adapter: &Arc<LocalAdapter>,
     app_manager: &Arc<MemoryAppManager>,
 ) -> (SocketId, WebSocketStream<WsStream<Http1>>) {
+    add_socket(adapter, app_manager, ProtocolVersion::V1).await
+}
+
+async fn add_socket(
+    adapter: &Arc<LocalAdapter>,
+    app_manager: &Arc<MemoryAppManager>,
+    protocol_version: ProtocolVersion,
+) -> (SocketId, WebSocketStream<WsStream<Http1>>) {
     let socket_id = SocketId::new();
     let (writer, client) = make_ws_pair().await;
     adapter
@@ -316,7 +324,7 @@ async fn add_v1_socket(
             APP_ID,
             app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
             WebSocketBufferConfig::default(),
-            ProtocolVersion::V1,
+            protocol_version,
             WireFormat::Json,
             true,
             sockudo_protocol::AppendMode::Delta,
@@ -616,4 +624,59 @@ async fn sync_disconnect_completes_when_its_caller_is_cancelled() {
     .await
     .expect("cleanup must remove the connection after its caller is cancelled");
     assert_eq!(metrics.disconnections(), 1);
+}
+
+/// Regression: during shutdown the client's reply to the 4200 close raced the reader's
+/// cancellation. Cancellation kept the presence lease; the reply took the voluntary-leave path
+/// and removed the member at once, so the last-leave webhook skipped the lease. Only that reply
+/// may keep the lease: a client leaving on its own, or answering any other server close, leaves.
+#[tokio::test]
+async fn peer_close_keeps_the_presence_lease_only_when_answering_the_servers_close() {
+    const LEASE: u64 = 9;
+    for (draining, server_closed, expected_lease) in [
+        (true, true, LEASE),
+        (true, false, 0),
+        (false, true, 0),
+        (false, false, 0),
+    ] {
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(10);
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager.create_app(make_app()).await.unwrap();
+        let adapter = Arc::new(LocalAdapter::new());
+        adapter.init().await;
+        let mut options = ServerOptions::default();
+        options.presence.v2_ungraceful_timeout_seconds = LEASE;
+        let handler = ConnectionHandler::builder(
+            app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+            adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+            Arc::new(NullCacheManager),
+            options,
+        )
+        .local_adapter(adapter.clone())
+        .cleanup_queue(CleanupSender::Direct(tx))
+        .running(Arc::new(std::sync::atomic::AtomicBool::new(!draining)))
+        .build();
+
+        let (socket_id, _client) = add_socket(&adapter, &app_manager, ProtocolVersion::V2).await;
+        let conn = adapter.get_connection(&socket_id, APP_ID).await.unwrap();
+        if server_closed {
+            conn.inner
+                .lock()
+                .await
+                .close(4200, "Server shutting down".to_string())
+                .await
+                .unwrap();
+        }
+        handler.handle_peer_close(APP_ID, &socket_id).await.unwrap();
+
+        let task = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("peer close must queue the disconnect")
+            .expect("cleanup queue must remain open");
+        assert_eq!(task.socket_id, socket_id);
+        assert_eq!(
+            task.presence_ungraceful_timeout_seconds, expected_lease,
+            "draining={draining} server_closed={server_closed}"
+        );
+    }
 }

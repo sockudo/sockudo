@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS applications (
     id VARCHAR(255) PRIMARY KEY,
     key VARCHAR(255) UNIQUE NOT NULL,
     secret VARCHAR(255) NOT NULL,
+    -- AES-256-GCM envelope ("v1:...") used instead of `secret` when
+    -- SOCKUDO_APP_SECRET_ENCRYPTION_KEY(_FILE) is configured.
+    secret_enc TEXT NULL,
     max_connections INTEGER NOT NULL,
     enable_client_messages BOOLEAN NOT NULL DEFAULT FALSE,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -210,22 +213,3 @@ CREATE TABLE IF NOT EXISTS sockudo_history_annotation_projections (
     updated_at_ms BIGINT NOT NULL,
     PRIMARY KEY (app_id, channel, message_serial, annotation_type)
 );
-
-INSERT INTO applications (
-    id,
-    key,
-    secret,
-    max_connections,
-    enable_client_messages,
-    enabled,
-    max_client_events_per_second
-) VALUES (
-    'app-id',
-    'app-key',
-    'app-secret',
-    100000,
-    TRUE,
-    TRUE,
-    1000
-)
-ON CONFLICT (id) DO NOTHING;

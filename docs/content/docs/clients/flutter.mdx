@@ -1,14 +1,17 @@
 ---
 title: Flutter and Dart
-description: Use sockudo_flutter in Flutter apps and pure Dart runtimes.
+description: Use sockudo_flutter to add Sockudo realtime channels, presence, and Protocol V2 features to Flutter apps.
 icon: Smartphone
 ---
 
-`sockudo_flutter` is the official Flutter and Dart realtime SDK. It supports public, private, presence, encrypted channels, auth, V2 recovery, rewind, filters, deltas, mutable messages, presence history proxies, and push registration workflows.
+`sockudo_flutter` is the official Flutter and Dart realtime SDK for Sockudo. It keeps the Pusher
+subscribe/bind model and adds Sockudo-native features: public, private, presence, and encrypted
+channels, channel and user auth, Protocol V2 recovery and rewind, tag filters, Fossil and
+Xdelta3/VCDIFF delta reconstruction, mutable messages, presence history proxies, and push
+registration helpers.
 
-The current package requires Dart 3.11.3+ and Flutter 3.35+ when used in a
-Flutter application. Protocol V1 compatibility is the default; opt into
-Protocol V2 for Sockudo-native features.
+The current package (`2.2.0`) requires Dart `^3.11.3` and Flutter `3.35+`. Protocol V1
+compatibility is the default; opt into Protocol V2 for Sockudo-native features.
 
 ## Install
 
@@ -16,9 +19,19 @@ Install the published package from `pub.dev`:
 
 ```bash
 flutter pub add sockudo_flutter
-# or, for pure Dart apps:
+# or, with the Dart CLI inside a Flutter project:
 dart pub add sockudo_flutter
 ```
+
+For local monorepo development, use a path dependency instead:
+
+```yaml title="pubspec.yaml"
+dependencies:
+  sockudo_flutter:
+    path: ../sockudo/client-sdks/sockudo-flutter
+```
+
+Everything is exported from a single library:
 
 ```dart
 import 'package:sockudo_flutter/sockudo_flutter.dart';
@@ -26,7 +39,13 @@ import 'package:sockudo_flutter/sockudo_flutter.dart';
 
 ## Connect
 
-```dart
+A `SockudoClient` owns one WebSocket connection to Sockudo. Channels are named streams multiplexed
+over that connection: you subscribe to a channel, then bind callbacks to the event names published
+on it. The client holds only your public app key; publishing and signing happen on your backend.
+
+```dart title="lib/realtime.dart"
+import 'package:sockudo_flutter/sockudo_flutter.dart';
+
 final client = SockudoClient(
   'app-key',
   const SockudoOptions(
@@ -41,59 +60,111 @@ final client = SockudoClient(
   ),
 );
 
-final channel = client.subscribe('public-updates');
-channel.bind('price-updated', (data, _) {
-  print(data);
-});
+void startRealtime() {
+  client.bind('state_change', (change, _) {
+    print('connection: ${change['previous']} -> ${change['current']}');
+  });
 
-client.connect();
+  final channel = client.subscribe('public-updates');
+  channel.bind('price-updated', (data, _) {
+    print(data);
+  });
+
+  client.connect();
+}
 ```
 
-Use a public load-balancer or ingress hostname with `forceTls: true` in
-production. Create the client in an application-scoped service rather than in a
-widget's `build` method.
+When the server accepts the connection, the state changes print in order:
 
-## Lifecycle and cleanup
-
-Keep binding tokens when a widget or controller needs to remove a specific
-handler:
-
-```dart
-final stateToken = client.bind('state_change', (change, _) {
-  print('connection: $change');
-});
-final orderToken = channel.bind('order.created', (data, _) {
-  print(data);
-});
-
-channel.unbind(eventName: 'order.created', token: orderToken);
-client.unbind(eventName: 'state_change', token: stateToken);
-client.unsubscribe('public-updates');
-client.disconnect();
+```text
+connection: initialized -> connecting
+connection: connecting -> connected
 ```
 
-Wait for the channel subscription-success event before treating its data as
-live. Unsubscribe in the owning service or controller's disposal path, and
-disconnect on explicit sign-out or process shutdown. Let the SDK handle
-temporary transport failures and resubscription.
+<Callout type="warn" title="TLS is on unless you turn it off">
+`forceTls` defaults to `null`, which the client treats as TLS. A plain `ws://` local server needs
+`forceTls: false`. `wsHost` defaults to `ws-<cluster>.sockudo.com`, so self-hosted deployments must
+set `wsHost` to their own ingress.
+</Callout>
 
-Unexpected disconnects emit `ConnectionState.reconnecting` and use quadratic
-backoff (0s, 1s, 4s, 9s) capped at 120 seconds. Configure
-`maxReconnectAttempts` (default `6`, `null` for unlimited) and
-`maxReconnectGapInSeconds`; protocol retry and TLS-upgrade close codes remain
-immediate.
+In production, point `wsHost` at the public load balancer or ingress with `forceTls: true`, and
+create the client in an application-scoped service rather than in a widget's `build` method.
 
-```dart
-const options = SockudoOptions(
-  cluster: 'local',
-  maxReconnectAttempts: 10,
-  maxReconnectGapInSeconds: 60,
-);
+### Common options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `cluster` | `String` | required | Cluster name. Must be non-empty; also used to derive default hosts. |
+| `protocolVersion` | `int` | `7` | `7` is Protocol V1 (Pusher-compatible). Set `2` for Protocol V2. |
+| `forceTls` | `bool?` | `null` | Anything other than `false` connects over `wss`. |
+| `wsHost` | `String?` | `null` | WebSocket host. Falls back to `ws-<cluster>.sockudo.com`. |
+| `wsPort` / `wssPort` | `int` | `80` / `443` | Ports for `ws` and `wss`. |
+| `enabledTransports` | `List<SockudoTransport>?` | `null` | Restrict to `SockudoTransport.ws` and/or `SockudoTransport.wss`. |
+| `connectionRecovery` | `bool` | `false` | Track stream positions and send a V2 resume after reconnect. |
+| `wireFormat` | `SockudoWireFormat` | `json` | V2 wire format: `json`, `messagepack`, or `protobuf`. |
+| `messageDeduplication` | `bool` | `true` | Drop repeated `message_id` values. |
+| `messageDeduplicationCapacity` | `int` | `1000` | Size of the deduplication window. |
+| `activityTimeout` | `Duration` | `120s` | V1 idle time before the client sends a ping. |
+| `pongTimeout` | `Duration` | `30s` | V1 wait for a pong before reconnecting. |
+| `unavailableTimeout` | `Duration` | `10s` | Time in `connecting` before the state becomes `unavailable`. |
+| `maxReconnectAttempts` | `int?` | `6` | Reconnect attempts before giving up. `null` is unlimited. |
+| `maxReconnectGapInSeconds` | `double` | `120.0` | Upper bound on the backoff delay. |
+| `reconnectJitter` | `double` | `0.0` | Fraction of each backoff delay to randomize, clamped to 0–1. |
+| `appendRollupWindow` | `int?` | `null` | V2 AI append rollup window: `0`, `20`, `40`, `100`, or `500`. |
+
+## Subscribe and bind events
+
+`subscribe` returns the channel immediately and sends the subscription once the socket is
+connected. Bind handlers before or after subscribing; each `bind` returns an `EventBindingToken`
+you can use to remove exactly that handler later.
+
+```dart title="lib/orders_service.dart"
+final orders = client.subscribe('orders');
+
+orders.bind('sockudo:subscription_succeeded', (_, __) {
+  print('orders is live');
+});
+orders.bind('sockudo:subscription_error', (error, _) {
+  print('orders subscription failed: $error');
+});
+
+final orderToken = orders.bind('order.created', (data, metadata) {
+  print('order: $data from user ${metadata?.userId}');
+});
+
+// Receive every event on the channel, for logging or reducers.
+orders.bindGlobal((eventName, data) => print('$eventName $data'));
 ```
 
-## Auth
+Remove handlers and subscriptions in the owning service or controller's disposal path:
 
 ```dart
+orders.unbind(eventName: 'order.created', token: orderToken);
+client.unsubscribe('orders');
+```
+
+<Callout type="note" title="Event prefixes follow the protocol">
+System events use the `sockudo:` prefix on Protocol V2 and `pusher:` on Protocol V1. On the default
+V1 connection, bind `pusher:subscription_succeeded` instead of `sockudo:subscription_succeeded`.
+</Callout>
+
+A connected socket can still have a pending or rejected channel. Wait for the channel's
+subscription-success event before treating its data as live. Client events (`client-*`) can be
+sent with `channel.trigger('client-typing', data)` on authorized channels.
+
+## Private and presence channels
+
+Anyone with your public app key can open a socket, so Sockudo will not let a client join a
+`private-*`, `presence-*`, or `private-encrypted-*` channel on its own say-so. Instead, the SDK
+asks your backend to sign the subscription. Your backend checks the user's session, decides
+whether that user may join that exact channel, and returns a signature made with the app secret.
+Sockudo verifies the signature before admitting the socket.
+
+The default authorizer sends a form-encoded `POST` with `socket_id` and `channel_name` to
+`channelAuthorization.endpoint` (default `/sockudo/auth`) and expects JSON with `auth`, plus
+`channel_data` for presence and `shared_secret` for encrypted channels.
+
+```dart title="lib/realtime.dart"
 final client = SockudoClient(
   'app-key',
   SockudoOptions(
@@ -101,20 +172,75 @@ final client = SockudoClient(
     forceTls: false,
     wsHost: '127.0.0.1',
     wsPort: 6001,
+    protocolVersion: 2,
     channelAuthorization: ChannelAuthorizationOptions(
       endpoint: 'https://api.example.com/sockudo/auth',
+      headersProvider: () => <String, String>{
+        'Authorization': 'Bearer ${session.accessToken}',
+      },
     ),
   ),
 );
 ```
 
-The endpoint must authenticate the user and authorize the exact requested
-channel. Presence identity comes from the backend session, not from an
-untrusted request field.
-
-Protocol V2 can use a scoped capability token and async refresh callback:
+Use an absolute URL for the endpoint; a Flutter app has no page origin to resolve `/sockudo/auth`
+against. To produce the signature yourself, pass `customHandler`, which receives a
+`ChannelAuthorizationRequest` and returns `ChannelAuthorizationData`:
 
 ```dart
+ChannelAuthorizationOptions(
+  customHandler: (request) async {
+    final signed = await backend.signChannel(request.socketId, request.channelName);
+    return ChannelAuthorizationData(
+      auth: signed.auth,
+      channelData: signed.channelData,
+    );
+  },
+)
+```
+
+<Callout type="warn" title="Authorize the exact channel">
+The endpoint must authenticate the user and authorize the exact requested channel. Presence
+identity comes from the backend session, not from an untrusted request field. Never sign every
+channel a client asks for.
+</Callout>
+
+### Presence
+
+Subscribing to a `presence-*` name returns a `PresenceChannel`. Its `members` collection is filled
+from the subscription-success payload and kept current as members join, leave, or update.
+
+```dart title="lib/lobby.dart"
+final presence = client.subscribe('presence-lobby') as PresenceChannel;
+
+presence.bind('sockudo:subscription_succeeded', (_, __) {
+  presence.members.forEach((member) => print('here: ${member.id}'));
+  presence.update(<String, Object?>{'status': 'editing'});
+});
+presence.bind('sockudo:member_added', (member, _) => print('joined: $member'));
+presence.bind('sockudo:member_removed', (member, _) => print('left: $member'));
+presence.bind('sockudo:presence_update', (member, _) {
+  print((member as PresenceMember).info);
+});
+```
+
+V2 presence updates modify member data without a leave and rejoin cycle. `update` throws
+`SockudoException` on Protocol V1. Inbound `sockudo_internal:presence_update` updates
+`channel.members` and emits `sockudo:presence_update` with the updated `PresenceMember`.
+
+### User sign-in
+
+Configure `userAuthentication` (default endpoint `/sockudo/user-auth`, expecting `auth` and
+`user_data`) and call `client.signIn()` when the application uses user-targeted events or
+watchlists. Bind user events with `client.user.on(...)` and watchlist events with
+`client.watchlist.on(...)`.
+
+### Capability tokens
+
+Protocol V2 can authenticate the connection itself with a scoped capability token and an async
+refresh callback:
+
+```dart title="lib/realtime.dart"
 final client = SockudoClient(
   'app-key',
   SockudoOptions(
@@ -126,36 +252,118 @@ final client = SockudoClient(
     authCallback: () async => fetchFreshSockudoToken(),
   ),
 );
+
+client.bind('sockudo:auth_success', (data, _) => print('token accepted'));
 ```
 
-JWTs with expiry metadata refresh proactively. After the optional initial
-token, the callback is invoked before reconnects. Expiry code `40142` can
-refresh in place; revocation code `40160` cannot. Token auth is rejected
-outside Protocol V2.
+- `token` is sent as the initial WebSocket query parameter.
+- When `authCallback` is set and the token is a JWT with an `exp` claim, the client decodes it
+  (without validating the signature) and refreshes at 80% of its lifetime. If `iat` is absent, the
+  lifetime starts at the local decode time. Opaque tokens, JWTs without `exp`, and static-only
+  `token` usage do not schedule proactive refreshes.
+- After the optional initial token is used, `authCallback` supplies a fresh token before every
+  reconnect.
+- On `sockudo:token_expired` with code `40142`, the client calls `authCallback` and sends
+  `sockudo:auth` without dropping the socket. Revocation code `40160` cannot refresh in place; it
+  is emitted to listeners and left to the server close path.
 
-## Presence
+<Callout type="warn" title="Tokens require Protocol V2">
+Setting `token` or `authCallback` with any other `protocolVersion` throws `SockudoException` from
+the constructor rather than opening an unauthenticated socket.
+</Callout>
 
-```dart
-final presence = client.subscribe('presence-lobby') as PresenceChannel;
+## Protocol V2 features
 
-presence.bind('sockudo:member_added', (member, _) => print('joined: $member'));
-presence.bind('sockudo:member_removed', (member, _) => print('left: $member'));
-presence.bind('sockudo:presence_update', (member, _) => print('updated: $member'));
+Protocol V2 keeps the same channel model but attaches continuity metadata (`message_id`, `serial`,
+`stream_id`) to broadcasts and unlocks server-side filtering, deltas, rewind, and mutable messages.
+All examples below assume `protocolVersion: 2`. See [Protocol V2](/docs/clients/protocol-v2) for
+the wire-level contract.
 
-presence.update(<String, Object?>{'status': 'editing'});
+### Recovery and rewind
+
+With `connectionRecovery: true`, the client records the latest position for each channel and sends
+`sockudo:resume` after reconnecting. Rewind asks the server to replay recent history at subscribe
+time, either by count (`SubscriptionRewind.count(n)`) or by age (`SubscriptionRewind.seconds(n)`).
+
+```dart title="lib/market.dart"
+final channel = client.subscribe(
+  'market:BTC',
+  options: const SubscriptionOptions(
+    rewind: SubscriptionRewind.seconds(30),
+  ),
+);
+
+channel.bind('sockudo:rewind_complete', (data, _) {
+  final done = data as RewindCompleteData;
+  print('replayed ${done.historicalCount}, complete: ${done.complete}');
+});
+
+channel.bind('message', (_, __) {
+  print(client.getRecoveryPosition('market:BTC'));
+});
+
+client.bind('sockudo:resume_success', (data, _) {
+  final result = data as ResumeSuccessData;
+  print('recovered ${result.recovered.length} channels');
+});
+
+client.bind('sockudo:resume_failed', (data, _) {
+  final failed = data as ResumeFailedChannel;
+  print('rebuild ${failed.channel}: ${failed.code}');
+});
 ```
 
-V2 presence updates modify member data without a leave and rejoin cycle.
+On `sockudo:resume_failed`, the SDK drops the stored position and resubscribes that channel, but
+your derived state may have a gap. Discard it and reload an authoritative snapshot. Persist
+positions across process restarts with `getRecoveryPositions()` and `setRecoveryPositions(...)`.
 
-## Filters and deltas
+After a V2 subscription succeeds, `channel.attachSerial` holds the server's `attach_serial` when
+durable history is enabled. For a gap-free late join, load channel history with
+`untilAttach: true`, then apply live events:
 
 ```dart
+final room = client.subscribe('presence-room') as PresenceChannel;
+final history = await room.channelHistory(
+  const ChannelHistoryParams(untilAttach: true, limit: 100),
+);
+```
+
+<Callout type="note" title="Where the history helpers live">
+In this SDK, `channelHistory`, `getMessage`, and `getMessageVersions` are defined on
+`PresenceChannel`, and they call your `versionedMessages.endpoint` proxy. Configure that option
+before using them.
+</Callout>
+
+### Filters
+
+Tag filters run on the server, so non-matching messages never reach the device. Build them with the
+`Filter` helpers (`eq`, `neq`, `inside`, `notIn`, `exists`, `notExists`, `startsWith`, `endsWith`,
+`contains`, `gt`, `gte`, `lt`, `lte`, `and`, `or`, `not`). Event-name lists and a bounded JMESPath
+`expression` can be combined with tags; every supplied component must match.
+
+```dart title="lib/prices.dart"
 final channel = client.subscribe(
   'price:btc',
+  options: SubscriptionOptions(
+    filter: Filter.and(<FilterNode>[
+      Filter.eq('market', 'spot'),
+      Filter.gt('spread', '0'),
+    ]),
+    events: const <String>['price.updated'],
+    expression: const SubscriptionExpression('data.price >= `100`'),
+  ),
+);
+```
+
+### Delta compression
+
+Deltas shrink large, repetitive payloads by sending only the change against the previous message.
+The SDK reconstructs Fossil and Xdelta3/VCDIFF deltas in pure Dart.
+
+```dart
+final book = client.subscribe(
+  'orderbook:btc-usd',
   options: const SubscriptionOptions(
-    filter: FilterNode(key: 'market', cmp: 'eq', val: 'spot'),
-    events: <String>['price.updated'],
-    expression: SubscriptionExpression('data.price >= `100`'),
     delta: ChannelDeltaSettings(
       enabled: true,
       algorithm: DeltaAlgorithm.xdelta3,
@@ -164,39 +372,36 @@ final channel = client.subscribe(
 );
 ```
 
-## Recovery and rewind
+Set `deltaCompression: DeltaOptions(...)` on `SockudoOptions` to receive `onStats` and `onError`
+callbacks, and read totals with `client.getDeltaStats()`. See
+[Filters and delta compression](/docs/clients/filters-delta).
 
-```dart
-final channel = client.subscribe(
-  'market:BTC',
-  options: const SubscriptionOptions(
-    rewind: SubscriptionRewind.seconds(30),
-  ),
-);
+### Mutable messages
 
-channel.bind('message', (_, __) {
-  print(client.getRecoveryPosition('market:BTC'));
-});
+Protocol V2 mutable messages arrive as `sockudo:message.update`, `sockudo:message.delete`, and
+`sockudo:message.append`. An update replaces local content, a delete is the latest visible version
+and may carry `null` data, and an append concatenates onto the current string. Reduce them in serial
+order:
 
-client.bind('sockudo:resume_success', (data, _) {
-  print(data);
-});
-```
-
-## Mutable messages
-
-```dart
+```dart title="lib/chat.dart"
 MutableMessageState? state;
 
 final channel = client.subscribe('chat:room-1');
 channel.bindGlobal((eventName, data) {
   if (data is! SockudoEvent || !isMutableMessageEvent(data)) return;
-  state = reduceMutableMessageEvent(state, data);
+  try {
+    state = reduceMutableMessageEvent(state, data);
+    print('${state?.messageSerial} ${state?.action} ${state?.data}');
+  } catch (e) {
+    print('mutable message reduction failed: $e');
+  }
 });
 ```
 
-Configure `versionedMessages` with a trusted backend endpoint to create,
-append, update, or delete messages:
+If an append arrives before its base, fetch the latest visible message through the proxy first.
+
+Configure `versionedMessages` with a trusted backend endpoint to create, append, update, or delete
+messages:
 
 ```dart
 final created = await channel.createMessage(
@@ -210,12 +415,18 @@ await channel.updateMessage(
 await channel.deleteMessage(created.messageSerial);
 ```
 
-Apply mutation events in serial order. If an append arrives before its base,
-fetch the latest visible message through the proxy first.
+These helpers send `publish_create`, `message_append`, `message_update`, or `message_delete` to
+`versionedMessages.endpoint` and resolve to a `MessageAck` with `messageSerial` and
+`historySerial`. The default timeout is 10 seconds (`VersionedMessagesOptions.timeout`). See
+[Mutable messages](/docs/server/mutable-messages).
 
-## Presence history proxy
+### Presence history
 
-```dart
+Presence history is proxy-backed. The client does not sign the server REST API; configure
+`presenceHistory` with a backend endpoint that accepts `{channel, params, action}` and forwards the
+request with server credentials.
+
+```dart title="lib/lobby_history.dart"
 final client = SockudoClient(
   'app-key',
   SockudoOptions(
@@ -233,28 +444,131 @@ final channel = client.subscribe('presence-lobby') as PresenceChannel;
 final page = await channel.history(
   const PresenceHistoryParams(limit: 50, direction: 'newest_first'),
 );
+if (page.hasNext()) {
+  final nextPage = await page.next();
+}
+
+final snapshot = await channel.snapshot(
+  const PresenceSnapshotParams(atSerial: 4),
+);
 ```
 
-The history proxy owns the app secret, authenticates the caller, checks channel
-access, and forwards opaque pagination cursors. Use channel history with
-`untilAttach: true` for a gap-free late join.
+The history proxy owns the app secret, authenticates the caller, checks channel access, and
+forwards opaque pagination cursors. See [Presence history](/docs/clients/presence-history).
 
-## Encrypted channels
+### Binary wire formats
 
-`private-encrypted-*` channels decrypt automatically when protected-channel
-authorization returns the derived `sharedSecret`:
+Set `wireFormat: SockudoWireFormat.messagepack` or `SockudoWireFormat.protobuf` to negotiate a
+binary encoding. Both preserve `Uint8List` message data as native binary. MessagePack uses the
+additive `["binary", <bin>]` tagged value; existing string and JSON variants are unchanged.
+
+### Encrypted channels
+
+`private-encrypted-*` channels decrypt automatically with libsodium when protected-channel
+authorization returns the derived `shared_secret` (surfaced as `ChannelAuthorizationData.sharedSecret`):
 
 ```dart
 final encrypted = client.subscribe('private-encrypted-documents');
 encrypted.bind('doc-updated', (payload, _) => print(payload));
 ```
 
-Keep the encryption master key on the backend. End-to-end encryption does not
-replace TLS or channel authorization.
+Keep the encryption master key on the backend. End-to-end encryption does not replace TLS or
+channel authorization.
 
-## Push registration
+## Connection lifecycle and reconnection
 
-Use a platform push plugin to get the provider token, then send the token to your backend.
+The connection moves through `ConnectionState` values: `initialized`, `connecting`, `connected`,
+`reconnecting`, `unavailable`, `disconnected`, and `failed`. Each change emits `state_change` with
+`previous` and `current` names, followed by an event named after the new state. Read the current
+value from `client.connectionState` and the socket ID from `client.socketId`.
+
+```dart
+final stateToken = client.bind('state_change', (change, _) {
+  print('connection: ${change['previous']} -> ${change['current']}');
+});
+client.bind('connected', (meta, _) => print('socket: ${client.socketId}'));
+client.bind('reconnecting', (_, __) => print('reconnecting'));
+
+// On sign-out or shutdown:
+client.unbind(eventName: 'state_change', token: stateToken);
+client.disconnect();
+```
+
+Unexpected disconnects emit `ConnectionState.reconnecting` and retry with a bounded quadratic delay
+of 0s, 1s, 4s, 9s, up to `maxReconnectGapInSeconds` (120 seconds by default). Protocol retry and
+TLS-upgrade close codes reconnect immediately. The default limit is six attempts; `null` enables
+unlimited retries. The attempt counter resets after a successful connection and on explicit
+`connect()` or `disconnect()` calls. When attempts run out, the state becomes `disconnected`.
+
+```dart
+const options = SockudoOptions(
+  cluster: 'local',
+  maxReconnectAttempts: 10,
+  maxReconnectGapInSeconds: 60,
+  reconnectJitter: 0.5,
+);
+```
+
+<Callout type="tip" title="Spread reconnect storms">
+Every client computes the same backoff, so clients dropped by one event retry in lockstep. Set
+`reconnectJitter` to randomize each delay by that fraction: `0.5` picks uniformly from 50–100% of
+the delay, `1.0` from 0–100%. The default `0.0` keeps delays exact.
+</Callout>
+
+Let the SDK handle temporary transport failures and resubscription. `disconnect()` stops
+reconnecting and closes the socket; `close()` also closes the underlying HTTP client used for auth
+and proxy requests.
+
+On Protocol V2, Sockudo uses native WebSocket ping/pong frames for heartbeats. Dart runtimes may
+still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages; those are excluded from
+recovery metadata such as `message_id`, `serial`, and `stream_id`.
+
+## Error handling
+
+| Failure | How it surfaces | What to do |
+| --- | --- | --- |
+| Invalid construction (empty key or cluster, token on V1, bad `appendRollupWindow`) | `SockudoException` thrown by the constructor | Fix configuration. |
+| Auth endpoint returns non-200 or invalid JSON | Channel emits `subscription_error` with `type: 'AuthError'` and the error text, which includes the HTTP status | Treat `401`/`403` as a permission problem, not a reconnect loop. |
+| Server error frames, decode failures, connection unavailable | Client emits `error` | Log and observe; the SDK keeps reconnecting where possible. |
+| Capability token expired (`40142`) | `sockudo:token_expired`, then refresh via `authCallback` | Make sure `authCallback` can mint a fresh token. |
+| Capability token revoked (`40160`) | Emitted to listeners; no in-place refresh, the server closes the connection | Sign the user out or obtain new credentials. |
+| Recovery gap | `sockudo:resume_failed` with `ResumeFailedChannel` | Discard derived state and reload a snapshot. |
+
+```dart
+client.bind('error', (error, _) {
+  if (error is SockudoException) {
+    print('sockudo error ${error.statusCode}: ${error.message}');
+  } else {
+    print('sockudo error: $error');
+  }
+});
+```
+
+Make handlers idempotent: reconnects, retries, and upstream publishing workflows can repeat logical
+work even with `message_id` deduplication enabled.
+
+## Platform notes
+
+### Flutter lifecycle
+
+- Scope the client above individual widgets and avoid reconnecting on rebuild.
+- Remove bindings and subscriptions when their lifecycle owner is disposed.
+- Keep event callbacks fast and move blocking work to an isolate or async service.
+- Test background/foreground transitions, offline recovery, token expiry, and application process
+  recreation.
+- The package declares a Flutter SDK dependency and opens sockets through `IOWebSocketChannel`
+  from `web_socket_channel`.
+
+### Large serials on Dart web
+
+On Dart web, serial values that arrive as JSON numbers may already have been rounded by the
+JavaScript runtime. The SDK preserves unsafe serials as strings when decoding raw JSON,
+MessagePack, Protobuf, and proxy responses where the original literal is still available. Prefer
+string serials in app-level web APIs when values may exceed `2^53 - 1`.
+
+### Push registration
+
+Use a platform push plugin to get the provider token, then send the token to your backend:
 
 ```dart
 final token = await FirebaseMessaging.instance.getToken();
@@ -271,6 +585,30 @@ await http.post(
 ```
 
 The backend registers the device with Sockudo and enforces user ownership.
+`SockudoPushRegistration` wraps an authenticated application proxy with typed helpers for device
+registrations, channel subscriptions, publishing, scheduling, and status. `publish()` and
+`publishBatch()` always send `sync: false` and should expect `202 Accepted` with a `publish_id`;
+list helpers use `limit` and `cursor`.
+
+```dart title="lib/push.dart"
+final push = SockudoPushRegistration(
+  const PushRegistrationOptions(
+    endpoint: 'https://api.example.com/sockudo/push',
+    headers: <String, String>{'Authorization': 'Bearer session-token'},
+  ),
+);
+
+final publish = await push.publish(<String, Object?>{
+  'recipients': <Map<String, Object?>>[
+    <String, Object?>{'type': 'channel', 'channel': 'orders'},
+  ],
+  'payload': <String, Object?>{
+    'title': 'Order updated',
+    'body': 'Ready for pickup',
+  },
+});
+print(publish['publish_id']);
+```
 
 ### Apple Live Activities
 
@@ -278,7 +616,8 @@ ActivityKit runs in the iOS host and Widget Extension because its APIs use the a
 `ActivityAttributes`. `sockudo_flutter` therefore integrates with any native bridge instead of
 forcing one plugin version. A current option is the
 [`live_activities` Flutter plugin](https://pub.dev/packages/live_activities), which exposes activity
-token and push-to-start token streams. Upload every rotation to your authenticated backend:
+token and push-to-start token streams. Upload every rotation to your authenticated backend, and
+keep listening for the activity's entire lifetime because Apple can rotate tokens at any time:
 
 ```dart
 liveActivities.pushToStartTokenUpdateStream.listen((token) async {
@@ -296,24 +635,40 @@ await backend.replaceLiveActivityToken(update.toJson());
 
 For an application proxy that authorizes the current user and activity, construct a validated direct
 or broadcast request with `ApnsLiveActivityPublishRequest`, `ApnsLiveActivityPayload`, and either
-`ApnsLiveActivityTokenRecipient` or `ApnsLiveActivityBroadcastRecipient`. The helper rejects invalid
-start fields, direct priority `lowPower`, and broadcast start requests before network I/O.
+`ApnsLiveActivityTokenRecipient` or `ApnsLiveActivityBroadcastRecipient`, then send it with
+`push.publishLiveActivity(...)`. The helper rejects invalid start fields, direct priority
+`lowPower`, and broadcast start requests before network I/O.
 
+```dart
+await push.publishLiveActivity(
+  ApnsLiveActivityPublishRequest(
+    publishId: 'ride-184-update-42',
+    recipient: const ApnsLiveActivityTokenRecipient(currentActivityToken),
+    liveActivity: const ApnsLiveActivityPayload(
+      event: ApnsLiveActivityEvent.update,
+      timestamp: 1725000042,
+      contentState: <String, Object?>{'status': 'arriving', 'etaMinutes': 1},
+      priority: ApnsLiveActivityPriority.conservePower,
+    ),
+  ),
+);
+```
+
+<Callout type="warn" title="Keep credentials off the device">
 Do not ship Sockudo app secrets, APNs provider keys, or unrestricted push-admin capabilities in the
-Flutter bundle. See [Apple Live Activities](/docs/server/apple-live-activities) for channel setup,
-broadcast delivery, and the complete payload contract.
+Flutter bundle. Protect and rate-limit auth, history, mutable-message, and push proxy endpoints.
+</Callout>
 
-## Production checklist
+See [Apple Live Activities](/docs/server/apple-live-activities) for channel setup, broadcast
+delivery, and the complete payload contract.
 
-- Scope the client above individual widgets and avoid reconnecting on rebuild.
-- Remove bindings and subscriptions when their lifecycle owner is disposed.
-- Keep event callbacks fast and move blocking work to an isolate or async
-  service.
-- On `sockudo:resume_failed`, discard derived state and load an authoritative
-  snapshot.
-- Protect and rate-limit auth, history, mutable-message, and push proxy
-  endpoints.
-- Refresh provider tokens through the backend and associate them with the
-  authenticated user.
-- Test background/foreground transitions, offline recovery, token expiry, and
-  application process recreation.
+## Next steps
+
+<Cards>
+  <Card title="Protocol V2" href="/docs/clients/protocol-v2" description="Continuity metadata, native events, recovery contract, and client history." />
+  <Card title="Filters and delta compression" href="/docs/clients/filters-delta" description="Cut delivered traffic with server-side tag filters and deltas." />
+  <Card title="Presence history" href="/docs/clients/presence-history" description="Read membership transitions and snapshots through a trusted proxy." />
+  <Card title="History and recovery" href="/docs/server/history-recovery" description="Configure durable history, retention, and recovery on the server." />
+  <Card title="Push notifications" href="/docs/server/push-notifications" description="Register devices and publish notifications from your backend." />
+  <Card title="Server SDKs" href="/docs/server-sdks" description="Sign auth responses and publish events from trusted code." />
+</Cards>

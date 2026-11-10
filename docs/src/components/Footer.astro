@@ -1,0 +1,63 @@
+---
+import { repoUrl } from '@/lib/github';
+
+const cols = [
+  {
+    title: 'Docs',
+    links: [
+      ['Installation', '/docs/getting-started/installation'],
+      ['First connection', '/docs/getting-started/first-connection'],
+      ['Migration from Pusher', '/docs/getting-started/migration'],
+      ['Scaling', '/docs/server/scaling'],
+      ['AI Transport', '/docs/server/ai-transport-overview'],
+    ],
+  },
+  {
+    title: 'Reference',
+    links: [
+      ['Protocol', '/docs/reference/protocol'],
+      ['HTTP endpoints', '/docs/reference/http-endpoints'],
+      ['Configuration', '/docs/reference/configuration'],
+      ['Environment variables', '/docs/reference/environment-variables'],
+      ['llms.txt', '/llms.txt'],
+    ],
+  },
+  {
+    title: 'Project',
+    links: [
+      ['GitHub', repoUrl],
+      ['Releases', `${repoUrl}/releases`],
+      ['Blog', '/blog'],
+      ['Support the project', 'https://buymeacoffee.com/radooku'],
+    ],
+  },
+];
+---
+
+<footer class="site-footer">
+  <div class="inner">
+    <div>
+      <a class="brand" href="/"><img src="/sockudo-logo/sockudo-icon-color.svg" alt="" width="28" height="28" /><span>Sockudo</span></a>
+      <p>The self-hosted realtime server written in Rust. Pusher-compatible today, durable and AI-native when you need it.</p>
+      <button class="chip-btn" type="button" data-consent-open>Analytics preferences</button>
+    </div>
+    {
+      cols.map((c) => (
+        <div>
+          <h4>{c.title}</h4>
+          <ul>
+            {c.links.map(([label, href]) => (
+              <li>
+                <a href={href} {...(href.startsWith('http') ? { target: '_blank', rel: 'noreferrer' } : {})}>
+                  {label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))
+    }
+  </div>
+  <div class="footer-word" aria-hidden="true">sockudo</div>
+  <div class="footer-bottom"><span>© {new Date().getFullYear()} Sockudo contributors · MIT License</span><span>Built with Rust 🦀 & Astro</span></div>
+</footer>

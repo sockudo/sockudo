@@ -1,0 +1,17 @@
+---
+import { Info, Lightbulb, TriangleAlert } from '@lucide/astro';
+interface Props {
+  type?: 'note' | 'tip' | 'warn';
+  title?: string;
+}
+const { type = 'note', title } = Astro.props;
+const Icon = type === 'warn' ? TriangleAlert : type === 'tip' ? Lightbulb : Info;
+---
+
+<aside class:list={['callout', `callout-${type}`]}>
+  <Icon class="callout-icon" />
+  <div>
+    {title && <strong class="callout-title">{title}</strong>}
+    <slot />
+  </div>
+</aside>

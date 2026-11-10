@@ -1,0 +1,13 @@
+{
+  "framework": "astro",
+  "installCommand": "bun install",
+  "buildCommand": "bun run build",
+  "outputDirectory": "dist",
+  "redirects": [
+    {
+      "source": "/install.sh",
+      "destination": "https://github.com/sockudo/sockudo/releases/latest/download/install.sh",
+      "permanent": false
+    }
+  ]
+}

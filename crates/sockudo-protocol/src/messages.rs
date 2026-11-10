@@ -1,5 +1,6 @@
 use ahash::AHashMap;
 use serde::de::Error as _;
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sonic_rs::prelude::*;
@@ -159,12 +160,15 @@ pub fn is_ai_agent_publish_event(event: &str) -> bool {
 
 /// Allowed value types for extras.headers.
 /// Flat only — no Object or Array variant so nesting is structurally impossible.
+/// A null header value. Ably admits `null` under `extras.headers` alongside
+/// strings, numbers and booleans.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ExtrasValue {
     String(String),
     Number(f64),
     Bool(bool),
+    Null,
 }
 
 /// Structured metadata envelope for V2-specific message features.
@@ -213,13 +217,97 @@ pub struct MessageExtras {
     pub opaque: BTreeMap<String, serde_json::Value>,
 }
 
+/// The value of `extras.ai.codec`, which two conventions share.
+///
+/// Sockudo AI Transport writes a tier of codec headers as a string-to-string
+/// map (`providerMetadata`, `finishReason`, ...). Ably AI Transport
+/// (AITRFC-032) writes the id of the codec that encoded the message as a
+/// string (`"vercel-ai-sdk-ui-message"`); an Ably decoder skips any message
+/// whose id differs. The server accepts either shape and re-emits the shape
+/// it received.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum AiCodec {
+    /// Ably AI Transport: the id of the codec that encoded the message.
+    Id(String),
+    /// Sockudo AI Transport: the codec header tier.
+    Headers(HashMap<String, String>),
+}
+
+/// A malformed value reports the key and the two accepted shapes, rather than
+/// a variant-matching failure that names neither.
+impl<'de> Deserialize<'de> for AiCodec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(AiCodecVisitor)
+    }
+}
+
+struct AiCodecVisitor;
+
+impl<'de> Visitor<'de> for AiCodecVisitor {
+    type Value = AiCodec;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a codec id string or a string-to-string map")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(AiCodec::Id(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(AiCodec::Id(value))
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut headers = HashMap::with_capacity(map.size_hint().unwrap_or(0));
+        while let Some(key) = map.next_key::<String>()? {
+            let value = map.next_value::<String>().map_err(|_| {
+                serde::de::Error::custom(format!("extras.ai.codec header '{key}' must be a string"))
+            })?;
+            headers.insert(key, value);
+        }
+        Ok(AiCodec::Headers(headers))
+    }
+}
+
+impl AiCodec {
+    #[inline]
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Id(id) => Some(id),
+            Self::Headers(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn headers(&self) -> Option<&HashMap<String, String>> {
+        match self {
+            Self::Headers(headers) => Some(headers),
+            Self::Id(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiExtras {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub codec: Option<HashMap<String, String>>,
+    pub codec: Option<AiCodec>,
 
     /// Opaque codec metadata, including Ably AI Transport's `type`, nested
     /// `fields`, `stream`, and `ends`. Native transport/codec headers remain
@@ -534,9 +622,13 @@ impl MessageExtras {
             .map(AiTransportHeaders::new)
     }
 
+    /// Returns the Sockudo codec header tier; `None` for an Ably codec id.
     #[inline]
     pub fn ai_codec_headers(&self) -> Option<&HashMap<String, String>> {
-        self.ai.as_ref().and_then(|ai| ai.codec.as_ref())
+        self.ai
+            .as_ref()
+            .and_then(|ai| ai.codec.as_ref())
+            .and_then(AiCodec::headers)
     }
 
     pub fn validate_ai_headers(&self) -> Result<(), AiHeaderValidationError> {
@@ -569,8 +661,10 @@ impl MessageExtras {
             }
         }
 
-        if let Some(codec) = ai.codec.as_ref() {
-            validate_ai_codec_tier(codec)?;
+        match ai.codec.as_ref() {
+            Some(AiCodec::Headers(codec)) => validate_ai_codec_tier(codec)?,
+            Some(AiCodec::Id(id)) => validate_ai_codec_id(id)?,
+            None => {}
         }
 
         Ok(())
@@ -665,6 +759,17 @@ fn validate_ai_codec_tier(codec: &HashMap<String, String>) -> Result<(), AiHeade
         }
     }
 
+    Ok(())
+}
+
+/// An Ably AI Transport codec id is opaque: its charset and its empty value
+/// belong to Ably, so only the length is bounded.
+fn validate_ai_codec_id(id: &str) -> Result<(), AiHeaderValidationError> {
+    if id.len() > AI_TRANSPORT_VALUE_MAX_BYTES {
+        return Err(AiHeaderValidationError::too_large(format!(
+            "extras.ai.codec exceeds {AI_TRANSPORT_VALUE_MAX_BYTES} bytes"
+        )));
+    }
     Ok(())
 }
 
@@ -1149,6 +1254,18 @@ impl From<Value> for MessageData {
     }
 }
 
+/// Metrics classification of a frame written to a WebSocket.
+///
+/// `Data` frames are application or presence deliveries and feed
+/// `ws_messages_sent_total`. `Control` frames are protocol traffic (pong, acks,
+/// errors, auth) and carry a bounded `frame_type` label for
+/// `ws_control_frames_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameKind {
+    Data,
+    Control(&'static str),
+}
+
 impl PusherMessage {
     pub fn is_protocol_ping_or_pong(&self) -> bool {
         let Some(event) = self.event.as_deref() else {
@@ -1159,6 +1276,54 @@ impl PusherMessage {
             ProtocolVersion::parse_any_protocol_event(event),
             Some(("ping", _)) | Some(("pong", _))
         )
+    }
+
+    /// Classify this message for delivery metrics.
+    ///
+    /// Prefixes are normalised, so `pusher:`, `pusher_internal:`, `sockudo:` and
+    /// `sockudo_internal:` forms of the same event classify identically. Every
+    /// protocol-prefixed event is control traffic unless it carries an
+    /// application or presence payload; unknown protocol events fall into
+    /// `Control("other")` so new protocol frames cannot inflate deliveries.
+    pub fn frame_kind(&self) -> FrameKind {
+        use crate::protocol_version::*;
+
+        let Some(event) = self.event.as_deref() else {
+            return FrameKind::Data;
+        };
+        let Some((canonical, _)) = ProtocolVersion::parse_any_protocol_event(event) else {
+            // User events and client-* events.
+            return FrameKind::Data;
+        };
+        match canonical {
+            // Protocol-prefixed events that are deliveries.
+            CANONICAL_MEMBER_ADDED
+            | CANONICAL_MEMBER_REMOVED
+            | CANONICAL_PRESENCE_UPDATE
+            | CANONICAL_DELTA => FrameKind::Data,
+            // ANNOTATION_EVENT_NAME and MESSAGE_SUMMARY_EVENT_NAME.
+            "annotation" | "message" => FrameKind::Data,
+            // sockudo:message.{create,update,delete,append}.
+            c if c.starts_with("message.") => FrameKind::Data,
+            // Control frames.
+            CANONICAL_PONG => FrameKind::Control("pong"),
+            CANONICAL_ERROR | CANONICAL_SUBSCRIPTION_ERROR | CANONICAL_RESUME_FAILED => {
+                FrameKind::Control("error")
+            }
+            CANONICAL_CONNECTION_ESTABLISHED => FrameKind::Control("connection_established"),
+            CANONICAL_SUBSCRIPTION_SUCCEEDED | CANONICAL_RESUME_SUCCESS | "rewind_complete" => {
+                FrameKind::Control("ack")
+            }
+            CANONICAL_SIGNIN_SUCCESS | CANONICAL_AUTH_SUCCESS | CANONICAL_TOKEN_EXPIRED => {
+                FrameKind::Control("auth")
+            }
+            CANONICAL_CACHE_MISS => FrameKind::Control("cache_miss"),
+            CANONICAL_DELTA_COMPRESSION_ENABLED | CANONICAL_DELTA_CACHE_SYNC => {
+                FrameKind::Control("delta_negotiation")
+            }
+            CANONICAL_CHANNEL_HISTORY => FrameKind::Control("history"),
+            _ => FrameKind::Control("other"),
+        }
     }
 
     pub fn connection_established(socket_id: String, activity_timeout: u64) -> Self {
@@ -1604,7 +1769,7 @@ impl PusherMessage {
             .and_then(MessageExtras::ai_transport_headers)
     }
 
-    /// Returns the AI codec header tier, if present.
+    /// Returns the Sockudo codec header tier; `None` for an Ably codec id.
     pub fn ai_codec_headers(&self) -> Option<&HashMap<String, String>> {
         self.extras
             .as_ref()
@@ -1717,10 +1882,84 @@ impl<T: AsRef<str>> InfoQueryParser for Option<T> {
 mod tests {
     use super::{
         AI_HEADER_RUN_ID, AiExtras, AnnotationEventAction, AnnotationEventData,
-        AnnotationSummaryEnvelope, MessageData, MessageExtras, MessageSummaryData, PusherMessage,
+        AnnotationSummaryEnvelope, FrameKind, MessageData, MessageExtras, MessageSummaryData,
+        PusherMessage,
     };
     use sonic_rs::JsonValueTrait;
     use std::collections::{BTreeMap, HashMap};
+
+    fn message_with_event(event: Option<&str>) -> PusherMessage {
+        let mut message: PusherMessage = sonic_rs::from_str("{}").unwrap();
+        message.event = event.map(str::to_string);
+        message
+    }
+
+    #[test]
+    fn frame_kind_classifies_control_frames_in_every_prefix_form() {
+        let control = [
+            ("pong", false, "pong"),
+            ("error", false, "error"),
+            ("subscription_error", true, "error"),
+            ("resume_failed", false, "error"),
+            ("connection_established", false, "connection_established"),
+            ("subscription_succeeded", true, "ack"),
+            ("resume_success", false, "ack"),
+            ("rewind_complete", false, "ack"),
+            ("signin_success", false, "auth"),
+            ("auth_success", false, "auth"),
+            ("token_expired", false, "auth"),
+            ("cache_miss", false, "cache_miss"),
+            ("delta_compression_enabled", false, "delta_negotiation"),
+            ("delta_cache_sync", false, "delta_negotiation"),
+            ("channel_history", false, "history"),
+            ("subscription_count", true, "other"),
+            ("foo", false, "other"),
+        ];
+        for (canonical, internal, expected) in control {
+            let prefixes: [&str; 2] = if internal {
+                ["pusher_internal:", "sockudo_internal:"]
+            } else {
+                ["pusher:", "sockudo:"]
+            };
+            for prefix in prefixes {
+                let event = format!("{prefix}{canonical}");
+                assert_eq!(
+                    message_with_event(Some(&event)).frame_kind(),
+                    FrameKind::Control(expected),
+                    "{event}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_kind_keeps_application_and_presence_payloads_as_data() {
+        for event in [
+            Some("pusher_internal:member_added"),
+            Some("sockudo_internal:member_added"),
+            Some("pusher_internal:member_removed"),
+            Some("sockudo_internal:member_removed"),
+            Some("pusher_internal:presence_update"),
+            Some("sockudo:presence_update"),
+            Some("pusher:delta"),
+            Some("sockudo:delta"),
+            Some("sockudo:message.create"),
+            Some("sockudo:message.update"),
+            Some("sockudo:message.delete"),
+            Some("sockudo:message.append"),
+            Some("sockudo_internal:annotation"),
+            Some("sockudo_internal:message"),
+            Some("order-created"),
+            Some("client-typing"),
+            None,
+        ] {
+            assert_eq!(
+                message_with_event(event).frame_kind(),
+                FrameKind::Data,
+                "{event:?}"
+            );
+        }
+    }
 
     #[test]
     fn api_message_data_accepts_json_with_both_deserializers() {

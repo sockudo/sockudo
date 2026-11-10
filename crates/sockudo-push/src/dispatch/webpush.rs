@@ -13,6 +13,8 @@ use sonic_rs::json;
 use sonic_rs::prelude::*;
 #[cfg(feature = "push-webpush")]
 use url::Url;
+#[cfg(feature = "push-webpush")]
+use {p256::ecdsa::SigningKey, p256::elliptic_curve::sec1::ToSec1Point};
 
 use super::auth::{CachedTokenProvider, auth_error};
 use super::http::{
@@ -91,7 +93,7 @@ pub struct NativeWebPushCrypto {
 #[cfg(feature = "push-webpush")]
 #[derive(Clone)]
 struct NativeVapidKey {
-    signing_key: web_push_native::p256::ecdsa::SigningKey,
+    signing_key: p256::ecdsa::SigningKey,
     public_key: String,
 }
 
@@ -110,14 +112,12 @@ impl NativeWebPushCrypto {
             .decode(vapid_private_key.as_bytes())
             .map_err(|_| NativeWebPushKeyError::Encoding)
             .and_then(|bytes| {
-                use web_push_native::p256::{
-                    SecretKey, ecdsa::SigningKey, elliptic_curve::sec1::ToEncodedPoint,
-                };
+                use p256::elliptic_curve::sec1::ToSec1Point;
 
                 let secret_key =
-                    SecretKey::from_slice(&bytes).map_err(|_| NativeWebPushKeyError::Key)?;
-                let public_key = URL_SAFE_NO_PAD
-                    .encode(secret_key.public_key().to_encoded_point(false).as_bytes());
+                    p256::SecretKey::from_slice(&bytes).map_err(|_| NativeWebPushKeyError::Key)?;
+                let public_key =
+                    URL_SAFE_NO_PAD.encode(secret_key.public_key().to_sec1_point(false).as_bytes());
                 Ok(Arc::new(NativeVapidKey {
                     signing_key: SigningKey::from(secret_key),
                     public_key,
@@ -136,7 +136,7 @@ impl NativeWebPushCrypto {
     }
 
     fn vapid_authorization(&self, endpoint: &str) -> Result<SecretString, ProviderError> {
-        use web_push_native::p256::ecdsa::{Signature, signature::Signer};
+        use p256::ecdsa::{Signature, signature::Signer};
 
         let vapid_key = self.vapid_key.as_ref().map_err(|error| match error {
             NativeWebPushKeyError::Encoding => ProviderError {
@@ -225,8 +225,6 @@ impl WebPushCrypto for NativeWebPushCrypto {
         payload: &[u8],
         _fallback_bearer: SecretString,
     ) -> Result<WebPushPreparedRequest, ProviderError> {
-        use web_push_native::{Auth, WebPushBuilder, p256::PublicKey};
-
         let p256dh_bytes = URL_SAFE_NO_PAD
             .decode(p256dh.expose_secret().as_bytes())
             .map_err(|_| ProviderError {
@@ -252,47 +250,129 @@ impl WebPushCrypto for NativeWebPushCrypto {
             });
         }
 
-        let request = WebPushBuilder::new(
-            endpoint.parse().map_err(|_| ProviderError {
-                class: "invalid_token".to_owned(),
-                failure_class: ProviderFailureClass::DeviceTerminal,
-                reason: Some("invalid Web Push endpoint".to_owned()),
-                retry_after_ms: None,
-            })?,
-            PublicKey::from_sec1_bytes(&p256dh_bytes).map_err(|_| ProviderError {
+        let ua_public =
+            p256::PublicKey::from_sec1_bytes(&p256dh_bytes).map_err(|_| ProviderError {
                 class: "invalid_token".to_owned(),
                 failure_class: ProviderFailureClass::DeviceTerminal,
                 reason: Some("invalid Web Push p256dh key".to_owned()),
                 retry_after_ms: None,
-            })?,
-            Auth::clone_from_slice(&auth_bytes),
-        )
-        .with_valid_duration(self.valid_for)
-        .build(payload.to_vec())
-        .map_err(|error| ProviderError {
-            class: "invalid_payload".to_owned(),
-            failure_class: ProviderFailureClass::CallerPayload,
-            reason: Some(format!("web push encryption failed: {error}")),
+            })?;
+        let auth_array: [u8; 16] = auth_bytes.try_into().map_err(|_| ProviderError {
+            class: "invalid_token".to_owned(),
+            failure_class: ProviderFailureClass::DeviceTerminal,
+            reason: Some("invalid Web Push auth length".to_owned()),
             retry_after_ms: None,
         })?;
+        let body = encrypt_webpush_payload(payload.to_vec(), &ua_public, &auth_array).map_err(
+            |error| ProviderError {
+                class: "invalid_payload".to_owned(),
+                failure_class: ProviderFailureClass::CallerPayload,
+                reason: Some(format!("web push encryption failed: {error}")),
+                retry_after_ms: None,
+            },
+        )?;
 
         let authorization = Some(self.vapid_authorization(endpoint)?);
-        let headers = request
-            .headers()
-            .iter()
-            .filter_map(|(name, value)| {
-                let name = name.as_str().to_ascii_lowercase();
-                let value = value.to_str().ok()?;
-                Some((name, value.to_owned()))
-            })
-            .collect();
+        let headers = BTreeMap::from([
+            ("ttl".to_owned(), self.valid_for.as_secs().to_string()),
+            ("content-encoding".to_owned(), "aes128gcm".to_owned()),
+            (
+                "content-type".to_owned(),
+                "application/octet-stream".to_owned(),
+            ),
+            ("content-length".to_owned(), body.len().to_string()),
+        ])
+        .into_iter()
+        .collect();
 
         Ok(WebPushPreparedRequest {
             headers,
             authorization,
-            body: request.into_body(),
+            body,
         })
     }
+}
+
+/// Derives the RFC 8291 Section 3.3 input keying material for content
+/// encryption: HKDF(auth_secret, ECDH shared secret, "WebPush: info" ||
+/// 0x00 || ua_public || as_public).
+#[cfg(feature = "push-webpush")]
+fn webpush_ikm(
+    shared: &p256::ecdh::SharedSecret,
+    ua_public: &p256::PublicKey,
+    as_public: &p256::PublicKey,
+    ua_auth: &[u8; 16],
+) -> [u8; 32] {
+    let mut info = Vec::with_capacity(13 + 65 + 65);
+    info.extend_from_slice(b"WebPush: info");
+    info.push(0u8);
+    info.extend_from_slice(ua_public.to_sec1_point(false).as_bytes());
+    info.extend_from_slice(as_public.to_sec1_point(false).as_bytes());
+
+    let mut ikm = [0u8; 32];
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(ua_auth), shared.raw_secret_bytes().as_ref());
+    hk.expand(&info, &mut ikm)
+        .expect("ikm length is always 32 bytes, cannot be too large");
+    ikm
+}
+
+/// Encrypts a Web Push message according to RFC 8291 (Message Encryption for
+/// Web Push) with the RFC 8188 "aes128gcm" content encoding, matching the
+/// behavior of `web-push-native::WebPushBuilder::build`.
+#[cfg(feature = "push-webpush")]
+fn encrypt_webpush_payload(
+    message: Vec<u8>,
+    ua_public: &p256::PublicKey,
+    ua_auth: &[u8; 16],
+) -> Result<Vec<u8>, ece_native::Error> {
+    use p256::ecdh::diffie_hellman;
+    use p256::elliptic_curve::Generate;
+
+    let salt = <[u8; 16] as Generate>::generate();
+    let as_secret = p256::SecretKey::generate();
+    let as_public = as_secret.public_key();
+    let shared = diffie_hellman(as_secret.to_nonzero_scalar(), ua_public.as_affine());
+    let ikm = webpush_ikm(&shared, ua_public, &as_public, ua_auth);
+
+    let keyid = as_public.to_sec1_point(false);
+    let encrypted_record_length = (message.len() + 17)
+        .try_into()
+        .map_err(|_| ece_native::Error::RecordLengthInvalid)?;
+
+    ece_native::encrypt(
+        ikm,
+        salt,
+        keyid.as_bytes(),
+        Some(message).into_iter(),
+        encrypted_record_length,
+    )
+}
+
+/// Decrypts a payload produced by [`encrypt_webpush_payload`]; used by tests to
+/// verify the full RFC 8291 round trip.
+#[cfg(all(feature = "push-webpush", test))]
+pub(crate) fn decrypt_webpush_payload(
+    encrypted: Vec<u8>,
+    as_secret: &p256::SecretKey,
+    ua_auth: &[u8; 16],
+) -> Result<Vec<u8>, ece_native::Error> {
+    use p256::ecdh::diffie_hellman;
+
+    if encrypted.len() < 21 {
+        return Err(ece_native::Error::HeaderLengthInvalid);
+    }
+
+    let idlen = usize::from(encrypted[20]);
+    if encrypted[21..].len() < idlen {
+        return Err(ece_native::Error::KeyIdLengthInvalid);
+    }
+
+    let sender_public = p256::PublicKey::from_sec1_bytes(&encrypted[21..21 + idlen])
+        .map_err(|_| ece_native::Error::Aes128Gcm)?;
+    let shared = diffie_hellman(as_secret.to_nonzero_scalar(), sender_public.as_affine());
+    let ikm = webpush_ikm(&shared, &as_secret.public_key(), &sender_public, ua_auth);
+
+    ece_native::decrypt(ikm, encrypted)
 }
 
 impl WebPushDispatcher {
@@ -469,16 +549,14 @@ mod tests {
     #[cfg(feature = "push-webpush")]
     #[tokio::test]
     async fn native_web_push_crypto_encrypts_and_signs_request() {
-        use web_push_native::p256::{
-            SecretKey,
-            elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
-        };
+        use base64::Engine as _;
+        use p256::elliptic_curve::{Generate, sec1::ToSec1Point};
 
-        let ua_secret = SecretKey::random(&mut OsRng);
+        let ua_secret = p256::SecretKey::generate();
         let ua_public = ua_secret.public_key();
         let auth_bytes = [7u8; 16];
         let p256dh =
-            SecretString::new(URL_SAFE_NO_PAD.encode(ua_public.to_encoded_point(false).as_bytes()))
+            SecretString::new(URL_SAFE_NO_PAD.encode(ua_public.to_sec1_point(false).as_bytes()))
                 .unwrap();
         let auth = SecretString::new(URL_SAFE_NO_PAD.encode(auth_bytes)).unwrap();
         let vapid_private = SecretString::new(URL_SAFE_NO_PAD.encode([1u8; 32])).unwrap();
@@ -505,8 +583,89 @@ mod tests {
         assert!(authorization.expose_secret().starts_with("vapid t="));
         assert!(!String::from_utf8_lossy(&prepared.body).contains("Hello"));
 
-        let auth = web_push_native::Auth::clone_from_slice(&auth_bytes);
-        let decrypted = web_push_native::decrypt(prepared.body, &ua_secret, &auth).unwrap();
+        let decrypted = decrypt_webpush_payload(prepared.body, &ua_secret, &auth_bytes).unwrap();
         assert_eq!(decrypted, payload);
+    }
+
+    /// Pins the production key derivation against the RFC 8291 Appendix A /
+    /// Section 5 vectors, so a shared mistake in [`webpush_ikm`] cannot pass
+    /// the round-trip tests while real user agents fail to decrypt.
+    ///
+    /// The RFC example encrypts with record size 4096 (rs field 0x00001000)
+    /// and a fixed salt/sender key; [`encrypt_webpush_payload`] chooses
+    /// `len + 17` instead, so the header and ciphertext are asserted in
+    /// segments rather than byte-comparing one full body.
+    #[cfg(feature = "push-webpush")]
+    #[test]
+    fn encryption_matches_rfc_8291_appendix_a_vectors() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use p256::ecdh::diffie_hellman;
+        use p256::elliptic_curve::sec1::ToSec1Point;
+
+        fn b64d(value: &str) -> Vec<u8> {
+            URL_SAFE_NO_PAD.decode(value).unwrap()
+        }
+
+        let ua_public = p256::PublicKey::from_sec1_bytes(&b64d(
+            "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+        ))
+        .unwrap();
+        let as_public = p256::PublicKey::from_sec1_bytes(&b64d(
+            "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8",
+        ))
+        .unwrap();
+        let as_secret =
+            p256::SecretKey::from_slice(&b64d("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"))
+                .unwrap();
+        let auth: [u8; 16] = b64d("BTBZMqHH6r4Tts7J_aSIgg").try_into().unwrap();
+        let salt: [u8; 16] = b64d("DGv6ra1nlYgDCS1FRnbzlw").try_into().unwrap();
+        let plaintext = b"When I grow up, I want to be a watermelon";
+
+        let shared = diffie_hellman(as_secret.to_nonzero_scalar(), ua_public.as_affine());
+        assert_eq!(
+            shared.raw_secret_bytes().as_slice(),
+            b64d("kyrL1jIIOHEzg3sM2ZWRHDRB62YACZhhSlknJ672kSs").as_slice(),
+            "ECDH shared secret must match RFC 8291 Appendix A"
+        );
+
+        let ikm = webpush_ikm(&shared, &ua_public, &as_public, &auth);
+        assert_eq!(
+            ikm,
+            b64d("S4lYMb_L0FxCeq0WhDx813KgSYqU26kOyzWUdsXYyrg").as_slice(),
+            "\"WebPush: info\" HKDF derivation must match RFC 8291 Appendix A"
+        );
+
+        let keyid = as_public.to_sec1_point(false);
+        let encrypted = ece_native::encrypt(
+            ikm,
+            salt,
+            keyid.as_bytes(),
+            Some(plaintext.to_vec()).into_iter(),
+            4096,
+        )
+        .unwrap();
+
+        // Header: salt || rs=4096 (0x00001000) || idlen=65 || as_public.
+        assert_eq!(&encrypted[..16], &salt[..]);
+        assert_eq!(&encrypted[16..20], &[0x00, 0x00, 0x10, 0x00]);
+        assert_eq!(encrypted[20], 65);
+        assert_eq!(&encrypted[21..86], keyid.as_bytes());
+
+        // RFC 8188/8291 ciphertext for the 0x02-padded plaintext under the
+        // CEK and nonce derived from the pinned IKM.
+        assert_eq!(
+            &encrypted[86..],
+            b64d("8pfeW0KbunFT06SuDKoJH9Ql87S1QUrdirN6GcG7sFz1y1sqLgVi1VhjVkHsUoEsbI_0LpXMuGvnzQ")
+                .as_slice(),
+            "aes128gcm record must match RFC 8291 Section 5 ciphertext"
+        );
+
+        // The receiver-side derivation must decrypt the RFC message back; the
+        // UA private key from RFC 8291 Section 5 is the receiver key here.
+        let ua_secret =
+            p256::SecretKey::from_slice(&b64d("q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94"))
+                .unwrap();
+        let decrypted = decrypt_webpush_payload(encrypted, &ua_secret, &auth).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 }

@@ -1,0 +1,35 @@
+---
+import { getCollection } from 'astro:content';
+import { ArrowUpRight } from '@lucide/astro';
+import Base from '@/layouts/Base.astro';
+
+const posts = (await getCollection('blog')).sort((a, b) => b.data.date.localeCompare(a.data.date));
+const fmt = (d: string) => new Date(d).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+---
+
+<Base title="Blog" description="Engineering notes from the Sockudo team on realtime protocols, horizontal scaling, and SDK design.">
+  <main id="main-content" class="blog-index">
+    <header class="blog-hero" data-reveal>
+      <span class="eyebrow">Engineering blog</span>
+      <h1>Notes from the <span class="grad">realtime trenches</span></h1>
+      <p>Protocol design, distributed fanout, recovery semantics, and the decisions behind Sockudo.</p>
+    </header>
+    <div class="blog-grid">
+      {
+        posts.map((p, i) => (
+          <a class="blog-card glass" href={`/blog/${p.id}`} data-reveal data-glow style={`--d:${i * 90}ms`}>
+            <div class="meta">
+              <span class="pill">{p.data.category}</span>
+              <time datetime={p.data.date}>{fmt(p.data.date)}</time>
+            </div>
+            <h2>{p.data.title}</h2>
+            <p>{p.data.description}</p>
+            <span class="more">
+              Read article <ArrowUpRight size={15} />
+            </span>
+          </a>
+        ))
+      }
+    </div>
+  </main>
+</Base>
