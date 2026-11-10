@@ -188,8 +188,9 @@ pub(crate) fn socket_allows_message(
     message: &PusherMessage,
     filtering_enabled: bool,
 ) -> bool {
+    // Predicates only read the projected document when filtering is enabled.
     #[cfg(feature = "tag-filtering")]
-    let document = matching_subscription_requires_document(socket, channel)
+    let document = (filtering_enabled && matching_subscription_requires_document(socket, channel))
         .then(|| {
             sockudo_filter::ProjectedDocument::new_bounded(
                 &crate::message_predicate::NativeMessageProjection::from_message(message),
@@ -218,21 +219,24 @@ pub(crate) fn apply_subscription_predicates_in_place(
     message: &PusherMessage,
     sockets: &mut Vec<WebSocketRef>,
 ) {
+    // Predicates only read the projected document when filtering is enabled,
+    // so skip the per-socket subscription scan on every delivery otherwise.
     #[cfg(feature = "tag-filtering")]
-    let document = sockets
-        .iter()
-        .any(|socket| matching_subscription_requires_document(socket, channel))
-        .then(|| {
-            sockudo_filter::ProjectedDocument::new_bounded(
-                &crate::message_predicate::NativeMessageProjection::from_message(message),
-                64 * 1024,
-            )
-        })
-        .transpose()
-        .unwrap_or_else(|error| {
-            tracing::warn!(error = %error, "message predicate projection failed closed");
-            None
-        });
+    let document = (filtering_enabled
+        && sockets
+            .iter()
+            .any(|socket| matching_subscription_requires_document(socket, channel)))
+    .then(|| {
+        sockudo_filter::ProjectedDocument::new_bounded(
+            &crate::message_predicate::NativeMessageProjection::from_message(message),
+            64 * 1024,
+        )
+    })
+    .transpose()
+    .unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "message predicate projection failed closed");
+        None
+    });
 
     sockets.retain(|socket| {
         should_deliver_for_subscription(
@@ -329,6 +333,35 @@ mod predicate_tests {
             &message("order.updated", "us"),
             true,
             Some(&document)
+        ));
+    }
+
+    /// Fanout skips projecting the document when filtering is disabled, so a
+    /// view must never need it then, even for a document predicate.
+    #[test]
+    fn disabled_filtering_never_reads_the_projected_document() {
+        let predicate = MessagePredicate::compile(SubscriptionView {
+            events: vec!["order.updated".into()],
+            tags: None,
+            expression: Some("data.total >= `1000`".into()),
+        })
+        .unwrap();
+        assert!(predicate.requires_document());
+        let state = PerChannelState {
+            predicate: Some(Arc::new(predicate)),
+            ..PerChannelState::default()
+        };
+        assert!(subscription_view_allows(
+            &state,
+            &message("order.created", "us"),
+            false,
+            None
+        ));
+        assert!(!subscription_view_allows(
+            &state,
+            &message("order.updated", "eu"),
+            true,
+            None
         ));
     }
 
