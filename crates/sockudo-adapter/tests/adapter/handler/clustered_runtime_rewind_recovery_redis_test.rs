@@ -1158,6 +1158,14 @@ async fn fresh_node_with_empty_replay_buffer_uses_cold_recovery_after_cross_node
     wait_for_cluster_ready(&[&node_a.adapter, &restarted_node_b.adapter], 2).await;
 
     let (resume_socket_id, mut resume_reader) = connect_v2_socket(&restarted_node_b, &app).await;
+    subscribe_for_resume(
+        &restarted_node_b,
+        &app,
+        &resume_socket_id,
+        &mut resume_reader,
+        "cold",
+    )
+    .await;
     let resume_payload = json!({
         "channel_positions": {
             "cold": {
@@ -1546,6 +1554,14 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
     wait_for_cluster_ready(&[&node_a.adapter, &restarted_node_b.adapter], 2).await;
 
     let (resume_socket_id, mut resume_reader) = connect_v2_socket(&restarted_node_b, &app).await;
+    subscribe_for_resume(
+        &restarted_node_b,
+        &app,
+        &resume_socket_id,
+        &mut resume_reader,
+        "versioned",
+    )
+    .await;
     let resume_payload = json!({
         "channel_positions": {
             "versioned": {
@@ -1599,9 +1615,11 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
         .iter()
         .find(|msg| msg.event.as_deref() == Some("sockudo:message.append"))
         .expect("expected append replay");
+    // Replay goes through the subscriber's delivery path, so a default (delta append mode)
+    // socket receives the appended fragment exactly as live delivery would.
     assert_eq!(
         appended_message.data,
-        Some(MessageData::String("patched world".to_string()))
+        Some(MessageData::String(" world".to_string()))
     );
 }
 
@@ -1697,6 +1715,14 @@ async fn degraded_durable_state_causes_explicit_cross_node_recovery_failure_via_
     wait_for_cluster_ready(&[&node_a.adapter, &restarted_node_b.adapter], 2).await;
 
     let (resume_socket_id, mut resume_reader) = connect_v2_socket(&restarted_node_b, &app).await;
+    subscribe_for_resume(
+        &restarted_node_b,
+        &app,
+        &resume_socket_id,
+        &mut resume_reader,
+        "degraded",
+    )
+    .await;
     let resume_payload = json!({
         "channel_positions": {
             "degraded": {
@@ -1869,5 +1895,42 @@ async fn rewind_live_handoff_across_nodes_has_no_gap_and_no_duplicates_via_redis
         !messages
             .iter()
             .any(|msg| msg.event.as_deref() == Some("live-dup"))
+    );
+}
+
+/// Recovery only replays channels the resuming socket is subscribed to, so reconnecting
+/// clients re-subscribe before (or alongside) `resume`.
+async fn subscribe_for_resume(
+    node: &ClusterNode,
+    app: &App,
+    socket_id: &SocketId,
+    reader: &mut ClientReader,
+    channel: &str,
+) {
+    node.handler
+        .handle_subscribe_request(
+            socket_id,
+            app,
+            SubscriptionRequest {
+                channel: channel.to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+                annotation_subscribe: false,
+            },
+        )
+        .await
+        .unwrap();
+    let subscribed = recv_message(reader).await;
+    assert_eq!(
+        subscribed.event.as_deref(),
+        Some("sockudo_internal:subscription_succeeded")
     );
 }

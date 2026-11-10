@@ -42,6 +42,22 @@ lines get fixes only when the issue is severe and the backport is practical.
 Client and server SDKs in this repository follow the same policy for their latest published
 version.
 
+## Security advisories
+
+Fixed in 5.2.1 (all affect 5.2.0). Reported by apudiu.
+
+| Advisory | Severity | Summary |
+| -------- | -------- | ------- |
+| GHSA-gg5j-wcw2-v78r | High | Public wildcard subscriptions received private/presence channel messages. |
+| GHSA-r5q6-rw3h-q24r | High | `resume` replayed private/presence history to unsubscribed connections. |
+| GHSA-4795-c9wj-3q58 | See advisory | Presence subscribe without `channel_data` panicked the connection task. |
+| GHSA-xfrj-v26g-242j | See advisory | Unauthenticated `/stats`, `/operator/stats`, and `/up/{appId}` disclosed tenants and app ids. |
+
+5.2.1 changes operator-visible behavior: on the client-facing listener, native `/stats` and
+`/operator/stats` require a Pusher-signed request and return only the signing app, and
+`/up/{appId}` answers exactly like `/up`. The unsigned operator views moved to the internal
+metrics listener. See the security page in the docs for upgrade notes and 5.2.0 workarounds.
+
 ## Scope
 
 In scope: the Sockudo server, the official client and server SDKs, the dashboard, and the

@@ -1,7 +1,7 @@
 use crate::app::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
-use crate::utils::wildcard_pattern_matches;
+use crate::utils::{channel_allows_wildcard_delivery, wildcard_pattern_matches};
 use crate::websocket::{SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
 use ahash::AHashMap as HashMap;
 use ahash::AHashSet;
@@ -284,6 +284,13 @@ impl Namespace {
         socket_ids: &mut AHashSet<SocketId>,
         include_exact_channels: bool,
     ) {
+        if include_exact_channels {
+            self.collect_exact_channel_socket_ids(channel, except, socket_ids);
+        }
+        if !channel_allows_wildcard_delivery(channel) {
+            // Restricted channels are never delivered through wildcard memberships.
+            return;
+        }
         for wildcard_channel in self.wildcard_channels.iter() {
             let subscribed_channel = wildcard_channel.key();
             if !wildcard_pattern_matches(channel, subscribed_channel) {
@@ -299,10 +306,6 @@ impl Namespace {
                 }
             }
         }
-
-        if include_exact_channels {
-            self.collect_exact_channel_socket_ids(channel, except, socket_ids);
-        }
     }
 
     fn collect_matching_socket_refs(
@@ -312,6 +315,10 @@ impl Namespace {
         seen_socket_ids: &mut Option<AHashSet<SocketId>>,
         socket_refs: &mut Vec<WebSocketRef>,
     ) {
+        if !channel_allows_wildcard_delivery(channel) {
+            // Restricted channels are never delivered through wildcard memberships.
+            return;
+        }
         for wildcard_channel in self.wildcard_channels.iter() {
             let subscribed_channel = wildcard_channel.key();
             if !wildcard_pattern_matches(channel, subscribed_channel) {
@@ -349,6 +356,10 @@ impl Namespace {
         v1_refs: &mut Vec<WebSocketRef>,
         v2_refs: &mut Vec<WebSocketRef>,
     ) {
+        if !channel_allows_wildcard_delivery(channel) {
+            // Restricted channels are never delivered through wildcard memberships.
+            return;
+        }
         for wildcard_channel in self.wildcard_channels.iter() {
             let subscribed_channel = wildcard_channel.key();
             if !wildcard_pattern_matches(channel, subscribed_channel) {
@@ -900,6 +911,54 @@ mod tests {
         assert!(matches.contains(&exact_socket));
         assert!(matches.contains(&wildcard_socket));
         assert!(!matches.contains(&unrelated_socket));
+    }
+
+    /// GHSA-gg5j-wcw2-v78r: every adapter (local and horizontal) resolves fanout targets
+    /// through these lookups, so wildcard members must never be returned for channels
+    /// that need per-channel authorization or are user-scoped.
+    #[test]
+    fn wildcard_memberships_never_match_restricted_channels() {
+        let namespace = Namespace::new("app".to_string());
+        let exact_private = SocketId::new();
+        namespace.add_channel_to_socket("private-acme.orders.1", &exact_private);
+        let wildcard_sockets: Vec<(&str, SocketId)> = ["*", "p*", "pri*", "pres*", "*.orders.1"]
+            .into_iter()
+            .map(|pattern| {
+                let socket = SocketId::new();
+                namespace.add_channel_to_socket(pattern, &socket);
+                (pattern, socket)
+            })
+            .collect();
+
+        for channel in [
+            "private-acme.orders.1",
+            "presence-acme.orders.1",
+            "private-encrypted-acme.orders.1",
+            "private-cache-acme.orders.1",
+            "presence-cache-acme.orders.1",
+            "private-encrypted-cache-acme.orders.1",
+            "pub.orders#alice",
+        ] {
+            let matches = namespace.get_matching_channel_socket_ids_except(channel, None);
+            for (pattern, socket) in &wildcard_sockets {
+                assert!(
+                    !matches.contains(socket),
+                    "wildcard {pattern:?} must not match restricted channel {channel:?}"
+                );
+            }
+        }
+        assert!(
+            namespace
+                .get_matching_channel_socket_ids_except("private-acme.orders.1", None)
+                .contains(&exact_private),
+            "exact authenticated members still receive the channel"
+        );
+
+        let public = namespace.get_matching_channel_socket_ids_except("pub.orders.1", None);
+        for (pattern, socket) in &wildcard_sockets {
+            let expected = crate::utils::wildcard_pattern_matches("pub.orders.1", pattern);
+            assert_eq!(public.contains(socket), expected, "pattern {pattern:?}");
+        }
     }
 
     #[test]

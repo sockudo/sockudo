@@ -338,7 +338,7 @@ Use different endpoints for different decisions:
 | --- | --- | --- |
 | Startup | `/live` | The process has started. |
 | Liveness | `/live` | The process runtime is alive. |
-| Readiness | `/up` or `/up/<app-id>` | Required apps and shared dependencies are available. |
+| Readiness | `/up` or `/up/<app-id>` | At least one app is configured and shared dependencies are available. On the public port `/up/<app-id>` answers like `/up`; use the metrics port (`9601`) `/up/<app-id>` to require that specific app. |
 | Capacity-aware readiness | `/ready` | Same dependency checks as `/up`, plus `503 CAPACITY` when the pod nears `SOCKUDO_MAX_CONNECTIONS`. |
 | New-connection admission | `/accept-traffic` | The pod is not draining or shedding new connections under memory pressure. |
 

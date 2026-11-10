@@ -123,7 +123,7 @@ top-level keys and `[http_api]` in the [configuration reference](/docs/reference
 | `INSTANCE_PROCESS_ID` | Stable node/process identity used by clustering and Iggy consumers. |
 | `HOSTNAME` | Fallback node identity for Iggy when `INSTANCE_PROCESS_ID` is not set. |
 | `HEALTH_CHECK_TIMEOUT_MS` | Per-dependency timeout for `/up` health checks in milliseconds. Defaults to `2000`. |
-| `HTTP_API_USAGE_ENABLED` | Enables the unauthenticated `/usage`, `/stats`, and `/operator/stats` operational endpoints. Defaults to `true`; set `false` on exposed deployments. |
+| `HTTP_API_USAGE_ENABLED` | Enables `/usage`, `/stats`, and `/operator/stats` (default `true`). The stats routes require a Pusher-signed request and report only the signing app. |
 | `HTTP_API_READINESS_HIGH_WATERMARK` | Fraction of `SOCKUDO_MAX_CONNECTIONS` that makes `/ready` return `503 CAPACITY`. Defaults to `0.95`. |
 | `HTTP_API_READINESS_LOW_WATERMARK` | Fraction at or below which `/ready` recovers after capacity shedding. Defaults to `0.85`; must be nonnegative and less than the high watermark. |
 | `HTTP_API_ACCEPT_TRAFFIC_ENABLED` | Enables memory-pressure admission control for new WebSocket connections. Defaults to `false`. |

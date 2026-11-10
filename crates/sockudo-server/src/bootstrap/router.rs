@@ -1,12 +1,12 @@
 use super::SockudoServer;
 use crate::http_handler::{
-    accept_traffic, append_message, batch_events, channel, channel_history, channel_history_purge,
-    channel_history_reset, channel_history_state, channel_message, channel_message_annotations,
-    channel_message_versions, channel_presence_history, channel_presence_history_reset,
-    channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
-    delete_annotation, delete_message, events, fallback_404, force_reconnect_user, live, metrics,
-    publish_annotation, ready, revoke_capability_tokens, stats, terminate_user_connections, up,
-    update_message, usage,
+    accept_traffic, app_health, append_message, batch_events, channel, channel_history,
+    channel_history_purge, channel_history_reset, channel_history_state, channel_message,
+    channel_message_annotations, channel_message_versions, channel_presence_history,
+    channel_presence_history_reset, channel_presence_history_snapshot,
+    channel_presence_history_state, channel_users, channels, delete_annotation, delete_message,
+    events, fallback_404, force_reconnect_user, live, metrics, operator_stats, publish_annotation,
+    ready, revoke_capability_tokens, stats, terminate_user_connections, up, update_message, usage,
 };
 use crate::middleware::{AppApiRateLimiter, pusher_api_auth_middleware};
 #[cfg(feature = "push")]
@@ -59,6 +59,36 @@ fn is_ably_stats_request(
     query.key.is_some()
         || query.access_token.is_some()
         || headers.contains_key(axum::http::header::AUTHORIZATION)
+}
+
+/// Native operator stats route: Pusher-signed requests only, scoped to the signing app
+/// (GHSA-xfrj-v26g-242j).
+pub(crate) fn operator_stats_route(
+    handler: &Arc<sockudo_adapter::ConnectionHandler>,
+) -> axum::routing::MethodRouter<Arc<sockudo_adapter::ConnectionHandler>> {
+    get(stats).route_layer(axum_middleware::from_fn_with_state(
+        handler.clone(),
+        pusher_api_auth_middleware,
+    ))
+}
+
+/// Routes on the internal metrics listener. It already exports every `app_id` through
+/// `/metrics`, so the cross-tenant operator stats and the app-specific health probe live
+/// here without credentials. The client-facing listener keeps the restricted variants.
+pub(crate) fn metrics_listener_router(
+    handler: &Arc<sockudo_adapter::ConnectionHandler>,
+    usage_enabled: bool,
+) -> Router {
+    let mut router = Router::new()
+        .route("/metrics", get(metrics))
+        .route("/up", get(up))
+        .route("/up/{appId}", get(app_health));
+    if usage_enabled {
+        router = router
+            .route("/usage", get(usage))
+            .route("/stats", get(operator_stats));
+    }
+    router.with_state(handler.clone())
 }
 
 impl SockudoServer {
@@ -647,7 +677,7 @@ impl SockudoServer {
         if stats_enabled {
             // Keep the native operator contract on an unambiguous alias even
             // when authenticated Ably requests share the legacy `/stats` path.
-            router = router.route("/operator/stats", get(stats));
+            router = router.route("/operator/stats", operator_stats_route(&self.handler));
             #[cfg(feature = "ably-compat")]
             {
                 let runtime = Arc::clone(&self.ably_compat);
@@ -672,7 +702,11 @@ impl SockudoServer {
                 router = router.route(
                     "/stats",
                     get(
-                        move |query: axum::extract::Query<sockudo_ably_compat::AblyStatsQuery>,
+                        move |uri: axum::http::Uri,
+                              limiter: Option<
+                            axum::Extension<crate::middleware::AppApiRateLimiter>,
+                        >,
+                              query: axum::extract::Query<sockudo_ably_compat::AblyStatsQuery>,
                               headers: axum::http::HeaderMap,
                               axum::extract::State(handler): axum::extract::State<
                             Arc<sockudo_adapter::ConnectionHandler>,
@@ -688,7 +722,22 @@ impl SockudoServer {
                                     )
                                     .await
                                 } else {
-                                    match stats(axum::extract::State(handler)).await {
+                                    // Native stats require a Pusher-signed request.
+                                    let app = match crate::middleware::authenticate_pusher_request(
+                                        &handler,
+                                        limiter.as_ref().map(|axum::Extension(limiter)| limiter),
+                                        "GET",
+                                        &uri,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(app) => app,
+                                        Err(error) => return error.into_response(),
+                                    };
+                                    match stats(axum::extract::State(handler), axum::Extension(app))
+                                        .await
+                                    {
                                         Ok(response) => response.into_response(),
                                         Err(error) => error.into_response(),
                                     }
@@ -700,7 +749,7 @@ impl SockudoServer {
             }
             #[cfg(not(feature = "ably-compat"))]
             {
-                router = router.route("/stats", get(stats));
+                router = router.route("/stats", operator_stats_route(&self.handler));
             }
         }
 
@@ -723,9 +772,7 @@ impl SockudoServer {
     }
 
     pub(crate) fn configure_metrics_routes(&self) -> Router {
-        Router::new()
-            .route("/metrics", get(metrics))
-            .with_state(self.handler.clone())
+        metrics_listener_router(&self.handler, self.config.http_api.usage_enabled)
     }
 }
 

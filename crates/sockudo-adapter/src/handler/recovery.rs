@@ -1,4 +1,5 @@
 use super::ConnectionHandler;
+use ahash::AHashMap;
 use bytes::Bytes;
 use serde::Deserialize;
 use sockudo_core::app::App;
@@ -6,9 +7,10 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryDirection, HistoryQueryBounds, HistoryReadRequest};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
-use sonic_rs::json;
+use sonic_rs::{JsonValueMutTrait, json};
 use std::collections::{HashMap, HashSet};
-use tracing::warn;
+use std::time::{Duration, Instant};
+use tracing::{debug, warn};
 
 use crate::replay_buffer::ReplayLookup;
 
@@ -37,6 +39,21 @@ struct ResumeDeliveryPosition {
     last_message_id: Option<String>,
 }
 
+/// The last position a recovery replay delivered for a channel.
+#[derive(Debug, Clone)]
+pub(crate) struct ReplayedThrough {
+    stream_id: Option<String>,
+    serial: u64,
+}
+
+impl ReplayedThrough {
+    /// Whether a held live message was already delivered by the replay. Serials are only
+    /// comparable within one stream generation, so a message from another stream never is.
+    fn covers(&self, stream_id: Option<&str>, serial: Option<u64>) -> bool {
+        stream_id == self.stream_id.as_deref() && serial.is_some_and(|serial| serial <= self.serial)
+    }
+}
+
 struct ResumeDelivery {
     delivered: usize,
     position: Option<ResumeDeliveryPosition>,
@@ -46,7 +63,6 @@ struct ResumeDelivery {
 enum ResumeOutcome {
     Recovered {
         source: &'static str,
-        count: usize,
         messages: Vec<Bytes>,
     },
     Failed(ResumeFailure),
@@ -124,11 +140,58 @@ fn exceeds_recovery_window(count: u64, max_replay_messages: usize) -> bool {
     count > u64::try_from(max_replay_messages).unwrap_or(u64::MAX)
 }
 
+/// Upper bound on resume positions parked per socket while their subscriptions are pending.
+pub(crate) const MAX_PENDING_RESUME_CHANNELS: usize = 100;
+/// Parked resume positions older than this fail closed instead of replaying.
+pub(crate) const PENDING_RESUME_TTL: Duration = Duration::from_secs(30);
+/// Channel names longer than this are never parked (Pusher caps names at 200 bytes).
+const MAX_PENDING_RESUME_CHANNEL_BYTES: usize = 256;
+/// Bound on the client-supplied identifiers a parked position retains, so an idle socket
+/// cannot hold arbitrary bytes. Stream ids are UUIDs or `{app_id}/{channel}` (bounded by the
+/// channel cap and always accepted); `last_message_id` only suppresses one duplicate
+/// identity during durable recovery, so an oversized one is dropped rather than refusing
+/// the whole position (the publish API may accept longer message ids).
+const MAX_PENDING_RESUME_ID_BYTES: usize = 128;
+
+/// A resume position received before the socket held the matching subscription.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingResume {
+    position: ResumePosition,
+    received_at: Instant,
+    /// Lets the periodic sweep tell the socket its parked position expired.
+    app_id: String,
+}
+
+/// Per-socket parked resume positions keyed by channel. Bounded by
+/// [`MAX_PENDING_RESUME_CHANNELS`] and removed on disconnect.
+pub(crate) type PendingResumes = AHashMap<String, PendingResume>;
+
+/// Generic failure for channels the socket may not read. It deliberately carries no
+/// stream metadata so it cannot be used to probe channels (GHSA-r5q6-rw3h-q24r).
+fn access_denied_failure(code: &'static str, reason: &'static str) -> ResumeFailure {
+    ResumeFailure {
+        code,
+        reason,
+        expected_stream_id: None,
+        current_stream_id: None,
+        oldest_available_serial: None,
+        newest_available_serial: None,
+    }
+}
+
 impl ConnectionHandler {
-    /// Handle a `pusher:resume` event from a reconnecting client.
+    /// Handle a `pusher:resume` / `sockudo:resume` event from a reconnecting client.
     ///
     /// V2 clients should send `channel_positions` with `{ stream_id, serial }`.
-    /// Legacy `channel_serials` is still accepted for the hot-buffer fast path only.
+    /// Legacy `channel_serials` (and positions without `stream_id`) are accepted for the
+    /// hot-buffer fast path only.
+    ///
+    /// Recovery is only served for channels the socket is subscribed to. Clients send
+    /// `resume` right after re-subscribing, while private/presence subscribes may still be
+    /// waiting on the auth endpoint, so positions for channels that are not subscribed yet
+    /// are parked (bounded per socket and in time) and replayed once that channel's
+    /// subscription succeeds. They are dropped if the subscription fails or the socket
+    /// disconnects.
     pub async fn handle_resume(
         &self,
         socket_id: &SocketId,
@@ -167,41 +230,365 @@ impl ConnectionHandler {
             return Ok(());
         }
 
-        let mut recovered = Vec::new();
-        let mut failed = Vec::new();
-        let connection = self
+        let Some(connection) = self
             .connection_manager
             .get_connection(socket_id, &app_config.id)
-            .await;
-        let mut gated_channels = HashSet::new();
-        if let Some(connection) = connection.as_ref() {
-            for channel in channel_positions.keys() {
-                if crate::v2_broadcast::has_matching_subscription(connection, channel) {
-                    connection.start_rewind_gate(channel.clone());
-                    gated_channels.insert(channel.clone());
+            .await
+        else {
+            return Err(Error::ConnectionNotFound);
+        };
+
+        // Positions parked by an earlier resume that expired before their subscription
+        // arrived get an explicit outcome instead of disappearing.
+        let mut failed = Vec::new();
+        for channel in self.take_expired_pending_resumes(socket_id) {
+            let failure = access_denied_failure("not_subscribed", "pending_resume_expired");
+            self.record_resume_failure(socket_id, app_config, &channel, &failure, &mut failed)
+                .await;
+        }
+
+        let mut ready = Vec::new();
+        let mut pending = Vec::new();
+        let mut rejected = Vec::new();
+        for (channel, position) in channel_positions {
+            if crate::v2_broadcast::has_matching_subscription(&connection, &channel) {
+                if self
+                    .resume_access_allowed(socket_id, app_config, &channel)
+                    .await
+                {
+                    ready.push((channel, position));
+                } else {
+                    rejected.push((channel, "channel_access_denied"));
                 }
+            } else if self.park_pending_resume(socket_id, &app_config.id, &channel, position) {
+                pending.push(channel);
+            } else {
+                rejected.push((channel, "pending_resume_limit_exceeded"));
             }
         }
 
-        for (channel, position) in channel_positions {
+        for (channel, reason) in &rejected {
+            let failure = access_denied_failure("not_subscribed", reason);
+            self.record_resume_failure(socket_id, app_config, channel, &failure, &mut failed)
+                .await;
+        }
+        if !rejected.is_empty() || !pending.is_empty() {
+            debug!(
+                app_id = %app_config.id,
+                socket_id = %socket_id,
+                rejected = rejected.len(),
+                pending = pending.len(),
+                "resume positions for unsubscribed channels were not replayed"
+            );
+        }
+
+        self.run_resume(
+            socket_id,
+            app_config,
+            &connection,
+            replay_buffer,
+            ready,
+            failed,
+            pending,
+        )
+        .await
+    }
+
+    /// Replay parked resume positions once a subscription succeeded, or drop them when it
+    /// failed. Called after every subscribe attempt on sockets that have parked positions.
+    pub(crate) async fn resume_pending_after_subscribe(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        channel: &str,
+        subscribed: bool,
+    ) -> Result<()> {
+        if !subscribed {
+            let dropped = self.take_pending_resumes(socket_id, |pending| pending == channel);
+            if !dropped.is_empty() {
+                if let Some(metrics) = self.metrics.as_ref() {
+                    metrics.mark_history_recovery_failure(&app_config.id, "subscription_failed");
+                }
+                debug!(
+                    app_id = %app_config.id,
+                    socket_id = %socket_id,
+                    channel,
+                    "dropped pending resume after failed subscription"
+                );
+            }
+            return Ok(());
+        }
+
+        let Some(replay_buffer) = self.replay_buffer.as_ref() else {
+            return Ok(());
+        };
+        let Some(connection) = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        else {
+            self.pending_resumes.remove(socket_id);
+            return Ok(());
+        };
+
+        // A wildcard subscribe can satisfy several parked public channels at once.
+        let matched = self.take_pending_resumes(socket_id, |pending| {
+            pending == channel
+                || crate::v2_broadcast::has_matching_subscription(&connection, pending)
+        });
+        if matched.is_empty() {
+            return Ok(());
+        }
+
+        let mut ready = Vec::new();
+        let mut failed = Vec::new();
+        for (pending_channel, entry) in matched {
+            let reason = if entry.received_at.elapsed() > PENDING_RESUME_TTL {
+                Some("pending_resume_expired")
+            } else if !crate::v2_broadcast::has_matching_subscription(&connection, &pending_channel)
+                || !self
+                    .resume_access_allowed(socket_id, app_config, &pending_channel)
+                    .await
+            {
+                Some("channel_access_denied")
+            } else {
+                None
+            };
+            match reason {
+                Some(reason) => {
+                    let failure = access_denied_failure("not_subscribed", reason);
+                    self.record_resume_failure(
+                        socket_id,
+                        app_config,
+                        &pending_channel,
+                        &failure,
+                        &mut failed,
+                    )
+                    .await;
+                }
+                None => ready.push((pending_channel, entry.position)),
+            }
+        }
+
+        self.run_resume(
+            socket_id,
+            app_config,
+            &connection,
+            replay_buffer,
+            ready,
+            failed,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Same channel-level checks `channel_history` applies, beyond holding the
+    /// subscription: user-limited channel access and the connection's capabilities.
+    async fn resume_access_allowed(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        channel: &str,
+    ) -> bool {
+        self.validate_v2_channel_access(socket_id, app_config, channel)
+            .await
+            .is_ok()
+            && self
+                .validate_v2_capability(socket_id, app_config, channel, "subscribe")
+                .await
+                .is_ok()
+    }
+
+    /// Whether `channel` has a parked resume on this socket. The subscribe path then leaves
+    /// its continuity gate for the recovery replay to drain, so held live traffic is released
+    /// after the older replayed messages instead of before them.
+    pub(crate) fn has_pending_resume(&self, socket_id: &SocketId, channel: &str) -> bool {
+        self.pending_resumes
+            .get(socket_id)
+            .is_some_and(|pending| pending.contains_key(channel))
+    }
+
+    /// Parked channels a subscribe to `subscribed` will satisfy: the exact channel, or every
+    /// parked public channel a wildcard pattern matches. Bounded by
+    /// [`MAX_PENDING_RESUME_CHANNELS`].
+    pub(crate) fn pending_channels_for_subscription(
+        &self,
+        socket_id: &SocketId,
+        subscribed: &str,
+    ) -> Vec<String> {
+        let is_pattern = sockudo_core::utils::is_wildcard_subscription_pattern(subscribed);
+        self.pending_resumes
+            .get(socket_id)
+            .map(|pending| {
+                pending
+                    .keys()
+                    .filter(|channel| {
+                        channel.as_str() == subscribed
+                            || (is_pattern
+                                && sockudo_core::utils::channel_allows_wildcard_delivery(channel)
+                                && sockudo_core::utils::wildcard_pattern_matches(
+                                    channel, subscribed,
+                                ))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn park_pending_resume(
+        &self,
+        socket_id: &SocketId,
+        app_id: &str,
+        channel: &str,
+        mut position: ResumePosition,
+    ) -> bool {
+        if channel.is_empty() || channel.len() > MAX_PENDING_RESUME_CHANNEL_BYTES {
+            return false;
+        }
+        if position.stream_id.as_deref().is_some_and(|stream_id| {
+            stream_id.len() > MAX_PENDING_RESUME_ID_BYTES
+                && !is_channel_scoped_stream_id(stream_id, app_id, channel)
+        }) {
+            // No store issues such a stream id, so the position could never match anyway.
+            return false;
+        }
+        if position
+            .last_message_id
+            .as_ref()
+            .is_some_and(|id| id.len() > MAX_PENDING_RESUME_ID_BYTES)
+        {
+            position.last_message_id = None;
+        }
+        let mut pending = self.pending_resumes.entry(*socket_id).or_default();
+        if !pending.contains_key(channel) && pending.len() >= MAX_PENDING_RESUME_CHANNELS {
+            return false;
+        }
+        pending.insert(
+            channel.to_string(),
+            PendingResume {
+                position,
+                received_at: Instant::now(),
+                app_id: app_id.to_string(),
+            },
+        );
+        true
+    }
+
+    /// Remove this socket's parked positions that are older than [`PENDING_RESUME_TTL`] and
+    /// return their channels so the caller can report them.
+    fn take_expired_pending_resumes(&self, socket_id: &SocketId) -> Vec<String> {
+        let Some(mut pending) = self.pending_resumes.get_mut(socket_id) else {
+            return Vec::new();
+        };
+        let mut expired = Vec::new();
+        pending.retain(|channel, entry| {
+            let live = entry.received_at.elapsed() <= PENDING_RESUME_TTL;
+            if !live {
+                expired.push(channel.clone());
+            }
+            live
+        });
+        let now_empty = pending.is_empty();
+        drop(pending);
+        if now_empty {
+            self.pending_resumes
+                .remove_if(socket_id, |_, pending| pending.is_empty());
+        }
+        expired
+    }
+
+    /// Drop parked resume positions older than [`PENDING_RESUME_TTL`] on every socket, so
+    /// idle connections do not retain them until disconnect, and send each affected socket a
+    /// `resume_failed` (`pending_resume_expired`) so a channel reported as `pending` always
+    /// gets an outcome. Called periodically by the server's recovery maintenance task;
+    /// returns how many positions were dropped.
+    pub async fn evict_expired_pending_resumes(&self) -> usize {
+        self.evict_pending_resumes_older_than(PENDING_RESUME_TTL)
+            .await
+    }
+
+    /// [`Self::evict_expired_pending_resumes`] with an explicit age limit.
+    pub async fn evict_pending_resumes_older_than(&self, ttl: Duration) -> usize {
+        let mut expired: Vec<(SocketId, String, String)> = Vec::new();
+        self.pending_resumes.retain(|socket_id, pending| {
+            pending.retain(|channel, entry| {
+                let live = entry.received_at.elapsed() <= ttl;
+                if !live {
+                    expired.push((*socket_id, entry.app_id.clone(), channel.clone()));
+                }
+                live
+            });
+            !pending.is_empty()
+        });
+
+        let failure = access_denied_failure("not_subscribed", "pending_resume_expired");
+        for (socket_id, app_id, channel) in &expired {
+            // The socket may have disconnected meanwhile; there is nobody left to tell.
+            let _ = self
+                .send_resume_failed(socket_id, app_id, channel, &failure)
+                .await;
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.mark_history_recovery_failure(app_id, failure.code);
+            }
+        }
+        expired.len()
+    }
+
+    fn take_pending_resumes(
+        &self,
+        socket_id: &SocketId,
+        mut matches: impl FnMut(&str) -> bool,
+    ) -> Vec<(String, PendingResume)> {
+        let Some(mut pending) = self.pending_resumes.get_mut(socket_id) else {
+            return Vec::new();
+        };
+        let keys: Vec<String> = pending
+            .keys()
+            .filter(|channel| matches(channel))
+            .cloned()
+            .collect();
+        let taken = keys
+            .into_iter()
+            .filter_map(|channel| pending.remove(&channel).map(|entry| (channel, entry)))
+            .collect();
+        let now_empty = pending.is_empty();
+        drop(pending);
+        if now_empty {
+            self.pending_resumes
+                .remove_if(socket_id, |_, pending| pending.is_empty());
+        }
+        taken
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_resume(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        connection: &sockudo_core::websocket::WebSocketRef,
+        replay_buffer: &crate::replay_buffer::ReplayBuffer,
+        ready: Vec<(String, ResumePosition)>,
+        mut failed: Vec<sonic_rs::Value>,
+        pending: Vec<String>,
+    ) -> Result<()> {
+        let mut recovered = Vec::new();
+        let mut gated_channels = HashSet::new();
+        let mut replayed_through: HashMap<String, ReplayedThrough> = HashMap::new();
+        for (channel, _) in &ready {
+            connection.start_rewind_gate(channel.clone());
+            gated_channels.insert(channel.clone());
+        }
+
+        for (channel, position) in ready {
             let outcome = self
                 .resume_channel(socket_id, app_config, replay_buffer, &channel, &position)
                 .await;
 
             match outcome {
-                ResumeOutcome::Recovered {
-                    source,
-                    count,
-                    messages,
-                } => {
+                ResumeOutcome::Recovered { source, messages } => {
                     let delivery = self
-                        .send_replayed_messages(
-                            socket_id,
-                            &app_config.id,
-                            &channel,
-                            messages,
-                            count,
-                        )
+                        .send_replayed_messages(socket_id, &app_config.id, &channel, messages)
                         .await;
                     let delivery = match delivery {
                         Ok(delivery) => delivery,
@@ -219,6 +606,15 @@ impl ConnectionHandler {
                     };
                     if let Some(metrics) = self.metrics.as_ref() {
                         metrics.mark_history_recovery_success(&app_config.id, source);
+                    }
+                    if let Some(position) = delivery.position.as_ref() {
+                        replayed_through.insert(
+                            channel.clone(),
+                            ReplayedThrough {
+                                stream_id: position.stream_id.clone(),
+                                serial: position.serial,
+                            },
+                        );
                     }
                     recovered.push(json!({
                         "channel": channel,
@@ -240,16 +636,19 @@ impl ConnectionHandler {
             }
         }
 
+        let mut summary = json!({
+            "recovered": recovered,
+            "failed": failed,
+        });
+        if !pending.is_empty()
+            && let Some(object) = summary.as_object_mut()
+        {
+            object.insert("pending", json!(pending));
+        }
         let success_msg = PusherMessage {
             event: Some(sockudo_protocol::constants::EVENT_RESUME_SUCCESS.to_string()),
             channel: None,
-            data: Some(MessageData::String(
-                json!({
-                    "recovered": recovered,
-                    "failed": failed,
-                })
-                .to_string(),
-            )),
+            data: Some(MessageData::String(summary.to_string())),
             name: None,
             user_id: None,
             tags: None,
@@ -267,20 +666,17 @@ impl ConnectionHandler {
             .send_message_to_socket(&app_config.id, socket_id, success_msg)
             .await
         {
-            if let Some(connection) = connection.as_ref() {
-                for channel in &gated_channels {
-                    let _ = connection.finish_rewind_gate(channel).await;
-                }
-                connection.shutdown();
+            for channel in &gated_channels {
+                let _ = connection.finish_rewind_gate(channel).await;
             }
+            connection.shutdown();
             return Err(error);
         }
 
-        if let Some(connection) = connection.as_ref() {
-            for channel in gated_channels {
-                self.drain_recovery_gate(connection, socket_id, &app_config.id, &channel)
-                    .await?;
-            }
+        for channel in gated_channels {
+            let through = replayed_through.get(&channel);
+            self.drain_recovery_gate(connection, socket_id, &app_config.id, &channel, through)
+                .await?;
         }
 
         Ok(())
@@ -304,8 +700,7 @@ impl ConnectionHandler {
             position.serial,
         ) {
             ReplayLookup::Recovered(messages) => {
-                let count = messages.len();
-                if count > max_replay_messages {
+                if messages.len() > max_replay_messages {
                     return ResumeOutcome::Failed(recovery_window_failure(
                         position,
                         position.stream_id.clone(),
@@ -319,7 +714,6 @@ impl ConnectionHandler {
                 }
                 return ResumeOutcome::Recovered {
                     source: "hot",
-                    count,
                     messages,
                 };
             }
@@ -560,7 +954,6 @@ impl ConnectionHandler {
 
             return ResumeOutcome::Recovered {
                 source: "cold",
-                count: messages.len(),
                 messages,
             };
         }
@@ -626,7 +1019,6 @@ impl ConnectionHandler {
         {
             Ok(messages) => ResumeOutcome::Recovered {
                 source: "cold",
-                count: messages.len(),
                 messages,
             },
             Err(failure) => ResumeOutcome::Failed(failure),
@@ -922,7 +1314,7 @@ impl ConnectionHandler {
         failed: &mut Vec<sonic_rs::Value>,
     ) {
         let _ = self
-            .send_resume_failed(socket_id, app_config, channel, failure)
+            .send_resume_failed(socket_id, &app_config.id, channel, failure)
             .await;
         if let Some(metrics) = self.metrics.as_ref() {
             metrics.mark_history_recovery_failure(&app_config.id, failure.code);
@@ -938,12 +1330,16 @@ impl ConnectionHandler {
         }));
     }
 
-    async fn drain_recovery_gate(
+    /// Release live messages held while a channel was being recovered. Messages of the
+    /// replayed stream at or before `replayed_through` were already delivered by the replay
+    /// and are skipped; messages of any other stream (e.g. after a reset) are always sent.
+    pub(crate) async fn drain_recovery_gate(
         &self,
         connection: &sockudo_core::websocket::WebSocketRef,
         socket_id: &SocketId,
         app_id: &str,
         channel: &str,
+        replayed_through: Option<&ReplayedThrough>,
     ) -> Result<()> {
         loop {
             let batch = connection
@@ -960,6 +1356,14 @@ impl ConnectionHandler {
             buffered.sort_by_key(|message| message.serial.unwrap_or(u64::MAX));
 
             for buffered_message in buffered {
+                if replayed_through.is_some_and(|through| {
+                    through.covers(
+                        buffered_message.message.stream_id.as_deref(),
+                        buffered_message.serial,
+                    )
+                }) {
+                    continue;
+                }
                 let message = crate::v2_broadcast::apply_append_mode(
                     std::sync::Arc::unwrap_or_clone(buffered_message.message),
                     connection.append_mode,
@@ -980,7 +1384,7 @@ impl ConnectionHandler {
     async fn send_resume_failed(
         &self,
         socket_id: &SocketId,
-        app_config: &App,
+        app_id: &str,
         channel: &str,
         failure: &ResumeFailure,
     ) -> Result<()> {
@@ -1011,38 +1415,8 @@ impl ConnectionHandler {
             delta_sequence: None,
             delta_conflation_key: None,
         };
-        self.send_message_to_socket(&app_config.id, socket_id, fail_msg)
+        self.send_message_to_socket(app_id, socket_id, fail_msg)
             .await
-    }
-
-    /// Send pre-serialized message bytes directly to a socket.
-    async fn send_raw_bytes_to_socket(
-        &self,
-        socket_id: &SocketId,
-        app_id: &str,
-        bytes: Bytes,
-    ) -> Result<()> {
-        if let Some(conn) = self
-            .connection_manager
-            .get_connection(socket_id, app_id)
-            .await
-        {
-            conn.send_broadcast(bytes)
-        } else {
-            Err(Error::ConnectionClosed(format!(
-                "Socket {} not found during replay",
-                socket_id
-            )))
-        }
-    }
-
-    async fn send_replayed_bytes(
-        &self,
-        socket_id: &SocketId,
-        app_id: &str,
-        messages: Vec<Bytes>,
-    ) -> std::result::Result<(), ResumeFailure> {
-        send_replayed_bytes_impl(self, socket_id, app_id, messages).await
     }
 
     async fn send_replayed_messages(
@@ -1051,7 +1425,6 @@ impl ConnectionHandler {
         app_id: &str,
         channel: &str,
         messages: Vec<Bytes>,
-        canonical_count: usize,
     ) -> std::result::Result<ResumeDelivery, ResumeFailure> {
         let Some(connection) = self
             .connection_manager
@@ -1061,17 +1434,13 @@ impl ConnectionHandler {
             return Err(replay_delivery_failure());
         };
 
+        // Never deliver recovery payloads without a live subscription, and never bypass the
+        // per-message subscription filter (GHSA-r5q6-rw3h-q24r).
         if !crate::v2_broadcast::has_matching_subscription(&connection, channel) {
-            let position = messages
-                .last()
-                .and_then(|bytes| sonic_rs::from_slice::<PusherMessage>(bytes).ok())
-                .and_then(|message| recovery_position(&message));
-            self.send_replayed_bytes(socket_id, app_id, messages)
-                .await?;
-            return Ok(ResumeDelivery {
-                delivered: canonical_count,
-                position,
-            });
+            return Err(access_denied_failure(
+                "not_subscribed",
+                "channel_not_subscribed",
+            ));
         }
 
         let mut delivered = 0;
@@ -1108,6 +1477,14 @@ fn recovery_position(message: &PusherMessage) -> Option<ResumeDeliveryPosition> 
     })
 }
 
+/// Durable version stores identify a channel's stream as `{app_id}/{channel}`.
+fn is_channel_scoped_stream_id(stream_id: &str, app_id: &str, channel: &str) -> bool {
+    stream_id
+        .strip_prefix(app_id)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| rest == channel)
+}
+
 fn replay_delivery_failure() -> ResumeFailure {
     ResumeFailure {
         code: "persistence_unavailable",
@@ -1117,31 +1494,6 @@ fn replay_delivery_failure() -> ResumeFailure {
         oldest_available_serial: None,
         newest_available_serial: None,
     }
-}
-
-async fn send_replayed_bytes_impl(
-    handler: &ConnectionHandler,
-    socket_id: &SocketId,
-    app_id: &str,
-    messages: Vec<Bytes>,
-) -> std::result::Result<(), ResumeFailure> {
-    for bytes in messages {
-        if let Err(err) = handler
-            .send_raw_bytes_to_socket(socket_id, app_id, bytes)
-            .await
-        {
-            warn!(socket_id = %socket_id, error = %err, "failed to replay message to socket");
-            return Err(ResumeFailure {
-                code: "persistence_unavailable",
-                reason: "failed_to_deliver_recovery_payload",
-                expected_stream_id: None,
-                current_stream_id: None,
-                oldest_available_serial: None,
-                newest_available_serial: None,
-            });
-        }
-    }
-    Ok(())
 }
 
 fn parse_resume_positions(message: &PusherMessage) -> Result<HashMap<String, ResumePosition>> {
@@ -1179,9 +1531,11 @@ fn parse_resume_positions(message: &PusherMessage) -> Result<HashMap<String, Res
                     channel,
                     ResumePosition {
                         serial: position.serial,
+                        // Without a stream_id continuity cannot be proven: treat it like
+                        // the legacy serial-only form (hot buffer only, never cold).
+                        legacy_serial_only: position.stream_id.is_none(),
                         stream_id: position.stream_id,
                         last_message_id: position.last_message_id,
-                        legacy_serial_only: false,
                     },
                 )
             })
@@ -1765,6 +2119,176 @@ mod tests {
         assert!(!position.legacy_serial_only);
     }
 
+    #[test]
+    fn positions_without_stream_id_are_hot_buffer_only() {
+        let positions = parse_resume_positions(&resume_message(json!({
+            "channel_positions": { "chat": { "serial": 42 } }
+        })))
+        .unwrap();
+        assert!(positions.get("chat").unwrap().legacy_serial_only);
+    }
+
+    fn parked_position() -> ResumePosition {
+        ResumePosition {
+            serial: 1,
+            stream_id: Some("stream".to_string()),
+            last_message_id: None,
+            legacy_serial_only: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_resumes_are_bounded_per_socket_and_in_time() {
+        let handler = build_handler(false);
+        let socket_id = SocketId::new();
+
+        for index in 0..MAX_PENDING_RESUME_CHANNELS {
+            assert!(handler.park_pending_resume(
+                &socket_id,
+                "app",
+                &format!("private-{index}"),
+                parked_position()
+            ));
+        }
+        assert!(
+            !handler.park_pending_resume(&socket_id, "app", "private-overflow", parked_position()),
+            "parking beyond the per-socket cap must be rejected"
+        );
+        assert!(
+            handler.park_pending_resume(&socket_id, "app", "private-0", parked_position()),
+            "re-parking an existing channel replaces it"
+        );
+        assert!(!handler.park_pending_resume(
+            &socket_id,
+            "app",
+            &"x".repeat(MAX_PENDING_RESUME_CHANNEL_BYTES + 1),
+            parked_position()
+        ));
+        assert!(!handler.park_pending_resume(&socket_id, "app", "", parked_position()));
+
+        // `handle_resume` takes (and reports) expired entries before parking new ones, so
+        // they never count against the cap.
+        let expired_at = Instant::now()
+            .checked_sub(PENDING_RESUME_TTL + Duration::from_secs(1))
+            .unwrap();
+        for entry in handler
+            .pending_resumes
+            .get_mut(&socket_id)
+            .unwrap()
+            .values_mut()
+        {
+            entry.received_at = expired_at;
+        }
+        assert_eq!(
+            handler.take_expired_pending_resumes(&socket_id).len(),
+            MAX_PENDING_RESUME_CHANNELS
+        );
+        assert!(!handler.pending_resumes.contains_key(&socket_id));
+        assert!(handler.park_pending_resume(
+            &socket_id,
+            "app",
+            "private-overflow",
+            parked_position()
+        ));
+        assert_eq!(handler.pending_resumes.get(&socket_id).unwrap().len(), 1);
+
+        let taken =
+            handler.take_pending_resumes(&socket_id, |channel| channel == "private-overflow");
+        assert_eq!(taken.len(), 1);
+        assert!(
+            !handler.pending_resumes.contains_key(&socket_id),
+            "an emptied socket entry is removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_resumes_reject_oversized_ids_and_expire_without_traffic() {
+        let handler = build_handler(false);
+        let socket_id = SocketId::new();
+        let long_id = "x".repeat(MAX_PENDING_RESUME_ID_BYTES + 1);
+
+        let mut oversized_stream = parked_position();
+        oversized_stream.stream_id = Some(long_id.clone());
+        assert!(!handler.park_pending_resume(&socket_id, "app", "private-a", oversized_stream));
+
+        // Durable version stores use `{app_id}/{channel}`, which may exceed the id cap.
+        let long_channel = format!("private-{}", "c".repeat(190));
+        let mut channel_scoped = parked_position();
+        channel_scoped.stream_id = Some(format!("app/{long_channel}"));
+        assert!(handler.park_pending_resume(&socket_id, "app", &long_channel, channel_scoped));
+        let mut other_channel_scope = parked_position();
+        other_channel_scope.stream_id = Some(format!("app/{long_channel}-other"));
+        assert!(!handler.park_pending_resume(
+            &socket_id,
+            "app",
+            &long_channel,
+            other_channel_scope
+        ));
+        assert!(
+            handler
+                .take_pending_resumes(&socket_id, |channel| channel == long_channel)
+                .len()
+                == 1
+        );
+
+        // An oversized optional last_message_id is dropped, not the whole position.
+        let mut oversized_message_id = parked_position();
+        oversized_message_id.last_message_id = Some(long_id);
+        assert!(handler.park_pending_resume(&socket_id, "app", "private-a", oversized_message_id));
+        let parked = handler.take_pending_resumes(&socket_id, |channel| channel == "private-a");
+        assert_eq!(parked.len(), 1);
+        assert_eq!(parked[0].1.position.last_message_id, None);
+        assert_eq!(parked[0].1.position.serial, parked_position().serial);
+        assert_eq!(parked[0].1.position.stream_id, parked_position().stream_id);
+
+        assert!(handler.park_pending_resume(&socket_id, "app", "private-a", parked_position()));
+        assert!(handler.park_pending_resume(&socket_id, "app", "private-b", parked_position()));
+        assert_eq!(handler.evict_expired_pending_resumes().await, 0);
+
+        let expired_at = Instant::now()
+            .checked_sub(PENDING_RESUME_TTL + Duration::from_secs(1))
+            .unwrap();
+        handler
+            .pending_resumes
+            .get_mut(&socket_id)
+            .unwrap()
+            .get_mut("private-a")
+            .unwrap()
+            .received_at = expired_at;
+        assert_eq!(handler.evict_expired_pending_resumes().await, 1);
+        assert!(handler.has_pending_resume(&socket_id, "private-b"));
+
+        handler
+            .pending_resumes
+            .get_mut(&socket_id)
+            .unwrap()
+            .get_mut("private-b")
+            .unwrap()
+            .received_at = expired_at;
+        assert_eq!(handler.evict_expired_pending_resumes().await, 1);
+        assert!(
+            !handler.pending_resumes.contains_key(&socket_id),
+            "a socket with no parked positions left is removed"
+        );
+    }
+
+    #[test]
+    fn replayed_through_only_covers_the_replayed_stream() {
+        let through = ReplayedThrough {
+            stream_id: Some("stream-a".to_string()),
+            serial: 5,
+        };
+        assert!(through.covers(Some("stream-a"), Some(5)));
+        assert!(through.covers(Some("stream-a"), Some(1)));
+        assert!(!through.covers(Some("stream-a"), Some(6)));
+        assert!(!through.covers(Some("stream-a"), None));
+        assert!(
+            !through.covers(Some("stream-b"), Some(1)),
+            "a reset stream restarts serials and must never be deduplicated against the old one"
+        );
+        assert!(!through.covers(None, Some(1)));
+    }
+
     #[tokio::test]
     async fn hot_recovery_success_uses_replay_buffer() {
         let handler = build_handler(true);
@@ -1801,7 +2325,8 @@ mod tests {
             .await;
 
         match outcome {
-            ResumeOutcome::Recovered { source, count, .. } => {
+            ResumeOutcome::Recovered { source, messages } => {
+                let count = messages.len();
                 assert_eq!(source, "hot");
                 assert_eq!(count, 2);
             }
@@ -1832,7 +2357,8 @@ mod tests {
             .await;
 
         match outcome {
-            ResumeOutcome::Recovered { source, count, .. } => {
+            ResumeOutcome::Recovered { source, messages } => {
+                let count = messages.len();
                 assert_eq!(source, "cold");
                 assert_eq!(count, 2);
             }
@@ -1901,7 +2427,8 @@ mod tests {
             .await;
 
         match outcome {
-            ResumeOutcome::Recovered { source, count, .. } => {
+            ResumeOutcome::Recovered { source, messages } => {
+                let count = messages.len();
                 assert_eq!(source, "cold");
                 assert_eq!(count, 3);
             }
@@ -1939,7 +2466,8 @@ mod tests {
             .await;
 
         match outcome {
-            ResumeOutcome::Recovered { source, count, .. } => {
+            ResumeOutcome::Recovered { source, messages } => {
+                let count = messages.len();
                 assert_eq!(source, "cold");
                 assert_eq!(count, 2);
             }
@@ -2216,7 +2744,8 @@ mod tests {
             .await;
 
         match outcome {
-            ResumeOutcome::Recovered { source, count, .. } => {
+            ResumeOutcome::Recovered { source, messages } => {
+                let count = messages.len();
                 assert_eq!(source, "cold");
                 assert_eq!(count, 2);
             }
@@ -2472,7 +3001,8 @@ mod tests {
             .await;
 
         match outcome {
-            ResumeOutcome::Recovered { source, count, .. } => {
+            ResumeOutcome::Recovered { source, messages } => {
+                let count = messages.len();
                 assert_eq!(source, "cold");
                 assert_eq!(count, 2);
             }

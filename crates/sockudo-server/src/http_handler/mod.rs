@@ -28,7 +28,10 @@ pub use presence_history::{
     channel_presence_history_state,
 };
 pub use sockudo_core::auth::EventQuery;
-pub use system::{accept_traffic, fallback_404, live, metrics, ready, stats, up, usage};
+pub use system::{
+    accept_traffic, app_health, fallback_404, live, metrics, operator_stats, ready, stats, up,
+    usage,
+};
 pub use versioned_messages::{
     append_message, channel_message, channel_message_versions, delete_message, update_message,
 };

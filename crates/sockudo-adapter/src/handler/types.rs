@@ -357,9 +357,10 @@ impl SubscriptionRequest {
             }
             for name in events {
                 if name.len() > event_name_filtering.max_event_name_length {
+                    // Truncate by characters: byte slicing panics inside multi-byte UTF-8.
+                    let preview: String = name.chars().take(40).collect();
                     return Err(sockudo_core::error::Error::InvalidMessageFormat(format!(
-                        "Event name '{}...' exceeds maximum length of {} characters",
-                        &name[..40.min(name.len())],
+                        "Event name '{preview}...' exceeds maximum length of {} characters",
                         event_name_filtering.max_event_name_length
                     )));
                 }
@@ -808,6 +809,22 @@ mod tests {
         );
         #[cfg(feature = "tag-filtering")]
         assert!(request.predicate.is_some());
+    }
+
+    #[test]
+    fn oversized_multibyte_event_name_is_an_error_not_a_panic() {
+        let filter = json!({ "events": [format!("a{}", "é".repeat(150))] });
+        let result = SubscriptionRequest::build(
+            "ticker".to_string(),
+            None,
+            None,
+            Some(filter),
+            None,
+            None,
+            None,
+            &event_name_filtering_config(),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

@@ -6,7 +6,9 @@
 
 use bytes::Bytes;
 use sockudo_core::error::{Error, Result};
-use sockudo_core::utils::{is_wildcard_subscription_pattern, wildcard_pattern_matches};
+use sockudo_core::utils::{
+    channel_allows_wildcard_delivery, is_wildcard_subscription_pattern, wildcard_pattern_matches,
+};
 use sockudo_core::websocket::WebSocketRef;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{
@@ -115,6 +117,12 @@ fn should_deliver_for_subscription(
         return true;
     }
 
+    // Defense in depth for GHSA-gg5j-wcw2-v78r: the namespace already excludes wildcard
+    // members for restricted channels, but never let a pattern authorize them here either.
+    if !channel_allows_wildcard_delivery(channel) {
+        return false;
+    }
+
     for entry in socket.channel_state.iter() {
         let subscribed_channel = entry.key();
         let subscribed_channel = subscribed_channel.as_ref();
@@ -137,14 +145,19 @@ fn should_deliver_for_subscription(
     false
 }
 
+/// Whether the socket holds a subscription that entitles it to `channel` traffic: the
+/// exact channel, or a public wildcard pattern for a channel that allows wildcard delivery.
 #[cfg(feature = "recovery")]
 pub(crate) fn has_matching_subscription(socket: &WebSocketRef, channel: &str) -> bool {
-    socket.channel_state.iter().any(|entry| {
-        let subscribed = entry.key().as_ref();
-        subscribed == channel
-            || (is_wildcard_subscription_pattern(subscribed)
-                && wildcard_pattern_matches(channel, subscribed))
-    })
+    if socket.channel_state.contains_key(channel) {
+        return true;
+    }
+    channel_allows_wildcard_delivery(channel)
+        && socket.channel_state.iter().any(|entry| {
+            let subscribed = entry.key().as_ref();
+            is_wildcard_subscription_pattern(subscribed)
+                && wildcard_pattern_matches(channel, subscribed)
+        })
 }
 
 #[cfg(feature = "tag-filtering")]
@@ -157,15 +170,16 @@ fn matching_subscription_requires_document(socket: &WebSocketRef, channel: &str)
     }) {
         return true;
     }
-    socket.channel_state.iter().any(|state| {
-        let subscribed = state.key().as_ref();
-        is_wildcard_subscription_pattern(subscribed)
-            && wildcard_pattern_matches(channel, subscribed)
-            && state
-                .predicate
-                .as_ref()
-                .is_some_and(|predicate| predicate.requires_document())
-    })
+    channel_allows_wildcard_delivery(channel)
+        && socket.channel_state.iter().any(|state| {
+            let subscribed = state.key().as_ref();
+            is_wildcard_subscription_pattern(subscribed)
+                && wildcard_pattern_matches(channel, subscribed)
+                && state
+                    .predicate
+                    .as_ref()
+                    .is_some_and(|predicate| predicate.requires_document())
+        })
 }
 
 pub(crate) fn socket_allows_message(

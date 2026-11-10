@@ -341,7 +341,7 @@ impl ConnectionHandler {
             )
             .await?;
 
-            if attach_serial.is_some() {
+            if attach_serial.is_some() && !self.recovery_owns_gate(socket_id, &request.channel) {
                 self.drain_attach_gate(socket_id, app_config, &request.channel)
                     .await?;
             }
@@ -873,6 +873,28 @@ impl ConnectionHandler {
             .is_some_and(|connection| connection.protocol_version == ProtocolVersion::V2)
     }
 
+    /// The version store's stream and newest delivered serial for `channel`. An empty
+    /// channel's stream is materialized (without reserving a serial) so the position handed
+    /// out at subscribe time matches the stream its first message will be delivered on.
+    #[cfg(feature = "recovery")]
+    async fn version_stream_position(&self, app_id: &str, channel: &str) -> Option<(String, u64)> {
+        let version_store = self.version_store();
+        let state = version_store.stream_state(app_id, channel).await.ok()?;
+        let serial = state
+            .newest_available_delivery_serial
+            .or_else(|| {
+                state
+                    .next_delivery_serial
+                    .map(|next| next.saturating_sub(1))
+            })
+            .unwrap_or(0);
+        let stream_id = match state.stream_id {
+            Some(stream_id) => stream_id,
+            None => version_store.ensure_stream_id(app_id, channel).await.ok()?,
+        };
+        Some((stream_id, serial))
+    }
+
     #[cfg(feature = "recovery")]
     async fn subscription_recovery_position(
         &self,
@@ -887,6 +909,24 @@ impl ConnectionHandler {
 
         let replay_buffer = self.replay_buffer.as_ref()?;
         let history_policy = app_config.resolved_history(channel, &self.server_options().history);
+
+        // Versioned channels (same gate as the publish path) deliver on the version store's
+        // stream, and cold recovery checks resume positions against it. Seeding the hot buffer
+        // from the history stream instead would make a later resume on this node fail as a
+        // stream reset, including for channels that have no messages yet.
+        if self.server_options().versioned_messages.enabled
+            && history_policy.enabled
+            && let Some((stream_id, serial)) =
+                self.version_stream_position(&app_config.id, channel).await
+        {
+            return Some(replay_buffer.ensure_position(
+                &app_config.id,
+                channel,
+                &stream_id,
+                serial,
+            ));
+        }
+
         if history_policy.enabled
             && let Ok(inspection) = self
                 .history_store()
@@ -911,6 +951,19 @@ impl ConnectionHandler {
         }
 
         Some(replay_buffer.current_position(&app_config.id, channel))
+    }
+
+    /// A parked resume for this channel drains the gate after its replay instead.
+    fn recovery_owns_gate(&self, socket_id: &SocketId, channel: &str) -> bool {
+        #[cfg(feature = "recovery")]
+        {
+            self.has_pending_resume(socket_id, channel)
+        }
+        #[cfg(not(feature = "recovery"))]
+        {
+            let _ = (socket_id, channel);
+            false
+        }
     }
 
     async fn drain_attach_gate(

@@ -572,6 +572,14 @@ async fn run_cross_node_cold_recovery_test(history_store: Arc<dyn HistoryStore +
 
     let (resume_socket_id, mut resume_reader, _resume_writer) =
         connect_v2_socket(&restarted_node_b, &app).await;
+    subscribe_for_resume(
+        &restarted_node_b,
+        &app,
+        &resume_socket_id,
+        &mut resume_reader,
+        "cold",
+    )
+    .await;
     let resume_payload = json!({
         "channel_positions": {
             "cold": {
@@ -650,4 +658,41 @@ async fn dynamodb_history_supports_cross_node_cold_recovery_over_redis_transport
     }
     let history_store = build_dynamodb_history_store().await;
     run_cross_node_cold_recovery_test(history_store).await;
+}
+
+/// Recovery only replays channels the resuming socket is subscribed to, so reconnecting
+/// clients re-subscribe before (or alongside) `resume`.
+async fn subscribe_for_resume(
+    node: &ClusterNode,
+    app: &App,
+    socket_id: &SocketId,
+    reader: &mut ClientReader,
+    channel: &str,
+) {
+    node.handler
+        .handle_subscribe_request(
+            socket_id,
+            app,
+            SubscriptionRequest {
+                channel: channel.to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+                annotation_subscribe: false,
+            },
+        )
+        .await
+        .unwrap();
+    let subscribed = recv_message(reader).await;
+    assert_eq!(
+        subscribed.event.as_deref(),
+        Some("sockudo_internal:subscription_succeeded")
+    );
 }

@@ -273,7 +273,10 @@ is the current form; the older `channel_serials` map of channel to serial is sti
 }
 ```
 
-Recoverable channels are replayed, then the server sends one aggregate `resume_success`:
+Only channels the connection is subscribed to are replayed. Positions for channels whose
+subscribe is still pending (for example waiting on the auth endpoint) are listed under
+`pending` and replayed once that subscription succeeds, followed by a `resume_success` for that
+channel. Recoverable channels are replayed, then the server sends one aggregate `resume_success`:
 
 ```json
 {
@@ -283,7 +286,8 @@ Recoverable channels are replayed, then the server sends one aggregate `resume_s
 ```
 
 Each channel that cannot be recovered also receives its own `resume_failed`. The `code` is one of
-`position_expired`, `stream_reset`, `continuity_unverifiable`, or `persistence_unavailable`.
+`position_expired`, `stream_reset`, `continuity_unverifiable`, `persistence_unavailable`, or
+`not_subscribed`. A `not_subscribed` failure carries no stream positions.
 
 ```json
 {
@@ -331,6 +335,14 @@ V2 clients read durable history over the WebSocket. The response uses the same e
 ```
 
 ## Subscription predicates
+
+Wildcard subscriptions (one `*`, V2 only) are public and unauthenticated, so they never
+match channels that need per-channel authorization or are user-scoped: `private-*`,
+`presence-*` (including encrypted and cache variants), `#server-to-user-*`, and
+user-limited `name#user` channels. A pattern such as `*` or `pri*` receives matching
+public channels only; restricted channels are delivered only to connections that
+subscribed to that exact channel. Before 5.2.1 wildcard patterns could receive restricted
+channels (GHSA-gg5j-wcw2-v78r).
 
 V2 subscriptions accept one compound `filter`. Its non-empty `events`, `tags`, and `expression`
 components use AND semantics; separate exact and wildcard subscriptions use OR semantics. The

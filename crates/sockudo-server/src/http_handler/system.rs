@@ -2,18 +2,19 @@
 //! metrics export, the 404 fallback, and shared API-metrics recording.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     response::IntoResponse,
 };
 use serde::Serialize;
 use sockudo_adapter::ConnectionHandler;
+use sockudo_core::app::App;
 use sockudo_core::error::HealthStatus;
 use std::{sync::Arc, time::Duration};
 use sysinfo::System;
 use tokio::time::timeout;
-use tracing::{debug, error, field, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use super::AppError;
 use super::history::HistoryStatusResponse;
@@ -131,11 +132,35 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
-/// GET /stats
-#[instrument(skip(handler), fields(service = "stats"))]
+/// GET /stats and /operator/stats on the client-facing listener.
+///
+/// Requires Pusher HTTP API signature auth (`pusher_api_auth_middleware`) and reports only
+/// the signing app: one tenant's credentials never reveal other tenants' ids or occupancy
+/// (GHSA-xfrj-v26g-242j). Memory and history health are process-wide and unchanged.
+#[instrument(skip(handler, app), fields(service = "stats", app_id = %app.id))]
 pub async fn stats(
     State(handler): State<Arc<ConnectionHandler>>,
+    Extension(app): Extension<App>,
 ) -> Result<impl IntoResponse, AppError> {
+    build_stats(&handler, Some(&app.id)).await
+}
+
+/// GET /stats on the internal metrics listener: every app, no credentials.
+///
+/// The metrics listener already exports every `app_id` through `/metrics`, so the
+/// cross-tenant operator view adds no exposure there. Keep that listener private.
+#[instrument(skip(handler), fields(service = "operator_stats"))]
+pub async fn operator_stats(
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    build_stats(&handler, None).await
+}
+
+/// Build the stats payload for one app (`Some`) or every app (`None`).
+async fn build_stats(
+    handler: &Arc<ConnectionHandler>,
+    only_app: Option<&str>,
+) -> Result<(StatusCode, Json<StatsResponse>), AppError> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
@@ -168,7 +193,23 @@ pub async fn stats(
     let mut app_stats = Vec::new();
     let mut totals = GlobalStats::default();
 
-    for (app_id, namespace) in handler.connection_manager().get_namespaces().await? {
+    let namespaces: Vec<_> = handler
+        .connection_manager()
+        .get_namespaces()
+        .await?
+        .into_iter()
+        .filter(|(app_id, _)| only_app.is_none_or(|only| only == app_id))
+        .collect();
+    if let Some(only) = only_app
+        && namespaces.is_empty()
+    {
+        totals.apps = 1;
+        app_stats.push(AppStats {
+            app_id: only.to_string(),
+            ..Default::default()
+        });
+    }
+    for (app_id, namespace) in namespaces {
         let mut app_stat = AppStats {
             app_id,
             connections: namespace.sockets.len(),
@@ -392,11 +433,11 @@ pub async fn ready(
 /// GET /up or /up/{app_id}
 // `debug`, matching `telemetry::trace_http_request`, which already skips the probe paths: at `info`
 // every readiness probe exported a root span to OpenTelemetry.
-#[instrument(level = "debug", skip(handler), fields(app_id = field::Empty))]
+#[instrument(level = "debug", skip(handler, app_id))]
 pub async fn up(
     app_id: Option<Path<String>>,
     State(handler): State<Arc<ConnectionHandler>>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<axum::http::Response<String>, AppError> {
     // Once shutdown begins, fail readiness so the orchestrator removes this pod
     // from its load-balancer endpoints and routes no new connections here while
     // existing ones drain.
@@ -409,67 +450,103 @@ pub async fn up(
 
     let timeout_duration = Duration::from_millis(handler.server_options().health_check_timeout_ms);
 
-    let (health_status, app_id_str) = if let Some(Path(app_id)) = app_id {
-        tracing::Span::current().record("app_id", &app_id);
-        debug!(app_id = %app_id, "health check received");
-
-        let app_check = timeout(timeout_duration, handler.app_manager().find_by_id(&app_id)).await;
-
-        let app_status = match app_check {
-            Ok(Ok(Some(app))) if app.enabled => {
-                check_system_health(&handler, timeout_duration).await
-            }
-            Ok(Ok(Some(_))) => HealthStatus::Error(vec!["App is disabled".to_string()]),
-            Ok(Ok(None)) => HealthStatus::NotFound,
-            Ok(Err(e)) => HealthStatus::Error(vec![format!("App manager: {e}")]),
-            Err(_) => HealthStatus::Error(vec![format!(
-                "App manager timeout (>{}ms)",
-                timeout_duration.as_millis()
-            )]),
-        };
-
-        (app_status, app_id)
-    } else {
-        debug!("General health check received (no app_id)");
-
-        let apps_check = timeout(timeout_duration, handler.app_manager().get_apps()).await;
-
-        let app_status = match apps_check {
-            Ok(Ok(apps)) if !apps.is_empty() => {
-                debug!(apps_count = apps.len(), "found configured apps");
-                check_system_health(&handler, timeout_duration).await
-            }
-            Ok(Ok(_)) => HealthStatus::Error(vec!["No apps configured".to_string()]),
-            Ok(Err(e)) => HealthStatus::Error(vec![format!("App manager: {e}")]),
-            Err(_) => HealthStatus::Error(vec![format!(
-                "App manager timeout (>{}ms)",
-                timeout_duration.as_millis()
-            )]),
-        };
-
-        (app_status, "system".to_string())
+    // `/up/{appId}` is kept for existing readiness probes but answers exactly like `/up`.
+    // Unauthenticated callers must not learn which app ids exist (or are disabled), and the
+    // caller-supplied id is never used as a metric label (GHSA-xfrj-v26g-242j).
+    if let Some(Path(app_id)) = app_id.as_ref() {
+        debug!(
+            requested_app_id_len = app_id.len(),
+            "app health check received"
+        );
+    }
+    let app_id_str = "system";
+    let apps_check = timeout(timeout_duration, handler.app_manager().get_apps()).await;
+    let health_status = match apps_check {
+        Ok(Ok(apps)) if !apps.is_empty() => {
+            debug!(apps_count = apps.len(), "found configured apps");
+            check_system_health(&handler, timeout_duration).await
+        }
+        Ok(Ok(_)) => HealthStatus::Error(vec!["No apps configured".to_string()]),
+        Ok(Err(e)) => HealthStatus::Error(vec![format!("App manager: {e}")]),
+        Err(_) => HealthStatus::Error(vec![format!(
+            "App manager timeout (>{}ms)",
+            timeout_duration.as_millis()
+        )]),
     };
 
+    health_response(&handler, health_status, app_id_str)
+}
+
+/// GET /up/{appId} on the internal metrics listener.
+///
+/// Keeps the pre-5.2.1 app-specific readiness contract (`404` unknown, `503` disabled) for
+/// probes and operators on the private listener. Only ids of existing apps become metric
+/// labels, so cardinality stays bounded by the configured apps.
+#[instrument(level = "debug", skip(handler, app_id))]
+pub async fn app_health(
+    Path(app_id): Path<String>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<axum::http::Response<String>, AppError> {
+    if !handler.is_accepting() {
+        return Ok(axum::http::Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("X-Health-Check", "DRAINING")
+            .body("DRAINING".to_string())?);
+    }
+
+    let timeout_duration = Duration::from_millis(handler.server_options().health_check_timeout_ms);
+    let app_check = timeout(timeout_duration, handler.app_manager().find_by_id(&app_id)).await;
+    let (health_status, label) = match app_check {
+        Ok(Ok(Some(app))) if app.enabled => (
+            check_system_health(&handler, timeout_duration).await,
+            app.id,
+        ),
+        Ok(Ok(Some(app))) => (
+            HealthStatus::Error(vec!["App is disabled".to_string()]),
+            app.id,
+        ),
+        Ok(Ok(None)) => (HealthStatus::NotFound, "system".to_string()),
+        Ok(Err(e)) => (
+            HealthStatus::Error(vec![format!("App manager: {e}")]),
+            "system".to_string(),
+        ),
+        Err(_) => (
+            HealthStatus::Error(vec![format!(
+                "App manager timeout (>{}ms)",
+                timeout_duration.as_millis()
+            )]),
+            "system".to_string(),
+        ),
+    };
+
+    health_response(&handler, health_status, &label)
+}
+
+fn health_response(
+    handler: &Arc<ConnectionHandler>,
+    health_status: HealthStatus,
+    metric_label: &str,
+) -> Result<axum::http::Response<String>, AppError> {
     match &health_status {
         HealthStatus::Ok => {
-            debug!(app_id = %app_id_str, "health check passed");
+            debug!(app_id = %metric_label, "health check passed");
         }
         HealthStatus::Degraded(reasons) => {
             warn!(
-                app_id = %app_id_str,
+                app_id = %metric_label,
                 reasons = %reasons.join(", "),
                 "health check degraded"
             );
         }
         HealthStatus::Error(reasons) => {
             error!(
-                app_id = %app_id_str,
+                app_id = %metric_label,
                 reasons = %reasons.join(", "),
                 "health check failed"
             );
         }
         HealthStatus::NotFound => {
-            warn!(app_id = %app_id_str, "health check for non-existent app");
+            debug!("health check for non-existent app");
         }
     }
 
@@ -483,15 +560,13 @@ pub async fn up(
     // Directly, not through `record_api_metrics`: that helper opens its own `info` span, which
     // would export as a root span on every probe now that `up` opens none at the default level.
     if let Some(metrics) = handler.metrics() {
-        metrics.mark_api_message(&app_id_str, 0, status_text.len());
+        metrics.mark_api_message(metric_label, 0, status_text.len());
     }
 
-    let response_val = axum::http::Response::builder()
+    Ok(axum::http::Response::builder()
         .status(status_code)
         .header("X-Health-Check", header_value)
-        .body(status_text.to_string())?;
-
-    Ok(response_val)
+        .body(status_text.to_string())?)
 }
 
 /// Fallback handler for unmatched routes.
@@ -545,7 +620,7 @@ mod tests {
     use sockudo_core::presence_history::{
         MemoryPresenceHistoryStore, PresenceHistoryDurableState, PresenceHistoryStreamRuntimeState,
     };
-    use sonic_rs::{JsonValueTrait, Value};
+    use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
     #[tokio::test]
     async fn ready_reports_capacity_without_changing_up_and_recovers_on_disconnect() {
@@ -728,7 +803,10 @@ mod tests {
             .build(),
         );
 
-        let response = stats(State(handler)).await.unwrap().into_response();
+        let response = stats(State(handler), Extension(test_app()))
+            .await
+            .unwrap()
+            .into_response();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -771,7 +849,10 @@ mod tests {
             .build(),
         );
 
-        let response = stats(State(handler)).await.unwrap().into_response();
+        let response = stats(State(handler), Extension(test_app()))
+            .await
+            .unwrap()
+            .into_response();
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -806,6 +887,270 @@ mod tests {
             json["presence_history"]["reset_required_channels"].as_u64(),
             Some(0)
         );
+    }
+
+    // --- GHSA-xfrj-v26g-242j -------------------------------------------------
+
+    fn tenant_app(id: &str) -> sockudo_core::app::App {
+        sockudo_core::app::App::from_policy(
+            id.to_string(),
+            format!("{id}-key"),
+            format!("{id}-secret"),
+            true,
+            Default::default(),
+        )
+    }
+
+    /// Pusher HTTP API signature for a GET request with no extra query parameters.
+    fn signed_get_uri(app: &sockudo_core::app::App, path: &str) -> String {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string();
+        let query = format!(
+            "auth_key={}&auth_timestamp={timestamp}&auth_version=1.0",
+            app.key
+        );
+        let signature = sockudo_core::token::Token::new(app.key.clone(), app.secret.clone())
+            .sign(&format!("GET\n{path}\n{query}"));
+        format!("{path}?{query}&auth_signature={signature}")
+    }
+
+    async fn multi_tenant_handler(
+        metrics: Option<Arc<dyn sockudo_core::metrics::MetricsInterface + Send + Sync>>,
+    ) -> Arc<ConnectionHandler> {
+        multi_tenant_handler_with_options(metrics, sockudo_core::options::ServerOptions::default())
+            .await
+    }
+
+    async fn multi_tenant_handler_with_options(
+        metrics: Option<Arc<dyn sockudo_core::metrics::MetricsInterface + Send + Sync>>,
+        options: sockudo_core::options::ServerOptions,
+    ) -> Arc<ConnectionHandler> {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager
+            .create_app(tenant_app("tenant-a"))
+            .await
+            .unwrap();
+        app_manager
+            .create_app(tenant_app("tenant-b"))
+            .await
+            .unwrap();
+        let adapter = Arc::new(LocalAdapter::new());
+        for (app_id, socket) in [("tenant-a", "1.1"), ("tenant-b", "2.1")] {
+            let namespace = Arc::new(Namespace::new(app_id.to_string()));
+            namespace.add_channel_to_socket(
+                "orders",
+                &sockudo_core::websocket::SocketId::from_string(socket).unwrap(),
+            );
+            adapter.namespaces.insert(app_id.to_string(), namespace);
+        }
+        let mut builder = ConnectionHandlerBuilder::new(
+            app_manager,
+            adapter,
+            Arc::new(MemoryCacheManager::new(
+                "test".to_string(),
+                MemoryCacheOptions::default(),
+            )),
+            options,
+        );
+        if let Some(metrics) = metrics {
+            builder = builder.metrics(metrics);
+        }
+        Arc::new(builder.build())
+    }
+
+    async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
+        use tower::ServiceExt;
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn stats_router(handler: &Arc<ConnectionHandler>) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/operator/stats",
+                crate::bootstrap::router::operator_stats_route(handler),
+            )
+            .route(
+                "/stats",
+                crate::bootstrap::router::operator_stats_route(handler),
+            )
+            .route("/up/{appId}", axum::routing::get(up))
+            .route("/up", axum::routing::get(up))
+            .with_state(handler.clone())
+    }
+
+    #[tokio::test]
+    async fn stats_routes_require_signed_api_auth() {
+        let handler = multi_tenant_handler(None).await;
+        let router = stats_router(&handler);
+        for path in ["/stats", "/operator/stats"] {
+            let (status, body) = get(&router, path).await;
+            assert!(
+                status.is_client_error(),
+                "{path} without credentials returned {status}: {body}"
+            );
+            assert!(
+                !body.contains("tenant-a") && !body.contains("tenant-b"),
+                "{path} leaked tenants: {body}"
+            );
+
+            let (status, body) = get(
+                &router,
+                &format!("{path}?auth_key=tenant-a-key&auth_timestamp=1&auth_signature=bad"),
+            )
+            .await;
+            assert!(
+                status.is_client_error(),
+                "{path} forged signature: {status}"
+            );
+            assert!(!body.contains("tenant-b"), "{path} leaked tenants: {body}");
+        }
+    }
+
+    /// Greptile on sockudo/sockudo#558: unauthenticated callers must not make the server
+    /// buffer a request body, and authenticated buffering is capped.
+    #[tokio::test]
+    async fn signed_api_auth_never_buffers_unbounded_bodies() {
+        use tower::ServiceExt;
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.http_api.request_limit_in_mb = 1;
+        let handler = multi_tenant_handler_with_options(None, options).await;
+        let router = stats_router(&handler);
+
+        // No credentials and a body that never ends: rejected without reading it.
+        let never_ending = axum::body::Body::from_stream(futures_util::stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >());
+        let response = timeout(
+            Duration::from_secs(2),
+            router.clone().oneshot(
+                axum::http::Request::builder()
+                    .uri("/operator/stats")
+                    .body(never_ending)
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("unsigned request must be rejected before its body is read")
+        .unwrap();
+        assert!(response.status().is_client_error(), "{}", response.status());
+
+        // Auth parameters present but the body exceeds request_limit_in_mb.
+        let oversized = axum::body::Body::from(vec![b'x'; 2 * 1024 * 1024]);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(
+                        "/operator/stats?auth_key=tenant-a-key&auth_timestamp=1&auth_signature=bad",
+                    )
+                    .body(oversized)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn signed_stats_request_only_sees_the_signing_tenant() {
+        let handler = multi_tenant_handler(None).await;
+        let router = stats_router(&handler);
+        for path in ["/stats", "/operator/stats"] {
+            let (status, body) = get(&router, &signed_get_uri(&tenant_app("tenant-a"), path)).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            let json: Value = sonic_rs::from_str(&body).unwrap();
+            assert_eq!(json["apps"].as_array().unwrap().len(), 1, "{body}");
+            assert_eq!(json["apps"][0]["app_id"].as_str(), Some("tenant-a"));
+            assert_eq!(json["totals"]["apps"].as_u64(), Some(1));
+            assert_eq!(
+                json["totals"]["occupancy"]["subscriptions"].as_u64(),
+                Some(1)
+            );
+            assert!(!body.contains("tenant-b"), "{path} leaked tenant-b: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn app_health_probe_does_not_reveal_which_app_ids_exist() {
+        let metrics =
+            Arc::new(sockudo_metrics::PrometheusMetricsDriver::new(0, Some("ghsa_up_test_")).await);
+        let handler = multi_tenant_handler(Some(metrics.clone())).await;
+        let router = stats_router(&handler);
+
+        let (known_status, known_body) = get(&router, "/up/tenant-a").await;
+        let (system_status, system_body) = get(&router, "/up").await;
+        for probe in 0..5 {
+            let (status, body) = get(&router, &format!("/up/probe-{probe}")).await;
+            assert_eq!(
+                (status, body.as_str()),
+                (known_status, known_body.as_str()),
+                "unknown app ids must be indistinguishable from known ones"
+            );
+        }
+        assert_eq!((known_status, known_body), (system_status, system_body));
+
+        let exported =
+            sockudo_core::metrics::MetricsInterface::get_metrics_as_plaintext(metrics.as_ref())
+                .await;
+        assert!(
+            !exported.contains("probe-"),
+            "unvalidated app ids must never become metric labels:\n{exported}"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_listener_keeps_operator_stats_and_app_specific_health() {
+        let metrics = Arc::new(
+            sockudo_metrics::PrometheusMetricsDriver::new(0, Some("ghsa_internal_test_")).await,
+        );
+        let handler = multi_tenant_handler(Some(metrics.clone())).await;
+        let router = crate::bootstrap::router::metrics_listener_router(&handler, true);
+
+        let (status, body) = get(&router, "/stats").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = sonic_rs::from_str(&body).unwrap();
+        assert_eq!(json["totals"]["apps"].as_u64(), Some(2), "{body}");
+        assert_eq!(json["apps"][0]["app_id"].as_str(), Some("tenant-a"));
+        assert_eq!(json["apps"][1]["app_id"].as_str(), Some("tenant-b"));
+
+        assert_eq!(get(&router, "/up/tenant-a").await.0, StatusCode::OK);
+        assert_eq!(get(&router, "/up/probe-1").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&router, "/usage").await.0, StatusCode::OK);
+        assert_eq!(get(&router, "/metrics").await.0, StatusCode::OK);
+
+        let exported =
+            sockudo_core::metrics::MetricsInterface::get_metrics_as_plaintext(metrics.as_ref())
+                .await;
+        assert!(
+            !exported.contains("probe-1"),
+            "unknown app ids must never become metric labels:\n{exported}"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_listener_omits_stats_when_usage_is_disabled() {
+        let handler = multi_tenant_handler(None).await;
+        let router = crate::bootstrap::router::metrics_listener_router(&handler, false);
+        assert_eq!(get(&router, "/stats").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&router, "/usage").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&router, "/up/tenant-a").await.0, StatusCode::OK);
     }
 
     #[tokio::test]
@@ -844,7 +1189,10 @@ mod tests {
                 .build(),
         );
 
-        let response = stats(State(handler)).await.unwrap().into_response();
+        let response = stats(State(handler), Extension(test_app()))
+            .await
+            .unwrap()
+            .into_response();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();

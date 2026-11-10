@@ -204,6 +204,71 @@ impl ConnectionHandler {
         app_config: &App,
         request: SubscriptionRequest,
     ) -> Result<()> {
+        // Resume positions that arrived before this subscription are replayed only after it
+        // succeeds, and dropped if it fails (GHSA-r5q6-rw3h-q24r).
+        #[cfg(feature = "recovery")]
+        if self.pending_resumes.contains_key(socket_id) {
+            let channel = request.channel.clone();
+            // Hold live traffic for every parked channel this subscribe satisfies (the exact
+            // channel, or the public channels a wildcard matches) from before the socket
+            // joins until the parked replay has been sent, so newer live messages never
+            // overtake older replayed ones. Rewind subscriptions manage their own gate.
+            let held_channels = if request.rewind.is_none() {
+                self.pending_channels_for_subscription(socket_id, &channel)
+            } else {
+                Vec::new()
+            };
+            let held = if held_channels.is_empty() {
+                None
+            } else {
+                self.connection_manager
+                    .get_connection(socket_id, &app_config.id)
+                    .await
+            };
+            if let Some(connection) = held.as_ref() {
+                for held_channel in &held_channels {
+                    connection.start_rewind_gate(held_channel.clone());
+                }
+            }
+
+            let result = self.subscribe_request(socket_id, app_config, request).await;
+            let flushed = self
+                .resume_pending_after_subscribe(socket_id, app_config, &channel, result.is_ok())
+                .await;
+
+            // Release whatever the replay did not (failed, expired, or denied resume), or
+            // discard it when the subscription itself failed.
+            if let Some(connection) = held.as_ref() {
+                for held_channel in &held_channels {
+                    if !connection.has_rewind_gate(held_channel) {
+                        continue;
+                    }
+                    if result.is_ok() {
+                        self.drain_recovery_gate(
+                            connection,
+                            socket_id,
+                            &app_config.id,
+                            held_channel,
+                            None,
+                        )
+                        .await?;
+                    } else {
+                        let _ = connection.finish_rewind_gate(held_channel).await;
+                    }
+                }
+            }
+            return result.and(flushed);
+        }
+
+        self.subscribe_request(socket_id, app_config, request).await
+    }
+
+    async fn subscribe_request(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        request: SubscriptionRequest,
+    ) -> Result<()> {
         let t_start = std::time::Instant::now();
 
         // Validate the request

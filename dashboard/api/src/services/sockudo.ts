@@ -1,7 +1,12 @@
 import { config } from "../config.ts";
 
+/**
+ * The cross-tenant operator stats are served on Sockudo's internal metrics
+ * listener (the same one as `/metrics`). The client-facing `/stats` only
+ * reports the app that signed the request (GHSA-xfrj-v26g-242j).
+ */
 export async function fetchSockudoStats() {
-  const res = await fetch(`${config.sockudoHttpUrl}/stats`, {
+  const res = await fetch(`${config.sockudoMetricsUrl}/stats`, {
     signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) {
@@ -21,8 +26,12 @@ export async function fetchSockudoUsage() {
 }
 
 export async function fetchSockudoHealth(appId?: string) {
-  const path = appId ? `/up/${encodeURIComponent(appId)}` : "/up";
-  const res = await fetch(`${config.sockudoHttpUrl}${path}`, {
+  // App-specific readiness (404 unknown, 503 disabled) is only answered on the
+  // internal metrics listener; the public `/up/{appId}` mirrors `/up`.
+  const url = appId
+    ? `${config.sockudoMetricsUrl}/up/${encodeURIComponent(appId)}`
+    : `${config.sockudoHttpUrl}/up`;
+  const res = await fetch(url, {
     signal: AbortSignal.timeout(5_000),
   });
   return {

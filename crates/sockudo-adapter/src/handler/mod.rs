@@ -192,6 +192,10 @@ pub struct ConnectionHandler {
     #[cfg(feature = "recovery")]
     /// Replay buffer for connection recovery (enabled via config)
     pub(crate) replay_buffer: Option<Arc<crate::replay_buffer::ReplayBuffer>>,
+    #[cfg(feature = "recovery")]
+    /// Resume positions parked until the socket's matching subscription succeeds.
+    /// Bounded per socket and removed with the socket's other per-connection state.
+    pub(crate) pending_resumes: Arc<FastDashMap<SocketId, recovery::PendingResumes>>,
     /// Shared with the server runtime. Flipped to false on shutdown so the handler
     /// stops accepting new connections and `/up` reports draining.
     running: Arc<AtomicBool>,
@@ -436,6 +440,8 @@ impl ConnectionHandlerBuilder {
                 .unwrap_or_else(|| Arc::new(PresenceRegistry::default())),
             #[cfg(feature = "recovery")]
             replay_buffer,
+            #[cfg(feature = "recovery")]
+            pending_resumes: Arc::new(fast_dashmap()),
             running: self
                 .running
                 .unwrap_or_else(|| Arc::new(AtomicBool::new(true))),
@@ -522,6 +528,8 @@ impl ConnectionHandler {
         self.message_limiters.remove(socket_id);
         self.presence_update_limiters.remove(socket_id);
         self.history_request_limits.remove(socket_id);
+        #[cfg(feature = "recovery")]
+        self.pending_resumes.remove(socket_id);
     }
 
     /// Stop AI background workers and wait for the bounded rollup shutdown drain.

@@ -1,6 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { config } from "../config.ts";
 import {
   discoverPrometheusPrefix,
+  fetchSockudoHealth,
+  fetchSockudoStats,
   parsePrometheusMetrics,
   parsePrometheusText,
   summarizeMetrics,
@@ -138,5 +141,30 @@ tenant_history_write_failures_total{app_id="app-a",port="6001"} 2
       ws_messages_received_total: 12,
       history_write_failures_total: 2,
     });
+  });
+});
+
+describe("Sockudo operator endpoints", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("reads cross-tenant stats and app health from the metrics listener", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ apps: [] }), { status: 200 });
+    }) as typeof fetch;
+
+    await fetchSockudoStats();
+    await fetchSockudoHealth("app 1");
+    await fetchSockudoHealth();
+
+    expect(urls).toEqual([
+      `${config.sockudoMetricsUrl}/stats`,
+      `${config.sockudoMetricsUrl}/up/app%201`,
+      `${config.sockudoHttpUrl}/up`,
+    ]);
   });
 });

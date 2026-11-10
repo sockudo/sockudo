@@ -151,6 +151,13 @@ fn get_params_for_signature(
     Ok(params_map)
 }
 
+/// Whether the query string carries the parameters a Pusher signature needs.
+fn has_signature_params(query: Option<&str>) -> bool {
+    query
+        .and_then(|query| serde_urlencoded::from_str::<EventQuery>(query).ok())
+        .is_some_and(|params| !params.auth_key.is_empty() && !params.auth_signature.is_empty())
+}
+
 /// Axum middleware for Pusher API authentication.
 ///
 /// This middleware authenticates incoming requests based on the Pusher protocol,
@@ -164,9 +171,74 @@ pub async fn pusher_api_auth_middleware(
     tracing::debug!("Entering Pusher API Auth Middleware");
 
     let uri = request.uri().clone();
-    let query_str_option = uri.query();
     let method = request.method().clone();
-    let path = uri.path().to_string();
+
+    // Requests that cannot authenticate are rejected before any of their body is read.
+    if !has_signature_params(uri.query()) {
+        tracing::warn!("missing authentication query parameters");
+        return Err(AppError::InvalidInput(
+            "Missing authentication query parameters".to_string(),
+        ));
+    }
+
+    // Buffer the request body for the body_md5 check, capped at the configured request limit
+    // (`DefaultBodyLimit` only applies to extractors, not to this direct read).
+    let limit_bytes = usize::try_from(handler_state.server_options().http_api.request_limit_in_mb)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(1024 * 1024);
+    let (parts, body) = request.into_parts();
+    let body_bytes = match http_body_util::Limited::new(body, limit_bytes)
+        .collect()
+        .await
+    {
+        Ok(collected) => collected.to_bytes(),
+        Err(err)
+            if err
+                .downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some() =>
+        {
+            return Err(AppError::PayloadTooLarge(format!(
+                "Request body exceeds {} MB",
+                handler_state.server_options().http_api.request_limit_in_mb
+            )));
+        }
+        Err(err) => {
+            tracing::error!("auth request body buffering failed");
+            // TODO: HTTP response body disclosure
+            return Err(AppError::InternalError(format!(
+                "Failed to read request body: {err}"
+            )));
+        }
+    };
+    tracing::debug!(body_bytes = body_bytes.len(), "request body buffered");
+
+    let app = authenticate_pusher_request(
+        &handler_state,
+        parts.extensions.get::<AppApiRateLimiter>(),
+        method.as_str(),
+        &uri,
+        Some(&body_bytes),
+    )
+    .await?;
+    let mut request = HttpRequest::from_parts(parts, Body::from(body_bytes.clone()));
+    request.extensions_mut().insert(app);
+    Ok(next.run(request).await)
+}
+
+/// Validate a Pusher HTTP API signature, enforce the app's per-app API limit when a
+/// limiter is configured, and return the signing app.
+///
+/// Shared by [`pusher_api_auth_middleware`] and routes that dispatch between auth schemes
+/// themselves (for example `/stats` with Ably compatibility enabled).
+pub(crate) async fn authenticate_pusher_request(
+    handler_state: &Arc<ConnectionHandler>,
+    limiter: Option<&AppApiRateLimiter>,
+    method: &str,
+    uri: &axum::http::Uri,
+    body: Option<&[u8]>,
+) -> Result<sockudo_core::app::App, AppError> {
+    let query_str_option = uri.query();
+    let path = uri.path();
 
     // 1. Extract Pusher's authentication query parameters
     let auth_q_params_struct: EventQuery = if let Some(query_str) = query_str_option {
@@ -184,49 +256,32 @@ pub async fn pusher_api_auth_middleware(
     // 2. Collect all query parameters (excluding auth_signature) for the signature string.
     let all_query_params_for_sig_map = get_params_for_signature(query_str_option)?;
 
-    // 3. Buffer the request body.
-    let (parts, body) = request.into_parts();
-    let body_bytes = match body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(err) => {
-            tracing::error!("auth request body buffering failed");
-            // TODO: HTTP response body disclosure
-            return Err(AppError::InternalError(format!(
-                "Failed to read request body: {err}"
-            )));
-        }
-    };
-    tracing::debug!(body_bytes = body_bytes.len(), "request body buffered");
-
-    // 4. Perform the authentication using AuthValidator.
+    // 3. Perform the authentication using AuthValidator.
     let auth_validator = AuthValidator::new(handler_state.app_manager().clone());
-
     match auth_validator
         .authenticate_pusher_api_request(
             &auth_q_params_struct,
-            method.as_str(),
-            &path,
+            method,
+            path,
             &all_query_params_for_sig_map,
-            Some(&body_bytes),
+            body,
         )
         .await
     {
         Ok(app) => {
             tracing::debug!(path = %path, "pusher API authentication successful");
-            if let Some(limiter) = parts.extensions.get::<AppApiRateLimiter>() {
+            if let Some(limiter) = limiter {
                 enforce_app_api_limit(
                     limiter,
-                    &handler_state,
+                    handler_state,
                     &app,
-                    method.as_str(),
-                    &path,
-                    &body_bytes,
+                    method,
+                    path,
+                    body.unwrap_or_default(),
                 )
                 .await?;
             }
-            let mut request = HttpRequest::from_parts(parts, Body::from(body_bytes.clone()));
-            request.extensions_mut().insert(app);
-            Ok(next.run(request).await)
+            Ok(app)
         }
         Err(e) => {
             tracing::warn!(path = %path, error = %e, "pusher API authentication failed");
@@ -522,6 +577,14 @@ mod tests {
             .await
             .expect("infallible response");
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn signature_params_are_required_before_body_read() {
+        assert!(!has_signature_params(None));
+        assert!(!has_signature_params(Some("unit=minute")));
+        assert!(!has_signature_params(Some("auth_key=k")));
+        assert!(has_signature_params(Some("auth_key=k&auth_signature=s")));
     }
 
     #[test]

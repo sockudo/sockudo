@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Security
+
+Fixes four advisories affecting 5.2.0, reported by apudiu. See `SECURITY.md` and the security
+docs page for 5.2.0 workarounds.
+
+- GHSA-gg5j-wcw2-v78r (high): public wildcard subscriptions no longer receive `private-*`,
+  `presence-*` (including encrypted and cache variants), `#server-to-user-*`, or user-limited
+  channels, on any node.
+- GHSA-r5q6-rw3h-q24r (high): `resume` only replays channels the connection is subscribed to and
+  always applies subscription filters. Positions sent before a private/presence subscribe
+  completes are parked (100 per connection, 30 s) and replayed after `subscription_succeeded`.
+  Failures for unreadable channels use `code: "not_subscribed"` without stream metadata, and
+  positions without `stream_id` use the hot buffer only.
+- GHSA-4795-c9wj-3q58: a presence subscribe without `channel_data`, or an oversized multi-byte
+  `filter.events` name, returns an error frame instead of panicking the connection task.
+- GHSA-xfrj-v26g-242j: `/stats` and `/operator/stats` require a Pusher-signed request and report
+  only the signing app. `/up/{appId}` answers exactly like `/up` and never creates metric labels
+  from the path.
+- Webhook transport errors no longer include the endpoint URL in logs or
+  propagated errors.
+
 ### Added
 
 - App secrets at rest (#527): with `SOCKUDO_APP_SECRET_ENCRYPTION_KEY` or
@@ -39,6 +60,14 @@
 
 ### Changed
 
+- **Breaking:** on the client-facing listener, unsigned `GET /stats` and `GET /operator/stats`
+  requests are rejected and the response lists only the signing app, and `GET /up/{appId}` no
+  longer returns `404` for unknown apps or `503` for disabled apps. The unsigned cross-tenant
+  `GET /stats`, `GET /usage`, and the app-specific `GET /up/{appId}` are now served on the
+  internal metrics listener (default port `9601`); the dashboard reads them there.
+- `resume_success` may include a `pending` channel list, followed by a per-channel
+  `resume_success` once a parked channel is replayed. Live messages published during that
+  subscribe and replay are held and released after the replay, without duplicates.
 - An explicit `--config` file that fails to load now exits with status 1, and
   an existing auto-discovered `config/config.toml`/`config.json` that fails to
   parse is fatal too, instead of silently falling back (#520).
@@ -164,11 +193,6 @@
   time and push `attempt` were ignored, and deferrals (scheduled provider retries, open circuit
   breakers, rate limiting) used up backend attempts until the job moved to the backend
   dead-letter queue, outside the push dead-letter list and replay API.
-
-### Security
-
-- Webhook transport errors no longer include the endpoint URL in logs or
-  propagated errors.
 
 ## [5.2.0] - 2026-10-22
 
