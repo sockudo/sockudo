@@ -146,8 +146,11 @@ pub(crate) const MAX_PENDING_RESUME_CHANNELS: usize = 100;
 pub(crate) const PENDING_RESUME_TTL: Duration = Duration::from_secs(30);
 /// Channel names longer than this are never parked (Pusher caps names at 200 bytes).
 const MAX_PENDING_RESUME_CHANNEL_BYTES: usize = 256;
-/// `stream_id` / `last_message_id` longer than this are never parked. Real values are UUIDs
-/// or short server-assigned ids, so this only bounds what an idle socket can retain.
+/// Bound on the client-supplied identifiers a parked position retains, so an idle socket
+/// cannot hold arbitrary bytes. Stream ids are UUIDs or `{app_id}/{channel}` (bounded by the
+/// channel cap and always accepted); `last_message_id` only suppresses one duplicate
+/// identity during durable recovery, so an oversized one is dropped rather than refusing
+/// the whole position (the publish API may accept longer message ids).
 const MAX_PENDING_RESUME_ID_BYTES: usize = 128;
 
 /// A resume position received before the socket held the matching subscription.
@@ -438,18 +441,24 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_id: &str,
         channel: &str,
-        position: ResumePosition,
+        mut position: ResumePosition,
     ) -> bool {
-        let id_too_long = |id: &Option<String>| {
-            id.as_ref()
-                .is_some_and(|id| id.len() > MAX_PENDING_RESUME_ID_BYTES)
-        };
-        if channel.is_empty()
-            || channel.len() > MAX_PENDING_RESUME_CHANNEL_BYTES
-            || id_too_long(&position.stream_id)
-            || id_too_long(&position.last_message_id)
-        {
+        if channel.is_empty() || channel.len() > MAX_PENDING_RESUME_CHANNEL_BYTES {
             return false;
+        }
+        if position.stream_id.as_deref().is_some_and(|stream_id| {
+            stream_id.len() > MAX_PENDING_RESUME_ID_BYTES
+                && !is_channel_scoped_stream_id(stream_id, app_id, channel)
+        }) {
+            // No store issues such a stream id, so the position could never match anyway.
+            return false;
+        }
+        if position
+            .last_message_id
+            .as_ref()
+            .is_some_and(|id| id.len() > MAX_PENDING_RESUME_ID_BYTES)
+        {
+            position.last_message_id = None;
         }
         let mut pending = self.pending_resumes.entry(*socket_id).or_default();
         if !pending.contains_key(channel) && pending.len() >= MAX_PENDING_RESUME_CHANNELS {
@@ -1468,6 +1477,14 @@ fn recovery_position(message: &PusherMessage) -> Option<ResumeDeliveryPosition> 
     })
 }
 
+/// Durable version stores identify a channel's stream as `{app_id}/{channel}`.
+fn is_channel_scoped_stream_id(stream_id: &str, app_id: &str, channel: &str) -> bool {
+    stream_id
+        .strip_prefix(app_id)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| rest == channel)
+}
+
 fn replay_delivery_failure() -> ResumeFailure {
     ResumeFailure {
         code: "persistence_unavailable",
@@ -2193,9 +2210,36 @@ mod tests {
         let mut oversized_stream = parked_position();
         oversized_stream.stream_id = Some(long_id.clone());
         assert!(!handler.park_pending_resume(&socket_id, "app", "private-a", oversized_stream));
+
+        // Durable version stores use `{app_id}/{channel}`, which may exceed the id cap.
+        let long_channel = format!("private-{}", "c".repeat(190));
+        let mut channel_scoped = parked_position();
+        channel_scoped.stream_id = Some(format!("app/{long_channel}"));
+        assert!(handler.park_pending_resume(&socket_id, "app", &long_channel, channel_scoped));
+        let mut other_channel_scope = parked_position();
+        other_channel_scope.stream_id = Some(format!("app/{long_channel}-other"));
+        assert!(!handler.park_pending_resume(
+            &socket_id,
+            "app",
+            &long_channel,
+            other_channel_scope
+        ));
+        assert!(
+            handler
+                .take_pending_resumes(&socket_id, |channel| channel == long_channel)
+                .len()
+                == 1
+        );
+
+        // An oversized optional last_message_id is dropped, not the whole position.
         let mut oversized_message_id = parked_position();
         oversized_message_id.last_message_id = Some(long_id);
-        assert!(!handler.park_pending_resume(&socket_id, "app", "private-a", oversized_message_id));
+        assert!(handler.park_pending_resume(&socket_id, "app", "private-a", oversized_message_id));
+        let parked = handler.take_pending_resumes(&socket_id, |channel| channel == "private-a");
+        assert_eq!(parked.len(), 1);
+        assert_eq!(parked[0].1.position.last_message_id, None);
+        assert_eq!(parked[0].1.position.serial, parked_position().serial);
+        assert_eq!(parked[0].1.position.stream_id, parked_position().stream_id);
 
         assert!(handler.park_pending_resume(&socket_id, "app", "private-a", parked_position()));
         assert!(handler.park_pending_resume(&socket_id, "app", "private-b", parked_position()));

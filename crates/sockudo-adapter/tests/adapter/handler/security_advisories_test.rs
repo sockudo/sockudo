@@ -807,39 +807,37 @@ async fn versioned_resume_after_subscribe_on_fresh_node_recovers_cold() {
 }
 
 /// Parked positions are retained per socket until their subscription arrives, so the
-/// client-supplied identifiers they carry are bounded: oversized ones are refused up front
-/// and a later subscribe replays nothing for them.
+/// client-supplied identifiers they carry are bounded. A `stream_id` no store could have
+/// issued is refused up front, and a later subscribe replays nothing for it.
 #[tokio::test]
-async fn resume_positions_with_oversized_ids_are_not_parked() {
+async fn resume_positions_with_oversized_stream_ids_are_not_parked() {
     let harness = build_harness(recovery_options()).await;
     let (position, stream_id) = restricted_position(&harness, "private-secret").await;
 
     let mut client = connect(&harness.handler, &harness.app, ProtocolVersion::V2).await;
-    for key in ["stream_id", "last_message_id"] {
-        let mut oversized = position.clone();
-        oversized
-            .as_object_mut()
-            .unwrap()
-            .insert(key, json!("x".repeat(4096)));
-        client
-            .send_resume(json!({ "private-secret": oversized }))
-            .await;
-        let frames = client.recv_until("resume_success").await;
-        let summary = frame_data(frames.last().unwrap());
-        assert!(
-            summary
-                .get("pending")
-                .is_none_or(|pending| pending.is_null()),
-            "oversized {key} must not be parked: {summary:?}"
-        );
-        let failed = summary["failed"].as_array().unwrap();
-        assert_eq!(failed.len(), 1, "{summary:?}");
-        assert_eq!(
-            failed[0]["reason"].as_str(),
-            Some("pending_resume_limit_exceeded")
-        );
-        assert_no_leak(&frames, &stream_id);
-    }
+    let mut oversized = position.clone();
+    oversized
+        .as_object_mut()
+        .unwrap()
+        .insert("stream_id", json!("x".repeat(4096)));
+    client
+        .send_resume(json!({ "private-secret": oversized }))
+        .await;
+    let frames = client.recv_until("resume_success").await;
+    let summary = frame_data(frames.last().unwrap());
+    assert!(
+        summary
+            .get("pending")
+            .is_none_or(|pending| pending.is_null()),
+        "oversized stream_id must not be parked: {summary:?}"
+    );
+    let failed = summary["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{summary:?}");
+    assert_eq!(
+        failed[0]["reason"].as_str(),
+        Some("pending_resume_limit_exceeded")
+    );
+    assert_no_leak(&frames, &stream_id);
 
     client
         .subscribe_private(&harness.app, "private-secret")
@@ -852,6 +850,51 @@ async fn resume_positions_with_oversized_ids_are_not_parked() {
         render(&frames)
     );
     client.assert_alive().await;
+}
+
+/// The publish API can accept message ids longer than the parked-id bound, and clients send
+/// the last one they saw as `last_message_id`. While private auth is still pending, such a
+/// position must still be parked (without the oversized id) and replayed on subscribe.
+#[tokio::test]
+async fn long_last_message_id_still_recovers_after_pending_private_auth() {
+    let harness = build_harness(recovery_options()).await;
+    let (mut position, _) = restricted_position(&harness, "private-secret").await;
+    position
+        .as_object_mut()
+        .unwrap()
+        .insert("last_message_id", json!("m".repeat(4096)));
+
+    let mut client = connect(&harness.handler, &harness.app, ProtocolVersion::V2).await;
+    client
+        .send_resume(json!({ "private-secret": position }))
+        .await;
+    let frames = client.recv_until("resume_success").await;
+    let summary = frame_data(frames.last().unwrap());
+    assert_eq!(
+        summary["pending"].as_array().map(|pending| pending.len()),
+        Some(1),
+        "a long last_message_id must not block parking: {summary:?}"
+    );
+    assert!(
+        summary["failed"].as_array().unwrap().is_empty(),
+        "{summary:?}"
+    );
+
+    client
+        .send_private_subscribe(&harness.app, "private-secret")
+        .await;
+    let frames = client.recv_until("resume_success").await;
+    let replayed: Vec<&str> = frames
+        .iter()
+        .filter(|frame| frame["event"].as_str() == Some("secret-event"))
+        .filter_map(|frame| frame["message_id"].as_str())
+        .collect();
+    assert_eq!(
+        replayed,
+        vec!["secret-msg-2", "secret-msg-3"],
+        "{}",
+        render(&frames)
+    );
 }
 
 /// The position advertised in `subscription_succeeded` for a versioned channel that has no

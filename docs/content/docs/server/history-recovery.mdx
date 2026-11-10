@@ -117,8 +117,10 @@ that race by parking positions for channels that are not subscribed yet:
 - If the subscription fails, the parked position is dropped silently (the client
   already received the subscription error).
 - Parked positions are bounded to 100 channels per connection, expire after 30 seconds,
-  and are removed when the connection closes. A position whose `stream_id` or
-  `last_message_id` is longer than 128 bytes is not parked. An expired position gets a
+  and are removed when the connection closes. A position whose `stream_id` is longer than
+  128 bytes (other than a store's `{app_id}/{channel}` id) is not parked; a
+  `last_message_id` longer than 128 bytes is dropped from the parked position, which then
+  still recovers. An expired position gets a
   `resume_failed` with `code: "not_subscribed"` and `reason: "pending_resume_expired"`
   even if the connection sends nothing else; an over-limit position fails immediately
   with `reason: "pending_resume_limit_exceeded"`.
