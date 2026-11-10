@@ -212,8 +212,14 @@ impl SubscriptionRequest {
                             "Missing channel field".into(),
                         )
                     })?;
+                    // `channel_data` is client-controlled. A presence subscribe without it is
+                    // a normal subscription error, never a panic (GHSA-4795-c9wj-3q58).
                     let channel_data = if ChannelType::from_name(ch) == ChannelType::Presence {
-                        Some(channel_data.as_ref().unwrap().clone())
+                        Some(channel_data.clone().ok_or_else(|| {
+                            sockudo_core::error::Error::InvalidMessageFormat(
+                                "Missing channel_data for presence channel".into(),
+                            )
+                        })?)
                     } else {
                         None
                     };
@@ -360,9 +366,10 @@ impl SubscriptionRequest {
             }
             for name in events {
                 if name.len() > event_name_filtering.max_event_name_length {
+                    // Truncate by characters: byte slicing panics inside multi-byte UTF-8.
+                    let preview: String = name.chars().take(40).collect();
                     return Err(sockudo_core::error::Error::InvalidMessageFormat(format!(
-                        "Event name '{}...' exceeds maximum length of {} characters",
-                        &name[..40.min(name.len())],
+                        "Event name '{preview}...' exceeds maximum length of {} characters",
                         event_name_filtering.max_event_name_length
                     )));
                 }
@@ -811,6 +818,39 @@ mod tests {
         );
         #[cfg(feature = "tag-filtering")]
         assert!(request.predicate.is_some());
+    }
+
+    /// GHSA-4795-c9wj-3q58: the wire decoder produces `MessageData::Structured` for
+    /// `{"channel": ...}` objects; a presence channel without `channel_data` must be an error.
+    #[test]
+    fn presence_subscribe_without_channel_data_is_an_error_not_a_panic() {
+        for event in ["pusher:subscribe", "sockudo:subscribe"] {
+            let raw = format!(r#"{{"event":"{event}","data":{{"channel":"presence-x"}}}}"#);
+            let message: PusherMessage = sonic_rs::from_str(&raw).unwrap();
+            assert!(matches!(message.data, Some(MessageData::Structured { .. })));
+            let result =
+                SubscriptionRequest::from_message(&message, &event_name_filtering_config());
+            assert!(matches!(
+                result,
+                Err(sockudo_core::error::Error::InvalidMessageFormat(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn oversized_multibyte_event_name_is_an_error_not_a_panic() {
+        let filter = json!({ "events": [format!("a{}", "é".repeat(150))] });
+        let result = SubscriptionRequest::build(
+            "ticker".to_string(),
+            None,
+            None,
+            Some(filter),
+            None,
+            None,
+            None,
+            &event_name_filtering_config(),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

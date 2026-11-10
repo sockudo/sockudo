@@ -130,3 +130,20 @@ Use shared Redis-backed limits in multi-node deployments.
 - use readiness checks during deploys
 - emit audit logs for denied auth and push admin operations
 - alert on authentication failures, signature failures, and provider credential errors
+
+## Fixed in 5.2.1
+
+| Advisory | Issue | Workaround for 5.2.0 |
+| --- | --- | --- |
+| GHSA-gg5j-wcw2-v78r | Public wildcard subscriptions received private and presence channel messages. | Block client `subscribe` frames whose channel contains `*` at your proxy. |
+| GHSA-r5q6-rw3h-q24r | `resume` replayed private/presence history and leaked stream metadata to unsubscribed connections. | `connection_recovery.enabled = false` |
+| GHSA-4795-c9wj-3q58 | A presence subscribe without `channel_data` panicked the connection task. | None in config; upgrade. |
+| GHSA-xfrj-v26g-242j | `/stats` and `/operator/stats` listed every tenant without credentials; `/up/{appId}` revealed app ids and created unbounded metric labels. | `HTTP_API_USAGE_ENABLED=false` and block `/up/` + app id at ingress. |
+
+Upgrade notes for 5.2.1:
+
+- `GET /stats` and `GET /operator/stats` require a Pusher-signed request and report only
+  the signing app.
+- `GET /up/{appId}` returns the same response as `GET /up`.
+- Recovery replays only channels the connection is subscribed to; see
+  [History and recovery](/docs/server/history-recovery).

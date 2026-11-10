@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
+import type { AppRecord } from "../types/app.ts";
 import {
+  createSignedSockudoStatsUrl,
   discoverPrometheusPrefix,
+  mergeSockudoStats,
   parsePrometheusMetrics,
   parsePrometheusText,
   summarizeMetrics,
@@ -138,5 +142,58 @@ tenant_history_write_failures_total{app_id="app-a",port="6001"} 2
       ws_messages_received_total: 12,
       history_write_failures_total: 2,
     });
+  });
+});
+
+const statsApp: AppRecord = {
+  id: "app-1",
+  key: "public-key",
+  secret: "top-secret",
+  enabled: true,
+  policy: {
+    limits: { max_connections: 100, max_client_events_per_second: 10 },
+    features: { enable_client_messages: false },
+    channels: {},
+  },
+};
+
+describe("Sockudo /stats signing", () => {
+  test("signs GET /stats with the Pusher canonical form", () => {
+    const url = new URL(
+      createSignedSockudoStatsUrl(statsApp, 1_785_312_000, "http://sockudo:6001"),
+    );
+    expect(url.pathname).toBe("/stats");
+    expect(url.searchParams.get("auth_key")).toBe("public-key");
+    expect(url.searchParams.get("auth_timestamp")).toBe("1785312000");
+    expect(url.searchParams.get("auth_version")).toBe("1.0");
+    const expected = createHmac("sha256", "top-secret")
+      .update(
+        "GET\n/stats\nauth_key=public-key&auth_timestamp=1785312000&auth_version=1.0",
+      )
+      .digest("hex");
+    expect(url.searchParams.get("auth_signature")).toBe(expected);
+    expect(url.toString()).not.toContain(statsApp.secret);
+  });
+
+  test("merges per-app responses into one operator view", () => {
+    const merged = mergeSockudoStats([
+      {
+        memory: { used: 1 },
+        totals: { apps: 1, connections: 2, occupancy: { channels: 3 } },
+        apps: [{ app_id: "b", connections: 2 }],
+      },
+      {
+        memory: { used: 9 },
+        totals: { apps: 1, connections: 5, occupancy: { channels: 1 } },
+        apps: [{ app_id: "a", connections: 5 }],
+      },
+    ]);
+    expect(merged.memory).toEqual({ used: 1 });
+    expect(merged.totals).toEqual({
+      apps: 2,
+      connections: 7,
+      occupancy: { channels: 4 },
+    });
+    expect(merged.apps.map((app) => app.app_id)).toEqual(["a", "b"]);
   });
 });

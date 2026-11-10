@@ -75,6 +75,14 @@ Use V2 when the client needs to reconnect without guessing what it missed, rewin
 
 ### Subscription predicates
 
+Wildcard subscriptions (one `*`, V2 only) are public and unauthenticated, so they never
+match channels that need per-channel authorization or are user-scoped: `private-*`,
+`presence-*` (including encrypted and cache variants), `#server-to-user-*`, and
+user-limited `name#user` channels. A pattern such as `*` or `pri*` receives matching
+public channels only; restricted channels are delivered only to connections that
+subscribed to that exact channel. Before 5.2.1 wildcard patterns could receive restricted
+channels (GHSA-gg5j-wcw2-v78r).
+
 V2 subscriptions accept one compound `filter`. Its non-empty `events`, `tags`, and `expression` components use AND semantics; separate exact and wildcard subscriptions use OR semantics. The expression form is either a JMESPath source string or `{ "language": "jmespath", "source": "..." }`.
 
 ```json

@@ -43,6 +43,39 @@ If a channel emits `sockudo:resume_failed` with `code: "position_expired"`, the 
 
 `code: "continuity_unverifiable"` means Sockudo rejected an ahead, non-contiguous, duplicate, or non-progressing recovery position. Treat it the same way: resubscribe and backfill instead of advancing the client cursor.
 
+### Recovery requires the subscription
+
+`resume` (`pusher:resume` or `sockudo:resume`) only replays a channel to a connection
+that holds a subscription to it: the exact channel, or a public wildcard pattern that
+matches it. Private and presence channels therefore need their normal authorized
+subscribe first. Sockudo applies the same checks as `channel_history`
+(user-limited channel access and the connection's `subscribe` capability) and always
+filters replayed messages through the subscription's event and tag filters.
+
+The official SDKs send `resume` right after re-issuing their subscribes, while private
+and presence subscribes may still be waiting for the auth endpoint. Sockudo handles
+that race by parking positions for channels that are not subscribed yet:
+
+- The immediate `resume_success` lists them under `pending`.
+- When that channel's subscription succeeds, Sockudo replays it after
+  `subscription_succeeded` and sends a second `resume_success` for that channel.
+- If the subscription fails, the parked position is dropped silently (the client
+  already received the subscription error).
+- Parked positions are bounded to 100 channels per connection, expire after 30 seconds,
+  and are removed when the connection closes. An expired or over-limit position
+  fails with `code: "not_subscribed"`.
+
+A `resume_failed` for a channel the connection may not read uses
+`code: "not_subscribed"` and never includes `current_stream_id`,
+`oldest_available_serial`, or `newest_available_serial`. Positions without a
+`stream_id` (and legacy `channel_serials`) cannot prove continuity, so they only use
+the hot replay buffer and never durable history. Rejected and dropped resumes are counted in
+the history recovery failure metric with codes `not_subscribed` and
+`subscription_failed`.
+
+Before 5.2.1 an unsubscribed connection could resume private and presence channels
+(GHSA-r5q6-rw3h-q24r). If you cannot upgrade, set `connection_recovery.enabled = false`.
+
 Recovery is two-tier:
 
 1. Hot replay uses the bounded per-channel replay buffer.
@@ -93,7 +126,7 @@ channel.bind("sockudo:rewind_complete", (payload) => {
 });
 ```
 
-When a V2 subscription has a compound predicate, rewind scans durable history in bounded pages until it fills the requested matching count or reaches the scan/retention boundary. Suppressed rows still advance the channel's canonical continuity position. Hot and durable recovery apply the same predicate after the client has reattached that subscription; a legacy resume sent before reattachment retains the unfiltered recovery contract. Each recovered-channel entry in `sockudo:resume_success` includes the terminal `position` so clients advance continuity even when the predicate suppresses the tail.
+When a V2 subscription has a compound predicate, rewind scans durable history in bounded pages until it fills the requested matching count or reaches the scan/retention boundary. Suppressed rows still advance the channel's canonical continuity position. Hot and durable recovery apply the same predicate; a resume sent before the subscription is reattached waits for it (see "Recovery requires the subscription") and is never replayed unfiltered. Each recovered-channel entry in `sockudo:resume_success` includes the terminal `position` so clients advance continuity even when the predicate suppresses the tail.
 
 ## Durable channel history
 

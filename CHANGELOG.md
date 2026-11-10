@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Security
+
+Fixes four advisories affecting 5.2.0, reported by apudiu. See `SECURITY.md` and the security
+docs page for 5.2.0 workarounds.
+
+- GHSA-gg5j-wcw2-v78r (high): public wildcard subscriptions no longer receive `private-*`,
+  `presence-*` (including encrypted and cache variants), `#server-to-user-*`, or user-limited
+  channels, on any node.
+- GHSA-r5q6-rw3h-q24r (high): `resume` only replays channels the connection is subscribed to and
+  always applies subscription filters. Positions sent before a private/presence subscribe
+  completes are parked (100 per connection, 30 s) and replayed after `subscription_succeeded`.
+  Failures for unreadable channels use `code: "not_subscribed"` without stream metadata, and
+  positions without `stream_id` use the hot buffer only.
+- GHSA-4795-c9wj-3q58: a presence subscribe without `channel_data`, or an oversized multi-byte
+  `filter.events` name, returns an error frame instead of panicking the connection task.
+- GHSA-xfrj-v26g-242j: `/stats` and `/operator/stats` require a Pusher-signed request and report
+  only the signing app. `/up/{appId}` answers exactly like `/up` and never creates metric labels
+  from the path.
+
+### Changed
+
+- **Breaking:** unsigned `GET /stats` and `GET /operator/stats` requests are rejected, and the
+  response lists only the signing app. `GET /up/{appId}` no longer returns `404` for unknown apps
+  or `503` for disabled apps. The dashboard now signs one stats request per app.
+- `resume_success` may include a `pending` channel list, followed by a per-channel
+  `resume_success` once a parked channel is replayed.
+
 ## [5.2.0] - 2026-10-22
 
 Protocol V1 Pusher compatibility is unchanged. The `iggy` driver needs Apache Iggy server 0.9 or

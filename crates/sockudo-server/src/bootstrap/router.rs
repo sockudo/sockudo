@@ -61,6 +61,17 @@ fn is_ably_stats_request(
         || headers.contains_key(axum::http::header::AUTHORIZATION)
 }
 
+/// Native operator stats route: Pusher-signed requests only, scoped to the signing app
+/// (GHSA-xfrj-v26g-242j).
+pub(crate) fn operator_stats_route(
+    handler: &Arc<sockudo_adapter::ConnectionHandler>,
+) -> axum::routing::MethodRouter<Arc<sockudo_adapter::ConnectionHandler>> {
+    get(stats).route_layer(axum_middleware::from_fn_with_state(
+        handler.clone(),
+        pusher_api_auth_middleware,
+    ))
+}
+
 impl SockudoServer {
     fn build_rate_limit_layer(
         limiter: Arc<dyn RateLimiter + Send + Sync>,
@@ -643,7 +654,7 @@ impl SockudoServer {
         if stats_enabled {
             // Keep the native operator contract on an unambiguous alias even
             // when authenticated Ably requests share the legacy `/stats` path.
-            router = router.route("/operator/stats", get(stats));
+            router = router.route("/operator/stats", operator_stats_route(&self.handler));
             #[cfg(feature = "ably-compat")]
             {
                 let runtime = Arc::clone(&self.ably_compat);
@@ -668,7 +679,8 @@ impl SockudoServer {
                 router = router.route(
                     "/stats",
                     get(
-                        move |query: axum::extract::Query<sockudo_ably_compat::AblyStatsQuery>,
+                        move |uri: axum::http::Uri,
+                              query: axum::extract::Query<sockudo_ably_compat::AblyStatsQuery>,
                               headers: axum::http::HeaderMap,
                               axum::extract::State(handler): axum::extract::State<
                             Arc<sockudo_adapter::ConnectionHandler>,
@@ -684,7 +696,18 @@ impl SockudoServer {
                                     )
                                     .await
                                 } else {
-                                    match stats(axum::extract::State(handler)).await {
+                                    // Native stats require a Pusher-signed request.
+                                    let app = match crate::middleware::authenticate_pusher_request(
+                                        &handler, "GET", &uri, None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(app) => app,
+                                        Err(error) => return error.into_response(),
+                                    };
+                                    match stats(axum::extract::State(handler), axum::Extension(app))
+                                        .await
+                                    {
                                         Ok(response) => response.into_response(),
                                         Err(error) => error.into_response(),
                                     }
@@ -696,7 +719,7 @@ impl SockudoServer {
             }
             #[cfg(not(feature = "ably-compat"))]
             {
-                router = router.route("/stats", get(stats));
+                router = router.route("/stats", operator_stats_route(&self.handler));
             }
         }
 

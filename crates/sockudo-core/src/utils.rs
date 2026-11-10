@@ -131,6 +131,17 @@ pub fn is_wildcard_subscription_pattern(channel: &str) -> bool {
     !channel.starts_with("#server-to-user-") && channel.contains('*')
 }
 
+/// Whether a concrete channel may be delivered to a wildcard (pattern) subscription.
+///
+/// Wildcard subscriptions are public and carry no per-channel authorization, so they must
+/// never match channels that require it: `private-*` and `presence-*` (which includes the
+/// encrypted and cache variants), plus user-scoped channels (`#server-to-user-*` and
+/// user-limited `name#user` channels). Those are only delivered to sockets that
+/// subscribed to the exact channel. See GHSA-gg5j-wcw2-v78r.
+pub fn channel_allows_wildcard_delivery(channel: &str) -> bool {
+    !(channel.starts_with("private-") || channel.starts_with("presence-") || channel.contains('#'))
+}
+
 pub fn is_meta_channel(channel: &str) -> bool {
     channel.starts_with("[meta]") && channel.len() > "[meta]".len()
 }
@@ -734,6 +745,25 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn restricted_channels_never_allow_wildcard_delivery() {
+        for channel in [
+            "private-a",
+            "presence-a",
+            "private-encrypted-a",
+            "private-cache-a",
+            "presence-cache-a",
+            "private-encrypted-cache-a",
+            "#server-to-user-u1",
+            "chat#alice,bob",
+        ] {
+            assert!(!channel_allows_wildcard_delivery(channel), "{channel}");
+        }
+        for channel in ["news.btc", "cache-prices", "prices", "press", "[meta]news"] {
+            assert!(channel_allows_wildcard_delivery(channel), "{channel}");
+        }
     }
 
     #[test]

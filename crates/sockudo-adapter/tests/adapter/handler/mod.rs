@@ -6,6 +6,8 @@ pub mod clustered_runtime_rewind_recovery_redis_test;
 pub mod presence_user_id_guard_test;
 #[cfg(feature = "recovery")]
 pub mod runtime_rewind_recovery_e2e_test;
+#[cfg(feature = "recovery")]
+pub mod security_advisories_test;
 pub mod signin_test;
 pub mod validation_test;
 pub mod webhook_count_gate_test;

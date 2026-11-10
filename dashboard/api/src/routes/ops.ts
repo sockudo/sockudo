@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { createRequireAuth } from "../auth/middleware.ts";
 import type { UsersRepository } from "../db/users-repository.ts";
+import type { AppsRepository } from "../db/types.ts";
 import type { AppVariables } from "../types/hono.ts";
 import { config } from "../config.ts";
 import {
@@ -13,7 +14,10 @@ import {
   summarizeMetrics,
 } from "../services/sockudo.ts";
 
-export function createOpsRoutes(usersRepo: UsersRepository) {
+export function createOpsRoutes(
+  usersRepo: UsersRepository,
+  appsRepo: AppsRepository,
+) {
   const opsRoutes = new Hono<{ Variables: AppVariables }>();
   const requireAuth = createRequireAuth(usersRepo);
 
@@ -21,7 +25,7 @@ export function createOpsRoutes(usersRepo: UsersRepository) {
 
   opsRoutes.get("/stats", async (c) => {
     try {
-      return c.json(await fetchSockudoStats());
+      return c.json(await fetchSockudoStats(await appsRepo.list()));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Stats unavailable";
       return c.json({ error: message }, 502);

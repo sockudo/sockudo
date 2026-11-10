@@ -1,6 +1,6 @@
 #[cfg(feature = "push")]
 pub(crate) mod push;
-mod router;
+pub(crate) mod router;
 mod runtime;
 mod server;
 

@@ -48,9 +48,41 @@ pub async fn pusher_api_auth_middleware(
     tracing::debug!("Entering Pusher API Auth Middleware");
 
     let uri = request.uri().clone();
-    let query_str_option = uri.query();
     let method = request.method().clone();
-    let path = uri.path().to_string();
+
+    // Buffer the request body for the body_md5 check.
+    let (parts, body) = request.into_parts();
+    let body_bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(err) => {
+            tracing::error!("auth request body buffering failed");
+            // TODO: HTTP response body disclosure
+            return Err(AppError::InternalError(format!(
+                "Failed to read request body: {err}"
+            )));
+        }
+    };
+    tracing::debug!(body_bytes = body_bytes.len(), "request body buffered");
+
+    let app = authenticate_pusher_request(&handler_state, method.as_str(), &uri, Some(&body_bytes))
+        .await?;
+    let mut request = HttpRequest::from_parts(parts, Body::from(body_bytes.clone()));
+    request.extensions_mut().insert(app);
+    Ok(next.run(request).await)
+}
+
+/// Validate a Pusher HTTP API signature and return the signing app.
+///
+/// Shared by [`pusher_api_auth_middleware`] and routes that dispatch between auth schemes
+/// themselves (for example `/stats` with Ably compatibility enabled).
+pub(crate) async fn authenticate_pusher_request(
+    handler_state: &Arc<ConnectionHandler>,
+    method: &str,
+    uri: &axum::http::Uri,
+    body: Option<&[u8]>,
+) -> Result<sockudo_core::app::App, AppError> {
+    let query_str_option = uri.query();
+    let path = uri.path();
 
     // 1. Extract Pusher's authentication query parameters
     let auth_q_params_struct: EventQuery = if let Some(query_str) = query_str_option {
@@ -68,38 +100,21 @@ pub async fn pusher_api_auth_middleware(
     // 2. Collect all query parameters (excluding auth_signature) for the signature string.
     let all_query_params_for_sig_map = get_params_for_signature(query_str_option)?;
 
-    // 3. Buffer the request body.
-    let (parts, body) = request.into_parts();
-    let body_bytes = match body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(err) => {
-            tracing::error!("auth request body buffering failed");
-            // TODO: HTTP response body disclosure
-            return Err(AppError::InternalError(format!(
-                "Failed to read request body: {err}"
-            )));
-        }
-    };
-    tracing::debug!(body_bytes = body_bytes.len(), "request body buffered");
-
-    // 4. Perform the authentication using AuthValidator.
+    // 3. Perform the authentication using AuthValidator.
     let auth_validator = AuthValidator::new(handler_state.app_manager().clone());
-
     match auth_validator
         .authenticate_pusher_api_request(
             &auth_q_params_struct,
-            method.as_str(),
-            &path,
+            method,
+            path,
             &all_query_params_for_sig_map,
-            Some(&body_bytes),
+            body,
         )
         .await
     {
         Ok(app) => {
             tracing::debug!(path = %path, "pusher API authentication successful");
-            let mut request = HttpRequest::from_parts(parts, Body::from(body_bytes.clone()));
-            request.extensions_mut().insert(app);
-            Ok(next.run(request).await)
+            Ok(app)
         }
         Err(e) => {
             tracing::warn!(path = %path, error = %e, "pusher API authentication failed");

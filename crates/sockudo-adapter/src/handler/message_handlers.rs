@@ -162,6 +162,27 @@ impl ConnectionHandler {
         app_config: &App,
         request: SubscriptionRequest,
     ) -> Result<()> {
+        // Resume positions that arrived before this subscription are replayed only after it
+        // succeeds, and dropped if it fails (GHSA-r5q6-rw3h-q24r).
+        #[cfg(feature = "recovery")]
+        if self.pending_resumes.contains_key(socket_id) {
+            let channel = request.channel.clone();
+            let result = self.subscribe_request(socket_id, app_config, request).await;
+            let flushed = self
+                .resume_pending_after_subscribe(socket_id, app_config, &channel, result.is_ok())
+                .await;
+            return result.and(flushed);
+        }
+
+        self.subscribe_request(socket_id, app_config, request).await
+    }
+
+    async fn subscribe_request(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        request: SubscriptionRequest,
+    ) -> Result<()> {
         let t_start = std::time::Instant::now();
 
         // Validate the request

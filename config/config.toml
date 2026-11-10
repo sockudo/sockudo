@@ -524,6 +524,10 @@ v2_ungraceful_timeout_seconds = 15
 
 [http_api]
 request_limit_in_mb = 10
+# Mounts GET /usage, /stats and /operator/stats. The stats routes require a
+# Pusher-signed request and only report the signing app. /up/{appId} answers
+# like /up and does not reveal whether an app id exists.
+usage_enabled = true
 
 # /ready load-balancer capacity thresholds, as fractions of max_connections.
 # /up continues to report dependency health independently of capacity.

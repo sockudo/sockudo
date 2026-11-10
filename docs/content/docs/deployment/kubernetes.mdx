@@ -259,7 +259,7 @@ Use different endpoints for different decisions:
 | --- | --- | --- |
 | Startup | `/live` | The process has started. |
 | Liveness | `/live` | The process runtime is alive. |
-| Readiness | `/up` or `/up/<app-id>` | Required apps and shared dependencies are available. |
+| Readiness | `/up` or `/up/<app-id>` | At least one app is configured and shared dependencies are available. `/up/<app-id>` answers like `/up` and does not check that specific app. |
 | New-connection admission | `/accept-traffic` | The pod is not draining or shedding new connections under memory pressure. |
 
 Do not use dependency-aware `/up` as liveness. Restarting every pod because Redis is slow creates a

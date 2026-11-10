@@ -877,7 +877,11 @@ async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
         "live update must preserve its already-reserved recovery position"
     );
 
-    let (resume_socket, mut resume_reader) = connect_v2_socket(&harness).await;
+    // Replay honours the socket's append mode; Full mode receives the rolled-up text.
+    let (resume_socket, mut resume_reader) =
+        connect_v2_socket_with_append_mode(&harness, sockudo_protocol::AppendMode::Full).await;
+    // Recovery only replays channels the resuming socket is subscribed to.
+    subscribe_v2(&harness, &resume_socket, &mut resume_reader, channel, None).await;
     harness
         .handler
         .handle_resume(
@@ -1487,6 +1491,8 @@ async fn hot_recovery_replays_real_deliveries_e2e() {
     });
 
     let (resume_socket_id, mut resume_reader) = connect_v2_socket(&harness).await;
+    // Recovery only replays channels the resuming socket is subscribed to.
+    subscribe_v2(&harness, &resume_socket_id, &mut resume_reader, "hot", None).await;
     harness
         .handler
         .handle_resume(
@@ -1590,6 +1596,15 @@ async fn hot_recovery_resumes_idle_subscription_e2e() {
     });
 
     let (resume_socket_id, mut resume_reader) = connect_v2_socket(&harness).await;
+    // Recovery only replays channels the resuming socket is subscribed to.
+    subscribe_v2(
+        &harness,
+        &resume_socket_id,
+        &mut resume_reader,
+        "idle",
+        None,
+    )
+    .await;
     harness
         .handler
         .handle_resume(
@@ -1762,6 +1777,33 @@ async fn cold_recovery_replays_real_deliveries_e2e() {
         .await
         .unwrap();
 
+    // Recovery only replays channels the resuming socket is subscribed to.
+    handler_b
+        .handle_subscribe_request(
+            &resume_socket_id,
+            &harness_a.app,
+            SubscriptionRequest {
+                channel: "cold".to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "tag-filtering")]
+                predicate: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+                annotation_subscribe: false,
+            },
+        )
+        .await
+        .unwrap();
+    let subscribed = recv_message(&mut resume_reader).await;
+    assert_eq!(
+        subscribed.event.as_deref(),
+        Some("sockudo_internal:subscription_succeeded")
+    );
     let resume_payload = sonic_rs::json!({
         "channel_positions": {
             "cold": {
@@ -1838,6 +1880,9 @@ async fn partial_per_channel_recovery_results_surface_real_deliveries_e2e() {
     .await;
 
     let (socket_id, mut reader) = connect_v2_socket(&harness).await;
+    // Recovery only replays channels the resuming socket is subscribed to.
+    subscribe_v2(&harness, &socket_id, &mut reader, "good", None).await;
+    subscribe_v2(&harness, &socket_id, &mut reader, "bad", None).await;
     let payload = sonic_rs::json!({
         "channel_positions": {
             "good": {
