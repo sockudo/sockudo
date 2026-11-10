@@ -151,6 +151,13 @@ fn get_params_for_signature(
     Ok(params_map)
 }
 
+/// Whether the query string carries the parameters a Pusher signature needs.
+fn has_signature_params(query: Option<&str>) -> bool {
+    query
+        .and_then(|query| serde_urlencoded::from_str::<EventQuery>(query).ok())
+        .is_some_and(|params| !params.auth_key.is_empty() && !params.auth_signature.is_empty())
+}
+
 /// Axum middleware for Pusher API authentication.
 ///
 /// This middleware authenticates incoming requests based on the Pusher protocol,
@@ -166,10 +173,35 @@ pub async fn pusher_api_auth_middleware(
     let uri = request.uri().clone();
     let method = request.method().clone();
 
-    // Buffer the request body for the body_md5 check.
+    // Requests that cannot authenticate are rejected before any of their body is read.
+    if !has_signature_params(uri.query()) {
+        tracing::warn!("missing authentication query parameters");
+        return Err(AppError::InvalidInput(
+            "Missing authentication query parameters".to_string(),
+        ));
+    }
+
+    // Buffer the request body for the body_md5 check, capped at the configured request limit
+    // (`DefaultBodyLimit` only applies to extractors, not to this direct read).
+    let limit_bytes = usize::try_from(handler_state.server_options().http_api.request_limit_in_mb)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(1024 * 1024);
     let (parts, body) = request.into_parts();
-    let body_bytes = match body.collect().await {
+    let body_bytes = match http_body_util::Limited::new(body, limit_bytes)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
+        Err(err)
+            if err
+                .downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some() =>
+        {
+            return Err(AppError::PayloadTooLarge(format!(
+                "Request body exceeds {} MB",
+                handler_state.server_options().http_api.request_limit_in_mb
+            )));
+        }
         Err(err) => {
             tracing::error!("auth request body buffering failed");
             // TODO: HTTP response body disclosure
@@ -545,6 +577,14 @@ mod tests {
             .await
             .expect("infallible response");
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn signature_params_are_required_before_body_read() {
+        assert!(!has_signature_params(None));
+        assert!(!has_signature_params(Some("unit=minute")));
+        assert!(!has_signature_params(Some("auth_key=k")));
+        assert!(has_signature_params(Some("auth_key=k&auth_signature=s")));
     }
 
     #[test]

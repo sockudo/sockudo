@@ -377,6 +377,34 @@ impl ConnectionHandler {
             .is_some_and(|pending| pending.contains_key(channel))
     }
 
+    /// Parked channels a subscribe to `subscribed` will satisfy: the exact channel, or every
+    /// parked public channel a wildcard pattern matches. Bounded by
+    /// [`MAX_PENDING_RESUME_CHANNELS`].
+    pub(crate) fn pending_channels_for_subscription(
+        &self,
+        socket_id: &SocketId,
+        subscribed: &str,
+    ) -> Vec<String> {
+        let is_pattern = sockudo_core::utils::is_wildcard_subscription_pattern(subscribed);
+        self.pending_resumes
+            .get(socket_id)
+            .map(|pending| {
+                pending
+                    .keys()
+                    .filter(|channel| {
+                        channel.as_str() == subscribed
+                            || (is_pattern
+                                && sockudo_core::utils::channel_allows_wildcard_delivery(channel)
+                                && sockudo_core::utils::wildcard_pattern_matches(
+                                    channel, subscribed,
+                                ))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn park_pending_resume(
         &self,
         socket_id: &SocketId,

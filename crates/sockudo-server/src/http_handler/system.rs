@@ -920,6 +920,14 @@ mod tests {
     async fn multi_tenant_handler(
         metrics: Option<Arc<dyn sockudo_core::metrics::MetricsInterface + Send + Sync>>,
     ) -> Arc<ConnectionHandler> {
+        multi_tenant_handler_with_options(metrics, sockudo_core::options::ServerOptions::default())
+            .await
+    }
+
+    async fn multi_tenant_handler_with_options(
+        metrics: Option<Arc<dyn sockudo_core::metrics::MetricsInterface + Send + Sync>>,
+        options: sockudo_core::options::ServerOptions,
+    ) -> Arc<ConnectionHandler> {
         let app_manager = Arc::new(MemoryAppManager::new());
         app_manager
             .create_app(tenant_app("tenant-a"))
@@ -945,7 +953,7 @@ mod tests {
                 "test".to_string(),
                 MemoryCacheOptions::default(),
             )),
-            sockudo_core::options::ServerOptions::default(),
+            options,
         );
         if let Some(metrics) = metrics {
             builder = builder.metrics(metrics);
@@ -1013,6 +1021,51 @@ mod tests {
             );
             assert!(!body.contains("tenant-b"), "{path} leaked tenants: {body}");
         }
+    }
+
+    /// Greptile on sockudo/sockudo#558: unauthenticated callers must not make the server
+    /// buffer a request body, and authenticated buffering is capped.
+    #[tokio::test]
+    async fn signed_api_auth_never_buffers_unbounded_bodies() {
+        use tower::ServiceExt;
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.http_api.request_limit_in_mb = 1;
+        let handler = multi_tenant_handler_with_options(None, options).await;
+        let router = stats_router(&handler);
+
+        // No credentials and a body that never ends: rejected without reading it.
+        let never_ending = axum::body::Body::from_stream(futures_util::stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >());
+        let response = timeout(
+            Duration::from_secs(2),
+            router.clone().oneshot(
+                axum::http::Request::builder()
+                    .uri("/operator/stats")
+                    .body(never_ending)
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("unsigned request must be rejected before its body is read")
+        .unwrap();
+        assert!(response.status().is_client_error(), "{}", response.status());
+
+        // Auth parameters present but the body exceeds request_limit_in_mb.
+        let oversized = axum::body::Body::from(vec![b'x'; 2 * 1024 * 1024]);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(
+                        "/operator/stats?auth_key=tenant-a-key&auth_timestamp=1&auth_signature=bad",
+                    )
+                    .body(oversized)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

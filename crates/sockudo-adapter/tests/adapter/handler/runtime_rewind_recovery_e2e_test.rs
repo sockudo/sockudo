@@ -2192,12 +2192,22 @@ async fn build_peer_harness(
 /// after the replayed (older) messages.
 #[tokio::test]
 async fn parked_resume_holds_live_messages_until_replay_completes_e2e() {
+    assert_parked_resume_keeps_order("ordered", "ordered").await;
+}
+
+/// Same guarantee when a wildcard subscribe (`ordered.*`) satisfies a parked concrete
+/// channel (`ordered.1`).
+#[tokio::test]
+async fn wildcard_subscribe_holds_live_messages_for_parked_channel_e2e() {
+    assert_parked_resume_keeps_order("ordered.1", "ordered.*").await;
+}
+
+async fn assert_parked_resume_keeps_order(channel: &'static str, subscribe_to: &'static str) {
     let mut options = ServerOptions::default();
     options.history.enabled = true;
     options.connection_recovery.enabled = true;
     options.history.max_page_size = 100;
     let node_a = build_harness(options.clone()).await;
-    let channel = "ordered";
 
     let (source, mut source_reader) = connect_v2_socket(&node_a).await;
     subscribe_v2(&node_a, &source, &mut source_reader, channel, None).await;
@@ -2268,7 +2278,7 @@ async fn parked_resume_holds_live_messages_until_replay_completes_e2e() {
                 &socket,
                 &app,
                 SubscriptionRequest {
-                    channel: channel.to_string(),
+                    channel: subscribe_to.to_string(),
                     auth: None,
                     channel_data: None,
                     #[cfg(feature = "tag-filtering")]
@@ -2318,6 +2328,6 @@ async fn parked_resume_holds_live_messages_until_replay_completes_e2e() {
     assert_eq!(
         order,
         vec!["o-msg-2", "o-msg-3", "o-msg-live"],
-        "live traffic overtook the replay"
+        "live traffic overtook the replay ({channel} via {subscribe_to})"
     );
 }
