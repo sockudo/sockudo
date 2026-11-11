@@ -156,6 +156,11 @@ docs page for 5.2.0 workarounds.
   app's budget, so subsequent publishes in the same window still succeed.
 - A ping or pong received after the server sent its Close frame no longer marks
   the connection active again, which allowed sends after the Close.
+- History reads, rewind, and durable recovery no longer return entries older than the channel's
+  `retention_window_seconds` while they wait for the purge job (#536). Those pages report
+  `truncated_by_retention: true`, and a resume that needs an expired entry fails with
+  `position_expired`. `continuity.oldest_available_*` names the first readable entry, and reports
+  null while expired rows are still waiting for the purge.
 - Push queue work can run on standard SQS queues (`QUEUE_DRIVER=sqs`). The push queue attached a
   deduplication key to every job, which standard SQS rejects (`SQS deduplication keys require a
   FIFO queue`), so every push enqueue failed. It now sends the key only to backends that

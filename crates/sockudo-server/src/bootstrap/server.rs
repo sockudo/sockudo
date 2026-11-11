@@ -966,6 +966,14 @@ impl SockudoServer {
             );
         }
 
+        // Only the message history path is wrapped: presence history and the
+        // purge worker keep using the raw store.
+        let history_store: Arc<dyn sockudo_core::history::HistoryStore + Send + Sync> =
+            Arc::new(sockudo_core::history::RetentionWindowHistoryStore::new(
+                history_store,
+                state.app_manager.clone(),
+                config.history.clone(),
+            ));
         builder = builder.history_store(history_store);
         #[cfg(feature = "versioned-messages")]
         if config.versioned_messages.enabled {
