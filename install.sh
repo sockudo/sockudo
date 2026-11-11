@@ -126,7 +126,16 @@ ARCHIVE="sockudo-v${VERSION}-${TARGET}.tgz"
 DOWNLOAD_URL="${RELEASES_URL}/download/v${VERSION}/${ARCHIVE}"
 
 TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t sockudo-install) || fail "could not create a temporary directory"
-trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 
 say "Downloading Sockudo ${VERSION} for ${TARGET}..."
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
