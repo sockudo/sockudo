@@ -82,6 +82,7 @@ done
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v install >/dev/null 2>&1 || fail "install is required"
+command -v grep >/dev/null 2>&1 || fail "grep is required"
 
 [ "$(uname -s)" = "Linux" ] || fail "prebuilt binaries are available only for Linux; use 'cargo install sockudo' on other platforms"
 
