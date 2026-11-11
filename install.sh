@@ -111,11 +111,23 @@ if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
 fi
 VERSION=${VERSION#v}
 
+# Reject anything not permitted in SemVer.
 case "$VERSION" in
-  '' | [!0-9]* | *[!0-9A-Za-z.+-]*)
+  *[!0-9A-Za-z.+-]*)
     fail "invalid release version: $VERSION"
     ;;
 esac
+
+# Validate complete SemVersioning format.
+SEMVER_NUMERIC='(0|[1-9][0-9]*)'
+SEMVER_PRERELEASE='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+SEMVER_BUILD='[0-9A-Za-z-]+'
+
+SEMVER_PATTERN="^${SEMVER_NUMERIC}\.${SEMVER_NUMERIC}\.${SEMVER_NUMERIC}(-${SEMVER_PRERELEASE}(\.${SEMVER_PRERELEASE})*)?(\+${SEMVER_BUILD}(\.${SEMVER_BUILD})*)?$"
+
+if ! printf '%s\n' "$VERSION" | grep -Eq "$SEMVER_PATTERN"; then
+  fail "invalid release version: $VERSION (expected SemVer, e.g. 5.2.0 or 5.2.0-rc.1)"
+fi
 
 if [ -z "$BIN_DIR" ]; then
   [ -n "${HOME:-}" ] || fail "HOME is not set; pass --bin-dir"
