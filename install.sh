@@ -179,8 +179,6 @@ tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
 [ -f "$TMP_DIR/sockudo" ] ||
   fail "release archive does not contain the sockudo binary"
 
-[ -x "$TMP_DIR/sockudo" ] ||
-  fail "release archive contains a non-executable sockudo binary"
 
 
 mkdir -p "$BIN_DIR" || fail "could not create $BIN_DIR"
