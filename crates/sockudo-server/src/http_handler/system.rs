@@ -474,7 +474,7 @@ pub async fn up(
         )]),
     };
 
-    health_response(&handler, health_status, app_id_str)
+    health_response(health_status, app_id_str)
 }
 
 /// GET /up/{appId} on the internal metrics listener.
@@ -519,11 +519,10 @@ pub async fn app_health(
         ),
     };
 
-    health_response(&handler, health_status, &label)
+    health_response(health_status, &label)
 }
 
 fn health_response(
-    handler: &Arc<ConnectionHandler>,
     health_status: HealthStatus,
     metric_label: &str,
 ) -> Result<axum::http::Response<String>, AppError> {
@@ -556,12 +555,6 @@ fn health_response(
         HealthStatus::Error(_) => (StatusCode::SERVICE_UNAVAILABLE, "ERROR", "ERROR"),
         HealthStatus::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "NOT_FOUND"),
     };
-
-    // Directly, not through `record_api_metrics`: that helper opens its own `info` span, which
-    // would export as a root span on every probe now that `up` opens none at the default level.
-    if let Some(metrics) = handler.metrics() {
-        metrics.mark_api_message(metric_label, 0, status_text.len());
-    }
 
     Ok(axum::http::Response::builder()
         .status(status_code)
@@ -1209,6 +1202,36 @@ mod tests {
         assert_eq!(
             json["presence_history"]["reset_required_channels"].as_u64(),
             Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn health_probes_do_not_count_as_api_calls() {
+        let metrics = Arc::new(
+            sockudo_metrics::PrometheusMetricsDriver::new(0, Some("probe_count_test_")).await,
+        );
+        let handler = multi_tenant_handler(Some(metrics.clone())).await;
+        let router = axum::Router::new()
+            .route("/up", axum::routing::get(up))
+            .route("/up/{appId}", axum::routing::get(app_health))
+            .with_state(handler.clone());
+
+        assert_eq!(get(&router, "/up").await.0, StatusCode::OK);
+        assert_eq!(get(&router, "/up/tenant-a").await.0, StatusCode::OK);
+        assert_eq!(get(&router, "/up/probe-9").await.0, StatusCode::NOT_FOUND);
+
+        let exported =
+            sockudo_core::metrics::MetricsInterface::get_metrics_as_plaintext(metrics.as_ref())
+                .await;
+        // The registry is process-global: assert on this test's prefix, which renders
+        // nothing unless a probe incremented the counters.
+        assert!(
+            !exported.contains("probe_count_test_http_calls_received_total"),
+            "probes must not increment the REST API call counter:\n{exported}"
+        );
+        assert!(
+            !exported.contains("probe_count_test_http_transmitted_bytes"),
+            "probes must not increment the REST API byte counters:\n{exported}"
         );
     }
 }
