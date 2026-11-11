@@ -83,6 +83,8 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v install >/dev/null 2>&1 || fail "install is required"
 command -v grep >/dev/null 2>&1 || fail "grep is required"
+command -v gzip >/dev/null 2>&1 || fail "gzip is required"
+
 
 [ "$(uname -s)" = "Linux" ] || fail "prebuilt binaries are available only for Linux; use 'cargo install sockudo' on other platforms"
 
@@ -173,7 +175,13 @@ else
 fi
 
 tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
-[ -f "$TMP_DIR/sockudo" ] || fail "release archive does not contain the sockudo binary"
+
+[ -f "$TMP_DIR/sockudo" ] ||
+  fail "release archive does not contain the sockudo binary"
+
+[ -x "$TMP_DIR/sockudo" ] ||
+  fail "release archive contains a non-executable sockudo binary"
+
 
 mkdir -p "$BIN_DIR" || fail "could not create $BIN_DIR"
 
