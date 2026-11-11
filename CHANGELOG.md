@@ -60,6 +60,9 @@ docs page for 5.2.0 workarounds.
 
 ### Changed
 
+- `/up`, `/ready`, and `/up/{appId}` health probes no longer increment
+  `sockudo_http_calls_received_total` or the HTTP byte counters; the counters
+  now reflect REST API traffic only.
 - OpenTelemetry crates updated to 0.33.1 (`tracing-opentelemetry` 0.34.0). OTLP
   exports retry failed batches by default (3 retries, upstream exponential
   backoff); `[opentelemetry] max_retries` or `SOCKUDO_OTEL_MAX_RETRIES` changes
