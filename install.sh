@@ -141,8 +141,14 @@ DOWNLOAD_URL="${RELEASES_URL}/download/v${VERSION}/${ARCHIVE}"
 
 TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t sockudo-install) || fail "could not create a temporary directory"
 
+INSTALL_TMP=
+
 cleanup() {
-  rm -rf "$TMP_DIR"
+  rm -rf "$TMP_DIR" || :
+
+  if [ -n "$INSTALL_TMP" ]; then
+    rm -f "$INSTALL_TMP" || :
+  fi
 }
 
 trap cleanup EXIT
@@ -169,7 +175,20 @@ tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
 [ -f "$TMP_DIR/sockudo" ] || fail "release archive does not contain the sockudo binary"
 
 mkdir -p "$BIN_DIR" || fail "could not create $BIN_DIR"
-install -m 0755 "$TMP_DIR/sockudo" "$BIN_DIR/sockudo" || fail "could not install to $BIN_DIR; choose a writable --bin-dir"
+
+[ ! -d "$BIN_DIR/sockudo" ] ||
+  fail "$BIN_DIR/sockudo is a directory"
+
+INSTALL_TMP=$(mktemp "$BIN_DIR/.sockudo.XXXXXX") ||
+  fail "could not create a temporary file in $BIN_DIR"
+
+install -m 0755 "$TMP_DIR/sockudo" "$INSTALL_TMP" ||
+  fail "could not install to $BIN_DIR; choose a writable --bin-dir"
+
+mv -f "$INSTALL_TMP" "$BIN_DIR/sockudo" ||
+  fail "could not replace existing sockudo binary"
+
+INSTALL_TMP=
 
 say "Installed Sockudo ${VERSION} to $BIN_DIR/sockudo"
 case ":${PATH:-}:" in
