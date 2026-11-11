@@ -56,6 +56,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --version=*)
       VERSION=${1#*=}
+      [ -n "$VERSION" ] || fail "--version requires a value"
       shift
       ;;
     --bin-dir)
@@ -65,6 +66,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --bin-dir=*)
       BIN_DIR=${1#*=}
+      [ -n "$BIN_DIR" ] || fail "--bin-dir requires a value"
       shift
       ;;
     -h | --help)
