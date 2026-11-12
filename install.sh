@@ -56,6 +56,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --version=*)
       VERSION=${1#*=}
+      [ -n "$VERSION" ] || fail "--version requires a value"
       shift
       ;;
     --bin-dir)
@@ -65,6 +66,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --bin-dir=*)
       BIN_DIR=${1#*=}
+      [ -n "$BIN_DIR" ] || fail "--bin-dir requires a value"
       shift
       ;;
     -h | --help)
@@ -80,6 +82,9 @@ done
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v install >/dev/null 2>&1 || fail "install is required"
+command -v grep >/dev/null 2>&1 || fail "grep is required"
+command -v gzip >/dev/null 2>&1 || fail "gzip is required"
+
 
 [ "$(uname -s)" = "Linux" ] || fail "prebuilt binaries are available only for Linux; use 'cargo install sockudo' on other platforms"
 
@@ -111,11 +116,23 @@ if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
 fi
 VERSION=${VERSION#v}
 
+# Reject anything not permitted in SemVer.
 case "$VERSION" in
-  '' | [!0-9]* | *[!0-9A-Za-z.+-]*)
+  *[!0-9A-Za-z.+-]*)
     fail "invalid release version: $VERSION"
     ;;
 esac
+
+# Validate complete SemVersioning format.
+SEMVER_NUMERIC='(0|[1-9][0-9]*)'
+SEMVER_PRERELEASE='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+SEMVER_BUILD='[0-9A-Za-z-]+'
+
+SEMVER_PATTERN="^${SEMVER_NUMERIC}\.${SEMVER_NUMERIC}\.${SEMVER_NUMERIC}(-${SEMVER_PRERELEASE}(\.${SEMVER_PRERELEASE})*)?(\+${SEMVER_BUILD}(\.${SEMVER_BUILD})*)?$"
+
+if ! printf '%s\n' "$VERSION" | grep -Eq "$SEMVER_PATTERN"; then
+  fail "invalid release version: $VERSION (expected SemVer, e.g. 5.2.0 or 5.2.0-rc.1)"
+fi
 
 if [ -z "$BIN_DIR" ]; then
   [ -n "${HOME:-}" ] || fail "HOME is not set; pass --bin-dir"
@@ -126,7 +143,22 @@ ARCHIVE="sockudo-v${VERSION}-${TARGET}.tgz"
 DOWNLOAD_URL="${RELEASES_URL}/download/v${VERSION}/${ARCHIVE}"
 
 TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t sockudo-install) || fail "could not create a temporary directory"
-trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+
+INSTALL_TMP=
+
+cleanup() {
+  rm -rf "$TMP_DIR" || :
+
+  if [ -n "$INSTALL_TMP" ]; then
+    rm -f "$INSTALL_TMP" || :
+  fi
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 
 say "Downloading Sockudo ${VERSION} for ${TARGET}..."
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
@@ -143,10 +175,27 @@ else
 fi
 
 tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
-[ -f "$TMP_DIR/sockudo" ] || fail "release archive does not contain the sockudo binary"
+
+[ -f "$TMP_DIR/sockudo" ] ||
+  fail "release archive does not contain the sockudo binary"
+
+
 
 mkdir -p "$BIN_DIR" || fail "could not create $BIN_DIR"
-install -m 0755 "$TMP_DIR/sockudo" "$BIN_DIR/sockudo" || fail "could not install to $BIN_DIR; choose a writable --bin-dir"
+
+[ ! -d "$BIN_DIR/sockudo" ] ||
+  fail "$BIN_DIR/sockudo is a directory"
+
+INSTALL_TMP=$(mktemp "$BIN_DIR/.sockudo.XXXXXX") ||
+  fail "could not create a temporary file in $BIN_DIR"
+
+install -m 0755 "$TMP_DIR/sockudo" "$INSTALL_TMP" ||
+  fail "could not install to $BIN_DIR; choose a writable --bin-dir"
+
+mv -f "$INSTALL_TMP" "$BIN_DIR/sockudo" ||
+  fail "could not replace existing sockudo binary"
+
+INSTALL_TMP=
 
 say "Installed Sockudo ${VERSION} to $BIN_DIR/sockudo"
 case ":${PATH:-}:" in
