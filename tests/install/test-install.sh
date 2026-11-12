@@ -6,6 +6,7 @@
 
 set -eu
 
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 INSTALLER=${1:-"$REPO_ROOT/install.sh"}
@@ -48,6 +49,12 @@ TEST_COUNT=0
 PASS_COUNT=0
 FAIL_COUNT=0
 CASE_NUMBER=0
+
+DEFAULT_LIBC=gnu
+
+if [ -f /etc/alpine-release ]; then
+  DEFAULT_LIBC=musl
+fi
 
 cleanup_tests() {
   "$REAL_RM" -rf "$WORK"
@@ -583,17 +590,32 @@ section 'Platform and libc target selection.'
 new_case
 MOCK_UNAME_M=amd64
 expect_success 'amd64 maps to x86_64 target' --version 5.2.0 --bin-dir "$CASE_BIN"
-if assert_contains 'x86_64-unknown-linux-gnu' "$CURL_LOG"; then pass 'amd64 target name is correct'; else fail_test 'amd64 target name is correct'; fi
+
+if assert_contains "x86_64-unknown-linux-${DEFAULT_LIBC}" "$CURL_LOG"; then
+  pass 'amd64 target name is correct'
+else
+  fail_test 'amd64 target name is correct'
+fi
 
 new_case
 MOCK_UNAME_M=aarch64
-expect_success 'aarch64 GNU target installs' --version 5.2.0 --bin-dir "$CASE_BIN"
-if assert_contains 'aarch64-unknown-linux-gnu' "$CURL_LOG"; then pass 'aarch64 target name is correct'; else fail_test 'aarch64 target name is correct'; fi
+expect_success 'aarch64 default libc target installs' --version 5.2.0 --bin-dir "$CASE_BIN"
+
+if assert_contains "aarch64-unknown-linux-${DEFAULT_LIBC}" "$CURL_LOG"; then
+  pass 'aarch64 target name is correct'
+else
+  fail_test 'aarch64 target name is correct'
+fi
 
 new_case
 MOCK_UNAME_M=arm64
 expect_success 'arm64 maps to aarch64 target' --version 5.2.0 --bin-dir "$CASE_BIN"
-if assert_contains 'aarch64-unknown-linux-gnu' "$CURL_LOG"; then pass 'arm64 target name is correct'; else fail_test 'arm64 target name is correct'; fi
+
+if assert_contains "aarch64-unknown-linux-${DEFAULT_LIBC}" "$CURL_LOG"; then
+  pass 'arm64 target name is correct'
+else
+  fail_test 'arm64 target name is correct'
+fi
 
 new_case
 MOCK_LDD_OUTPUT='musl libc (x86_64)'
