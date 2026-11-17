@@ -1,5 +1,4 @@
-import { createTransport } from '@ably/ai-transport';
-import { createVercelCodec } from '@ably/ai-transport/vercel';
+import { vercelAdaptor, vercelDecoder } from '@ably/ai-transport/vercel';
 import { createRealtimeClient } from '@ably/pubsub-server';
 import assert from 'node:assert/strict';
 
@@ -52,8 +51,14 @@ function createRealtime(clientIdValue) {
     autoConnect: false,
   };
   if (clientIdValue) options.clientId = clientIdValue;
-  // `createTransport` accepts a Pub/Sub v3 client, so the harness creates one.
+  // The AI Transport adaptors and decoders publish on a Pub/Sub v3 channel.
   return createRealtimeClient(options);
+}
+
+async function teardownChannel(channel, decoder) {
+  channel.unsubscribe(decoder.receive);
+  // detach rejects once the connection is gone; closing the client is enough.
+  await channel.detach().catch(() => {});
 }
 
 function streamChunks(chunks) {
@@ -76,8 +81,19 @@ function textFromMessage(message) {
 
 const clientRealtime = createRealtime(clientId);
 const agentRealtime = createRealtime(agentClientId);
-let clientTransport;
-let agentTransport;
+// A decoder holds the per-serial state of the streams it reads, so the two
+// sides of this one process need one each, and each reads its own channel.
+// The 0.11 transport set echoMessages: false; in 1.0 that is a channel param.
+const channelOptions = { params: { echo: 'false' } };
+const clientChannel = clientRealtime.channels.get(channelName, channelOptions);
+const agentChannel = agentRealtime.channels.get(channelName, channelOptions);
+const clientAdaptor = vercelAdaptor(clientChannel);
+const agentAdaptor = vercelAdaptor(agentChannel);
+const clientDecoder = vercelDecoder();
+const agentDecoder = vercelDecoder();
+const decodeErrors = [];
+clientDecoder.onError((error) => decodeErrors.push(error));
+agentDecoder.onError((error) => decodeErrors.push(error));
 
 try {
   clientRealtime.connect();
@@ -85,21 +101,12 @@ try {
   await withTimeout(onceConnection(clientRealtime, 'connected'), 'client connect');
   await withTimeout(onceConnection(agentRealtime, 'connected'), 'agent connect');
 
-  // A codec holds decoder state, so the two sides of this one process need one each.
-  clientTransport = createTransport({
-    client: clientRealtime,
-    channelName,
-    codec: createVercelCodec(),
-  });
-  agentTransport = createTransport({
-    client: agentRealtime,
-    channelName,
-    codec: createVercelCodec(),
-  });
-
+  const seenClientEvents = [];
+  const seenAgentEvents = [];
   const inbound = withTimeout(
     new Promise((resolve) => {
-      agentTransport.subscribe(({ event }) => {
+      agentDecoder.onEvent(({ event }) => {
+        seenAgentEvents.push(event?.type);
         if (event?.type === 'user-message') resolve(event.message);
       });
     }),
@@ -108,22 +115,22 @@ try {
   const reply = withTimeout(
     new Promise((resolve) => {
       let text = '';
-      clientTransport.subscribe(({ event }) => {
+      clientDecoder.onEvent(({ event }) => {
+        seenClientEvents.push(event?.type);
         if (event?.type === 'text-delta') text += event.delta;
         if (event?.type === 'finish') resolve(text);
       });
     }),
     'client observed the reply',
   );
-  await withTimeout(
-    clientRealtime.channels.get(channelName).whenState('attached'),
-    'client attach',
-  );
-  await withTimeout(agentRealtime.channels.get(channelName).whenState('attached'), 'agent attach');
+  await withTimeout(clientChannel.subscribe(clientDecoder.receive), 'client subscribe');
+  await withTimeout(agentChannel.subscribe(agentDecoder.receive), 'agent subscribe');
+  await withTimeout(clientChannel.whenState('attached'), 'client attach');
+  await withTimeout(agentChannel.whenState('attached'), 'agent attach');
 
   const requestId = `user-${Date.now()}`;
   const { serial } = await withTimeout(
-    clientTransport.send(
+    clientAdaptor.send(
       {
         type: 'user-message',
         message: { id: requestId, role: 'user', parts: [{ type: 'text', text: prompt }] },
@@ -135,7 +142,7 @@ try {
   assert.equal(textFromMessage(await inbound), prompt);
 
   await withTimeout(
-    agentTransport.pipe(
+    agentAdaptor.pipe(
       streamChunks([
         { type: 'start', messageId: `assistant-${Date.now()}` },
         { type: 'text-start', id: 'answer' },
@@ -151,6 +158,21 @@ try {
 
   const text = await reply;
   assert.equal(text, 'Hello from Sockudo via stock @ably/ai-transport.');
+  assert.deepEqual(
+    decodeErrors.map((error) => error.message),
+    [],
+    'both decoders reported decode errors',
+  );
+  assert.deepEqual(
+    seenAgentEvents,
+    ['user-message'],
+    'the agent decoded exactly the user message',
+  );
+  assert.deepEqual(
+    seenClientEvents,
+    ['start', 'text-start', 'text-delta', 'text-delta', 'text-end', 'finish'],
+    'the client decoded the full assistant stream in order',
+  );
 
   console.log(
     JSON.stringify({
@@ -165,8 +187,8 @@ try {
     }),
   );
 } finally {
-  await clientTransport?.close().catch(() => {});
-  await agentTransport?.close().catch(() => {});
+  await teardownChannel(clientChannel, clientDecoder);
+  await teardownChannel(agentChannel, agentDecoder);
   clientRealtime.close();
   agentRealtime.close();
 }

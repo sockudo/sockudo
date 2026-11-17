@@ -612,9 +612,10 @@ The targets read these environment variables:
 
 `make ably-ai-demo` runs two headless demos:
 
-1. A stock `@ably/ai-transport@0.10.0` chat demo using `createTransport` with
-   the `@ably/ai-transport/vercel` codec, pinned `ably@2.30.0`, and Sockudo as
-   the configured endpoint.
+1. A stock `@ably/ai-transport@1.0.0` chat demo publishing through
+   `vercelAdaptor` and reading through `vercelDecoder` on a channel from
+   `@ably/pubsub-server`, pinned `ably@2.30.0`, with Sockudo as the configured
+   endpoint.
 2. A recovery/history demo that disconnects during an AI output stream, appends
    additional fragments while offline, reconnects with an Ably recovery key, and
    verifies that only missed fragments replay and the final aggregate is intact.

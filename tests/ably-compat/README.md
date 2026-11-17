@@ -3,9 +3,9 @@
 This harness points the unmodified Ably JavaScript SDKs, and one stock
 `@ably/ai-transport` smoke demo, at a local Sockudo server. Ably publishes two
 SDK lines: the 2.x `ably` package and the 3.x `@ably/pubsub-device` and
-`@ably/pubsub-server` packages. Both are covered; `@ably/ai-transport` 0.11
-peers on the 3.x packages, so the AI Transport demo builds its clients with
-`createRealtimeClient` from `@ably/pubsub-server`.
+`@ably/pubsub-server` packages. Both are covered; `@ably/ai-transport` 1.0
+publishes on a channel from the 3.x packages, so the AI Transport demo builds
+its clients with `createRealtimeClient` from `@ably/pubsub-server`.
 
 Required local service:
 
