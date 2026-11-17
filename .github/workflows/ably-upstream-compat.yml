@@ -496,8 +496,11 @@ jobs:
           npm ci --ignore-scripts
           npm install --no-save --ignore-scripts \
             ably@latest @ably/ai-transport@latest @ably/pubsub-device@latest @ably/pubsub-server@latest
+          # This job installs @latest over the manifest on purpose, so `npm ls`
+          # reports the pins as invalid and exits non-zero. Keep its output for
+          # the summary; a package that failed to install fails the harness.
           npm ls --depth=0 ably @ably/ai-transport @ably/pubsub-device @ably/pubsub-server \
-            | tee "${RUNNER_TEMP}/ably-published-sdks-versions.txt"
+            > "${RUNNER_TEMP}/ably-published-sdks-versions.txt" 2>&1 || true
           {
             echo "# Ably published SDKs"
             echo
