@@ -10,6 +10,19 @@ features = [
     "sockudo/postgres",
 ]
 
+[advisories]
+# `unmaintained` defaults to "workspace": unmaintained advisories on crates the
+# workspace depends on directly are errors. Keep that, and ignore only the
+# advisories that have no fix yet. Mirrors the RUSTSEC-* entries in
+# .cargo/audit.toml, which is the same policy for `cargo audit`.
+ignore = [
+    # RUSTSEC-2026-0543 — chrono is unmaintained (no fixed release).
+    # Direct dependency of sockudo-core, sockudo-metrics, sockudo-queue,
+    # sockudo-webhook, sockudo-ably-compat and rmcp/schemars. Remove once the
+    # workspace migrates off chrono (time or jiff).
+    "RUSTSEC-2026-0543",
+]
+
 [licenses]
 allow = [
     "0BSD",
