@@ -100,14 +100,18 @@ ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 
 # Build dependencies only (this layer is cached unless Cargo.toml files change)
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
-# Clean up dummy sources but keep compiled deps
+# Clean up dummy sources but keep compiled deps. The workspace fingerprints go
+# too: COPY keeps the checkout mtimes, which predate the stub sources, so cargo
+# would otherwise consider those crates fresh, skip the rebuild below, and ship
+# the `fn main() {}` stub binary.
 RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter mcp server simulator; do \
         rm -rf crates/sockudo-$dir/src; \
     done && \
     rm -rf crates/sockudo-push/examples crates/sockudo-queue/examples && \
     rm -rf crates/sockudo-ably-compat/benches && \
     rm -rf benches/ai/src benches/ai/benches && \
-    rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
+    rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo && \
+    rm -rf target/release/.fingerprint/sockudo-*
 
 # Copy actual source code
 COPY crates/ ./crates/
