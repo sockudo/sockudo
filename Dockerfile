@@ -30,57 +30,12 @@ WORKDIR /app
 # Preserve repo rustflags such as `--cfg tokio_unstable` inside Docker builds.
 COPY .cargo/ ./.cargo/
 
-# Copy workspace Cargo.toml and lockfile first for dependency caching
+# Copy the workspace and the real sources. Every workspace member lives under
+# crates/ or benches/ai (see the root Cargo.toml).
 COPY Cargo.toml ./
 COPY Cargo.loc[k] ./
-
-# Copy all crate Cargo.toml files to establish workspace structure
-COPY crates/sockudo-protocol/Cargo.toml crates/sockudo-protocol/Cargo.toml
-COPY crates/sockudo-filter/Cargo.toml crates/sockudo-filter/Cargo.toml
-COPY crates/sockudo-core/Cargo.toml crates/sockudo-core/Cargo.toml
-COPY crates/sockudo-app/Cargo.toml crates/sockudo-app/Cargo.toml
-COPY crates/sockudo-cache/Cargo.toml crates/sockudo-cache/Cargo.toml
-COPY crates/sockudo-queue/Cargo.toml crates/sockudo-queue/Cargo.toml
-COPY crates/sockudo-rate-limiter/Cargo.toml crates/sockudo-rate-limiter/Cargo.toml
-COPY crates/sockudo-metrics/Cargo.toml crates/sockudo-metrics/Cargo.toml
-COPY crates/sockudo-webhook/Cargo.toml crates/sockudo-webhook/Cargo.toml
-COPY crates/sockudo-delta/Cargo.toml crates/sockudo-delta/Cargo.toml
-COPY crates/sockudo-push/Cargo.toml crates/sockudo-push/Cargo.toml
-COPY crates/sockudo-ai-transport/Cargo.toml crates/sockudo-ai-transport/Cargo.toml
-COPY crates/sockudo-ably-compat/Cargo.toml crates/sockudo-ably-compat/Cargo.toml
-COPY crates/sockudo-adapter/Cargo.toml crates/sockudo-adapter/Cargo.toml
-COPY crates/sockudo-mcp/Cargo.toml crates/sockudo-mcp/Cargo.toml
-COPY crates/sockudo-server/Cargo.toml crates/sockudo-server/Cargo.toml
-COPY crates/sockudo-simulator/Cargo.toml crates/sockudo-simulator/Cargo.toml
-COPY benches/ai/Cargo.toml benches/ai/Cargo.toml
-
-# Create dummy lib.rs / main.rs for each crate so cargo can resolve the workspace
-# and build dependencies without the real source code
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter mcp; do \
-        mkdir -p crates/sockudo-$dir/src && \
-        echo "// dummy" > crates/sockudo-$dir/src/lib.rs; \
-    done && \
-    mkdir -p crates/sockudo-mcp/src/bin && \
-    echo "fn main() {}" > crates/sockudo-mcp/src/bin/sockudo-mcp.rs && \
-    mkdir -p crates/sockudo-push/examples && \
-    echo "fn main() {}" > crates/sockudo-push/examples/webpush_send.rs && \
-    mkdir -p crates/sockudo-queue/examples && \
-    echo "fn main() {}" > crates/sockudo-queue/examples/queue_bench.rs && \
-    mkdir -p crates/sockudo-ably-compat/benches && \
-    for bench in wire_codec compatibility_hot_paths fanout_grouping realtime_retry_id stats_recording ably_vcdiff; do \
-        echo "fn main() {}" > crates/sockudo-ably-compat/benches/$bench.rs; \
-    done && \
-    mkdir -p crates/sockudo-simulator/src && \
-    echo "fn main() {}" > crates/sockudo-simulator/src/main.rs && \
-    mkdir -p benches/ai/src && \
-    echo "// dummy" > benches/ai/src/lib.rs && \
-    mkdir -p benches/ai/benches && \
-    echo "fn main() {}" > benches/ai/benches/ai_hot_paths.rs && \
-    mkdir -p crates/sockudo-server/src && \
-    echo "fn main() {}" > crates/sockudo-server/src/main.rs
-
-# Generate lockfile if missing
-RUN test -f Cargo.lock || cargo generate-lockfile
+COPY crates/ ./crates/
+COPY benches/ai/ ./benches/ai/
 
 # The release image runs the in-process push pipeline workers. Custom worker/API
 # images can still override this build argument with a narrower feature set.
@@ -98,21 +53,9 @@ ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 ARG JEMALLOC_SYS_WITH_LG_PAGE=12
 ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 
-# Build dependencies only (this layer is cached unless Cargo.toml files change)
-RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
-# Clean up dummy sources but keep compiled deps
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter mcp server simulator; do \
-        rm -rf crates/sockudo-$dir/src; \
-    done && \
-    rm -rf crates/sockudo-push/examples crates/sockudo-queue/examples && \
-    rm -rf crates/sockudo-ably-compat/benches && \
-    rm -rf benches/ai/src benches/ai/benches && \
-    rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
-
-# Copy actual source code
-COPY crates/ ./crates/
-
-# Build the real binary
+# Build the release binary from the real sources in one pass. There is no stub
+# source or dependency warm-up layer, so cargo always compiles the actual code and
+# the image cannot ship a placeholder binary.
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
 
 # Strip the binary to reduce size
