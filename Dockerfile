@@ -119,10 +119,12 @@ COPY crates/ ./crates/
 # Build the real binary
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
 
-# Fail loudly instead of shipping the stub binary if the build above no-ops.
+# Fail loudly instead of shipping the stub binary if the build above no-ops. The
+# stub is ~0.3 MB; every real build is far above 1 MB, including the narrowest
+# SOCKUDO_FEATURES worker images.
 RUN size=$(stat -c %s target/release/sockudo) && \
-    if [ "$size" -lt 5000000 ]; then \
-        echo "refusing to ship ${size}-byte binary: the real build did not run" >&2; \
+    if [ "$size" -lt 1000000 ]; then \
+        echo "refusing to ship ${size}-byte stub binary: the real build did not run" >&2; \
         exit 1; \
     fi
 
