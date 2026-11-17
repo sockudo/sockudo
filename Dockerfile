@@ -107,13 +107,27 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
     rm -rf crates/sockudo-push/examples crates/sockudo-queue/examples && \
     rm -rf crates/sockudo-ably-compat/benches && \
     rm -rf benches/ai/src benches/ai/benches && \
-    rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
+    rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo && \
+    rm -rf target/release/.fingerprint/sockudo-*
 
 # Copy actual source code
 COPY crates/ ./crates/
 
+# COPY keeps the checkout mtimes, which can predate the stub sources written
+# above. Cargo then judges the workspace fresh and skips the real build, so the
+# image ships the `fn main() {}` stub from the dependency layer. Mark the real
+# sources as unambiguously newer.
+RUN find crates -name '*.rs' -exec touch {} +
+
 # Build the real binary
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
+
+# Fail loudly instead of shipping the stub binary if the build above no-ops.
+RUN size=$(stat -c %s target/release/sockudo) && \
+    if [ "$size" -lt 5000000 ]; then \
+        echo "refusing to ship ${size}-byte binary: the real build did not run" >&2; \
+        exit 1; \
+    fi
 
 # Strip the binary to reduce size
 RUN strip target/release/sockudo
