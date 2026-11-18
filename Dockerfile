@@ -7,7 +7,7 @@
 # -----------------------------------------------------------------------------
 # Build Stage: Compile the Rust application
 # -----------------------------------------------------------------------------
-FROM rust:1.99-bookworm AS builder
+FROM rust:1.100-bookworm AS builder
 
 # Install system dependencies required for building
 RUN apt-get update && apt-get install -y \
@@ -100,21 +100,23 @@ ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 
 # Build dependencies only (this layer is cached unless Cargo.toml files change)
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
-# Clean up dummy sources but keep compiled deps. The workspace fingerprints go
-# too: COPY keeps the checkout mtimes, which predate the stub sources, so cargo
-# would otherwise consider those crates fresh, skip the rebuild below, and ship
-# the `fn main() {}` stub binary.
+# Clean up dummy sources but keep compiled deps
 RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter mcp server simulator; do \
         rm -rf crates/sockudo-$dir/src; \
     done && \
     rm -rf crates/sockudo-push/examples crates/sockudo-queue/examples && \
     rm -rf crates/sockudo-ably-compat/benches && \
     rm -rf benches/ai/src benches/ai/benches && \
-    rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo && \
-    rm -rf target/release/.fingerprint/sockudo-*
+    rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
 
 # Copy actual source code
 COPY crates/ ./crates/
+
+# Cargo treats a unit as fresh when its sources are older than the build that
+# produced it. COPY keeps the checkout mtimes, which predate the stub sources
+# written above, so without this the real build is skipped and the image ships
+# the `fn main() {}` stub binary.
+RUN find crates -name '*.rs' -exec touch {} +
 
 # Build the real binary
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
