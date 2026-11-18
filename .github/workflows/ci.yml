@@ -113,6 +113,13 @@ jobs:
           sh -n install.sh
           shellcheck install.sh
 
+      - name: Check no manifest suppresses Cargo lints
+        run: |
+          if grep -rn '\[lints\.cargo\]' Cargo.toml crates/*/Cargo.toml benches/ai/Cargo.toml; then
+            echo "A manifest suppresses Cargo lints; only the Docker stub layer may do this." >&2
+            exit 1
+          fi
+
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 

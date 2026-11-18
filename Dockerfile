@@ -98,7 +98,11 @@ ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 ARG JEMALLOC_SYS_WITH_LG_PAGE=12
 ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 
-# Build dependencies only (this layer is cached unless Cargo.toml files change)
+# Build dependencies only (this layer is cached unless Cargo.toml files change).
+# The stub sources use none of the server's dependencies, so silence the
+# unused-dependency lint for this layer only; the real build below copies the
+# pristine crates/ back over and keeps the lint enabled.
+RUN printf '\n[lints.cargo]\nunused_dependencies = "allow"\n' >> crates/sockudo-server/Cargo.toml
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}"
 # Clean up dummy sources but keep compiled deps
 RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport ably-compat adapter mcp server simulator; do \
