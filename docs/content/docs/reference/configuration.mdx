@@ -457,12 +457,12 @@ network path is unavailable, messages in flight are not retained by a broker.
 ## Apache Iggy adapter and queue
 
 `adapter.driver = "iggy"` and `queue.driver = "iggy"` use Apache Iggy (build with
-the `iggy` Cargo feature). Sockudo ships the Iggy Rust SDK 0.11, which speaks
-the Iggy 0.9 server wire protocol: run Iggy server 0.9 or newer. Older 0.8.x
-servers are not wire-compatible, and Iggy 0.9 starts from a fresh data
-directory. An Iggy 0.9 server that binds a wildcard address (`0.0.0.0`) also
-needs `node.advertised_address` (`IGGY_NODE_ADVERTISED_ADDRESS`) set to the
-address clients dial.
+the `iggy` Cargo feature). Sockudo ships the Iggy Rust SDK 0.12, which speaks
+the Iggy binary protocol version 0.12.2: run a matching Iggy server release
+(mixed versions and rolling upgrades are unsupported, and the server refuses
+older data directories without `--fresh`). An Iggy server that binds a wildcard
+address (`0.0.0.0`) also needs `node.advertised_address`
+(`IGGY_NODE_ADVERTISED_ADDRESS`) set to the address clients dial.
 
 The same settings work for a single Iggy server and for a Viewstamped
 Replication (VSR) cluster. Against a cluster, the SDK reads the cluster roster
