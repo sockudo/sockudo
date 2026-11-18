@@ -29,10 +29,8 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.100.0
         id: toolchain
-        with:
-          toolchain: stable
 
       - name: Cache cargo registry
         uses: actions/cache/restore@v6
