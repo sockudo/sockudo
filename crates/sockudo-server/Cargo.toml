@@ -70,7 +70,6 @@ opentelemetry = [
   "dep:opentelemetry-appender-tracing",
   "dep:opentelemetry-http",
   "dep:opentelemetry-otlp",
-  "dep:opentelemetry-semantic-conventions",
   "dep:opentelemetry_sdk",
   "dep:tracing-opentelemetry",
   "sockudo-adapter/opentelemetry",
@@ -139,7 +138,6 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 axum-server = { workspace = true }
 clap = { workspace = true }
-cmake = { workspace = true }
 crossfire = { workspace = true }
 dashmap = { workspace = true }
 futures-util = { workspace = true }
@@ -153,7 +151,6 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry-appender-tracing = { workspace = true, optional = true }
 opentelemetry-http = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
-opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 rustls = { workspace = true }
 serde = { workspace = true }

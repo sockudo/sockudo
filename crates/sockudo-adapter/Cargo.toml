@@ -33,7 +33,6 @@ sockudo-protocol = { workspace = true }
 sockudo-filter = { workspace = true, optional = true }
 sockudo-delta = { workspace = true, optional = true }
 sockudo-ai-transport = { workspace = true, optional = true }
-sockudo-metrics = { workspace = true }
 sockudo-webhook = { workspace = true }
 
 ahash = { workspace = true }
@@ -49,7 +48,6 @@ futures-util = { workspace = true }
 google-cloud-pubsub = { workspace = true, optional = true }
 google-cloud-auth = { workspace = true, optional = true }
 lapin = { workspace = true, optional = true }
-mockall = { workspace = true }
 moka = { workspace = true }
 num_cpus = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
