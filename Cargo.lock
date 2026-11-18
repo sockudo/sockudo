@@ -48,6 +48,7 @@ dependencies = [
  "cipher 0.5.2",
  "cpubits",
  "cpufeatures 0.3.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -76,6 +77,22 @@ dependencies = [
  "ctr 0.10.1",
  "ctutils",
  "ghash 0.6.0",
+ "zeroize",
+]
+
+[[package]]
+name = "aes-gcm-siv"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c32325128cb24de2a2d14d92da7569dae7073f9e47334521d494747fa94d902"
+dependencies = [
+ "aead 0.6.1",
+ "aes 0.9.3",
+ "cipher 0.5.2",
+ "ctr 0.10.1",
+ "ctutils",
+ "polyval 0.7.3",
+ "zeroize",
 ]
 
 [[package]]
@@ -1278,18 +1295,18 @@ dependencies = [
 
 [[package]]
 name = "bon"
-version = "3.10.2"
+version = "3.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "214f5df094ce551a10a30ffb9c70243d61f121a3d985a6495933e181dee6a7d2"
+checksum = "a05442cd7005532d0cfedec676b5b9333d2b4c7c3afabe2b1a9ce2742fbe2ee6"
 dependencies = [
  "bon-macros",
 ]
 
 [[package]]
 name = "bon-macros"
-version = "3.10.2"
+version = "3.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2706da6c749998cc555d04184909608956a69ad3f8ab1a076fbc867b4a3c3ce5"
+checksum = "93833e97ac7c46ba97045afcf247238c27057538fcf2f06344662ddd5f567be6"
 dependencies = [
  "darling 0.24.1",
  "ident_case",
@@ -2883,6 +2900,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
 dependencies = [
  "polyval 0.7.3",
+ "zeroize",
 ]
 
 [[package]]
@@ -3459,7 +3477,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
@@ -3693,9 +3711,9 @@ dependencies = [
 
 [[package]]
 name = "iggy"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13d604e5573ec5f6bed2fcc3103f7d7ec2d42207312012b7d96487008a0c8d24"
+checksum = "cdbf0acb09194e396ddb5d412eacba62fb70ecb60c02e50677900cd3d752d0ba"
 dependencies = [
  "async-broadcast",
  "async-dropper",
@@ -3709,11 +3727,14 @@ dependencies = [
  "futures-util",
  "iggy_binary_protocol",
  "iggy_common",
+ "percent-encoding",
  "quinn",
+ "rand 0.10.3",
  "reqwest 0.13.5",
  "reqwest-middleware",
  "reqwest-retry",
  "reqwest-tracing",
+ "ring",
  "rustls",
  "secrecy",
  "serde",
@@ -3723,30 +3744,33 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing",
  "trait-variant",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
 name = "iggy_binary_protocol"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc1dfab100ec08e587dc5348c6cbfa52353d93e7cc03f63655e2251ac3adc230"
+checksum = "a2799893b814292b83ca4ba33242b90377f2cc06d4c35aa15343e89705d61727"
 dependencies = [
  "bytemuck",
  "bytes",
  "enumset",
+ "ring",
  "secrecy",
+ "serde",
  "thiserror",
  "twox-hash",
 ]
 
 [[package]]
 name = "iggy_common"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15e5cd528c3222e3e785148f1a888e736fa83a0bf429aec6f5a95a67fa7103a3"
+checksum = "f354bd7083ed284ee72cabcf22c5046732a49a8958571f5ca569eee4979996bb"
 dependencies = [
  "aes-gcm 0.11.1",
+ "aes-gcm-siv",
  "async-broadcast",
  "async-trait",
  "base64 0.23.1",
@@ -3761,6 +3785,7 @@ dependencies = [
  "humantime",
  "iggy_binary_protocol",
  "papaya",
+ "pin-project-lite",
  "ring",
  "secrecy",
  "serde",
@@ -5290,6 +5315,7 @@ dependencies = [
  "cpubits",
  "cpufeatures 0.3.1",
  "universal-hash 0.6.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -5936,7 +5962,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "url",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.12",
  "xxhash-rust",
 ]
 
@@ -6058,7 +6084,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
@@ -7848,7 +7874,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
@@ -8755,7 +8781,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.12",
  "zstd 0.14.3",
 ]
 
@@ -9367,14 +9393,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.10"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
+checksum = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297"
 dependencies = [
  "rustls-pki-types",
 ]

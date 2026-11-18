@@ -6,10 +6,10 @@ use bytes::Bytes;
 use dashmap::DashSet;
 use futures_util::StreamExt;
 use iggy::prelude::{
-    AutoCommit, Client, ClusterClient, ClusterNodeRole, ClusterNodeStatus, CompressionAlgorithm,
+    Client, ClusterClient, ClusterNodeRole, ClusterNodeStatus, CommitPolicy, CompressionAlgorithm,
     ConsumerGroupClient, Durability, HeaderKey, HeaderValue, IggyClient, IggyDuration, IggyError,
-    IggyExpiry, IggyMessage, IggyProducer, MaxTopicSize, NonZeroIggyDuration, Partitioning,
-    StreamClient, SystemClient, TopicClient, TopicCreateOptions, UserClient,
+    IggyExpiry, IggyMessage, IggyProducer, MaxTopicSize, Partitioning, PollOptions, StreamClient,
+    StreamCreateOptions, SystemClient, TopicClient, TopicCreateOptions, UserClient,
 };
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{
@@ -32,9 +32,6 @@ use tracing::{debug, error, info, warn};
 /// [`run_detached`].
 const MAX_DETACHED_CALLS: usize = 10_000;
 static DETACHED_CALLS: Semaphore = Semaphore::const_new(MAX_DETACHED_CALLS);
-
-/// Pause between producer send attempts while the cluster fails over.
-const SEND_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 const IGGY_QUEUE_ATTEMPT_HEADER: &str = "sockudo-delivery-attempt";
 struct QueuePublisher<'a> {
@@ -474,11 +471,15 @@ async fn build_queue_consumer(
     let mut consumer = client
         .consumer_group(group, stream, topic)
         .map_err(to_queue_error)?
-        .poll_interval(IggyDuration::from(Duration::from_millis(
-            config.poll_interval_ms,
-        )))
-        .batch_length(config.poll_batch_size)
-        .auto_commit(AutoCommit::Disabled)
+        .poll_options(PollOptions {
+            // The server holds the poll for up to `poll_interval_ms` before answering empty.
+            max_wait: IggyDuration::from(Duration::from_millis(config.poll_interval_ms)),
+            // Most messages fetched per poll request.
+            count: config.poll_batch_size,
+            // The application stores offsets itself, preserving at-least-once delivery.
+            commit: CommitPolicy::Manual,
+            ..PollOptions::default()
+        })
         .build();
     with_timeout(config, consumer.init()).await?;
     Ok(consumer)
@@ -497,7 +498,10 @@ async fn ensure_stream(client: &IggyClient, config: &IggyConfig, stream: &str) -
                 "Apache Iggy stream '{stream}' does not exist and auto_create is false"
             )));
         }
-        match client.create_stream(stream).await {
+        match client
+            .create_stream(stream, &StreamCreateOptions::default())
+            .await
+        {
             Ok(_) | Err(IggyError::StreamNameAlreadyExists(_)) => {}
             Err(error) => return Err(to_queue_error(error)),
         }
@@ -641,10 +645,6 @@ async fn build_queue_producer(
         .partitioning(Partitioning::balanced())
         .do_not_create_stream_if_not_exists()
         .do_not_create_topic_if_not_exists()
-        .send_retries(
-            Some(send_retry_count(config)),
-            NonZeroIggyDuration::new(SEND_RETRY_INTERVAL).ok(),
-        )
         .build();
     run_detached(config.request_timeout_ms, async move {
         producer.init().await.map(|()| producer)
@@ -751,15 +751,6 @@ where
             "Apache Iggy request timed out after {timeout_ms} ms"
         ))),
     }
-}
-
-/// Send attempts that fit the failover budget, so the SDK keeps retrying through an
-/// election for about as long as the caller is willing to wait.
-fn send_retry_count(config: &IggyConfig) -> u32 {
-    let interval_ms = SEND_RETRY_INTERVAL.as_millis() as u64;
-    u32::try_from(config.failover_timeout_ms.div_ceil(interval_ms))
-        .unwrap_or(u32::MAX)
-        .max(1)
 }
 
 async fn with_timeout<F, T>(config: &IggyConfig, future: F) -> Result<T>
@@ -899,9 +890,8 @@ fn to_queue_error(error: IggyError) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_detached, send_retry_count};
+    use super::run_detached;
     use iggy::prelude::IggyError;
-    use sockudo_core::options::IggyConfig;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -925,13 +915,5 @@ mod tests {
             finished.load(Ordering::SeqCst),
             "an abandoned SDK call must not be cancelled"
         );
-    }
-
-    #[test]
-    fn send_retries_span_the_failover_budget() {
-        let mut config = IggyConfig::default();
-        assert_eq!(send_retry_count(&config), 30);
-        config.failover_timeout_ms = 1;
-        assert_eq!(send_retry_count(&config), 1);
     }
 }
