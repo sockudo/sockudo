@@ -10,6 +10,7 @@ use sockudo_core::utils::{
     channel_allows_wildcard_delivery, is_wildcard_subscription_pattern, wildcard_pattern_matches,
 };
 use sockudo_core::websocket::WebSocketRef;
+use sockudo_protocol::WireFormat;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{
     AppendMode, MessageAction, clear_runtime_append_fragment, extract_runtime_action,
@@ -33,16 +34,38 @@ pub(crate) fn apply_append_mode(
     message
 }
 
-/// Prepare and serialize a V2 message (rewrite prefix, keep serial/message_id).
-pub(crate) fn prepare_v2_message(mut message: PusherMessage) -> Result<(PusherMessage, Bytes)> {
+/// A V2 message prepared once per fanout group: its encoded payload and the
+/// wire format that payload targets, plus the structured message when delta
+/// fanout is compiled in.
+pub(crate) struct PreparedV2Message {
+    /// Only delta fanout consumes the structured message; the shared-payload
+    /// path sends `payload` directly.
+    #[cfg(feature = "delta")]
+    pub message: PusherMessage,
+    pub payload: Bytes,
+    pub wire_format: WireFormat,
+}
+
+/// Prepare a V2 message and serialize it once for the given wire format.
+///
+/// JSON sockets receive text frames; MessagePack/Protobuf sockets receive the
+/// matching binary encoding. Callers partition sockets by wire format so this
+/// runs once per (append mode, wire format) group instead of once per socket.
+pub(crate) fn prepare_v2_message(
+    mut message: PusherMessage,
+    wire_format: WireFormat,
+) -> Result<PreparedV2Message> {
     clear_runtime_append_fragment(&mut message);
     message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
     message.idempotency_key = None;
-    let v2_bytes = Bytes::from(
-        sonic_rs::to_vec(&message)
-            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?,
-    );
-    Ok((message, v2_bytes))
+    let payload = sockudo_protocol::wire::serialize_message(&message, wire_format)
+        .map_err(Error::InvalidMessageFormat)?;
+    Ok(PreparedV2Message {
+        #[cfg(feature = "delta")]
+        message,
+        payload: Bytes::from(payload),
+        wire_format,
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -8,16 +8,31 @@ use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::namespace::{Namespace, SocketInitOptions};
 use sockudo_core::websocket::{SocketId, WebSocketRef};
+use sockudo_protocol::WireFormat;
 use sockudo_protocol::messages::{PusherMessage, generate_message_id};
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-fn partition_by_append_mode(sockets: Vec<WebSocketRef>) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
-    sockets
-        .into_iter()
-        .partition(|socket| socket.append_mode == sockudo_protocol::AppendMode::Delta)
+pub(super) fn partition_by_append_and_wire_format(
+    sockets: Vec<WebSocketRef>,
+) -> Vec<(
+    (sockudo_protocol::AppendMode, WireFormat),
+    Vec<WebSocketRef>,
+)> {
+    let mut groups: Vec<(
+        (sockudo_protocol::AppendMode, WireFormat),
+        Vec<WebSocketRef>,
+    )> = Vec::new();
+    for socket in sockets {
+        let key = (socket.append_mode, socket.wire_format);
+        match groups.iter_mut().find(|(existing, _)| *existing == key) {
+            Some((_, bucket)) => bucket.push(socket),
+            None => groups.push((key, vec![socket])),
+        }
+    }
+    groups
 }
 
 async fn send_v2_append_mode_groups(
@@ -25,17 +40,14 @@ async fn send_v2_append_mode_groups(
     message: PusherMessage,
     sockets: Vec<WebSocketRef>,
 ) -> Result<()> {
-    let (delta_sockets, full_sockets) = partition_by_append_mode(sockets);
-    for (append_mode, sockets) in [
-        (sockudo_protocol::AppendMode::Delta, delta_sockets),
-        (sockudo_protocol::AppendMode::Full, full_sockets),
-    ] {
-        if sockets.is_empty() {
-            continue;
-        }
+    for ((append_mode, wire_format), sockets) in partition_by_append_and_wire_format(sockets) {
         let mode_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
-        let (_, v2_bytes) = crate::v2_broadcast::prepare_v2_message(mode_message)?;
-        LocalAdapter::log_send_errors(adapter.send_messages_concurrent(sockets, v2_bytes).await);
+        let prepared = crate::v2_broadcast::prepare_v2_message(mode_message, wire_format)?;
+        LocalAdapter::log_send_errors(
+            adapter
+                .send_messages_concurrent(sockets, prepared.payload, prepared.wire_format)
+                .await,
+        );
     }
     Ok(())
 }
@@ -49,26 +61,15 @@ async fn send_v2_append_mode_groups_with_compression(
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     channel_settings: Option<&sockudo_delta::ChannelDeltaSettings>,
 ) -> Result<()> {
-    let (delta_sockets, full_sockets) = partition_by_append_mode(sockets);
-    for (append_mode, sockets) in [
-        (sockudo_protocol::AppendMode::Delta, delta_sockets),
-        (sockudo_protocol::AppendMode::Full, full_sockets),
-    ] {
-        if sockets.is_empty() {
-            continue;
-        }
-        let mut v2_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
-        v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
-        v2_message.idempotency_key = None;
-        let v2_event_name = v2_message.event.as_deref().unwrap_or("").to_string();
-        let v2_bytes = sonic_rs::to_vec(&v2_message)
-            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+    for ((append_mode, wire_format), sockets) in partition_by_append_and_wire_format(sockets) {
+        let mode_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
+        let prepared = crate::v2_broadcast::prepare_v2_message(mode_message, wire_format)?;
+        let v2_event_name = prepared.message.event.as_deref().unwrap_or("").to_string();
         LocalAdapter::log_send_errors(
             adapter
                 .send_messages_with_compression(
                     sockets,
-                    v2_message,
-                    v2_bytes,
+                    prepared,
                     channel,
                     &v2_event_name,
                     crate::connection_manager::CompressionParams {
@@ -719,5 +720,51 @@ impl ConnectionManager for LocalAdapter {
     ) -> Option<&dyn crate::connection_manager::HorizontalAdapterInterface> {
         // Local adapter doesn't support horizontal scaling
         None
+    }
+}
+
+#[cfg(all(test, feature = "delta"))]
+mod tests {
+    use super::partition_by_append_and_wire_format;
+    use crate::local_adapter::tests::socket_pair::{create_ws_pair, socket_ref};
+    use sockudo_protocol::{AppendMode, WireFormat};
+    use std::collections::HashSet;
+
+    #[tokio::test]
+    async fn partitions_by_append_mode_and_wire_format_without_loss() {
+        let (json_full_writer, _json_full_client) = create_ws_pair().await;
+        let (json_delta_writer, _json_delta_client) = create_ws_pair().await;
+        let (msgpack_writer, _msgpack_client) = create_ws_pair().await;
+
+        let json_full = socket_ref(json_full_writer, WireFormat::Json, AppendMode::Full);
+        let json_delta = socket_ref(json_delta_writer, WireFormat::Json, AppendMode::Delta);
+        let msgpack_full = socket_ref(msgpack_writer, WireFormat::MessagePack, AppendMode::Full);
+
+        let expected: HashSet<_> = [
+            json_full.socket_id,
+            json_delta.socket_id,
+            msgpack_full.socket_id,
+        ]
+        .into_iter()
+        .collect();
+
+        let groups = partition_by_append_and_wire_format(vec![
+            json_full.clone(),
+            json_delta.clone(),
+            msgpack_full.clone(),
+        ]);
+
+        assert_eq!(groups.len(), 3, "one bucket per (append mode, wire format)");
+        let mut seen = HashSet::new();
+        for ((append_mode, wire_format), sockets) in groups {
+            assert_eq!(sockets.len(), 1, "no socket may be duplicated or merged");
+            assert_eq!(
+                (append_mode, wire_format),
+                (sockets[0].append_mode, sockets[0].wire_format),
+                "bucket key must match its contents"
+            );
+            seen.insert(sockets[0].socket_id);
+        }
+        assert_eq!(seen, expected, "every socket must appear exactly once");
     }
 }

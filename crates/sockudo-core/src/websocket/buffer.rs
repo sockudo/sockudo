@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use crossfire::{TrySendError, mpsc};
+use sockudo_protocol::WireFormat;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
 use std::sync::Arc;
@@ -164,11 +165,13 @@ impl ByteCounter {
     }
 }
 
-/// Message wrapper that includes size for byte tracking
+/// Message wrapper that includes size for byte tracking and the wire format
+/// needed to pick the outbound frame kind (Text for JSON, Binary otherwise).
 #[derive(Debug)]
 pub struct SizedMessage {
     pub bytes: Bytes,
     pub size: usize,
+    pub wire_format: WireFormat,
 }
 
 #[derive(Debug, Clone)]
@@ -450,7 +453,16 @@ impl SizedMessageSenderHandle {
 impl SizedMessage {
     #[inline]
     pub fn new(bytes: Bytes) -> Self {
+        Self::with_wire_format(bytes, WireFormat::Json)
+    }
+
+    #[inline]
+    pub fn with_wire_format(bytes: Bytes, wire_format: WireFormat) -> Self {
         let size = bytes.len();
-        Self { bytes, size }
+        Self {
+            bytes,
+            size,
+            wire_format,
+        }
     }
 }
