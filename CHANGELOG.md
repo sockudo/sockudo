@@ -131,6 +131,17 @@ docs page for 5.2.0 workarounds.
 
 ### Fixed
 
+- History reads, rewind, and cold recovery no longer return entries older than the channel's
+  `retention_window_seconds` while they wait for the purge job (#536). Pages that drop expired
+  entries report `truncated_by_retention: true` and `complete: false`, and a cold resume that
+  needs an expired entry fails with `position_expired`. `continuity.oldest_available_*` is null
+  when the oldest stored entry has expired, instead of naming an entry reads skip.
+- Recovery no longer stops at the local replay tail when durable history is enabled, versioned
+  messages are off, and the resume has a matching `stream_id`. If the hot replay ends before the
+  durable reserved head, recovery reads durable history; cold recovery waits up to 500 ms for the
+  reserved serial to commit and otherwise rejects the resume with `persistence_unavailable` /
+  `durable_history_write_in_flight` (#535, #563). Messages held during the resume now pass the
+  same subscription filters as live fanout.
 - Delta compression is refused on MessagePack and Protobuf connections.
   Delta bases are the server's JSON serialization of each message, which a
   binary-format client never receives and cannot reproduce, so every delta
@@ -157,13 +168,23 @@ docs page for 5.2.0 workarounds.
 - The memory rate limiter no longer counts denied requests, matching the Redis
   drivers: an oversized `batch_events` request is rejected without consuming the
   app's budget, so subsequent publishes in the same window still succeed.
+- Signed HTTP API requests for a disabled app return `403` (`ApplicationDisabled`) after signature
+  verification. With a secret-encryption key configured, the Redis app cache stores an empty
+  `secret` plus a sealed `secret_enc` instead of the plaintext secret, and replaces legacy
+  plaintext entries on the next lookup (#526, #527, #546).
+- Ably AI Transport `rewind` accepts a message serial (a publish ack's `serials` value, which
+  contains `:`), replays `(target, attach high-water]` through the version store, and includes
+  updates and later appends to older messages. It returns `90003` for an unknown or expired
+  serial, a replay gap, or continuity it cannot verify; `90004` above 1,000 messages; `90005`
+  for a serial from another stream; and `40000` when versioned messages are disabled. Ably
+  clients receive these as `errorReason` on an `ATTACHED` response (#545).
+- Ably AI Transport accepts the upstream `extras.ai.codec` id string (up to 256 bytes) as well as
+  the legacy header map, and `null` values in `extras.headers`. JSON and MessagePack carry nulls;
+  Protobuf omits those keys, and older Protobuf nodes ignore the new codec id until all nodes are
+  upgraded. `@ably/ai-transport` publishes failed with `40000 Invalid extras` after the 2026-11-02
+  wire change (#519).
 - A ping or pong received after the server sent its Close frame no longer marks
   the connection active again, which allowed sends after the Close.
-- History reads, rewind, and durable recovery no longer return entries older than the channel's
-  `retention_window_seconds` while they wait for the purge job (#536). Those pages report
-  `truncated_by_retention: true`, and a resume that needs an expired entry fails with
-  `position_expired`. `continuity.oldest_available_*` names the first readable entry, and reports
-  null while expired rows are still waiting for the purge.
 - Push queue work can run on standard SQS queues (`QUEUE_DRIVER=sqs`). The push queue attached a
   deduplication key to every job, which standard SQS rejects (`SQS deduplication keys require a
   FIFO queue`), so every push enqueue failed. It now sends the key only to backends that
@@ -203,6 +224,23 @@ docs page for 5.2.0 workarounds.
   time and push `attempt` were ignored, and deferrals (scheduled provider retries, open circuit
   breakers, rate limiting) used up backend attempts until the job moved to the backend
   dead-letter queue, outside the push dead-letter list and replay API.
+
+### Performance
+
+- V2 fanout for non-delta sockets encodes a message once per `(append mode, wire format)` group
+  and shares a refcounted `Bytes` across sockets instead of encoding it per socket. In the
+  encoding benchmark, a 64 KB JSON message to 1,000 sockets drops from 3.06 ms to 13.1 µs;
+  MessagePack drops from 5.00 ms to 14.9 µs. These sends now use the broadcast queue budget and
+  honor `max_bytes` when configured (#586).
+- V2 fanout skips the per-subscriber channel-state scan when tag filtering is disabled, so it no
+  longer projects the message document for JMESPath predicates.
+  `apply_subscription_predicates_in_place` drops from 4.6% to 1.4% of server CPU samples in the
+  2,000-client probe (#560).
+- Idle Protocol V2 connections use about 70% less resident memory in the idle-connection
+  benchmark. The outbound queue allocates blocks on demand, per-socket maps use 4 shards, and the
+  new `[websocket] read_buffer_size` / `WEBSOCKET_READ_BUFFER_SIZE` (default `2048`, minimum
+  `1024`) sets the starting receive buffer. Larger frames grow it and it shrinks back when the
+  connection is quiet (#556).
 
 ## [5.2.0] - 2026-10-22
 
