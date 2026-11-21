@@ -6,7 +6,9 @@ use dashmap::DashMap;
 use papaya::HashMap as PapayaHashMap;
 use parking_lot::Mutex as ParkingMutex;
 use scc::{HashIndex as SccHashIndex, HashMap as SccHashMap};
+use sockudo_protocol::WireFormat;
 use sockudo_protocol::messages::PusherMessage;
+use sockudo_protocol::wire::serialize_message;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -21,6 +23,7 @@ static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
 static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static FANOUT_ALLOCATION_REPORT: Once = Once::new();
+static WIRE_FORMAT_ALLOCATION_REPORT: Once = Once::new();
 
 // SAFETY: every allocation operation delegates to the process system allocator.
 unsafe impl GlobalAlloc for CountingAllocator {
@@ -92,6 +95,81 @@ fn serialized_bytes_fanout(message: &PusherMessage, sockets: usize) -> usize {
             socket_bytes.len()
         })
         .sum()
+}
+
+/// Per-socket encode with the production serializer (includes the MessagePack
+/// `PusherMessage` clone + conversion).
+fn legacy_wire_fanout(message: &PusherMessage, wire_format: WireFormat, sockets: usize) -> usize {
+    (0..sockets)
+        .map(|_| serialize_message(message, wire_format).unwrap().len())
+        .sum()
+}
+
+/// Encode once per broadcast, then hand every socket a refcounted `Bytes`.
+fn shared_wire_fanout(message: &PusherMessage, wire_format: WireFormat, sockets: usize) -> usize {
+    let bytes = Bytes::from(serialize_message(message, wire_format).unwrap());
+    (0..sockets).map(|_| bytes.clone().len()).sum()
+}
+
+fn bench_wire_format_fanout(c: &mut Criterion) {
+    WIRE_FORMAT_ALLOCATION_REPORT.call_once(|| {
+        let message = fanout_message(64 * 1024);
+        for (label, wire_format) in [
+            ("json", WireFormat::Json),
+            ("msgpack", WireFormat::MessagePack),
+        ] {
+            let (_, legacy_allocations, legacy_bytes) =
+                measure_allocations(|| legacy_wire_fanout(&message, wire_format, 1_000));
+            let (_, shared_allocations, shared_bytes) =
+                measure_allocations(|| shared_wire_fanout(&message, wire_format, 1_000));
+            eprintln!(
+                "allocation_profile name=adapter_wire_format_fanout_1000x64k variant={label}_legacy allocations={legacy_allocations} allocated_bytes={legacy_bytes}"
+            );
+            eprintln!(
+                "allocation_profile name=adapter_wire_format_fanout_1000x64k variant={label}_shared allocations={shared_allocations} allocated_bytes={shared_bytes}"
+            );
+        }
+    });
+
+    let mut group = c.benchmark_group("adapter_wire_format_fanout");
+    for (label, wire_format) in [
+        ("json", WireFormat::Json),
+        ("msgpack", WireFormat::MessagePack),
+    ] {
+        for payload_bytes in [1_024_usize, 64 * 1_024] {
+            let message = fanout_message(payload_bytes);
+            for sockets in [1_usize, 100, 1_000] {
+                group.throughput(Throughput::Elements(sockets as u64));
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{label}_legacy_{payload_bytes}b"), sockets),
+                    &sockets,
+                    |b, &sockets| {
+                        b.iter(|| {
+                            black_box(legacy_wire_fanout(
+                                black_box(&message),
+                                wire_format,
+                                black_box(sockets),
+                            ))
+                        })
+                    },
+                );
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{label}_shared_{payload_bytes}b"), sockets),
+                    &sockets,
+                    |b, &sockets| {
+                        b.iter(|| {
+                            black_box(shared_wire_fanout(
+                                black_box(&message),
+                                wire_format,
+                                black_box(sockets),
+                            ))
+                        })
+                    },
+                );
+            }
+        }
+    }
+    group.finish();
 }
 
 fn bench_serialized_fanout(c: &mut Criterion) {
@@ -983,6 +1061,7 @@ criterion_group!(
     bench_compact_string_candidates,
     bench_concurrent_map_candidates,
     bench_subscription_count_notification_plans,
-    bench_serialized_fanout
+    bench_serialized_fanout,
+    bench_wire_format_fanout
 );
 criterion_main!(benches);

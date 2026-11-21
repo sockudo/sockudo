@@ -6,6 +6,9 @@ use sockudo_protocol::versioned_messages::{
 };
 use std::collections::HashMap;
 
+#[cfg(feature = "delta")]
+pub(crate) mod socket_pair;
+
 #[test]
 fn v1_compatible_message_strips_v2_only_fields_for_plain_messages() {
     let message = PusherMessage {

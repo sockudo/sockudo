@@ -117,7 +117,11 @@ impl MessageSender {
                                 broadcast_pending.fetch_sub(1, Ordering::Release);
                                 msg_count += 1;
                                 let msg_size = sized_msg.size;
-                                let msg = Message::Text(sized_msg.bytes);
+                                let msg = if sized_msg.wire_format.is_binary() {
+                                    Message::Binary(sized_msg.bytes)
+                                } else {
+                                    Message::Text(sized_msg.bytes)
+                                };
 
                                 if let Err(e) = socket.send(msg).await {
                                     Self::log_connection_error(

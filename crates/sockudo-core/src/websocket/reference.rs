@@ -106,6 +106,15 @@ impl WebSocketRef {
 
     #[inline]
     pub fn send_broadcast(&self, bytes: Bytes) -> Result<()> {
+        self.send_broadcast_frame(bytes, WireFormat::Json)
+    }
+
+    #[inline]
+    pub fn send_broadcast_frame(&self, bytes: Bytes, wire_format: WireFormat) -> Result<()> {
+        if self.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
+            return Err(Error::ConnectionClosed("Connection shutting down".into()));
+        }
+
         let msg_size = bytes.len();
 
         let byte_reservation = self
@@ -118,7 +127,7 @@ impl WebSocketRef {
             return self.handle_buffer_full("byte limit", byte_limit, Some(msg_size));
         }
 
-        let sized_msg = SizedMessage::new(bytes);
+        let sized_msg = SizedMessage::with_wire_format(bytes, wire_format);
 
         match self.broadcast_tx.try_send(sized_msg) {
             Ok(()) => Ok(()),

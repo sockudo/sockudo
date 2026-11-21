@@ -5,6 +5,7 @@ use bytes::Bytes;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketRef};
+use sockudo_protocol::WireFormat;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{MessageAction, extract_runtime_action};
 #[cfg(feature = "delta")]
@@ -12,8 +13,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 #[cfg(feature = "tag-filtering")]
 use std::sync::atomic::Ordering;
-#[cfg(feature = "delta")]
-use tracing::info;
 use tracing::{debug, warn};
 
 #[cfg(feature = "delta")]
@@ -21,20 +20,6 @@ fn hash_cached_base_message(base: &[u8]) -> u64 {
     let mut hasher = ahash::AHasher::default();
     base.hash(&mut hasher);
     hasher.finish()
-}
-
-#[cfg(feature = "delta")]
-/// Parameters for sending a message to a socket with compression
-#[allow(dead_code)]
-struct SocketMessageParams {
-    socket_ref: WebSocketRef,
-    base_message: Arc<PusherMessage>,
-    base_message_bytes: Arc<Vec<u8>>,
-    channel: Arc<str>,
-    event_name: Arc<str>,
-    delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
-    channel_settings: Option<Arc<sockudo_delta::ChannelDeltaSettings>>,
-    tag_filtering_enabled: bool,
 }
 
 #[cfg(feature = "delta")]
@@ -62,6 +47,7 @@ impl LocalAdapter {
         &self,
         target_socket_refs: Vec<WebSocketRef>,
         message_bytes: Bytes,
+        wire_format: WireFormat,
     ) -> Vec<Result<()>> {
         use futures::stream::{self, StreamExt};
 
@@ -94,7 +80,7 @@ impl LocalAdapter {
                     let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
                         .map(|socket_ref| {
                             let bytes = message_bytes.clone();
-                            async move { socket_ref.send_broadcast(bytes) }
+                            async move { socket_ref.send_broadcast_frame(bytes, wire_format) }
                         })
                         .buffer_unordered(chunk_size)
                         .collect()
@@ -121,14 +107,21 @@ impl LocalAdapter {
     pub(super) async fn send_messages_with_compression(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        base_message: PusherMessage,
-        base_message_bytes: Vec<u8>,
+        prepared: crate::v2_broadcast::PreparedV2Message,
         channel: &str,
         event_name: &str,
         compression: crate::connection_manager::CompressionParams<'_>,
     ) -> Vec<Result<()>> {
+        let crate::v2_broadcast::PreparedV2Message {
+            message: base_message,
+            payload: base_message_bytes,
+            wire_format,
+        } = prepared;
         let delta_compression = compression.delta_compression;
         let channel_settings = compression.channel_settings;
+
+        // Shared fanout keeps the refcounted Bytes; the delta path materializes
+        // an owned byte slice only when a delta-enabled socket exists.
 
         use futures::stream::{self, StreamExt};
 
@@ -154,7 +147,11 @@ impl LocalAdapter {
             let socket_id = socket_ref.get_socket_id_sync();
 
             // Check if socket has delta enabled for this specific channel
-            if delta_compression.is_enabled_for_socket_channel(socket_id, channel) {
+            // Delta compression operates on JSON bytes only; binary wire formats
+            // always take the shared-payload fanout below.
+            if !wire_format.is_binary()
+                && delta_compression.is_enabled_for_socket_channel(socket_id, channel)
+            {
                 debug!(socket_id = %socket_id, channel = %channel, "socket has delta compression enabled");
                 // Extract conflation key
                 let conflation_key_path = channel_settings
@@ -165,7 +162,7 @@ impl LocalAdapter {
 
                 let conflation_key = if let Some(path) = conflation_key_path {
                     let extracted = delta_compression
-                        .extract_conflation_key_from_path(&base_message_bytes, path);
+                        .extract_conflation_key_from_path(base_message_bytes.as_ref(), path);
                     debug!(
                         path = %path,
                         conflation_key = %extracted,
@@ -276,7 +273,7 @@ impl LocalAdapter {
                 {
                     // Compute delta ONCE for this group
                     match delta_compression
-                        .compute_delta_for_broadcast(&base_msg, &base_message_bytes)
+                        .compute_delta_for_broadcast(&base_msg, base_message_bytes.as_ref())
                     {
                         Ok(delta) => {
                             // Check if delta is beneficial
@@ -326,7 +323,6 @@ impl LocalAdapter {
         }
 
         let base_message = Arc::new(base_message);
-        let base_message_bytes = Arc::new(base_message_bytes);
         let channel: Arc<str> = Arc::from(channel);
         let event_name: Arc<str> = Arc::from(event_name);
         let channel_settings = channel_settings.cloned().map(Arc::new);
@@ -342,83 +338,91 @@ impl LocalAdapter {
         // Process chunks sequentially with controlled concurrency
         let mut results = Vec::with_capacity(socket_count);
 
-        // Process delta-enabled socket groups
-        for ((conflation_key, base_hash), group_sockets) in socket_groups {
-            let precomputed_delta = precomputed_deltas
-                .get(&(conflation_key.clone(), base_hash))
-                .and_then(|d| d.as_ref())
-                .cloned();
+        // Process delta-enabled socket groups. Only these sockets need an owned
+        // payload copy for their cached base messages, so it is materialized
+        // here and never for pure shared-payload fanout.
+        let delta_bytes =
+            (!socket_groups.is_empty()).then(|| Arc::new(base_message_bytes.to_vec()));
+        if let Some(delta_bytes) = delta_bytes {
+            for ((conflation_key, base_hash), group_sockets) in socket_groups {
+                let precomputed_delta = precomputed_deltas
+                    .get(&(conflation_key.clone(), base_hash))
+                    .and_then(|d| d.as_ref())
+                    .cloned();
 
-            for socket_chunk in group_sockets.chunks(socket_chunk_size) {
-                let chunk_size = socket_chunk.len();
+                for socket_chunk in group_sockets.chunks(socket_chunk_size) {
+                    let chunk_size = socket_chunk.len();
 
-                // Acquire permits for the entire chunk
-                match self
-                    .broadcast_semaphore
-                    .acquire_many(chunk_size as u32)
-                    .await
-                {
-                    Ok(_permits) => {
-                        // Process sockets in this chunk using buffered unordered streaming
-                        let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                        let base_msg = Arc::clone(&base_message);
-                        let base_bytes = Arc::clone(&base_message_bytes);
-                        let channel_str = Arc::clone(&channel);
-                        let event_str = Arc::clone(&event_name);
-                        let delta_comp = Arc::clone(&delta_compression);
-                        let ch_settings = channel_settings.clone();
-                        let precomp_delta = precomputed_delta.clone();
-                        let conf_key: Arc<str> = Arc::from(conflation_key.as_str());
+                    // Acquire permits for the entire chunk
+                    match self
+                        .broadcast_semaphore
+                        .acquire_many(chunk_size as u32)
+                        .await
+                    {
+                        Ok(_permits) => {
+                            // Process sockets in this chunk using buffered unordered streaming
+                            let chunk_vec: Vec<_> = socket_chunk.to_vec();
+                            let base_msg = Arc::clone(&base_message);
+                            let base_bytes = Arc::clone(&delta_bytes);
+                            let channel_str = Arc::clone(&channel);
+                            let event_str = Arc::clone(&event_name);
+                            let delta_comp = Arc::clone(&delta_compression);
+                            let ch_settings = channel_settings.clone();
+                            let precomp_delta = precomputed_delta.clone();
+                            let conf_key: Arc<str> = Arc::from(conflation_key.as_str());
 
-                        let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
-                            .map(|socket_ref| {
-                                let msg = Arc::clone(&base_msg);
-                                let bytes = Arc::clone(&base_bytes);
-                                let ch = Arc::clone(&channel_str);
-                                let ev = Arc::clone(&event_str);
-                                let dc = Arc::clone(&delta_comp);
-                                let settings = ch_settings.clone();
-                                let delta = precomp_delta.clone();
-                                let ck = Arc::clone(&conf_key);
+                            let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
+                                .map(|socket_ref| {
+                                    let msg = Arc::clone(&base_msg);
+                                    let bytes = Arc::clone(&base_bytes);
+                                    let ch = Arc::clone(&channel_str);
+                                    let ev = Arc::clone(&event_str);
+                                    let dc = Arc::clone(&delta_comp);
+                                    let settings = ch_settings.clone();
+                                    let delta = precomp_delta.clone();
+                                    let ck = Arc::clone(&conf_key);
 
-                                async move {
-                                    Self::send_to_socket_with_precomputed_delta(
-                                        PrecomputedDeltaParams {
-                                            socket_ref,
-                                            base_message: msg,
-                                            base_message_bytes: bytes,
-                                            channel: ch,
-                                            event_name: ev,
-                                            delta_compression: dc,
-                                            channel_settings: settings,
-                                            tag_filtering_enabled: tag_filtering,
-                                            precomputed_delta: delta,
-                                            conflation_key: ck,
-                                            base_hash,
-                                        },
-                                    )
-                                    .await
-                                }
-                            })
-                            .buffer_unordered(chunk_size)
-                            .collect()
-                            .await;
+                                    async move {
+                                        Self::send_to_socket_with_precomputed_delta(
+                                            PrecomputedDeltaParams {
+                                                socket_ref,
+                                                base_message: msg,
+                                                base_message_bytes: bytes,
+                                                channel: ch,
+                                                event_name: ev,
+                                                delta_compression: dc,
+                                                channel_settings: settings,
+                                                tag_filtering_enabled: tag_filtering,
+                                                precomputed_delta: delta,
+                                                conflation_key: ck,
+                                                base_hash,
+                                            },
+                                        )
+                                        .await
+                                    }
+                                })
+                                .buffer_unordered(chunk_size)
+                                .collect()
+                                .await;
 
-                        results.extend(chunk_results);
-                    }
-                    Err(_) => {
-                        // Return errors for all sockets if semaphore fails
-                        for _ in 0..chunk_size {
-                            results.push(Err(Error::Connection(
-                                "Broadcast semaphore unavailable".to_string(),
-                            )));
+                            results.extend(chunk_results);
+                        }
+                        Err(_) => {
+                            // Return errors for all sockets if semaphore fails
+                            for _ in 0..chunk_size {
+                                results.push(Err(Error::Connection(
+                                    "Broadcast semaphore unavailable".to_string(),
+                                )));
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Process non-delta sockets
+        // Process non-delta sockets. Every socket in this group shares the same
+        // pre-serialized payload: JSON goes out as a Text frame, binary wire
+        // formats as a Binary frame.
         for socket_chunk in non_delta_sockets.chunks(socket_chunk_size) {
             let chunk_size = socket_chunk.len();
 
@@ -429,35 +433,12 @@ impl LocalAdapter {
             {
                 Ok(_permits) => {
                     let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                    let base_msg = Arc::clone(&base_message);
-                    let base_bytes = Arc::clone(&base_message_bytes);
-                    let channel_str = Arc::clone(&channel);
-                    let event_str = Arc::clone(&event_name);
-                    let delta_comp = Arc::clone(&delta_compression);
-                    let ch_settings = channel_settings.clone();
+                    let shared = base_message_bytes.clone();
 
                     let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
                         .map(|socket_ref| {
-                            let msg = Arc::clone(&base_msg);
-                            let bytes = Arc::clone(&base_bytes);
-                            let ch = Arc::clone(&channel_str);
-                            let ev = Arc::clone(&event_str);
-                            let dc = Arc::clone(&delta_comp);
-                            let settings = ch_settings.clone();
-
-                            async move {
-                                Self::send_to_socket_with_compression(SocketMessageParams {
-                                    socket_ref,
-                                    base_message: msg,
-                                    base_message_bytes: bytes,
-                                    channel: ch,
-                                    event_name: ev,
-                                    delta_compression: dc,
-                                    channel_settings: settings,
-                                    tag_filtering_enabled: tag_filtering,
-                                })
-                                .await
-                            }
+                            let bytes = shared.clone();
+                            async move { socket_ref.send_broadcast_frame(bytes, wire_format) }
                         })
                         .buffer_unordered(chunk_size)
                         .collect()
@@ -476,166 +457,6 @@ impl LocalAdapter {
         }
 
         results
-    }
-
-    #[cfg(feature = "delta")]
-    /// Send a message to a single socket with delta compression support
-    ///
-    /// # Arguments
-    /// * `params` - Parameters for sending the message
-    async fn send_to_socket_with_compression(params: SocketMessageParams) -> Result<()> {
-        use sockudo_delta::CompressionResult;
-
-        let SocketMessageParams {
-            socket_ref,
-            base_message,
-            base_message_bytes,
-            channel,
-            event_name,
-            delta_compression,
-            channel_settings,
-            tag_filtering_enabled: _,
-        } = params;
-        let channel = channel.as_ref();
-        let event_name = event_name.as_ref();
-        let channel_settings = channel_settings.as_deref();
-
-        // Get socket ID and filter for this channel subscription (lock-free)
-        let socket_id = socket_ref.get_socket_id_sync();
-
-        // NOTE: Tag filtering already applied at broadcast level - no redundant check needed
-
-        // Only process delta compression if it's enabled for this socket
-        let compression_result =
-            if !delta_compression.is_enabled_for_socket_channel(socket_id, channel) {
-                CompressionResult::Uncompressed
-            } else {
-                // Compute compression WITHOUT sequence metadata
-                // Sequence changes every message and should not be part of delta base
-                delta_compression
-                    .compress_message(
-                        socket_id,
-                        channel,
-                        event_name,
-                        base_message_bytes.as_slice(),
-                        channel_settings,
-                    )
-                    .await?
-            };
-
-        match compression_result {
-            CompressionResult::Uncompressed => socket_ref.send_message(base_message.as_ref()),
-            CompressionResult::FullMessage {
-                sequence,
-                conflation_key,
-            } => {
-                // Store the message WITHOUT sequence/conflation_key for future delta compression
-                // The client strips these fields before storing, so we must match that behavior
-                info!(
-                    sequence = sequence,
-                    conflation_key = ?conflation_key,
-                    len_bytes = base_message_bytes.len(),
-                    "storing full base message"
-                );
-                if let Err(e) = delta_compression
-                    .store_shared_sent_message(
-                        socket_id,
-                        channel,
-                        event_name,
-                        Arc::clone(&base_message_bytes),
-                        true,
-                        channel_settings,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "failed to store full message for delta state");
-                }
-
-                let mut full_message = base_message.as_ref().clone();
-                full_message.delta_sequence = Some(sequence.into());
-                full_message.delta_conflation_key = conflation_key;
-                socket_ref.send_message(&full_message)
-            }
-            CompressionResult::Delta {
-                delta,
-                sequence,
-                algorithm,
-                conflation_key,
-                base_index,
-            } => {
-                // Send delta message
-                info!(
-                    sequence = sequence,
-                    base_index = ?base_index,
-                    conflation_key = ?conflation_key,
-                    delta_bytes = delta.len(),
-                    msg_bytes = base_message_bytes.len(),
-                    "sending delta message"
-                );
-                let algorithm_str = match algorithm {
-                    sockudo_delta::DeltaAlgorithm::Fossil => "fossil",
-                    sockudo_delta::DeltaAlgorithm::Xdelta3 => "xdelta3",
-                };
-
-                // Create delta message data
-                let mut delta_data = sonic_rs::json!({
-                    "event": event_name,
-                    "delta": base64::Engine::encode(
-                        &base64::engine::general_purpose::STANDARD,
-                        &delta,
-                    ),
-                    "seq": sequence,
-                    "algorithm": algorithm_str,
-                });
-
-                // Add conflation key and base index if available
-                if let Some(key) = conflation_key.clone() {
-                    delta_data["conflation_key"] = sonic_rs::Value::from(&key);
-                }
-                if let Some(idx) = base_index {
-                    delta_data["base_index"] = sonic_rs::Value::from(idx as u64);
-                }
-
-                // Wrap in Pusher message format
-                let mut pusher_msg = PusherMessage {
-                    event: Some("pusher:delta".to_string()),
-                    channel: Some(channel.to_string()),
-                    data: Some(sockudo_protocol::messages::MessageData::Json(delta_data)),
-                    name: None,
-                    user_id: None,
-                    tags: None,
-                    sequence: None,
-                    conflation_key: None,
-                    message_id: None,
-                    stream_id: None,
-                    serial: None,
-                    idempotency_key: None,
-                    extras: None,
-                    delta_sequence: None,
-                    delta_conflation_key: None,
-                };
-                if socket_ref.protocol_version == sockudo_protocol::ProtocolVersion::V2 {
-                    pusher_msg.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
-                }
-
-                // Store the ORIGINAL message bytes (without sequence/conflation_key metadata) for future delta computation
-                // The sequence changes every message, so it should not be part of the delta base
-                if let Err(e) = delta_compression
-                    .store_shared_sent_message(
-                        socket_id,
-                        channel,
-                        event_name,
-                        Arc::clone(&base_message_bytes),
-                        false,
-                        channel_settings,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "failed to store delta base message state");
-                }
-                socket_ref.send_message(&pusher_msg)
-            }
-        }
     }
 
     #[cfg(feature = "delta")]
@@ -904,7 +725,10 @@ impl LocalAdapter {
             sonic_rs::to_vec(&v1_message)
                 .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?,
         );
-        Self::log_send_errors(self.send_messages_concurrent(sockets, v1_bytes).await);
+        Self::log_send_errors(
+            self.send_messages_concurrent(sockets, v1_bytes, WireFormat::Json)
+                .await,
+        );
         Ok(())
     }
 
@@ -1149,5 +973,242 @@ impl LocalAdapter {
         );
 
         Some((count, newly_subscribed, activated))
+    }
+}
+
+#[cfg(all(test, feature = "delta"))]
+mod wire_format_fanout_tests {
+    use super::*;
+    use crate::connection_manager::CompressionParams;
+    use crate::local_adapter::tests::socket_pair::{create_ws_pair, next_frame, socket_ref};
+    use sockudo_delta::{DeltaCompressionConfig, DeltaCompressionManager};
+    use sockudo_protocol::{AppendMode, WireFormat, wire};
+
+    fn disabled_delta() -> Arc<DeltaCompressionManager> {
+        let config = DeltaCompressionConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        Arc::new(DeltaCompressionManager::new(config))
+    }
+
+    async fn fanout_one(wire_format: WireFormat) -> (Bytes, PusherMessage) {
+        let adapter = LocalAdapter::new();
+        let (writer, mut client) = create_ws_pair().await;
+        let socket = socket_ref(writer, wire_format, AppendMode::Full);
+
+        let message = PusherMessage::channel_event(
+            "test:event",
+            "test-channel",
+            sonic_rs::json!({ "payload": "x".repeat(1024) }),
+        );
+        let prepared = crate::v2_broadcast::prepare_v2_message(message, wire_format).unwrap();
+        let expected_message = prepared.message.clone();
+        let expected_payload = prepared.payload.clone();
+
+        let results = adapter
+            .send_messages_with_compression(
+                vec![socket.clone()],
+                prepared,
+                "test-channel",
+                "test:event",
+                CompressionParams {
+                    delta_compression: disabled_delta(),
+                    channel_settings: None,
+                    envelope: None,
+                },
+            )
+            .await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+
+        let frame = next_frame(&mut client).await;
+        match (&frame, wire_format) {
+            (sockudo_ws::Message::Text(got), WireFormat::Json) => {
+                assert_eq!(got, &expected_payload)
+            }
+            (sockudo_ws::Message::Binary(got), wf) => {
+                assert!(wf.is_binary());
+                assert_eq!(got, &expected_payload);
+            }
+            _ => panic!("unexpected frame for {wire_format:?}: {frame:?}"),
+        }
+
+        (expected_payload, expected_message)
+    }
+
+    #[tokio::test]
+    async fn json_fanout_sends_shared_text_payload() {
+        let (payload, prepared) = fanout_one(WireFormat::Json).await;
+        let decoded = wire::deserialize_message(&payload, WireFormat::Json).unwrap();
+        assert_eq!(decoded, prepared);
+        // Pin the bytes to the serializer the delta caches and rewind gates
+        // assume; a field-order change must fail here, not silently in prod.
+        let legacy_bytes = Bytes::from(sonic_rs::to_vec(&prepared).unwrap());
+        assert_eq!(payload, legacy_bytes);
+    }
+
+    #[tokio::test]
+    async fn messagepack_fanout_sends_shared_binary_payload() {
+        let (payload, prepared) = fanout_one(WireFormat::MessagePack).await;
+        let decoded = wire::deserialize_message(&payload, WireFormat::MessagePack).unwrap();
+        assert_eq!(decoded, prepared);
+    }
+
+    #[tokio::test]
+    async fn protobuf_fanout_sends_shared_binary_payload() {
+        let (payload, prepared) = fanout_one(WireFormat::Protobuf).await;
+        let decoded = wire::deserialize_message(&payload, WireFormat::Protobuf).unwrap();
+        assert_eq!(decoded, prepared);
+    }
+
+    async fn send_prepared_group(
+        adapter: &LocalAdapter,
+        message: &PusherMessage,
+        sockets: Vec<WebSocketRef>,
+        append_mode: AppendMode,
+        wire_format: WireFormat,
+    ) -> Bytes {
+        let mode_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
+        let prepared = crate::v2_broadcast::prepare_v2_message(mode_message, wire_format).unwrap();
+        let expected_payload = prepared.payload.clone();
+        let results = adapter
+            .send_messages_with_compression(
+                sockets,
+                prepared,
+                "test-channel",
+                "test:event",
+                CompressionParams {
+                    delta_compression: disabled_delta(),
+                    channel_settings: None,
+                    envelope: None,
+                },
+            )
+            .await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        expected_payload
+    }
+
+    #[tokio::test]
+    async fn mixed_wire_format_groups_receive_their_own_encoding() {
+        let adapter = LocalAdapter::new();
+        let (json_writer, mut json_client) = create_ws_pair().await;
+        let (msgpack_writer, mut msgpack_client) = create_ws_pair().await;
+
+        let json_socket = socket_ref(json_writer, WireFormat::Json, AppendMode::Full);
+        let msgpack_socket = socket_ref(msgpack_writer, WireFormat::MessagePack, AppendMode::Full);
+
+        let message = PusherMessage::channel_event(
+            "test:event",
+            "test-channel",
+            sonic_rs::json!({ "payload": "x".repeat(1024) }),
+        );
+
+        let groups =
+            crate::local_adapter::connection_manager::partition_by_append_and_wire_format(vec![
+                json_socket.clone(),
+                msgpack_socket.clone(),
+            ]);
+        assert_eq!(groups.len(), 2, "one group per wire format");
+
+        for ((append_mode, wire_format), sockets) in groups {
+            let expected =
+                send_prepared_group(&adapter, &message, sockets, append_mode, wire_format).await;
+
+            if wire_format.is_binary() {
+                match next_frame(&mut msgpack_client).await {
+                    sockudo_ws::Message::Binary(got) => assert_eq!(got, expected),
+                    other => panic!("expected binary frame for {wire_format:?}, got {other:?}"),
+                }
+            } else {
+                match next_frame(&mut json_client).await {
+                    sockudo_ws::Message::Text(got) => assert_eq!(got, expected),
+                    other => panic!("expected text frame for {wire_format:?}, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    fn enabled_delta() -> Arc<DeltaCompressionManager> {
+        let config = DeltaCompressionConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        Arc::new(DeltaCompressionManager::new(config))
+    }
+
+    async fn send_one_with_delta(
+        adapter: &LocalAdapter,
+        socket: &WebSocketRef,
+        manager: &Arc<DeltaCompressionManager>,
+        wire_format: WireFormat,
+        tick: usize,
+    ) {
+        let message = PusherMessage::channel_event(
+            "test:event",
+            "test-channel",
+            sonic_rs::json!({ "payload": "x".repeat(1024), "tick": tick }),
+        );
+        let prepared = crate::v2_broadcast::prepare_v2_message(message, wire_format).unwrap();
+        let results = adapter
+            .send_messages_with_compression(
+                vec![socket.clone()],
+                prepared,
+                "test-channel",
+                "test:event",
+                CompressionParams {
+                    delta_compression: Arc::clone(manager),
+                    channel_settings: None,
+                    envelope: None,
+                },
+            )
+            .await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+    }
+
+    #[tokio::test]
+    async fn delta_enabled_socket_still_receives_delta_frames() {
+        let adapter = LocalAdapter::new();
+        let (writer, mut client) = create_ws_pair().await;
+        let socket = socket_ref(writer, WireFormat::Json, AppendMode::Full);
+        let manager = enabled_delta();
+        manager.enable_for_socket(&socket.socket_id);
+
+        for tick in 0..3 {
+            send_one_with_delta(&adapter, &socket, &manager, WireFormat::Json, tick).await;
+            let sockudo_ws::Message::Text(bytes) = next_frame(&mut client).await else {
+                panic!("delta fanout must stay on text frames");
+            };
+            let message: PusherMessage =
+                wire::deserialize_message(&bytes, WireFormat::Json).unwrap();
+            let event = message.event.unwrap_or_default();
+            if tick < 2 {
+                assert_eq!(event, "test:event", "first two messages must be full bases");
+            } else {
+                assert_eq!(event, "sockudo:delta", "third message must be a delta");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn binary_socket_with_delta_enabled_receives_full_binary_frames() {
+        let adapter = LocalAdapter::new();
+        let (writer, mut client) = create_ws_pair().await;
+        let socket = socket_ref(writer, WireFormat::MessagePack, AppendMode::Full);
+        let manager = enabled_delta();
+        manager.enable_for_socket(&socket.socket_id);
+
+        for tick in 0..3 {
+            send_one_with_delta(&adapter, &socket, &manager, WireFormat::MessagePack, tick).await;
+            let sockudo_ws::Message::Binary(bytes) = next_frame(&mut client).await else {
+                panic!("binary fanout must stay on binary frames");
+            };
+            let message: PusherMessage =
+                wire::deserialize_message(&bytes, WireFormat::MessagePack).unwrap();
+            assert_eq!(
+                message.event.as_deref(),
+                Some("test:event"),
+                "delta compression is JSON-only; binary sockets must receive full messages"
+            );
+        }
     }
 }
