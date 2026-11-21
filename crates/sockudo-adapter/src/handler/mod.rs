@@ -931,6 +931,31 @@ impl ConnectionHandler {
             }
         };
 
+        // The reservation above only bounds this node. A clustered adapter
+        // reports peer sockets from `get_sockets_count`, so the app quota is
+        // checked across the cluster before the socket is registered.
+        if app_config.max_connections_limit() > 0
+            && self.connection_manager.as_horizontal_adapter().is_some()
+        {
+            let cluster_count = self
+                .connection_manager
+                .get_sockets_count(&app_config.id)
+                .await
+                .map_err(|e| {
+                    error!(app_id = %app_config.id, error = %e, "socket count lookup failed");
+                    Error::Internal("Failed to check connection quota".to_string())
+                })?;
+            if cluster_count >= app_config.max_connections_limit() as usize {
+                Self::send_error_frame(
+                    &mut socket_tx,
+                    &Error::OverConnectionQuota,
+                    wire_options.wire_format,
+                )
+                .await;
+                return Err(Error::OverConnectionQuota);
+            }
+        }
+
         // Remove any existing connection with the same socket_id (should be rare).
         // Balance the unconditional mark_new_connection below for the replaced
         // socket, otherwise the gauge leaks.
