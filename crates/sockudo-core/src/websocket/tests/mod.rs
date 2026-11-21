@@ -1124,6 +1124,28 @@ async fn test_shutdown_token_cancels_receiver() {
 }
 
 #[tokio::test]
+async fn close_after_shutdown_returns_connection_closed_without_mutating_status() {
+    use crate::error::Error;
+
+    let socket_id = SocketId::new();
+    let (writer, _client) = create_server_writer_with_client().await;
+    let mut ws = WebSocket::new(socket_id, writer);
+    ws.shutdown_token.cancel();
+
+    let result = ws.close(4200, "Server shutting down".to_string()).await;
+
+    assert!(
+        matches!(result, Err(Error::ConnectionClosed(_))),
+        "close() on a cancelled writer must report ConnectionClosed: {result:?}"
+    );
+    assert_eq!(
+        ws.state.status,
+        ConnectionStatus::Active,
+        "a close that never reached the writer must not mark the server close as started"
+    );
+}
+
+#[tokio::test]
 async fn close_frame_delivered_before_cancellation() {
     use sockudo_ws::Message;
 

@@ -10,13 +10,13 @@ use axum::response::Redirect;
 use axum::serve::IncomingStream;
 use axum::{BoxError, Router, ServiceExt};
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
-use futures_util::future::join_all;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use sockudo_core::error::{Error, Result};
-use sockudo_core::websocket::WebSocketRef;
+use sockudo_core::namespace::Namespace;
+use sockudo_core::websocket::{ConnectionStatus, SocketId};
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -26,9 +26,7 @@ use tokio::net::UnixListener;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tower::Layer;
-#[cfg(unix)]
-use tracing::debug;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(unix)]
 #[derive(Clone, Debug)]
@@ -508,9 +506,9 @@ impl SockudoServer {
     /// Used by direct `stop()` callers; the signal path uses
     /// [`Self::close_all_connections_paced`].
     pub(crate) async fn close_all_connections(&self) {
-        let connections = self.collect_live_connections().await;
+        let targets = self.collect_shutdown_targets().await;
         close_in_batches(
-            connections,
+            targets,
             Duration::ZERO,
             &CancellationToken::new(),
             close_for_shutdown,
@@ -538,23 +536,20 @@ impl SockudoServer {
                 _ = cancel.cancelled() => {}
             }
         }
-        let connections = self.collect_live_connections().await;
-        close_in_batches(connections, spread, cancel, close_for_shutdown).await;
+        let targets = self.collect_shutdown_targets().await;
+        close_in_batches(targets, spread, cancel, close_for_shutdown).await;
     }
 
-    async fn collect_live_connections(&self) -> Vec<WebSocketRef> {
-        let mut connections = Vec::new();
+    async fn collect_shutdown_targets(&self) -> Vec<(Arc<Namespace>, SocketId)> {
+        let mut targets = Vec::new();
 
         match self.state.connection_manager.get_namespaces().await {
             Ok(namespaces_vec) => {
-                for (app_id, namespace_obj) in namespaces_vec {
-                    match namespace_obj.get_sockets().await {
-                        Ok(sockets_vec) => {
-                            connections.extend(sockets_vec.into_iter().map(|(_, ws)| ws));
-                        }
-                        Err(e) => {
-                            warn!(%app_id, error = %e, "failed to get sockets for namespace during shutdown");
-                        }
+                for (_app_id, namespace) in namespaces_vec {
+                    let socket_ids = namespace.get_socket_ids();
+                    targets.reserve(socket_ids.len());
+                    for socket_id in socket_ids {
+                        targets.push((Arc::clone(&namespace), socket_id));
                     }
                 }
             }
@@ -564,10 +559,10 @@ impl SockudoServer {
         }
 
         info!(
-            connection_count = connections.len(),
+            connection_count = targets.len(),
             "collected connections to cleanup"
         );
-        connections
+        targets
     }
 
     pub(crate) async fn stop(&self) -> Result<()> {
@@ -677,11 +672,68 @@ impl SockudoServer {
     }
 }
 
-async fn close_for_shutdown(ws: WebSocketRef) {
-    let mut ws = ws.inner.lock().await;
-    if let Err(e) = ws.close(4200, "Server shutting down".to_string()).await {
-        error!(error = %e, "failed to close websocket");
+/// A close that cannot flush within this budget is abandoned: the token
+/// cancellation tears the socket down, and the spread keeps its schedule.
+const SHUTDOWN_SOCKET_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn close_for_shutdown((namespace, socket_id): (Arc<Namespace>, SocketId)) {
+    let Some(ws) = namespace.get_connection(&socket_id) else {
+        // Disconnected and removed during the spread window: nothing to close.
+        return;
+    };
+    if ws.shutdown_token.is_cancelled() {
+        // The writer task is already gone; no Close frame can reach the peer.
+        return;
     }
+    ws.mark_closing();
+
+    // One absolute budget for lock acquisition and the flush, matching the
+    // documented five-second per-socket bound.
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_SOCKET_CLOSE_TIMEOUT;
+
+    // Bound lock acquisition separately: a timeout here means no server Close
+    // started, so the socket must not be marked closed.
+    let mut socket = match tokio::time::timeout_at(deadline, ws.inner.lock()).await {
+        Ok(socket) => socket,
+        Err(elapsed) => {
+            ws.shutdown();
+            warn!(
+                %socket_id,
+                timeout_ms = SHUTDOWN_SOCKET_CLOSE_TIMEOUT.as_millis() as u64,
+                error = %elapsed,
+                "websocket close lock timed out during shutdown"
+            );
+            return;
+        }
+    };
+
+    // The flush deadline runs while the connection lock is held, so a timeout
+    // can abort the writer and clear watchdogs before releasing the guard.
+    match tokio::time::timeout_at(
+        deadline,
+        socket.close(4200, "Server shutting down".to_string()),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if matches!(&e, Error::ConnectionClosed(_)) => {
+            debug!(%socket_id, error = %e, "websocket already gone before shutdown close");
+        }
+        Ok(Err(e)) => warn!(%socket_id, error = %e, "failed to close websocket during shutdown"),
+        Err(elapsed) => {
+            socket.message_sender.abort_writer();
+            socket.state.clear_timeouts();
+            socket.state.status = ConnectionStatus::Closed;
+            warn!(
+                %socket_id,
+                timeout_ms = SHUTDOWN_SOCKET_CLOSE_TIMEOUT.as_millis() as u64,
+                error = %elapsed,
+                "websocket close timed out during shutdown"
+            );
+        }
+    }
+
+    ws.shutdown();
 }
 
 /// Granularity of paced shutdown closes: connections are closed in at most
@@ -724,6 +776,7 @@ async fn close_in_batches<T, F, Fut>(
 
     let started = tokio::time::Instant::now();
     let mut remaining = items.into_iter();
+    let mut in_flight = FuturesUnordered::new();
     let mut batch_index: u32 = 0;
     loop {
         let take = if cancel.is_cancelled() {
@@ -731,15 +784,24 @@ async fn close_in_batches<T, F, Fut>(
         } else {
             batch_size
         };
-        let batch: Vec<T> = remaining.by_ref().take(take).collect();
-        join_all(batch.into_iter().map(&close)).await;
+        for item in remaining.by_ref().take(take) {
+            in_flight.push(close(item));
+        }
         if remaining.len() == 0 {
+            while in_flight.next().await.is_some() {}
             break;
         }
         batch_index = batch_index.saturating_add(1);
-        tokio::select! {
-            _ = tokio::time::sleep_until(started + interval * batch_index) => {}
-            _ = cancel.cancelled() => {}
+        let next_tick = started + interval * batch_index;
+        // Drain finished closes while waiting for the next batch so a slow TCP
+        // flush cannot delay the schedule and burst the backlog later.
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep_until(next_tick) => break,
+                Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
+            }
         }
     }
     info!("All connection cleanup tasks have been processed.");
@@ -1191,6 +1253,40 @@ mod tests {
         })
         .await;
         Arc::try_unwrap(times).unwrap().into_inner().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_slow_close_does_not_delay_later_batches() {
+        let started = Instant::now();
+        let times = Arc::new(std::sync::Mutex::new(Vec::new()));
+        close_in_batches(
+            (0..10).collect(),
+            Duration::from_millis(200),
+            &CancellationToken::new(),
+            |item: usize| {
+                let times = times.clone();
+                async move {
+                    if item == 0 {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    times.lock().unwrap().push((item, started.elapsed()));
+                }
+            },
+        )
+        .await;
+
+        let times = Arc::try_unwrap(times).unwrap().into_inner().unwrap();
+        let last_started = times
+            .iter()
+            .filter(|(item, _)| *item != 0)
+            .map(|(_, elapsed)| *elapsed)
+            .max()
+            .unwrap();
+        assert!(
+            last_started < Duration::from_millis(700),
+            "a slow close delayed later batches: last non-slow close at {last_started:?}"
+        );
+        assert_eq!(times.len(), 10);
     }
 
     #[tokio::test]

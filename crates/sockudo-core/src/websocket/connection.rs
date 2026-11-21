@@ -78,28 +78,52 @@ impl WebSocket {
     }
 
     pub async fn close(&mut self, code: u16, reason: String) -> Result<()> {
-        match self.state.status {
-            ConnectionStatus::Closing | ConnectionStatus::Closed => {
-                debug!("Connection already closing or closed, skipping close frames");
-                return Ok(());
-            }
-            _ => {}
+        if matches!(
+            self.state.status,
+            ConnectionStatus::Closing | ConnectionStatus::Closed
+        ) {
+            debug!("Connection already closing or closed, skipping close frames");
+            return Ok(());
+        }
+
+        // The writer task exits as soon as its cancellation token fires (peer
+        // disconnect, write error, previous close), dropping the outbound receiver.
+        // No close frame can reach the peer after that: report it instead of first
+        // enqueueing a pusher:error frame that cannot be sent.
+        if self.shutdown_token.is_cancelled() {
+            self.state.clear_timeouts();
+            return Err(Error::ConnectionClosed(
+                "WebSocket writer already stopped".to_string(),
+            ));
         }
 
         // Send error message while connection still active
         if code >= 4000 {
             let error_message = PusherMessage::error(u32::from(code), reason.clone(), None);
             if let Err(e) = self.send_message(&error_message) {
-                warn!(error = %e, "failed to send error message before close");
+                match &e {
+                    Error::ConnectionClosed(_) | Error::BufferFull(_) => {
+                        debug!(error = %e, "error frame skipped before close");
+                    }
+                    _ => warn!(error = %e, "failed to send error message before close"),
+                }
             }
         }
 
         self.state.status = ConnectionStatus::Closing;
-        self.message_sender.send_close(code, &reason).await?;
+        let result = self.message_sender.send_close(code, &reason).await;
+        if result.is_err() {
+            // The Close frame could not be queued (full direct queue or a dead
+            // writer). Tear the connection down here: direct callers such as the
+            // app-availability sweep and the auth timeout call this method without
+            // WebSocketRef::close's token cancellation, and clearing the watchdogs
+            // below must not leave the socket registered with no close in flight.
+            self.shutdown_token.cancel();
+            self.message_sender.abort_writer();
+        }
         self.state.clear_timeouts();
         self.state.status = ConnectionStatus::Closed;
-
-        Ok(())
+        result
     }
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
