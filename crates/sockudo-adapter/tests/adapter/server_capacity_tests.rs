@@ -5,8 +5,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use sockudo_adapter::ConnectionManager;
+use sockudo_adapter::delegate_connection_manager;
 use sockudo_adapter::handler::ConnectionHandler;
 use sockudo_adapter::local_adapter::LocalAdapter;
+use sockudo_adapter::test_support::NoopConnectionManager;
 use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppLimitsPolicy, AppManager, AppPolicy};
 use sockudo_core::cache::CacheManager;
@@ -19,6 +21,7 @@ use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
 use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
 use sonic_rs::Value;
+use std::any::Any;
 use tokio::net::{TcpListener, TcpStream};
 
 #[allow(dead_code)]
@@ -199,7 +202,38 @@ async fn make_full_ws_pair() -> (WebSocket, WebSocketStream<WsStream<Http1>>) {
     (server_ws, client_ws)
 }
 
-#[tokio::test]
+async fn wait_for(mut condition: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("condition was not reached");
+}
+
+fn spawn_socket(
+    handler: &ConnectionHandler,
+    socket: WebSocket,
+) -> tokio::task::JoinHandle<Result<()>> {
+    let handler = handler.clone();
+    tokio::spawn(async move {
+        handler
+            .handle_socket(
+                socket,
+                APP_KEY.to_string(),
+                None,
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+                None,
+            )
+            .await
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_max_connections_rejects_over_capacity() {
     let app_manager = Arc::new(MemoryAppManager::new());
     app_manager.create_app(make_app(0)).await.unwrap();
@@ -224,40 +258,14 @@ async fn server_max_connections_rejects_over_capacity() {
     .metrics(metrics.clone())
     .build();
 
-    let socket_id_1 = SocketId::new();
-    let (writer1, _client1) = make_ws_pair().await;
-    adapter
-        .add_socket(
-            socket_id_1,
-            writer1,
-            APP_ID,
-            app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
-            WebSocketBufferConfig::default(),
-            ProtocolVersion::V1,
-            WireFormat::Json,
-            true,
-            sockudo_protocol::AppendMode::Delta,
-        )
-        .await
-        .unwrap();
-
-    let socket_id_2 = SocketId::new();
-    let (writer2, _client2) = make_ws_pair().await;
-    adapter
-        .add_socket(
-            socket_id_2,
-            writer2,
-            APP_ID,
-            app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
-            WebSocketBufferConfig::default(),
-            ProtocolVersion::V1,
-            WireFormat::Json,
-            true,
-            sockudo_protocol::AppendMode::Delta,
-        )
-        .await
-        .unwrap();
-
+    let mut _clients = Vec::new();
+    let mut tasks = Vec::new();
+    for _ in 0..2 {
+        let (server_ws, client) = make_full_ws_pair().await;
+        _clients.push(client);
+        tasks.push(spawn_socket(&handler, server_ws));
+    }
+    wait_for(|| metrics.new_connections() == 2).await;
     assert_eq!(
         adapter.get_total_sockets_count(),
         2,
@@ -265,7 +273,6 @@ async fn server_max_connections_rejects_over_capacity() {
     );
 
     let (server_ws, _client) = make_full_ws_pair().await;
-
     let result = handler
         .handle_socket(
             server_ws,
@@ -285,9 +292,147 @@ async fn server_max_connections_rejects_over_capacity() {
     );
     assert_eq!(
         metrics.new_connections(),
-        0,
+        2,
         "mark_new_connection must NOT be called on capacity rejection"
     );
+    assert_eq!(
+        adapter.get_total_sockets_count(),
+        2,
+        "capacity rejection must not register a socket"
+    );
+
+    for task in tasks {
+        task.abort();
+    }
+}
+
+/// Registers sockets only after the test opens the gate, so competing upgrades
+/// reach the admission decision together instead of one at a time.
+struct GatedAdapter {
+    gate: Arc<tokio::sync::Semaphore>,
+    entered: AtomicUsize,
+    registered: AtomicUsize,
+}
+
+#[async_trait]
+impl NoopConnectionManager for GatedAdapter {
+    async fn add_socket(
+        &self,
+        _socket_id: SocketId,
+        _socket: WebSocketWriter,
+        _app_id: &str,
+        _app_manager: Arc<dyn AppManager + Send + Sync>,
+        _buffer_config: WebSocketBufferConfig,
+        _protocol_version: ProtocolVersion,
+        _wire_format: WireFormat,
+        _echo_messages: bool,
+        _append_mode: sockudo_protocol::AppendMode,
+    ) -> Result<()> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        self.gate
+            .acquire()
+            .await
+            .map_err(|_| Error::ConnectionClosed("admission gate closed".to_string()))?
+            .forget();
+        self.registered.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+delegate_connection_manager!(GatedAdapter);
+
+/// Runs `ATTEMPTS` simultaneous upgrades against `node_limit`/`app_limit` and
+/// returns `(admitted, registered)`.
+async fn gated_admissions(node_limit: u32, app_limit: u32) -> (usize, usize) {
+    const ATTEMPTS: usize = 8;
+
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(make_app(app_limit)).await.unwrap();
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let adapter = Arc::new(GatedAdapter {
+        gate: gate.clone(),
+        entered: AtomicUsize::new(0),
+        registered: AtomicUsize::new(0),
+    });
+    let metrics = Arc::new(CountingMetrics::new());
+    let handler = ConnectionHandler::builder(
+        app_manager as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(NullCacheManager),
+        ServerOptions {
+            max_connections: node_limit,
+            ..Default::default()
+        },
+    )
+    .metrics(metrics.clone())
+    .build();
+
+    let mut _clients = Vec::new();
+    let mut tasks = Vec::new();
+    for _ in 0..ATTEMPTS {
+        let (server_ws, client) = make_full_ws_pair().await;
+        _clients.push(client);
+        tasks.push(spawn_socket(&handler, server_ws));
+    }
+
+    // Every attempt is now either parked in `add_socket` or already rejected.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.entered.load(Ordering::SeqCst)
+            + tasks.iter().filter(|task| task.is_finished()).count()
+            < ATTEMPTS
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("attempts never reached admission");
+
+    // Release every parked registration at once: without a reservation all of
+    // them would register, with one only the holders of a slot can.
+    let parked = adapter.entered.load(Ordering::SeqCst);
+    gate.add_permits(ATTEMPTS);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.registered.load(Ordering::SeqCst) < parked
+            || metrics.new_connections() < parked
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("admissions never settled");
+
+    let admitted = metrics.new_connections();
+    let registered = adapter.registered.load(Ordering::SeqCst);
+    for task in tasks {
+        task.abort();
+    }
+    (admitted, registered)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_admissions_never_exceed_node_capacity() {
+    let (admitted, registered) = gated_admissions(4, 0).await;
+
+    assert_eq!(
+        admitted, 4,
+        "concurrent upgrades must not overshoot max_connections"
+    );
+    assert_eq!(registered, 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_admissions_never_exceed_app_quota() {
+    let (admitted, registered) = gated_admissions(0, 4).await;
+
+    assert_eq!(
+        admitted, 4,
+        "concurrent upgrades must not overshoot the per-app quota"
+    );
+    assert_eq!(registered, 4);
 }
 
 #[cfg(target_os = "linux")]
