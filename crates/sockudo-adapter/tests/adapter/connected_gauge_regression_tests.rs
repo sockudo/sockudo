@@ -401,26 +401,38 @@ async fn connected_gauge_socket_replacement_nets_zero() {
 }
 
 // A quota rejection happens before registration, so neither counter moves.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connected_gauge_over_quota_never_increments() {
-    let app = make_app(1);
-
-    let app_manager = Arc::new(MemoryAppManager::new());
-    app_manager.create_app(app).await.unwrap();
-
     let metrics = Arc::new(CountingMetrics::new());
-
-    let handler = ConnectionHandler::builder(
-        app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(TestAdapter::with_count(1)) as Arc<dyn ConnectionManager + Send + Sync>,
-        Arc::new(NullCacheManager),
-        ServerOptions::default(),
-    )
-    .metrics(metrics.clone())
-    .build();
+    let (handler, _adapter, _app_manager) =
+        build_handler_with_local(make_app(1), metrics.clone()).await;
 
     let (server_ws, _client) = make_full_ws_pair().await;
+    let admitted_handler = handler.clone();
+    let admitted = tokio::spawn(async move {
+        admitted_handler
+            .handle_socket(
+                server_ws,
+                APP_KEY.to_string(),
+                None,
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+                None,
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while metrics.new_connections() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("first socket was not admitted");
+    assert_eq!(metrics.new_connections(), 1, "one connection registered");
 
+    let (server_ws, _client) = make_full_ws_pair().await;
     let result = handler
         .handle_socket(
             server_ws,
@@ -440,7 +452,7 @@ async fn connected_gauge_over_quota_never_increments() {
     );
     assert_eq!(
         metrics.new_connections(),
-        0,
+        1,
         "mark_new_connection must NOT be called on quota rejection"
     );
     assert_eq!(
@@ -448,7 +460,13 @@ async fn connected_gauge_over_quota_never_increments() {
         0,
         "mark_disconnection must NOT be called on quota rejection"
     );
-    assert_eq!(metrics.net(), 0, "gauge must remain untouched");
+    assert_eq!(
+        metrics.net(),
+        1,
+        "gauge must count only the admitted socket"
+    );
+
+    admitted.abort();
 }
 
 // While draining (running=false), is_accepting() is false, which is what /up and

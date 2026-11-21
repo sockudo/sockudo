@@ -5,8 +5,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use sockudo_adapter::ConnectionManager;
+use sockudo_adapter::connection_manager::HorizontalAdapterInterface;
+use sockudo_adapter::delegate_connection_manager;
 use sockudo_adapter::handler::ConnectionHandler;
 use sockudo_adapter::local_adapter::LocalAdapter;
+use sockudo_adapter::test_support::NoopConnectionManager;
 use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppLimitsPolicy, AppManager, AppPolicy};
 use sockudo_core::cache::CacheManager;
@@ -14,11 +17,14 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
+use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_protocol::{ProtocolVersion, WireFormat};
+use sockudo_ws::Message;
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
 use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
-use sonic_rs::Value;
+use sonic_rs::{JsonValueTrait, Value};
+use std::any::Any;
 use tokio::net::{TcpListener, TcpStream};
 
 #[allow(dead_code)]
@@ -199,7 +205,88 @@ async fn make_full_ws_pair() -> (WebSocket, WebSocketStream<WsStream<Http1>>) {
     (server_ws, client_ws)
 }
 
-#[tokio::test]
+async fn wait_for(mut condition: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("condition was not reached");
+}
+
+fn spawn_socket(
+    handler: &ConnectionHandler,
+    socket: WebSocket,
+) -> tokio::task::JoinHandle<Result<()>> {
+    let handler = handler.clone();
+    tokio::spawn(async move {
+        handler
+            .handle_socket(
+                socket,
+                APP_KEY.to_string(),
+                None,
+                ProtocolVersion::V1,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+                None,
+            )
+            .await
+    })
+}
+
+async fn capped_handler(
+    max_connections: u32,
+    app_limit: u32,
+) -> (ConnectionHandler, Arc<CountingMetrics>) {
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(make_app(app_limit)).await.unwrap();
+    let adapter = Arc::new(LocalAdapter::new());
+    adapter.init().await;
+    let metrics = Arc::new(CountingMetrics::new());
+    let handler = ConnectionHandler::builder(
+        app_manager as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(NullCacheManager),
+        ServerOptions {
+            max_connections,
+            ..Default::default()
+        },
+    )
+    .local_adapter(adapter)
+    .metrics(metrics.clone())
+    .build();
+    (handler, metrics)
+}
+
+async fn next_frame(client: &mut WebSocketStream<WsStream<Http1>>) -> Message {
+    tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("frame timed out")
+        .expect("socket closed before the rejection frame")
+        .expect("frame read failed")
+}
+
+fn decode_error(frame: Message, wire_format: WireFormat) -> (bool, PusherMessage) {
+    let (binary, bytes) = match frame {
+        Message::Text(bytes) => (false, bytes.to_vec()),
+        Message::Binary(bytes) => (true, bytes.to_vec()),
+        other => panic!("expected a data frame, got {other:?}"),
+    };
+    let message = sockudo_protocol::wire::deserialize_message(&bytes, wire_format)
+        .expect("rejection frame must decode in the negotiated format");
+    (binary, message)
+}
+
+fn error_code(message: &PusherMessage) -> Option<u64> {
+    match message.data.as_ref()? {
+        MessageData::Json(value) => value.get("code").and_then(|code| code.as_u64()),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_max_connections_rejects_over_capacity() {
     let app_manager = Arc::new(MemoryAppManager::new());
     app_manager.create_app(make_app(0)).await.unwrap();
@@ -224,40 +311,14 @@ async fn server_max_connections_rejects_over_capacity() {
     .metrics(metrics.clone())
     .build();
 
-    let socket_id_1 = SocketId::new();
-    let (writer1, _client1) = make_ws_pair().await;
-    adapter
-        .add_socket(
-            socket_id_1,
-            writer1,
-            APP_ID,
-            app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
-            WebSocketBufferConfig::default(),
-            ProtocolVersion::V1,
-            WireFormat::Json,
-            true,
-            sockudo_protocol::AppendMode::Delta,
-        )
-        .await
-        .unwrap();
-
-    let socket_id_2 = SocketId::new();
-    let (writer2, _client2) = make_ws_pair().await;
-    adapter
-        .add_socket(
-            socket_id_2,
-            writer2,
-            APP_ID,
-            app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
-            WebSocketBufferConfig::default(),
-            ProtocolVersion::V1,
-            WireFormat::Json,
-            true,
-            sockudo_protocol::AppendMode::Delta,
-        )
-        .await
-        .unwrap();
-
+    let mut _clients = Vec::new();
+    let mut tasks = Vec::new();
+    for _ in 0..2 {
+        let (server_ws, client) = make_full_ws_pair().await;
+        _clients.push(client);
+        tasks.push(spawn_socket(&handler, server_ws));
+    }
+    wait_for(|| metrics.new_connections() == 2).await;
     assert_eq!(
         adapter.get_total_sockets_count(),
         2,
@@ -265,7 +326,6 @@ async fn server_max_connections_rejects_over_capacity() {
     );
 
     let (server_ws, _client) = make_full_ws_pair().await;
-
     let result = handler
         .handle_socket(
             server_ws,
@@ -285,9 +345,223 @@ async fn server_max_connections_rejects_over_capacity() {
     );
     assert_eq!(
         metrics.new_connections(),
-        0,
+        2,
         "mark_new_connection must NOT be called on capacity rejection"
     );
+    assert_eq!(
+        adapter.get_total_sockets_count(),
+        2,
+        "capacity rejection must not register a socket"
+    );
+
+    for task in tasks {
+        task.abort();
+    }
+}
+
+/// Registers sockets only after the test opens the gate, so competing upgrades
+/// reach the admission decision together instead of one at a time.
+struct GatedAdapter {
+    gate: Arc<tokio::sync::Semaphore>,
+    entered: AtomicUsize,
+    registered: AtomicUsize,
+}
+
+#[async_trait]
+impl NoopConnectionManager for GatedAdapter {
+    async fn add_socket(
+        &self,
+        _socket_id: SocketId,
+        _socket: WebSocketWriter,
+        _app_id: &str,
+        _app_manager: Arc<dyn AppManager + Send + Sync>,
+        _buffer_config: WebSocketBufferConfig,
+        _protocol_version: ProtocolVersion,
+        _wire_format: WireFormat,
+        _echo_messages: bool,
+        _append_mode: sockudo_protocol::AppendMode,
+    ) -> Result<()> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        self.gate
+            .acquire()
+            .await
+            .map_err(|_| Error::ConnectionClosed("admission gate closed".to_string()))?
+            .forget();
+        self.registered.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+delegate_connection_manager!(GatedAdapter);
+
+/// Reports peer socket counts like a clustered adapter, so the app quota can be
+/// exercised without a real cluster.
+struct ClusterCountAdapter {
+    peer_sockets: usize,
+}
+
+#[async_trait]
+impl NoopConnectionManager for ClusterCountAdapter {
+    async fn get_sockets_count(&self, _app_id: &str) -> Result<usize> {
+        Ok(self.peer_sockets)
+    }
+
+    fn as_horizontal_adapter(&self) -> Option<&dyn HorizontalAdapterInterface> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+#[async_trait]
+impl HorizontalAdapterInterface for ClusterCountAdapter {
+    async fn broadcast_presence_join(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _user_id: &str,
+        _socket_id: &str,
+        _user_info: Option<Value>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn broadcast_presence_leave(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _user_id: &str,
+        _socket_id: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn broadcast_presence_update(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _user_id: &str,
+        _socket_id: &str,
+        _user_info: Value,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+delegate_connection_manager!(ClusterCountAdapter);
+
+async fn cluster_handler(
+    peer_sockets: usize,
+    app_limit: u32,
+) -> (ConnectionHandler, Arc<CountingMetrics>) {
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(make_app(app_limit)).await.unwrap();
+    let metrics = Arc::new(CountingMetrics::new());
+    let handler = ConnectionHandler::builder(
+        app_manager as Arc<dyn AppManager + Send + Sync>,
+        Arc::new(ClusterCountAdapter { peer_sockets }) as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(NullCacheManager),
+        ServerOptions::default(),
+    )
+    .metrics(metrics.clone())
+    .build();
+    (handler, metrics)
+}
+
+/// Runs `ATTEMPTS` simultaneous upgrades against `node_limit`/`app_limit` and
+/// returns `(admitted, registered)`.
+async fn gated_admissions(node_limit: u32, app_limit: u32) -> (usize, usize) {
+    const ATTEMPTS: usize = 8;
+
+    let app_manager = Arc::new(MemoryAppManager::new());
+    app_manager.create_app(make_app(app_limit)).await.unwrap();
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let adapter = Arc::new(GatedAdapter {
+        gate: gate.clone(),
+        entered: AtomicUsize::new(0),
+        registered: AtomicUsize::new(0),
+    });
+    let metrics = Arc::new(CountingMetrics::new());
+    let handler = ConnectionHandler::builder(
+        app_manager as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(NullCacheManager),
+        ServerOptions {
+            max_connections: node_limit,
+            ..Default::default()
+        },
+    )
+    .metrics(metrics.clone())
+    .build();
+
+    let mut _clients = Vec::new();
+    let mut tasks = Vec::new();
+    for _ in 0..ATTEMPTS {
+        let (server_ws, client) = make_full_ws_pair().await;
+        _clients.push(client);
+        tasks.push(spawn_socket(&handler, server_ws));
+    }
+
+    // Every attempt is now either parked in `add_socket` or already rejected.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.entered.load(Ordering::SeqCst)
+            + tasks.iter().filter(|task| task.is_finished()).count()
+            < ATTEMPTS
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("attempts never reached admission");
+
+    // Release every parked registration at once: without a reservation all of
+    // them would register, with one only the holders of a slot can.
+    let parked = adapter.entered.load(Ordering::SeqCst);
+    gate.add_permits(ATTEMPTS);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.registered.load(Ordering::SeqCst) < parked
+            || metrics.new_connections() < parked
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("admissions never settled");
+
+    let admitted = metrics.new_connections();
+    let registered = adapter.registered.load(Ordering::SeqCst);
+    for task in tasks {
+        task.abort();
+    }
+    (admitted, registered)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_admissions_never_exceed_node_capacity() {
+    let (admitted, registered) = gated_admissions(4, 0).await;
+
+    assert_eq!(
+        admitted, 4,
+        "concurrent upgrades must not overshoot max_connections"
+    );
+    assert_eq!(registered, 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_admissions_never_exceed_app_quota() {
+    let (admitted, registered) = gated_admissions(0, 4).await;
+
+    assert_eq!(
+        admitted, 4,
+        "concurrent upgrades must not overshoot the per-app quota"
+    );
+    assert_eq!(registered, 4);
 }
 
 #[cfg(target_os = "linux")]
@@ -499,4 +773,122 @@ async fn capacity_readiness_recovers_before_disconnect_cleanup() {
             .unwrap()
             .is_ok()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capacity_rejection_frames_use_the_negotiated_wire_format() {
+    for (format, expect_binary) in [
+        (WireFormat::Json, false),
+        (WireFormat::MessagePack, true),
+        (WireFormat::Protobuf, true),
+    ] {
+        let (handler, metrics) = capped_handler(1, 0).await;
+        let (server_ws, _client) = make_full_ws_pair().await;
+        let admitted = spawn_socket(&handler, server_ws);
+        wait_for(|| metrics.new_connections() == 1).await;
+
+        let (server_ws, mut client) = make_full_ws_pair().await;
+        let result = handler
+            .handle_socket(
+                server_ws,
+                APP_KEY.to_string(),
+                None,
+                ProtocolVersion::V2,
+                format,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::OverCapacity)),
+            "{format:?}: expected OverCapacity, got {result:?}"
+        );
+
+        let (binary, message) = decode_error(next_frame(&mut client).await, format);
+        assert_eq!(binary, expect_binary, "{format:?} rejection frame type");
+        assert_eq!(
+            message.event.as_deref(),
+            Some("pusher:error"),
+            "{format:?} rejection event"
+        );
+        assert_eq!(
+            error_code(&message),
+            Some(4100),
+            "{format:?} rejection code"
+        );
+        match next_frame(&mut client).await {
+            Message::Close(Some(reason)) => {
+                assert_eq!(reason.code, 4100, "{format:?} close code")
+            }
+            other => panic!("{format:?}: expected a close frame, got {other:?}"),
+        }
+
+        admitted.abort();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_quota_rejection_sends_4004_frame() {
+    let (handler, metrics) = capped_handler(0, 1).await;
+    let (server_ws, _client) = make_full_ws_pair().await;
+    let admitted = spawn_socket(&handler, server_ws);
+    wait_for(|| metrics.new_connections() == 1).await;
+
+    let (server_ws, mut client) = make_full_ws_pair().await;
+    let result = handler
+        .handle_socket(
+            server_ws,
+            APP_KEY.to_string(),
+            None,
+            ProtocolVersion::V2,
+            WireFormat::Json,
+            true,
+            sockudo_protocol::AppendMode::Delta,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(result, Err(Error::OverConnectionQuota)),
+        "expected OverConnectionQuota, got {result:?}"
+    );
+
+    let (_, message) = decode_error(next_frame(&mut client).await, WireFormat::Json);
+    assert_eq!(error_code(&message), Some(4004));
+
+    admitted.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_quota_counts_peer_nodes_on_a_clustered_adapter() {
+    // A peer already holds the whole quota: this node must reject even though
+    // its local counter is empty.
+    let (handler, metrics) = cluster_handler(1, 1).await;
+    let (server_ws, mut client) = make_full_ws_pair().await;
+    let result = handler
+        .handle_socket(
+            server_ws,
+            APP_KEY.to_string(),
+            None,
+            ProtocolVersion::V2,
+            WireFormat::Json,
+            true,
+            sockudo_protocol::AppendMode::Delta,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(result, Err(Error::OverConnectionQuota)),
+        "peer nodes count toward the app quota: {result:?}"
+    );
+    assert_eq!(metrics.new_connections(), 0);
+    let (_, message) = decode_error(next_frame(&mut client).await, WireFormat::Json);
+    assert_eq!(error_code(&message), Some(4004));
+
+    // No peer sockets: the same admission succeeds.
+    let (handler, metrics) = cluster_handler(0, 1).await;
+    let (server_ws, _client) = make_full_ws_pair().await;
+    let admitted = spawn_socket(&handler, server_ws);
+    wait_for(|| metrics.new_connections() == 1).await;
+    admitted.abort();
 }
