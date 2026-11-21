@@ -91,6 +91,11 @@ jobs:
             -w /src \
             "rust:${RUST_VERSION}-alpine" \
             sh -c '
+              # rust-toolchain.toml at the repo root (mounted at /src) pins 1.100.0, and
+              # rustup would obey it and download that version. Use the image's compiler
+              # instead: RUST_VERSION is its exact patch, so this stays on the declared MSRV
+              # with no download. Set it before the first cargo call.
+              export RUSTUP_TOOLCHAIN="$RUST_VERSION"
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev
               mkdir -p .cargo

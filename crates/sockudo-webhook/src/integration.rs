@@ -466,7 +466,7 @@ impl WebhookIntegration {
     }
 
     /// Cheap synchronous check: is a webhook configured for `event_type` on this app?
-    /// Unlike [`Self::should_send_webhook`] this does not allocate, so it is safe to
+    /// Unlike `should_send_webhook` this does not allocate, so it is safe to
     /// call on the subscribe/unsubscribe hot path.
     pub fn webhook_configured(&self, app: &App, event_type: &str) -> bool {
         self.is_enabled()

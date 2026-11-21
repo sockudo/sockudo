@@ -123,6 +123,12 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Clippy does not resolve intra-doc links, so check them explicitly.
+      - name: Check rustdoc links
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --all-features
+
   # =============================================================================
   # Test Suite (sharded; union of the shards is the whole workspace)
   # =============================================================================

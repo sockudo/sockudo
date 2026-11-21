@@ -1,9 +1,10 @@
 //! Shared test infrastructure for `ConnectionManager` mocks.
 //!
 //! Every test adapter in this crate overrides 1-2 methods and no-ops the rest.
-//! [`NoopConnectionManager`] provides default no-op implementations for all
-//! required `ConnectionManager` methods, and [`delegate_connection_manager!`]
-//! generates the `ConnectionManager` impl by delegating to the trait.
+//! [`NoopConnectionManager`](crate::test_support::NoopConnectionManager) provides default no-op
+//! implementations for all required `ConnectionManager` methods, and
+//! [`delegate_connection_manager!`] generates the `ConnectionManager` impl by delegating to the
+//! trait.
 //!
 //! When `ConnectionManager` gains a new method:
 //! 1. Add a default no-op to `NoopConnectionManager`.
