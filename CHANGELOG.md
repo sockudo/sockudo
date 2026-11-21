@@ -131,6 +131,13 @@ docs page for 5.2.0 workarounds.
 
 ### Fixed
 
+- Connection admission now reserves the node and per-app slots under the
+  capacity mutex before registering the socket. `max_connections` and
+  `policy.limits.max_connections` were checked against a socket count that
+  excluded upgrades still registering (which await app lookup), so a burst of
+  concurrent connections could exceed either limit. Both limits are now exact,
+  and a per-app quota rejection sends the documented `4004` error frame instead
+  of closing silently.
 - Delta compression is refused on MessagePack and Protobuf connections.
   Delta bases are the server's JSON serialization of each message, which a
   binary-format client never receives and cannot reproduce, so every delta

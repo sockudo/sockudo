@@ -24,6 +24,7 @@ use sockudo_core::versioned_messages::{
     VersionedMessage,
 };
 use sockudo_core::websocket::SocketId;
+use sockudo_protocol::WireFormat;
 use sockudo_protocol::messages::generate_message_id;
 use sockudo_protocol::messages::{
     AI_ERROR_PAYLOAD_TOO_LARGE, FrameKind, PusherMessage, is_ai_event,
@@ -1091,12 +1092,31 @@ impl ConnectionHandler {
             .await
     }
 
-    pub(super) async fn send_error_frame(ws_tx: &mut WebSocketWriter, error: &Error) {
+    pub(super) async fn send_error_frame(
+        ws_tx: &mut WebSocketWriter,
+        error: &Error,
+        wire_format: WireFormat,
+    ) {
         let error_message =
             PusherMessage::error(u32::from(error.close_code()), error.to_string(), None);
 
-        if let Ok(payload) = sonic_rs::to_string(&error_message)
-            && let Err(e) = ws_tx.send(Message::text(payload)).await
+        let frame = match sockudo_protocol::wire::serialize_message(&error_message, wire_format) {
+            Ok(payload) if wire_format.is_binary() => Some(Message::Binary(payload.into())),
+            Ok(payload) => match String::from_utf8(payload) {
+                Ok(payload) => Some(Message::text(payload)),
+                Err(e) => {
+                    warn!(error = %e, "error frame serialization produced invalid utf-8");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "error frame serialization failed");
+                None
+            }
+        };
+
+        if let Some(frame) = frame
+            && let Err(e) = ws_tx.send(frame).await
         {
             warn!(error = %e, "failed to send error frame");
         }

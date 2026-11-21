@@ -809,7 +809,7 @@ impl ConnectionHandler {
         let socket_id = SocketId::new();
         tracing::Span::current().record("app_id", app_config.id.as_str());
         tracing::Span::current().record("socket_id", socket_id.to_string());
-        Box::pin(self.initialize_socket_with_quota_check(
+        let mut live_connection = Box::pin(self.initialize_socket_with_quota_check(
             socket_id,
             socket_tx,
             &app_config,
@@ -821,8 +821,6 @@ impl ConnectionHandler {
             },
         ))
         .await?;
-
-        let mut live_connection = self.capacity.track();
         // A validated upgrade can finish registration after the shutdown snapshot.
         if !self.is_accepting() {
             let close_result = self
@@ -898,97 +896,77 @@ impl ConnectionHandler {
         result
     }
 
+    /// Reserve node and app slots, then register the socket. The returned
+    /// reservation keeps both slots held until the connection closes.
     async fn initialize_socket_with_quota_check(
         &self,
         socket_id: SocketId,
         mut socket_tx: WebSocketWriter,
         app_config: &App,
         wire_options: SocketWireOptions,
-    ) -> Result<()> {
+    ) -> Result<readiness::LiveConnection> {
         // Memory pressure closes admission only; established sockets remain untouched.
         if self.is_memory_pressure_shedding() {
             self.mark_memory_pressure_rejection();
-            Self::send_error_frame(&mut socket_tx, &Error::OverCapacity).await;
+            Self::send_error_frame(
+                &mut socket_tx,
+                &Error::OverCapacity,
+                wire_options.wire_format,
+            )
+            .await;
             return Err(Error::OverCapacity);
         }
 
-        // Per-pod capacity check (across all apps on this node)
-        if self.server_options.max_connections > 0 {
-            let node_count = if let Some(ref la) = self.local_adapter {
-                la.get_total_sockets_count()
-            } else {
-                self.connection_manager
-                    .get_sockets_count(&app_config.id)
-                    .await
-                    .unwrap_or(0)
-            };
+        // Reserve before registration: `add_socket` awaits app lookup, so a
+        // check-then-register admission lets concurrent upgrades overshoot.
+        let live_connection = match self.capacity.try_reserve(
+            &app_config.id,
+            self.server_options.max_connections,
+            app_config.max_connections_limit(),
+        ) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                Self::send_error_frame(&mut socket_tx, &error, wire_options.wire_format).await;
+                return Err(error);
+            }
+        };
 
-            if node_count >= self.server_options.max_connections as usize {
-                Self::send_error_frame(&mut socket_tx, &Error::OverCapacity).await;
-                return Err(Error::OverCapacity);
+        // Remove any existing connection with the same socket_id (should be rare).
+        // Balance the unconditional mark_new_connection below for the replaced
+        // socket, otherwise the gauge leaks.
+        if let Some(conn) = self
+            .connection_manager
+            .get_connection(&socket_id, &app_config.id)
+            .await
+        {
+            self.connection_manager
+                .cleanup_connection(&app_config.id, conn)
+                .await;
+            if let Some(metrics) = &self.metrics {
+                metrics.mark_disconnection(&app_config.id, &socket_id);
             }
         }
 
-        // True atomic operation: quota check and socket addition under single lock
-        // This is the only way to prevent race conditions
-        {
-            // Check quota first - this must be atomic with add_socket
-            if app_config.max_connections_limit() > 0 {
-                let current_count = self
-                    .connection_manager
-                    .get_sockets_count(&app_config.id)
-                    .await
-                    .map_err(|e| {
-                        error!(app_id = %app_config.id, error = %e, "socket count lookup failed");
-                        Error::Internal("Failed to check connection quota".to_string())
-                    })?;
+        let buffer_config = self.server_options.websocket.to_buffer_config();
+        self.connection_manager
+            .add_socket(
+                socket_id,
+                socket_tx,
+                &app_config.id,
+                Arc::clone(&self.app_manager),
+                buffer_config,
+                wire_options.protocol_version,
+                wire_options.wire_format,
+                wire_options.echo_messages,
+                wire_options.append_mode,
+            )
+            .await?;
 
-                if current_count >= app_config.max_connections_limit() as usize {
-                    return Err(Error::OverConnectionQuota);
-                }
-            }
-
-            // Remove any existing connection with the same socket_id (should be rare).
-            // Balance the unconditional mark_new_connection below for the replaced
-            // socket, otherwise the gauge leaks.
-            if let Some(conn) = self
-                .connection_manager
-                .get_connection(&socket_id, &app_config.id)
-                .await
-            {
-                self.connection_manager
-                    .cleanup_connection(&app_config.id, conn)
-                    .await;
-                if let Some(ref metrics) = self.metrics {
-                    metrics.mark_disconnection(&app_config.id, &socket_id);
-                }
-            }
-
-            // Add the new socket - this must be in the same critical section as quota check
-            // Create buffer config from server options
-            let buffer_config = self.server_options.websocket.to_buffer_config();
-
-            self.connection_manager
-                .add_socket(
-                    socket_id,
-                    socket_tx,
-                    &app_config.id,
-                    Arc::clone(&self.app_manager),
-                    buffer_config,
-                    wire_options.protocol_version,
-                    wire_options.wire_format,
-                    wire_options.echo_messages,
-                    wire_options.append_mode,
-                )
-                .await?;
-        } // Lock released - atomic operation complete
-
-        // Update metrics after lock is released to prevent deadlock
-        if let Some(ref metrics) = self.metrics {
+        if let Some(metrics) = &self.metrics {
             metrics.mark_new_connection(&app_config.id, &socket_id);
         }
 
-        Ok(())
+        Ok(live_connection)
     }
 
     async fn validate_and_get_app(&self, app_key: &str) -> Result<App> {
@@ -1075,9 +1053,16 @@ impl ConnectionHandler {
                         Box::pin(self.handle_message(message, socket_id, app_config.clone())).await
                     {
                         if e.is_fatal() {
-                            live_connection.release();
+                            // `handle_fatal_error` frees the slot once the
+                            // transport is closed, before disconnect cleanup.
                             error!(socket_id = %socket_id, error = %e, "socket message handling failed");
-                            Box::pin(self.handle_fatal_error(socket_id, app_config, &e)).await?;
+                            Box::pin(self.handle_fatal_error(
+                                socket_id,
+                                app_config,
+                                &e,
+                                live_connection,
+                            ))
+                            .await?;
                             break;
                         } else if matches!(&e, Error::ConnectionClosed(_)) {
                             debug!(socket_id = %socket_id, error = %e, "socket message handling stopped");
@@ -1321,6 +1306,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
         error: &Error,
+        live_connection: &mut readiness::LiveConnection,
     ) -> Result<()> {
         // Send error message
         self.send_error(&app_config.id, socket_id, error, None)
@@ -1337,6 +1323,10 @@ impl ConnectionHandler {
             &error.to_string(),
         )
         .await?;
+
+        // The transport is closed, so free the slot before disconnect cleanup,
+        // which can await app-store lookups or the cleanup queue.
+        live_connection.release();
 
         // Handle disconnect cleanup
         self.handle_disconnect(&app_config.id, socket_id).await?;
