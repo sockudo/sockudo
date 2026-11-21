@@ -1,0 +1,4 @@
+# cargo-fuzz needs nightly.
+# This overrides the repo version for everything in fuzz/.
+[toolchain]
+channel = "nightly"

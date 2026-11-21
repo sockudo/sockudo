@@ -8,6 +8,9 @@ set -euo pipefail
 cargo test --workspace --all-features --all-targets --no-run
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# Match the lint job's rustdoc flags so its documentation units are cache hits.
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
 # Each shard resolves features over its own members, so the workspace build
 # above does not produce the artifacts the shards use.
 for shard in $(scripts/ci/test-shards.sh --list); do
