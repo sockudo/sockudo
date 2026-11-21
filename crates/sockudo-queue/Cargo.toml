@@ -11,7 +11,7 @@ license-file.workspace = true
 default = ["local"]
 local = []
 full = ["redis", "redis-cluster", "nats", "rabbitmq", "kafka", "iggy", "pulsar", "google-pubsub", "sqs", "sns"]
-redis = ["sockudo-core/redis", "dep:redis"]
+redis = ["sockudo-core/redis", "dep:redis", "dep:metrics"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
 nats = ["sockudo-core/nats", "dep:async-nats"]
 rabbitmq = ["sockudo-core/rabbitmq", "dep:lapin"]
@@ -39,7 +39,7 @@ parking_lot = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-pubsub = { workspace = true, optional = true }
 lapin = { workspace = true, optional = true }
-metrics = { workspace = true }
+metrics = { workspace = true, optional = true }
 pulsar = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }

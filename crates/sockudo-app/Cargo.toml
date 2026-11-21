@@ -11,10 +11,10 @@ license-file.workspace = true
 default = ["local"]
 local = []
 full = ["mysql", "postgres", "dynamodb", "surrealdb", "scylladb"]
-mysql = ["sockudo-core/mysql", "dep:sqlx", "dep:futures-util", "dep:urlencoding", "dep:regex"]
-postgres = ["sockudo-core/postgres", "dep:sqlx", "dep:futures-util", "dep:urlencoding", "dep:regex"]
+mysql = ["sockudo-core/mysql", "dep:sqlx", "dep:futures-util", "dep:urlencoding", "dep:regex", "dep:moka"]
+postgres = ["sockudo-core/postgres", "dep:sqlx", "dep:futures-util", "dep:urlencoding", "dep:regex", "dep:moka"]
 dynamodb = ["sockudo-core/dynamodb", "dep:aws-config", "dep:aws-sdk-dynamodb"]
-surrealdb = ["sockudo-core/surrealdb", "dep:surrealdb", "dep:surrealdb-types", "dep:regex"]
+surrealdb = ["sockudo-core/surrealdb", "dep:surrealdb", "dep:surrealdb-types", "dep:regex", "dep:moka"]
 scylladb = ["sockudo-core/scylladb", "dep:scylla", "dep:futures"]
 
 [dependencies]
@@ -29,7 +29,7 @@ base64 = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-moka = { workspace = true }
+moka = { workspace = true, optional = true }
 rand = { workspace = true }
 regex = { workspace = true, optional = true }
 scylla = { workspace = true, optional = true }

@@ -223,7 +223,7 @@ impl AdapterFactory {
 
     /// Create a connection manager with typed adapter for configuration
     /// Returns:
-    /// - Arc<dyn ConnectionManager> for runtime use (lock-free, all methods are &self)
+    /// - `Arc<dyn ConnectionManager>` for runtime use (lock-free, all methods are `&self`)
     /// - TypedAdapter for configuration (set_metrics, set_delta_compression, etc.)
     #[allow(unused_variables)]
     pub async fn create_with_typed(

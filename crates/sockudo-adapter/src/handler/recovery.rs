@@ -517,7 +517,7 @@ impl ConnectionHandler {
         expired
     }
 
-    /// Drop parked resume positions older than [`PENDING_RESUME_TTL`] on every socket, so
+    /// Drop parked resume positions older than `PENDING_RESUME_TTL` on every socket, so
     /// idle connections do not retain them until disconnect, and send each affected socket a
     /// `resume_failed` (`pending_resume_expired`) so a channel reported as `pending` always
     /// gets an outcome. Called periodically by the server's recovery maintenance task;

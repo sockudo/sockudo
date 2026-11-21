@@ -17,6 +17,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "--cfg tokio_unstable"
+  # cargo-fuzz needs nightly for `-Zsanitizer`, and it runs cargo from the repo
+  # root, where `fuzz/rust-toolchain.toml` does not apply.
+  RUSTUP_TOOLCHAIN: nightly
 
 jobs:
   fuzz-smoke:

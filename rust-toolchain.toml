@@ -1,0 +1,10 @@
+# Rust version used for local development and CI.
+# When you change it, change the pin in .github/actions/rust-setup/action.yml too.
+#
+# 1.100.0 reads registry.global-min-publish-age from .cargo/config.toml.
+# Older versions ignore that setting and warn on every cargo command.
+#
+# fuzz/ uses nightly instead, because cargo-fuzz needs it.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]

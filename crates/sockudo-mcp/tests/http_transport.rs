@@ -1,6 +1,11 @@
 //! Streamable HTTP transport: bearer auth, initialize handshake, scope-filtered
 //! tool listing, and tool execution against a recording API transport.
 
+// `transport::http` needs the `http` feature. A `required-features` test target
+// would force Cargo to demand this file in the Docker stub layer, which has no
+// test sources, so gate the crate instead.
+#![cfg(feature = "http")]
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
