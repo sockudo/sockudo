@@ -66,11 +66,11 @@ impl ConnectionHandler {
             let mut closed = 0usize;
             for (socket_id, socket) in sockets {
                 let mut connection = socket.inner.lock().await;
-                connection
-                    .state
-                    .record_disconnect_cause(DisconnectCause::AdministrativeClose);
-                match connection.close(code, reason.clone()).await {
-                    Ok(()) => closed += 1,
+                match connection
+                    .close_with_outcome(code, reason.clone(), DisconnectCause::AdministrativeClose)
+                    .await
+                {
+                    Ok(_) => closed += 1,
                     Err(error) => {
                         debug!(%app_id, %socket_id, error = %error, "failed to close connection of unavailable app");
                     }

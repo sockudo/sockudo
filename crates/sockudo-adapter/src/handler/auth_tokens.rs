@@ -2,7 +2,7 @@ use super::ConnectionHandler;
 use sockudo_core::app::App;
 use sockudo_core::capability_token::{TokenAuthContext, validate_capability_token};
 use sockudo_core::error::{Error, Result};
-use sockudo_core::websocket::SocketId;
+use sockudo_core::websocket::{CloseOutcome, ConnectionStatus, DisconnectCause, SocketId};
 use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_protocol::protocol_version::{CANONICAL_AUTH_SUCCESS, CANONICAL_TOKEN_EXPIRED};
@@ -55,6 +55,17 @@ fn now_seconds() -> Result<i64> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .map_err(|_| Error::Internal("system clock is before unix epoch".to_string()))
+}
+
+fn revocation_delivery_failure(error: &Error) -> &'static str {
+    match error {
+        Error::BufferFull(_) => "queue_full",
+        Error::ConnectionClosed(_) => "connection_closed",
+        Error::ConnectionNotFound => "connection_not_found",
+        Error::InvalidMessageFormat(_) => "invalid_message_format",
+        Error::WebSocket(error) => error.metric_name(),
+        _ => "connection_error",
+    }
 }
 
 impl ConnectionHandler {
@@ -330,28 +341,75 @@ impl ConnectionHandler {
             else {
                 continue;
             };
-            let Some(context) = connection.get_token_auth_context().await else {
-                continue;
+            let matches = {
+                let socket = connection.inner.lock().await;
+                socket
+                    .state
+                    .token_auth_context
+                    .as_ref()
+                    .is_some_and(|context| {
+                        request.jti.as_deref() == Some(context.jti.as_str())
+                            || request.client_id.as_deref() == Some(context.client_id.as_str())
+                    })
             };
-            let jti_matches = request.jti.as_deref() == Some(context.jti.as_str());
-            let client_matches = request.client_id.as_deref() == Some(context.client_id.as_str());
-            if !jti_matches && !client_matches {
+            if !matches {
                 continue;
             }
 
             debug!(%socket_id, "closing revoked capability-token connection");
-            let _ = self
+            if let Err(error) = self
                 .send_token_expired(&app_config.id, &socket_id, TOKEN_REVOKED_CODE, "revoked")
-                .await;
-            self.close_connection_with_cause(
-                &socket_id,
-                app_config,
-                4009,
-                "capability token revoked",
-                sockudo_core::websocket::DisconnectCause::TokenRevoked,
-            )
-            .await?;
-            result.closed_connections += 1;
+                .await
+            {
+                warn!(
+                    app_id = %app_config.id,
+                    %socket_id,
+                    failure = revocation_delivery_failure(&error),
+                    "failed to send capability-token revocation notice"
+                );
+            }
+
+            // Block new sends, but leave the writer running until Close has flushed.
+            let mut socket = connection.inner.lock().await;
+            connection.mark_closing();
+            let was_cancelled = socket.shutdown_token.is_cancelled();
+            match socket
+                .close_with_outcome(
+                    4009,
+                    "capability token revoked".to_owned(),
+                    DisconnectCause::TokenRevoked,
+                )
+                .await
+            {
+                Ok(CloseOutcome::Flushed) => result.closed_connections += 1,
+                Ok(CloseOutcome::AlreadyClosing) => {}
+                Err(error) => {
+                    let cancelled = socket.shutdown_token.is_cancelled();
+                    if cancelled {
+                        // A failed Close can still finish by tearing down the socket.
+                        if !was_cancelled && socket.state.status == ConnectionStatus::Closed {
+                            result.closed_connections += 1;
+                        }
+                    } else if socket.is_connected()
+                        && socket.disconnect_cause() == DisconnectCause::Unknown
+                    {
+                        // The writer was unavailable before Close started. Stop the
+                        // still-live reader, but leave terminal readers to finish.
+                        socket.record_disconnect_cause(DisconnectCause::TokenRevoked);
+                        connection.shutdown();
+                        socket.message_sender.abort_writer();
+                        socket.state.clear_timeouts();
+                        socket.state.status = ConnectionStatus::Closed;
+                        result.closed_connections += 1;
+                    }
+                    warn!(
+                        app_id = %app_config.id,
+                        %socket_id,
+                        failure = revocation_delivery_failure(&error),
+                        "failed to write Close for revoked capability-token connection"
+                    );
+                }
+            }
         }
 
         Ok(result)

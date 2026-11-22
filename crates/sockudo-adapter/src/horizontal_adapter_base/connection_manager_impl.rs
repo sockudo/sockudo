@@ -936,16 +936,22 @@ where
         }
 
         // Get distributed count
-        match self
+        let (count, complete) = match self
             .send_request(app_id, RequestType::SocketsCount, None, None, None)
             .await
         {
-            Ok(response) => Ok(local_count + response.sockets_count),
+            Ok(response) => (local_count + response.sockets_count, response.complete),
             Err(e) => {
                 error!(error = %e, "failed to get remote socket count");
-                Ok(local_count)
+                (local_count, false)
             }
+        };
+
+        if !complete && let Some(metrics) = self.horizontal.metrics.get() {
+            metrics.mark_ws_quota_lookup_fallback();
         }
+
+        Ok(count)
     }
 
     async fn get_all_connections(&self, app_id: &str) -> Result<Vec<SocketId>> {

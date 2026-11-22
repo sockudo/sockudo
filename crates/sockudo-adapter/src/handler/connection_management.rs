@@ -1014,10 +1014,10 @@ impl ConnectionHandler {
             .await
         {
             let mut conn_locked = conn.inner.lock().await;
-            conn_locked.state.record_disconnect_cause(cause);
             conn_locked
-                .close(code, reason.to_string())
+                .close_with_outcome(code, reason.to_string(), cause)
                 .await
+                .map(|_| ())
                 .map_err(|e| Error::Internal(format!("Failed to close connection: {e}")))
         } else {
             warn!(socket_id = %socket_id, "connection not found for close");

@@ -1,4 +1,4 @@
-use super::horizontal_adapter_helpers::{MockConfig, MockTransport};
+use super::horizontal_adapter_helpers::{MockConfig, MockNodeState, MockTransport};
 use crate::mocks::connection_handler_mock::MockMetricsInterface;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::horizontal_adapter::RequestType;
@@ -14,6 +14,7 @@ use sockudo_ws::{Config as WsConfig, Http1, WebSocketStream};
 use sonic_rs::prelude::*;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -687,6 +688,53 @@ async fn test_connection_manager_distributed_socket_count() -> Result<()> {
 
     // Should sum socket counts from all nodes: 3 + 3 = 6
     assert_eq!(count, 6); // Total socket count across both nodes
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_incomplete_distributed_socket_count_records_quota_fallback() -> Result<()> {
+    let responsive_peer = MockNodeState::new("responsive-peer")
+        .with_sockets(vec!["remote-socket-1", "remote-socket-2"])
+        .with_response_delay(0);
+
+    for (responsive_peer, expected_count) in [(None, 1), (Some(responsive_peer), 3)] {
+        let config = MockConfig {
+            // Keep background cleanup from expiring the request before aggregation.
+            request_timeout_ms: u64::MAX,
+            node_states: [MockNodeState::new("silent-peer").will_not_respond()]
+                .into_iter()
+                .chain(responsive_peer)
+                .collect(),
+            ..Default::default()
+        };
+        let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+        adapter.cluster_health_enabled = false; // Use the mock transport's peer count.
+        let metrics = Arc::new(MockMetricsInterface::new());
+        adapter.set_metrics(metrics.clone()).await?;
+        adapter.start_listeners().await?;
+        // Replies with zero delay arrive during publish; expire the wait immediately.
+        adapter
+            .horizontal
+            .requests_timeout
+            .store(0, Ordering::Relaxed);
+
+        let socket_id = SocketId::from_string("local-socket-1").unwrap();
+        let writer = create_test_writer().await;
+        let namespace = Arc::new(Namespace::new("test-app".to_string()));
+        namespace.sockets.insert(
+            socket_id,
+            WebSocketRef::new(WebSocket::new(socket_id, writer)),
+        );
+        adapter
+            .local_adapter
+            .namespaces
+            .insert("test-app".to_string(), namespace);
+
+        assert_eq!(adapter.get_sockets_count("test-app").await?, expected_count);
+        assert_eq!(metrics.horizontal_uncomplete_promises(), 1);
+        assert_eq!(metrics.ws_quota_lookup_fallbacks(), 1);
+    }
 
     Ok(())
 }
