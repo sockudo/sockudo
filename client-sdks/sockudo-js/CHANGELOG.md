@@ -21,6 +21,10 @@
   within seconds of an outage ending (sockudo/sockudo#532)
 * stop retrying when a connection attempt is aborted, even if its transport reports a failure
   afterwards
+* resolve the documented `@sockudo/client/with-encryption`, `@sockudo/client/worker`, and
+  `@sockudo/client/worker/with-encryption` subpaths, plus the `node.js` shim, which still imported
+  the pre-rename `pusher-*` bundles and failed with `ERR_MODULE_NOT_FOUND` in Node and bundlers
+  (sockudo/sockudo#569)
 
 ## [2.2.0] - 2026-08-17
 
