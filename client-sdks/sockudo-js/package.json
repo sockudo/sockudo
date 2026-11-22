@@ -84,7 +84,7 @@
     "format:check": "oxfmt --check src test scripts vite.config.ts vite.config.react.ts vite.config.vue.ts vite.config.filter.ts vite.config.node.ts vite.config.filter.node.ts vite.config.with-encryption.ts vite.config.worker.ts vite.config.worker.with-encryption.ts vite.config.react-native.ts vite.config.nativescript.ts vitest.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check:entrypoints": "node scripts/check-entrypoints.mjs"
+    "check:entrypoints": "bun scripts/check-entrypoints.mjs"
   },
   "keywords": [
     "sockudo",
