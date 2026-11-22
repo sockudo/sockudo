@@ -865,40 +865,36 @@ mod tests {
     async fn websocket_outcomes_export_bounded_labels() {
         let metrics = PrometheusMetricsDriver::new(0, Some("ws_outcome_test_")).await;
         let startup = metrics.get_metrics_as_plaintext().await;
-        let startup_reasons: [(&str, &[&str]); 2] = [
-            (
-                "ws_admission_rejections_total",
-                &[
-                    "invalid_options",
-                    "app_not_found",
-                    "app_disabled",
-                    "origin",
-                    "authentication",
-                ],
-            ),
-            (
-                "ws_session_ends_total",
-                &[
-                    "client_close",
-                    "protocol_error",
-                    "fatal_error",
-                    "auth_timeout",
-                    "token_expired",
-                    "token_revoked",
-                    "administrative_close",
-                    "server_shutdown",
-                    "unknown",
-                ],
-            ),
-        ];
-        for (metric, reasons) in startup_reasons {
-            for reason in reasons {
-                let sample = format!("ws_outcome_test_{metric}{{reason=\"{reason}\"}} 0");
-                assert!(
-                    startup.lines().any(|line| line == sample),
-                    "missing startup sample: {sample}"
-                );
-            }
+
+        // Every bounded series must exist at zero before any event is recorded,
+        // otherwise a counter whose first sample is 1 never shows the 0 -> 1
+        // transition. Iterate the enums so a new label value is covered here too.
+        let mut expected_startup = Vec::new();
+        for reason in WsAdmissionRejection::ALL {
+            expected_startup.push(format!(
+                "ws_outcome_test_ws_admission_rejections_total{{reason=\"{}\"}} 0",
+                reason.as_str()
+            ));
+        }
+        for cause in DisconnectCause::ALL {
+            expected_startup.push(format!(
+                "ws_outcome_test_ws_session_ends_total{{reason=\"{}\"}} 0",
+                cause.as_str()
+            ));
+        }
+        for outcome in WsShutdownCloseOutcome::ALL {
+            expected_startup.push(format!(
+                "ws_outcome_test_ws_shutdown_closes_total{{outcome=\"{}\"}} 0",
+                outcome.as_str()
+            ));
+        }
+        expected_startup.push("ws_outcome_test_ws_quota_lookup_fallbacks_total 0".to_string());
+
+        for sample in &expected_startup {
+            assert!(
+                startup.lines().any(|line| line == sample),
+                "missing startup sample: {sample}"
+            );
         }
 
         metrics.mark_ws_admission_rejection(WsAdmissionRejection::NodeCapacity);

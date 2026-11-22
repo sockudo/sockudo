@@ -58,6 +58,17 @@ pub enum WsShutdownCloseOutcome {
 }
 
 impl WsShutdownCloseOutcome {
+    /// Every bounded drain Close outcome.
+    pub const ALL: [Self; 7] = [
+        Self::Flushed,
+        Self::AlreadyGone,
+        Self::AlreadyClosing,
+        Self::QueueFull,
+        Self::WriteFailed,
+        Self::LockTimeout,
+        Self::FlushTimeout,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Flushed => "flushed",

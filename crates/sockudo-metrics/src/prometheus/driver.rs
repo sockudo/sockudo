@@ -412,15 +412,7 @@ impl PrometheusMetricsDriver {
             &["outcome"]
         )
         .unwrap();
-        for outcome in [
-            WsShutdownCloseOutcome::Flushed,
-            WsShutdownCloseOutcome::AlreadyGone,
-            WsShutdownCloseOutcome::AlreadyClosing,
-            WsShutdownCloseOutcome::QueueFull,
-            WsShutdownCloseOutcome::WriteFailed,
-            WsShutdownCloseOutcome::LockTimeout,
-            WsShutdownCloseOutcome::FlushTimeout,
-        ] {
+        for outcome in WsShutdownCloseOutcome::ALL {
             ws_shutdown_closes_total
                 .with_label_values(&[outcome.as_str()])
                 .init();
