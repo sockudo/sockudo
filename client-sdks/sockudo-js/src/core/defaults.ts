@@ -24,10 +24,6 @@ export interface DefaultConfig {
   retryJitterMs: number;
   userAuthentication: UserAuthenticationOptions;
   channelAuthorization: ChannelAuthorizationOptions;
-
-  cdn_http?: string;
-  cdn_https?: string;
-  dependency_suffix?: string;
 }
 
 const Defaults: DefaultConfig = {
@@ -63,11 +59,6 @@ const Defaults: DefaultConfig = {
     endpoint: "/sockudo/auth",
     transport: "fetch",
   },
-
-  // CDN configuration
-  cdn_http: CDN_HTTP,
-  cdn_https: CDN_HTTPS,
-  dependency_suffix: DEPENDENCY_SUFFIX,
 };
 
 export default Defaults;

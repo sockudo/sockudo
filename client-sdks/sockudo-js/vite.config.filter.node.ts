@@ -8,7 +8,7 @@ export default defineConfig({
       entry: {
         filter: path.resolve(__dirname, "src/filter.ts"),
       },
-      name: "PusherFilter",
+      name: "SockudoFilter",
       formats: ["es"],
       fileName: () => "filter.js",
     },

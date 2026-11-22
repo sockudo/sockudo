@@ -33,8 +33,5 @@ export default defineConfig({
   define: {
     RUNTIME: JSON.stringify("react-native"),
     VERSION: JSON.stringify("2.2.0"),
-    CDN_HTTP: JSON.stringify("//js.pusher.com/"),
-    CDN_HTTPS: JSON.stringify("//js.pusher.com/"),
-    DEPENDENCY_SUFFIX: JSON.stringify(""),
   },
 });
