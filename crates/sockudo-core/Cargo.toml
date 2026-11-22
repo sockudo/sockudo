@@ -112,3 +112,8 @@ harness = false
 name = "versioned_message_streaming"
 path = "benches/versioned_message_streaming.rs"
 harness = false
+
+[[bench]]
+name = "websocket_send"
+path = "benches/websocket_send.rs"
+harness = false

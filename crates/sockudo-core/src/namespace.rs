@@ -2,7 +2,7 @@ use crate::app::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
 use crate::utils::{channel_allows_wildcard_delivery, wildcard_pattern_matches};
-use crate::websocket::{SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
+use crate::websocket::{DisconnectCause, SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
 use ahash::AHashMap as HashMap;
 use ahash::AHashSet;
 use dashmap::mapref::entry::Entry;
@@ -439,7 +439,11 @@ impl Namespace {
             .filter_map(|sid| self.get_connection(&sid))
             .map(|ws_ref| async move {
                 if let Err(e) = ws_ref
-                    .close(4009, "You got disconnected by the app.".to_string())
+                    .close_with_cause(
+                        4009,
+                        "You got disconnected by the app.".to_string(),
+                        DisconnectCause::AdministrativeClose,
+                    )
                     .await
                 {
                     warn!(error = %e, "failed to close connection");
@@ -462,7 +466,11 @@ impl Namespace {
             .filter_map(|sid| self.get_connection(&sid))
             .map(|ws_ref| async move {
                 if let Err(e) = ws_ref
-                    .close(4200, "Force reconnect requested by the app.".to_string())
+                    .close_with_cause(
+                        4200,
+                        "Force reconnect requested by the app.".to_string(),
+                        DisconnectCause::AdministrativeClose,
+                    )
                     .await
                 {
                     warn!(error = %e, "failed to close connection");

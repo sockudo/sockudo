@@ -365,7 +365,13 @@ use futures_util::StreamExt;
 
 type ClientWs = sockudo_ws::WebSocketStream<sockudo_ws::Stream<sockudo_ws::Http1>>;
 
-async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
+async fn create_server_split_with_client(
+    config: sockudo_ws::Config,
+) -> (
+    sockudo_ws::axum_integration::WebSocketReader,
+    WebSocketWriter,
+    ClientWs,
+) {
     use sockudo_ws::Config as WsConfig;
     use sockudo_ws::Http1;
     use sockudo_ws::axum_integration::WebSocket;
@@ -375,21 +381,12 @@ async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local_addr = listener.local_addr().unwrap();
 
-    let server_task: tokio::task::JoinHandle<WebSocketWriter> = tokio::spawn(async move {
+    let server_task = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let _ = sockudo_ws::handshake::server_handshake(&mut stream)
             .await
             .unwrap();
-        let ws = WebSocket::from_tcp(stream, WsConfig::default());
-        let (mut reader, writer) = ws.split();
-        tokio::spawn(async move {
-            while let Some(result) = reader.next().await {
-                if result.is_err() {
-                    break;
-                }
-            }
-        });
-        writer
+        WebSocket::from_tcp(stream, config).split()
     });
 
     let client_stream = TcpStream::connect(local_addr).await.unwrap();
@@ -399,8 +396,20 @@ async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
         .await
         .unwrap();
 
-    let writer = server_task.await.unwrap();
-    (writer, client_ws)
+    let (reader, writer) = server_task.await.unwrap();
+    (reader, writer, client_ws)
+}
+
+async fn create_server_writer_with_client() -> (WebSocketWriter, ClientWs) {
+    let (mut reader, writer, client) = create_server_split_with_client(Default::default()).await;
+    tokio::spawn(async move {
+        while let Some(result) = reader.next().await {
+            if result.is_err() {
+                break;
+            }
+        }
+    });
+    (writer, client)
 }
 
 /// Reading a peer Close and then dropping both split halves (as connection
@@ -1229,6 +1238,328 @@ async fn close_wait_returns_error_when_writer_is_cancelled_before_flush() {
         matches!(close_result, Err(crate::error::Error::ConnectionClosed(_))),
         "cancelled writer must report that the close frame was not flushed: {close_result:?}"
     );
+}
+
+#[tokio::test]
+async fn close_returns_already_gone_when_writer_cannot_start_it() {
+    for cancellation_aware in [false, true] {
+        let (mut writer, _peer) = create_server_writer_with_client().await;
+        writer.close(1000, "already closing").await.unwrap();
+        let sender = if cancellation_aware {
+            MessageSender::new_with_broadcast(writer, 1, None, Default::default())
+        } else {
+            MessageSender::new(writer, 1)
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sender.send_close(4200, "server shutting down"),
+        )
+        .await
+        .expect("queued Close must complete");
+        assert!(
+            matches!(result, Err(crate::error::Error::ConnectionClosed(_))),
+            "{result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancellation_before_dequeue_reports_already_gone() {
+    let (writer, _peer) = create_server_writer_with_client().await;
+    let token = tokio_util::sync::CancellationToken::new();
+    let sender = MessageSender::new_with_broadcast(writer, 1, None, token.clone());
+    let close = sender.send_close(4200, "server shutting down");
+    tokio::pin!(close);
+
+    assert!(futures_util::poll!(&mut close).is_pending());
+    token.cancel();
+    assert!(matches!(
+        close.await,
+        Err(crate::error::Error::ConnectionClosed(_))
+    ));
+}
+
+#[tokio::test]
+async fn cancelling_an_administrative_close_tears_down_the_writer() {
+    let (writer, _peer) = create_server_writer_with_client().await;
+    let mut socket = WebSocket::new(SocketId::new(), writer);
+    let termination = socket.message_sender.termination().clone();
+    let mut close = Box::pin(socket.close_with_outcome(
+        4009,
+        "user connection terminated".into(),
+        DisconnectCause::AdministrativeClose,
+    ));
+
+    // The current-thread writer cannot dequeue until this task yields.
+    assert!(futures_util::poll!(close.as_mut()).is_pending());
+    drop(close);
+
+    assert!(socket.shutdown_token.is_cancelled());
+    assert_eq!(socket.state.status, ConnectionStatus::Closed);
+    assert_eq!(
+        socket.disconnect_cause(),
+        DisconnectCause::AdministrativeClose
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        termination.wait_for_writer(),
+    )
+    .await
+    .expect("the writer must stop without waiting for the peer");
+}
+
+#[tokio::test]
+async fn cancellation_after_dequeue_waits_for_flush_acknowledgement() {
+    use std::sync::atomic::AtomicBool;
+    use tokio::sync::oneshot;
+    use tokio_util::sync::CancellationToken;
+
+    let shutdown = CancellationToken::new();
+    let termination = SocketTermination::new(Some(shutdown.clone()));
+    let claimed = AtomicBool::new(true);
+    let (written, mut result) = oneshot::channel();
+    let waiter = MessageSender::wait_for_close(&termination, &claimed, &mut result);
+    tokio::pin!(waiter);
+
+    shutdown.cancel();
+    assert!(futures_util::poll!(&mut waiter).is_pending());
+    written.send(Ok(())).unwrap();
+    assert!(waiter.await.is_ok());
+}
+
+#[tokio::test]
+async fn queued_close_preserves_native_idle_timeout() {
+    use sockudo_ws::Error as WsError;
+    use std::time::Duration;
+
+    let config = sockudo_ws::Config::builder().idle_timeout(1).build();
+    let (mut reader, writer, _peer) = create_server_split_with_client(config).await;
+    let expired = tokio::time::timeout(Duration::from_secs(3), reader.next())
+        .await
+        .expect("native idle timeout must fire");
+    assert!(matches!(expired, Some(Err(WsError::IdleTimeout))));
+
+    let socket = WebSocketRef::new(WebSocket::new(SocketId::new(), writer));
+    {
+        let guard = socket.inner.lock().await;
+        for _ in 0..2 {
+            assert!(matches!(
+                guard.message_sender.send_close(1000, "done").await,
+                Err(crate::error::Error::WebSocket(WsError::IdleTimeout))
+            ));
+        }
+    }
+    assert_eq!(
+        socket.termination_handle().cause(),
+        DisconnectCause::IdleTimeout
+    );
+    assert_eq!(
+        socket
+            .shutdown_close_target()
+            .close(Some(&socket), Duration::from_secs(1))
+            .await,
+        Some(crate::metrics::WsShutdownCloseOutcome::AlreadyGone)
+    );
+}
+
+#[tokio::test]
+async fn close_returns_native_timeout_already_observed_by_the_reader() {
+    use sockudo_ws::Error as WsError;
+    use std::time::Duration;
+
+    let config = sockudo_ws::Config::builder().idle_timeout(1).build();
+    let (mut reader, writer, _peer) = create_server_split_with_client(config).await;
+    let mut socket = WebSocket::new(SocketId::new(), writer);
+    let termination = socket.message_sender.termination().clone();
+    let _reader = termination.attach_reader();
+    let observed = tokio::time::timeout(Duration::from_secs(3), reader.next())
+        .await
+        .expect("native timer must fire")
+        .expect("reader must report the terminal error")
+        .unwrap_err();
+    termination.record(DisconnectCause::from_websocket_error(&observed));
+
+    assert!(matches!(
+        socket
+            .close_with_outcome(
+                4200,
+                "server shutdown".into(),
+                DisconnectCause::ServerShutdown
+            )
+            .await,
+        Err(crate::error::Error::WebSocket(WsError::IdleTimeout))
+    ));
+    assert_eq!(socket.disconnect_cause(), DisconnectCause::IdleTimeout);
+}
+
+#[tokio::test]
+async fn namespace_user_closes_keep_the_administrative_cause() {
+    use sockudo_ws::Message;
+
+    for (reconnect, expected) in [(false, 4009), (true, 4200)] {
+        let (writer, mut peer) = create_server_writer_with_client().await;
+        let namespace = crate::namespace::Namespace::new("test-app".into());
+        let id = SocketId::new();
+        let mut socket = WebSocket::new(id, writer);
+        socket.state.user_id = Some("user".into());
+        let socket = WebSocketRef::new(socket);
+        namespace.sockets.insert(id, socket.clone());
+        namespace.add_user(socket.clone()).await.unwrap();
+
+        if reconnect {
+            namespace
+                .force_reconnect_user_connections("user")
+                .await
+                .unwrap();
+        } else {
+            namespace.terminate_user_connections("user").await.unwrap();
+        }
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            assert!(matches!(peer.next().await, Some(Ok(Message::Text(_)))));
+            peer.next().await
+        })
+        .await
+        .unwrap();
+        assert!(matches!(frame, Some(Ok(Message::Close(Some(reason)))) if reason.code == expected));
+        assert_eq!(
+            socket.termination_handle().cause(),
+            DisconnectCause::AdministrativeClose
+        );
+    }
+}
+
+#[tokio::test]
+async fn queued_close_returns_when_an_earlier_frame_stops_the_writer() {
+    use sockudo_ws::Message;
+
+    for cancellation_aware in [false, true] {
+        let (writer, _peer) = create_server_writer_with_client().await;
+        let sender = if cancellation_aware {
+            MessageSender::new_with_broadcast(writer, 2, None, Default::default())
+        } else {
+            MessageSender::new(writer, 2)
+        };
+        sender.send(Message::Close(None)).unwrap();
+
+        // On the current-thread runtime, send_close enqueues before the
+        // writer can consume the earlier Close.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sender.send_close(4200, "server shutting down"),
+        )
+        .await
+        .expect("writer exit must wake the queued Close caller");
+        assert!(matches!(result, Err(crate::error::Error::Connection(_))));
+    }
+}
+
+#[tokio::test]
+async fn earlier_peer_loss_classifies_close_before_and_after_writer_stops() {
+    for cancellation_aware in [false, true] {
+        let (mut writer, _peer) = create_server_writer_with_client().await;
+        writer.close(1000, "already closing").await.unwrap();
+        let sender = if cancellation_aware {
+            MessageSender::new_with_broadcast(writer, 2, None, Default::default())
+        } else {
+            MessageSender::new(writer, 2)
+        };
+        sender.send_text("pre-close error frame".into()).unwrap();
+
+        // This Close is queued behind the data write that discovers closure.
+        let queued = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sender.send_close(4200, "server shutting down"),
+        )
+        .await
+        .expect("queued Close must resolve");
+        let after_exit = sender.send_close(4200, "server shutting down").await;
+        for result in [queued, after_exit] {
+            assert!(matches!(
+                result,
+                Err(crate::error::Error::ConnectionClosed(_))
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+async fn writer_keeps_attached_peer_close_reader_alive() {
+    use sockudo_ws::Message;
+    use std::time::Duration;
+
+    let (mut reader, writer, mut client) =
+        create_server_split_with_client(Default::default()).await;
+    let token = tokio_util::sync::CancellationToken::new();
+    let sender = MessageSender::new_with_broadcast(writer, 2, None, token.clone());
+    let termination = sender.termination();
+    let _reader_shutdown = termination.attach_reader();
+
+    client.close(1000, "finished").await.unwrap();
+    assert!(matches!(reader.next().await, Some(Ok(Message::Close(_)))));
+    sender
+        .send_text("in flight when the peer closes".into())
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), termination.wait_for_writer())
+        .await
+        .expect("the transport has stopped accepting writes");
+    assert_eq!(termination.cause(), DisconnectCause::TransportClosed);
+    assert!(
+        !token.is_cancelled(),
+        "the writer must let the reader finish the handshake"
+    );
+    let reply = tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .unwrap();
+    assert!(matches!(reply, Some(Ok(Message::Close(_)))));
+    token.cancel();
+}
+
+#[tokio::test]
+async fn close_respects_a_full_direct_queue() {
+    let (writer, _peer) = create_server_writer_with_client().await;
+    let sender = MessageSender::new(writer, 1);
+    sender.send_text("fills the queue".into()).unwrap();
+    let result = sender.send_close(4200, "server shutting down").await;
+    assert!(
+        matches!(result, Err(crate::error::Error::BufferFull(_))),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn repeat_close_reports_already_closing() {
+    let (writer, _peer) = create_server_writer_with_client().await;
+    let mut socket = WebSocket::new(SocketId::new(), writer);
+    assert_eq!(
+        socket
+            .close_with_outcome(1000, String::new(), DisconnectCause::Unknown)
+            .await
+            .unwrap(),
+        CloseOutcome::Flushed
+    );
+    assert_eq!(
+        socket
+            .close_with_outcome(1000, String::new(), DisconnectCause::Unknown)
+            .await
+            .unwrap(),
+        CloseOutcome::AlreadyClosing
+    );
+}
+
+#[tokio::test]
+async fn writer_records_session_cause_before_cancelling_reader() {
+    let (mut writer, _peer) = create_server_writer_with_client().await;
+    writer.close(1000, "already closing").await.unwrap();
+    let token = tokio_util::sync::CancellationToken::new();
+    let sender = MessageSender::new_with_broadcast(writer, 1, None, token.clone());
+    let termination = sender.termination();
+    sender.send_text("queued frame".into()).unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), token.cancelled())
+        .await
+        .expect("the writer must cancel the reader after a failed send");
+    assert_eq!(termination.cause(), DisconnectCause::TransportClosed);
 }
 
 #[tokio::test]

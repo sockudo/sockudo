@@ -4,7 +4,8 @@ use sockudo_protocol::WireFormat;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::sync::oneshot;
 
 /// Buffer limit strategy for WebSocket connections
 /// Supports message count, byte size, or both (whichever triggers first)
@@ -349,6 +350,17 @@ impl RewindGate {
 pub(super) enum OutboundFrame {
     Direct(Message),
     Broadcast(SizedMessage),
+    /// Boxed so the two extra fields do not inflate every queue slot: this
+    /// variant is only used once per connection, while the other two are the
+    /// per-message hot path.
+    Close(Box<CloseFrame>),
+}
+
+#[derive(Debug)]
+pub(super) struct CloseFrame {
+    pub message: Message,
+    pub claimed: Arc<AtomicBool>,
+    pub written: oneshot::Sender<crate::error::Result<()>>,
 }
 
 // A bounded `Array` flavor allocates and initializes every slot up front: with the default
@@ -412,6 +424,36 @@ impl MessageSenderHandle {
             }
             Err(_) => unreachable!("direct frame changed variant while enqueueing"),
         }
+    }
+
+    pub(super) fn enqueue_close(
+        &self,
+        message: Message,
+        claimed: Arc<AtomicBool>,
+        written: oneshot::Sender<crate::error::Result<()>>,
+    ) -> crate::error::Result<()> {
+        use crate::error::Error;
+
+        if !try_reserve_message(&self.pending, self.limit) {
+            return Err(Error::BufferFull("Message buffer is full".into()));
+        }
+        if let Err(error) = self
+            .sender
+            .try_send(OutboundFrame::Close(Box::new(CloseFrame {
+                message,
+                claimed,
+                written,
+            })))
+        {
+            self.pending.fetch_sub(1, Ordering::Release);
+            return Err(match error {
+                TrySendError::Full(_) => Error::BufferFull("Message buffer is full".into()),
+                TrySendError::Disconnected(_) => {
+                    Error::ConnectionClosed("Message channel closed".into())
+                }
+            });
+        }
+        Ok(())
     }
 }
 
