@@ -1,4 +1,4 @@
-import { PusherEvent } from '../connection/protocol/message-types';
+import { SockudoEvent } from '../connection/protocol/message-types';
 import { DeltaOptions, DeltaStats, DeltaMessage, DeltaAlgorithm, CacheSyncData } from './types';
 export default class DeltaCompressionManager {
     private options;
@@ -14,7 +14,7 @@ export default class DeltaCompressionManager {
     disable(): void;
     handleEnabled(data: any): void;
     handleCacheSync(channel: string, data: CacheSyncData): void;
-    handleDeltaMessage(channel: string, deltaData: DeltaMessage): PusherEvent | null;
+    handleDeltaMessage(channel: string, deltaData: DeltaMessage): SockudoEvent | null;
     handleFullMessage(channel: string, rawMessage: string, sequence?: number, conflationKey?: string): void;
     private requestResync;
     private updateStats;

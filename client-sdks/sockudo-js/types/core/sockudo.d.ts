@@ -17,8 +17,8 @@ import type { RecoveryPosition } from './connection/protocol/message-types';
 import type { ChannelSubscriptionOptions } from './channels/channel';
 export { Filter, validateFilter, FilterExamples };
 export type { FilterNode };
-export default class Pusher {
-    static instances: Pusher[];
+export default class Sockudo {
+    static instances: Sockudo[];
     static isReady: boolean;
     private static _logToConsole;
     private static _log;
@@ -50,11 +50,11 @@ export default class Pusher {
     allChannels(): Channel[];
     connect(): void;
     disconnect(): void;
-    bind(event_name: string, callback: Function, context?: any): Pusher;
-    unbind(event_name?: string, callback?: Function, context?: any): Pusher;
-    bind_global(callback: Function): Pusher;
-    unbind_global(callback?: Function): Pusher;
-    unbind_all(callback?: Function): Pusher;
+    bind(event_name: string, callback: Function, context?: any): Sockudo;
+    unbind(event_name?: string, callback?: Function, context?: any): Sockudo;
+    bind_global(callback: Function): Sockudo;
+    unbind_global(callback?: Function): Sockudo;
+    unbind_all(callback?: Function): Sockudo;
     subscribeAll(): void;
     subscribe(channel_name: string, options?: any | ChannelSubscriptionOptions): Channel;
     unsubscribe(channel_name: string): void;

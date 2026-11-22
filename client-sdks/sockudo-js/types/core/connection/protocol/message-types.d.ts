@@ -53,4 +53,3 @@ interface SockudoEvent {
     conflation_key?: string;
 }
 export { SockudoEvent };
-export type PusherEvent = SockudoEvent;
