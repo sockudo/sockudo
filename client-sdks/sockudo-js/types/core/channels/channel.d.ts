@@ -64,7 +64,7 @@ export interface AnnotationEventsResponse {
 }
 export default class Channel extends EventsDispatcher {
     name: string;
-    pusher: Sockudo;
+    sockudo: Sockudo;
     subscribed: boolean;
     subscriptionPending: boolean;
     subscriptionCancelled: boolean;
@@ -73,7 +73,7 @@ export default class Channel extends EventsDispatcher {
     eventsFilter: string[] | null;
     rewind: SubscriptionRewind | null;
     annotationSubscribe: boolean;
-    constructor(name: string, pusher: Sockudo);
+    constructor(name: string, sockudo: Sockudo);
     authorize(socketId: string, callback: ChannelAuthorizationCallback): void;
     trigger(event: string, data: any): boolean;
     disconnect(): void;

@@ -4,7 +4,7 @@ import Sockudo from '../sockudo';
 export default class Channels {
     channels: ChannelTable;
     constructor();
-    add(name: string, pusher: Sockudo): Channel;
+    add(name: string, sockudo: Sockudo): Channel;
     all(): Channel[];
     find(name: string): Channel;
     remove(name: string): Channel;

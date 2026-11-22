@@ -6,7 +6,7 @@ import * as nacl from 'tweetnacl';
 export default class EncryptedChannel extends PrivateChannel {
     key: Uint8Array;
     nacl: nacl;
-    constructor(name: string, pusher: Sockudo, nacl: nacl);
+    constructor(name: string, sockudo: Sockudo, nacl: nacl);
     authorize(socketId: string, callback: ChannelAuthorizationCallback): void;
     trigger(event: string, data: any): boolean;
     handleEvent(event: SockudoEvent): void;
