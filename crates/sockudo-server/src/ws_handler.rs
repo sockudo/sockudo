@@ -10,7 +10,7 @@ use serde::Deserialize;
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::WebSocketUpgrade;
 use std::sync::Arc;
-use tracing::{Instrument, error, field, info_span};
+use tracing::{Instrument, debug, error, field, info_span};
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectionQuery {
@@ -40,6 +40,36 @@ fn websocket_config_for_protocol(
             server_options.activity_timeout,
             protocol_version == ProtocolVersion::V2,
         )
+}
+
+/// A peer or transport termination that needs no operator action: the socket is
+/// already gone, the peer closed/reset it, or this node is shutting down.
+/// Scoped to the upgrade callback so the rest of the server keeps treating
+/// `ConnectionClosed` as a real error where it has another meaning.
+fn is_expected_websocket_termination(error: &sockudo_core::error::Error) -> bool {
+    use sockudo_core::error::Error;
+
+    match error {
+        Error::ConnectionClosed(_) => true,
+        Error::WebSocket(error) => match error {
+            sockudo_ws::Error::ConnectionClosed
+            | sockudo_ws::Error::ConnectionReset
+            | sockudo_ws::Error::Closed(_)
+            | sockudo_ws::Error::HeartbeatTimeout
+            | sockudo_ws::Error::IdleTimeout => true,
+            sockudo_ws::Error::Io(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::TimedOut
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 // WebSocket upgrade handler
@@ -135,8 +165,12 @@ pub async fn handle_ws_upgrade(
                     )
                     .await
                 {
-                    error!(error = %e, "socket handling failed");
-                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    if is_expected_websocket_termination(&e) {
+                        debug!(error = %e, "websocket transport closed");
+                    } else {
+                        error!(error = %e, "socket handling failed");
+                        tracing::Span::current().record("otel.status_code", "ERROR");
+                    }
                     if let Some(metrics) = handler.metrics() {
                         match &e {
                             sockudo_core::error::Error::ApplicationNotFound
@@ -160,6 +194,39 @@ pub async fn handle_ws_upgrade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expected_websocket_terminations_are_classified() {
+        use sockudo_core::error::Error;
+
+        assert!(is_expected_websocket_termination(&Error::ConnectionClosed(
+            "gone".into()
+        )));
+        assert!(is_expected_websocket_termination(&Error::WebSocket(
+            sockudo_ws::Error::ConnectionReset
+        )));
+        assert!(is_expected_websocket_termination(&Error::WebSocket(
+            sockudo_ws::Error::HeartbeatTimeout
+        )));
+        assert!(is_expected_websocket_termination(&Error::WebSocket(
+            sockudo_ws::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "reset",
+            ))
+        )));
+        assert!(!is_expected_websocket_termination(&Error::WebSocket(
+            sockudo_ws::Error::Protocol("bad")
+        )));
+        assert!(!is_expected_websocket_termination(&Error::WebSocket(
+            sockudo_ws::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bad tls record",
+            ))
+        )));
+        assert!(!is_expected_websocket_termination(&Error::Internal(
+            "boom".into()
+        )));
+    }
 
     #[test]
     fn v2_rejects_unknown_wire_format() {

@@ -131,6 +131,12 @@ docs page for 5.2.0 workarounds.
 
 ### Fixed
 
+- Paced shutdown (`shutdown_close_delay_ms` / `shutdown_close_spread_ms`) no longer logs
+  `failed to close websocket` for sockets that disconnect before their scheduled `4200`.
+  The drain snapshots socket IDs and resolves each at its turn, skips writers whose
+  cancellation token already fired, and bounds each close to 5 s. A slow close can no
+  longer delay later batches, and peer transport resets are logged at debug instead of
+  error.
 - History reads, rewind, and cold recovery no longer return entries older than the channel's
   `retention_window_seconds` while they wait for the purge job (#536). Pages that drop expired
   entries report `truncated_by_retention: true` and `complete: false`, and a cold resume that

@@ -233,7 +233,9 @@ On SIGTERM or SIGINT, Sockudo:
    at once. `shutdown_close_delay_ms` waits that long first, so the load balancer can see
    `/ready` return 503 before anyone reconnects. `shutdown_close_spread_ms` spreads the closes
    evenly over that window, so a node's clients do not all reconnect onto the remaining nodes
-   in the same instant. A second signal closes any remaining connections at once.
+   in the same instant. Each socket's close is bounded to five seconds; if the frame cannot be
+   flushed, the connection is torn down so the pacing schedule keeps moving. A second signal
+   closes any remaining connections at once.
 3. Keeps the listener open until `shutdown_grace_period` seconds after the signal so load
    balancers finish deregistration without connection-refused errors. The close delay and
    spread run inside this window; together they must not exceed it.

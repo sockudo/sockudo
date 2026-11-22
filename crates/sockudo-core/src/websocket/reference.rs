@@ -216,11 +216,19 @@ impl WebSocketRef {
         }
     }
 
+    /// Mark this socket as closing before queueing a Close frame so no data
+    /// frame can be enqueued behind it. The caller must still cancel the token
+    /// after the close attempt.
+    #[inline]
+    pub fn mark_closing(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+
     pub async fn close(&self, code: u16, reason: String) -> Result<()> {
         // Reject new sends before queueing the close frame so no data frame can be
         // enqueued behind it. Token cancellation must stay AFTER ws.close(): the
         // writer task breaks on cancellation and would drop the queued close frame.
-        self.closing.store(true, Ordering::Release);
+        self.mark_closing();
         let result = {
             let mut ws = self.inner.lock().await;
             ws.close(code, reason).await

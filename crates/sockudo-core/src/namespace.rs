@@ -102,6 +102,14 @@ impl Namespace {
             .map(|conn_ref| conn_ref.value().clone())
     }
 
+    /// Socket IDs currently registered, without cloning every [`WebSocketRef`].
+    /// Shutdown resolves each ID at its turn so sockets that disconnect during
+    /// the spread are skipped instead of holding their connection state alive.
+    #[inline]
+    pub fn get_socket_ids(&self) -> Vec<SocketId> {
+        self.sockets.iter().map(|entry| *entry.key()).collect()
+    }
+
     pub fn get_channel_members(
         &self,
         channel: &str,

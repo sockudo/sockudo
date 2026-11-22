@@ -294,6 +294,14 @@ impl MessageSender {
         self.sender.try_send(message)
     }
 
+    /// Abort the writer task without waiting for a queued frame to flush.
+    /// Shutdown uses this when a close cannot finish within its budget.
+    pub fn abort_writer(&mut self) {
+        if let Some(handle) = self.receiver_handle.take() {
+            handle.abort();
+        }
+    }
+
     pub(super) fn sender_handle(&self) -> MessageSenderHandle {
         self.sender.clone()
     }
