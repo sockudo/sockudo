@@ -128,6 +128,12 @@ docs page for 5.2.0 workarounds.
   `presence.ungraceful_timeout_seconds` for V1, which defaults to 0), as it
   already did when the reader was cancelled first; which one won was a race.
   A client that closes on its own still leaves at once.
+- Dependency advisories: `url` 2.5.9 (RUSTSEC-2026-0592), `rustix` 1.1.6
+  (RUSTSEC-2026-0486), and `wasmtimer` 0.4.5, which drops `pin-utils`
+  (RUSTSEC-2026-0441). `chrono`, `humantime` and nine `heapless` advisories have
+  no fixed release on any reachable path (`surrealdb` 4.0.1, `iggy` 0.12 and
+  `rmcp` 3.10 are already newest), so `.cargo/audit.toml` ignores them.
+  `cargo audit` is clean.
 
 ### Fixed
 
