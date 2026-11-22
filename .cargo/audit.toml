@@ -14,4 +14,29 @@ ignore = [
     # libsqlite3-sys --all-features` finds no path). sqlx 0.9.0, the latest
     # release, still pins 0.37. Remove once sqlx ships libsqlite3-sys >= 0.39.
     "RUSTSEC-2026-0459",
+    # RUSTSEC-2026-0542 — humantime is unmaintained (2.4.0 is the latest
+    # release). Only reachable through iggy 0.12 (`iggy_common`) and
+    # surrealdb-rpc 4.0.1, both at their newest release. Remove once either
+    # drops humantime.
+    "RUSTSEC-2026-0542",
+    # RUSTSEC-2026-0543 — chrono is unmaintained (no fixed release). Mirrors the
+    # entry in deny.toml; see there for the dependents.
+    "RUSTSEC-2026-0543",
+    # RUSTSEC-2026-0574 … RUSTSEC-2026-0582 — heapless is unsound (0.6.1, 0.7.17
+    # and 0.8.0). No upgrade path: 0.9.4 fixes all nine, but every path runs
+    # through surrealdb 4.0.1 (newest) → surrealdb-iam → revision 0.30 →
+    # geo-types 0.7.20, whose per-version `rstar` features pull rstar
+    # 0.8.4…0.13.0. Those crates pin `heapless = "0.6"`/`"0.7"`/`"0.8"` and 0.9
+    # is semver-incompatible; features cannot be subtracted from here, and even a
+    # full `cargo update` leaves all three versions locked. Remove once
+    # geo-types/rstar reach heapless 0.9.
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582",
 ]
