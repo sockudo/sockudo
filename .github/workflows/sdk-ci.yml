@@ -108,6 +108,7 @@ jobs:
               bun run lint
               bun run test
               bun run build:all
+              bun run check:entrypoints
               npm pack --dry-run
           - name: "@sockudo/ai-transport"
             path: client-sdks/sockudo-ai-transport-js

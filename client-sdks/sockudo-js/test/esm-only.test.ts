@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkEntrypoints, collectWrapperFiles } from "../scripts/entrypoints.mjs";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
@@ -23,19 +24,21 @@ describe("esm-only packaging", () => {
     expect(JSON.stringify(packageJson.exports).includes('"require"')).toBe(false);
   });
 
-  it("points explicit mobile entrypoints at their Sockudo builds", () => {
-    const reactNativeEntry = readFileSync(
-      join(currentDir, "..", "react-native", "index.js"),
-      "utf8",
-    );
-    const nativeScriptEntry = readFileSync(
-      join(currentDir, "..", "nativescript", "index.js"),
-      "utf8",
-    );
+  it("points every entrypoint wrapper at a shipped dist bundle", () => {
+    const root = join(currentDir, "..");
 
-    expect(reactNativeEntry).toContain('from "../dist/react-native/sockudo.js"');
-    expect(nativeScriptEntry).toContain('from "../dist/nativescript/sockudo.js"');
-    expect(reactNativeEntry).not.toContain("pusher.js");
-    expect(nativeScriptEntry).not.toContain("pusher.js");
+    expect(collectWrapperFiles(root)).toEqual(
+      expect.arrayContaining([
+        "node.js",
+        "with-encryption/index.js",
+        "worker/index.js",
+        "worker/with-encryption/index.js",
+        "react/index.js",
+        "vue/index.js",
+        "react-native/index.js",
+        "nativescript/index.js",
+      ]),
+    );
+    expect(checkEntrypoints(root).problems).toEqual([]);
   });
 });

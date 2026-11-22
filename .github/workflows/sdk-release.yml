@@ -115,6 +115,7 @@ jobs:
           bun run lint
           bun run test
           bun run build:all
+          bun run check:entrypoints
           npm pack --dry-run
 
       - name: Publish to npm
