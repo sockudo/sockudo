@@ -18,10 +18,10 @@ import * as nacl from 'tweetnacl';
 declare var Factory: {
     createChannels(): Channels;
     createConnectionManager(key: string, options: ConnectionManagerOptions): ConnectionManager;
-    createChannel(name: string, pusher: Sockudo): Channel;
-    createPrivateChannel(name: string, pusher: Sockudo): PrivateChannel;
-    createPresenceChannel(name: string, pusher: Sockudo): PresenceChannel;
-    createEncryptedChannel(name: string, pusher: Sockudo, nacl: nacl): EncryptedChannel;
+    createChannel(name: string, sockudo: Sockudo): Channel;
+    createPrivateChannel(name: string, sockudo: Sockudo): PrivateChannel;
+    createPresenceChannel(name: string, sockudo: Sockudo): PresenceChannel;
+    createEncryptedChannel(name: string, sockudo: Sockudo, nacl: nacl): EncryptedChannel;
     createTimelineSender(timeline: Timeline, options: TimelineSenderOptions): TimelineSender;
     createHandshake(transport: TransportConnection, callback: (HandshakePayload: any) => void): Handshake;
     createAssistantToTheTransportManager(manager: TransportManager, transport: Transport, options: PingDelayOptions): AssistantToTheTransportManager;
