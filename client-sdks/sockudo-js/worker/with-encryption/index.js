@@ -1,3 +1,3 @@
-import PusherWithEncryption from "../../dist/worker/sockudo-with-encryption.worker.js";
+import SockudoWithEncryption from "../../dist/worker/sockudo-with-encryption.worker.js";
 
-export default PusherWithEncryption;
+export default SockudoWithEncryption;

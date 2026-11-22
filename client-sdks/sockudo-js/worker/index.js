@@ -1,3 +1,3 @@
-import Pusher from "../dist/worker/sockudo.worker.js";
+import Sockudo from "../dist/worker/sockudo.worker.js";
 
-export default Pusher;
+export default Sockudo;
