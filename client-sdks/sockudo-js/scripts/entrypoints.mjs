@@ -3,6 +3,38 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 
 const IMPORT_RE = /(?:from\s*|import\s*)["']([^"']+)["']/g;
 const BUNDLE_RE = /^dist\/[a-z0-9-]+\/[^/]+\.m?js$/;
+// Published directories that hold build output or declarations, not wrappers.
+const NON_WRAPPER_DIRS = new Set(["dist", "types"]);
+
+/**
+ * Relative specifiers imported or re-exported by a wrapper source.
+ *
+ * @param {string} source wrapper file contents
+ * @returns {string[]}
+ */
+export function importSpecifiers(source) {
+  return [...source.matchAll(IMPORT_RE)]
+    .map((match) => match[1])
+    .filter((specifier) => specifier.startsWith("."));
+}
+
+/**
+ * Walk published directories so a wrapper nested at any depth is covered.
+ *
+ * @param {string} root package root
+ * @param {string} dir directory relative to root
+ * @param {string[]} out collected wrapper paths
+ */
+function collectJsFiles(root, dir, out) {
+  for (const child of readdirSync(join(root, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${child.name}`;
+    if (child.isDirectory()) {
+      collectJsFiles(root, rel, out);
+    } else if (child.isFile() && child.name.endsWith(".js")) {
+      out.push(rel);
+    }
+  }
+}
 
 /**
  * Every hand-written entrypoint wrapper that ships in the tarball, derived from
@@ -15,22 +47,17 @@ export function collectWrapperFiles(root) {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const wrappers = [];
 
-  for (const entry of pkg.files) {
+  for (const raw of pkg.files) {
+    const entry = raw.replace(/^\.\//, "").replace(/\/$/, "");
     if (entry.endsWith(".js")) {
       wrappers.push(entry);
       continue;
     }
-    if (entry.includes(".")) continue;
+    if (entry.includes(".") || NON_WRAPPER_DIRS.has(entry)) continue;
 
     const dir = join(root, entry);
     if (!existsSync(dir)) continue;
-    for (const child of readdirSync(dir, { withFileTypes: true })) {
-      if (child.isFile() && child.name.endsWith(".js")) {
-        wrappers.push(`${entry}/${child.name}`);
-      } else if (child.isDirectory() && existsSync(join(dir, child.name, "index.js"))) {
-        wrappers.push(`${entry}/${child.name}/index.js`);
-      }
-    }
+    collectJsFiles(root, entry, wrappers);
   }
 
   return wrappers.sort();
@@ -49,9 +76,7 @@ export function checkEntrypoints(root, { requireBuilt = false } = {}) {
 
   for (const file of files) {
     const source = readFileSync(join(root, file), "utf8");
-    const specifiers = [...source.matchAll(IMPORT_RE)]
-      .map((match) => match[1])
-      .filter((specifier) => specifier.startsWith("."));
+    const specifiers = importSpecifiers(source);
 
     if (specifiers.length === 0) {
       problems.push(`${file}: imports no relative bundle`);

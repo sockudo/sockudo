@@ -7,6 +7,11 @@ import { checkEntrypoints } from "./entrypoints.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { files, problems } = checkEntrypoints(root, { requireBuilt: true });
 
+if (files.length === 0) {
+  console.error("entrypoint: found no published wrappers to check");
+  process.exit(1);
+}
+
 if (problems.length > 0) {
   for (const problem of problems) console.error(`entrypoint: ${problem}`);
   process.exit(1);

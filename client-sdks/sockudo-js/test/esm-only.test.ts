@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkEntrypoints, collectWrapperFiles } from "../scripts/entrypoints.mjs";
+import {
+  checkEntrypoints,
+  collectWrapperFiles,
+  importSpecifiers,
+} from "../scripts/entrypoints.mjs";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
@@ -24,21 +28,32 @@ describe("esm-only packaging", () => {
     expect(JSON.stringify(packageJson.exports).includes('"require"')).toBe(false);
   });
 
-  it("points every entrypoint wrapper at a shipped dist bundle", () => {
+  it("points every entrypoint wrapper at its shipped dist bundle", () => {
     const root = join(currentDir, "..");
 
-    expect(collectWrapperFiles(root)).toEqual(
-      expect.arrayContaining([
-        "node.js",
-        "with-encryption/index.js",
-        "worker/index.js",
-        "worker/with-encryption/index.js",
-        "react/index.js",
-        "vue/index.js",
-        "react-native/index.js",
-        "nativescript/index.js",
-      ]),
-    );
+    // Pinned per wrapper: an existing-but-wrong bundle (e.g. the web build for
+    // react-native) must fail here, not only a stale pusher-* name.
+    const expectedBundles: Record<string, string> = {
+      "node.js": "./dist/node/sockudo.js",
+      "with-encryption/index.js": "../dist/web/sockudo-with-encryption.mjs",
+      "worker/index.js": "../dist/worker/sockudo.worker.js",
+      "worker/with-encryption/index.js": "../../dist/worker/sockudo-with-encryption.worker.js",
+      "react/index.js": "../dist/web/react.mjs",
+      "vue/index.js": "../dist/web/vue.mjs",
+      "react-native/index.js": "../dist/react-native/sockudo.js",
+      "nativescript/index.js": "../dist/nativescript/sockudo.js",
+    };
+
+    expect(collectWrapperFiles(root)).toEqual(Object.keys(expectedBundles).sort());
+
+    for (const [file, bundle] of Object.entries(expectedBundles)) {
+      const specifiers = importSpecifiers(readFileSync(join(root, file), "utf8"));
+      expect(specifiers.length, file).toBeGreaterThan(0);
+      for (const specifier of specifiers) {
+        expect(specifier, `${file} imports ${specifier}`).toBe(bundle);
+      }
+    }
+
     expect(checkEntrypoints(root).problems).toEqual([]);
   });
 });
