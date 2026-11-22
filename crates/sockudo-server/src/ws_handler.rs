@@ -224,6 +224,7 @@ mod tests {
         use sockudo_adapter::local_adapter::LocalAdapter;
         use sockudo_app::memory_app_manager::MemoryAppManager;
         use sockudo_cache::memory_cache_manager::MemoryCacheManager;
+        use sockudo_core::metrics::MetricsInterface;
         use sockudo_core::options::MemoryCacheOptions;
         use std::time::Duration;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -268,6 +269,14 @@ mod tests {
             to_bytes(response.into_body(), 1024).await.unwrap(),
             to_bytes(expected.into_body(), 1024).await.unwrap()
         );
+        const INVALID_OPTIONS: &str =
+            "ws_bad_query_test_ws_admission_rejections_total{reason=\"invalid_options\"}";
+        assert!(
+            metrics
+                .get_metrics_as_plaintext()
+                .await
+                .contains(&format!("{INVALID_OPTIONS} 0\n"))
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -286,6 +295,12 @@ mod tests {
             .unwrap();
         server.abort();
         assert!(response.starts_with(b"HTTP/1.1 400 "));
+        assert!(
+            metrics
+                .get_metrics_as_plaintext()
+                .await
+                .contains(&format!("{INVALID_OPTIONS} 1\n"))
+        );
     }
 
     #[test]

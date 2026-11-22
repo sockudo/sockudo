@@ -3,8 +3,8 @@ use super::text::prometheus_text_to_json;
 use async_trait::async_trait;
 use sockudo_core::channel::ChannelType;
 use sockudo_core::error::Result;
-use sockudo_core::metrics::MetricsInterface;
-use sockudo_core::websocket::SocketId;
+use sockudo_core::metrics::{MetricsInterface, WsAdmissionRejection, WsShutdownCloseOutcome};
+use sockudo_core::websocket::{DisconnectCause, SocketId};
 use sonic_rs::{Value, json};
 use tracing::debug;
 
@@ -40,6 +40,30 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connection_errors_total.with_label_values(&tags).inc();
 
         debug!(app_id, error_type, "metrics: connection error");
+    }
+
+    fn mark_ws_admission_rejection(&self, reason: WsAdmissionRejection) {
+        self.ws_admission_rejections_total
+            .with_label_values(&[reason.as_str()])
+            .inc();
+    }
+
+    fn mark_ws_session_end(&self, cause: DisconnectCause) {
+        self.ws_session_ends_total
+            .with_label_values(&[cause.as_str()])
+            .inc();
+    }
+
+    fn mark_ws_shutdown_close(&self, outcome: WsShutdownCloseOutcome) {
+        self.ws_shutdown_closes_total
+            .with_label_values(&[outcome.as_str()])
+            .inc();
+    }
+
+    fn mark_ws_quota_lookup_fallback(&self) {
+        self.ws_quota_lookup_fallbacks_total
+            .with_label_values(&[] as &[&str])
+            .inc();
     }
 
     fn mark_memory_pressure_rejection(&self) {
@@ -836,6 +860,66 @@ impl MetricsInterface for PrometheusMetricsDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn websocket_outcomes_export_bounded_labels() {
+        let metrics = PrometheusMetricsDriver::new(0, Some("ws_outcome_test_")).await;
+        let startup = metrics.get_metrics_as_plaintext().await;
+        let startup_reasons: [(&str, &[&str]); 2] = [
+            (
+                "ws_admission_rejections_total",
+                &[
+                    "invalid_options",
+                    "app_not_found",
+                    "app_disabled",
+                    "origin",
+                    "authentication",
+                ],
+            ),
+            (
+                "ws_session_ends_total",
+                &[
+                    "client_close",
+                    "protocol_error",
+                    "fatal_error",
+                    "auth_timeout",
+                    "token_expired",
+                    "token_revoked",
+                    "administrative_close",
+                    "server_shutdown",
+                    "unknown",
+                ],
+            ),
+        ];
+        for (metric, reasons) in startup_reasons {
+            for reason in reasons {
+                let sample = format!("ws_outcome_test_{metric}{{reason=\"{reason}\"}} 0");
+                assert!(
+                    startup.lines().any(|line| line == sample),
+                    "missing startup sample: {sample}"
+                );
+            }
+        }
+
+        metrics.mark_ws_admission_rejection(WsAdmissionRejection::NodeCapacity);
+        metrics.mark_ws_session_end(DisconnectCause::PeerTransportLost);
+        metrics.mark_ws_shutdown_close(WsShutdownCloseOutcome::WriteFailed);
+        metrics.mark_ws_quota_lookup_fallback();
+        let output = metrics.get_metrics_as_plaintext().await;
+
+        for sample in [
+            "ws_outcome_test_ws_admission_rejections_total{reason=\"node_capacity\"} 1",
+            "ws_outcome_test_ws_admission_rejections_total{reason=\"app_quota\"} 0",
+            "ws_outcome_test_ws_session_ends_total{reason=\"peer_transport_lost\"} 1",
+            "ws_outcome_test_ws_shutdown_closes_total{outcome=\"write_failed\"} 1",
+            "ws_outcome_test_ws_quota_lookup_fallbacks_total 1",
+        ] {
+            assert!(
+                output.lines().any(|line| line == sample),
+                "missing sample: {sample}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn promise_outcome_tracking_registers_both_counter_series() {

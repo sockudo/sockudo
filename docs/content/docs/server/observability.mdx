@@ -80,11 +80,20 @@ The TCP exporter has bounded buffering by default. When buffers fill, event samp
 | `sockudo_new_disconnections_total` | counter | | Disconnects. Rising faster than connections means clients are leaving. |
 | `sockudo_connection_errors_total` | counter | `error_type` | Failed connections, for example `origin_not_allowed`. |
 | `sockudo_memory_pressure_rejections_total` | counter | `port` only | New sockets refused by memory-pressure admission. |
+| `sockudo_ws_admission_rejections_total` | counter | `reason` only | Native V1/V2 admission rejections, such as `node_capacity`, `app_quota`, `app_not_found`, and `draining`. `memory_pressure` also includes Ably compatibility sockets. |
+| `sockudo_ws_session_ends_total` | counter | `reason` only | One outcome per completed native V1/V2 socket message loop, recorded before disconnect cleanup. Excludes Ably compatibility sockets. |
+| `sockudo_ws_shutdown_closes_total` | counter | `outcome` only | One Close result per native V1/V2 socket selected for drain or registered while draining. `flushed` confirms a local write, not peer receipt. Excludes Ably compatibility sockets. |
+| `sockudo_ws_quota_lookup_fallbacks_total` | counter | none | Native distributed socket-count lookups that failed or returned incomplete results. Admission still uses the local count plus any peer counts received. |
 | `sockudo_memory_pressure_shedding` | gauge | none | `1` while the node is shedding new connections. |
 | `sockudo_ws_messages_received_total`, `sockudo_ws_messages_sent_total` | counter | `app_id`, `port` | Messages received from connections, and application messages addressed to connections. Outbound control frames are counted separately in `sockudo_ws_control_frames_total`; see [WebSocket delivery metrics](#websocket-delivery-metrics). |
 | `sockudo_socket_received_bytes`, `sockudo_socket_transmitted_bytes` | counter | | WebSocket bandwidth. |
 | `sockudo_http_calls_received_total` | counter | `app_id`, `port` | REST API calls, including publishes. Health and readiness probes (`/up`, `/ready`) are not counted. |
 | `sockudo_http_received_bytes`, `sockudo_http_transmitted_bytes` | counter | `app_id`, `port` | REST API bandwidth, excluding probe traffic. |
+
+The admission counter excludes failures in WebSocket handshake extraction and rate limits applied before
+the handler runs. For native upgrade throttling, use
+[`sockudo_rate_limit_triggered_total`](#publish-controls) with
+`{app_id="global",limiter_type="websocket_rate_limit",request_context="websocket_upgrade"}`.
 
 ### Channels and fanout
 

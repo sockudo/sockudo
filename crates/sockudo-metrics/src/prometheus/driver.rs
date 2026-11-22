@@ -6,7 +6,9 @@ use super::recorder::{
 };
 use metrics::{describe_counter, describe_gauge, describe_histogram};
 use metrics_exporter_prometheus::PrometheusHandle;
+use sockudo_core::metrics::{WsAdmissionRejection, WsShutdownCloseOutcome};
 use sockudo_core::utils::resolve_socket_addr;
+use sockudo_core::websocket::DisconnectCause;
 use std::sync::atomic::AtomicU64;
 
 #[derive(Debug)]
@@ -113,6 +115,10 @@ pub struct PrometheusMetricsDriver {
     pub(super) new_connections_total: CounterVec,
     pub(super) new_disconnections_total: CounterVec,
     pub(super) connection_errors_total: CounterVec,
+    pub(super) ws_admission_rejections_total: CounterVec,
+    pub(super) ws_session_ends_total: CounterVec,
+    pub(super) ws_shutdown_closes_total: CounterVec,
+    pub(super) ws_quota_lookup_fallbacks_total: CounterVec,
     pub(super) memory_pressure_rejections_total: CounterVec,
     pub(super) memory_pressure_shedding: Gauge,
     pub(super) socket_bytes_received: CounterVec,
@@ -371,6 +377,65 @@ impl PrometheusMetricsDriver {
             &["app_id", "port", "error_type"]
         )
         .unwrap();
+
+        let ws_admission_rejections_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ws_admission_rejections_total"),
+                "WebSocket admission rejections"
+            ),
+            &["reason"]
+        )
+        .unwrap();
+        for reason in WsAdmissionRejection::ALL {
+            ws_admission_rejections_total
+                .with_label_values(&[reason.as_str()])
+                .init();
+        }
+        let ws_session_ends_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ws_session_ends_total"),
+                "WebSocket session ends"
+            ),
+            &["reason"]
+        )
+        .unwrap();
+        for cause in DisconnectCause::ALL {
+            ws_session_ends_total
+                .with_label_values(&[cause.as_str()])
+                .init();
+        }
+        let ws_shutdown_closes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ws_shutdown_closes_total"),
+                "WebSocket drain Close outcomes"
+            ),
+            &["outcome"]
+        )
+        .unwrap();
+        for outcome in [
+            WsShutdownCloseOutcome::Flushed,
+            WsShutdownCloseOutcome::AlreadyGone,
+            WsShutdownCloseOutcome::AlreadyClosing,
+            WsShutdownCloseOutcome::QueueFull,
+            WsShutdownCloseOutcome::WriteFailed,
+            WsShutdownCloseOutcome::LockTimeout,
+            WsShutdownCloseOutcome::FlushTimeout,
+        ] {
+            ws_shutdown_closes_total
+                .with_label_values(&[outcome.as_str()])
+                .init();
+        }
+        let ws_quota_lookup_fallbacks_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ws_quota_lookup_fallbacks_total"),
+                "Failed or incomplete distributed WebSocket socket-count lookups"
+            ),
+            &[]
+        )
+        .unwrap();
+        ws_quota_lookup_fallbacks_total
+            .with_label_values(&[] as &[&str])
+            .init();
 
         let memory_pressure_rejections_total = register_counter_vec!(
             Opts::new(
@@ -1261,6 +1326,10 @@ impl PrometheusMetricsDriver {
             new_connections_total,
             new_disconnections_total,
             connection_errors_total,
+            ws_admission_rejections_total,
+            ws_session_ends_total,
+            ws_shutdown_closes_total,
+            ws_quota_lookup_fallbacks_total,
             memory_pressure_rejections_total,
             memory_pressure_shedding,
             socket_bytes_received,
