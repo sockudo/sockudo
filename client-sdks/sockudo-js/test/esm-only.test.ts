@@ -25,7 +25,6 @@ describe("esm-only packaging", () => {
 
   it("pins entrypoint wrappers to the bundles the build emits", () => {
     const root = join(currentDir, "..");
-    const built = existsSync(join(root, "dist"));
 
     // One entry per published wrapper. The target is the exact file each vite
     // config writes, so a renamed bundle or a wrong-but-existing target fails.
@@ -50,7 +49,10 @@ describe("esm-only packaging", () => {
 
       expect(targets.length, file).toBeGreaterThan(0);
       expect(new Set(targets), file).toEqual(new Set([bundle]));
-      if (built) expect(existsSync(join(root, bundle)), bundle).toBe(true);
+      // Only assert what this build produced: `build` is web-only, `build:all`
+      // covers every variant, and both leave their own dist/<dir> behind.
+      const target = join(root, bundle);
+      if (existsSync(dirname(target))) expect(existsSync(target), bundle).toBe(true);
     }
   });
 });
