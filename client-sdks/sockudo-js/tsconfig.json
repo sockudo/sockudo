@@ -21,7 +21,6 @@
     },
     "lib": ["ScriptHost", "DOM", "ES2022"],
     "types": ["bun-types", "node"],
-    "allowJs": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "noEmit": true,

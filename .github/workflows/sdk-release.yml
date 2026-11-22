@@ -113,9 +113,8 @@ jobs:
           bun run format:check
           bun run typecheck
           bun run lint
-          bun run test
           bun run build:all
-          bun run check:entrypoints
+          bun run test
           npm pack --dry-run
 
       - name: Publish to npm

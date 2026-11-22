@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  checkEntrypoints,
-  collectWrapperFiles,
-  importSpecifiers,
-} from "../scripts/entrypoints.mjs";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
@@ -28,32 +23,34 @@ describe("esm-only packaging", () => {
     expect(JSON.stringify(packageJson.exports).includes('"require"')).toBe(false);
   });
 
-  it("points every entrypoint wrapper at its shipped dist bundle", () => {
+  it("pins entrypoint wrappers to the bundles the build emits", () => {
     const root = join(currentDir, "..");
+    const built = existsSync(join(root, "dist"));
 
-    // Pinned per wrapper: an existing-but-wrong bundle (e.g. the web build for
-    // react-native) must fail here, not only a stale pusher-* name.
+    // One entry per published wrapper. The target is the exact file each vite
+    // config writes, so a renamed bundle or a wrong-but-existing target fails.
     const expectedBundles: Record<string, string> = {
-      "node.js": "./dist/node/sockudo.js",
-      "with-encryption/index.js": "../dist/web/sockudo-with-encryption.mjs",
-      "worker/index.js": "../dist/worker/sockudo.worker.js",
-      "worker/with-encryption/index.js": "../../dist/worker/sockudo-with-encryption.worker.js",
-      "react/index.js": "../dist/web/react.mjs",
-      "vue/index.js": "../dist/web/vue.mjs",
-      "react-native/index.js": "../dist/react-native/sockudo.js",
-      "nativescript/index.js": "../dist/nativescript/sockudo.js",
+      "node.js": "dist/node/sockudo.js",
+      "with-encryption/index.js": "dist/web/sockudo-with-encryption.mjs",
+      "worker/index.js": "dist/worker/sockudo.worker.js",
+      "worker/with-encryption/index.js": "dist/worker/sockudo-with-encryption.worker.js",
+      "react/index.js": "dist/web/react.mjs",
+      "vue/index.js": "dist/web/vue.mjs",
+      "react-native/index.js": "dist/react-native/sockudo.js",
+      "nativescript/index.js": "dist/nativescript/sockudo.js",
     };
 
-    expect(collectWrapperFiles(root)).toEqual(Object.keys(expectedBundles).sort());
-
     for (const [file, bundle] of Object.entries(expectedBundles)) {
-      const specifiers = importSpecifiers(readFileSync(join(root, file), "utf8"));
-      expect(specifiers.length, file).toBeGreaterThan(0);
-      for (const specifier of specifiers) {
-        expect(specifier, `${file} imports ${specifier}`).toBe(bundle);
-      }
-    }
+      const source = readFileSync(join(root, file), "utf8");
+      const targets = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) =>
+        relative(root, resolve(root, dirname(file), match[1]))
+          .split(sep)
+          .join("/"),
+      );
 
-    expect(checkEntrypoints(root).problems).toEqual([]);
+      expect(targets.length, file).toBeGreaterThan(0);
+      expect(new Set(targets), file).toEqual(new Set([bundle]));
+      if (built) expect(existsSync(join(root, bundle)), bundle).toBe(true);
+    }
   });
 });

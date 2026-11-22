@@ -494,10 +494,8 @@ GitHub Actions are managed from the monorepo root:
 - Publish: `.github/workflows/sdk-release.yml` with tag `client-js-vX.Y.Z`
 - Setup: see `docs/sdk-publishing-2026.md` for npm trusted publishing and provenance.
 
-The release gate runs format checks, type checks, linting, tests, `build:all`, `check:entrypoints`,
-and `npm pack --dry-run` before publishing. `check:entrypoints` verifies that every published
-entrypoint wrapper (`node.js`, `with-encryption/`, `worker/`, `react*-native`, framework wrappers)
-imports a bundle that the build actually emitted.
+The release gate runs format checks, type checks, linting, tests, `build:all`, and `npm pack
+--dry-run` before publishing.
 
 ## Repository
 
