@@ -1,6 +1,6 @@
 import { default as EventsDispatcher } from '../events/dispatcher';
-import Pusher from '../sockudo';
-import { PusherEvent } from '../connection/protocol/message-types';
+import Sockudo from '../sockudo';
+import { SockudoEvent } from '../connection/protocol/message-types';
 import { ChannelAuthorizationCallback } from '../auth/options';
 import { FilterNode } from './filter';
 export type SubscriptionRewind = number | {
@@ -64,7 +64,7 @@ export interface AnnotationEventsResponse {
 }
 export default class Channel extends EventsDispatcher {
     name: string;
-    pusher: Pusher;
+    sockudo: Sockudo;
     subscribed: boolean;
     subscriptionPending: boolean;
     subscriptionCancelled: boolean;
@@ -73,13 +73,13 @@ export default class Channel extends EventsDispatcher {
     eventsFilter: string[] | null;
     rewind: SubscriptionRewind | null;
     annotationSubscribe: boolean;
-    constructor(name: string, pusher: Pusher);
+    constructor(name: string, sockudo: Sockudo);
     authorize(socketId: string, callback: ChannelAuthorizationCallback): void;
     trigger(event: string, data: any): boolean;
     disconnect(): void;
-    handleEvent(event: PusherEvent): void;
-    handleSubscriptionSucceededEvent(event: PusherEvent): void;
-    handleSubscriptionCountEvent(event: PusherEvent): void;
+    handleEvent(event: SockudoEvent): void;
+    handleSubscriptionSucceededEvent(event: SockudoEvent): void;
+    handleSubscriptionCountEvent(event: SockudoEvent): void;
     publishAnnotation(messageSerial: string, annotation: PublishAnnotationRequest): Promise<PublishAnnotationResponse>;
     deleteAnnotation(messageSerial: string, annotationSerial: string, socketId?: string): Promise<DeleteAnnotationResponse>;
     listAnnotations(messageSerial: string, params?: AnnotationEventsParams): Promise<AnnotationEventsResponse>;

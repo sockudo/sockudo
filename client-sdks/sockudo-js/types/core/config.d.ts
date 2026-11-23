@@ -35,4 +35,4 @@ export interface Config {
     nacl?: nacl;
     timelineParams?: any;
 }
-export declare function getConfig(opts: Options, pusher: any): Config;
+export declare function getConfig(opts: Options, sockudo: any): Config;

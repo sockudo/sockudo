@@ -15,4 +15,4 @@ export interface DeprecatedAuthorizerOptions {
     authEndpoint: string;
     auth?: DeprecatedAuthOptions;
 }
-export declare const ChannelAuthorizerProxy: (pusher: any, authOptions: InternalAuthOptions, channelAuthorizerGenerator: ChannelAuthorizerGenerator) => ChannelAuthorizationHandler;
+export declare const ChannelAuthorizerProxy: (sockudo: any, authOptions: InternalAuthOptions, channelAuthorizerGenerator: ChannelAuthorizerGenerator) => ChannelAuthorizationHandler;

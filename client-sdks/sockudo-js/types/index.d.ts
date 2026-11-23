@@ -1,2 +1,2 @@
-import PusherClass from './core/sockudo';
-export default PusherClass;
+import SockudoClass from './core/sockudo';
+export default SockudoClass;

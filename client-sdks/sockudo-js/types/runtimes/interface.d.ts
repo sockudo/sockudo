@@ -6,14 +6,14 @@ import TransportsTable from '../core/transports/transports_table';
 import Socket from '../core/socket';
 import HTTPFactory from '../core/http/http_factory';
 import HTTPRequest from '../core/http/http_request';
-import Pusher from '../core/sockudo';
+import Sockudo from '../core/sockudo';
 import JSONPRequest from './web/dom/jsonp_request';
 import Strategy from '../core/strategies/strategy';
 import { Config } from '../core/config';
 import StrategyOptions from '../core/strategies/strategy_options';
 interface Runtime {
-    setup(PusherClass: {
-        new (key: string, options: any): Pusher;
+    setup(SockudoClass: {
+        new (key: string, options: any): Sockudo;
         ready(): void;
     }): void;
     getProtocol(): string;

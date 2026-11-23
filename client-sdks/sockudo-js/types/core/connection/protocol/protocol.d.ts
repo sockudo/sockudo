@@ -1,8 +1,8 @@
 import Action from './action';
-import { PusherEvent } from './message-types';
+import { SockudoEvent } from './message-types';
 declare const Protocol: {
-    decodeMessage: (messageEvent: MessageEvent) => PusherEvent;
-    encodeMessage: (event: PusherEvent) => string;
+    decodeMessage: (messageEvent: MessageEvent) => SockudoEvent;
+    encodeMessage: (event: SockudoEvent) => string;
     processHandshake: (messageEvent: MessageEvent) => Action;
     getCloseAction: (closeEvent: any) => string;
     getCloseError: (closeEvent: any) => any;

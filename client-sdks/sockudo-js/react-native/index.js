@@ -1,3 +1,3 @@
-import Pusher from "../dist/react-native/sockudo.js";
+import Sockudo from "../dist/react-native/sockudo.js";
 
-export default Pusher;
+export default Sockudo;

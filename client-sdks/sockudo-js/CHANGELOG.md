@@ -9,6 +9,11 @@
 * `retryJitterMs` option that waits a random delay before immediate protocol retries (such as the
   `4200` server-shutdown close), so a draining node's clients do not reconnect in the same instant
 
+### Changed
+
+* published TypeScript declarations now name the client `Sockudo`, `SockudoWithEncryption`, and
+  `SockudoEvent`, matching the runtime; the deep-path-only `PusherEvent` alias is removed
+
 ### Fixed
 
 * honour `delta_compression_enabled` with `enabled: false`; `data.enabled || true` always reported
@@ -21,6 +26,12 @@
   within seconds of an outage ending (sockudo/sockudo#532)
 * stop retrying when a connection attempt is aborted, even if its transport reports a failure
   afterwards
+* resolve the documented `@sockudo/client/with-encryption`, `@sockudo/client/worker`, and
+  `@sockudo/client/worker/with-encryption` subpaths, plus the `node.js` shim, which still imported
+  the pre-rename `pusher-*` bundles and failed with `ERR_MODULE_NOT_FOUND` in Node and bundlers
+  (sockudo/sockudo#569)
+* declare `channel.sockudo`, `user.sockudo`, and the `sockudo` constructor and factory parameters
+  that the runtime exposes, instead of a `pusher` field that was always `undefined`
 
 ## [2.2.0] - 2026-08-17
 

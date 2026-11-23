@@ -1,3 +1,3 @@
-import PusherWithEncryption from "../dist/web/pusher-with-encryption.mjs";
+import SockudoWithEncryption from "../dist/web/sockudo-with-encryption.mjs";
 
-export default PusherWithEncryption;
+export default SockudoWithEncryption;

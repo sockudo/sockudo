@@ -38,7 +38,7 @@ const ProtoMessageData = new Type("ProtoMessageData")
   .add(new Field("jsonValue", 3, "string"))
   .add(new Field("binaryValue", 4, "bytes"));
 
-const ProtoPusherMessage = new Type("ProtoPusherMessage")
+const ProtoSockudoMessage = new Type("ProtoSockudoMessage")
   .add(new Field("event", 1, "string"))
   .add(new Field("channel", 2, "string"))
   .add(new Field("data", 3, "ProtoMessageData"))
@@ -62,7 +62,7 @@ new Root()
   .add(ProtoAiExtras)
   .add(ProtoStructuredData)
   .add(ProtoMessageData)
-  .add(ProtoPusherMessage);
+  .add(ProtoSockudoMessage);
 
 type Envelope = Record<string, any>;
 const MSGPACK_ENVELOPE_FIELDS = [
@@ -397,11 +397,11 @@ function encodeProtobuf(event: SockudoEvent): Uint8Array {
     }
   }
 
-  return ProtoPusherMessage.encode(payload).finish();
+  return ProtoSockudoMessage.encode(payload).finish();
 }
 
 function decodeProtobuf(payload: Uint8Array): Envelope {
-  const decoded = ProtoPusherMessage.toObject(ProtoPusherMessage.decode(payload), {
+  const decoded = ProtoSockudoMessage.toObject(ProtoSockudoMessage.decode(payload), {
     longs: String,
     defaults: false,
   }) as Record<string, any>;
