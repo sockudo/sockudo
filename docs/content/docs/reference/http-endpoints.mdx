@@ -347,6 +347,23 @@ unauthenticated, so expose them only on trusted networks.
 builds, when `[ably_compat].enabled` is true. The two `/operator/stats/*` sub-routes exist only
 when `[ably_compat].enabled` is true.
 
+### `GET /usage`
+
+```json
+{
+  "memory": {
+    "total": 34359738368,
+    "used": 28869918720,
+    "free": 5495819648,
+    "percent": 84.02
+  }
+}
+```
+
+`total`, `used`, and `free` are host RAM in **bytes**. `free` is `total - used`, not the OS
+"available" figure, and `percent` is `used / total * 100`. When the host refuses to expose
+memory information, the endpoint returns `200` with all counters zero instead of failing.
+
 <Callout type="warn" title="Usage and stats are on by default">
 `[http_api].usage_enabled` defaults to `true`, so `/usage`, `/stats`, and `/operator/stats` are
 served without authentication out of the box. Disable `/usage`, `/operator/stats`, and operator
