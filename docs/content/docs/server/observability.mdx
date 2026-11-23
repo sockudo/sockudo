@@ -95,6 +95,10 @@ the handler runs. For native upgrade throttling, use
 [`sockudo_rate_limit_triggered_total`](#publish-controls) with
 `{app_id="global",limiter_type="websocket_rate_limit",request_context="websocket_upgrade"}`.
 
+Drain-time counters are only collected while the pod is still scraped: `/ready` and `/up` return 503
+at shutdown, before sockets close. Use the `shutdown drain complete` log line (`targets` plus
+per-outcome counts) or push the metrics through OpenTelemetry; `0` from a scrape does not mean no drain.
+
 ### Channels and fanout
 
 | Metric | Type | Labels | What it tells you |

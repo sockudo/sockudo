@@ -12,13 +12,14 @@ use axum::{BoxError, Router, ServiceExt};
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::WsShutdownCloseOutcome;
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::ShutdownCloseTarget;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -534,19 +535,59 @@ impl SockudoServer {
     }
 
     async fn close_shutdown_targets(&self, spread: Duration, cancel: &CancellationToken) {
+        use WsShutdownCloseOutcome as Outcome;
+
         let targets = self.collect_shutdown_targets().await;
+        let total = targets.len();
+        if total == 0 {
+            debug!("drain collected no sockets");
+        }
+
         let metrics = self.handler.metrics().as_deref();
-        close_in_batches(targets, spread, cancel, |(namespace, target)| async move {
-            let socket = namespace.get_connection(&target.socket_id);
-            if let Some(outcome) = target
-                .close(socket.as_ref(), ShutdownCloseTarget::TIMEOUT)
-                .await
-                && let Some(metrics) = metrics
-            {
-                metrics.mark_ws_shutdown_close(outcome);
+        let outcomes = Arc::new(DrainOutcomeCounts::default());
+        close_in_batches(targets, spread, cancel, {
+            let outcomes = Arc::clone(&outcomes);
+            move |(namespace, target)| {
+                let outcomes = Arc::clone(&outcomes);
+                async move {
+                    let socket = namespace.get_connection(&target.socket_id);
+                    if let Some(outcome) = target
+                        .close(socket.as_ref(), ShutdownCloseTarget::TIMEOUT)
+                        .await
+                    {
+                        outcomes.record(outcome);
+                        if let Some(metrics) = metrics {
+                            metrics.mark_ws_shutdown_close(outcome);
+                        }
+                    }
+                }
             }
         })
         .await;
+
+        // A second sweep (stop() or a second listener) finds the same sockets
+        // but every close reports None, so nothing is recorded: stay quiet.
+        if outcomes.total() > 0 {
+            info!(
+                targets = total,
+                flushed = outcomes.count(Outcome::Flushed),
+                already_gone = outcomes.count(Outcome::AlreadyGone),
+                already_closing = outcomes.count(Outcome::AlreadyClosing),
+                queue_full = outcomes.count(Outcome::QueueFull),
+                write_failed = outcomes.count(Outcome::WriteFailed),
+                lock_timeout = outcomes.count(Outcome::LockTimeout),
+                flush_timeout = outcomes.count(Outcome::FlushTimeout),
+                "shutdown drain complete"
+            );
+            let failed = outcomes.failed();
+            if failed > 0 {
+                warn!(
+                    failed,
+                    targets = total,
+                    "some sockets could not be closed with 4200"
+                );
+            }
+        }
     }
 
     async fn collect_shutdown_targets(&self) -> Vec<(Arc<Namespace>, ShutdownCloseTarget)> {
@@ -679,6 +720,66 @@ impl SockudoServer {
         match worker_error {
             Some(error) => Err(Error::Internal(format!("cleanup worker failed: {error}"))),
             None => Ok(job_count),
+        }
+    }
+}
+
+/// Terminal outcome of every socket selected for the drain. The counter metric
+/// alone is not enough to verify a drain: the pod stops being scrapeable when
+/// it turns not-ready, which is before these closes run.
+#[derive(Default)]
+struct DrainOutcomeCounts {
+    flushed: AtomicUsize,
+    already_gone: AtomicUsize,
+    already_closing: AtomicUsize,
+    queue_full: AtomicUsize,
+    write_failed: AtomicUsize,
+    lock_timeout: AtomicUsize,
+    flush_timeout: AtomicUsize,
+}
+
+impl DrainOutcomeCounts {
+    fn record(&self, outcome: WsShutdownCloseOutcome) {
+        self.counter(outcome).fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn count(&self, outcome: WsShutdownCloseOutcome) -> usize {
+        self.counter(outcome).load(Ordering::Relaxed)
+    }
+
+    fn total(&self) -> usize {
+        WsShutdownCloseOutcome::ALL
+            .into_iter()
+            .map(|outcome| self.count(outcome))
+            .sum()
+    }
+
+    fn failed(&self) -> usize {
+        WsShutdownCloseOutcome::ALL
+            .into_iter()
+            .filter(|outcome| {
+                matches!(
+                    outcome,
+                    WsShutdownCloseOutcome::QueueFull
+                        | WsShutdownCloseOutcome::WriteFailed
+                        | WsShutdownCloseOutcome::LockTimeout
+                        | WsShutdownCloseOutcome::FlushTimeout
+                )
+            })
+            .map(|outcome| self.count(outcome))
+            .sum()
+    }
+
+    fn counter(&self, outcome: WsShutdownCloseOutcome) -> &AtomicUsize {
+        use WsShutdownCloseOutcome as Outcome;
+        match outcome {
+            Outcome::Flushed => &self.flushed,
+            Outcome::AlreadyGone => &self.already_gone,
+            Outcome::AlreadyClosing => &self.already_closing,
+            Outcome::QueueFull => &self.queue_full,
+            Outcome::WriteFailed => &self.write_failed,
+            Outcome::LockTimeout => &self.lock_timeout,
+            Outcome::FlushTimeout => &self.flush_timeout,
         }
     }
 }
@@ -1511,5 +1612,81 @@ mod tests {
             .expect("second signal did not end paced closes")
             .unwrap();
         assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn drain_outcome_counts_cover_every_variant() {
+        let counts = DrainOutcomeCounts::default();
+        for outcome in WsShutdownCloseOutcome::ALL {
+            counts.record(outcome);
+        }
+        for outcome in WsShutdownCloseOutcome::ALL {
+            assert_eq!(counts.count(outcome), 1, "{outcome:?} counted once");
+        }
+        assert_eq!(
+            counts.failed(),
+            4,
+            "queue_full, write_failed, lock_timeout and flush_timeout are failures"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_collects_registered_sockets() {
+        use crate::http_handler::test_support::test_websocket_writer;
+        use sockudo_core::websocket::WebSocketBufferConfig;
+
+        let config = serde_json::from_value(serde_json::json!({
+            "adapter": {"driver": "local"},
+            "cache": {"driver": "memory"},
+            "queue": {"driver": "memory"},
+            "push": {"storage_driver": "memory", "queue_driver": "memory", "allow_memory_drivers": true},
+            "metrics": {"enabled": false},
+            "rate_limiter": {"enabled": false},
+            "cleanup": {"async_enabled": false}
+        }))
+        .unwrap();
+        let server = SockudoServer::new(config).await.unwrap();
+        assert!(
+            server.collect_shutdown_targets().await.is_empty(),
+            "a fresh server has nothing to drain"
+        );
+
+        let app = App::from_policy(
+            "drain-targets".into(),
+            "key".into(),
+            "secret".into(),
+            true,
+            AppPolicy::default(),
+        );
+        server
+            .state
+            .app_manager
+            .create_app(app.clone())
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::new();
+        server
+            .state
+            .connection_manager
+            .add_socket(
+                socket_id,
+                test_websocket_writer().await,
+                &app.id,
+                server.state.app_manager.clone(),
+                WebSocketBufferConfig::default(),
+                sockudo_protocol::ProtocolVersion::V2,
+                sockudo_protocol::WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            server.collect_shutdown_targets().await.len(),
+            1,
+            "drain must see the registered socket"
+        );
     }
 }
