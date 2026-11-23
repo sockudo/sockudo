@@ -52,7 +52,7 @@ jobs:
           ref: ${{ inputs.git_ref || github.ref }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: ${{ inputs.target_triple }}
 

@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@1.120.0
         id: toolchain
 
       - name: Cache Cargo inputs
