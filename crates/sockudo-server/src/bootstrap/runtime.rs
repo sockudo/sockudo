@@ -12,13 +12,14 @@ use axum::{BoxError, Router, ServiceExt};
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::WsShutdownCloseOutcome;
 use sockudo_core::namespace::Namespace;
-use sockudo_core::websocket::{ConnectionStatus, SocketId};
+use sockudo_core::websocket::ShutdownCloseTarget;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -506,14 +507,8 @@ impl SockudoServer {
     /// Used by direct `stop()` callers; the signal path uses
     /// [`Self::close_all_connections_paced`].
     pub(crate) async fn close_all_connections(&self) {
-        let targets = self.collect_shutdown_targets().await;
-        close_in_batches(
-            targets,
-            Duration::ZERO,
-            &CancellationToken::new(),
-            close_for_shutdown,
-        )
-        .await;
+        self.close_shutdown_targets(Duration::ZERO, &CancellationToken::new())
+            .await;
     }
 
     /// Close every live websocket with `4200 Server shutting down` so clients
@@ -536,21 +531,78 @@ impl SockudoServer {
                 _ = cancel.cancelled() => {}
             }
         }
-        let targets = self.collect_shutdown_targets().await;
-        close_in_batches(targets, spread, cancel, close_for_shutdown).await;
+        self.close_shutdown_targets(spread, cancel).await;
     }
 
-    async fn collect_shutdown_targets(&self) -> Vec<(Arc<Namespace>, SocketId)> {
+    async fn close_shutdown_targets(&self, spread: Duration, cancel: &CancellationToken) {
+        use WsShutdownCloseOutcome as Outcome;
+
+        let targets = self.collect_shutdown_targets().await;
+        let total = targets.len();
+        if total == 0 {
+            debug!("drain collected no sockets");
+        }
+
+        let metrics = self.handler.metrics().as_deref();
+        let outcomes = Arc::new(DrainOutcomeCounts::default());
+        close_in_batches(targets, spread, cancel, {
+            let outcomes = Arc::clone(&outcomes);
+            move |(namespace, target)| {
+                let outcomes = Arc::clone(&outcomes);
+                async move {
+                    let socket = namespace.get_connection(&target.socket_id);
+                    if let Some(outcome) = target
+                        .close(socket.as_ref(), ShutdownCloseTarget::TIMEOUT)
+                        .await
+                    {
+                        outcomes.record(outcome);
+                        if let Some(metrics) = metrics {
+                            metrics.mark_ws_shutdown_close(outcome);
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+
+        // A second sweep (stop() or a second listener) finds the same sockets
+        // but every close reports None, so nothing is recorded: stay quiet.
+        if outcomes.total() > 0 {
+            info!(
+                targets = total,
+                flushed = outcomes.count(Outcome::Flushed),
+                already_gone = outcomes.count(Outcome::AlreadyGone),
+                already_closing = outcomes.count(Outcome::AlreadyClosing),
+                queue_full = outcomes.count(Outcome::QueueFull),
+                write_failed = outcomes.count(Outcome::WriteFailed),
+                lock_timeout = outcomes.count(Outcome::LockTimeout),
+                flush_timeout = outcomes.count(Outcome::FlushTimeout),
+                "shutdown drain complete"
+            );
+            let failed = outcomes.failed();
+            if failed > 0 {
+                warn!(
+                    failed,
+                    targets = total,
+                    "some sockets could not be closed with 4200"
+                );
+            }
+        }
+    }
+
+    async fn collect_shutdown_targets(&self) -> Vec<(Arc<Namespace>, ShutdownCloseTarget)> {
         let mut targets = Vec::new();
 
         match self.state.connection_manager.get_namespaces().await {
             Ok(namespaces_vec) => {
                 for (_app_id, namespace) in namespaces_vec {
-                    let socket_ids = namespace.get_socket_ids();
-                    targets.reserve(socket_ids.len());
-                    for socket_id in socket_ids {
-                        targets.push((Arc::clone(&namespace), socket_id));
-                    }
+                    targets.reserve(namespace.sockets.len());
+                    targets.extend(
+                        namespace
+                            .sockets
+                            .iter()
+                            .map(|socket| (Arc::clone(&namespace), socket.shutdown_close_target())),
+                    );
                 }
             }
             Err(e) => {
@@ -672,68 +724,64 @@ impl SockudoServer {
     }
 }
 
-/// A close that cannot flush within this budget is abandoned: the token
-/// cancellation tears the socket down, and the spread keeps its schedule.
-const SHUTDOWN_SOCKET_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Terminal outcome of every socket selected for the drain. The counter metric
+/// alone is not enough to verify a drain: the pod stops being scrapeable when
+/// it turns not-ready, which is before these closes run.
+#[derive(Default)]
+struct DrainOutcomeCounts {
+    flushed: AtomicUsize,
+    already_gone: AtomicUsize,
+    already_closing: AtomicUsize,
+    queue_full: AtomicUsize,
+    write_failed: AtomicUsize,
+    lock_timeout: AtomicUsize,
+    flush_timeout: AtomicUsize,
+}
 
-async fn close_for_shutdown((namespace, socket_id): (Arc<Namespace>, SocketId)) {
-    let Some(ws) = namespace.get_connection(&socket_id) else {
-        // Disconnected and removed during the spread window: nothing to close.
-        return;
-    };
-    if ws.shutdown_token.is_cancelled() {
-        // The writer task is already gone; no Close frame can reach the peer.
-        return;
-    }
-    ws.mark_closing();
-
-    // One absolute budget for lock acquisition and the flush, matching the
-    // documented five-second per-socket bound.
-    let deadline = tokio::time::Instant::now() + SHUTDOWN_SOCKET_CLOSE_TIMEOUT;
-
-    // Bound lock acquisition separately: a timeout here means no server Close
-    // started, so the socket must not be marked closed.
-    let mut socket = match tokio::time::timeout_at(deadline, ws.inner.lock()).await {
-        Ok(socket) => socket,
-        Err(elapsed) => {
-            ws.shutdown();
-            warn!(
-                %socket_id,
-                timeout_ms = SHUTDOWN_SOCKET_CLOSE_TIMEOUT.as_millis() as u64,
-                error = %elapsed,
-                "websocket close lock timed out during shutdown"
-            );
-            return;
-        }
-    };
-
-    // The flush deadline runs while the connection lock is held, so a timeout
-    // can abort the writer and clear watchdogs before releasing the guard.
-    match tokio::time::timeout_at(
-        deadline,
-        socket.close(4200, "Server shutting down".to_string()),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) if matches!(&e, Error::ConnectionClosed(_)) => {
-            debug!(%socket_id, error = %e, "websocket already gone before shutdown close");
-        }
-        Ok(Err(e)) => warn!(%socket_id, error = %e, "failed to close websocket during shutdown"),
-        Err(elapsed) => {
-            socket.message_sender.abort_writer();
-            socket.state.clear_timeouts();
-            socket.state.status = ConnectionStatus::Closed;
-            warn!(
-                %socket_id,
-                timeout_ms = SHUTDOWN_SOCKET_CLOSE_TIMEOUT.as_millis() as u64,
-                error = %elapsed,
-                "websocket close timed out during shutdown"
-            );
-        }
+impl DrainOutcomeCounts {
+    fn record(&self, outcome: WsShutdownCloseOutcome) {
+        self.counter(outcome).fetch_add(1, Ordering::Relaxed);
     }
 
-    ws.shutdown();
+    fn count(&self, outcome: WsShutdownCloseOutcome) -> usize {
+        self.counter(outcome).load(Ordering::Relaxed)
+    }
+
+    fn total(&self) -> usize {
+        WsShutdownCloseOutcome::ALL
+            .into_iter()
+            .map(|outcome| self.count(outcome))
+            .sum()
+    }
+
+    fn failed(&self) -> usize {
+        WsShutdownCloseOutcome::ALL
+            .into_iter()
+            .filter(|outcome| {
+                matches!(
+                    outcome,
+                    WsShutdownCloseOutcome::QueueFull
+                        | WsShutdownCloseOutcome::WriteFailed
+                        | WsShutdownCloseOutcome::LockTimeout
+                        | WsShutdownCloseOutcome::FlushTimeout
+                )
+            })
+            .map(|outcome| self.count(outcome))
+            .sum()
+    }
+
+    fn counter(&self, outcome: WsShutdownCloseOutcome) -> &AtomicUsize {
+        use WsShutdownCloseOutcome as Outcome;
+        match outcome {
+            Outcome::Flushed => &self.flushed,
+            Outcome::AlreadyGone => &self.already_gone,
+            Outcome::AlreadyClosing => &self.already_closing,
+            Outcome::QueueFull => &self.queue_full,
+            Outcome::WriteFailed => &self.write_failed,
+            Outcome::LockTimeout => &self.lock_timeout,
+            Outcome::FlushTimeout => &self.flush_timeout,
+        }
+    }
 }
 
 /// Granularity of paced shutdown closes: connections are closed in at most
@@ -918,7 +966,9 @@ mod tests {
     use super::*;
     use axum::routing::get;
     use sockudo_core::app::{App, AppPolicy};
+    use sockudo_core::metrics::WsShutdownCloseOutcome;
     use sockudo_core::webhook_types::Webhook;
+    use sockudo_core::websocket::{ConnectionStatus, SocketId};
     use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -1059,6 +1109,145 @@ mod tests {
     #[tokio::test]
     async fn cancelled_cleanup_worker_does_not_skip_webhook_drain() {
         assert_worker_failure_still_drains_webhooks(true).await;
+    }
+
+    async fn shutdown_socket_pair() -> (
+        Arc<Namespace>,
+        sockudo_core::websocket::WebSocketRef,
+        sockudo_ws::axum_integration::WebSocketReader,
+        TcpStream,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer = tokio::net::TcpSocket::new_v4().unwrap();
+        peer.set_recv_buffer_size(4096).unwrap();
+        let (peer, accepted) = tokio::join!(
+            peer.connect(listener.local_addr().unwrap()),
+            listener.accept(),
+        );
+        let (stream, _) = accepted.unwrap();
+        let (reader, writer) =
+            sockudo_ws::axum_integration::WebSocket::from_tcp(stream, Default::default()).split();
+
+        let namespace = Arc::new(Namespace::new("shutdown-test".into()));
+        let socket_id = SocketId::new();
+        let socket = sockudo_core::websocket::WebSocketRef::new(
+            sockudo_core::websocket::WebSocket::new(socket_id, writer),
+        );
+        namespace.sockets.insert(socket_id, socket.clone());
+        (namespace, socket, reader, peer.unwrap())
+    }
+
+    #[tokio::test]
+    async fn shutdown_reports_lock_timeout_before_starting_close() {
+        let (_namespace, socket, _reader, _peer) = shutdown_socket_pair().await;
+        let guard = socket.inner.lock().await;
+        let outcome = socket
+            .shutdown_close_target()
+            .close(Some(&socket), Duration::from_millis(25))
+            .await;
+
+        assert_eq!(outcome, Some(WsShutdownCloseOutcome::LockTimeout));
+        assert_eq!(guard.state.status, ConnectionStatus::Active);
+        assert!(socket.shutdown_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn shutdown_reports_flush_timeout_if_writer_is_blocked() {
+        let (_namespace, socket, _reader, _peer) = shutdown_socket_pair().await;
+        {
+            // The peer keeps its small receive window open without reading.
+            let guard = socket.inner.lock().await;
+            guard
+                .message_sender
+                .send(sockudo_ws::Message::Binary(vec![0; 8 * 1024 * 1024].into()))
+                .unwrap();
+        }
+        let outcome = socket
+            .shutdown_close_target()
+            .close(Some(&socket), Duration::from_millis(100))
+            .await;
+
+        assert_eq!(outcome, Some(WsShutdownCloseOutcome::FlushTimeout));
+        assert_eq!(
+            socket.inner.lock().await.state.status,
+            ConnectionStatus::Closed
+        );
+        assert!(socket.shutdown_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn shutdown_snapshot_does_not_recount_a_late_close_after_removal() {
+        let (namespace, socket, _reader, _peer) = shutdown_socket_pair().await;
+        let snapshot = socket.shutdown_close_target();
+        let outcome = socket
+            .shutdown_close_target()
+            .close(Some(&socket), Duration::from_secs(2))
+            .await;
+        assert_eq!(outcome, Some(WsShutdownCloseOutcome::Flushed));
+
+        namespace.remove_connection(&socket.socket_id);
+        let gone = namespace.get_connection(&snapshot.socket_id);
+        assert_eq!(snapshot.close(gone.as_ref(), Duration::ZERO).await, None);
+    }
+
+    #[tokio::test]
+    async fn shutdown_duplicate_finishes_if_first_lookup_found_no_socket() {
+        let (_namespace, socket, _reader, _peer) = shutdown_socket_pair().await;
+        let target = socket.shutdown_close_target();
+        assert_eq!(
+            target.close(None, Duration::ZERO).await,
+            Some(WsShutdownCloseOutcome::AlreadyGone)
+        );
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                target.close(Some(&socket), Duration::ZERO)
+            )
+            .await
+            .expect("no shutdown Close is still running"),
+            None
+        );
+        assert!(!socket.shutdown_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn shutdown_waiter_reports_when_the_first_owner_is_cancelled() {
+        let (_namespace, socket, _reader, _peer) = shutdown_socket_pair().await;
+        let guard = socket.inner.lock().await;
+        let target = socket.shutdown_close_target();
+        let budget = Duration::from_secs(2);
+        let mut owner = Box::pin(target.close(Some(&socket), budget));
+        let mut waiter = Box::pin(target.close(Some(&socket), budget));
+        assert!(futures_util::poll!(owner.as_mut()).is_pending());
+        assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+
+        drop(owner);
+        assert!(socket.shutdown_token.is_cancelled());
+        drop(guard);
+
+        assert_eq!(
+            tokio::time::timeout(budget, waiter).await.unwrap(),
+            Some(WsShutdownCloseOutcome::AlreadyGone)
+        );
+        assert_eq!(target.close(Some(&socket), budget).await, None);
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_claim_a_socket_that_reached_eof_while_waiting_for_lock() {
+        use sockudo_core::websocket::DisconnectCause;
+
+        let (_namespace, socket, _reader, _peer) = shutdown_socket_pair().await;
+        let guard = socket.inner.lock().await;
+        let target = socket.shutdown_close_target();
+        let close = target.close(Some(&socket), Duration::from_secs(2));
+        tokio::pin!(close);
+        assert!(futures_util::poll!(&mut close).is_pending());
+        let termination = socket.termination_handle();
+        termination.finish_reader_eof().await;
+        drop(guard);
+
+        assert_eq!(close.await, Some(WsShutdownCloseOutcome::AlreadyGone));
+        assert_eq!(termination.cause(), DisconnectCause::TransportEof);
     }
 
     async fn ready_status_line(addr: SocketAddr) -> std::io::Result<String> {
@@ -1423,5 +1612,81 @@ mod tests {
             .expect("second signal did not end paced closes")
             .unwrap();
         assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn drain_outcome_counts_cover_every_variant() {
+        let counts = DrainOutcomeCounts::default();
+        for outcome in WsShutdownCloseOutcome::ALL {
+            counts.record(outcome);
+        }
+        for outcome in WsShutdownCloseOutcome::ALL {
+            assert_eq!(counts.count(outcome), 1, "{outcome:?} counted once");
+        }
+        assert_eq!(
+            counts.failed(),
+            4,
+            "queue_full, write_failed, lock_timeout and flush_timeout are failures"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_collects_registered_sockets() {
+        use crate::http_handler::test_support::test_websocket_writer;
+        use sockudo_core::websocket::WebSocketBufferConfig;
+
+        let config = serde_json::from_value(serde_json::json!({
+            "adapter": {"driver": "local"},
+            "cache": {"driver": "memory"},
+            "queue": {"driver": "memory"},
+            "push": {"storage_driver": "memory", "queue_driver": "memory", "allow_memory_drivers": true},
+            "metrics": {"enabled": false},
+            "rate_limiter": {"enabled": false},
+            "cleanup": {"async_enabled": false}
+        }))
+        .unwrap();
+        let server = SockudoServer::new(config).await.unwrap();
+        assert!(
+            server.collect_shutdown_targets().await.is_empty(),
+            "a fresh server has nothing to drain"
+        );
+
+        let app = App::from_policy(
+            "drain-targets".into(),
+            "key".into(),
+            "secret".into(),
+            true,
+            AppPolicy::default(),
+        );
+        server
+            .state
+            .app_manager
+            .create_app(app.clone())
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::new();
+        server
+            .state
+            .connection_manager
+            .add_socket(
+                socket_id,
+                test_websocket_writer().await,
+                &app.id,
+                server.state.app_manager.clone(),
+                WebSocketBufferConfig::default(),
+                sockudo_protocol::ProtocolVersion::V2,
+                sockudo_protocol::WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            server.collect_shutdown_targets().await.len(),
+            1,
+            "drain must see the registered socket"
+        );
     }
 }

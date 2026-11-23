@@ -1,6 +1,6 @@
 use super::ConnectionHandler;
-use sockudo_core::error::Result;
-use sockudo_core::websocket::SocketId;
+use sockudo_core::error::{Error, Result};
+use sockudo_core::websocket::{DisconnectCause, SocketId, WebSocket};
 use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::PONG_TIMEOUT;
 use sockudo_protocol::messages::PusherMessage;
@@ -143,9 +143,12 @@ impl ConnectionHandler {
                                     timeout_seconds = PONG_TIMEOUT,
                                     "pong timeout reached, forcing cleanup"
                                 );
-                                let _ = Box::pin(
-                                    ws.close(4201, "Pong reply not received in time".to_string()),
-                                )
+                                Box::pin(close_after_timeout(
+                                    &mut ws,
+                                    4201,
+                                    "Pong reply not received in time",
+                                    DisconnectCause::ActivityTimeout,
+                                ))
                                 .await;
                                 drop(ws);
                                 handler.spawn_disconnect(
@@ -250,12 +253,13 @@ impl ConnectionHandler {
 
                 // Check if user is still not authenticated
                 if !ws.state.is_authenticated() {
-                    let _ = ws
-                        .close(
-                            4009,
-                            "Connection not authorized within timeout.".to_string(),
-                        )
-                        .await;
+                    close_after_timeout(
+                        &mut ws,
+                        4009,
+                        "Connection not authorized within timeout.",
+                        DisconnectCause::AuthTimeout,
+                    )
+                    .await;
                 }
             }
         });
@@ -299,5 +303,43 @@ impl ConnectionHandler {
         }
 
         Ok(())
+    }
+}
+
+async fn close_after_timeout(
+    socket: &mut WebSocket,
+    code: u16,
+    message: &str,
+    cause: DisconnectCause,
+) {
+    let socket_id = *socket.get_socket_id();
+    match socket
+        .close_with_outcome(code, message.to_owned(), cause)
+        .await
+    {
+        Ok(_) => {}
+        Err(Error::ConnectionClosed(_)) => {
+            debug!(%socket_id, close_code = code, "socket already gone before timeout close");
+        }
+        Err(Error::WebSocket(error))
+            if DisconnectCause::from_websocket_error(&error).is_confirmed_peer_loss() =>
+        {
+            debug!(%socket_id, close_code = code, reason = error.metric_name(), "socket already gone before timeout close");
+        }
+        Err(Error::WebSocket(sockudo_ws::Error::Io(error))) => {
+            warn!(
+                %socket_id,
+                close_code = code,
+                io_kind = ?error.kind(),
+                os_error = error.raw_os_error(),
+                "websocket timeout close failed"
+            );
+        }
+        Err(Error::WebSocket(error)) => {
+            warn!(%socket_id, close_code = code, reason = error.metric_name(), "websocket timeout close failed");
+        }
+        Err(error) => {
+            warn!(%socket_id, close_code = code, error = %error, "websocket timeout close failed");
+        }
     }
 }

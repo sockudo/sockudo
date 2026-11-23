@@ -529,7 +529,7 @@ impl ConnectionHandler {
 
             let channels: Vec<String> = conn_locked.state.get_subscribed_channels_list().to_vec();
             let user_id = conn_locked.state.user_id.clone();
-            let cause = conn_locked.state.disconnect_cause;
+            let cause = conn_locked.disconnect_cause();
 
             // Extract presence channel info for webhook processing
             let presence_channels: Vec<String> = channels

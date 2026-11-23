@@ -42,13 +42,13 @@ use sockudo_core::memory_pressure::{
     MemoryPressureMonitor, MemoryPressureObserver, MemoryPressureSnapshot,
 };
 use sockudo_core::message_envelope::MessageEnvelope;
-use sockudo_core::metrics::MetricsInterface;
+use sockudo_core::metrics::{MetricsInterface, WsAdmissionRejection, WsShutdownCloseOutcome};
 use sockudo_core::options::ServerOptions;
 use sockudo_core::presence_history::{NoopPresenceHistoryStore, PresenceHistoryStore};
 use sockudo_core::presence_registry::{PresenceRegistry, PresenceReplication};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_core::version_store::{NoopVersionStore, VersionStore};
-use sockudo_core::websocket::{DisconnectCause, SocketId};
+use sockudo_core::websocket::{DisconnectCause, ShutdownCloseTarget, SocketId, SocketTermination};
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
 use sockudo_protocol::messages::{MessageData, PusherMessage, is_ai_event};
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
@@ -145,6 +145,12 @@ struct SocketWireOptions {
     wire_format: WireFormat,
     echo_messages: bool,
     append_mode: AppendMode,
+}
+
+enum SocketLoopExit {
+    Ended,
+    PeerClose,
+    FatalError,
 }
 
 fn fast_dashmap<K: Eq + std::hash::Hash, V>() -> FastDashMap<K, V> {
@@ -613,6 +619,13 @@ impl ConnectionHandler {
     pub fn mark_memory_pressure_rejection(&self) {
         if let Some(metrics) = self.metrics.as_ref() {
             metrics.mark_memory_pressure_rejection();
+            metrics.mark_ws_admission_rejection(WsAdmissionRejection::MemoryPressure);
+        }
+    }
+
+    pub fn mark_ws_admission_rejection(&self, reason: WsAdmissionRejection) {
+        if let Some(metrics) = &self.metrics {
+            metrics.mark_ws_admission_rejection(reason);
         }
     }
 
@@ -715,6 +728,7 @@ impl ConnectionHandler {
         // Early validation and setup
         let _socket_task = self.socket_tasks.token();
         if !self.is_accepting() {
+            self.mark_ws_admission_rejection(WsAdmissionRejection::Draining);
             return Err(Error::ConnectionClosed("server shutting down".into()));
         }
         // Large sub-futures here are boxed: they run once or briefly, and inline they would be
@@ -722,6 +736,15 @@ impl ConnectionHandler {
         let app_config = match Box::pin(self.validate_and_get_app(&app_key)).await {
             Ok(app) => app,
             Err(e) => {
+                match &e {
+                    Error::ApplicationNotFound => {
+                        self.mark_ws_admission_rejection(WsAdmissionRejection::AppNotFound);
+                    }
+                    Error::ApplicationDisabled => {
+                        self.mark_ws_admission_rejection(WsAdmissionRejection::AppDisabled);
+                    }
+                    _ => {}
+                }
                 // Track application validation errors
                 if let Some(ref metrics) = self.metrics {
                     let error_type = match &e {
@@ -748,6 +771,7 @@ impl ConnectionHandler {
             let origin_str = origin.as_deref().unwrap_or("");
 
             if !OriginValidator::validate_origin(origin_str, allowed_origins) {
+                self.mark_ws_admission_rejection(WsAdmissionRejection::Origin);
                 // Track origin validation errors
                 if let Some(ref metrics) = self.metrics {
                     metrics.mark_connection_error(&app_config.id, "origin_not_allowed");
@@ -823,12 +847,36 @@ impl ConnectionHandler {
         .await?;
         // A validated upgrade can finish registration after the shutdown snapshot.
         if !self.is_accepting() {
-            let close_result = self
-                .close_connection(&socket_id, &app_config, 4200, "Server shutting down")
-                .await;
+            self.mark_ws_admission_rejection(WsAdmissionRejection::Draining);
+            let outcome = if let Some(socket) = self
+                .connection_manager
+                .get_connection(&socket_id, &app_config.id)
+                .await
+            {
+                socket
+                    .shutdown_close_target()
+                    .close(Some(&socket), ShutdownCloseTarget::TIMEOUT)
+                    .await
+            } else {
+                None
+            };
+            if let (Some(metrics), Some(outcome)) = (&self.metrics, outcome) {
+                metrics.mark_ws_shutdown_close(outcome);
+            }
             live_connection.release();
             self.cleanup_socket(&socket_id, &app_config).await;
-            return close_result;
+            return match outcome {
+                Some(
+                    outcome @ (WsShutdownCloseOutcome::QueueFull
+                    | WsShutdownCloseOutcome::WriteFailed
+                    | WsShutdownCloseOutcome::LockTimeout
+                    | WsShutdownCloseOutcome::FlushTimeout),
+                ) => Err(Error::Internal(format!(
+                    "shutdown close failed: {}",
+                    outcome.as_str()
+                ))),
+                _ => Ok(()),
+            };
         }
         // Wrapped in an async block so any early return still reaches cleanup_socket below.
         let result = async {
@@ -850,6 +898,9 @@ impl ConnectionHandler {
                 .await;
 
                 if let Err(error) = auth_result {
+                    if matches!(&error, Error::Auth(_)) {
+                        self.mark_ws_admission_rejection(WsAdmissionRejection::Authentication);
+                    }
                     let _ =
                         Box::pin(self.send_error(&app_config.id, &socket_id, &error, None)).await;
                     let _ = Box::pin(self.close_connection(
@@ -863,14 +914,16 @@ impl ConnectionHandler {
                 }
             }
 
-            // Get the cancellation token so the reader loop can be cancelled
-            // when the connection is cleaned up (e.g., ghost connection timeout)
-            let shutdown_token = Box::pin(
+            // Keep the split transport alive until the reader has published its
+            // terminal observation and completed any peer Close handshake.
+            let termination = Box::pin(
                 self.connection_manager
                     .get_connection(&socket_id, &app_config.id),
             )
             .await
-            .map(|conn| conn.cancellation_token());
+            .map(|conn| conn.termination_handle())
+            .unwrap_or_default();
+            let reader_shutdown = termination.attach_reader();
 
             // Send connection established
             Box::pin(self.send_connection_established(&app_config.id, &socket_id)).await?;
@@ -879,14 +932,37 @@ impl ConnectionHandler {
             Box::pin(self.setup_initial_timeouts(&socket_id, &app_config)).await?;
 
             // Main message loop
-            self.run_message_loop(
-                socket_rx,
-                &socket_id,
-                &app_config,
-                shutdown_token,
-                &mut live_connection,
-            )
-            .await
+            let result = self
+                .run_message_loop(
+                    socket_rx,
+                    &socket_id,
+                    &app_config,
+                    &termination,
+                    &mut live_connection,
+                )
+                .await;
+            live_connection.release();
+            let cause = termination.cause();
+            if let Some(metrics) = &self.metrics {
+                metrics.mark_ws_session_end(cause);
+            }
+            let span = tracing::Span::current();
+            span.record("sockudo.ws.disconnect_reason", cause.as_str());
+            if cause == DisconnectCause::TransportError {
+                span.record("error.type", cause.as_str());
+                span.record("otel.status_code", "ERROR");
+            }
+            debug!(%socket_id, reason = cause.as_str(), "websocket session ended");
+            drop(reader_shutdown);
+            match result? {
+                SocketLoopExit::Ended => Ok(()),
+                SocketLoopExit::PeerClose => {
+                    Box::pin(self.handle_peer_close(&app_config.id, &socket_id)).await
+                }
+                SocketLoopExit::FatalError => {
+                    Box::pin(self.handle_disconnect(&app_config.id, &socket_id)).await
+                }
+            }
         }
         .await;
 
@@ -926,6 +1002,15 @@ impl ConnectionHandler {
         ) {
             Ok(reservation) => reservation,
             Err(error) => {
+                match &error {
+                    Error::OverCapacity => {
+                        self.mark_ws_admission_rejection(WsAdmissionRejection::NodeCapacity);
+                    }
+                    Error::OverConnectionQuota => {
+                        self.mark_ws_admission_rejection(WsAdmissionRejection::AppQuota);
+                    }
+                    _ => {}
+                }
                 Self::send_error_frame(&mut socket_tx, &error, wire_options.wire_format).await;
                 return Err(error);
             }
@@ -946,6 +1031,7 @@ impl ConnectionHandler {
                     Error::Internal("Failed to check connection quota".to_string())
                 })?;
             if cluster_count >= app_config.max_connections_limit() as usize {
+                self.mark_ws_admission_rejection(WsAdmissionRejection::AppQuota);
                 Self::send_error_frame(
                     &mut socket_tx,
                     &Error::OverConnectionQuota,
@@ -985,7 +1071,12 @@ impl ConnectionHandler {
                 wire_options.echo_messages,
                 wire_options.append_mode,
             )
-            .await?;
+            .await
+            .inspect_err(|error| {
+                if matches!(error, Error::ApplicationNotFound) {
+                    self.mark_ws_admission_rejection(WsAdmissionRejection::AppNotFound);
+                }
+            })?;
 
         if let Some(metrics) = &self.metrics {
             metrics.mark_new_connection(&app_config.id, &socket_id);
@@ -1011,11 +1102,12 @@ impl ConnectionHandler {
         mut reader: WebSocketReader,
         socket_id: &SocketId,
         app_config: &App,
-        shutdown_token: Option<tokio_util::sync::CancellationToken>,
+        termination: &SocketTermination,
         live_connection: &mut readiness::LiveConnection,
-    ) -> Result<()> {
+    ) -> Result<SocketLoopExit> {
+        let shutdown_token = termination.shutdown_token();
         loop {
-            let next = if let Some(ref token) = shutdown_token {
+            let next = if let Some(token) = shutdown_token {
                 tokio::select! {
                     biased;
                     _ = token.cancelled() => {
@@ -1030,7 +1122,11 @@ impl ConnectionHandler {
 
             let next = match next {
                 Some(n) => n,
-                None => break,
+                None => {
+                    live_connection.release();
+                    termination.finish_reader_eof().await;
+                    break;
+                }
             };
 
             let message = match next {
@@ -1042,19 +1138,7 @@ impl ConnectionHandler {
                     ) =>
                 {
                     live_connection.release();
-                    Box::pin(async {
-                        if let Some(connection) = self
-                            .connection_manager
-                            .get_connection(socket_id, &app_config.id)
-                            .await
-                        {
-                            let mut connection = connection.inner.lock().await;
-                            connection
-                                .state
-                                .record_disconnect_cause(DisconnectCause::ActivityTimeout);
-                        }
-                    })
-                    .await;
+                    termination.record(DisconnectCause::from_websocket_error(&e));
                     warn!(
                         socket_id = %socket_id,
                         error = %e,
@@ -1062,33 +1146,29 @@ impl ConnectionHandler {
                     );
                     break;
                 }
-                Err(e) => return Err(Error::WebSocket(e)),
+                Err(e) => {
+                    termination.record(DisconnectCause::from_websocket_error(&e));
+                    return Err(Error::WebSocket(e));
+                }
             };
             match message {
                 Message::Close(_) => {
+                    termination.record(DisconnectCause::ClientClose);
                     live_connection.release();
                     debug!(socket_id = %socket_id, "socket close frame received");
                     // Cleanup drops the split halves; let the Close reply leave first.
                     Box::pin(sockudo_core::websocket::finish_peer_close(&mut reader)).await;
-                    Box::pin(self.handle_peer_close(&app_config.id, socket_id)).await?;
-                    break;
+                    return Ok(SocketLoopExit::PeerClose);
                 }
                 Message::Text(_) | Message::Binary(_) => {
                     if let Err(e) =
                         Box::pin(self.handle_message(message, socket_id, app_config.clone())).await
                     {
                         if e.is_fatal() {
-                            // `handle_fatal_error` frees the slot once the
-                            // transport is closed, before disconnect cleanup.
+                            termination.record(DisconnectCause::FatalError);
                             error!(socket_id = %socket_id, error = %e, "socket message handling failed");
-                            Box::pin(self.handle_fatal_error(
-                                socket_id,
-                                app_config,
-                                &e,
-                                live_connection,
-                            ))
-                            .await?;
-                            break;
+                            Box::pin(self.handle_fatal_error(socket_id, app_config, &e)).await?;
+                            return Ok(SocketLoopExit::FatalError);
                         } else if matches!(&e, Error::ConnectionClosed(_)) {
                             debug!(socket_id = %socket_id, error = %e, "socket message handling stopped");
                             break;
@@ -1117,7 +1197,7 @@ impl ConnectionHandler {
             }
         }
 
-        Ok(())
+        Ok(SocketLoopExit::Ended)
     }
 
     #[tracing::instrument(
@@ -1331,7 +1411,6 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
         error: &Error,
-        live_connection: &mut readiness::LiveConnection,
     ) -> Result<()> {
         // Send error message
         self.send_error(&app_config.id, socket_id, error, None)
@@ -1347,16 +1426,7 @@ impl ConnectionHandler {
             error.close_code(),
             &error.to_string(),
         )
-        .await?;
-
-        // The transport is closed, so free the slot before disconnect cleanup,
-        // which can await app-store lookups or the cleanup queue.
-        live_connection.release();
-
-        // Handle disconnect cleanup
-        self.handle_disconnect(&app_config.id, socket_id).await?;
-
-        Ok(())
+        .await
     }
 
     async fn cleanup_socket(&self, socket_id: &SocketId, app_config: &App) {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Observability
+
+- Server logs one `shutdown drain complete` line with per-outcome close counts when a node drains,
+  so drain behaviour stays verifiable after the pod leaves scrape rotation.
+
 ### Security
 
 Fixes four advisories affecting 5.2.0, reported by apudiu. See `SECURITY.md` and the security

@@ -148,6 +148,7 @@ pub struct MockMetricsInterface {
     annotation_projection_rebuild_durations: Arc<AtomicUsize>,
     horizontal_resolved_promises: Arc<AtomicUsize>,
     horizontal_uncomplete_promises: Arc<AtomicUsize>,
+    ws_quota_lookup_fallbacks: Arc<AtomicUsize>,
 }
 impl Default for MockMetricsInterface {
     fn default() -> Self {
@@ -162,6 +163,7 @@ impl MockMetricsInterface {
             annotation_projection_rebuild_durations: Arc::new(AtomicUsize::new(0)),
             horizontal_resolved_promises: Arc::new(AtomicUsize::new(0)),
             horizontal_uncomplete_promises: Arc::new(AtomicUsize::new(0)),
+            ws_quota_lookup_fallbacks: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -181,6 +183,10 @@ impl MockMetricsInterface {
     pub fn horizontal_uncomplete_promises(&self) -> usize {
         self.horizontal_uncomplete_promises.load(Ordering::Relaxed)
     }
+
+    pub fn ws_quota_lookup_fallbacks(&self) -> usize {
+        self.ws_quota_lookup_fallbacks.load(Ordering::Relaxed)
+    }
 }
 
 #[async_trait]
@@ -191,6 +197,10 @@ impl MetricsInterface for MockMetricsInterface {
     fn mark_new_connection(&self, _app_id: &str, _socket_id: &SocketId) {}
     fn mark_disconnection(&self, _app_id: &str, _socket_id: &SocketId) {}
     fn mark_connection_error(&self, _app_id: &str, _error_type: &str) {}
+    fn mark_ws_quota_lookup_fallback(&self) {
+        self.ws_quota_lookup_fallbacks
+            .fetch_add(1, Ordering::Relaxed);
+    }
     fn mark_rate_limit_check(&self, _app_id: &str, _limiter_type: &str) {}
     fn mark_rate_limit_check_with_context(
         &self,

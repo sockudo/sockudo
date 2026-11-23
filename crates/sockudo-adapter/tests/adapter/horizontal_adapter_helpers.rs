@@ -379,7 +379,6 @@ impl MockTransport {
 
     /// Simulate realistic response based on node state and request
     fn create_realistic_response(
-        &self,
         node_state: &MockNodeState,
         request: &RequestBody,
     ) -> ResponseBody {
@@ -573,49 +572,27 @@ impl HorizontalTransport for MockTransport {
         let handlers_guard = self.handlers.lock().await;
         if let Some(handlers) = handlers_guard.as_ref() {
             let on_response = handlers.on_response.clone();
-            let request = request.clone();
-            let node_states = self.config.node_states.clone();
 
             drop(handlers_guard);
 
-            // Spawn responses from each configured node
-            for node_state in node_states {
-                if !node_state.will_respond {
-                    continue; // Skip nodes that won't respond
+            // Simulate replies from the configured peers.
+            for node_state in &self.config.node_states {
+                if !node_state.will_respond || request.request_id.contains("no_response") {
+                    continue;
                 }
 
-                let on_response = on_response.clone();
-                let request = request.clone();
-                let node_state = node_state.clone();
-
-                tokio::spawn(async move {
-                    // Simulate network/processing delay
-                    if node_state.response_delay_ms > 0 {
-                        tokio::time::sleep(Duration::from_millis(node_state.response_delay_ms))
-                            .await;
-                    }
-
-                    // Don't respond if simulating failures for this request
-                    if request.request_id.contains("no_response") {
-                        return;
-                    }
-
-                    // Create realistic response based on node state
-                    let dummy_transport = MockTransport {
-                        config: MockConfig::default(),
-                        handlers: Arc::new(Mutex::new(None)),
-                        published_broadcasts: Arc::new(Mutex::new(Vec::new())),
-                        published_requests: Arc::new(Mutex::new(Vec::new())),
-                        published_responses: Arc::new(Mutex::new(Vec::new())),
-                        healthy: Arc::new(Mutex::new(true)),
-                        node_count: Arc::new(Mutex::new(1)),
-                        hang_node_dead_publish: Arc::new(AtomicBool::new(false)),
-                    };
-
-                    let response = dummy_transport.create_realistic_response(&node_state, &request);
-
+                let response = Self::create_realistic_response(node_state, request);
+                if node_state.response_delay_ms == 0 {
+                    // Deliver before publish returns, so zero-timeout tests can observe this reply.
                     (on_response)(response).await;
-                });
+                } else {
+                    let on_response = Arc::clone(&on_response);
+                    let delay = Duration::from_millis(node_state.response_delay_ms);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        (on_response)(response).await;
+                    });
+                }
             }
         }
 

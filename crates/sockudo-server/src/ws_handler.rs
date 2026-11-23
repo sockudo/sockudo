@@ -3,12 +3,14 @@
 
 use sockudo_adapter::ConnectionHandler;
 
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use serde::Deserialize;
+use sockudo_core::metrics::WsAdmissionRejection;
 use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
-use sockudo_ws::axum_integration::WebSocketUpgrade;
+use sockudo_ws::axum_integration::{WebSocketUpgrade, WebSocketUpgradeRejection};
 use std::sync::Arc;
 use tracing::{Instrument, debug, error, field, info_span};
 
@@ -63,8 +65,6 @@ fn is_expected_websocket_termination(error: &sockudo_core::error::Error) -> bool
                     | std::io::ErrorKind::ConnectionAborted
                     | std::io::ErrorKind::BrokenPipe
                     | std::io::ErrorKind::UnexpectedEof
-                    | std::io::ErrorKind::NotConnected
-                    | std::io::ErrorKind::TimedOut
             ),
             _ => false,
         },
@@ -75,14 +75,29 @@ fn is_expected_websocket_termination(error: &sockudo_core::error::Error) -> bool
 // WebSocket upgrade handler
 pub async fn handle_ws_upgrade(
     Path(app_key): Path<String>,
-    Query(params): Query<ConnectionQuery>,
+    params: Result<Query<ConnectionQuery>, QueryRejection>,
     headers: HeaderMap,
-    ws: WebSocketUpgrade,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> impl IntoResponse {
+    let Query(params) = match params {
+        Ok(query) => query,
+        Err(rejection) => {
+            if ws.is_ok() {
+                handler.mark_ws_admission_rejection(WsAdmissionRejection::InvalidOptions);
+            }
+            return rejection.into_response();
+        }
+    };
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(rejection) => return rejection.into_response(),
+    };
+
     // Reject new connections once draining so a terminating pod stops taking work
     // and its sockudo_connected gauge can decay to zero instead of spiking.
     if !handler.is_accepting() {
+        handler.mark_ws_admission_rejection(WsAdmissionRejection::Draining);
         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     if handler.is_memory_pressure_shedding() {
@@ -108,6 +123,7 @@ pub async fn handle_ws_upgrade(
         match WireFormat::parse_query_param(params.format.as_deref()) {
             Ok(format) => format,
             Err(_) => {
+                handler.mark_ws_admission_rejection(WsAdmissionRejection::InvalidOptions);
                 return axum::http::StatusCode::BAD_REQUEST.into_response();
             }
         }
@@ -125,12 +141,16 @@ pub async fn handle_ws_upgrade(
         && let Some(window_ms) = params.append_rollup_window
         && !server_options.ai_transport.rollup.allows_window(window_ms)
     {
+        handler.mark_ws_admission_rejection(WsAdmissionRejection::InvalidOptions);
         return axum::http::StatusCode::BAD_REQUEST.into_response();
     }
     let append_mode = if protocol_version == ProtocolVersion::V2 {
         match AppendMode::parse_query_param(params.append_mode.as_deref()) {
             Ok(mode) => mode,
-            Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
+            Err(_) => {
+                handler.mark_ws_admission_rejection(WsAdmissionRejection::InvalidOptions);
+                return axum::http::StatusCode::BAD_REQUEST.into_response();
+            }
         }
     } else {
         AppendMode::Full
@@ -147,6 +167,8 @@ pub async fn handle_ws_upgrade(
         app_id = field::Empty,
         socket_id = field::Empty,
         otel.status_code = field::Empty,
+        "error.type" = field::Empty,
+        sockudo.ws.disconnect_reason = field::Empty,
     );
 
     ws.config(ws_cfg)
@@ -195,6 +217,92 @@ pub async fn handle_ws_upgrade(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn malformed_query_retains_axum_rejection_and_counts_invalid_options() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use sockudo_adapter::local_adapter::LocalAdapter;
+        use sockudo_app::memory_app_manager::MemoryAppManager;
+        use sockudo_cache::memory_cache_manager::MemoryCacheManager;
+        use sockudo_core::metrics::MetricsInterface;
+        use sockudo_core::options::MemoryCacheOptions;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+        use tower::ServiceExt;
+
+        let metrics = Arc::new(
+            sockudo_metrics::PrometheusMetricsDriver::new(0, Some("ws_bad_query_test_")).await,
+        );
+        let handler = ConnectionHandler::builder(
+            Arc::new(MemoryAppManager::new()),
+            Arc::new(LocalAdapter::new()),
+            Arc::new(MemoryCacheManager::new(
+                "test".into(),
+                MemoryCacheOptions::default(),
+            )),
+            Default::default(),
+        )
+        .metrics(metrics.clone())
+        .build();
+        let router = axum::Router::new()
+            .route("/app/{key}", axum::routing::get(handle_ws_upgrade))
+            .with_state(Arc::new(handler));
+        let uri = "/app/test?protocol=2&append_rollup_window=abc"
+            .parse()
+            .unwrap();
+        let expected = Query::<ConnectionQuery>::try_from_uri(&uri)
+            .unwrap_err()
+            .into_response();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected.status());
+        assert_eq!(
+            to_bytes(response.into_body(), 1024).await.unwrap(),
+            to_bytes(expected.into_body(), 1024).await.unwrap()
+        );
+        const INVALID_OPTIONS: &str =
+            "ws_bad_query_test_ws_admission_rejections_total{reason=\"invalid_options\"}";
+        assert!(
+            metrics
+                .get_metrics_as_plaintext()
+                .await
+                .contains(&format!("{INVALID_OPTIONS} 0\n"))
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(format!(
+                "GET {uri} HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade, close\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+            ).as_bytes())
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        assert!(response.starts_with(b"HTTP/1.1 400 "));
+        assert!(
+            metrics
+                .get_metrics_as_plaintext()
+                .await
+                .contains(&format!("{INVALID_OPTIONS} 1\n"))
+        );
+    }
+
     #[test]
     fn expected_websocket_terminations_are_classified() {
         use sockudo_core::error::Error;
@@ -226,6 +334,14 @@ mod tests {
         assert!(!is_expected_websocket_termination(&Error::Internal(
             "boom".into()
         )));
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::NotConnected,
+        ] {
+            assert!(!is_expected_websocket_termination(&Error::WebSocket(
+                sockudo_ws::Error::Io(std::io::Error::from(kind))
+            )));
+        }
     }
 
     #[test]
