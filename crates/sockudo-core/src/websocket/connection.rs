@@ -17,6 +17,13 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+/// Result of a local Close request that completed without an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseOutcome {
+    Flushed,
+    AlreadyClosing,
+}
+
 pub struct WebSocket {
     pub state: ConnectionState,
     pub message_sender: MessageSender,
@@ -26,7 +33,35 @@ pub struct WebSocket {
     pub shutdown_token: CancellationToken,
 }
 
+struct PendingClose<'a> {
+    socket: &'a mut WebSocket,
+    abort: bool,
+}
+
+impl Drop for PendingClose<'_> {
+    fn drop(&mut self) {
+        if self.abort {
+            self.socket.shutdown_token.cancel();
+            self.socket.message_sender.abort_writer();
+        }
+        self.socket.state.clear_timeouts();
+        self.socket.state.status = ConnectionStatus::Closed;
+    }
+}
+
 impl WebSocket {
+    pub fn record_disconnect_cause(&mut self, cause: super::DisconnectCause) {
+        self.message_sender.termination().record(cause);
+        self.state.record_disconnect_cause(self.disconnect_cause());
+    }
+
+    pub fn disconnect_cause(&self) -> super::DisconnectCause {
+        match self.message_sender.termination().cause() {
+            super::DisconnectCause::Unknown => self.state.disconnect_cause,
+            cause => cause,
+        }
+    }
+
     pub fn new(socket_id: SocketId, socket: WebSocketWriter) -> Self {
         Self::with_buffer_config(socket_id, socket, WebSocketBufferConfig::default())
     }
@@ -78,24 +113,30 @@ impl WebSocket {
     }
 
     pub async fn close(&mut self, code: u16, reason: String) -> Result<()> {
+        self.close_with_outcome(code, reason, super::DisconnectCause::Unknown)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn close_with_outcome(
+        &mut self,
+        code: u16,
+        reason: String,
+        cause: super::DisconnectCause,
+    ) -> Result<CloseOutcome> {
         if matches!(
             self.state.status,
             ConnectionStatus::Closing | ConnectionStatus::Closed
         ) {
             debug!("Connection already closing or closed, skipping close frames");
-            return Ok(());
+            return Ok(CloseOutcome::AlreadyClosing);
         }
 
-        // The writer task exits as soon as its cancellation token fires (peer
-        // disconnect, write error, previous close), dropping the outbound receiver.
-        // No close frame can reach the peer after that: report it instead of first
-        // enqueueing a pusher:error frame that cannot be sent.
-        if self.shutdown_token.is_cancelled() {
+        if let Err(error) = self.message_sender.termination().begin_local_close(cause) {
             self.state.clear_timeouts();
-            return Err(Error::ConnectionClosed(
-                "WebSocket writer already stopped".to_string(),
-            ));
+            return Err(error);
         }
+        self.state.record_disconnect_cause(self.disconnect_cause());
 
         // Send error message while connection still active
         if code >= 4000 {
@@ -111,19 +152,26 @@ impl WebSocket {
         }
 
         self.state.status = ConnectionStatus::Closing;
-        let result = self.message_sender.send_close(code, &reason).await;
-        if result.is_err() {
-            // The Close frame could not be queued (full direct queue or a dead
-            // writer). Tear the connection down here: direct callers such as the
-            // app-availability sweep and the auth timeout call this method without
-            // WebSocketRef::close's token cancellation, and clearing the watchdogs
-            // below must not leave the socket registered with no close in flight.
-            self.shutdown_token.cancel();
-            self.message_sender.abort_writer();
-        }
-        self.state.clear_timeouts();
-        self.state.status = ConnectionStatus::Closed;
-        result
+        // If the caller disappears before the acknowledgement, the writer can
+        // skip the abandoned frame. Tear down instead of leaving a live socket
+        // that every later close would see as AlreadyClosing.
+        let mut pending = PendingClose {
+            socket: self,
+            abort: true,
+        };
+        let result = pending
+            .socket
+            .message_sender
+            .send_close(code, &reason)
+            .await;
+        pending.abort = result.as_ref().is_err_and(|error| {
+            !pending
+                .socket
+                .message_sender
+                .termination()
+                .preserve_reader_after_close_error(error)
+        });
+        result.map(|()| CloseOutcome::Flushed)
     }
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {

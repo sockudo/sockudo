@@ -8,6 +8,7 @@ use super::connection::WebSocket;
 use super::socket_id::SocketId;
 use crate::capability_token::TokenAuthContext;
 use crate::error::{Error, Result};
+use crate::metrics::WsShutdownCloseOutcome;
 use bytes::Bytes;
 use crossfire::TrySendError;
 use dashmap::DashMap;
@@ -18,10 +19,11 @@ use sonic_rs::Value;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[derive(Clone)]
 pub struct WebSocketRef {
@@ -33,10 +35,11 @@ pub struct WebSocketRef {
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
     pub shutdown_token: CancellationToken,
+    termination: Arc<super::SocketTermination>,
     // Set at the start of close(), before the close frame is queued, so no data
     // frame can slip in behind it. The shutdown_token is only cancelled after the
     // close frame is queued (cancelling earlier would make the writer task drop it).
-    closing: Arc<std::sync::atomic::AtomicBool>,
+    close_state: Arc<CloseState>,
     pub inner: Arc<Mutex<WebSocket>>,
     pub protocol_version: ProtocolVersion,
     pub wire_format: WireFormat,
@@ -44,6 +47,45 @@ pub struct WebSocketRef {
     pub echo_messages: bool,
     /// V2 only. Live append frame mode for this socket.
     pub append_mode: sockudo_protocol::AppendMode,
+}
+
+#[derive(Default)]
+struct CloseState {
+    closing: AtomicBool,
+    shutdown_close_reported: Mutex<bool>,
+}
+
+/// A drain snapshot entry that does not keep the socket or its queues alive.
+pub struct ShutdownCloseTarget {
+    pub socket_id: SocketId,
+    close_state: Arc<CloseState>,
+}
+
+impl ShutdownCloseTarget {
+    /// One budget for waiting for the connection lock and writing the Close.
+    pub const TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Return one drain outcome per socket. If an owner is cancelled before
+    /// producing an outcome, a waiting caller takes over.
+    pub async fn close(
+        &self,
+        socket: Option<&WebSocketRef>,
+        budget: Duration,
+    ) -> Option<WsShutdownCloseOutcome> {
+        let socket = socket.filter(|socket| Arc::ptr_eq(&self.close_state, &socket.close_state));
+        // Hold ownership until there is an outcome to report. Dropping the
+        // future releases the lock without marking the attempt complete.
+        let mut reported = self.close_state.shutdown_close_reported.lock().await;
+        if *reported {
+            return None;
+        }
+        let outcome = match socket {
+            Some(socket) => socket.close_for_shutdown(budget).await,
+            None => WsShutdownCloseOutcome::AlreadyGone,
+        };
+        *reported = true;
+        Some(outcome)
+    }
 }
 
 #[derive(Default)]
@@ -67,6 +109,7 @@ impl WebSocketRef {
         let buffer_config = websocket.buffer_config;
         let byte_counter = websocket.byte_counter.clone();
         let shutdown_token = websocket.shutdown_token.clone();
+        let termination = Arc::clone(websocket.message_sender.termination());
         let protocol_version = websocket.state.protocol_version;
         let wire_format = websocket.state.wire_format;
         let echo_messages = websocket.state.echo_messages;
@@ -95,7 +138,8 @@ impl WebSocketRef {
             buffer_config,
             byte_counter,
             shutdown_token,
-            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            termination,
+            close_state: Arc::new(CloseState::default()),
             protocol_version,
             wire_format,
             echo_messages,
@@ -111,7 +155,7 @@ impl WebSocketRef {
 
     #[inline]
     pub fn send_broadcast_frame(&self, bytes: Bytes, wire_format: WireFormat) -> Result<()> {
-        if self.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
+        if self.close_state.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
             return Err(Error::ConnectionClosed("Connection shutting down".into()));
         }
 
@@ -184,7 +228,7 @@ impl WebSocketRef {
     }
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
-        if self.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
+        if self.close_state.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
             return Err(Error::ConnectionClosed("Connection shutting down".into()));
         }
 
@@ -221,25 +265,171 @@ impl WebSocketRef {
     /// after the close attempt.
     #[inline]
     pub fn mark_closing(&self) {
-        self.closing.store(true, Ordering::Release);
+        self.close_state.closing.store(true, Ordering::Release);
     }
 
     pub async fn close(&self, code: u16, reason: String) -> Result<()> {
+        self.close_with_cause(code, reason, super::DisconnectCause::Unknown)
+            .await
+    }
+
+    pub(crate) async fn close_with_cause(
+        &self,
+        code: u16,
+        reason: String,
+        cause: super::DisconnectCause,
+    ) -> Result<()> {
         // Reject new sends before queueing the close frame so no data frame can be
         // enqueued behind it. Token cancellation must stay AFTER ws.close(): the
         // writer task breaks on cancellation and would drop the queued close frame.
-        self.mark_closing();
         let result = {
             let mut ws = self.inner.lock().await;
-            ws.close(code, reason).await
+            self.mark_closing();
+            ws.close_with_outcome(code, reason, cause).await
         };
-        self.shutdown_token.cancel();
-        result
+        if !result
+            .as_ref()
+            .is_err_and(|error| self.termination.preserve_reader_after_close_error(error))
+        {
+            self.shutdown_token.cancel();
+        }
+        result.map(|_| ())
+    }
+
+    pub fn shutdown_close_target(&self) -> ShutdownCloseTarget {
+        ShutdownCloseTarget {
+            socket_id: self.socket_id,
+            close_state: Arc::clone(&self.close_state),
+        }
+    }
+
+    async fn close_for_shutdown(&self, budget: Duration) -> WsShutdownCloseOutcome {
+        use super::DisconnectCause;
+        use WsShutdownCloseOutcome as Outcome;
+
+        let socket_id = self.socket_id;
+        if self.termination.writer_unavailable() {
+            return Outcome::AlreadyGone;
+        }
+        self.mark_closing();
+        let shutdown = self.shutdown_token.drop_guard_ref();
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut socket = match tokio::time::timeout_at(deadline, self.inner.lock()).await {
+            Ok(socket) => socket,
+            Err(error) => {
+                if self
+                    .termination
+                    .begin_local_close(DisconnectCause::ServerShutdown)
+                    .is_err()
+                {
+                    shutdown.disarm();
+                    return Outcome::AlreadyGone;
+                }
+                warn!(
+                    %socket_id,
+                    timeout_ms = budget.as_millis() as u64,
+                    error = %error,
+                    "websocket close lock timed out during shutdown"
+                );
+                return Outcome::LockTimeout;
+            }
+        };
+        if self.termination.writer_unavailable() {
+            shutdown.disarm();
+            return Outcome::AlreadyGone;
+        }
+
+        match tokio::time::timeout_at(
+            deadline,
+            socket.close_with_outcome(
+                4200,
+                "Server shutting down".to_string(),
+                DisconnectCause::ServerShutdown,
+            ),
+        )
+        .await
+        {
+            Ok(result) => {
+                if result.as_ref().is_err_and(|error| {
+                    matches!(error, Error::ConnectionClosed(_))
+                        || self.termination.preserve_reader_after_close_error(error)
+                }) {
+                    shutdown.disarm();
+                }
+                Self::shutdown_close_outcome(socket_id, result)
+            }
+            Err(error) => {
+                warn!(
+                    %socket_id,
+                    timeout_ms = budget.as_millis() as u64,
+                    error = %error,
+                    "websocket close timed out during shutdown"
+                );
+                Outcome::FlushTimeout
+            }
+        }
+    }
+
+    fn shutdown_close_outcome(
+        socket_id: SocketId,
+        result: Result<super::CloseOutcome>,
+    ) -> WsShutdownCloseOutcome {
+        use super::{CloseOutcome, DisconnectCause};
+        use WsShutdownCloseOutcome as Outcome;
+
+        match result {
+            Ok(CloseOutcome::Flushed) => Outcome::Flushed,
+            Ok(CloseOutcome::AlreadyClosing) => Outcome::AlreadyClosing,
+            Err(Error::ConnectionClosed(error)) => {
+                debug!(%socket_id, error = %error, "websocket already gone before shutdown close");
+                Outcome::AlreadyGone
+            }
+            Err(Error::BufferFull(error)) => {
+                warn!(%socket_id, error = %error, "websocket shutdown close queue full");
+                Outcome::QueueFull
+            }
+            Err(Error::WebSocket(error))
+                if DisconnectCause::from_websocket_error(&error).is_confirmed_peer_loss() =>
+            {
+                debug!(%socket_id, reason = error.metric_name(), "websocket already gone before shutdown close");
+                Outcome::AlreadyGone
+            }
+            Err(Error::WebSocket(error))
+                if DisconnectCause::from_websocket_error(&error).is_native_timeout() =>
+            {
+                // The native driver ended the transport before this Close could
+                // start, so no frame was written. Report the socket as already
+                // gone instead of as a failed shutdown write.
+                debug!(%socket_id, reason = error.metric_name(), "websocket already gone before shutdown close");
+                Outcome::AlreadyGone
+            }
+            Err(Error::WebSocket(sockudo_ws::Error::Io(error))) => {
+                warn!(
+                    %socket_id,
+                    io_kind = ?error.kind(),
+                    os_error = error.raw_os_error(),
+                    "websocket shutdown close write failed"
+                );
+                Outcome::WriteFailed
+            }
+            Err(Error::WebSocket(error)) => {
+                warn!(%socket_id, reason = error.metric_name(), "websocket shutdown close write failed");
+                Outcome::WriteFailed
+            }
+            Err(error) => {
+                warn!(%socket_id, error = %error, "websocket shutdown close write failed");
+                Outcome::WriteFailed
+            }
+        }
     }
 
     /// Signal both reader and writer tasks to shut down.
     pub fn shutdown(&self) {
         self.shutdown_token.cancel();
+    }
+
+    pub fn termination_handle(&self) -> Arc<super::SocketTermination> {
+        Arc::clone(&self.termination)
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
@@ -569,4 +759,45 @@ pub struct BufferStats {
     pub pending_bytes: Option<usize>,
     pub byte_limit: Option<usize>,
     pub message_limit: Option<usize>,
+}
+
+#[cfg(test)]
+mod shutdown_close_tests {
+    use super::*;
+
+    #[test]
+    fn generic_transport_failure_during_close_is_not_assumed_to_be_peer_loss() {
+        let socket_id = SocketId::new();
+        assert_eq!(
+            WebSocketRef::shutdown_close_outcome(
+                socket_id,
+                Err(Error::WebSocket(sockudo_ws::Error::ConnectionClosed)),
+            ),
+            WsShutdownCloseOutcome::WriteFailed
+        );
+        assert_eq!(
+            WebSocketRef::shutdown_close_outcome(
+                socket_id,
+                Err(Error::WebSocket(sockudo_ws::Error::ConnectionReset)),
+            ),
+            WsShutdownCloseOutcome::AlreadyGone
+        );
+    }
+
+    /// A native heartbeat or idle deadline can land between the shutdown
+    /// availability check and Close admission. The transport is already
+    /// terminal at that point, so no Close was written.
+    #[test]
+    fn native_timeout_before_shutdown_close_is_already_gone() {
+        let socket_id = SocketId::new();
+        for error in [
+            sockudo_ws::Error::IdleTimeout,
+            sockudo_ws::Error::HeartbeatTimeout,
+        ] {
+            assert_eq!(
+                WebSocketRef::shutdown_close_outcome(socket_id, Err(Error::WebSocket(error))),
+                WsShutdownCloseOutcome::AlreadyGone
+            );
+        }
+    }
 }

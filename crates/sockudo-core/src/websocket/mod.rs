@@ -10,11 +10,15 @@ mod state;
 
 pub use buffer::{BufferLimit, BufferedRewindMessage, ByteCounter, WebSocketBufferConfig};
 pub use capabilities::{ConnectionCapabilities, UserInfo};
-pub use connection::WebSocket;
-pub use reference::{BufferStats, PerChannelState, WebSocketExt, WebSocketRef};
+pub use connection::{CloseOutcome, WebSocket};
+pub use reference::{
+    BufferStats, PerChannelState, ShutdownCloseTarget, WebSocketExt, WebSocketRef,
+};
 pub use sender::MessageSender;
 pub use socket_id::SocketId;
-pub use state::{ConnectionState, ConnectionStatus, ConnectionTimeouts, DisconnectCause};
+pub use state::{
+    ConnectionState, ConnectionStatus, ConnectionTimeouts, DisconnectCause, SocketTermination,
+};
 
 use sockudo_ws::axum_integration::WebSocketReader;
 use std::time::Duration;

@@ -3,21 +3,30 @@ use super::socket_id::SocketId;
 use crate::app::App;
 use crate::capability_token::TokenAuthContext;
 use crate::channel::PresenceMemberInfo;
+use crate::error::{Error, Result};
 use ahash::AHashMap as HashMap;
 use sockudo_filter::FilterNode;
 use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sonic_rs::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 use tokio::task::JoinHandle;
+use tokio_util::sync::{CancellationToken, DropGuardRef};
 
 /// Stable, content-free reason for a connection reaching terminal cleanup.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DisconnectCause {
     ClientClose,
     TransportEof,
+    TransportClosed,
+    PeerTransportLost,
     TransportError,
+    ProtocolError,
     FatalError,
     ActivityTimeout,
+    HeartbeatTimeout,
+    IdleTimeout,
     AuthTimeout,
     TokenExpired,
     TokenRevoked,
@@ -28,13 +37,37 @@ pub enum DisconnectCause {
 }
 
 impl DisconnectCause {
+    pub const ALL: [Self; 16] = [
+        Self::ClientClose,
+        Self::TransportEof,
+        Self::TransportClosed,
+        Self::PeerTransportLost,
+        Self::TransportError,
+        Self::ProtocolError,
+        Self::FatalError,
+        Self::ActivityTimeout,
+        Self::HeartbeatTimeout,
+        Self::IdleTimeout,
+        Self::AuthTimeout,
+        Self::TokenExpired,
+        Self::TokenRevoked,
+        Self::AdministrativeClose,
+        Self::ServerShutdown,
+        Self::Unknown,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ClientClose => "client_close",
             Self::TransportEof => "transport_eof",
+            Self::TransportClosed => "transport_closed",
+            Self::PeerTransportLost => "peer_transport_lost",
             Self::TransportError => "transport_error",
+            Self::ProtocolError => "protocol_error",
             Self::FatalError => "fatal_error",
             Self::ActivityTimeout => "activity_timeout",
+            Self::HeartbeatTimeout => "heartbeat_timeout",
+            Self::IdleTimeout => "idle_timeout",
             Self::AuthTimeout => "auth_timeout",
             Self::TokenExpired => "token_expired",
             Self::TokenRevoked => "token_revoked",
@@ -44,8 +77,273 @@ impl DisconnectCause {
         }
     }
 
+    pub fn from_websocket_error(error: &sockudo_ws::Error) -> Self {
+        use sockudo_ws::Error;
+        use std::io::ErrorKind;
+
+        match error {
+            Error::HeartbeatTimeout => Self::HeartbeatTimeout,
+            Error::IdleTimeout => Self::IdleTimeout,
+            Error::ConnectionClosed => Self::TransportClosed,
+            Error::ConnectionReset => Self::PeerTransportLost,
+            Error::Closed(_) => Self::ClientClose,
+            Error::Io(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionReset
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::BrokenPipe
+                        | ErrorKind::UnexpectedEof
+                ) =>
+            {
+                Self::PeerTransportLost
+            }
+            Error::InvalidFrame(_)
+            | Error::InvalidUtf8
+            | Error::Protocol(_)
+            | Error::InvalidCloseCode(_)
+            | Error::MessageTooLarge
+            | Error::FrameTooLarge => Self::ProtocolError,
+            _ => Self::TransportError,
+        }
+    }
+
+    /// Whether a Close write found a peer or transport that was already gone.
+    pub fn is_peer_or_transport_gone(self) -> bool {
+        matches!(
+            self,
+            Self::ClientClose | Self::TransportClosed | Self::PeerTransportLost
+        )
+    }
+
+    /// A definite peer-side end, not a generic closure that can also be
+    /// reported when the transport aborts an in-progress local Close.
+    pub fn is_confirmed_peer_loss(self) -> bool {
+        matches!(self, Self::ClientClose | Self::PeerTransportLost)
+    }
+
+    pub(super) fn is_native_timeout(self) -> bool {
+        matches!(self, Self::HeartbeatTimeout | Self::IdleTimeout)
+    }
+
+    fn is_transport_end(self) -> bool {
+        matches!(
+            self,
+            Self::ClientClose
+                | Self::TransportEof
+                | Self::TransportClosed
+                | Self::PeerTransportLost
+                | Self::TransportError
+                | Self::ProtocolError
+        ) || self.is_native_timeout()
+    }
+
     fn may_be_replaced(self) -> bool {
-        matches!(self, Self::Unknown | Self::TransportEof)
+        matches!(
+            self,
+            Self::Unknown | Self::TransportEof | Self::TransportClosed
+        )
+    }
+}
+
+/// Observations shared by the reader, writer, and local close initiators.
+#[derive(Debug, Default)]
+pub struct SocketTermination {
+    terminal: Mutex<TerminalState>,
+    pub(super) reader_attached: AtomicBool,
+    pub(super) close_requested: AtomicBool,
+    shutdown_token: Option<CancellationToken>,
+    pub(super) writer_stopped: CancellationToken,
+}
+
+#[derive(Debug, Default)]
+struct TerminalState {
+    observed: DisconnectCause,
+    writer_failure: Option<WriterFailure>,
+}
+
+impl TerminalState {
+    fn record(&mut self, cause: DisconnectCause) {
+        if cause != DisconnectCause::Unknown
+            && ((self.observed.may_be_replaced()
+                && (self.observed != DisconnectCause::TransportEof
+                    || cause != DisconnectCause::TransportClosed))
+                || (cause.is_native_timeout() && !self.observed.is_transport_end()))
+        {
+            self.observed = cause;
+        }
+    }
+
+    fn close_error(&self) -> Option<Error> {
+        let cause = if self.observed.is_native_timeout() {
+            self.observed
+        } else {
+            self.writer_failure.as_ref()?.cause
+        };
+        Some(match cause {
+            DisconnectCause::HeartbeatTimeout => {
+                Error::WebSocket(sockudo_ws::Error::HeartbeatTimeout)
+            }
+            DisconnectCause::IdleTimeout => Error::WebSocket(sockudo_ws::Error::IdleTimeout),
+            DisconnectCause::TransportClosed
+                if self
+                    .writer_failure
+                    .as_ref()
+                    .is_some_and(|failure| failure.during_close) =>
+            {
+                Error::WebSocket(sockudo_ws::Error::ConnectionClosed)
+            }
+            cause if cause.is_peer_or_transport_gone() => {
+                Error::ConnectionClosed(cause.as_str().into())
+            }
+            cause => Error::Connection(format!("websocket writer failed: {}", cause.as_str())),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct WriterFailure {
+    cause: DisconnectCause,
+    during_close: bool,
+}
+
+impl SocketTermination {
+    pub(super) fn new(shutdown_token: Option<CancellationToken>) -> Self {
+        Self {
+            shutdown_token,
+            ..Self::default()
+        }
+    }
+
+    pub fn shutdown_token(&self) -> Option<&CancellationToken> {
+        self.shutdown_token.as_ref()
+    }
+
+    /// Keep the transport alive for the reader until the returned guard drops.
+    #[must_use]
+    pub fn attach_reader(&self) -> Option<DropGuardRef<'_>> {
+        let token = self.shutdown_token()?;
+        self.reader_attached.store(true, Ordering::Release);
+        Some(token.drop_guard_ref())
+    }
+
+    /// Publish a terminal observation before awaiting teardown. A generic EOF or
+    /// a writer finding the transport closed cannot displace a specific cause.
+    pub fn record(&self, cause: DisconnectCause) {
+        if cause == DisconnectCause::Unknown {
+            return;
+        }
+        self.terminal().record(cause);
+    }
+
+    fn terminal(&self) -> MutexGuard<'_, TerminalState> {
+        self.terminal.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    // Serialize local intent with the reader's terminal observation. EOF may
+    // still be refined by an actual write error, not by a subsequent close.
+    pub(super) fn begin_local_close(&self, cause: DisconnectCause) -> Result<()> {
+        let mut terminal = self.terminal();
+        if let Some(error) = terminal.close_error() {
+            return Err(error);
+        }
+        if terminal.observed.is_transport_end() {
+            return Err(Error::ConnectionClosed(terminal.observed.as_str().into()));
+        }
+        if self.writer_has_stopped() {
+            return Err(Error::ConnectionClosed(
+                "WebSocket writer already stopped".into(),
+            ));
+        }
+        if terminal.observed == DisconnectCause::Unknown {
+            terminal.observed = cause;
+        }
+        self.close_requested.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn cause(&self) -> DisconnectCause {
+        let terminal = self.terminal();
+        match terminal.observed {
+            DisconnectCause::Unknown => terminal
+                .writer_failure
+                .as_ref()
+                .map_or(DisconnectCause::Unknown, |failure| failure.cause),
+            cause => cause,
+        }
+    }
+
+    /// Wait for the writer to stop taking frames and publish its last failure.
+    /// The caller must first stop the idle writer with the socket shutdown token.
+    pub(super) async fn wait_for_writer(&self) {
+        self.writer_stopped.cancelled().await;
+    }
+
+    /// Resolve a terminal EOF before reporting the session outcome. The split
+    /// transport may yield EOF just before an in-flight write returns an error.
+    pub async fn finish_reader_eof(&self) {
+        self.record(DisconnectCause::TransportEof);
+        if let Some(token) = self.shutdown_token() {
+            token.cancel();
+            self.wait_for_writer().await;
+        }
+    }
+
+    pub(super) fn writer_failure(&self) -> Option<DisconnectCause> {
+        self.terminal()
+            .writer_failure
+            .as_ref()
+            .map(|failure| failure.cause)
+    }
+
+    pub(super) fn writer_has_stopped(&self) -> bool {
+        self.writer_stopped.is_cancelled()
+            || self
+                .shutdown_token()
+                .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    pub(super) fn writer_unavailable(&self) -> bool {
+        let terminal = self.terminal();
+        terminal.writer_failure.is_some()
+            || terminal.observed.is_transport_end()
+            || self.writer_has_stopped()
+    }
+
+    pub(super) fn preserve_reader_after_close_error(&self, error: &crate::error::Error) -> bool {
+        self.reader_attached.load(Ordering::Acquire)
+            && match error {
+                Error::ConnectionClosed(_) => self.cause() == DisconnectCause::ClientClose,
+                Error::WebSocket(error) => {
+                    DisconnectCause::from_websocket_error(error).is_native_timeout()
+                }
+                _ => false,
+            }
+    }
+
+    pub(super) fn record_writer_failure(&self, error: &sockudo_ws::Error) -> DisconnectCause {
+        self.record_failure(error, false)
+    }
+
+    pub(super) fn record_close_failure(&self, error: &sockudo_ws::Error) {
+        self.record_failure(error, true);
+    }
+
+    fn record_failure(&self, error: &sockudo_ws::Error, during_close: bool) -> DisconnectCause {
+        let cause = DisconnectCause::from_websocket_error(error);
+        let mut terminal = self.terminal();
+        if cause != DisconnectCause::TransportClosed {
+            terminal.record(cause);
+        }
+        terminal.writer_failure.get_or_insert(WriterFailure {
+            cause,
+            during_close,
+        });
+        cause
+    }
+
+    pub(super) fn writer_close_error(&self) -> Option<Error> {
+        self.terminal().close_error()
     }
 }
 
@@ -309,6 +607,71 @@ mod disconnect_cause_tests {
         state.record_disconnect_cause(DisconnectCause::ActivityTimeout);
         state.record_disconnect_cause(DisconnectCause::FatalError);
         assert_eq!(state.disconnect_cause, DisconnectCause::ActivityTimeout);
+    }
+
+    #[test]
+    fn observed_eof_is_not_refined_by_generic_writer_closure() {
+        let termination = SocketTermination::default();
+        termination.record(DisconnectCause::TransportEof);
+        termination.record_writer_failure(&sockudo_ws::Error::ConnectionClosed);
+        assert!(
+            termination
+                .begin_local_close(DisconnectCause::ServerShutdown)
+                .is_err()
+        );
+        assert_eq!(termination.cause(), DisconnectCause::TransportEof);
+    }
+
+    #[test]
+    fn reader_transport_closed_is_reported_and_can_be_refined() {
+        let termination = SocketTermination::default();
+        termination.record(DisconnectCause::TransportClosed);
+        assert_eq!(termination.cause(), DisconnectCause::TransportClosed);
+        assert!(
+            termination
+                .begin_local_close(DisconnectCause::ServerShutdown)
+                .is_err()
+        );
+        termination.record(DisconnectCause::HeartbeatTimeout);
+        assert_eq!(termination.cause(), DisconnectCause::HeartbeatTimeout);
+        assert!(matches!(
+            termination.begin_local_close(DisconnectCause::ServerShutdown),
+            Err(Error::WebSocket(sockudo_ws::Error::HeartbeatTimeout))
+        ));
+    }
+
+    #[test]
+    fn writer_failure_rejects_local_close_before_writer_exit() {
+        let termination = SocketTermination::default();
+        termination.record_writer_failure(&sockudo_ws::Error::ConnectionClosed);
+        assert!(matches!(
+            termination.begin_local_close(DisconnectCause::ServerShutdown),
+            Err(Error::ConnectionClosed(_))
+        ));
+        assert_eq!(termination.cause(), DisconnectCause::TransportClosed);
+    }
+
+    #[tokio::test]
+    async fn terminal_eof_waits_for_the_in_flight_writer_result() {
+        let termination = SocketTermination::new(Some(CancellationToken::new()));
+        let shutdown = termination.shutdown_token().unwrap();
+        let reader = async {
+            termination.finish_reader_eof().await;
+            termination.cause()
+        };
+        let writer = async {
+            shutdown.cancelled().await;
+            termination.record_writer_failure(&sockudo_ws::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::TimedOut,
+            )));
+            termination.writer_stopped.cancel();
+        };
+        let (cause, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(reader, writer)
+        })
+        .await
+        .unwrap();
+        assert_eq!(cause, DisconnectCause::TransportError);
     }
 }
 

@@ -1,6 +1,75 @@
-use crate::websocket::SocketId;
+use crate::websocket::{DisconnectCause, SocketId};
 use async_trait::async_trait;
 use sonic_rs::Value;
+
+/// Why the WebSocket admission gate refused a new connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WsAdmissionRejection {
+    Draining,
+    MemoryPressure,
+    NodeCapacity,
+    AppQuota,
+    InvalidOptions,
+    AppNotFound,
+    AppDisabled,
+    Origin,
+    Authentication,
+}
+
+impl WsAdmissionRejection {
+    /// Every bounded admission rejection reason.
+    pub const ALL: [Self; 9] = [
+        Self::Draining,
+        Self::MemoryPressure,
+        Self::NodeCapacity,
+        Self::AppQuota,
+        Self::InvalidOptions,
+        Self::AppNotFound,
+        Self::AppDisabled,
+        Self::Origin,
+        Self::Authentication,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Draining => "draining",
+            Self::MemoryPressure => "memory_pressure",
+            Self::NodeCapacity => "node_capacity",
+            Self::AppQuota => "app_quota",
+            Self::InvalidOptions => "invalid_options",
+            Self::AppNotFound => "app_not_found",
+            Self::AppDisabled => "app_disabled",
+            Self::Origin => "origin",
+            Self::Authentication => "authentication",
+        }
+    }
+}
+
+/// Terminal outcome of a Close request during a server drain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WsShutdownCloseOutcome {
+    Flushed,
+    AlreadyGone,
+    AlreadyClosing,
+    QueueFull,
+    WriteFailed,
+    LockTimeout,
+    FlushTimeout,
+}
+
+impl WsShutdownCloseOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Flushed => "flushed",
+            Self::AlreadyGone => "already_gone",
+            Self::AlreadyClosing => "already_closing",
+            Self::QueueFull => "queue_full",
+            Self::WriteFailed => "write_failed",
+            Self::LockTimeout => "lock_timeout",
+            Self::FlushTimeout => "flush_timeout",
+        }
+    }
+}
 
 /// Metrics Interface trait that any metrics driver should implement
 #[async_trait]
@@ -16,6 +85,14 @@ pub trait MetricsInterface: Send + Sync {
 
     /// Handle a connection error
     fn mark_connection_error(&self, app_id: &str, error_type: &str);
+
+    fn mark_ws_admission_rejection(&self, _reason: WsAdmissionRejection) {}
+
+    fn mark_ws_session_end(&self, _cause: DisconnectCause) {}
+
+    fn mark_ws_shutdown_close(&self, _outcome: WsShutdownCloseOutcome) {}
+
+    fn mark_ws_quota_lookup_fallback(&self) {}
 
     /// Track a new connection rejected by memory-pressure admission control.
     fn mark_memory_pressure_rejection(&self) {}
