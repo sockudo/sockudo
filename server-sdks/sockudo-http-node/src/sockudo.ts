@@ -78,7 +78,8 @@ function validateUserId(userId: string): void {
 
 function validateUserData(userData: UserChannelData): void {
   if (userData == null || typeof userData !== "object") {
-    throw new Error(`Invalid user data: '${userData}'`);
+    const received = userData === null ? "null" : typeof userData;
+    throw new Error(`Invalid user data: expected an object, received ${received}`);
   }
   validateUserId(userData.id);
 }

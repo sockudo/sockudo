@@ -19,7 +19,7 @@ describe("Sockudo (integration)", function () {
         .then((response) => {
           expect(response.status).to.equal(200);
           return response.json().then((body) => {
-            expect(body).to.eql({});
+            expect(body).to.eql({ ok: true });
             done();
           });
         })

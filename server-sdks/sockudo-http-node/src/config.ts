@@ -44,7 +44,7 @@ class Config {
       }
       if (options.encryptionMasterKey.length !== 32) {
         throw new Error(
-          `encryptionMasterKey must be 32 bytes long, but the string '${options.encryptionMasterKey}' is ${options.encryptionMasterKey.length} bytes long`,
+          `encryptionMasterKey must be 32 bytes long, but the provided key is ${options.encryptionMasterKey.length} bytes long`,
         );
       }
 
@@ -62,7 +62,7 @@ class Config {
       const decodedKey = Buffer.from(options.encryptionMasterKeyBase64, "base64");
       if (decodedKey.length !== 32) {
         throw new Error(
-          `encryptionMasterKeyBase64 must decode to 32 bytes, but the string '${options.encryptionMasterKeyBase64}' decodes to ${decodedKey.length} bytes`,
+          `encryptionMasterKeyBase64 must decode to 32 bytes, but the provided key decodes to ${decodedKey.length} bytes`,
         );
       }
 

@@ -56,8 +56,8 @@ describe("Sockudo (integration)", function () {
           .then((response) => {
             expect(proxy.requests).to.equal(1);
             expect(response.status).to.equal(200);
-            response.json().then((body) => {
-              expect(body).to.eql({});
+            return response.json().then((body) => {
+              expect(body).to.eql({ ok: true });
               done();
             });
           })

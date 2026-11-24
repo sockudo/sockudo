@@ -146,5 +146,35 @@ describe("Sockudo", function () {
         new Sockudo({ encryptionMasterKeyBase64: keyBase64 });
       }).to.throwException(/valid base64/);
     });
+
+    it("should not include `encryptionMasterKey` in validation errors", function () {
+      [31, 33].forEach(function (length) {
+        const key = "012345678901234567890123456789012".slice(0, length);
+        let error;
+        try {
+          new Sockudo({ encryptionMasterKey: key });
+        } catch (e) {
+          error = e;
+        }
+        expect(error.message).to.match(new RegExp(String(length) + " bytes"));
+        expect(error.message.indexOf(key)).to.equal(-1);
+      });
+    });
+
+    it("should not include `encryptionMasterKeyBase64` in validation errors", function () {
+      [31, 33].forEach(function (length) {
+        const key = "012345678901234567890123456789012".slice(0, length);
+        const keyBase64 = Buffer.from(key).toString("base64");
+        let error;
+        try {
+          new Sockudo({ encryptionMasterKeyBase64: keyBase64 });
+        } catch (e) {
+          error = e;
+        }
+        expect(error.message).to.match(new RegExp(String(length) + " bytes"));
+        expect(error.message.indexOf(keyBase64)).to.equal(-1);
+        expect(error.message.indexOf(key)).to.equal(-1);
+      });
+    });
   });
 });
