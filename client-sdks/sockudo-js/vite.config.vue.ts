@@ -6,7 +6,7 @@ export default defineConfig({
     emptyOutDir: false,
     lib: {
       entry: {
-        vue: path.resolve(__dirname, "src/framework-vue/index.ts"),
+        vue: path.resolve(import.meta.dirname, "src/framework-vue/index.ts"),
       },
       formats: ["es"],
       fileName: () => "vue.mjs",
@@ -24,10 +24,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      runtime: path.resolve(__dirname, "src/runtimes/web/runtime.ts"),
-      core: path.resolve(__dirname, "src/core"),
-      isomorphic: path.resolve(__dirname, "src/runtimes/isomorphic"),
-      web: path.resolve(__dirname, "src/runtimes/web"),
+      runtime: path.resolve(import.meta.dirname, "src/runtimes/web/runtime.ts"),
+      core: path.resolve(import.meta.dirname, "src/core"),
+      isomorphic: path.resolve(import.meta.dirname, "src/runtimes/isomorphic"),
+      web: path.resolve(import.meta.dirname, "src/runtimes/web"),
     },
   },
   define: {

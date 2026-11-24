@@ -6,7 +6,7 @@ export default defineConfig({
     emptyOutDir: false,
     lib: {
       entry: {
-        sockudo: path.resolve(__dirname, "src/index.ts"),
+        sockudo: path.resolve(import.meta.dirname, "src/index.ts"),
       },
       name: "Sockudo",
       formats: ["es"],
@@ -27,10 +27,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      runtime: path.resolve(__dirname, "src/runtimes/web/runtime.ts"),
-      core: path.resolve(__dirname, "src/core"),
-      isomorphic: path.resolve(__dirname, "src/runtimes/isomorphic"),
-      web: path.resolve(__dirname, "src/runtimes/web"),
+      runtime: path.resolve(import.meta.dirname, "src/runtimes/web/runtime.ts"),
+      core: path.resolve(import.meta.dirname, "src/core"),
+      isomorphic: path.resolve(import.meta.dirname, "src/runtimes/isomorphic"),
+      web: path.resolve(import.meta.dirname, "src/runtimes/web"),
     },
   },
   define: {

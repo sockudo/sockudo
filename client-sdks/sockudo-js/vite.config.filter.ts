@@ -6,7 +6,7 @@ export default defineConfig({
     emptyOutDir: false,
     lib: {
       entry: {
-        filter: path.resolve(__dirname, "src/filter.ts"),
+        filter: path.resolve(import.meta.dirname, "src/filter.ts"),
       },
       name: "SockudoFilter",
       formats: ["es"],
@@ -18,7 +18,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      core: path.resolve(__dirname, "src/core"),
+      core: path.resolve(import.meta.dirname, "src/core"),
     },
   },
 });

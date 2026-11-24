@@ -459,7 +459,9 @@ npm install @sockudo/client @valor/nativescript-websockets
 ### Requirements
 
 - Bun `>=1.0.0`
-- Node.js `>=22`
+- Node.js `>=22` for the published SDK
+- Node.js `^22.22.2 || ^24.15.0 || >=26.0.0` to install and run the tests; `jsdom` 31 is
+  test-only and declares that range, so `npm ci` warns on older releases
 
 ### Commands
 

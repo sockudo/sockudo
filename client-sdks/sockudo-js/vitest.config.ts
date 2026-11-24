@@ -8,13 +8,13 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      runtime: path.resolve(__dirname, "src/runtimes/node/runtime.ts"),
-      core: path.resolve(__dirname, "src/core"),
-      isomorphic: path.resolve(__dirname, "src/runtimes/isomorphic"),
-      web: path.resolve(__dirname, "src/runtimes/web"),
-      worker: path.resolve(__dirname, "src/runtimes/worker"),
-      "react-native": path.resolve(__dirname, "src/runtimes/react-native"),
-      node: path.resolve(__dirname, "src/runtimes/node"),
+      runtime: path.resolve(import.meta.dirname, "src/runtimes/node/runtime.ts"),
+      core: path.resolve(import.meta.dirname, "src/core"),
+      isomorphic: path.resolve(import.meta.dirname, "src/runtimes/isomorphic"),
+      web: path.resolve(import.meta.dirname, "src/runtimes/web"),
+      worker: path.resolve(import.meta.dirname, "src/runtimes/worker"),
+      "react-native": path.resolve(import.meta.dirname, "src/runtimes/react-native"),
+      node: path.resolve(import.meta.dirname, "src/runtimes/node"),
     },
   },
   test: {

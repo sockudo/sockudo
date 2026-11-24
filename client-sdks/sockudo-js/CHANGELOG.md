@@ -13,6 +13,8 @@
 
 * published TypeScript declarations now name the client `Sockudo`, `SockudoWithEncryption`, and
   `SockudoEvent`, matching the runtime; the deep-path-only `PusherEvent` alias is removed
+* the Vite and Vitest configs resolve their paths through `import.meta.dirname` instead of
+  `__dirname`, which Vite's upcoming native config loader does not support
 
 ### Fixed
 
@@ -32,6 +34,21 @@
   (sockudo/sockudo#569)
 * declare `channel.sockudo`, `user.sockudo`, and the `sockudo` constructor and factory parameters
   that the runtime exposes, instead of a `pusher` field that was always `undefined`
+* emit `pusher:signin_error` (`sockudo:signin_error` under Protocol V2) when user authentication
+  fails, mirroring the existing `subscription_error` contract; ported from pusher-js v8.6.0
+* run the signin cleanup even when a `signin_error` listener throws, so `user.signinDonePromise`
+  settles and presence authorization does not wait for a disconnect
+
+### Security
+
+* clear the development dependency advisories: `oxfmt` 0.80.0 drops the vulnerable `tinypool`,
+  `vitest` 4.1.12 fixes `@vitest/mocker` path traversal and mock injection, `vite` 8.3.8 fixes the
+  `launch-editor` and dev-server issues, and `vue` 3.5.46 fixes the `@vue/server-renderer` XSS.
+  `undici` and `source-map-js` now resolve to patched releases through `jsdom` 31 and the existing
+  parent ranges
+* remove the `overrides` block; every previously pinned transitive resolves to a patched version
+  through its parent's own range, so the forced versions are no longer needed
+* move `protobufjs` to 7.6.6 and `@msgpack/msgpack` to 3.1.3
 
 ## [2.2.0] - 2026-08-17
 
