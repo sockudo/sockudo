@@ -22,7 +22,7 @@ use super::presence_history::PresenceHistoryStatusResponse;
 
 // --- Response Structs ---
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct MemoryStats {
     free: u64,
     used: u64,
@@ -96,14 +96,31 @@ pub(super) async fn record_api_metrics(
     }
 }
 
-/// GET /usage
-#[instrument(skip_all, fields(service = "usage_monitor"))]
-pub async fn usage() -> Result<impl IntoResponse, AppError> {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+/// Snapshot host memory counters.
+///
+/// `sysinfo` cannot read host information in restricted sandboxes or on unsupported
+/// platforms. That is a reporting limitation rather than a server fault, so degrade to
+/// zeroed counters instead of failing the request.
+fn memory_stats() -> MemoryStats {
+    let mut sys = match System::new() {
+        Ok(sys) => sys,
+        Err(error) => {
+            warn!(error = %error, "system information unavailable, reporting zeroed memory usage");
+            return MemoryStats::default();
+        }
+    };
+    sys.refresh_memory();
 
-    let total = sys.total_memory() * 1024;
-    let used = sys.used_memory() * 1024;
+    let total = sys.total_memory();
+    if total == 0 {
+        warn!("system memory total is zero, reporting zeroed memory usage");
+    }
+
+    memory_stats_from_bytes(total, sys.used_memory())
+}
+
+/// Build counters from raw byte counts. `sysinfo` already reports bytes, so no scaling.
+fn memory_stats_from_bytes(total: u64, used: u64) -> MemoryStats {
     let free = total.saturating_sub(used);
     let percent = if total > 0 {
         (used as f64 / total as f64) * 100.0
@@ -111,25 +128,28 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
         0.0
     };
 
-    let memory_stats = MemoryStats {
+    MemoryStats {
         free,
         used,
         total,
         percent,
-    };
-    let response_payload = UsageResponse {
-        memory: memory_stats,
-    };
+    }
+}
+
+/// GET /usage
+#[instrument(skip_all, fields(service = "usage_monitor"))]
+pub async fn usage() -> Result<impl IntoResponse, AppError> {
+    let memory = memory_stats();
 
     info!(
-        total_bytes = total,
-        used_bytes = used,
-        free_bytes = free,
-        usage_percent = format!("{:.2}", percent),
+        total_bytes = memory.total,
+        used_bytes = memory.used,
+        free_bytes = memory.free,
+        usage_percent = format!("{:.2}", memory.percent),
         "Memory usage queried"
     );
 
-    Ok((StatusCode::OK, Json(response_payload)))
+    Ok((StatusCode::OK, Json(UsageResponse { memory })))
 }
 
 /// GET /stats and /operator/stats on the client-facing listener.
@@ -161,24 +181,7 @@ async fn build_stats(
     handler: &Arc<ConnectionHandler>,
     only_app: Option<&str>,
 ) -> Result<(StatusCode, Json<StatsResponse>), AppError> {
-    let mut sys = System::new_all();
-    sys.refresh_all();
-
-    let total = sys.total_memory() * 1024;
-    let used = sys.used_memory() * 1024;
-    let free = total.saturating_sub(used);
-    let percent = if total > 0 {
-        (used as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    let memory = MemoryStats {
-        free,
-        used,
-        total,
-        percent,
-    };
+    let memory = memory_stats();
     let history_status = handler
         .history_store()
         .runtime_status()
@@ -1202,6 +1205,36 @@ mod tests {
         assert_eq!(
             json["presence_history"]["reset_required_channels"].as_u64(),
             Some(1)
+        );
+    }
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn memory_stats_compute_percent_and_free_from_bytes() {
+        let stats = memory_stats_from_bytes(16 * GIB, 4 * GIB);
+
+        assert_eq!(stats.free, 12 * GIB);
+        assert_eq!(stats.percent, 25.0);
+        assert_eq!(memory_stats_from_bytes(0, 0).percent, 0.0);
+    }
+
+    /// A rescale between `sysinfo` and the response would make `total` diverge from raw bytes.
+    #[test]
+    fn memory_stats_report_unscaled_sysinfo_total() {
+        let Ok(mut sys) = System::new() else {
+            return;
+        };
+        sys.refresh_memory();
+        let total = sys.total_memory();
+        if total == 0 {
+            return;
+        }
+
+        assert_eq!(
+            memory_stats().total,
+            total,
+            "total must be raw sysinfo bytes"
         );
     }
 
