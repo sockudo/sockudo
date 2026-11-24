@@ -9,16 +9,16 @@
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {
-    "@ai-sdk/vue": "^4.0.2",
+    "@ai-sdk/vue": "^4.0.181",
     "@sockudo/ai-transport": "workspace:*",
     "@sockudo/client": "workspace:*",
-    "ai": "^7.0.2",
-    "nuxt": "^4.5.2",
-    "vue": "^3.5.35",
-    "zod": "^4.4.3"
+    "ai": "^7.0.181",
+    "nuxt": "^4.7.0",
+    "vue": "^3.5.46",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vue-tsc": "^3.1.8"
+    "vue-tsc": "^3.3.14"
   }
 }

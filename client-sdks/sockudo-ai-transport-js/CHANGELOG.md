@@ -1,5 +1,27 @@
 # @sockudo/ai-transport
 
+## Unreleased
+
+### Security
+
+- Update the build, demo, and release-tooling dependencies to patched releases. `nuxt` 4.7.0 brings
+  `nitropack` 2.14.0, `node-forge` 1.4.x, `seroval` 1.8.2, `devalue` 6.0.4, and `simple-git` 4.x.
+- Bump `happy-dom` to 21.0.4, `vite` to 8.3.8, `vitest` to 4.1.12, `typedoc` to 0.28.20, `verdaccio`
+  to 6.11.3, and `zod` to 4.6.7.
+- Remove the `pnpm` overrides that pinned `brace-expansion`, `fast-uri`, `js-yaml`, `qs`,
+  `shell-quote`, `svgo`, and `undici` to vulnerable versions. They now resolve to patched releases
+  through their parents' own ranges.
+
+### Changed
+
+- Build with `rolldownOptions` and `codeSplitting` instead of the deprecated `rollupOptions` and
+  `inlineDynamicImports`.
+
+### Fixed
+
+- Replace the 0.5 ms local budget in the token patch test with a single regression ceiling, so
+  slower machines no longer fail it.
+
 ## 3.0.0 - 2026-08-17
 
 ### Breaking changes

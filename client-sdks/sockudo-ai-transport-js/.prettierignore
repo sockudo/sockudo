@@ -3,6 +3,7 @@ dist/
 .vite/
 .next/
 demo/.nuxt/
+demo/.output/
 coverage/
 bench/.generated/
 test-results/

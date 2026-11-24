@@ -388,10 +388,10 @@ async function bundledCode(name: string, lines: readonly string[]): Promise<stri
       write: false,
       minify: "esbuild",
       sourcemap: false,
-      rollupOptions: {
+      rolldownOptions: {
         input: await writeBundleEntry(name, lines),
         external: ["@sockudo/client", "@sockudo/client/react", "react", "ai"],
-        output: { format: "esm", inlineDynamicImports: true },
+        output: { format: "esm", codeSplitting: false },
         treeshake: { moduleSideEffects: false },
       },
     },
@@ -553,35 +553,30 @@ class BenchChannel implements ChannelLike {
 
   public appendMessage(
     messageSerial: string,
-    data: string,
-    options: Omit<MessageMutation, "data"> = {},
+    _data: string,
+    _options: Omit<MessageMutation, "data"> = {},
   ): Promise<MessageAck> {
-    void data;
-    void options;
     return Promise.resolve(this.nextAck(messageSerial));
   }
 
   public updateMessage(
     messageSerial: string,
-    options: MessageMutation = {},
+    _options: MessageMutation = {},
   ): Promise<MessageAck> {
-    void options;
     return Promise.resolve(this.nextAck(messageSerial));
   }
 
   public deleteMessage(
     messageSerial: string,
-    options: MessageMutation = {},
+    _options: MessageMutation = {},
   ): Promise<MessageAck> {
-    void options;
     return Promise.resolve(this.nextAck(messageSerial));
   }
 
   public subscribe(
     listener: MessageListener,
-    options?: SubscribeOptions,
+    _options?: SubscribeOptions,
   ): Unsubscribe {
-    void options;
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -589,9 +584,8 @@ class BenchChannel implements ChannelLike {
   }
 
   public history(
-    options: HistoryOptions = {},
+    _options: HistoryOptions = {},
   ): Promise<PaginatedResult<InboundMessage>> {
-    void options;
     return Promise.resolve({
       items: [],
       hasNext: () => false,
