@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Redact the encryption master key value from `encryptionMasterKey` and `encryptionMasterKeyBase64`
+  validation errors, so a misconfiguration cannot leak the key through logs, error trackers, or
+  support responses.
+- Stop echoing caller-supplied user data in `validateUserData` validation errors.
+
 ## 2.2.0 - 2026-08-17
 
 - [ADDED] Add `forceReconnectUser` for `POST /users/{userId}/force_reconnect`.

@@ -91,19 +91,19 @@ describe("Sockudo", function () {
     it("should raise an exception if user data is not a non-null object", function () {
       expect(function () {
         sockudo.authenticateUser("111.222", undefined);
-      }).to.throwException(/^Invalid user data: 'undefined'$/);
+      }).to.throwException(/^Invalid user data: expected an object, received undefined$/);
       expect(function () {
         sockudo.authenticateUser("111.222", null);
-      }).to.throwException(/^Invalid user data: 'null'$/);
+      }).to.throwException(/^Invalid user data: expected an object, received null$/);
       expect(function () {
         sockudo.authenticateUser("111.222", 111);
-      }).to.throwException(/^Invalid user data: '111'$/);
+      }).to.throwException(/^Invalid user data: expected an object, received number$/);
       expect(function () {
         sockudo.authenticateUser("111.222", "");
-      }).to.throwException(/^Invalid user data: ''$/);
+      }).to.throwException(/^Invalid user data: expected an object, received string$/);
       expect(function () {
         sockudo.authenticateUser("111.222", "abc");
-      }).to.throwException(/^Invalid user data: 'abc'$/);
+      }).to.throwException(/^Invalid user data: expected an object, received string$/);
     });
 
     it("should raise an exception if user data doesn't have a valid id field", function () {

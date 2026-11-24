@@ -50,6 +50,24 @@ updates:
       prefix: "chore(docker)"
 
   - package-ecosystem: npm
+    directory: /server-sdks/sockudo-http-node
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:45"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
     directory: /client-sdks/sockudo-js
     schedule:
       interval: weekly
