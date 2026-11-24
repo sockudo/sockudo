@@ -21,6 +21,10 @@ on:
         type: string
         default: ""
         description: "Git ref to build; defaults to the triggering ref"
+      rust_channel:
+        required: true
+        type: string
+        description: "Rust toolchain of the calling workflow revision"
       version:
         required: false
         type: string
@@ -53,8 +57,9 @@ jobs:
           ref: ${{ inputs.git_ref || github.ref }}
 
       - name: Install Rust toolchain
-        uses: ./.github/actions/rust-toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ inputs.rust_channel }}
           targets: ${{ inputs.target_triple }}
 
       - name: Cache cargo registry
@@ -79,9 +84,9 @@ jobs:
         if: ${{ contains(inputs.target_triple, 'musl') }}
         env:
           TARGET_TRIPLE: ${{ inputs.target_triple }}
+          RUST_VERSION: ${{ inputs.rust_channel }}
         run: |
-          RUST_VERSION=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
-          : "${RUST_VERSION:?rust-toolchain.toml has no channel}"
+          case "$RUST_VERSION" in [0-9]*) ;; *) echo "the rust alpine image needs a numeric channel, got '$RUST_VERSION'" >&2; exit 1 ;; esac
           docker run --rm \
             -e TARGET_TRIPLE \
             -e RUST_VERSION \
