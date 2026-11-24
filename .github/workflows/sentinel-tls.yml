@@ -1,3 +1,4 @@
+---
 name: Live - Redis Sentinel TLS
 
 # Opt-in live validation of the Redis adapter's Sentinel TLS / mutual-TLS path.
@@ -29,7 +30,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: ./.github/actions/rust-toolchain
         id: toolchain
 
       - name: Cache cargo registry

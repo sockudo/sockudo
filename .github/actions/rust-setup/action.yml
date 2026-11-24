@@ -1,3 +1,4 @@
+---
 name: Rust CI setup
 description: >-
   Install the Rust toolchain and the system build dependencies, then restore the
@@ -10,10 +11,6 @@ inputs:
     description: "restore | none"
     required: false
     default: restore
-  components:
-    description: "Extra rustup components, comma separated (e.g. rustfmt, clippy)."
-    required: false
-    default: ""
   apt-packages:
     description: "Extra apt packages installed on top of the base build dependencies."
     required: false
@@ -36,9 +33,7 @@ runs:
   steps:
     - name: Install Rust toolchain
       id: toolchain
-      uses: dtolnay/rust-toolchain@1.100.0
-      with:
-        components: ${{ inputs.components }}
+      uses: ./.github/actions/rust-toolchain
 
     # Lockfile-hashed key; the prefix restore-key lets a bump reuse target/.
     # The seeder saves only on a miss, so the key also hashes its prebuild

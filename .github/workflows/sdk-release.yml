@@ -1,3 +1,4 @@
+---
 name: SDK Release
 
 on:
@@ -627,9 +628,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.100.0
-        with:
-          components: rustfmt, clippy
+        uses: ./.github/actions/rust-toolchain
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -689,9 +688,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.100.0
-        with:
-          components: rustfmt, clippy
+        uses: ./.github/actions/rust-toolchain
 
       - name: Cache cargo registry
         uses: actions/cache@v6

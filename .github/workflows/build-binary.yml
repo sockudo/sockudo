@@ -1,3 +1,4 @@
+---
 name: Reusable Linux Binary Build
 
 on:
@@ -52,7 +53,7 @@ jobs:
           ref: ${{ inputs.git_ref || github.ref }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: ./.github/actions/rust-toolchain
         with:
           targets: ${{ inputs.target_triple }}
 
@@ -79,9 +80,11 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ inputs.target_triple }}
         run: |
-          RUST_VERSION=$(grep "^rust-version" Cargo.toml | head -1 | cut -d'"' -f2)
+          RUST_VERSION=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          : "${RUST_VERSION:?rust-toolchain.toml has no channel}"
           docker run --rm \
             -e TARGET_TRIPLE \
+            -e RUST_VERSION \
             -e CARGO_PROFILE_RELEASE_LTO \
             -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
             -e CARGO_BUILD_JOBS \
@@ -91,10 +94,8 @@ jobs:
             -w /src \
             "rust:${RUST_VERSION}-alpine" \
             sh -c '
-              # rust-toolchain.toml at the repo root (mounted at /src) pins 1.100.0, and
-              # rustup would obey it and download that version. Use the image's compiler
-              # instead: RUST_VERSION is its exact patch, so this stays on the declared MSRV
-              # with no download. Set it before the first cargo call.
+              # Image compiler is the pinned toolchain; RUSTUP_TOOLCHAIN keeps rustup from
+              # resolving and downloading a second copy of the same version.
               export RUSTUP_TOOLCHAIN="$RUST_VERSION"
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev

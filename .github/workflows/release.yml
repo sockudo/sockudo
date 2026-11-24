@@ -1,3 +1,4 @@
+---
 name: Release - Build and Publish
 
 on:
@@ -372,7 +373,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: ./.github/actions/rust-toolchain
 
       - name: Install system dependencies
         run: |
