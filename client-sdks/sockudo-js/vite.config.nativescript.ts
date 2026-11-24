@@ -5,7 +5,7 @@ export default defineConfig({
   build: {
     lib: {
       entry: {
-        sockudo: path.resolve(__dirname, "src/index.ts"),
+        sockudo: path.resolve(import.meta.dirname, "src/index.ts"),
       },
       name: "Sockudo",
       formats: ["es"],
@@ -24,9 +24,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      runtime: path.resolve(__dirname, "src/runtimes/nativescript/runtime.ts"),
-      core: path.resolve(__dirname, "src/core"),
-      isomorphic: path.resolve(__dirname, "src/runtimes/isomorphic"),
+      runtime: path.resolve(import.meta.dirname, "src/runtimes/nativescript/runtime.ts"),
+      core: path.resolve(import.meta.dirname, "src/core"),
+      isomorphic: path.resolve(import.meta.dirname, "src/runtimes/isomorphic"),
     },
   },
   define: {

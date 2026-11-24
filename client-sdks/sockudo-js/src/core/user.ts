@@ -5,6 +5,7 @@ import Channel from "./channels/channel";
 import WatchlistFacade from "./watchlist";
 import EventsDispatcher from "./events/dispatcher";
 import flatPromise from "./utils/flat_promise";
+import { HTTPAuthError } from "./errors";
 import { prefixedEvent, isInternalEvent, isPlatformEvent } from "./protocol_prefix";
 
 export default class UserFacade extends EventsDispatcher {
@@ -76,7 +77,21 @@ export default class UserFacade extends EventsDispatcher {
   private _onAuthorize: UserAuthenticationCallback = (err, authData: UserAuthenticationData) => {
     if (err) {
       Logger.warn(`Error during signin: ${err}`);
-      this._cleanup();
+      try {
+        this.emit(
+          prefixedEvent("signin_error"),
+          Object.assign(
+            {},
+            {
+              type: "AuthError",
+              error: err.message,
+            },
+            err instanceof HTTPAuthError ? { status: err.status } : {},
+          ),
+        );
+      } finally {
+        this._cleanup();
+      }
       return;
     }
 

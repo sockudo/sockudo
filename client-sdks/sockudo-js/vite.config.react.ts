@@ -6,7 +6,7 @@ export default defineConfig({
     emptyOutDir: false,
     lib: {
       entry: {
-        react: path.resolve(__dirname, "src/framework-react/index.ts"),
+        react: path.resolve(import.meta.dirname, "src/framework-react/index.ts"),
       },
       formats: ["es"],
       fileName: () => "react.mjs",
@@ -24,10 +24,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      runtime: path.resolve(__dirname, "src/runtimes/web/runtime.ts"),
-      core: path.resolve(__dirname, "src/core"),
-      isomorphic: path.resolve(__dirname, "src/runtimes/isomorphic"),
-      web: path.resolve(__dirname, "src/runtimes/web"),
+      runtime: path.resolve(import.meta.dirname, "src/runtimes/web/runtime.ts"),
+      core: path.resolve(import.meta.dirname, "src/core"),
+      isomorphic: path.resolve(import.meta.dirname, "src/runtimes/isomorphic"),
+      web: path.resolve(import.meta.dirname, "src/runtimes/web"),
     },
   },
   define: {

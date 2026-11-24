@@ -7,7 +7,7 @@ export default defineConfig({
     lib: {
       entry: {
         "sockudo-with-encryption.worker": path.resolve(
-          __dirname,
+          import.meta.dirname,
           "src/core/sockudo-with-encryption.ts",
         ),
       },
@@ -28,10 +28,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      runtime: path.resolve(__dirname, "src/runtimes/worker/runtime.ts"),
-      core: path.resolve(__dirname, "src/core"),
-      isomorphic: path.resolve(__dirname, "src/runtimes/isomorphic"),
-      worker: path.resolve(__dirname, "src/runtimes/worker"),
+      runtime: path.resolve(import.meta.dirname, "src/runtimes/worker/runtime.ts"),
+      core: path.resolve(import.meta.dirname, "src/core"),
+      isomorphic: path.resolve(import.meta.dirname, "src/runtimes/isomorphic"),
+      worker: path.resolve(import.meta.dirname, "src/runtimes/worker"),
     },
   },
   define: {
