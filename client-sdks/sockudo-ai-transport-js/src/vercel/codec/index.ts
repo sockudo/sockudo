@@ -58,6 +58,7 @@ export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, 
 /** Type-level docs-compatible codec conformance. */
 type DocsCompatibleCodec = Codec2<VercelOutput, AI.UIMessage>;
 const docsCompatibleCodec = UIMessageCodec as unknown as DocsCompatibleCodec;
+// eslint-disable-next-line @typescript-eslint/no-meaningless-void-operator
 void docsCompatibleCodec;
 
 export { createVercelDecoder } from "./decoder.js";

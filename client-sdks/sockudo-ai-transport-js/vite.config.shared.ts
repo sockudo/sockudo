@@ -41,7 +41,7 @@ export function createLibraryConfig(entry: LibraryEntry): UserConfig {
           format === "es" ? `${entry.fileBase}.js` : `${entry.fileBase}.umd.cjs`,
       },
       outDir: "dist",
-      rollupOptions: {
+      rolldownOptions: {
         external: [
           "@sockudo/client",
           "@sockudo/client/react",

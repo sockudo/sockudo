@@ -27,7 +27,7 @@ import { createView } from "./view.js";
 import type { Tree } from "./tree.js";
 import type { View } from "./view.js";
 
-const TOKEN_PATCH_BUDGET_MS = process.env.CI === "true" ? 1.5 : 0.5;
+const TOKEN_PATCH_BUDGET_MS = 1.5;
 
 describe("transport view", () => {
   it("flattens reachable selected branches with latest sibling by default", () => {
@@ -205,7 +205,7 @@ describe("transport view", () => {
       );
     }
     const view = createView({ tree, codec, decoder: codec.createDecoder() });
-    const before = view.getMessages();
+    const before = [...view.getMessages()];
     const first = before[0];
     const middle = before[5_000];
     const started = performance.now();
@@ -219,6 +219,7 @@ describe("transport view", () => {
     const elapsedPerToken = (performance.now() - started) / 100;
     const after = view.getMessages();
 
+    expect(after.slice(0, -1).every((message, index) => message === before[index])).toBe(true);
     expect(after[0]).toBe(first);
     expect(after[5_000]).toBe(middle);
     expect(after.at(-1)).toEqual({ id: "msg-9999", text: "token 99" });

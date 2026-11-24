@@ -229,8 +229,6 @@ export function createSessionScope<
     try {
       const client = useSockudoRealtimeClient(options.client);
       const { client: _client, closeOnScopeDispose: _close, ...rest } = options;
-      void _client;
-      void _close;
       session.value = createClientSession({
         ...rest,
         client,
@@ -347,6 +345,8 @@ export function createSessionScope<
       onScopeDispose(unsubscribe);
     }
     return computed(() => {
+      // Reading the tick is what makes this computed re-run when runs change.
+      // eslint-disable-next-line @typescript-eslint/no-meaningless-void-operator
       void tick.value;
       return cloneActiveRuns(session);
     });
