@@ -1,0 +1,31 @@
+---
+name: Rust toolchain
+description: Install the toolchain pinned in rust-toolchain.toml.
+
+inputs:
+  targets:
+    description: "Compilation targets to add, comma or space separated."
+    required: false
+    default: ""
+
+outputs:
+  cachekey:
+    description: "rustc commit date and hash, truncated for cache keys."
+    value: ${{ steps.install.outputs.cachekey }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve pinned channel
+      id: pin
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
+    - name: Install Rust toolchain
+      id: install
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        targets: ${{ inputs.targets }}
+        components: rustfmt, clippy

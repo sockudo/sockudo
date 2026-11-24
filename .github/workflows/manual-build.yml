@@ -1,3 +1,4 @@
+---
 name: Manual Build - Linux Artifacts
 
 on:
@@ -29,43 +30,62 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  pin:
+    name: Resolve Rust channel
+    runs-on: ubuntu-24.04
+    outputs:
+      channel: ${{ steps.pin.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve Rust channel
+        id: pin
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
   # =============================================================================
   # Build Binaries using Reusable Workflow
   # =============================================================================
   build-linux-x64-gnu:
+    needs: pin
     if: inputs.build_linux_x64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux x86_64 (GNU)
       target_triple: x86_64-unknown-linux-gnu
       runner_os: ubuntu-24.04
+      rust_channel: ${{ needs.pin.outputs.channel }}
       artifact_retention_days: 30
 
   build-linux-x64-musl:
+    needs: pin
     if: inputs.build_linux_x64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux x86_64 (musl)
       target_triple: x86_64-unknown-linux-musl
       runner_os: ubuntu-24.04
+      rust_channel: ${{ needs.pin.outputs.channel }}
       artifact_retention_days: 30
 
   build-linux-arm64-gnu:
+    needs: pin
     if: inputs.build_linux_arm64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux ARM64 (GNU)
       target_triple: aarch64-unknown-linux-gnu
       runner_os: ubuntu-24.04-arm
+      rust_channel: ${{ needs.pin.outputs.channel }}
       artifact_retention_days: 30
 
   build-linux-arm64-musl:
+    needs: pin
     if: inputs.build_linux_arm64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux ARM64 (musl)
       target_triple: aarch64-unknown-linux-musl
       runner_os: ubuntu-24.04-arm
+      rust_channel: ${{ needs.pin.outputs.channel }}
       artifact_retention_days: 30
 
   # =============================================================================

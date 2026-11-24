@@ -1,3 +1,4 @@
+---
 name: Release - Build and Publish
 
 on:
@@ -42,12 +43,17 @@ jobs:
       lowercase_image_name: ${{ steps.lowercase_repo.outputs.name }} # New output for lowercased repo name
       lowercase_owner: ${{ steps.lowercase_repo.outputs.owner }}
       docker_tag_suffix: ${{ steps.docker_suffix.outputs.suffix }}
+      rust_channel: ${{ steps.pin.outputs.channel }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Resolve Rust channel
+        id: pin
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Get version information
         id: version
@@ -131,6 +137,7 @@ jobs:
       target_triple: x86_64-unknown-linux-musl
       runner_os: ubuntu-24.04
       git_ref: ${{ needs.prepare.outputs.tag }}
+      rust_channel: ${{ needs.prepare.outputs.rust_channel }}
       version: ${{ needs.prepare.outputs.version }}
 
   build-linux-x64-gnu:
@@ -141,6 +148,7 @@ jobs:
       target_triple: x86_64-unknown-linux-gnu
       runner_os: ubuntu-24.04
       git_ref: ${{ needs.prepare.outputs.tag }}
+      rust_channel: ${{ needs.prepare.outputs.rust_channel }}
       version: ${{ needs.prepare.outputs.version }}
 
   build-linux-arm64-gnu:
@@ -151,6 +159,7 @@ jobs:
       target_triple: aarch64-unknown-linux-gnu
       runner_os: ubuntu-24.04-arm
       git_ref: ${{ needs.prepare.outputs.tag }}
+      rust_channel: ${{ needs.prepare.outputs.rust_channel }}
       version: ${{ needs.prepare.outputs.version }}
 
   build-linux-arm64-musl:
@@ -161,6 +170,7 @@ jobs:
       target_triple: aarch64-unknown-linux-musl
       runner_os: ubuntu-24.04-arm
       git_ref: ${{ needs.prepare.outputs.tag }}
+      rust_channel: ${{ needs.prepare.outputs.rust_channel }}
       version: ${{ needs.prepare.outputs.version }}
 
   # =============================================================================
@@ -372,7 +382,9 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.prepare.outputs.rust_channel }}
 
       - name: Install system dependencies
         run: |

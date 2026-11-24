@@ -1,3 +1,4 @@
+---
 name: CI - Lint and Test
 
 on:
@@ -68,7 +69,6 @@ jobs:
         uses: ./.github/actions/rust-setup
         with:
           cache: restore
-          components: rustfmt, clippy
           apt-packages: libpq-dev libmariadb-dev
 
       - name: Prebuild every cached job's artifacts
@@ -99,7 +99,6 @@ jobs:
         uses: ./.github/actions/rust-setup
         with:
           cache: restore
-          components: rustfmt, clippy
           apt-packages: shellcheck
 
       - name: Check formatting
@@ -201,7 +200,6 @@ jobs:
         uses: ./.github/actions/rust-setup
         with:
           cache: restore
-          components: clippy
           apt-packages: libpq-dev libmariadb-dev
 
       - name: Check push feature matrix
@@ -299,7 +297,6 @@ jobs:
         uses: ./.github/actions/rust-setup
         with:
           cache: restore
-          components: clippy
           apt-packages: libpq-dev libmariadb-dev
 
       # --all-targets only on the `full` entry; the seeder already covers it.

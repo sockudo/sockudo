@@ -1,3 +1,4 @@
+---
 name: Distributed Correctness Chaos
 
 on:
@@ -38,7 +39,7 @@ jobs:
           fetch-depth: 2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: ./.github/actions/rust-toolchain
         id: toolchain
 
       - name: Cache Cargo inputs
