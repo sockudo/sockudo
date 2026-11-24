@@ -155,7 +155,7 @@ redis = { version = "^1", features = [
   "connection-manager",
 ] }
 regex = "1.12.2"
-rdkafka = { version = "0.39.0", default-features = false, features = [
+rdkafka = { version = "0.40.0", default-features = false, features = [
   "tokio",
   "cmake-build",
   "libz",
