@@ -101,10 +101,21 @@ module Sockudo
     def signature_valid?(secret)
       digest = OpenSSL::Digest.new('SHA256')
       expected = OpenSSL::HMAC.hexdigest(digest, secret, @body)
-      return true if @signature == expected
 
-      Sockudo.logger.warn "Received WebHook with invalid signature: got #{@signature}, expected #{expected}"
-      false
+      unless constant_time_compare(@signature.to_s, expected)
+        Sockudo.logger.warn 'Received WebHook with invalid signature'
+        return false
+      end
+
+      true
+    end
+
+    # Constant-time compare via stdlib OpenSSL. fixed_length_secure_compare
+    # raises on length mismatch, so guard the lengths first.
+    def constant_time_compare(left, right)
+      return false unless left.bytesize == right.bytesize
+
+      OpenSSL.fixed_length_secure_compare(left, right)
     end
   end
 end

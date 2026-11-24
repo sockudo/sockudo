@@ -85,10 +85,16 @@ describe Sockudo::WebHook do
     it 'should not validate if secret is wrong' do
       @client.key = '1234'
       @client.secret = 'asdfxxx'
-      digest = OpenSSL::Digest.new('SHA256')
-      expected = OpenSSL::HMAC.hexdigest(digest, @client.secret, @body)
-      expect(Sockudo.logger).to receive(:warn).with("Received WebHook with invalid signature: got #{@wh.signature}, expected #{expected}")
+      expect(Sockudo.logger).to receive(:warn).with('Received WebHook with invalid signature')
       expect(@wh).not_to be_valid
+    end
+
+    it 'should not validate if signature is missing' do
+      @client.key = '1234'
+      @client.secret = 'asdf'
+      request = { key: '1234', signature: nil, content_type: 'application/json', body: @body }
+      expect(Sockudo.logger).to receive(:warn).with('Received WebHook with invalid signature')
+      expect(described_class.new(request, @client)).not_to be_valid
     end
 
     it 'should validate with an extra token' do
@@ -116,7 +122,7 @@ describe Sockudo::WebHook do
     it 'should not validate if secret is wrong with extra tokens' do
       @client.key = '123456'
       @client.secret = 'asdfxxx'
-      expect(Sockudo.logger).to receive(:warn).with(/Received WebHook with invalid signature/)
+      expect(Sockudo.logger).to receive(:warn).with('Received WebHook with invalid signature')
       expect(@wh.valid?({ key: '1234', secret: 'wtf' })).to be_falsey
     end
 
