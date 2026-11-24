@@ -7372,7 +7372,7 @@ dependencies = [
  "papaya",
  "parking_lot 0.13.0",
  "pulsar",
- "rand 0.9.5",
+ "rand 0.10.3",
  "rdkafka",
  "redis",
  "regex",
@@ -7437,7 +7437,7 @@ dependencies = [
  "futures",
  "futures-util",
  "moka",
- "rand 0.9.5",
+ "rand 0.10.3",
  "regex",
  "scylla",
  "serde",
@@ -7486,7 +7486,7 @@ dependencies = [
  "memchr",
  "papaya",
  "parking_lot 0.13.0",
- "rand 0.9.5",
+ "rand 0.10.3",
  "redis",
  "regex",
  "serde",
@@ -7622,7 +7622,7 @@ dependencies = [
  "metrics",
  "opentelemetry",
  "p256",
- "rand 0.9.5",
+ "rand 0.10.3",
  "reqwest 0.12.28",
  "ring",
  "scylla",
@@ -7683,7 +7683,7 @@ dependencies = [
  "futures-util",
  "http",
  "hyper",
- "rand 0.9.5",
+ "rand 0.10.3",
  "redis",
  "sockudo-core",
  "sonic-rs",
@@ -7700,7 +7700,7 @@ version = "5.2.0"
 dependencies = [
  "bytes",
  "clap",
- "rand 0.9.5",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "sockudo-core",
@@ -8421,7 +8421,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -9023,7 +9023,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.9.5",
+ "rand 0.10.3",
 ]
 
 [[package]]
