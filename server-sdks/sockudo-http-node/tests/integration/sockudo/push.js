@@ -1,5 +1,5 @@
 const expect = require("expect.js");
-const nock = require("nock");
+const nock = require("nock").default;
 
 const Sockudo = require("../../../dist/sockudo");
 

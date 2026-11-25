@@ -1,5 +1,5 @@
 const expect = require("expect.js");
-const nock = require("nock");
+const nock = require("nock").default;
 const nacl = require("tweetnacl");
 const naclUtil = require("tweetnacl-util");
 const sinon = require("sinon");
@@ -390,7 +390,7 @@ describe("Sockudo", function () {
             socket_id: "123.567",
           },
         )
-        .delayConnection(101)
+        .delay(101)
         .reply(200);
 
       sockudo
