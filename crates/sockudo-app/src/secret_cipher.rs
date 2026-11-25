@@ -16,7 +16,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use rand::RngCore;
+use rand::Rng;
 use sockudo_core::error::{Error, Result};
 use std::fmt;
 
