@@ -1,5 +1,5 @@
 const expect = require("expect.js");
-const nock = require("nock");
+const nock = require("nock").default;
 
 const Sockudo = require("../../../dist/sockudo");
 
@@ -123,7 +123,7 @@ describe("Sockudo", function () {
             .replace(/auth_signature=[0-9a-f]{64}/, "auth_signature=Y");
         })
         .get("/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y")
-        .delayConnection(101)
+        .delay(101)
         .reply(200);
 
       sockudo.get({ path: "/test", params: {} }).catch((error) => {

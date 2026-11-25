@@ -1,5 +1,5 @@
 const expect = require("expect.js");
-const nock = require("nock");
+const nock = require("nock").default;
 
 const Sockudo = require("../../../dist/sockudo");
 
@@ -158,7 +158,7 @@ describe("Sockudo", function () {
           "/apps/10000/test?auth_key=aaaa&auth_timestamp=X&auth_version=1.0&body_md5=99914b932bd37a50b983c5e7c90ae93b&auth_signature=Y",
           {},
         )
-        .delayConnection(101)
+        .delay(101)
         .reply(200);
 
       sockudo.post({ path: "/test", body: {} }).catch((error) => {
