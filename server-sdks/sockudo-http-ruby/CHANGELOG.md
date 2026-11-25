@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.0 - 2026-11-25
+
+* [ADDED] Add `create_apns_live_activity_channel`, `get_apns_live_activity_channel`, `list_apns_live_activity_channels`, and `delete_apns_live_activity_channel` for Apple Live Activities broadcast channels.
+* [FIXED] Validate webhook signatures in constant time and stop logging the expected HMAC digest.
+* [CHANGED] Require Ruby 3.0 or later, matching the supported baseline documented in the README.
+
 ## 2.2.0 - 2026-08-17
 
 * [ADDED] Add `terminate_user_connections` and `force_reconnect_user` helpers.

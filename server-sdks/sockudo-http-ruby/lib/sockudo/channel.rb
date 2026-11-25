@@ -8,7 +8,7 @@ module Sockudo
   class Channel
     attr_reader :name
 
-    INVALID_CHANNEL_REGEX = /[^A-Za-z0-9_\-=@,.;:]/.freeze
+    INVALID_CHANNEL_REGEX = /[^A-Za-z0-9_\-=@,.;:]/
 
     def initialize(_, name, client = Sockudo)
       if Sockudo::Channel::INVALID_CHANNEL_REGEX.match(name)

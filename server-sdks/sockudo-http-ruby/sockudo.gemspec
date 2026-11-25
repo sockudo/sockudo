@@ -13,7 +13,7 @@ Gem::Specification.new do |s|
   s.description = 'Wrapper for Sockudo REST API'
   s.license     = 'MIT'
 
-  s.required_ruby_version = '>= 2.6'
+  s.required_ruby_version = '>= 3.0'
 
   s.add_dependency 'httpclient', '~> 2.8'
   s.add_dependency 'jruby-openssl' if defined?(JRUBY_VERSION)
