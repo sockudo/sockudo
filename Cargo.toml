@@ -55,7 +55,7 @@ async-trait = "0.1.89"
 ahash = { version = "0.8.12", features = ["serde"] }
 aes-gcm = "0.11.1"
 axum = { version = "^0.8", features = ["ws"] }
-axum-server = { version = "^0.8", features = ["tls-rustls"] }
+axum-server = { version = "^0.9", features = ["tls-rustls"] }
 aws-config = { version = "^1.8.10", default-features = false, features = [
   "behavior-version-latest",
   "credentials-process",
