@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- Configure `examples/webhook_endpoint.js` from `SOCKUDO_APP_ID`, `SOCKUDO_KEY` and
+  `SOCKUDO_SECRET` instead of the unsupported `url` option, so webhook signatures can actually
+  validate, and reject invalid payloads with `401`.
+- Cover the webhook endpoint example with an integration test that boots it and posts signed and
+  tampered payloads.
+
+### Changed
+
+- Bump the development-only `express` dependency to 5.x.
+
 ### Security
 
 - Redact the encryption master key value from `encryptionMasterKey` and `encryptionMasterKeyBase64`

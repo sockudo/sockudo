@@ -290,6 +290,14 @@ app.post(
 )
 ```
 
+A runnable version of this endpoint lives in
+[`examples/webhook_endpoint.js`](examples/webhook_endpoint.js):
+
+```bash
+SOCKUDO_APP_ID=<app-id> SOCKUDO_KEY=<app-key> SOCKUDO_SECRET=<app-secret> \
+  node examples/webhook_endpoint.js
+```
+
 ## Fastify Integration
 
 ```javascript
