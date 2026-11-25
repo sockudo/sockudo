@@ -95,6 +95,7 @@ conventions.
 | `4007` | Unsupported protocol version. | Upgrade or reconfigure the client library. |
 | `4008` | No protocol version supplied. | The client did not send a protocol version. |
 | `4009` | Unauthorized. | Invalid channel or user auth signature, disallowed origin, or invalid capability token. |
+| `4010` | Capability token verification unavailable (V2 only). | The app's signing secret is empty. Correct the app configuration before reconnecting. |
 | `4100` | Over capacity. | The node reached `max_connections`, is shedding for memory pressure, or the client's outbound buffer is full. Reconnect with backoff. |
 | `4200` | Reconnect immediately. | Server-initiated reconnect, for example during shutdown draining or a `force_reconnect` call. |
 | `4201` | Pong reply not received. | Network stall or a client that does not answer pings. |

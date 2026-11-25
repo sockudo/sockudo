@@ -241,7 +241,7 @@ fn issue_sockudo_token(
             exp: now + 3600,
             jti,
         },
-        &EncodingKey::from_secret(app_secret.as_bytes()),
+        &EncodingKey::from_secret(app_secret.as_bytes())?,
     )
 }
 ```

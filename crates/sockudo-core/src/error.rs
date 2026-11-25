@@ -130,6 +130,9 @@ pub enum Error {
     #[error("Internal server error: {0}")]
     Internal(String),
 
+    #[error("Capability token verification is unavailable")]
+    CapabilityTokenVerificationUnavailable,
+
     // JSON serialization/deserialization errors
     #[error("JSON error: {0}")]
     Json(#[from] sonic_rs::Error),
@@ -209,6 +212,7 @@ impl Error {
             Error::NoProtocolVersion => 4008,
             Error::Unauthorized => 4009,
             Error::OriginNotAllowed => 4009,
+            Error::CapabilityTokenVerificationUnavailable => 4010,
 
             // 4100-4199: Reconnect with backoff
             Error::OverCapacity => 4100,

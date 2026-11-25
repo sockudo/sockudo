@@ -251,7 +251,7 @@ fn issue_token(app_key: &str, app_secret: &str, client_id: &str) -> anyhow::Resu
             exp: now + 3600,
             jti: uuid::Uuid::new_v4().to_string(),
         },
-        &EncodingKey::from_secret(app_secret.as_bytes()),
+        &EncodingKey::from_secret(app_secret.as_bytes())?,
     )?)
 }
 ```

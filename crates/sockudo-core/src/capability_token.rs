@@ -63,7 +63,7 @@ pub fn validate_capability_token(token: &str, app: &App) -> Result<TokenAuthCont
             error = %error,
             "app capability token secret is not a usable HMAC key"
         );
-        Error::Internal("capability token verification is unavailable".to_string())
+        Error::CapabilityTokenVerificationUnavailable
     })?;
     let decoded = decode::<CapabilityTokenClaims>(token, &decoding_key, &validation)
         .map_err(|_| Error::Auth("capability token signature or claims are invalid".to_string()))?;
@@ -296,7 +296,7 @@ mod tests {
         // An empty app secret is a config fault, not a bad token.
         assert!(matches!(
             validate_capability_token(&token, &app),
-            Err(Error::Internal(_))
+            Err(Error::CapabilityTokenVerificationUnavailable)
         ));
     }
 
