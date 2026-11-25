@@ -1230,12 +1230,10 @@ pub(super) fn verify_ably_signed_jwt(
     validation.validate_exp = false;
     validation.validate_nbf = false;
     validation.required_spec_claims.clear();
-    let decoded = decode::<AblyJwtClaims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map_err(|_| AblyAuthError::invalid_jwt_format())?;
+    let decoding_key = DecodingKey::from_secret(secret.as_bytes())
+        .map_err(|_| auth_internal_failure("Ably key secret"))?;
+    let decoded = decode::<AblyJwtClaims>(token, &decoding_key, &validation)
+        .map_err(|_| AblyAuthError::invalid_jwt_format())?;
     let mut claims = decoded.claims;
     let embedded_token = header
         .embedded_token

@@ -847,6 +847,52 @@ async fn capacity_rejection_frames_use_the_negotiated_wire_format() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capability_token_admission_distinguishes_config_failure_from_invalid_token() {
+    let (handler, metrics) = capped_handler(0, 0).await;
+    // HS256 header with the test app's kid, followed by an invalid signature.
+    let token = "eyJhbGciOiJIUzI1NiIsImtpZCI6ImNhcGFjaXR5LXRlc3Qta2V5In0.e30.AA";
+
+    for (empty_secret, expected_code) in [(true, 4010), (false, 4009)] {
+        let mut app = make_app(0);
+        if empty_secret {
+            app.secret.clear();
+        }
+        handler.app_manager().update_app(app).await.unwrap();
+        let (server_ws, mut client) = make_full_ws_pair().await;
+
+        let result = handler
+            .handle_socket(
+                server_ws,
+                APP_KEY.to_string(),
+                None,
+                ProtocolVersion::V2,
+                WireFormat::Json,
+                true,
+                sockudo_protocol::AppendMode::Delta,
+                Some(token.to_string()),
+            )
+            .await;
+        assert!(result.is_err(), "token admission must fail");
+
+        // Admission sends a V2 error, then the close helper sends its legacy error frame.
+        for event in ["sockudo:error", "pusher:error"] {
+            let (_, message) = decode_error(next_frame(&mut client).await, WireFormat::Json);
+            assert_eq!(message.event.as_deref(), Some(event));
+            assert_eq!(error_code(&message), Some(u64::from(expected_code)));
+        }
+        match next_frame(&mut client).await {
+            Message::Close(Some(reason)) => assert_eq!(reason.code, expected_code),
+            other => panic!("expected a close frame, got {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        *metrics.admission_rejections.lock().unwrap(),
+        [WsAdmissionRejection::Authentication]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_quota_rejection_sends_4004_frame() {
     let (handler, metrics) = capped_handler(0, 1).await;
     let (server_ws, _client) = make_full_ws_pair().await;
