@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{SimulatorError, SimulatorResult};
@@ -256,7 +256,7 @@ impl WorkloadActionCounts {
 }
 
 /// Deterministic weighted workload generator.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WorkloadGenerator {
     weights: ActionWeights,
     rng: StdRng,

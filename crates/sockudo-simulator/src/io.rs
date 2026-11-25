@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::collections::VecDeque;
 
 const BASE_TIME_MS: i64 = 1_893_456_000_000;
@@ -41,7 +41,7 @@ impl DeterministicClock {
 }
 
 /// Seeded scheduler for all simulator IO choices and fault rolls.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct DeterministicFaultScheduler {
     rng: StdRng,
     schedule_rng: StdRng,
