@@ -5,6 +5,7 @@ use ahash::AHashMap;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::error;
 
 pub const MAX_CAPABILITY_TOKEN_BYTES: usize = 8 * 1024;
 pub const MAX_CAPABILITY_PATTERNS: usize = 100;
@@ -56,12 +57,16 @@ pub fn validate_capability_token(token: &str, app: &App) -> Result<TokenAuthCont
     validation.validate_nbf = true;
     validation.set_required_spec_claims(&["exp"]);
 
-    let decoded = decode::<CapabilityTokenClaims>(
-        token,
-        &DecodingKey::from_secret(app.secret.as_bytes()),
-        &validation,
-    )
-    .map_err(|_| Error::Auth("capability token signature or claims are invalid".to_string()))?;
+    let decoding_key = DecodingKey::from_secret(app.secret.as_bytes()).map_err(|error| {
+        error!(
+            app_id = %app.id,
+            error = %error,
+            "app capability token secret is not a usable HMAC key"
+        );
+        Error::Internal("capability token verification is unavailable".to_string())
+    })?;
+    let decoded = decode::<CapabilityTokenClaims>(token, &decoding_key, &validation)
+        .map_err(|_| Error::Auth("capability token signature or claims are invalid".to_string()))?;
 
     let now = now_seconds()?;
     validate_claims(decoded.claims, now)
@@ -250,15 +255,14 @@ mod tests {
         )
     }
 
+    fn encoding_key(secret: &str) -> EncodingKey {
+        EncodingKey::from_secret(secret.as_bytes()).expect("test HMAC secret must be non-empty")
+    }
+
     fn token_with(claims: TestClaims<'_>, alg: Algorithm, kid: &str, secret: &str) -> String {
         let mut header = Header::new(alg);
         header.kid = Some(kid.to_string());
-        encode(
-            &header,
-            &claims,
-            &EncodingKey::from_secret(secret.as_bytes()),
-        )
-        .unwrap()
+        encode(&header, &claims, &encoding_key(secret)).unwrap()
     }
 
     fn claims(now: i64, capability: &str) -> TestClaims<'_> {
@@ -270,6 +274,30 @@ mod tests {
             nbf: None,
             jti: "jti-1",
         }
+    }
+
+    #[test]
+    fn rejects_app_with_empty_secret_as_server_error() {
+        let now = now_seconds().unwrap();
+        let token = token_with(
+            claims(now, r#"{"*":["subscribe"]}"#),
+            Algorithm::HS256,
+            "app-key",
+            "app-secret",
+        );
+        let app = App::from_policy(
+            "app".to_string(),
+            "app-key".to_string(),
+            String::new(),
+            true,
+            Default::default(),
+        );
+
+        // An empty app secret is a config fault, not a bad token.
+        assert!(matches!(
+            validate_capability_token(&token, &app),
+            Err(Error::Internal(_))
+        ));
     }
 
     #[test]
@@ -317,7 +345,7 @@ mod tests {
                 "exp": now + 3600,
                 "jti": "jti-object-claim"
             }),
-            &EncodingKey::from_secret(b"app-secret"),
+            &encoding_key("app-secret"),
         )
         .unwrap();
 
