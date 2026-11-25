@@ -79,7 +79,7 @@
     "oxfmt": "^0.80.0",
     "oxlint": "^1.95.0",
     "sinon": "^22.1.0",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "webpack": "^5.113.0",
     "webpack-cli": "^7.3.1"
   },
