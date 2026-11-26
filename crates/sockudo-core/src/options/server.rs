@@ -2,6 +2,10 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+/// Delay in milliseconds between Redis adapter health check attempts.
+pub const REDIS_HEALTH_CHECK_RETRY_DELAY_MS: u64 = 100;
+const MIN_REDIS_HEALTH_CHECK_ATTEMPT_MS: u64 = 250;
+
 /// Deployment topology role for this process.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -104,6 +108,8 @@ pub struct ServerOptions {
     /// Timeout in milliseconds for each subsystem check in the `/up` health endpoint.
     /// Applies to adapter, cache, queue, and app manager checks independently.
     pub health_check_timeout_ms: u64,
+    /// Total PING attempts for Redis adapters within the health check timeout.
+    pub redis_health_check_attempts: u32,
 }
 
 impl Default for ServerOptions {
@@ -161,6 +167,7 @@ impl Default for ServerOptions {
             push_rules: Vec::new(),
             mcp: McpConfig::default(),
             health_check_timeout_ms: 2000,
+            redis_health_check_attempts: 2,
         }
     }
 }
@@ -180,6 +187,7 @@ impl ServerOptions {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_redis_health_check()?;
         self.ably_compat.validate()?;
         self.http_api
             .readiness
@@ -445,6 +453,31 @@ impl ServerOptions {
         Ok(())
     }
 
+    fn validate_redis_health_check(&self) -> Result<(), String> {
+        let attempts = u64::from(self.redis_health_check_attempts);
+        if attempts == 0 {
+            return Err("redis_health_check_attempts must be at least 1".to_owned());
+        }
+        if attempts == 1
+            || !matches!(
+                self.adapter.driver,
+                AdapterDriver::Redis | AdapterDriver::RedisCluster
+            )
+        {
+            return Ok(());
+        }
+
+        let minimum_timeout_ms = MIN_REDIS_HEALTH_CHECK_ATTEMPT_MS * attempts
+            + REDIS_HEALTH_CHECK_RETRY_DELAY_MS * (attempts - 1);
+        if self.health_check_timeout_ms < minimum_timeout_ms {
+            return Err(format!(
+                "redis_health_check_attempts = {attempts} requires health_check_timeout_ms of at least {minimum_timeout_ms} ms (configured: {} ms)",
+                self.health_check_timeout_ms
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_unix_socket_security(&self) -> Result<(), String> {
         let path = &self.unix_socket.path;
 
@@ -564,6 +597,60 @@ mod tests {
     #[test]
     fn default_health_check_timeout_leaves_probe_headroom() {
         assert_eq!(ServerOptions::default().health_check_timeout_ms, 2000);
+    }
+
+    #[test]
+    fn redis_health_check_attempts_defaults_to_two() {
+        let defaults: ServerOptions = toml::from_str("").unwrap();
+        assert_eq!(defaults.redis_health_check_attempts, 2);
+    }
+
+    #[test]
+    fn redis_health_check_attempts_validate_against_the_timeout_budget() {
+        for driver in [AdapterDriver::Redis, AdapterDriver::RedisCluster] {
+            let mut options = ServerOptions::default();
+            options.adapter.driver = driver;
+            options.idempotency.enabled = false;
+
+            options.redis_health_check_attempts = 0;
+            assert_eq!(
+                options.validate().unwrap_err(),
+                "redis_health_check_attempts must be at least 1"
+            );
+
+            options.redis_health_check_attempts = 1;
+            options.health_check_timeout_ms = 1;
+            options.validate().unwrap();
+
+            for (attempts, minimum) in [
+                (2, 600),
+                (5, 1650),
+                (6, 2000),
+                (u32::MAX, 1_503_238_553_150),
+            ] {
+                options.redis_health_check_attempts = attempts;
+                options.health_check_timeout_ms = minimum;
+                options.validate().unwrap();
+
+                options.health_check_timeout_ms -= 1;
+                assert_eq!(
+                    options.validate().unwrap_err(),
+                    format!(
+                        "redis_health_check_attempts = {attempts} requires health_check_timeout_ms of at least {minimum} ms (configured: {} ms)",
+                        minimum - 1
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_redis_adapters_can_use_a_shorter_health_check_timeout() {
+        let options = ServerOptions {
+            health_check_timeout_ms: 50,
+            ..ServerOptions::default()
+        };
+        options.validate().unwrap();
     }
 
     #[test]

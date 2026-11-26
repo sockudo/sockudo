@@ -13,6 +13,7 @@ use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub type DeadNodeEventBusFlavor = mpsc::List<crate::horizontal_adapter::DeadNodeEvent>;
 pub type DeadNodeEventBusSender = crossfire::MTx<DeadNodeEventBusFlavor>;
@@ -343,6 +344,11 @@ pub trait ConnectionManager: Send + Sync {
     /// Check the health of the connection manager and its underlying adapter
     /// Returns Ok(()) if healthy, Err(error_message) if unhealthy with specific reason
     async fn check_health(&self) -> Result<()>;
+
+    /// The default runs one check. The caller enforces the timeout.
+    async fn check_health_with_retries(&self, _budget: Duration, _attempts: u32) -> Result<()> {
+        self.check_health().await
+    }
 
     /// Get the unique node ID for this instance
     fn get_node_id(&self) -> String;

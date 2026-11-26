@@ -1,10 +1,12 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use crate::transports::redis_client::RedisClient;
+use crate::transports::redis_health;
 use crate::transports::redis_pubsub_probe::{PubSubProbeFailure, pubsub_connection_lost};
 use async_trait::async_trait;
 use futures::StreamExt;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::{DEFAULT_REDIS_PUBSUB_PING_INTERVAL_MS, RedisTlsOptions, SentinelSpec};
@@ -70,6 +72,26 @@ pub struct RedisTransport {
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
+}
+
+impl RedisTransport {
+    async fn ping_health_connection(&self, mut conn: ConnectionManager) -> Result<()> {
+        let response = redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .map_err(|e| {
+                self.client.invalidate();
+                Error::Redis(format!("Health check PING failed: {e}"))
+            })?;
+
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(Error::Redis(format!(
+                "PING returned unexpected response: {response}"
+            )))
+        }
+    }
 }
 
 #[async_trait]
@@ -557,25 +579,19 @@ impl HorizontalTransport for RedisTransport {
     }
 
     async fn check_health(&self) -> Result<()> {
-        // Reuse a dedicated reconnecting connection: periodic maintenance must
-        // not force every probe through a new TCP/TLS handshake.
-        let mut conn = self.client.health_connection().await?;
-
-        let response = redis::cmd("PING")
-            .query_async::<String>(&mut conn)
+        self.ping_health_connection(self.client.health_connection().await?)
             .await
-            .map_err(|e| {
-                self.client.invalidate();
-                Error::Redis(format!("Health check PING failed: {e}"))
-            })?;
+    }
 
-        if response == "PONG" {
-            Ok(())
-        } else {
-            Err(Error::Redis(format!(
-                "PING returned unexpected response: {response}"
-            )))
-        }
+    async fn check_health_with_retries(&self, budget: Duration, attempts: u32) -> Result<()> {
+        redis_health::check_health(
+            "redis",
+            budget,
+            attempts,
+            || self.client.health_connection(),
+            |conn| self.ping_health_connection(conn),
+        )
+        .await
     }
 
     fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {

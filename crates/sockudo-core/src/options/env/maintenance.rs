@@ -64,9 +64,13 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         options.cluster_health.cleanup_interval_ms,
     );
 
-    // Health check endpoint timeout
+    // Health check endpoint configuration
     options.health_check_timeout_ms =
         parse_env::<u64>("HEALTH_CHECK_TIMEOUT_MS", options.health_check_timeout_ms);
+    options.redis_health_check_attempts = parse_env::<u32>(
+        "REDIS_HEALTH_CHECK_ATTEMPTS",
+        options.redis_health_check_attempts,
+    );
 
     // Tag filtering configuration
     options.tag_filtering.enabled =

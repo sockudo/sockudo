@@ -46,6 +46,7 @@ limits, timeouts, and graceful-shutdown behavior.
 | `user_authentication_timeout` | integer (seconds) | `3600` | How long a connection may stay open without completing user authentication when the app requires it. |
 | `websocket_max_payload_kb` | integer (KiB) | `64` | Legacy maximum inbound WebSocket payload size. |
 | `health_check_timeout_ms` | integer (ms) | `2000` | Timeout for each subsystem check in `/up` (adapter, cache, queue, app manager). |
+| `redis_health_check_attempts` | integer | `2` | Total `PING` attempts for standalone Redis and Redis Cluster adapter checks in `/up` and `/ready`. Set to at least `1`. With retries enabled, `health_check_timeout_ms` must cover 250 ms per attempt plus 100 ms between attempts. |
 | `shutdown_grace_period` | integer (seconds) | `10` | Seconds the listener stays open after SIGTERM/SIGINT while `/ready` reports 503. Raise it when load balancers need longer to drain a node. |
 | `shutdown_close_delay_ms` | integer (ms) | `0` | Milliseconds to wait after the shutdown signal before closing existing WebSockets with 4200, so load balancers see the node draining first. |
 | `shutdown_close_spread_ms` | integer (ms) | `0` | Milliseconds over which existing WebSockets are closed with 4200, evenly in small batches, so clients do not all reconnect at once. `0` closes all at once. Delay plus spread must not exceed `shutdown_grace_period`. |

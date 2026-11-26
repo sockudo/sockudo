@@ -1,6 +1,7 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use crate::transports::redis_cluster_broadcast::BroadcastTopology;
+use crate::transports::redis_health;
 use async_trait::async_trait;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
@@ -77,6 +78,21 @@ pub struct RedisClusterTransport {
 }
 
 impl RedisClusterTransport {
+    async fn ping_health_connection(mut conn: ClusterConnection) -> Result<()> {
+        let response = redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .map_err(|e| Error::Redis(format!("Cluster health check PING failed: {e}")))?;
+
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(Error::Redis(format!(
+                "Cluster PING returned unexpected response: {response}"
+            )))
+        }
+    }
+
     /// Publish one broadcast payload to a single channel, with its own retry budget.
     async fn publish_broadcast_to(&self, channel: &str, payload: &str) -> Result<()> {
         let mut retry_delay = 100u64;
@@ -710,22 +726,18 @@ impl HorizontalTransport for RedisClusterTransport {
     }
 
     async fn check_health(&self) -> Result<()> {
-        // Use dedicated health check connection to avoid contention with publish operations
-        // Under high load (10K+ msg/s), sharing the publish connection causes timeouts
-        let mut conn = self.health_check_connection.clone();
+        Self::ping_health_connection(self.health_check_connection.clone()).await
+    }
 
-        let response = redis::cmd("PING")
-            .query_async::<String>(&mut conn)
-            .await
-            .map_err(|e| Error::Redis(format!("Cluster health check PING failed: {e}")))?;
-
-        if response == "PONG" {
-            Ok(())
-        } else {
-            Err(Error::Redis(format!(
-                "Cluster PING returned unexpected response: {response}"
-            )))
-        }
+    async fn check_health_with_retries(&self, budget: Duration, attempts: u32) -> Result<()> {
+        redis_health::check_health(
+            "redis_cluster",
+            budget,
+            attempts,
+            || std::future::ready(Ok(self.health_check_connection.clone())),
+            Self::ping_health_connection,
+        )
+        .await
     }
 
     fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {

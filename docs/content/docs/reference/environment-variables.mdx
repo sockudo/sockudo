@@ -123,6 +123,7 @@ top-level keys and `[http_api]` in the [configuration reference](/docs/reference
 | `INSTANCE_PROCESS_ID` | Stable node/process identity used by clustering and Iggy consumers. |
 | `HOSTNAME` | Fallback node identity for Iggy when `INSTANCE_PROCESS_ID` is not set. |
 | `HEALTH_CHECK_TIMEOUT_MS` | Per-dependency timeout for `/up` health checks in milliseconds. Defaults to `2000`. |
+| `REDIS_HEALTH_CHECK_ATTEMPTS` | Total `PING` attempts for Redis adapter checks in `/up` and `/ready`. Defaults to `2`. Set to at least `1`. With retries enabled, `HEALTH_CHECK_TIMEOUT_MS` must cover 250 ms per attempt plus 100 ms between attempts. |
 | `HTTP_API_USAGE_ENABLED` | Enables `/usage`, `/stats`, and `/operator/stats` (default `true`). The stats routes require a Pusher-signed request and report only the signing app. |
 | `HTTP_API_READINESS_HIGH_WATERMARK` | Fraction of `SOCKUDO_MAX_CONNECTIONS` that makes `/ready` return `503 CAPACITY`. Defaults to `0.95`. |
 | `HTTP_API_READINESS_LOW_WATERMARK` | Fraction at or below which `/ready` recovers after capacity shedding. Defaults to `0.85`; must be nonnegative and less than the high watermark. |

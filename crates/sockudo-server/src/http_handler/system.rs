@@ -307,13 +307,15 @@ async fn check_system_health(
     handler: &Arc<ConnectionHandler>,
     timeout_duration: Duration,
 ) -> HealthStatus {
-    let cache_enabled =
-        handler.server_options().cache.driver != sockudo_core::options::CacheDriver::None;
+    let options = handler.server_options();
+    let cache_enabled = options.cache.driver != sockudo_core::options::CacheDriver::None;
     let webhook_integration = handler.webhook_integration();
 
     let adapter_fut = timeout(
         timeout_duration,
-        handler.connection_manager().check_health(),
+        handler
+            .connection_manager()
+            .check_health_with_retries(timeout_duration, options.redis_health_check_attempts),
     );
     let cache_fut = async {
         if !cache_enabled {

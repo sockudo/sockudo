@@ -970,6 +970,12 @@ where
         self.transport.check_health().await
     }
 
+    async fn check_health_with_retries(&self, budget: Duration, attempts: u32) -> Result<()> {
+        self.transport
+            .check_health_with_retries(budget, attempts)
+            .await
+    }
+
     async fn announce_node_departure(&self) -> Result<()> {
         let request = RequestBody {
             request_id: generate_request_id(),

@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::horizontal_adapter::{
     BroadcastMessage, HorizontalAdapter, RequestBody, RequestType, ResponseBody,
@@ -51,6 +52,11 @@ pub trait HorizontalTransport: Send + Sync + Clone {
 
     /// Check transport health
     async fn check_health(&self) -> Result<()>;
+
+    /// The default runs one check. The caller enforces the timeout.
+    async fn check_health_with_retries(&self, _budget: Duration, _attempts: u32) -> Result<()> {
+        self.check_health().await
+    }
 
     /// Attach metrics for transport-level instrumentation.
     fn set_metrics(&self, _metrics: Arc<dyn MetricsInterface + Send + Sync>) {}
