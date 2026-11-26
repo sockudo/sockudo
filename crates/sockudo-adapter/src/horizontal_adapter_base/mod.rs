@@ -20,7 +20,9 @@ use crate::horizontal_adapter::{
     AggregationStats, BroadcastMessage, DeadNodeEvent, HorizontalAdapter, OrphanedMember,
     PendingRequest, RequestBody, RequestType, ResponseBody, current_timestamp, generate_request_id,
 };
-use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
+use crate::horizontal_transport::{
+    HorizontalTransport, ListenerState, TransportConfig, TransportHandlers,
+};
 use crate::local_adapter::LocalAdapter;
 use async_trait::async_trait;
 use crossfire::mpsc;
@@ -74,11 +76,16 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     idempotency_ttl: AtomicU64,
     // Shared run flag for background loops so dropping the adapter stops heartbeats/cleanup tasks.
     is_running: Arc<AtomicBool>,
-    // When this node may first conclude that it is alone. Set when cluster health discovery
-    // starts. See `discovery_settled`.
-    discovery_settles_at: OnceLock<Instant>,
-    discovery_settled: AtomicBool,
+    // When this node may conclude that it is alone, in ms since `discovery_epoch`. See
+    // `discovery_settled`. `DISCOVERY_UNSETTLED` until cluster health discovery starts, and
+    // again while the transport's subscription is down.
+    discovery_epoch: Instant,
+    discovery_settles_at_ms: Arc<AtomicU64>,
 }
+
+/// `discovery_settles_at_ms` value meaning "never settled": not started yet, or the transport
+/// subscription is down so peers cannot be heard.
+const DISCOVERY_UNSETTLED: u64 = u64::MAX;
 
 /// Check if we should skip horizontal communication (single node optimization)
 /// This is determined by checking if cluster health is enabled and
@@ -115,23 +122,20 @@ impl<T: HorizontalTransport> HorizontalAdapterBase<T> {
     /// since discovery started (the same window after which a silent peer is declared dead),
     /// a node with no known peers keeps publishing; at worst that sends a few messages
     /// nobody consumes.
+    ///
+    /// The same holds after the transport's subscription was lost: while it is down the node
+    /// hears no heartbeats and expires its peers, and once it is back it needs a heartbeat
+    /// before it knows of them again. So a lost subscription unsettles discovery until it is
+    /// restored, and a restored one reopens the window (see `on_listener_state`).
     fn discovery_settled(&self) -> bool {
-        if self.discovery_settled.load(Ordering::Relaxed) {
-            return true;
-        }
-        let settled = self
-            .discovery_settles_at
-            .get()
-            .is_some_and(|settles_at| Instant::now() >= *settles_at);
-        if settled {
-            self.discovery_settled.store(true, Ordering::Relaxed);
-        }
-        settled
+        let settles_at_ms = self.discovery_settles_at_ms.load(Ordering::Acquire);
+        settles_at_ms != DISCOVERY_UNSETTLED
+            && self.discovery_epoch.elapsed().as_millis() as u64 >= settles_at_ms
     }
 
     /// Treat peer discovery as complete, so an empty heartbeat map means a single node at once.
     pub fn settle_discovery_for_test(&self) {
-        self.discovery_settled.store(true, Ordering::Relaxed);
+        self.discovery_settles_at_ms.store(0, Ordering::Release);
     }
 }
 

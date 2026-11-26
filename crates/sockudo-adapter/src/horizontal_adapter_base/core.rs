@@ -70,8 +70,8 @@ where
             realtime_egress_tap: Arc::new(OnceLock::new()),
             idempotency_ttl: AtomicU64::new(120),
             is_running: Arc::new(AtomicBool::new(true)),
-            discovery_settles_at: OnceLock::new(),
-            discovery_settled: AtomicBool::new(false),
+            discovery_epoch: Instant::now(),
+            discovery_settles_at_ms: Arc::new(AtomicU64::new(DISCOVERY_UNSETTLED)),
         })
     }
 
@@ -474,7 +474,45 @@ where
             .idempotency_ttl
             .load(std::sync::atomic::Ordering::Relaxed);
 
+        let listener_state_transport = self.transport.clone();
+        let listener_state_node_id = self.node_id.clone();
+        let discovery_epoch = self.discovery_epoch;
+        let discovery_settles_at_ms = self.discovery_settles_at_ms.clone();
+        let cluster_health_enabled = self.cluster_health_enabled;
+        let node_timeout_ms = self.node_timeout_ms;
+
         let handlers = TransportHandlers {
+            on_listener_state: Arc::new(move |state| {
+                if !cluster_health_enabled {
+                    return;
+                }
+                match state {
+                    // Peers cannot be heard, so they will expire from the heartbeat map. Keep
+                    // publishing broadcasts instead of concluding that this node is alone.
+                    ListenerState::Lost => {
+                        discovery_settles_at_ms.store(DISCOVERY_UNSETTLED, Ordering::Release);
+                    }
+                    // Peers may have been expired while the subscription was down: rediscover
+                    // them as at startup. Announce ourselves at once; peers that expired us
+                    // answer immediately instead of at their next periodic heartbeat.
+                    ListenerState::Restored => {
+                        discovery_settles_at_ms.store(
+                            discovery_epoch.elapsed().as_millis() as u64 + node_timeout_ms,
+                            Ordering::Release,
+                        );
+                        let transport = listener_state_transport.clone();
+                        let node_id = listener_state_node_id.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = transport
+                                .publish_request(&heartbeat_request(&node_id, None))
+                                .await
+                            {
+                                warn!(error = %e, "failed to send heartbeat after resubscribing");
+                            }
+                        });
+                    }
+                }
+            }),
             node_id: self.node_id.clone(),
             on_broadcast: Arc::new(move |broadcast| {
                 let consumer_span = crate::telemetry::broadcast_consumer_span(
@@ -812,9 +850,13 @@ where
 
     /// Start cluster health monitoring system
     pub async fn start_cluster_health_system(&self) {
-        let _ = self
-            .discovery_settles_at
-            .set(Instant::now() + Duration::from_millis(self.node_timeout_ms));
+        // Keep a window the transport listener (or a test) already opened.
+        let _ = self.discovery_settles_at_ms.compare_exchange(
+            DISCOVERY_UNSETTLED,
+            self.discovery_epoch.elapsed().as_millis() as u64 + self.node_timeout_ms,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
 
         let heartbeat_interval_ms = self.heartbeat_interval_ms;
         let node_timeout_ms = self.node_timeout_ms;

@@ -1,5 +1,7 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
-use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
+use crate::horizontal_transport::{
+    HorizontalTransport, ListenerState, TransportConfig, TransportHandlers,
+};
 use crate::transports::redis_client::RedisClient;
 use crate::transports::redis_pubsub_probe::{PubSubProbeFailure, pubsub_connection_lost};
 use async_trait::async_trait;
@@ -16,6 +18,9 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
+
+/// Longest wait between attempts to re-establish the pub/sub subscription.
+pub(crate) const PUBSUB_MAX_RETRY_DELAY_MS: u64 = 1_000;
 
 /// Redis adapter configuration
 #[derive(Debug, Clone)]
@@ -260,9 +265,15 @@ impl HorizontalTransport for RedisTransport {
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
 
+        let on_listener_state = handlers.on_listener_state.clone();
+
         tokio::spawn(async move {
-            let mut retry_delay = 500u64; // Start with 500ms delay
-            const MAX_RETRY_DELAY: u64 = 10_000; // Max 10 seconds
+            // While the subscription is down this node misses every peer broadcast, so retry
+            // often: a long backoff would keep it deaf for seconds after Redis is back (#566).
+            let mut retry_delay = 100u64;
+            const MAX_RETRY_DELAY: u64 = PUBSUB_MAX_RETRY_DELAY_MS;
+            // Whether a subscription was established and has since been lost.
+            let mut subscription_lost = false;
             // Fires when the Sentinel primary moves. A subscription on the old
             // primary can stay silently open (its host may vanish without a TCP
             // reset), so the listener resubscribes instead of waiting on it.
@@ -282,7 +293,7 @@ impl HorizontalTransport for RedisTransport {
                 master_changes.mark_seen();
                 let mut pubsub = match sub_client.pubsub().await {
                     Ok(pubsub) => {
-                        retry_delay = 500;
+                        retry_delay = 100;
                         debug!(adapter = "redis", "pub/sub connection established");
                         pubsub
                     }
@@ -331,6 +342,10 @@ impl HorizontalTransport for RedisTransport {
                     reply_channel = %reply_channel,
                     "transport subscriptions established"
                 );
+                if std::mem::take(&mut subscription_lost) {
+                    info!(adapter = "redis", "pub/sub subscription restored");
+                    on_listener_state(ListenerState::Restored);
+                }
 
                 let (ping_sink, mut message_stream) = pubsub.split();
                 let liveness = pubsub_connection_lost(pubsub_ping_interval, move || {
@@ -448,6 +463,12 @@ impl HorizontalTransport for RedisTransport {
                         break;
                     }
                 }
+
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
+                }
+                subscription_lost = true;
+                on_listener_state(ListenerState::Lost);
 
                 if primary_moved {
                     if let Some(metrics) = metrics.get() {
@@ -700,8 +721,17 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let counters = Arc::new(FakeRedisCounters::default());
-        let server_counters = counters.clone();
-        let server = tokio::spawn(async move {
+        let server = serve_fake_redis(listener, first_subscriber_goes_silent, counters.clone());
+        (format!("redis://{address}"), counters, server)
+    }
+
+    /// Serve the fake Redis on `listener`. Aborting the returned task closes every connection.
+    fn serve_fake_redis(
+        listener: TcpListener,
+        first_subscriber_goes_silent: bool,
+        server_counters: Arc<FakeRedisCounters>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
             let mut connections = JoinSet::new();
             loop {
                 let (socket, _) = listener.accept().await.unwrap();
@@ -759,17 +789,92 @@ mod tests {
                     }
                 });
             }
-        });
-        (format!("redis://{address}"), counters, server)
+        })
     }
 
     fn noop_handlers() -> TransportHandlers {
         TransportHandlers {
             node_id: "probe-test".to_string(),
+            on_listener_state: Arc::new(|_| {}),
             on_broadcast: Arc::new(|_| Box::pin(async {})),
             on_request: Arc::new(|_| Box::pin(async { Err(Error::Other("not used".to_string())) })),
             on_response: Arc::new(|_| Box::pin(async {})),
         }
+    }
+
+    /// #566: after an outage long enough to grow the backoff, the listener must resubscribe
+    /// promptly once Redis is back, and tell the adapter when the subscription was lost and
+    /// when it is restored.
+    #[tokio::test]
+    async fn listener_resubscribes_promptly_after_outage_and_reports_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let counters = Arc::new(FakeRedisCounters::default());
+        let server = serve_fake_redis(listener, false, counters.clone());
+        let transport = RedisTransport::new(RedisAdapterConfig {
+            url: format!("redis://{address}"),
+            pubsub_ping_interval_ms: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let states = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = states.clone();
+        let mut handlers = noop_handlers();
+        handlers.on_listener_state = Arc::new(move |state| recorded.lock().unwrap().push(state));
+        transport.start_listeners(handlers).await.unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while counters.subscribes.load(Ordering::SeqCst) < 1 {
+            assert!(tokio::time::Instant::now() < deadline, "never subscribed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            states.lock().unwrap().is_empty(),
+            "first subscription is not a restore"
+        );
+
+        // Redis goes away: every connection closes and new ones are refused.
+        server.abort();
+        let _ = server.await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while states.lock().unwrap().is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "lost subscription not reported"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*states.lock().unwrap(), vec![ListenerState::Lost]);
+
+        // Long enough for the old 500 ms doubling backoff to reach 4 s between attempts.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let listener = TcpListener::bind(address).await.unwrap();
+        let server = serve_fake_redis(listener, false, counters.clone());
+        let back_at = tokio::time::Instant::now();
+
+        while counters.subscribes.load(Ordering::SeqCst) < 2 {
+            assert!(
+                back_at.elapsed() < Duration::from_millis(PUBSUB_MAX_RETRY_DELAY_MS + 1_000),
+                "listener did not resubscribe promptly after Redis came back"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        while states.lock().unwrap().len() < 2 {
+            assert!(
+                back_at.elapsed() < Duration::from_secs(3),
+                "restored subscription not reported"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![ListenerState::Lost, ListenerState::Restored]
+        );
+
+        drop(transport);
+        server.abort();
     }
 
     #[tokio::test]
