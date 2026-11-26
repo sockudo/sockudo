@@ -70,8 +70,8 @@ where
             realtime_egress_tap: Arc::new(OnceLock::new()),
             idempotency_ttl: AtomicU64::new(120),
             is_running: Arc::new(AtomicBool::new(true)),
-            discovery_settles_at: OnceLock::new(),
-            discovery_settled: AtomicBool::new(false),
+            discovery: Arc::new(PeerDiscovery::new()),
+            heartbeat_now: Arc::new(Notify::new()),
         })
     }
 
@@ -474,7 +474,29 @@ where
             .idempotency_ttl
             .load(std::sync::atomic::Ordering::Relaxed);
 
+        let heartbeat_now = Arc::clone(&self.heartbeat_now);
+        let discovery = Arc::clone(&self.discovery);
+        let cluster_health_enabled = self.cluster_health_enabled;
+        let node_timeout_ms = self.node_timeout_ms;
+
         let handlers = TransportHandlers {
+            on_listener_state: Arc::new(move |state| {
+                if !cluster_health_enabled {
+                    return;
+                }
+                match state {
+                    // Peers cannot be heard, so they will expire from the heartbeat map. Keep
+                    // publishing broadcasts instead of concluding that this node is alone.
+                    ListenerState::Lost => discovery.lost(),
+                    // Peers may have been expired while the subscription was down: rediscover
+                    // them as at startup. Announce ourselves at once; peers that expired us
+                    // answer immediately instead of at their next periodic heartbeat.
+                    ListenerState::Restored => {
+                        discovery.restored(node_timeout_ms);
+                        heartbeat_now.notify_one();
+                    }
+                }
+            }),
             node_id: self.node_id.clone(),
             on_broadcast: Arc::new(move |broadcast| {
                 let consumer_span = crate::telemetry::broadcast_consumer_span(
@@ -812,9 +834,7 @@ where
 
     /// Start cluster health monitoring system
     pub async fn start_cluster_health_system(&self) {
-        let _ = self
-            .discovery_settles_at
-            .set(Instant::now() + Duration::from_millis(self.node_timeout_ms));
+        self.discovery.start(self.node_timeout_ms);
 
         let heartbeat_interval_ms = self.heartbeat_interval_ms;
         let node_timeout_ms = self.node_timeout_ms;
@@ -945,12 +965,16 @@ where
         let node_id = self.node_id.clone();
         let heartbeat_interval_ms = self.heartbeat_interval_ms;
         let is_running = self.is_running.clone();
+        let heartbeat_now = Arc::clone(&self.heartbeat_now);
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = heartbeat_now.notified() => {}
+                }
                 if !is_running.load(Ordering::Relaxed) {
                     break;
                 }

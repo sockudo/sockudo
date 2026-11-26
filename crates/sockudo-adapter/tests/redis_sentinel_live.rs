@@ -316,6 +316,7 @@ async fn sentinel_clients_follow_primary_failover() {
     subscriber
         .start_listeners(TransportHandlers {
             node_id: "failover-subscriber".to_string(),
+            on_listener_state: Arc::new(|_| {}),
             on_broadcast: Arc::new(move |message| {
                 let _ = received_tx.send(message.message.clone());
                 Box::pin(async {}) as BoxFuture<'static, ()>

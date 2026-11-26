@@ -235,6 +235,22 @@ impl MockTransport {
         Ok(())
     }
 
+    /// Report a subscription state change to the adapter, as a transport listener would.
+    pub async fn report_listener_state(
+        &self,
+        state: sockudo_adapter::horizontal_transport::ListenerState,
+    ) -> Result<()> {
+        let on_listener_state = self
+            .handlers
+            .lock()
+            .await
+            .as_ref()
+            .map(|handlers| handlers.on_listener_state.clone())
+            .ok_or_else(|| Error::Internal("listeners not started".to_string()))?;
+        on_listener_state(state);
+        Ok(())
+    }
+
     /// Get access to published requests for testing
     pub async fn get_published_requests(
         &self,

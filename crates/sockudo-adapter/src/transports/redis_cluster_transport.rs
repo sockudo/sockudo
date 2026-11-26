@@ -1,6 +1,7 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use crate::transports::redis_cluster_broadcast::BroadcastTopology;
+use crate::transports::redis_transport::PUBSUB_MAX_RETRY_DELAY_MS;
 use async_trait::async_trait;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
@@ -366,10 +367,20 @@ impl HorizontalTransport for RedisClusterTransport {
         let reply_channel = self.reply_channel.clone();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
+        // Every shard listener reconnects on its own and keeps the fan-in channel open, so
+        // the lost and restored subscriptions are reported from there, not from this loop.
+        let subscription_health =
+            crate::transports::redis_cluster_sharded_pubsub::SubscriptionHealth::new(
+                handlers.on_listener_state.clone(),
+                is_running.clone(),
+            );
+
         // Spawn the main listener task with reconnection logic
         tokio::spawn(async move {
-            let mut retry_delay = 500u64; // Start with 500ms delay
-            const MAX_RETRY_DELAY: u64 = 10_000; // Max 10 seconds
+            // While the subscription is down this node misses every peer broadcast, so retry
+            // often: a long backoff would keep it deaf for seconds after Redis is back (#566).
+            let mut retry_delay = 100u64;
+            const MAX_RETRY_DELAY: u64 = PUBSUB_MAX_RETRY_DELAY_MS;
             let mut reconnection_count = 0u64;
             let mut ready_tx = Some(ready_tx);
 
@@ -396,6 +407,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         shutdown.clone(),
                         tls.clone(),
                         pubsub_ping_interval,
+                        subscription_health.clone(),
                     )
                 } else {
                     use crate::transports::redis_cluster_sharded_pubsub::ShardedSubscriber;
@@ -408,12 +420,13 @@ impl HorizontalTransport for RedisClusterTransport {
                         shutdown.clone(),
                         tls.clone(),
                         pubsub_ping_interval,
+                        subscription_health.clone(),
                     )
                 };
 
                 let rx = match subscriber.start().await {
                     Ok(rx) => {
-                        retry_delay = 500;
+                        retry_delay = 100;
                         if reconnection_count > 0 {
                             debug!(
                                 adapter = "redis_cluster",
@@ -636,6 +649,10 @@ impl HorizontalTransport for RedisClusterTransport {
                             });
                         }
                     }
+                }
+
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
                 }
 
                 // Connection ended, reconnect with exponential backoff

@@ -145,6 +145,18 @@ separate from command, event, and blocking queue connections. Probes still execu
 `PING` and fail on dependency errors or timeouts; they do not open a new connection
 on every probe. There is no adapter connection-pool size to tune.
 
+When the Redis or Redis Cluster adapter loses its Pub/Sub subscription (for example, Redis
+restarts), the listener retries at least once per second, so it resubscribes within about a
+second of Redis becoming reachable again. While the subscription is down, a node does not
+take the single-node shortcut even if its peers have expired from its heartbeat list, so
+broadcasts it cannot hand to Redis fail instead of reaching only its own sockets. Once
+resubscribed, it announces itself with an immediate heartbeat and keeps publishing cross-node
+for `node_timeout_ms` while it rediscovers its peers. With Redis Cluster, each shard has its
+own subscription, and the node counts as unsubscribed while any of them is down, including while
+channels move to a new shard after a topology change. Redis Pub/Sub is at-most-once: messages
+other nodes publish in the moment before a listener has resubscribed still miss that node's
+sockets, and V2 clients only see the gap as a jump in `serial`.
+
 ## Memory-pressure connection admission
 
 Memory-pressure admission control is opt-in under `[http_api.accept_traffic]`. Enable it when

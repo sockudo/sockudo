@@ -5,15 +5,17 @@
 //! grouping channels by hash slot, and opening a direct (non-cluster)
 //! connection to each shard master. Inspired by `go-redis` and `fred.rs`.
 
+use crate::horizontal_transport::ListenerState;
 use crate::transports::redis_pubsub_probe::{PubSubProbeFailure, pubsub_connection_lost};
+use crate::transports::redis_transport::PUBSUB_MAX_RETRY_DELAY_MS;
 use crossfire::mpsc;
 use redis::cluster_routing::Slot;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::RedisTlsOptions;
 use sockudo_core::redis_client::build_standalone_client;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
@@ -23,6 +25,84 @@ use tracing::{info, warn};
 const TOPOLOGY_REFRESH_INTERVAL_SECS: u64 = 30;
 const TOPOLOGY_REFRESH_FAILURE_THRESHOLD: u64 = 3;
 const FAN_IN_CAPACITY: usize = 10_000;
+
+/// Combines the subscription state of every shard listener into the node-level
+/// [`ListenerState`] the adapter needs: the node hears its peers only while every
+/// shard listener is subscribed (#566).
+pub(crate) struct SubscriptionHealth {
+    on_state: Arc<dyn Fn(ListenerState) + Send + Sync>,
+    is_running: Arc<AtomicBool>,
+    next_id: AtomicU64,
+    down: std::sync::Mutex<HashSet<u64>>,
+}
+
+impl SubscriptionHealth {
+    pub(crate) fn new(
+        on_state: Arc<dyn Fn(ListenerState) + Send + Sync>,
+        is_running: Arc<AtomicBool>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            on_state,
+            is_running,
+            next_id: AtomicU64::new(0),
+            down: std::sync::Mutex::new(HashSet::new()),
+        })
+    }
+
+    /// Register a shard listener. One that starts `down` holds the node in the lost
+    /// state until it subscribes, so moving channels to a new shard cannot report a
+    /// restore before they are subscribed again.
+    fn listener(self: &Arc<Self>, down: bool) -> ShardHealth {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let shard = ShardHealth {
+            id,
+            health: self.clone(),
+        };
+        if down {
+            self.set_down(id, true);
+        }
+        shard
+    }
+
+    fn set_down(&self, id: u64, down: bool) {
+        let mut set = self.down.lock().unwrap_or_else(|e| e.into_inner());
+        let was_healthy = set.is_empty();
+        let changed = if down {
+            set.insert(id)
+        } else {
+            set.remove(&id)
+        };
+        if !changed || was_healthy == set.is_empty() || !self.is_running.load(Ordering::Relaxed) {
+            return;
+        }
+        // Report under the lock so concurrent shard transitions reach the adapter in order.
+        if was_healthy {
+            (self.on_state)(ListenerState::Lost);
+        } else {
+            info!(adapter = "redis_cluster", "pubsub subscriptions restored");
+            (self.on_state)(ListenerState::Restored);
+        }
+    }
+}
+
+/// One shard listener's entry in [`SubscriptionHealth`]. Dropping it, including
+/// when the listener task is aborted on a topology change, removes the entry.
+pub(crate) struct ShardHealth {
+    id: u64,
+    health: Arc<SubscriptionHealth>,
+}
+
+impl ShardHealth {
+    fn set_subscribed(&self, subscribed: bool) {
+        self.health.set_down(self.id, !subscribed);
+    }
+}
+
+impl Drop for ShardHealth {
+    fn drop(&mut self) {
+        self.health.set_down(self.id, false);
+    }
+}
 
 type ShardedPushChannelFlavor = mpsc::Array<redis::PushInfo>;
 type ShardedPushSender = crossfire::MAsyncTx<ShardedPushChannelFlavor>;
@@ -373,6 +453,7 @@ pub(crate) struct ShardListenerParams {
     refresh_notify: Arc<Notify>,
     tls: RedisTlsOptions,
     ping_interval: Duration,
+    health: ShardHealth,
 }
 
 /// Long-running task for one shard master.
@@ -380,14 +461,17 @@ pub(crate) struct ShardListenerParams {
 /// Connects via a non-cluster `redis::Client`, issues the configured
 /// subscription command for each assigned channel, and forwards Pub/Sub pushes
 /// to the bounded fan-in sender. Reconnects with exponential back-off
-/// (500 ms to 10 s) on any failure.
+/// (100 ms to `PUBSUB_MAX_RETRY_DELAY_MS`) on any failure, and reports each lost and
+/// restored subscription to [`SubscriptionHealth`].
 pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
     // Unbounded because push_sender must not block the redis runtime;
     // backpressure is applied at the bounded fan-in boundary.
     type InternalFlavor = mpsc::List<redis::PushInfo>;
 
-    let mut retry_delay = 500u64;
-    const MAX_RETRY_DELAY: u64 = 10_000;
+    // While this shard is unsubscribed the node misses peer messages routed to it, so
+    // retry often: a long backoff keeps it deaf for seconds after Redis is back (#566).
+    let mut retry_delay = 100u64;
+    const MAX_RETRY_DELAY: u64 = PUBSUB_MAX_RETRY_DELAY_MS;
     let mut reconnection_count = 0u64;
     let mut consecutive_failures: u64 = 0;
     let mut fan_in_dropped_count = 0u64;
@@ -442,7 +526,7 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
                         "shard listener reconnected"
                     );
                 }
-                retry_delay = 500;
+                retry_delay = 100;
                 consecutive_failures = 0;
                 c
             }
@@ -514,6 +598,7 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
         if let Some(ready_tx) = params.ready_tx.take() {
             let _ = ready_tx.send(());
         }
+        params.health.set_subscribed(true);
         reconnection_count = 0;
 
         let ping_conn = conn.clone();
@@ -599,6 +684,7 @@ pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
             }
         }
 
+        params.health.set_subscribed(false);
         reconnection_count += 1;
         warn!(
             adapter = "redis_cluster",
@@ -627,10 +713,12 @@ pub(crate) struct ShardedSubscriber {
     refresh_notify: Arc<Notify>,
     tls: RedisTlsOptions,
     ping_interval: Duration,
+    health: Arc<SubscriptionHealth>,
 }
 
 impl ShardedSubscriber {
     // Caller's is_running and shutdown are shared with spawned shard tasks.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         channels: Vec<String>,
         seed_urls: Vec<String>,
@@ -639,6 +727,7 @@ impl ShardedSubscriber {
         shutdown: Arc<Notify>,
         tls: RedisTlsOptions,
         ping_interval: Duration,
+        health: Arc<SubscriptionHealth>,
     ) -> Self {
         Self::with_mode(
             channels,
@@ -649,9 +738,11 @@ impl ShardedSubscriber {
             shutdown,
             tls,
             ping_interval,
+            health,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_standard(
         channels: Vec<String>,
         seed_urls: Vec<String>,
@@ -660,6 +751,7 @@ impl ShardedSubscriber {
         shutdown: Arc<Notify>,
         tls: RedisTlsOptions,
         ping_interval: Duration,
+        health: Arc<SubscriptionHealth>,
     ) -> Self {
         Self::with_mode(
             channels,
@@ -670,6 +762,7 @@ impl ShardedSubscriber {
             shutdown,
             tls,
             ping_interval,
+            health,
         )
     }
 
@@ -683,6 +776,7 @@ impl ShardedSubscriber {
         shutdown: Arc<Notify>,
         tls: RedisTlsOptions,
         ping_interval: Duration,
+        health: Arc<SubscriptionHealth>,
     ) -> Self {
         Self {
             channels,
@@ -694,6 +788,7 @@ impl ShardedSubscriber {
             refresh_notify: Arc::new(Notify::new()),
             tls,
             ping_interval,
+            health,
         }
     }
 
@@ -757,8 +852,8 @@ impl ShardedSubscriber {
         }
 
         {
-            let mut shard_map = shard_handles.lock().await;
-            let mut ready_receivers = Vec::new();
+            // Register every shard before any listener can report a successful subscription.
+            let mut pending = Vec::with_capacity(by_shard.len());
             for (shard_addr, shard_channels) in by_shard {
                 if shard_channels.is_empty() {
                     continue;
@@ -779,7 +874,14 @@ impl ShardedSubscriber {
                     refresh_notify: self.refresh_notify.clone(),
                     tls: self.tls.clone(),
                     ping_interval: self.ping_interval,
+                    health: self.health.listener(true),
                 };
+                pending.push((shard_addr_str, params, ready_rx));
+            }
+
+            let mut shard_map = shard_handles.lock().await;
+            let mut ready_receivers = Vec::with_capacity(pending.len());
+            for (shard_addr_str, params, ready_rx) in pending {
                 let readiness_channels = params.channels.clone();
                 shard_map.insert(
                     shard_addr_str.clone(),
@@ -825,6 +927,7 @@ impl ShardedSubscriber {
         let mode = self.mode;
         let tls = self.tls.clone();
         let ping_interval = self.ping_interval;
+        let health = self.health.clone();
 
         let refresh_task = tokio::spawn(async move {
             loop {
@@ -874,13 +977,21 @@ impl ShardedSubscriber {
 
                 let mut sh = shard_handles_clone.lock().await;
 
+                // Register the replacement listeners as unsubscribed before aborting the
+                // old ones, so the node stays in the lost state until the moved channels
+                // are subscribed again.
+                let new_shard_channels: Vec<_> = new_shard_channels
+                    .into_iter()
+                    .map(|(new_str, channels)| (new_str, channels, health.listener(true)))
+                    .collect();
+
                 for old_str in old_shards_to_abort {
                     if let Some(handle) = sh.remove(&old_str) {
                         handle.abort();
                     }
                 }
 
-                for (new_str, channels) in new_shard_channels {
+                for (new_str, channels, shard_health) in new_shard_channels {
                     let new_shard_addr = new_topo.shard_for(&channels[0]).clone();
                     let url = new_shard_addr.to_url(
                         &scheme_clone,
@@ -900,6 +1011,7 @@ impl ShardedSubscriber {
                         refresh_notify: refresh_notify_clone.clone(),
                         tls: tls.clone(),
                         ping_interval,
+                        health: shard_health,
                     };
                     sh.insert(new_str, tokio::spawn(shard_listener_loop(params)));
                 }
@@ -1265,5 +1377,154 @@ mod tests {
         ]);
         let topo = parse_cluster_shards(raw).expect("should skip malformed and succeed");
         assert_eq!(topo.masters.len(), 1);
+    }
+
+    fn recording_health() -> (
+        Arc<SubscriptionHealth>,
+        Arc<std::sync::Mutex<Vec<ListenerState>>>,
+    ) {
+        let states = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = states.clone();
+        let health = SubscriptionHealth::new(
+            Arc::new(move |state| recorded.lock().unwrap().push(state)),
+            Arc::new(AtomicBool::new(true)),
+        );
+        (health, states)
+    }
+
+    #[test]
+    fn subscription_health_reports_only_node_level_transitions() {
+        let (health, states) = recording_health();
+        let a = health.listener(false);
+        let b = health.listener(false);
+        a.set_subscribed(true);
+        b.set_subscribed(true);
+        assert!(states.lock().unwrap().is_empty());
+
+        // Both shards drop: one Lost. Only after the last one is back: one Restored.
+        a.set_subscribed(false);
+        b.set_subscribed(false);
+        a.set_subscribed(true);
+        assert_eq!(*states.lock().unwrap(), vec![ListenerState::Lost]);
+        b.set_subscribed(true);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![ListenerState::Lost, ListenerState::Restored]
+        );
+
+        // Topology change: the replacement starts unsubscribed, so aborting the old
+        // listener (dropping its entry) does not report a restore early.
+        states.lock().unwrap().clear();
+        let replacement = health.listener(true);
+        drop(a);
+        assert_eq!(*states.lock().unwrap(), vec![ListenerState::Lost]);
+        replacement.set_subscribed(true);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![ListenerState::Lost, ListenerState::Restored]
+        );
+
+        // A lost shard whose listener is aborted no longer holds the node down.
+        states.lock().unwrap().clear();
+        b.set_subscribed(false);
+        drop(b);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![ListenerState::Lost, ListenerState::Restored]
+        );
+    }
+
+    #[test]
+    fn recovery_waits_for_a_shard_that_has_never_subscribed() {
+        let (health, states) = recording_health();
+        let a = health.listener(true);
+        let b = health.listener(true);
+
+        a.set_subscribed(true);
+        a.set_subscribed(false);
+        a.set_subscribed(true);
+        assert_eq!(*states.lock().unwrap(), vec![ListenerState::Lost]);
+
+        b.set_subscribed(true);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![ListenerState::Lost, ListenerState::Restored],
+        );
+    }
+
+    /// #566: a shard listener reconnects on its own, so it must report the outage itself
+    /// and resubscribe promptly once Redis is back.
+    #[tokio::test]
+    async fn shard_listener_resubscribes_promptly_after_outage_and_reports_state() {
+        use crate::transports::redis_transport::tests::{FakeRedisCounters, serve_fake_redis};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let counters = Arc::new(FakeRedisCounters::default());
+        let server = serve_fake_redis(listener, false, counters.clone());
+
+        let (health, states) = recording_health();
+        let (fan_tx, _fan_rx): (ShardedPushSender, ShardedPushReceiver) = mpsc::bounded_async(16);
+        let shutdown = Arc::new(Notify::new());
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(shard_listener_loop(ShardListenerParams {
+            url: format!("redis://{address}/?protocol=resp3"),
+            channels: vec!["sockudo#broadcast".to_string()],
+            mode: PubSubMode::Standard,
+            fan_in_tx: fan_tx,
+            ready_tx: Some(ready_tx),
+            is_running: Arc::new(AtomicBool::new(true)),
+            shutdown: shutdown.clone(),
+            shard_addr: address.to_string(),
+            metrics: Arc::new(OnceLock::new()),
+            refresh_notify: Arc::new(Notify::new()),
+            tls: RedisTlsOptions::default(),
+            ping_interval: Duration::from_millis(200),
+            health: health.listener(false),
+        }));
+
+        tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("subscription timed out")
+            .expect("listener exited before subscribing");
+        assert!(
+            states.lock().unwrap().is_empty(),
+            "first subscription is not a restore"
+        );
+
+        // Redis goes away: every connection closes and new ones are refused.
+        server.abort();
+        let _ = server.await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while states.lock().unwrap().is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "lost subscription not reported"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*states.lock().unwrap(), vec![ListenerState::Lost]);
+
+        // Long enough for the old 500 ms doubling backoff to reach 4 s between attempts.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let listener = TcpListener::bind(address).await.unwrap();
+        let server = serve_fake_redis(listener, false, counters.clone());
+        let back_at = tokio::time::Instant::now();
+        while states.lock().unwrap().len() < 2 {
+            assert!(
+                back_at.elapsed() < Duration::from_millis(PUBSUB_MAX_RETRY_DELAY_MS + 1_000),
+                "shard listener did not resubscribe promptly after Redis came back"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![ListenerState::Lost, ListenerState::Restored]
+        );
+        assert!(counters.subscribes.load(Ordering::SeqCst) >= 2);
+
+        task.abort();
+        server.abort();
     }
 }
