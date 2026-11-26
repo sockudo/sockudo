@@ -483,6 +483,7 @@ mod tests {
         node_a
             .start_listeners(TransportHandlers {
                 node_id: "node-a".to_string(),
+                on_listener_state: Arc::new(|_| {}),
                 on_broadcast: Arc::new(|_| Box::pin(async {})),
                 on_request: Arc::new(|_| Box::pin(async { Err(Error::NoResponseNeeded) })),
                 on_response: Arc::new(move |response| {
@@ -498,6 +499,7 @@ mod tests {
         node_b
             .start_listeners(TransportHandlers {
                 node_id: "node-b".to_string(),
+                on_listener_state: Arc::new(|_| {}),
                 on_broadcast: Arc::new(move |broadcast| {
                     let broadcast_tx = broadcast_tx.clone();
                     Box::pin(async move {

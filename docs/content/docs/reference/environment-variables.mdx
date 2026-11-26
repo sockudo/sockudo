@@ -562,7 +562,7 @@ Disconnect cleanup workers and cross-node heartbeat tracking.
 | `CLEANUP_MAX_RETRY_ATTEMPTS` | Cleanup retry limit. |
 | `CLUSTER_HEALTH_ENABLED` | Enables cluster health tracking. |
 | `CLUSTER_HEALTH_HEARTBEAT_INTERVAL` | Cluster heartbeat interval in milliseconds. |
-| `CLUSTER_HEALTH_NODE_TIMEOUT` | Node timeout in milliseconds before a peer is considered stale. A newly started node also keeps publishing cross-node for this long before it treats an empty peer list as a single-node deployment. |
+| `CLUSTER_HEALTH_NODE_TIMEOUT` | Node timeout in milliseconds before a peer is considered stale. A newly started node also keeps publishing cross-node for this long before it treats an empty peer list as a single-node deployment. The same applies after a Redis or Redis Cluster adapter subscription is lost: while it is down, and for this long after it is restored, the node keeps publishing cross-node even if its peers expired meanwhile. |
 | `CLUSTER_HEALTH_CLEANUP_INTERVAL` | Cleanup interval for cluster health state in milliseconds. |
 
 <Callout type="warn" title="Cluster health variables and the adapter">

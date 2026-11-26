@@ -1,7 +1,7 @@
 use sockudo_adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
 use sockudo_adapter::horizontal_adapter::{RequestBody, RequestType};
 use sockudo_adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo_adapter::horizontal_transport::HorizontalTransport;
+use sockudo_adapter::horizontal_transport::{HorizontalTransport, ListenerState};
 use sockudo_core::error::Result;
 use sockudo_core::options::ClusterHealthConfig;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
@@ -118,6 +118,95 @@ async fn test_multi_node_sends_broadcast() -> Result<()> {
     let broadcast = &published_broadcasts[0];
     assert_eq!(broadcast.channel, "test-channel");
     assert_eq!(broadcast.app_id, "test-app");
+
+    Ok(())
+}
+
+fn broadcast_message() -> PusherMessage {
+    PusherMessage {
+        channel: Some("test-channel".to_string()),
+        event: Some("test-event".to_string()),
+        data: Some(MessageData::String("test message".to_string())),
+        name: None,
+        user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
+        message_id: None,
+        stream_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
+    }
+}
+
+/// #566: while the transport subscription is down a node hears no heartbeats, so its peers
+/// expire and it looks alone. It must keep publishing broadcasts then, and after the
+/// subscription is restored until it has had a chance to hear its peers again; otherwise
+/// publishes answered 200 reach only its own sockets.
+#[tokio::test]
+async fn lost_subscription_suspends_single_node_shortcut_until_peers_can_be_heard() -> Result<()> {
+    let config = MockConfig {
+        node_states: vec![MockNodeState::new("single-node")],
+        ..Default::default()
+    };
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    // Peers have already been expired: the node believes it is alone.
+    adapter.settle_discovery_for_test();
+    adapter.start_listeners().await?;
+
+    adapter
+        .send("test-channel", broadcast_message(), None, "test-app", None)
+        .await?;
+    assert_eq!(adapter.transport.get_published_broadcasts().await.len(), 0);
+
+    adapter
+        .transport
+        .report_listener_state(ListenerState::Lost)
+        .await?;
+    adapter
+        .send("test-channel", broadcast_message(), None, "test-app", None)
+        .await?;
+    assert_eq!(
+        adapter.transport.get_published_broadcasts().await.len(),
+        1,
+        "a node whose subscription is down cannot know it is alone"
+    );
+
+    let heartbeats = || async {
+        adapter
+            .transport
+            .get_published_requests()
+            .await
+            .into_iter()
+            .filter(|request| request.request_type == RequestType::Heartbeat)
+            .count()
+    };
+    let heartbeats_before_restore = heartbeats().await;
+    adapter
+        .transport
+        .report_listener_state(ListenerState::Restored)
+        .await?;
+    adapter
+        .send("test-channel", broadcast_message(), None, "test-app", None)
+        .await?;
+    assert_eq!(
+        adapter.transport.get_published_broadcasts().await.len(),
+        2,
+        "peers expired while the subscription was down must be rediscovered first"
+    );
+
+    // The node announces itself at once, so peers that expired it answer immediately.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while heartbeats().await == heartbeats_before_restore {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no heartbeat sent after the subscription was restored"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     Ok(())
 }

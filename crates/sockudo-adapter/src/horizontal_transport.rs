@@ -13,9 +13,22 @@ use sockudo_core::metrics::MetricsInterface;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Whether a transport's listener can currently receive broadcasts and requests from peers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenerState {
+    /// The subscription that was established has been lost. Until it is restored this node
+    /// misses peer messages, including heartbeats.
+    Lost,
+    /// A lost subscription is established again.
+    Restored,
+}
+
 /// Handlers for transport events
 pub struct TransportHandlers {
     pub node_id: String,
+    /// Called by transports that manage their own subscription when it is lost and when it is
+    /// restored. Must not block. Transports whose client resubscribes internally may never call it.
+    pub on_listener_state: Arc<dyn Fn(ListenerState) + Send + Sync>,
     pub on_broadcast: Arc<dyn Fn(BroadcastMessage) -> BoxFuture<'static, ()> + Send + Sync>,
     pub on_request:
         Arc<dyn Fn(RequestBody) -> BoxFuture<'static, Result<ResponseBody>> + Send + Sync>,
