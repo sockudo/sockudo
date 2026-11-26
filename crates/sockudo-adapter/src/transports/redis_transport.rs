@@ -633,7 +633,7 @@ impl Clone for RedisTransport {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
@@ -708,9 +708,9 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct FakeRedisCounters {
-        subscribes: AtomicUsize,
-        pubsub_pings: AtomicUsize,
+    pub(crate) struct FakeRedisCounters {
+        pub(crate) subscribes: AtomicUsize,
+        pub(crate) pubsub_pings: AtomicUsize,
     }
 
     /// Minimal RESP2 server. The first connection that subscribes stops answering PING, like a
@@ -726,7 +726,8 @@ mod tests {
     }
 
     /// Serve the fake Redis on `listener`. Aborting the returned task closes every connection.
-    fn serve_fake_redis(
+    /// A connection that sends `HELLO 3` gets RESP3 replies and push frames.
+    pub(crate) fn serve_fake_redis(
         listener: TcpListener,
         first_subscriber_goes_silent: bool,
         server_counters: Arc<FakeRedisCounters>,
@@ -740,6 +741,7 @@ mod tests {
                     let mut socket = BufReader::new(socket);
                     let mut silent = false;
                     let mut subscribed = false;
+                    let mut resp3 = false;
                     loop {
                         let mut line = String::new();
                         if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
@@ -759,12 +761,22 @@ mod tests {
                         }
                         let mut response = Vec::new();
                         match args[0].as_slice() {
+                            b"HELLO" => {
+                                resp3 = args.get(1).is_some_and(|v| v.as_slice() == b"3");
+                                response.extend_from_slice(
+                                    b"%2\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:3\r\n",
+                                );
+                            }
                             b"SUBSCRIBE" => {
                                 let previous = counters.subscribes.fetch_add(1, Ordering::SeqCst);
                                 silent = first_subscriber_goes_silent && previous == 0;
                                 subscribed = true;
                                 for (index, channel) in args[1..].iter().enumerate() {
-                                    response.extend_from_slice(b"*3\r\n$9\r\nsubscribe\r\n");
+                                    response.extend_from_slice(if resp3 {
+                                        b">3\r\n$9\r\nsubscribe\r\n"
+                                    } else {
+                                        b"*3\r\n$9\r\nsubscribe\r\n"
+                                    });
                                     response.extend_from_slice(
                                         format!("${}\r\n", channel.len()).as_bytes(),
                                     );
@@ -777,7 +789,12 @@ mod tests {
                             b"PING" if subscribed => {
                                 counters.pubsub_pings.fetch_add(1, Ordering::SeqCst);
                                 if !silent {
-                                    response.extend_from_slice(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n");
+                                    // RESP3 answers PING normally even while subscribed.
+                                    response.extend_from_slice(if resp3 {
+                                        b"+PONG\r\n"
+                                    } else {
+                                        b"*2\r\n$4\r\npong\r\n$0\r\n\r\n"
+                                    });
                                 }
                             }
                             b"PING" => response.extend_from_slice(b"+PONG\r\n"),
