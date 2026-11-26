@@ -357,6 +357,12 @@ taken out of rotation; keep `/up` when rollout health must succeed even on a ful
 
 Set probe timeout below its period and above normal dependency-check latency. Sockudo's
 `health_check_timeout_ms` (default `2000`) bounds each dependency check separately.
+The standalone Redis and Redis Cluster adapter checks use `redis_health_check_attempts` (default `2`)
+within that budget. Set `1` to give a single attempt the full budget. With retries enabled, Sockudo
+requires at least 250 ms per attempt and 100 ms between attempts. For example, five attempts require
+at least 1,650 ms. An insufficient timeout fails startup with an error that reports the required
+minimum. Earlier attempts reserve time for retries, and the last can use the remaining time.
+Redis Cluster requires a successful `PING` from every primary.
 
 ## Resources and connection admission
 

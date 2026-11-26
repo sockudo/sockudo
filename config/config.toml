@@ -13,6 +13,7 @@ max_connections = 0 # 0 = disabled (no per-pod limit)
 user_authentication_timeout = 3600
 activity_timeout = 120
 health_check_timeout_ms = 2000
+redis_health_check_attempts = 2
 
 [adapter]
 driver = "local"
