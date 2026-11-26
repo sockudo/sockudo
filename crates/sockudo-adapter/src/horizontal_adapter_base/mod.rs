@@ -76,16 +76,63 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     idempotency_ttl: AtomicU64,
     // Shared run flag for background loops so dropping the adapter stops heartbeats/cleanup tasks.
     is_running: Arc<AtomicBool>,
-    // When this node may conclude that it is alone, in ms since `discovery_epoch`. See
-    // `discovery_settled`. `DISCOVERY_UNSETTLED` until cluster health discovery starts, and
-    // again while the transport's subscription is down.
-    discovery_epoch: Instant,
-    discovery_settles_at_ms: Arc<AtomicU64>,
+    discovery: Arc<PeerDiscovery>,
+    heartbeat_now: Arc<Notify>,
 }
 
-/// `discovery_settles_at_ms` value meaning "never settled": not started yet, or the transport
-/// subscription is down so peers cannot be heard.
-const DISCOVERY_UNSETTLED: u64 = u64::MAX;
+struct PeerDiscovery {
+    epoch: Instant,
+    deadline_ms: AtomicU64,
+}
+
+impl PeerDiscovery {
+    const NOT_STARTED: u64 = u64::MAX;
+    const DOWN: u64 = u64::MAX - 1;
+
+    fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+            deadline_ms: AtomicU64::new(Self::NOT_STARTED),
+        }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis().min(u64::MAX as u128) as u64
+    }
+
+    fn deadline(&self, timeout_ms: u64) -> u64 {
+        self.elapsed_ms()
+            .saturating_add(timeout_ms)
+            .min(Self::DOWN - 1)
+    }
+
+    fn start(&self, timeout_ms: u64) {
+        let _ = self.deadline_ms.compare_exchange(
+            Self::NOT_STARTED,
+            self.deadline(timeout_ms),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn lost(&self) {
+        self.deadline_ms.store(Self::DOWN, Ordering::Release);
+    }
+
+    fn restored(&self, timeout_ms: u64) {
+        self.deadline_ms
+            .store(self.deadline(timeout_ms), Ordering::Release);
+    }
+
+    fn is_settled(&self) -> bool {
+        let deadline = self.deadline_ms.load(Ordering::Acquire);
+        deadline < Self::DOWN && self.elapsed_ms() >= deadline
+    }
+
+    fn settle_for_test(&self) {
+        self.deadline_ms.store(0, Ordering::Release);
+    }
+}
 
 /// Check if we should skip horizontal communication (single node optimization)
 /// This is determined by checking if cluster health is enabled and
@@ -128,19 +175,34 @@ impl<T: HorizontalTransport> HorizontalAdapterBase<T> {
     /// before it knows of them again. So a lost subscription unsettles discovery until it is
     /// restored, and a restored one reopens the window (see `on_listener_state`).
     fn discovery_settled(&self) -> bool {
-        let settles_at_ms = self.discovery_settles_at_ms.load(Ordering::Acquire);
-        settles_at_ms != DISCOVERY_UNSETTLED
-            && self.discovery_epoch.elapsed().as_millis() as u64 >= settles_at_ms
+        self.discovery.is_settled()
     }
 
     /// Treat peer discovery as complete, so an empty heartbeat map means a single node at once.
     pub fn settle_discovery_for_test(&self) {
-        self.discovery_settles_at_ms.store(0, Ordering::Release);
+        self.discovery.settle_for_test();
     }
 }
 
 impl<T: HorizontalTransport> Drop for HorizontalAdapterBase<T> {
     fn drop(&mut self) {
         self.is_running.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PeerDiscovery;
+
+    #[test]
+    fn startup_cannot_settle_discovery_after_listener_loss() {
+        let discovery = PeerDiscovery::new();
+
+        discovery.lost();
+        discovery.start(0);
+        assert!(!discovery.is_settled());
+
+        discovery.restored(0);
+        assert!(discovery.is_settled());
     }
 }

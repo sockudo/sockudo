@@ -852,8 +852,8 @@ impl ShardedSubscriber {
         }
 
         {
-            let mut shard_map = shard_handles.lock().await;
-            let mut ready_receivers = Vec::new();
+            // Register every shard before any listener can report a successful subscription.
+            let mut pending = Vec::with_capacity(by_shard.len());
             for (shard_addr, shard_channels) in by_shard {
                 if shard_channels.is_empty() {
                     continue;
@@ -874,10 +874,14 @@ impl ShardedSubscriber {
                     refresh_notify: self.refresh_notify.clone(),
                     tls: self.tls.clone(),
                     ping_interval: self.ping_interval,
-                    // A shard that never subscribes at startup is reported by the
-                    // readiness warning below, not as a lost subscription.
-                    health: self.health.listener(false),
+                    health: self.health.listener(true),
                 };
+                pending.push((shard_addr_str, params, ready_rx));
+            }
+
+            let mut shard_map = shard_handles.lock().await;
+            let mut ready_receivers = Vec::with_capacity(pending.len());
+            for (shard_addr_str, params, ready_rx) in pending {
                 let readiness_channels = params.channels.clone();
                 shard_map.insert(
                     shard_addr_str.clone(),
@@ -1430,6 +1434,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recovery_waits_for_a_shard_that_has_never_subscribed() {
+        let (health, states) = recording_health();
+        let a = health.listener(true);
+        let b = health.listener(true);
+
+        a.set_subscribed(true);
+        a.set_subscribed(false);
+        a.set_subscribed(true);
+        assert_eq!(*states.lock().unwrap(), vec![ListenerState::Lost]);
+
+        b.set_subscribed(true);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![ListenerState::Lost, ListenerState::Restored],
+        );
+    }
+
     /// #566: a shard listener reconnects on its own, so it must report the outage itself
     /// and resubscribe promptly once Redis is back.
     #[tokio::test]
@@ -1445,12 +1467,13 @@ mod tests {
         let (health, states) = recording_health();
         let (fan_tx, _fan_rx): (ShardedPushSender, ShardedPushReceiver) = mpsc::bounded_async(16);
         let shutdown = Arc::new(Notify::new());
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(shard_listener_loop(ShardListenerParams {
             url: format!("redis://{address}/?protocol=resp3"),
             channels: vec!["sockudo#broadcast".to_string()],
             mode: PubSubMode::Standard,
             fan_in_tx: fan_tx,
-            ready_tx: None,
+            ready_tx: Some(ready_tx),
             is_running: Arc::new(AtomicBool::new(true)),
             shutdown: shutdown.clone(),
             shard_addr: address.to_string(),
@@ -1461,11 +1484,10 @@ mod tests {
             health: health.listener(false),
         }));
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while counters.subscribes.load(Ordering::SeqCst) < 1 {
-            assert!(tokio::time::Instant::now() < deadline, "never subscribed");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("subscription timed out")
+            .expect("listener exited before subscribing");
         assert!(
             states.lock().unwrap().is_empty(),
             "first subscription is not a restore"
