@@ -170,7 +170,10 @@ jobs:
           fi
 
           # Anchored on the test title alone: upstream renames describe groups.
-          harness_only_excludes=' node_transports$| Should use the primary domain as the first attempted for every connection attempt$| Init without any tls key should enable tls$'
+          # The ws checks need their 1 ms slow timer to fire before the
+          # handshake; the local sandbox wins that race, so the timer is
+          # cancelled and the tests hang waiting for a connectivitycheck event.
+          harness_only_excludes=' node_transports$| Should use the primary domain as the first attempted for every connection attempt$| Init without any tls key should enable tls$|failed_ws_check_emits_event$|disabled_check_still_emits_ws_event$|passed_ws_check_emits_event$'
           CI=true \
           ABLY_LOCAL_SANDBOX_URL=http://127.0.0.1:9080 \
           ABLY_TEST_TRANSPORTS=web_socket \
