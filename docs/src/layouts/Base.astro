@@ -57,6 +57,7 @@ const ogImage = new URL('/sockudo-logo/sockudo-logo-color.png', Astro.site);
         } catch {}
         if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
         document.documentElement.dataset.theme = t;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t === 'dark' ? '#07050c' : '#fbfaff');
         document.documentElement.classList.add('js');
       })();
     </script>

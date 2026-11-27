@@ -7,8 +7,8 @@ const { caption = 'Live 3D model: one HTTP publish fans out through the adapter 
 const steps = ['Publish', 'Fan out', 'Deliver', 'Recover'];
 ---
 
-<figure class="d3 not-prose island" data-diagram3d data-start={start}>
-  <div class="d3-stage">
+<figure class="d3 not-prose" data-diagram3d data-start={start}>
+  <div class="d3-stage island">
     <canvas aria-hidden="true"></canvas>
     <div class="labels" data-fanout-labels aria-hidden="true">
       <span class="lbl s0" data-anchor="publisher">HTTP API</span>

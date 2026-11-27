@@ -105,16 +105,19 @@ import { ArrowRight } from '@lucide/astro';
   .kw {
     color: #c084fc;
   }
+  :global([data-theme='light']) .kw {
+    color: #7c3aed;
+  }
   .str {
     color: #34d399;
   }
-  [data-theme='light'] .str {
+  :global([data-theme='light']) .str {
     color: #047857;
   }
   .fn {
     color: #60a5fa;
   }
-  [data-theme='light'] .fn {
+  :global([data-theme='light']) .fn {
     color: #2563eb;
   }
   .row.del {
@@ -129,10 +132,10 @@ import { ArrowRight } from '@lucide/astro';
     background: rgb(34 197 94 / 0.12);
     color: #4ade80;
   }
-  [data-theme='light'] .row.add {
+  :global([data-theme='light']) .row.add {
     color: #15803d;
   }
-  [data-theme='light'] .row.del {
+  :global([data-theme='light']) .row.del {
     color: #be123c;
   }
   .diff-card.in .row.add {
