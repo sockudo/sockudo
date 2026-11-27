@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import path from "path";
+import pkg from "./package.json" with { type: "json" };
 
 export default defineConfig({
   build: {
@@ -31,6 +32,6 @@ export default defineConfig({
   },
   define: {
     RUNTIME: JSON.stringify("nativescript"),
-    VERSION: JSON.stringify("2.2.0"),
+    VERSION: JSON.stringify(pkg.version),
   },
 });

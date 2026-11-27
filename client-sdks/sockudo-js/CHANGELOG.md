@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased
+## [2.3.0] - 2026-11-27
 
 ### Added
 
 * public TypeScript declarations for push proxy APIs and typed Apple Live Activity direct and
   broadcast publishing
+* `reconnectJitter` option that randomizes each bounded reconnect delay downwards by that
+  fraction (0-1) after the cap, so clients dropped by one event do not return in lockstep at
+  `maxReconnectGapInSeconds`
 * `retryJitterMs` option that waits a random delay before immediate protocol retries (such as the
   `4200` server-shutdown close), so a draining node's clients do not reconnect in the same instant
 
@@ -23,9 +26,13 @@
 * track delta bases per event and conflation key, as the server does; a single base per channel
   applied one event's delta to another event's base whenever events interleaved, failing the
   checksum and forcing a resync
+* bound the per-channel delta event-base groups at 4096, evicting the least recently used group
+  and resyncing when a delta needs an evicted base, instead of growing memory without limit on
+  channels whose event names or conflation keys keep changing
 * retry a connection attempt that fails before its 15 s timeout after a short jittered backoff
   (0.5-1 s, growing to 2.5-5 s) instead of waiting out the full timeout, so clients come back
-  within seconds of an outage ending (sockudo/sockudo#532)
+  within seconds of an outage ending (sockudo/sockudo#532); fast retries also keep the attempt
+  timeout, so an attempt that hangs afterwards is abandoned after 15 s instead of 60 s
 * stop retrying when a connection attempt is aborted, even if its transport reports a failure
   afterwards
 * resolve the documented `@sockudo/client/with-encryption`, `@sockudo/client/worker`, and
