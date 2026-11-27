@@ -59,6 +59,7 @@ runs:
           # shellcheck disable=SC2206 # word splitting is intentional
           packages+=($EXTRA_PACKAGES)
         fi
+        sudo rm -f /etc/apt/sources.list.d/*microsoft*
         sudo apt-get update
         sudo apt-get install -y "${packages[@]}"
 
