@@ -12,14 +12,14 @@ default = ["local", "v2"]
 local = []
 ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "dep:sockudo-ai-transport"]
 v2 = ["delta", "tag-filtering", "recovery"]
-delta = ["dep:sockudo-delta"]
+delta = ["dep:sockudo-delta", "dep:futures"]
 tag-filtering = ["dep:sockudo-filter"]
 recovery = []
 opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 full = ["redis", "redis-cluster", "nats", "pulsar", "rabbitmq", "google-pubsub", "kafka", "iggy", "omq", "v2", "opentelemetry"]
-redis = ["sockudo-core/redis", "dep:redis"]
+redis = ["sockudo-core/redis", "dep:redis", "dep:futures"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
-nats = ["sockudo-core/nats", "dep:async-nats"]
+nats = ["sockudo-core/nats", "dep:async-nats", "dep:futures"]
 pulsar = ["sockudo-core/pulsar", "dep:pulsar"]
 rabbitmq = ["sockudo-core/rabbitmq", "dep:lapin"]
 google-pubsub = ["sockudo-core/google-pubsub", "dep:google-cloud-auth", "dep:google-cloud-pubsub"]
@@ -43,7 +43,7 @@ bytes = { workspace = true }
 compact_str = { workspace = true }
 crossfire = { workspace = true }
 dashmap = { workspace = true }
-futures = { workspace = true }
+futures = { workspace = true, optional = true }
 futures-util = { workspace = true }
 google-cloud-pubsub = { workspace = true, optional = true }
 google-cloud-auth = { workspace = true, optional = true }

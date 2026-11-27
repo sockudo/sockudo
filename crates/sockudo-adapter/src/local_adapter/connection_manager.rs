@@ -43,11 +43,7 @@ async fn send_v2_append_mode_groups(
     for ((append_mode, wire_format), sockets) in partition_by_append_and_wire_format(sockets) {
         let mode_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
         let prepared = crate::v2_broadcast::prepare_v2_message(mode_message, wire_format)?;
-        LocalAdapter::log_send_errors(
-            adapter
-                .send_messages_concurrent(sockets, prepared.payload, prepared.wire_format)
-                .await,
-        );
+        adapter.send_prepared(&sockets, &prepared.payload, prepared.wire_format);
     }
     Ok(())
 }
@@ -262,7 +258,7 @@ impl ConnectionManager for LocalAdapter {
         };
 
         if !is_v2_only_protocol_event(&message) {
-            self.send_to_v1_sockets(v1_all_sockets, &message).await?;
+            self.send_to_v1_sockets(&v1_all_sockets, &message)?;
         }
 
         // Gated sockets are buffered before subscription predicates run: a
@@ -330,7 +326,7 @@ impl ConnectionManager for LocalAdapter {
         };
 
         if !is_v2_annotation_protocol_event(&message) {
-            self.send_to_v1_sockets(v1_all_sockets, &message).await?;
+            self.send_to_v1_sockets(&v1_all_sockets, &message)?;
         }
 
         // Buffer gated sockets before subscription predicates; see `send`.
