@@ -1,10 +1,11 @@
 import { defineConfig } from "vitest/config";
 import path from "node:path";
+import pkg from "./package.json" with { type: "json" };
 
 export default defineConfig({
   define: {
     RUNTIME: JSON.stringify("node"),
-    VERSION: JSON.stringify("2.2.0"),
+    VERSION: JSON.stringify(pkg.version),
   },
   resolve: {
     alias: {
