@@ -245,9 +245,25 @@ onPage(() => {
   document.querySelectorAll('[data-mod-key]').forEach((k) => (k.textContent = isMac ? '⌘ K' : 'Ctrl K'));
   refreshStars();
 
-  // Header translucency on scroll
+  // Header translucency on scroll; switch to the dark treatment while it sits over a full-bleed dark island
   const header = document.querySelector<HTMLElement>('.site-header');
-  const onScroll = () => header?.toggleAttribute('data-scrolled', scrollY > 8);
+  const islands = [...document.querySelectorAll<HTMLElement>('.island')];
+  let scrollQueued = false;
+  const onScroll = () => {
+    if (scrollQueued) return;
+    scrollQueued = true;
+    requestAnimationFrame(() => {
+      scrollQueued = false;
+      if (!header) return;
+      header.toggleAttribute('data-scrolled', scrollY > 8);
+      const mid = header.offsetHeight / 2;
+      const over = islands.some((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top <= mid && r.bottom >= mid && r.width >= innerWidth * 0.9;
+      });
+      header.toggleAttribute('data-over-island', over);
+    });
+  };
   onScroll();
   addEventListener('scroll', onScroll, { passive: true });
 

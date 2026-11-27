@@ -29,7 +29,7 @@
   --bg-elev: #ffffff;
   --fg: #150d22;
   --fg-muted: #5c5470;
-  --fg-subtle: #8a829c;
+  --fg-subtle: #6b6380;
   --border: rgb(41 21 63 / 0.1);
   --border-strong: rgb(41 21 63 / 0.18);
   --glass: rgb(255 255 255 / 0.62);
@@ -54,6 +54,7 @@
 
 [data-theme='dark'],
 .island,
+.site-header[data-over-island],
 .home-page .site-header:not([data-scrolled]) {
   --accent: #a978ff;
   --accent-strong: #c4a5ff;
@@ -65,7 +66,7 @@
   --bg-elev: #0e0a16;
   --fg: #f5f1ff;
   --fg-muted: #a9a1bc;
-  --fg-subtle: #756d88;
+  --fg-subtle: #857d98;
   --border: rgb(220 200 255 / 0.08);
   --border-strong: rgb(220 200 255 / 0.15);
   --glass: rgb(18 12 30 / 0.55);
@@ -78,6 +79,13 @@
   --shadow-glow: 0 0 0 1px rgb(169 120 255 / 0.2), 0 24px 60px -20px rgb(139 77 255 / 0.55);
 
   color-scheme: dark;
+}
+
+/* Re-scoped token blocks must also re-resolve inherited text color; otherwise
+   children inherit the page's computed (light-mode) --fg from <body>. */
+.island,
+.site-header {
+  color: var(--fg);
 }
 
 /* ───────────────────────── Base ───────────────────────── */
@@ -155,7 +163,7 @@ button {
   z-index: 100;
   padding: 10px 16px;
   border-radius: 12px;
-  background: var(--accent);
+  background: var(--violet-600);
   color: #fff;
   font-weight: 600;
   transition: top 0.2s var(--ease-out);
@@ -250,6 +258,10 @@ button {
   -webkit-backdrop-filter: blur(20px) saturate(170%);
   backdrop-filter: blur(20px) saturate(170%);
   border-bottom-color: var(--border);
+}
+/* Light glass goes muddy grey over the always-dark islands; keep it opaque enough to stay light. */
+[data-theme='light'] .site-header:is([data-scrolled], [data-solid]):not([data-over-island]) {
+  background: rgb(251 250 255 / 0.86);
 }
 .site-header .inner {
   width: 100%;
@@ -920,6 +932,9 @@ kbd {
 .prose .anchor[data-copied] {
   opacity: 1;
   color: #22c55e;
+}
+[data-theme='light'] .prose .anchor[data-copied] {
+  color: #15803d;
 }
 .prose .anchor[data-copied]::after {
   content: 'Copied';
@@ -1832,7 +1847,7 @@ html:not(.js) [data-reveal] {
   color: transparent;
   animation: grad-pan 8s linear infinite;
 }
-[data-theme='light'] .grad {
+[data-theme='light'] .grad:not(.island *) {
   background-image: linear-gradient(100deg, #7c3aed 0%, #6425d0 35%, #c026d3 70%, #7c3aed 100%);
 }
 @keyframes grad-pan {
@@ -2182,7 +2197,7 @@ html:not(.js) [data-reveal] {
   right: 14px;
   font-family: var(--font-mono);
   font-size: 0.65rem;
-  color: #756d88;
+  color: var(--fg-subtle);
 }
 
 /* Docs hub hero */
@@ -2452,6 +2467,9 @@ main.home {
 }
 .head-cross .seq-label {
   color: #fb7185;
+}
+[data-theme='light'] .head-cross .seq-label {
+  color: #e11d48;
 }
 /* self messages: a small loop to the right of the lifeline */
 .seq-msg.dir-self {
