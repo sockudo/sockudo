@@ -42,64 +42,38 @@ struct PrecomputedDeltaParams {
 }
 
 impl LocalAdapter {
-    /// Send messages using chunked processing with semaphore-controlled concurrency
-    pub(super) async fn send_messages_concurrent(
+    /// Fan out one prepared payload to every target socket.
+    ///
+    /// `send_broadcast_frame` is synchronous and non-blocking: it reserves bytes
+    /// with an atomic and pushes into the socket's outbound queue. The loop
+    /// therefore never awaits and the whole fan-out completes inside one task
+    /// poll. A failing socket is logged and does not stop delivery to the rest.
+    pub fn send_prepared(
         &self,
-        target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: Bytes,
+        target_socket_refs: &[WebSocketRef],
+        message_bytes: &Bytes,
         wire_format: WireFormat,
-    ) -> Vec<Result<()>> {
-        use futures::stream::{self, StreamExt};
+    ) {
+        let mut delivered = 0usize;
+        let mut failed = 0usize;
 
-        let socket_count = target_socket_refs.len();
-
-        // Determine target number of chunks (1-8 based on socket count vs max concurrency)
-        let target_chunks = socket_count.div_ceil(self.max_concurrent).clamp(1, 8);
-
-        // Calculate socket chunk size based on socket count divided by target chunks
-        // With a max of self.max_concurrent sockets per chunk (better utilization)
-        let socket_chunk_size = (socket_count / target_chunks)
-            .min(self.max_concurrent)
-            .max(1);
-
-        // Process chunks sequentially with controlled concurrency
-        let mut results = Vec::with_capacity(socket_count);
-
-        for socket_chunk in target_socket_refs.chunks(socket_chunk_size) {
-            let chunk_size = socket_chunk.len();
-
-            // Acquire permits for the entire chunk
-            match self
-                .broadcast_semaphore
-                .acquire_many(chunk_size as u32)
-                .await
-            {
-                Ok(_permits) => {
-                    // Process sockets in this chunk using buffered unordered streaming
-                    let chunk_vec: Vec<_> = socket_chunk.to_vec();
-                    let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
-                        .map(|socket_ref| {
-                            let bytes = message_bytes.clone();
-                            async move { socket_ref.send_broadcast_frame(bytes, wire_format) }
-                        })
-                        .buffer_unordered(chunk_size)
-                        .collect()
-                        .await;
-
-                    results.extend(chunk_results);
-                }
-                Err(_) => {
-                    // Return errors for all sockets if semaphore fails
-                    for _ in 0..chunk_size {
-                        results.push(Err(Error::Connection(
-                            "Broadcast semaphore unavailable".to_string(),
-                        )));
-                    }
+        for socket_ref in target_socket_refs {
+            match socket_ref.send_broadcast_frame(message_bytes.clone(), wire_format) {
+                Ok(()) => delivered += 1,
+                Err(error) => {
+                    failed += 1;
+                    Self::log_send_error(&error);
                 }
             }
         }
 
-        results
+        if failed > 0 {
+            debug!(
+                delivered_count = delivered,
+                failed_count = failed,
+                "fanout completed with send errors"
+            );
+        }
     }
 
     #[cfg(feature = "delta")]
@@ -710,9 +684,9 @@ impl LocalAdapter {
     }
 
     /// Send a message to V1 sockets (strips serial/message_id/tags, plain Pusher format).
-    pub(super) async fn send_to_v1_sockets(
+    pub(super) fn send_to_v1_sockets(
         &self,
-        sockets: Vec<WebSocketRef>,
+        sockets: &[WebSocketRef],
         message: &PusherMessage,
     ) -> Result<()> {
         if sockets.is_empty() {
@@ -725,21 +699,24 @@ impl LocalAdapter {
             sonic_rs::to_vec(&v1_message)
                 .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?,
         );
-        Self::log_send_errors(
-            self.send_messages_concurrent(sockets, v1_bytes, WireFormat::Json)
-                .await,
-        );
+        self.send_prepared(sockets, &v1_bytes, WireFormat::Json);
         Ok(())
     }
 
-    /// Log send errors (debug for closed connections, warn for others).
+    /// Log a fan-out send failure: debug for closed connections, warn otherwise.
+    pub(super) fn log_send_error(error: &Error) {
+        match error {
+            Error::ConnectionClosed(_) => debug!(error = %error, "send error"),
+            _ => warn!(error = %error, "send error"),
+        }
+    }
+
+    /// Log every failure collected by the delta fan-out.
+    #[cfg(feature = "delta")]
     pub(super) fn log_send_errors(results: Vec<Result<()>>) {
-        for r in results {
-            if let Err(e) = r {
-                match &e {
-                    Error::ConnectionClosed(_) => debug!(error = %e, "send error"),
-                    _ => warn!(error = %e, "send error"),
-                }
+        for result in results {
+            if let Err(error) = result {
+                Self::log_send_error(&error);
             }
         }
     }
