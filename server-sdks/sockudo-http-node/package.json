@@ -64,7 +64,7 @@
   "dependencies": {
     "abort-controller": "^3.0.0",
     "is-base64": "^1.1.0",
-    "node-fetch": "^2.7.0",
+    "node-fetch": "^3.3.2",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1"
   },
